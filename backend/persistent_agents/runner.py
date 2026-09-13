@@ -89,6 +89,7 @@ class OneShotEpisodeResult:
 
     record: AssignmentRecord
     completion: AssignmentEpisodeCompletion
+    research: object = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +443,8 @@ class AssignmentRunner:
 
     async def _finish_operation(self, executor, outcome):
         """Commit a bounded explicit outcome; never synthesize a recurring wake."""
+        from persistent_agents.research_episode import ResearchCompletion
+
         record, completion = outcome.record, outcome.completion
         if (not isinstance(record, AssignmentRecord)
                 or not isinstance(completion, AssignmentEpisodeCompletion)
@@ -451,9 +454,27 @@ class AssignmentRunner:
                 or (completion.phase == "waiting" and not completion.completed
                     and completion.next_wake_at is None)):
             raise DispatchDenied("assignment_completion_invalid")
+        proof = outcome.research
+        # Research may yield or fail without producing content. Every successful
+        # completion or content incorporation requires the closed result proof;
+        # a handler cannot bypass it by choosing a different checkpoint key.
+        research_output = record.operation.get("kind") == "research" and (
+            (completion.completed and completion.terminal_outcome != "failed")
+            or completion.checkpoint != record.checkpoint
+            or completion.activity is not None
+            or bool(completion.incorporations)
+            or bool(completion.event_receipts)
+        )
+        if (proof is not None and type(proof) is not ResearchCompletion) or (
+            proof is None and (research_output or completion.result_reference is not None
+                               or "research_result" in completion.checkpoint)
+        ):
+            raise DispatchDenied("assignment_research_result_invalid")
         lease = _episode_lease(executor)
         async with lease.lock:
-            authority = await self._operation_authority(executor.record)
+            checks = await proof.refresh(executor) if proof is not None else None
+            authority = (checks["model"]["authority"] if checks is not None
+                         else await self._operation_authority(executor.record))
 
             def finish(tx, repository, current):
                 self.service._owner(current.owner_id, authority.claims)
@@ -466,10 +487,16 @@ class AssignmentRunner:
                         or current.checkpoint != record.checkpoint or current.tasks != record.tasks
                         or current.wake_generation != record.wake_generation):
                     raise DispatchDenied("assignment_state_changed")
+                if proof is not None:
+                    proof.assert_completion(executor, tx, repository, current, checks, completion)
                 return self._complete_operation(tx, repository, executor, current, completion)
 
-            result = await self.store.operation_lifecycle_transaction(authority=authority,
-                fence=executor.claim.fence, binding=executor.binding, callback=finish)
+            if proof is not None:
+                result = await executor._research_transaction(proof.private, authority, finish,
+                                                              action_id=proof.model_action_id)
+            else:
+                result = await self.store.operation_lifecycle_transaction(authority=authority,
+                    fence=executor.claim.fence, binding=executor.binding, callback=finish)
             lease.terminal = True
         return result
 

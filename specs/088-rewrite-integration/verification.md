@@ -1,5 +1,130 @@
 # Feature 088 verification record
 
+
+## September 13 local repair integration and store review
+
+The owner reports adding the repaired Mac app for review. Xcode's actual
+same-version 1.6 (62) retry was accepted at `2026-09-13T01:11:15Z`, upload
+`44bcf787-902e-44ec-80ca-c9927bdd82fe`. The actual transported and preserved
+`Desktop/Work/AstralDeep-1.6-build62-macOS-AppStore-REPAIRED.pkg` is 24,260,279
+bytes, SHA-256 `d416a295030c2e1c6da2a7de799d35f64502e6c1440bffcafb16b65211d73198`.
+Root independently verified the actual received package's installer certificate,
+all six nested/app signatures, both Mach-O architectures, unchanged executable
+content and the original seven entitlements. The fix signs the three codeless
+SwiftPM resource bundles with the profile's existing distribution identity,
+then signs the outer app. It neither recompiles nor changes the version. The
+original rejected package remains preserved. Mac review approval or release is
+not inferred from the owner's report; iOS and Android submissions remain untouched.
+
+Local component commits now preserve the reviewed repairs:
+
+- Plane `c0d9644d83d49e0628ddaad0df4e399300450110`: bounded circular scheduler
+  scans with owner rotation and a final fixed-reader policy snapshot. Scheduler
+  qualification passed 61 Plane and 137 Deep tests; the policy snapshot passed
+  183 Plane and 121 Deep tests. Changed production coverage is respectively
+  Plane 100%, Deep scheduler 90.91%, and Deep policy 100%. Schema `088.003` and
+  its migration digest are unchanged.
+- Projection `ec1a41d1c6fe9ba47dd28baa9af17ae314731e78`: test-only Android
+  document grants/loopback policy, isolated Apple fixtures and accessibility
+  queries, raw xcresult query isolation, and the checked Mac signing helper.
+  Android instrumentation passed 91/91; final iOS App passed 210/210 plus the
+  changed history UI case, with the preceding four-case UI cohort also passing.
+  The collector replay passed 229 native Core tests and its Python suites passed
+  263 Projection / 233 Deep cases, with 100% changed collector lines. The signing
+  helper passed 33 focused tests with 201/211 statements (95.26%), and Deep's
+  workflow tests passed 88 with three existing skips.
+
+The Mac test build passed. Both attempted GUI runs stopped before assertions
+at macOS's separate UI-automation authentication prompt; no Mac UI pass is
+claimed. The task-owned Android and iOS emulators were removed and their build
+scratch cleaned. Compact receipts and raw test evidence remain private. Root
+verified 42 source hashes against the frozen component handoffs before committing.
+The wiki checkpoint is pushed at `47fd2ae`; product commits remain local.
+
+Deep has staged these exact component pins and built/installed/verified all four
+components with `scripts/install_local_components.py` and the digest-bound wheel
+lock. An initial build invocation refused an out-of-directory lock path before
+building; the corrected invocation and install/verification all passed. The fixed
+reader/model/research-completion integration passed 183 cases against those actual
+installed wheels on Python 3.11.15 with real disposable PostgreSQL. All six measured
+production sources were byte-identical before/after that run; independent Work
+read/preflight source edits are recorded separately in the full inventory. Changed
+coverage is 435/455 executable lines (95.60%), with each module above 90%. The first
+installed run had 180 passes and three old assertions expecting a later permission
+digest refusal; those fixtures now assert the stronger early closed-profile refusal.
+The corrected full cohort passed unchanged runtime code. All 27 component pin and
+installer tests passed as well. A reproduced result-proof bypass and policy-wait revocation
+race are now denied; unsupported reader identities and extra allowed tools are
+rejected by a shared closed profile. Research can still truthfully yield or fail
+without output. The finite handler and Work submission remain unregistered while
+broader profiles, controls, result delivery and qualifying staging remain open.
+No full T026/T028/T029, full 088, hosted-CI or protected-release completion follows
+from these scoped local results.
+
+## September 12 merges, cleanup and continuation
+
+The owner merged and deleted all three review branches. GitHub confirms Plane #8
+at `d279235691544da9268f56e7076ce15886c0ff25`, Projection #15 at
+`a8364219d28ef297b86476bbb41a8dbdb68fa159`, and Deep #195 at
+`013a06922759ae737b24b20ab02705e35614789d`. Each merged tree equals its final PR
+tree. The primary checkouts were synchronized; Deep's exact qualified component
+pins remain unchanged. New local `codex/088-completion` branches continue this
+feature without allocating another spec number.
+
+At the owner's request, 34 secondary worktrees, 36 old local task branches and
+147 scoped build/temporary paths were removed. Five running upgrade containers
+were stopped and their task records removed; 21 exact upgrade images were
+removed. All 22 named volumes, unrelated baseline resources and simulator data
+were preserved. All Apple simulators and both Android emulators were shut down.
+Subsequent verification uses newly owned disposable resources, closed after use.
+
+Five unfinished source files, 72 historical Deep commits and one historical
+Plane commit were preserved and verified before deletion. Compact local recovery
+metadata under `.git/088-recovery-20260912` includes verified Git bundles and 767
+selected receipts/handoffs/coverage records. This compact archive does not
+reconstruct every historical raw build or canonical release-evidence input.
+Private runtime configuration and signed store deliverables remain separate from
+source control. The cleanup checkpoint is recorded in pushed kos-wiki
+`0223fe3d5453d2d1704e0348ed3c1bcc1ddc86e2`.
+
+The owner confirms iOS 1.6 is waiting for review. A fresh App Store Connect view
+confirms Mac 1.6 (62) failed processing. The owner supplied error 90284 for the
+SwiftProtobuf, AstralCore and LiveKit resource bundles: their signing certificate
+must match the embedded provisioning profile. Signature diagnosis and a corrected
+Mac upload are in progress; no upload retry or iOS change has occurred. The exact
+preserved original Mac package is
+`Desktop/Work/AstralDeep-1.6-build62-macOS-AppStore.pkg`, SHA-256
+`8e303c8ffaf2ebc576fcecb7b6ef1da6491c358c9192e88a99481a83d6548d3a`.
+The sibling build-62 iOS package and Android code-8 AAB are preserved as well.
+
+The final merged Projection head had actual hosted native failures: Android ran
+88 cases with 30 failures, including test-provider permission, chart capture and
+welcome geometry cases; Apple had collector and App/UI test failures. Passing
+core/build lanes do not override those failures. Successor repairs and exact
+qualification are in progress; no full native or 088 completion is asserted.
+
+T014's preserved institutional compatibility suite was ported without semantic
+changes and passed all 30 cases with zero skips on Python 3.11.15 and real
+disposable PostgreSQL 17.10, using the pinned Plane `4a07d59`/schema `088.003`.
+It exercises registered Work read/control, BFF origin checks, native issuer/client
+and owner/delegation denials, token/logout compatibility and accepted replay
+without minting new durable session authority. IdP replies are synthetic; this
+does not complete live institutional staging T020. Ruff check/format, diff and
+secret checks passed. The local handoff digest is
+`513e3d508104f9c4a7f7fd083f58deb6b9ae69db8556f142772bf66e6d0b5bab`.
+
+The B1 fixed USER research-model boundary now passes 40 real-PostgreSQL tests
+on Python 3.11.15, including current source/configuration/key bindings, guarded
+cache reuse, final-body mutation, lost acknowledgements, repeated cancellation,
+truthful unknown consumption and confirmed overruns. Private prompts and provider
+keys remain in memory; the durable model action stores only routing metadata,
+source references and named-key bindings. Model calls use the ordinary orchestrator
+entry and existing isolated HTTP transport. The four changed production modules
+have 303/319 changed executable lines covered (94.98%; each above 90%) in the
+retained local diagnostic. This boundary remains unregistered: a finite handler,
+atomic result incorporation, ingress activation and the broader profiles still
+require implementation and qualification. It does not complete T026/T028/T029.
+
 ## September 12 uploaded clients and source-review checkpoint
 
 Apple accepted fresh iPhone/embedded-Watch and universal Mac version 1.6 / build 62

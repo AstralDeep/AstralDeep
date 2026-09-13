@@ -1,6 +1,9 @@
 # Implementation and qualification
 
-Use `codex/088-rewrite-integration` and explicit `SPECIFY_FEATURE_DIRECTORY=specs/088-rewrite-integration` for each Spec Kit script. Do not allocate another number or mutate source 081–087 branches. Read the inventory, contracts and tasks before implementation.
+Continue on `codex/088-completion` after the owner merged and deleted the original
+review branches. Set `SPECIFY_FEATURE_DIRECTORY=specs/088-rewrite-integration` for
+each Spec Kit script. Do not allocate another number or mutate source 081–087
+branches. Read the inventory, contracts and tasks before implementation.
 
 ## Baselines
 

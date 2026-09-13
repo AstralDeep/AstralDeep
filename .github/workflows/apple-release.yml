@@ -67,6 +67,9 @@ jobs:
       - name: Select the latest stable Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
 
+      - name: Require the pinned Mac Store package signer
+        run: test -f components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py
+
       # Fail before any signing step if the operator has not provisioned the
       # secrets. Names only ever reach the log — never values.
       - name: Require signing material
@@ -308,6 +311,14 @@ jobs:
             echo "::error::components/AstralProjection/apple-clients/ExportOptions-macos.plist against the identity actually"
             echo "::error::present in the keychain ('3rd Party Mac Developer Installer: …')."
             exit 1; }
+          # Validate the exported Distribution leaf, repair SwiftPM resource
+          # bundles inside-out, then verify the actual repackaged payload.
+          # Selecting the pre-export archive's leaf could select Development.
+          REPAIRED_PKG="$RUNNER_TEMP/AstralDeep-macos-store-verified.pkg"
+          python3 components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py \
+            --input "$PKG" --output "$REPAIRED_PKG" \
+            > "$RUNNER_TEMP/macos-store-signature-receipt.json"
+          PKG="$REPAIRED_PKG"
           echo "IPA=$IPA" >> "$GITHUB_ENV"
           echo "PKG=$PKG" >> "$GITHUB_ENV"
 

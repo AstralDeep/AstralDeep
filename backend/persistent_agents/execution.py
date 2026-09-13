@@ -130,27 +130,45 @@ class ActionExecutor:
             raise DispatchDenied("assignment_foreground_fanout_denied")
         return ActionExecutor(self.runner, self.claim, self.operation_fence, websocket)
 
-    def _operation_reader(self, request, action=None):
+    def _operation_reader(self, request, action=None, *, record=None):
         """Only the qualified durable read profile can enter this adapter."""
+        from persistent_agents.research_input import fixed_reader_source
+
+        current = self.record if record is None else record
+        fixed_reader_source(current)
         if (self.operation_sessions is None or self.interactive
                 or self.remote_marker is not None or self.approved_action_id is not None
-                or self.record.operation.get("version") != 2
-                or self.record.operation.get("source_retention") != "operation"
+                or current.operation.get("version") != 2
+                or current.operation.get("source_retention") != "operation"
                 or not isinstance(request, dict) or request.get("kind") != "tool"
                 or set(request) != {"kind", "agent_id", "tool_name", "arguments"}
+                or request.get("agent_id") != "web-research-1"
+                or request.get("tool_name") != "fetch_page"
                 or not isinstance(request.get("arguments"), dict)
                 or any(not isinstance(key, str) or key.startswith("_") or key in {"session_id", "user_id"}
                        for key in request["arguments"])
                 or self.orch.tool_permissions.get_tool_scope(
-                    request.get("agent_id"), request.get("tool_name")) not in {"tools:read", "tools:search"}
-                or (action is not None and (action.intent.boundary != "read_only"
+                    request.get("agent_id"), request.get("tool_name")) != "tools:read"
+                or (action is not None and (action.owner_id != current.owner_id
+                    or action.assignment_id != current.assignment_id
+                    or action.instruction_revision != current.instruction_revision
+                    or action.control_epoch != current.control_epoch
+                    or action.intent.boundary != "read_only"
                     or action.intent.sensitivity != "ordinary" or action.intent.interactive_only
                     or action.intent.transient_input is not None))):
             raise DispatchDenied("assignment_operation_profile_unavailable")
 
-    async def refresh(self, request=None, *, authority=None):
+    async def refresh(self, request=None, *, authority=None, _research=None):
         if self.one_shot:
-            self._operation_reader(request)
+            if _research is None:
+                self._operation_reader(request)
+            else:
+                from persistent_agents.research_input import ResearchInput, route
+                if (type(_research) is not ResearchInput or request != route()
+                        or self.operation_sessions is None or self.interactive
+                        or self.remote_marker is not None or self.approved_action_id is not None):
+                    raise DispatchDenied("assignment_operation_profile_unavailable")
+                _research.assert_record(self.record)
             if authority is None:
                 from orchestrator.session_authority import refresh_operation_execution_authority
                 authority = await refresh_operation_execution_authority(
@@ -166,6 +184,8 @@ class ActionExecutor:
             # never rotate the JWT after the ordinary delegation gate has run.
             self.record = await self.store.call_for_operation("assert_current_assignment_execution",
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
+            if _research is not None:
+                _research.assert_record(self.record)
             return {**checks, "authority": authority}
         self.record = await self.store.call("assert_current_claim", fence=self.claim.fence)
         await asyncio.to_thread(self.orch.work_admission.assert_current_execution,
@@ -295,6 +315,18 @@ class ActionExecutor:
                     or operation_checks["precondition_digest"] != action.intent.precondition_digest):
                 raise DispatchDenied("assignment_precondition_changed")
         if action.state == "succeeded":
+            if self.one_shot:
+                def cached(tx, repository, _current):
+                    actual = repository.get_action(tx, owner_id=self.record.owner_id,
+                        assignment_id=self.record.assignment_id, action_id=action.action_id)
+                    if actual.intent != action.intent or actual.state != "succeeded":
+                        raise DispatchDenied("assignment_action_binding_changed")
+                    retained = thaw(actual.result)
+                    if retained.get("result_available") is False:
+                        raise DispatchDenied("assignment_result_requires_reconciliation")
+                    return retained["result"]
+                return await self._reader_policy_transaction(operation_checks["authority"],
+                    action.action_id, cached)
             retained = thaw(action.result)
             if retained.get("result_available") is False:
                 raise DispatchDenied("assignment_result_requires_reconciliation")
@@ -347,13 +379,17 @@ class ActionExecutor:
         async def start():
             nonlocal permit_issued
             if self.one_shot:
-                permit = await self.store.call_for_operation("start_action_for_execution",
-                    fence=self.claim.fence, binding=self.binding, authority=checks["authority"].observation,
-                    action_id=action.action_id, attempt_id=attempt_id,
-                    expected_request_digest=action.intent.request_digest,
-                    current_permission_digest=checks["permission_digest"],
-                    current_precondition_digest=checks["precondition_digest"])
-                permit_issued = True
+                def commit(tx, repository, _current):
+                    nonlocal permit_issued
+                    permit = repository.start_action_for_execution(tx,
+                        fence=self.claim.fence, binding=self.binding, authority=checks["authority"].observation,
+                        action_id=action.action_id, attempt_id=attempt_id,
+                        expected_request_digest=action.intent.request_digest,
+                        current_permission_digest=checks["permission_digest"],
+                        current_precondition_digest=checks["precondition_digest"])
+                    permit_issued = True
+                    return permit
+                permit = await self._reader_policy_transaction(checks["authority"], action.action_id, commit)
                 if authority_window is not None:
                     # Issuance commits the effect permit. Renewal may now run
                     # while physical I/O continues; settlement has its own window.
@@ -475,13 +511,21 @@ class ActionExecutor:
                     cancelled = True
             settle = self.store.call_for_operation if self.one_shot else self.store.call
             try:
-                retained = await settle(
-                    "record_action_outcome", owner_id=self.record.owner_id,
+                values = dict(owner_id=self.record.owner_id,
                     assignment_id=self.record.assignment_id, action_id=action.action_id,
                     attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
-                    expected_request_digest=action.intent.request_digest, outcome=receipt,
-                    **result_context,
-                )
+                    expected_request_digest=action.intent.request_digest, outcome=receipt)
+                if self.one_shot and result_context:
+                    def retain(tx, repository, _current):
+                        return repository.record_action_outcome(tx, **values, **result_context)
+                    try:
+                        retained = await self._reader_policy_transaction(
+                            current_checks["authority"], action.action_id, retain)
+                    except (Exception, asyncio.CancelledError) as error:
+                        retained = await settle("record_action_outcome", **values)
+                        cancelled = cancelled or isinstance(error, asyncio.CancelledError)
+                else:
+                    retained = await settle("record_action_outcome", **values, **result_context)
             finally:
                 settlement_window.release()
             retained_result = thaw(retained.result)
@@ -572,3 +616,268 @@ class ActionExecutor:
                     attempt_id=attempt_id, expected_request_digest=action.intent.request_digest,
                     reason_code="assignment_dispatch_finished",
                 )
+
+    async def _reader_policy_transaction(self, authority, action_id, callback):
+        """Fence current fixed-reader policy at cache, permit and result boundaries."""
+        def guarded(tx, repository, current):
+            from persistent_agents.models import AssignmentError
+
+            action = repository.get_action(tx, owner_id=current.owner_id,
+                assignment_id=current.assignment_id, action_id=action_id)
+            try:
+                self._operation_reader(thaw(action.intent.request), action, record=current)
+            except DispatchDenied:
+                raise AssignmentError("assignment_operation_profile_unavailable", 403) from None
+            self._assert_fixed_reader_policy(tx, authority)
+            return callback(tx, repository, current)
+        return await self.store.operation_lifecycle_transaction(authority=authority,
+            fence=self.claim.fence, binding=self.binding, callback=guarded)
+
+    async def _research_transaction(self, private, authority, callback, *, action_id):
+        """Compose only current public Plane guards and locked config in one tx."""
+        def guarded(tx, repository, current):
+            repository.assert_current_assignment_execution(tx, fence=self.claim.fence,
+                binding=self.binding, authority=authority.observation, action_id=private.source_action_id)
+            # Take all action row locks in stable order before waiting on the
+            # current USER configuration. Later callbacks only revisit these rows.
+            locked = {identity: repository.get_action(tx, owner_id=private.owner_id,
+                assignment_id=private.assignment_id, action_id=identity)
+                for identity in sorted({private.source_action_id, action_id})}
+            source = locked[private.source_action_id]
+            config = self.store.plane_runtime.repositories.encrypted_llm_config.get_user_for_update(
+                tx, owner_id=private.owner_id)
+            private.assert_current(current, source, config)
+            self._assert_fixed_reader_policy(tx, authority)
+            return callback(tx, repository, current)
+        return await self.store.operation_lifecycle_transaction(authority=authority,
+            fence=self.claim.fence, binding=self.binding, callback=guarded)
+
+    def _assert_fixed_reader_policy(self, tx, authority):
+        """Take the opt-in policy fence only after every waiting action/config lock."""
+        from orchestrator.tool_permissions import FixedReaderPolicyError
+        from persistent_agents.models import AssignmentError
+        try:
+            self.orch.tool_permissions.assert_fixed_reader_current(tx,
+                owner_id=self.record.owner_id, plane_runtime=self.store.plane_runtime,
+                orchestrator=self.orch, identity_claims=authority.claims)
+        except FixedReaderPolicyError as error:
+            raise AssignmentError(error.code,
+                403 if error.code == "assignment_scope_revoked" else 503) from None
+
+    async def research_selection(self, key: str, *, source_action_id: str):
+        """Attempt only the fixed USER passage-selection profile, never raw prompts.
+
+        This entry remains unregistered. It cannot run a generic model intent or
+        complete an operation; a separate reviewed handler owns that lifecycle.
+        """
+        import re
+        from llm_config import research_profile as profile
+        from persistent_agents.research_input import ResearchInput, route
+
+        if (not self.one_shot or self.operation_sessions is None or self.interactive
+                or self.remote_marker is not None or self.approved_action_id is not None
+                or type(key) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+        try:
+            uuid.UUID(source_action_id)
+        except (ValueError, TypeError, AttributeError):
+            raise DispatchDenied("assignment_research_binding_changed") from None
+        async with _OperationAuthorityWindow(self.operation_authority_lock) as window:
+            source_request = {"kind": "tool", **{name: thaw(self.record.definition.source)[name]
+                for name in ("agent_id", "tool_name", "arguments")}}
+            initial = await self.refresh(source_request)
+            current, source = await self.store.read_current_action(fence=self.claim.fence,
+                binding=self.binding, action_id=source_action_id,
+                authority=initial["authority"].observation)
+            # A linked page must pass its own ordinary consent/egress/tool checks.
+            source_checks = await self.refresh(thaw(source.intent.request), authority=initial["authority"])
+            if (source.intent.permission_digest != source_checks["permission_digest"]
+                    or source.intent.precondition_digest != source_checks["precondition_digest"]):
+                raise DispatchDenied("assignment_precondition_changed")
+            existing = await self.store.transaction(lambda tx, repository: repository.get_action_by_key(
+                tx, owner_id=current.owner_id, assignment_id=current.assignment_id,
+                action_key="research-v1-" + key), bound_session_waits=True)
+            key_id = None
+            if existing is not None:
+                transient = existing.intent.transient_input
+                if transient is None or not hasattr(transient, "binding_key_id"):
+                    raise DispatchDenied("assignment_research_binding_changed")
+                key_id = transient.binding_key_id
+            private = await ResearchInput.capture(current, source, config_store=self.orch._llm_store,
+                                                   key_id=key_id)
+            await safe_text(canonical(private.body()["messages"]), reviewed_urls(current.definition.source))
+            checks = await self.refresh(route(), authority=initial["authority"], _research=private)
+            maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
+                                               elapsed_ms=profile.RESERVED_MILLISECONDS)
+            if existing is not None:
+                private.assert_action(existing)
+                if existing.intent.maximum != maximum:
+                    raise DispatchDenied("assignment_research_binding_changed")
+                if (existing.intent.permission_digest != checks["permission_digest"]
+                        or existing.intent.precondition_digest != checks["precondition_digest"]):
+                    raise DispatchDenied("assignment_precondition_changed")
+                if existing.state == "succeeded":
+                    def cached(tx, repository, _current):
+                        actual = repository.get_action(tx, owner_id=private.owner_id,
+                            assignment_id=private.assignment_id, action_id=existing.action_id)
+                        return private.retained_result(actual)
+                    return await self._research_transaction(private, checks["authority"], cached,
+                                                            action_id=existing.action_id)
+                if existing.ever_started or existing.state in {"started", "uncertain", "reconciliation"}:
+                    raise DispatchDenied("assignment_action_uncertain")
+            if current.definition.limits.get("currency") is not None:
+                # Existing aggregate quote rates do not identify this exact USER
+                # model/config. Do not invent price or provider-identity coverage.
+                raise DispatchDenied("assignment_cost_bound_unavailable")
+            if existing is None:
+                intent = AssignmentActionIntent(action_key="research-v1-" + key, request=route(),
+                    request_digest=private.payload_binding, maximum=maximum,
+                    permission_digest=checks["permission_digest"], precondition_digest=checks["precondition_digest"],
+                    transient_input=private.transient(), boundary="unreplayable")
+                existing = await self.store.call_for_operation("put_action_for_execution",
+                    fence=self.claim.fence, binding=self.binding, authority=checks["authority"].observation,
+                    intent=intent)
+            if existing.intent.maximum != maximum:
+                raise DispatchDenied("assignment_research_binding_changed")
+            private.assert_action(existing)
+            return await self._execute_research(existing, private, checks, window)
+
+    async def _execute_research(self, action, private, operation_checks, window):
+        """Meter one fixed effect, preserve authentic liability and guard result use."""
+        from astralplane.repositories.assignment_models import AssignmentResultDisposition
+        from llm_config import research_profile as profile
+        from persistent_agents.research_input import route
+
+        attempt_id = str(uuid.uuid4())
+        reservation = await self.store.call_for_operation("reserve_action_for_execution",
+            fence=self.claim.fence, binding=self.binding, authority=operation_checks["authority"].observation,
+            action_id=action.action_id, attempt_id=attempt_id, expected_request_digest=private.payload_binding,
+            maximum=action.intent.maximum, quote_digest=None, quote_expires_at=None)
+        if not reservation.created:
+            raise DispatchDenied("assignment_attempt_already_reserved")
+        invocation = object()
+        authority = operation_checks["authority"]
+        expected_session = authority.claims
+        expected_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+        private_session = authority.claims
+        private_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
+        self.orch.ui_sessions[invocation] = private_session
+        checks = operation_checks
+        # Candidate set inside callback means start may have committed despite a
+        # lost acknowledgement. Never refund or send from that uncertain state.
+        candidate_permit = None
+        observed = None
+        effect_started = None
+
+        def session_current():
+            if (self.orch.ui_sessions.get(invocation) is not private_session
+                    or private_session != expected_session):
+                raise DispatchDenied("assignment_authorization_required")
+
+        async def authorize():
+            nonlocal checks
+            session_current()
+            checks = await self.refresh(route(), authority=authority, _research=private)
+            session_current()
+            if (checks["permission_digest"] != action.intent.permission_digest
+                    or checks["precondition_digest"] != action.intent.precondition_digest):
+                raise DispatchDenied("assignment_precondition_changed")
+
+        async def start():
+            nonlocal candidate_permit, effect_started
+            def commit(tx, repository, _current):
+                nonlocal candidate_permit
+                session_current()
+                candidate_permit = repository.start_action_for_execution(tx, fence=self.claim.fence,
+                    binding=self.binding, authority=authority.observation, action_id=action.action_id,
+                    attempt_id=attempt_id, expected_request_digest=private.payload_binding,
+                    current_permission_digest=checks["permission_digest"],
+                    current_precondition_digest=checks["precondition_digest"])
+                return candidate_permit
+            permit = await self._research_transaction(private, authority, commit, action_id=action.action_id)
+            effect_started = time.monotonic()
+            window.release()
+            return permit
+
+        async def observe(permit, status, response):
+            nonlocal observed
+            elapsed = max(1, int((time.monotonic() - effect_started) * 1000))
+            parsed = (profile.parse_response(response.body, status_code=response.status_code,
+                passage_ids=private.passage_ids) if status == "succeeded" else None)
+            actual = None
+            result = {}
+            outcome = "uncertain"
+            if parsed is not None and parsed.usage is not None:
+                # Usage is factual even for wrong model, refusal, malformed
+                # selection or overrun. It is never clamped to a lower reservation.
+                actual = AssignmentResourceAmount(model_calls=1, tokens=parsed.usage.total_tokens,
+                                                   elapsed_ms=elapsed)
+                outcome = "failed"
+                if parsed.passage_ids is not None and elapsed <= profile.RESERVED_MILLISECONDS:
+                    result = private.selection_result(parsed.passage_ids)
+                    outcome = "succeeded"
+                else:
+                    result = {"code": "assignment_research_response_refused"}
+            receipt_digest = private.receipt_digest(action_id=action.action_id, attempt_id=attempt_id,
+                outcome=outcome, result=result, actual=actual)
+            receipt = AssignmentActionOutcome(outcome=outcome, result_digest=receipt_digest,
+                result=result, actual=actual,
+                result_disposition=AssignmentResultDisposition(available=outcome != "uncertain",
+                    reason="reconstruction_required" if outcome == "uncertain" else None,
+                    binding_key_id=private.key_id))
+            retained = None
+            try:
+                async with _OperationAuthorityWindow(self.operation_authority_lock):
+                    fresh = await self.refresh(route(), _research=private)
+                    if (fresh["permission_digest"] != action.intent.permission_digest
+                            or fresh["precondition_digest"] != action.intent.precondition_digest):
+                        raise DispatchDenied("assignment_precondition_changed")
+                    def settle(tx, repository, _current):
+                        return repository.record_action_outcome(tx, owner_id=private.owner_id,
+                            assignment_id=private.assignment_id, action_id=action.action_id,
+                            attempt_id=attempt_id, dispatch_token=permit.dispatch_token,
+                            expected_request_digest=private.payload_binding, outcome=receipt,
+                            result_fence=self.claim.fence, result_binding=self.binding,
+                            result_authority=fresh["authority"].observation)
+                    retained = await self._research_transaction(private, fresh["authority"], settle,
+                                                                action_id=action.action_id)
+            except (Exception, asyncio.CancelledError) as error:
+                # Source/config/key/session can disappear after a real effect,
+                # including while reacquiring the renewal lock. A committed but
+                # unacknowledged receipt is idempotent by its exact signature.
+                retained = await self.store.call_for_operation("record_action_outcome",
+                    owner_id=private.owner_id, assignment_id=private.assignment_id,
+                    action_id=action.action_id, attempt_id=attempt_id,
+                    dispatch_token=permit.dispatch_token, expected_request_digest=private.payload_binding,
+                    outcome=receipt)
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+            saved = thaw(retained.result)
+            observed = saved
+            if outcome == "uncertain":
+                raise DispatchDenied("assignment_action_uncertain")
+            if saved.get("result_available") is False:
+                raise DispatchDenied("assignment_result_unavailable")
+            if outcome != "succeeded":
+                raise DispatchDenied("assignment_research_response_refused")
+
+        context = PersistentDispatchContext(owner_id=private.owner_id, kind="model", agent_id=None,
+            tool_name=None, arguments=route(), timeout_seconds=65, max_input_bytes=65536,
+            max_output_tokens=1024, authorize=authorize, start=start, observe=observe,
+            strict_final_arguments=True, research_input=private)
+        try:
+            with bind_dispatch(context), turn_permission_memo():
+                await self.orch._call_llm(invocation, private.body()["messages"],
+                    feature="persistent_assignment", response_format={"type": "json_object"}, allow_stream=False)
+            if observed is None or observed.get("result_available") is not True:
+                raise DispatchDenied("assignment_action_not_executed")
+            return observed["result"]
+        finally:
+            if self.orch.ui_sessions.get(invocation) is private_session:
+                self.orch.ui_sessions.pop(invocation, None)
+            if candidate_permit is None:
+                await self.store.transaction(lambda tx, repository: repository.release_unstarted_action(
+                    tx, owner_id=private.owner_id, assignment_id=private.assignment_id,
+                    action_id=action.action_id, attempt_id=attempt_id,
+                    expected_request_digest=private.payload_binding,
+                    reason_code="assignment_dispatch_finished"), bound_session_waits=True)

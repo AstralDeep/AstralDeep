@@ -55,7 +55,7 @@ REQUEST = {"kind": "tool", "agent_id": "web-research-1", "tool_name": "fetch_pag
 
 
 @pytest.fixture
-async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path):
+async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path, request):
     sessions, owner, sid, _, refreshes = fixture
     orch, untouched = gate_orchestrator
     untouched_session = dict(orch.ui_sessions[untouched])
@@ -130,7 +130,8 @@ async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path):
                     allowed_tools=("web-research-1:fetch_page",), consented_scopes=("tools:read", "tools:search"),
                     offline_grant_id=None,
                     limits={"max_retries": 1, "max_concurrent_tasks": 1, "max_depth": 1, "max_tasks": 2,
-                            "model_calls": 1, "tool_calls": 4, "tokens": 1000, "elapsed_ms": 120_000}),
+                            "model_calls": 1, "tool_calls": 4, "tokens": 1000, "elapsed_ms": 120_000,
+                            **getattr(request, "param", {})}),
                 operation=AssignmentOperationSpec("research", AssignmentOperationAuthority(
                     owner, "interactive", "session_incarnation", state.credential.incarnation_id,
                     state.observed_at + timedelta(minutes=5)),
@@ -365,11 +366,11 @@ async def test_live_consented_scope_change_denies_old_intent_and_cached_content(
     permissions.register_tool_scopes("web-research-1", {"fetch_page": "tools:search"})
     await asyncio.to_thread(permissions.set_agent_scopes, op.owner, "web-research-1",
                             {"tools:read": True, "tools:search": True})
-    # This remains an authorized reader inside original consent, but it is a
-    # different permission binding than the actual stored action.
-    checks = await op.executor.refresh(REQUEST)
-    assert checks["permission_digest"] != action.intent.permission_digest
-    with pytest.raises(DispatchDenied, match="assignment_precondition_changed"):
+    # Consent alone cannot expand this closed profile. The changed scope must
+    # be refused before an authority refresh or reuse of the stored action.
+    with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
+        await op.executor.refresh(REQUEST)
+    with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
         await op.executor.execute(action)
     assert len(op.physical) == int(cached)
     assert (await actions(op))[0] == action
@@ -395,7 +396,7 @@ async def test_argument_mutation_across_await_cannot_change_physical_request(ope
     captured = {}
     governed = op.executor.orch._execute_governed_attempt
     refresh = op.executor.refresh
-    call = op.executor.store.call_for_operation
+    transaction = op.executor._reader_policy_transaction
 
     async def pause():
         entered.set()
@@ -413,15 +414,15 @@ async def test_argument_mutation_across_await_cannot_change_physical_request(ope
             await pause()
         return result
 
-    async def start(method, **kwargs):
-        result = await call(method, **kwargs)
-        if boundary == "start" and method == "start_action_for_execution":
+    async def start(authority, action_id, callback):
+        result = await transaction(authority, action_id, callback)
+        if boundary == "start" and callback.__name__ == "commit":
             await pause()
         return result
 
     monkeypatch.setattr(op.executor.orch, "_execute_governed_attempt", gate)
     monkeypatch.setattr(op.executor, "refresh", authorize)
-    monkeypatch.setattr(op.executor.store, "call_for_operation", start)
+    monkeypatch.setattr(op.executor, "_reader_policy_transaction", start)
     task = asyncio.create_task(op.executor.action("read", REQUEST))
     await asyncio.wait_for(entered.wait(), 10)
     captured["arguments"]["url"] = "https://93.184.216.34/changed-after-await"

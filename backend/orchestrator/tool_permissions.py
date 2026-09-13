@@ -78,6 +78,31 @@ VALID_SCOPES = ["tools:read", "tools:write", "tools:search", "tools:system",
                 "tools:files", "tools:execute"]
 
 
+class FixedReaderPolicyError(ValueError):
+    """Closed refusal from the opt-in atomic fixed-reader policy boundary."""
+
+    def __init__(self, code: str = "assignment_source_permission_unavailable"):
+        self.code = code
+        super().__init__(code)
+
+
+def _runtime_override_decision(rows, tool_name: str, required_scope: str):
+    """Apply normal dispatch precedence, including kind grants over legacy denies."""
+    kind_row = next((row for row in rows if row.tool_name == tool_name
+                     and row.permission_kind == required_scope), None)
+    if kind_row is not None:
+        return kind_row.enabled
+    legacy_row = next((row for row in rows if row.tool_name == tool_name
+                       and row.permission_kind is None), None)
+    return False if legacy_row is not None and not legacy_row.enabled else None
+
+
+def _runtime_scope_decision(rows, required_scope: str):
+    """An explicit scope, including opt-out, outranks safe/owned defaults."""
+    row = next((row for row in rows if row.scope == required_scope), None)
+    return None if row is None else row.enabled
+
+
 def resolve_effective_tool_permissions(
     tool_scope_map: Mapping[str, str],
     *,
@@ -561,28 +586,9 @@ class ToolPermissionManager:
             owner_id=user_id,
             agent_id=agent_id,
         )
-        kind_row = next(
-            (
-                row
-                for row in override_rows
-                if row.tool_name == tool_name
-                and row.permission_kind == required_scope
-            ),
-            None,
-        )
-        if kind_row is not None:
-            return kind_row.enabled
-        # 2. Legacy tool-wide override (permission_kind IS NULL) can still block
-        legacy_row = next(
-            (
-                row
-                for row in override_rows
-                if row.tool_name == tool_name and row.permission_kind is None
-            ),
-            None,
-        )
-        if legacy_row is not None and not legacy_row.enabled:
-            return False
+        override = _runtime_override_decision(override_rows, tool_name, required_scope)
+        if override is not None:
+            return override
         # 3. Fall back to the agent-wide scope. Feature 040: an owner-approved
         # "safe" agent flips this baseline from deny→allow — but ONLY when the
         # user has no explicit scope row. An explicit grant OR opt-out (a stored
@@ -594,9 +600,9 @@ class ToolPermissionManager:
             owner_id=user_id,
             agent_id=agent_id,
         )
-        scope_row = next((row for row in scope_rows if row.scope == required_scope), None)
-        if scope_row is not None:
-            return scope_row.enabled
+        scope = _runtime_scope_decision(scope_rows, required_scope)
+        if scope is not None:
+            return scope
         if required_scope not in VALID_SCOPES:
             # A tool declaring an unknown scope has no grantable permission
             # surface (registration warns and says as much) and no scope the
@@ -617,6 +623,68 @@ class ToolPermissionManager:
         if self._is_owned_user_agent(user_id, agent_id):
             return True
         return False
+
+    def assert_fixed_reader_current(
+        self, transaction, *, owner_id: str, plane_runtime, orchestrator,
+        identity_claims,
+    ) -> str:
+        """Recheck the fixed research reader in the caller's bounded transaction.
+
+        Call LAST after all waiting record/config locks, retaining the returned
+        policy fence through commit. No later policy lock/write or external I/O
+        is allowed. The transaction must belong to the supplied application
+        runtime; the composing lifecycle guard establishes that binding. This
+        opt-in path bypasses memo/default caches and opens no second transaction.
+        Contention, stale snapshots and malformed facts refuse without fallback.
+        Temporary table-level fencing can also refuse unrelated-owner writers.
+        Ordinary client flows retain their existing evaluator and cache behavior.
+        """
+        agent_id, tool_name, scope = "web-research-1", "fetch_page", "tools:read"
+        try:
+            from astralplane.repositories.tool_policy import FixedReaderPolicySnapshot
+            from orchestrator.agent_identity import identity_requirement_satisfied
+            from shared.feature_flags import flags
+
+            if (plane_runtime is not self._policy.plane_runtime
+                    or plane_runtime is not self._agents.plane_runtime
+                    or orchestrator.tool_permissions is not self):
+                raise FixedReaderPolicyError()
+            snapshot = self._policy.repository.lock_fixed_reader_policy_snapshot(
+                transaction, owner_id=owner_id,
+            )
+            if type(snapshot) is not FixedReaderPolicySnapshot or snapshot.owner_id != owner_id:
+                raise FixedReaderPolicyError()
+            card = orchestrator.agent_cards.get(agent_id)
+            allowed = bool(
+                card is not None
+                and (agent_id in orchestrator.agents or agent_id in orchestrator.local_agents)
+                and any(getattr(skill, "id", None) == tool_name for skill in card.skills)
+                and identity_requirement_satisfied(card, identity_claims)
+                and not orchestrator.security_flags.get(agent_id, {}).get(tool_name, {}).get("blocked")
+                and self.get_tool_scope(agent_id, tool_name) == scope
+                and not snapshot.disabled
+                and not snapshot.user_agent_deleted
+                and snapshot.user_agent_owner in (None, owner_id)
+                and not (hasattr(orchestrator, "lifecycle_manager")
+                         and snapshot.draft_status not in (None, "live")
+                         and snapshot.is_public is not True)
+            )
+            decision = _runtime_override_decision(snapshot.overrides, tool_name, scope)
+            if decision is None:
+                decision = _runtime_scope_decision(snapshot.scopes, scope)
+            if decision is None:
+                decision = bool(
+                    (flags.is_enabled("safe_agents") and snapshot.is_safe
+                     and snapshot.is_public is not False)
+                    or snapshot.user_agent_owner == owner_id
+                )
+            if not allowed or not decision:
+                raise FixedReaderPolicyError("assignment_scope_revoked")
+            return scope
+        except FixedReaderPolicyError:
+            raise
+        except Exception:
+            raise FixedReaderPolicyError() from None
 
     def _is_owned_user_agent(self, user_id: str, agent_id: str) -> bool:
         """Whether ``agent_id`` is a user-created agent owned by ``user_id``
