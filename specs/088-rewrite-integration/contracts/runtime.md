@@ -141,6 +141,17 @@ logical task. Crash recovery fences prior assignments/actions before any reclaim
 
 ### Ephemeral source recovery regression
 
+The implemented `POST /api/work/v1/operations` public-reader request accepts the
+optional closed `source_retention` field (`operation` or `none`). Omission retains
+the previous `operation` behavior and exact previous canonical receipt digest.
+An explicitly supplied field participates in command identity: a retry must use
+its original body. `none` selects the same governed ephemeral reader/model path,
+without changing IAM, budgets or execution authority. Its result endpoint returns
+metadata with unavailable content; it cannot reconstruct a discarded result for
+later viewing or saving. Invalid types/values or extra payload fields refuse
+before refresh or admission. This transport option does not itself implement a
+new client composition control, automatic provider retry or retention migration.
+
 When `source_retention=none`, source title/URL/extraction metadata and receipt may
 survive; full text exists only in the current attempt. Do not persist an `available`
 flag that a new attempt interprets as retained content. A checkpoint carries:

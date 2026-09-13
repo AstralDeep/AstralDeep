@@ -50,7 +50,9 @@ def _parse(raw):
             _invalid()
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                            parse_constant=lambda _: _invalid())
-        if (not isinstance(value, dict) or set(value) != _FIELDS
+        if (not isinstance(value, dict) or set(value) not in (_FIELDS, _FIELDS | {"source_retention"})
+                or type(value.get("source_retention", "operation")) is not str
+                or value.get("source_retention", "operation") not in {"operation", "none"}
                 or type(value["version"]) is not int or value["version"] != 1
                 or not isinstance(value["caller_key"], str)
                 or not 1 <= len(value["caller_key"]) <= 256
@@ -272,7 +274,7 @@ class WorkSubmitService:
             observation = replace(state, valid_until=min(state.valid_until, deadline))
             operation = AssignmentOperationSpec("research", AssignmentOperationAuthority(
                 context.owner_id, "interactive", "session_incarnation", state.credential.incarnation_id,
-                deadline), deadline, "operation")
+                deadline), deadline, body.get("source_retention", "operation"))
             identity = str(uuid4())
 
             def accept(transaction, repository):
