@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from orchestrator.orchestrator import Orchestrator
 from persistent_agents.dispatch_context import DispatchDenied, bind_dispatch
+from persistent_agents.research_episode import run_research_episode
 from persistent_agents.tests.test_dispatch_integration import context
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
@@ -28,7 +29,9 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     monkeypatch.setattr(session_store, "assert_production_posture", Mock())
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
     created_service = SimpleNamespace(approval_executor=None)
-    created_runner = SimpleNamespace(start=Mock())
+    # The runner is composed with an explicit one-shot lifecycle and must report
+    # its server-owned research composition ready before it is published.
+    created_runner = SimpleNamespace(start=Mock(), fixed_research_ready=Mock(return_value=True))
     factory = Mock(return_value=created_service)
     runner_factory = Mock(return_value=created_runner)
     bridge = Mock(return_value=object())
@@ -46,7 +49,10 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
             recover_once=AsyncMock(return_value=SimpleNamespace(degraded_publication_ids=())), start=Mock()),
         _track_startup_background_task=background, _jwks_warm_loop=AsyncMock(),
         _personal_agent_watchdog_task=SimpleNamespace(done=lambda: False),
-        _start_phi_warm=Mock(), _monitor_agents=AsyncMock(),
+        _start_phi_warm=Mock(), _monitor_agents=AsyncMock(), web_sessions=object(),
+        # Production always constructs the note service in __init__; startup
+        # schedules its expiry loop as a tracked background task.
+        explicit_notes=SimpleNamespace(expiry_loop=AsyncMock()),
         lifecycle_manager=SimpleNamespace(reconcile_orphaned_draft_permissions=Mock(return_value=0),
             reconcile_legacy_directory_ownership=Mock()))
     with pytest.raises(StartupObserved):
@@ -54,7 +60,11 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     assert hub._scheduler_loop is None
     if enabled:
         factory.assert_called_once_with(hub)
-        runner_factory.assert_called_once_with(hub, created_service)
+        assert runner_factory.call_args.args == (hub, created_service)
+        one_shot = runner_factory.call_args.kwargs["one_shot"]
+        assert one_shot.sessions is hub.web_sessions and one_shot.episode is run_research_episode
+        created_runner.fixed_research_ready.assert_called_once_with(
+            service=created_service, sessions=hub.web_sessions)
         bridge.assert_called_once_with(created_runner)
         assert created_service.approval_executor is bridge.return_value
         created_runner.start.assert_called_once()

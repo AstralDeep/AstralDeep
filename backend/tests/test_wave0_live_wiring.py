@@ -131,7 +131,7 @@ def _tool_messages(messages):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags):
+async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags, user_skills_disabled):
     _register_tool_agent(orchestrator)
     ws = _fake_ws(orchestrator)
     chat_id = f"w0-{uuid.uuid4().hex[:8]}"
@@ -179,7 +179,7 @@ async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags):
 
 
 @pytest.mark.asyncio
-async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags):
+async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags, user_skills_disabled):
     """C-N15 + C-S4 composition: a tool-authored digest is trusted → unwrapped."""
     _register_tool_agent(orchestrator)
     ws = _fake_ws(orchestrator)
@@ -224,7 +224,7 @@ async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_flags):
+async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_flags, user_skills_disabled):
     from orchestrator.context_engineering import TOMBSTONE
     _register_tool_agent(orchestrator)
     ws = _fake_ws(orchestrator)

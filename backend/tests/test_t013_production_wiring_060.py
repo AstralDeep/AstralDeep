@@ -598,28 +598,36 @@ async def test_background_react_projection_reuses_operation_fence_off_loop(
 def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() -> None:
     """The simulated manager seam above must also be wired into production."""
 
-    wrapper_source = textwrap.dedent(
-        inspect.getsource(Orchestrator.handle_chat_message)
-    )
-    wrapper_tree = ast.parse(wrapper_source)
-    wrapper = next(
-        node for node in wrapper_tree.body if isinstance(node, ast.AsyncFunctionDef)
-    )
-    assert "operation_context" in {
-        argument.arg for argument in wrapper.args.args
-    }
-    delegates = [
-        call
-        for call in ast.walk(wrapper)
-        if isinstance(call, ast.Call)
-        and _dotted_name(call.func) == "self._handle_chat_message_impl"
-    ]
-    assert len(delegates) == 1
-    forwarded = {
-        keyword.arg: _dotted_name(keyword.value)
-        for keyword in delegates[0].keywords
-    }
-    assert forwarded["operation_context"] == "operation_context"
+    # Feature 088 put a turn-guidance wrapper in front of the Re-Act
+    # implementation, so the production callsite is now two hops:
+    # ``handle_chat_message`` -> ``_handle_chat_message_with_guidance`` ->
+    # ``_handle_chat_message_impl``. Walk both hops and prove the exact
+    # managed authority is forwarded verbatim across each of them.
+    for outer, inner in (
+        (Orchestrator.handle_chat_message, "self._handle_chat_message_with_guidance"),
+        (Orchestrator._handle_chat_message_with_guidance, "self._handle_chat_message_impl"),
+    ):
+        wrapper_source = textwrap.dedent(inspect.getsource(outer))
+        wrapper_tree = ast.parse(wrapper_source)
+        wrapper = next(
+            node
+            for node in wrapper_tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+        )
+        assert "operation_context" in {
+            argument.arg for argument in wrapper.args.args
+        }
+        delegates = [
+            call
+            for call in ast.walk(wrapper)
+            if isinstance(call, ast.Call) and _dotted_name(call.func) == inner
+        ]
+        assert len(delegates) == 1
+        forwarded = {
+            keyword.arg: _dotted_name(keyword.value)
+            for keyword in delegates[0].keywords
+        }
+        assert forwarded["operation_context"] == "operation_context"
 
     # Conversation publication now wraps the Re-Act implementation. Inspect
     # the delegated production callsite as well as proving the wrapper carries

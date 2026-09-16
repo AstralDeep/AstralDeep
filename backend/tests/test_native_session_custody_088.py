@@ -1,16 +1,27 @@
 """Fresh native grants enter real Plane custody; all IdP traffic is synthetic."""
 
 import asyncio
-import json
 import threading
+from types import SimpleNamespace
 from urllib.parse import urlencode
 from uuid import uuid4
 
+from cryptography.fernet import Fernet
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from audit.repository import AuditRepository
+from llm_config import research_profile as profile
+from llm_config.user_store import UserLLMConfigStore
 from orchestrator import auth, device_login, web_auth
+from orchestrator.api import operation_router
+from orchestrator.tool_permissions import ToolPermissionManager
+from personalization.phi_gate import PHIGate
+from persistent_agents.research_episode import run_research_episode
+from persistent_agents.runner import AssignmentRunner, OneShotLifecycle
+from persistent_agents.service import AssignmentService
+from persistent_agents.store import AssignmentStore
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_device_login import start_body
 from tests.test_auth_token_proxy import _FakeSession
@@ -21,14 +32,26 @@ from tests.test_session_issuer_binding_088 import (
     runtime as runtime,
     signing_key as signing_key,
 )
+from tests.test_work_research_preflight_postgres_088 import research_command
+from tests.test_work_submit_postgres_088 import totals
 
 MODE = "server_v1"
 HEADER = {"X-Astral-Session-Custody": MODE}
 REDIRECT = "com.personalailabs.astraldeep:/oauth2redirect"
+WORK = "/api/work/v1/operations"
 
 
 @pytest.fixture
-async def client(fixture, monkeypatch):
+def app():
+    """The one ASGI application every route in a test shares (auth + web_auth)."""
+    value = FastAPI()
+    value.include_router(auth.auth_router)
+    value.include_router(web_auth.web_auth_router)
+    return value
+
+
+@pytest.fixture
+async def client(app, fixture, monkeypatch):
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native,astral-mobile,astral-watch")
     monkeypatch.setenv("KEYCLOAK_DEVICE_CLIENTS", "astral-watch")
     monkeypatch.setenv("FF_DEVICE_LOGIN", "1")
@@ -53,9 +76,6 @@ async def client(fixture, monkeypatch):
 
     monkeypatch.setattr(device_login, "_default_get_json", discovery)
     monkeypatch.setattr(device_login, "_default_post_form", device_post)
-    app = FastAPI()
-    app.include_router(auth.auth_router)
-    app.include_router(web_auth.web_auth_router)
     auth.reset_token_proxy_state()
     device_login.reset_state()
     async with REAL_CLIENT(transport=httpx.ASGITransport(app=app),
@@ -456,3 +476,184 @@ async def test_existing_session_route_refreshes_server_custody_without_cookie_ro
     assert "refresh_token" not in response.text and "set-cookie" not in response.headers
     assert client.cookies[web_auth.COOKIE_NAME] == cookie
     assert get_session_record(runtime, sid).incarnation_id == before.incarnation_id
+
+
+@pytest.mark.asyncio
+async def test_mock_auth_discovery_never_advertises_custody(client, fixture, monkeypatch):
+    # Every custody route refuses under mock auth (_issuer() -> 503), so an
+    # advertisement there would send the native client into a dead exchange.
+    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+    response = await client.get("/auth/session")
+    assert response.status_code == 200
+    assert response.headers.get_list("x-astral-session-custody") == []
+    assert response.json() == {"authenticated": True, "access_token": "dev-token", "resumed": True}
+    assert "set-cookie" not in response.headers
+    refused = await client.post("/auth/token", data=form(), headers=HEADER)
+    assert refused.status_code == 503
+    assert "set-cookie" not in refused.headers and not fixture[4].requests
+
+
+@pytest.mark.asyncio
+async def test_authenticated_discovery_keeps_body_shape_and_sets_no_cookie(client, fixture):
+    issued = await client.post("/auth/token", data=form(), headers=HEADER)
+    assert issued.status_code == 200
+    cookie = issued.cookies[web_auth.COOKIE_NAME]
+    client.cookies.clear()
+    response = await client.get("/auth/session",
+                                headers={"Cookie": web_auth.COOKIE_NAME + "=" + cookie})
+    assert response.status_code == 200
+    # Exactly one advertisement; the native probe refuses more than one value.
+    assert response.headers.get_list("x-astral-session-custody") == [MODE]
+    # The Android client pins this exact key set on the authenticated reply.
+    assert set(response.json()) == {"authenticated", "access_token", "resumed", "user_id"}
+    assert response.json()["authenticated"] is True
+    assert response.json()["user_id"] == fixture[1]
+    assert "set-cookie" not in response.headers
+    assert "refresh_token" not in response.text and "incarnation" not in response.text
+
+
+@pytest.fixture
+async def work_host(app, client, fixture, runtime, monkeypatch, tmp_path):
+    """Compose the real Work admission host on the custody runtime.
+
+    Mirrors the production bindings the registered ``operation_router`` reads
+    (``_Composition.capture``): assignments, sessions, audit, config and a
+    supervised runner whose dispatch is a no-op. No runner loop, provider or
+    tool ever executes; only admission, read and retirement are exercised.
+    """
+    store, owner = fixture[0], fixture[1]
+    # .env supplies PUBLIC_BASE_URL/BACKEND_PUBLIC_URL on host runs; pin them
+    # so the exact-origin write gate is deterministic here and in CI.
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
+    monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("AUDIT_HMAC_KEY_ID", "custody_e2e")
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-custody-e2e-binding-" + "x" * 40)
+    monkeypatch.delenv("AUDIT_HMAC_SECRET_CUSTODY_E2E", raising=False)
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    permissions = ToolPermissionManager(plane_runtime=runtime)
+    permissions.register_tool_scopes("web-research-1", {"fetch_page": "tools:read"})
+    permissions.set_agent_scopes(owner, "web-research-1", {"tools:read": True})
+    orch = SimpleNamespace(
+        agents={"web-research-1": object()}, local_agents={},
+        agent_cards={"web-research-1": SimpleNamespace(skills=[SimpleNamespace(id="fetch_page")])},
+        _is_draft_agent=lambda _: False, security_flags={}, tool_permissions=permissions,
+        history=SimpleNamespace(get_chat=lambda *_args, **_kwargs: None))
+    assignments = AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
+        phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
+    config = UserLLMConfigStore(plane_runtime=runtime, data_dir=str(tmp_path))
+    await config.set(owner, provider="openai", base_url=profile.BASE_URL, model=profile.MODEL,
+                     api_key="synthetic-never-sent-provider-key")
+    orch.runtime_composition = SimpleNamespace(
+        plane=SimpleNamespace(runtime=runtime, repositories=runtime.repositories))
+    orch.persistent_assignments = assignments
+    orch.web_sessions = store
+    orch.audit_repo = AuditRepository(plane_runtime=runtime)
+    orch._llm_store = config
+    runner = AssignmentRunner(orch, assignments,
+                              one_shot=OneShotLifecycle(store, run_research_episode))
+    orch.persistent_assignment_runner = runner
+    ticked = asyncio.Event()
+
+    async def no_dispatch():
+        ticked.set()
+
+    monkeypatch.setattr(runner, "tick", no_dispatch)
+    app.state.orchestrator = orch
+    app.include_router(operation_router)
+    runner.start()
+    await asyncio.wait_for(ticked.wait(), 2)
+    yield SimpleNamespace(assignments=assignments, audit=orch.audit_repo)
+    runner._stopping = True
+    runner._wake.set()
+    await asyncio.gather(runner._loop, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_custody_cookie_admits_and_reads_work_until_custody_retirement(
+        work_host, client, fixture, runtime, monkeypatch):
+    """The native client's whole path on one app: probe -> exchange -> Work.
+
+    Registered routes, real JWT/JWKS policy and the private Plane schema; only
+    the IdP replies are synthetic. Pins that the custody cookie IS the
+    server-side issuance a new admission refreshes (through the BOUND
+    exchange, as the public native client with no secret), that the same
+    cookie reads the accepted work, and that custody retirement ends both.
+    """
+    owner = fixture[1]
+    # 1. Anonymous discovery, exactly as the Android probe reads it.
+    probe = await client.get("/auth/session")
+    assert probe.headers.get_list("x-astral-session-custody") == [MODE]
+    assert set(probe.json()) == {"authenticated", "access_token", "resumed", "reason"}
+    # 2. Custody exchange issues the server-side session.
+    issued = await client.post("/auth/token", data=form(), headers=HEADER)
+    assert issued.status_code == 200
+    access_token = issued.json()["access_token"]
+    cookie = issued.cookies[web_auth.COOKIE_NAME]
+    sid = web_auth._unsign(cookie)
+    client.cookies.clear()  # every request below states its credential explicitly
+    cookie_header = {"Cookie": web_auth.COOKIE_NAME + "=" + cookie}
+    write = {**cookie_header, "Content-Type": "application/json", "Origin": "https://app.invalid"}
+    body = research_command(work_host)
+    # 3. The bare access token the client also holds cannot admit NEW work: a
+    #    bearer selects no signed-cookie issuance, so there is nothing to
+    #    refresh into execution authority (work_authority_unavailable, 403).
+    refused = await client.post(WORK, content=body, headers={
+        "Authorization": "Bearer " + access_token, "Content-Type": "application/json"})
+    assert refused.status_code == 403
+    assert refused.json() == {"error": "work_authority_unavailable"}
+    assert totals(runtime, owner) == (0, 0, 0)
+    # 4. The custody cookie admits with the exact Origin ...
+    accepted = await client.post(WORK, content=body, headers=write)
+    assert accepted.status_code == 201, accepted.text
+    assert set(accepted.json()) == {"id", "revision", "created"}
+    assert accepted.json()["created"] is True
+    assert totals(runtime, owner) == (1, 1, 1)
+    assert work_host.audit.verify_chain(owner) is None
+    # ... through the bound exchange of the custody issuance: the public
+    # native client id, no confidential secret, on the stored issuer.
+    rotations = [sent for url, sent in fixture[4].requests
+                 if url == ISSUER + "/protocol/openid-connect/token"
+                 and sent.get("grant_type") == ["refresh_token"]]
+    assert len(rotations) == 1
+    assert rotations[0]["client_id"] == ["astral-mobile"] and "client_secret" not in rotations[0]
+    # The rotation presents the refresh credential the code exchange stored
+    # (the wire's reply); it never reached the client in any response body.
+    assert rotations[0]["refresh_token"] == ["synthetic-rotated-refresh"]
+    assert "synthetic-rotated-refresh" not in issued.text
+    record = get_session_record(runtime, sid)
+    assert record.issuing_client_id == "astral-mobile" and record.issuing_issuer == ISSUER
+    # ... and never with a foreign Origin (cookie writes keep the exact-origin gate).
+    foreign = await client.post(WORK, content=research_command(work_host),
+                                headers={**write, "Origin": "https://other.invalid"})
+    assert foreign.status_code == 403 and foreign.json() == {"error": "work_origin_refused"}
+    assert totals(runtime, owner) == (1, 1, 1)
+    # 5. The same cookie reads the accepted work.
+    listing = await client.get(WORK, headers=cookie_header)
+    assert listing.status_code == 200, listing.text
+    assert [item["id"] for item in listing.json()["operations"]] == [accepted.json()["id"]]
+    assert listing.headers["cache-control"] == "no-store"
+    assert "synthetic" not in listing.text and "Read one" not in listing.text
+    detail = await client.get(WORK + "/" + accepted.json()["id"], headers=cookie_header)
+    assert detail.status_code == 200
+    assert detail.json()["operation"]["id"] == accepted.json()["id"]
+    # 6. Custody retirement: provider revocation is synthetic, local retirement real.
+    revoked = []
+
+    async def revoke(token, client_id=None, **binding):
+        revoked.append((client_id, binding))
+        return True
+
+    monkeypatch.setattr(web_auth, "_revoke_refresh_token", revoke)
+    logout = await client.post("/api/auth/logout", json={"session_custody": MODE},
+        headers={**HEADER, **cookie_header, "Authorization": "Bearer " + access_token})
+    assert logout.status_code == 200 and logout.json()["revoked"] is True
+    assert revoked == [("astral-mobile", {"issuing_issuer": ISSUER})]
+    assert get_session_record(runtime, sid) is None
+    # 7. The retired cookie neither reads nor admits; the receipt is untouched.
+    stale_read = await client.get(WORK, headers=cookie_header)
+    assert stale_read.status_code == 401
+    stale_write = await client.post(WORK, content=research_command(work_host), headers=write)
+    assert stale_write.status_code == 401
+    assert stale_write.json() == {"error": "work_authentication_required"}
+    assert totals(runtime, owner) == (1, 1, 1)
+    assert len(fixture[4].requests) == 2  # the code exchange + exactly one rotation

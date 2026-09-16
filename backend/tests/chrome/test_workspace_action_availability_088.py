@@ -7,7 +7,10 @@ from fastapi.testclient import TestClient
 
 from orchestrator.api import chrome_router
 from orchestrator.auth import get_current_user_payload
-from orchestrator.chrome_availability import projection_chrome_availability
+from orchestrator.chrome_availability import (
+    projection_chrome_availability,
+    projection_native_chrome_availability,
+)
 from shared.feature_flags import FeatureFlags, flags
 from shared.protocol import ChromeMenu
 from webrender.chrome.menu_model import menu_model_dict
@@ -33,9 +36,26 @@ def test_rest_ws_and_web_resolve_same_workspace_inventory(monkeypatch, export, s
     assert response.status_code == 200
     model = response.json()
     availability = projection_chrome_availability()
+    # api.py deliberately forces work_enabled/notes_enabled off for the legacy
+    # REST menu: those two items require a negotiated native capability that a
+    # REST caller never declares (pinned by test_chrome_menu_api.py::
+    # test_rest_body_equals_unnegotiated_native_model). Build the expected model
+    # with that documented REST disposition, not with the raw host availability.
+    rest_availability = {**availability, "work_enabled": False, "notes_enabled": False}
     frame = json.loads(ChromeMenu(model=menu_model_dict(
-        ["admin", "user"], include_admin=False, include_tour=False, **availability)).to_json())
+        ["admin", "user"], include_admin=False, include_tour=False, **rest_availability)).to_json())
     assert frame["model"] == model and model["version"] == 2
+    # The negotiated WebSocket model carries the account item REST omits.
+    negotiated = menu_model_dict(["admin", "user"], include_admin=False, include_tour=False,
+        **projection_native_chrome_availability(
+            {"_client_capabilities": ["work_read_v1", "guidance_notes_v1"]}))
+
+    def account_keys(value):
+        return [item["key"] for group in value["menu"] if group["key"] == "account"
+                for item in group["items"]]
+
+    assert "guidance" not in account_keys(model)
+    assert "guidance" in account_keys(negotiated)
     assert all(group["key"] != "admin" for group in model["menu"])
     html = render_topbar(["admin", "user"], **availability)
     for enabled, key in ((export, "export"), (share, "share")):

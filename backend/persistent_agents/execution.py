@@ -739,6 +739,11 @@ class ActionExecutor:
 
     async def _reader_policy_transaction(self, authority, action_id, callback):
         """Fence current fixed-reader policy at cache, permit and result boundaries."""
+        # No captured guidance means no episode input to fence, so refuse before
+        # opening a transaction rather than raising an attribute error on the
+        # final check below (the closed code the reader profile already uses).
+        if self._research_guidance is None:
+            raise DispatchDenied("assignment_operation_profile_unavailable")
         def guarded(tx, repository, current):
             from persistent_agents.models import AssignmentError
 

@@ -9,6 +9,7 @@ runner/configuration composition and cannot activate registered HTTP submission.
 
 import asyncio
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -93,6 +94,16 @@ async def client(service, fixture, runtime, monkeypatch, tmp_path):
     app.state.orchestrator = service.assignments.orch
     app.state.orchestrator.persistent_assignments = service.assignments
     app.state.orchestrator.audit_repo = service.audit
+    # Owner controls are fenced to the exact production composition (088,
+    # ``work_control_authority._Composition``): the SAME web-session store and
+    # Plane runtime the assignments use, or every write is 503
+    # ``work_control_unavailable``. Deliberately still no ``_llm_store`` and no
+    # runner, so registered HTTP submission stays unavailable on this host
+    # (module docstring; ``test_native_bearer_refuses_new_admission…`` pins it).
+    app.state.orchestrator.web_sessions = service.sessions
+    app.state.orchestrator.runtime_composition = SimpleNamespace(
+        plane=SimpleNamespace(runtime=runtime, repositories=runtime.repositories)
+    )
     recorder = Recorder(service.audit, retry_queue=tmp_path / "audit-retry.jsonl")
     monkeypatch.setattr(hooks, "get_recorder", lambda: recorder)
     grants = offline_grant.OfflineGrantStore(plane_runtime=runtime)
@@ -486,3 +497,114 @@ async def test_existing_native_token_routes_do_not_mint_work_session_authority(
     with pytest.raises(AssignmentError, match="work_authority_unavailable"):
         await service.submit(selected, command())
     assert totals(runtime, fixture[1]) == (0, 0, 0) and not fixture[-1]
+
+
+@pytest.mark.parametrize("client_id", ("astral-desktop", "astral-mobile"))
+async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
+    client, service, fixture, runtime, monkeypatch, client_id
+):
+    """Feature 088 T014: the native client's server-custody cookie is the
+    issuance a NEW admission refreshes; the bearer it also holds is not.
+
+    Why bearer-only is refused (pinned, not just observed): a bearer selects
+    no signed-cookie session, so ``AuthenticatedWorkRequest.session_id`` is
+    None and ``refresh_work_submission_authority`` has no server-side row to
+    refresh into execution authority. It refuses ``work_authority_unavailable``
+    (403) BEFORE any IdP exchange and never borrows the owner's other session.
+    The watch client has no authorization-code redirect, so only the two
+    code-flow clients are parametrized here (device custody is pinned in
+    ``test_native_session_custody_088``).
+    """
+    store, owner, original_sid, token, seen = fixture
+    # 1. Bare bearer: nothing to refresh, nothing exchanged, nothing admitted.
+    selected = await context(
+        fixture, runtime, cookie=False, bearer=True, changes={"azp": client_id}
+    )
+    assert selected.session_id is None and selected.cookie_session is None
+    with pytest.raises(AssignmentError) as refused:
+        await service.submit(selected, command())
+    assert (refused.value.code, refused.value.status_code) == (
+        "work_authority_unavailable",
+        403,
+    )
+    assert totals(runtime, owner) == (0, 0, 0) and not seen
+    assert session_count(runtime) == 1
+    # 2. The custody exchange (same public client, no secret) issues the
+    #    server-side session the client then presents as a cookie.
+    exchanged = []
+
+    async def token_post(url, data):
+        exchanged.append((url, dict(data)))
+        assert url == ISSUER + "/protocol/openid-connect/token"
+        assert data["client_id"] == client_id and "client_secret" not in data
+        return 200, {
+            "access_token": token(azp=client_id),
+            "refresh_token": "synthetic-native-custody-refresh",
+            "expires_in": 300,
+        }
+
+    monkeypatch.setattr(device_login, "_default_post_form", token_post)
+    issued = await client.post(
+        "/auth/token",
+        headers={"X-Astral-Session-Custody": "server_v1"},
+        data={
+            "session_custody": "server_v1",
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "redirect_uri": "com.personalailabs.astraldeep:/oauth2redirect",
+            "code": "synthetic-code-" + uuid4().hex,
+            "code_verifier": "a" * 64,
+        },
+    )
+    assert issued.status_code == 200, issued.text
+    assert len(exchanged) == 1 and "refresh_token" not in issued.text
+    cookie = issued.cookies["astral_session"]
+    sid = web_auth._unsign(cookie)
+    client.cookies.clear()
+    assert sid != original_sid and session_count(runtime) == 2
+    custody = get_session_record(runtime, sid)
+    assert (custody.issuing_issuer, custody.issuing_client_id) == (ISSUER, client_id)
+    # 3. New admission under the custody cookie refreshes THAT issuance through
+    #    the bound exchange (issuer + public client identity), never the
+    #    legacy confidential-client exchange the original web session uses.
+    bound = []
+
+    async def bound_exchange(refresh, identity):
+        bound.append((refresh, identity.issuer, identity.client_id, identity.owner_id))
+        return {
+            "access_token": token(azp=client_id),
+            "refresh_token": "synthetic-native-custody-rotated",
+        }
+
+    monkeypatch.setattr(web_auth, "_exchange_bound_session_refresh", bound_exchange)
+    admitted = await work_submit_authority.authenticate_work_submission_request(
+        request_authority_fixtures.request(
+            sid,
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"origin", b"https://app.invalid"),
+            ],
+        ),
+        sessions=store,
+        plane_runtime=runtime,
+    )
+    assert admitted.session_id == sid
+    result = await service.submit(admitted, command())
+    assert result.created and totals(runtime, owner) == (1, 1, 1)
+    assert bound == [("synthetic-native-custody-refresh", ISSUER, client_id, owner)]
+    assert not seen  # the original web session was never touched
+    assert (
+        result.record.operation["authority"]["reference_id"]
+        == get_session_record(runtime, sid).incarnation_id
+    )
+    assert get_session_record(runtime, original_sid).incarnation_id != (
+        result.record.operation["authority"]["reference_id"]
+    )
+    # 4. The same cookie reads the accepted work through the registered route.
+    detail = await client.get(
+        f"{WORK}/{result.record.assignment_id}",
+        headers={"Cookie": "astral_session=" + cookie},
+    )
+    assert detail.status_code == 200
+    assert detail.json()["operation"]["id"] == result.record.assignment_id
+    assert service.audit.verify_chain(owner) is None

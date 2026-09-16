@@ -97,7 +97,7 @@ async def _last_assistant_text(o, chat_id, user_id):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_supervisor_blocks_leaky_answer(orch, monkeypatch):
+async def test_supervisor_blocks_leaky_answer(orch, monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
     _register(orch)
     ws = _ws(orch)
@@ -118,7 +118,7 @@ async def test_supervisor_blocks_leaky_answer(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_off_lets_answer_through(orch, monkeypatch):
+async def test_supervisor_off_lets_answer_through(orch, monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "false")
     _register(orch)
     ws = _ws(orch)
@@ -140,7 +140,7 @@ async def test_supervisor_off_lets_answer_through(orch, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_skill_induced_after_tool_turn(orch, monkeypatch):
+async def test_skill_induced_after_tool_turn(orch, monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_SKILL_MEMORY", "true")
     _register(orch)
     ws = _ws(orch)
@@ -189,7 +189,7 @@ def _status_messages(orch):
 
 
 @pytest.mark.asyncio
-async def test_moa_panel_aggregates(orch, monkeypatch):
+async def test_moa_panel_aggregates(orch, monkeypatch, user_skills_disabled):
     """A genuinely hard turn runs the panel; the JUDGE picks the winner (not
     the longest text) and the user sees a chat_status frame meanwhile."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
@@ -225,7 +225,7 @@ async def test_moa_panel_aggregates(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_moa_panel_skips_simple_turn(orch, monkeypatch):
+async def test_moa_panel_skips_simple_turn(orch, monkeypatch, user_skills_disabled):
     """Defect (a): the difficulty gate is real — a short factual question never
     triggers the panel even with the flag on (exactly one LLM call)."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
@@ -249,7 +249,7 @@ async def test_moa_panel_skips_simple_turn(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch):
+async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch, user_skills_disabled):
     """Defect (b): the supervisor reviews the panel WINNER, so a block is
     final — whether the leak is in the draft the judge prefers (first turn)
     or in a candidate that beats a clean draft (second turn)."""
@@ -296,7 +296,7 @@ async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_moa_panel_judge_failure_keeps_draft(orch, monkeypatch):
+async def test_moa_panel_judge_failure_keeps_draft(orch, monkeypatch, user_skills_disabled):
     """Defect (c): no 'longest wins' — a judge error / garbage verdict fails
     open to the ORIGINAL draft, never to the longest candidate."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")

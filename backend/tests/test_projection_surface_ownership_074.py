@@ -21,6 +21,7 @@ HOST_SURFACES = frozenset(
         "audit",
         "authoring",
         "drafts",
+        "guidance",
         "llm",
         "llm_system",
         "my_computers",

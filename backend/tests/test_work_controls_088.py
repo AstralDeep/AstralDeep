@@ -200,7 +200,12 @@ async def test_flag_off_extra_authority_unknown_commands_and_private_errors_fail
     app, orch, read, repo = controls
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         path = f"/api/work/v1/operations/{read.assignment.assignment_id}"
-        assert (await client.post(path + "/resume", json=body())).status_code == 404
+        # /resume is a registered route (since 85135498), so the old unknown-command
+        # 404 is now the registered route's OWN closed refusal: a cookie-authenticated
+        # write with no Origin header is refused before authority or storage.
+        refused = await client.post(path + "/resume", json=body())
+        assert refused.status_code == 403 and refused.json() == {"error": "work_origin_refused"}
+        assert refused.headers["cache-control"] == "no-store"
         assert (await client.post("/api/work/v1/operations", json={})).status_code == 405
         invalid = await client.post(path + "/pause", json=body(owner_id="other"), headers={"Origin": "http://test"})
         assert invalid.status_code == 422 and invalid.json() == {"error": "work_control_invalid"}

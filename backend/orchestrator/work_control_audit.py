@@ -73,11 +73,46 @@ class WorkControlAudit:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise AssignmentError("work_control_unavailable", 503) from None
+        self._insert(transaction, owner_id=owner_id, record=record,
+                     action_type="assignment_" + command, description="Work owner command",
+                     metadata=metadata)
+
+    def append_publication(self, transaction, *, owner_id, command, record, action_id,
+                           publication_id, conversation_id, submission_id=None):
+        """Append a reviewed result publication step as identifiers only.
+
+        ``result.propose`` names the proposal action and its destination;
+        ``result.save`` adds the approving submission. Neither row carries result
+        text, canvas payloads, selection digests, key names or private values.
+        """
+        self.assert_current()
+        if (command not in {"result.propose", "result.save"}
+                or type(record) is not AssignmentRecord or record.owner_id != owner_id):
+            raise AssignmentError("work_control_unavailable", 503)
+        try:
+            if type(conversation_id) is not str or not 1 <= len(conversation_id) <= 512:
+                raise ValueError
+            metadata = {"action_id": validate_id(action_id),
+                        "publication_id": validate_id(publication_id),
+                        "conversation_id": conversation_id}
+            if command == "result.save":
+                metadata["submission_id"] = validate_id(submission_id)
+            elif submission_id is not None:
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise AssignmentError("work_control_unavailable", 503) from None
+        self._insert(transaction, owner_id=owner_id, record=record, action_type="work." + command,
+                     description="Work result publication", metadata=metadata,
+                     conversation_id=conversation_id)
+
+    def _insert(self, transaction, *, owner_id, record, action_type, description, metadata,
+                conversation_id=None):
         now = datetime.now(UTC)
         event = AuditEventCreate(
             actor_user_id=owner_id, auth_principal=owner_id,
-            event_class="settings", action_type="assignment_" + command,
-            description="Work owner command", correlation_id=record.assignment_id,
+            event_class="settings", action_type=action_type,
+            description=description, correlation_id=record.assignment_id,
+            conversation_id=conversation_id,
             outcome="success", outputs_meta={
                 "assignment_id": record.assignment_id,
                 "instruction_revision": record.instruction_revision,

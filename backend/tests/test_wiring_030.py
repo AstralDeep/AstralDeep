@@ -516,6 +516,7 @@ def test_schedule_meta_tool_rejects_bad_proposals(sched_env):
 
 def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     import asyncio
+    import time as _time
 
     from orchestrator import scheduling_chat
 
@@ -523,15 +524,24 @@ def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     manager.register_tool_scopes("web-research-1", {"web_search": "tools:search"})
     manager.set_agent_scopes(user_id, "web-research-1", {"tools:search": True})
     fake = _sched_fake(manager, store)
+    # ``handle_decision`` re-checks the approving socket's CURRENT registration
+    # around every await (session-bound consent): an unregistered socket is
+    # refused before the job is created, which is the deliberate fail-closed
+    # posture. Register the approving socket so this test reaches the
+    # scope-bounding assertions it is actually about. ``select_consent_session``
+    # still returns None for a non-HTTP socket, so the job is created without a
+    # durable grant — exactly what ``offline_grant_id is None`` below pins.
+    approving_ws = object()
+    fake.ui_sessions = {approving_ws: {"sub": user_id, "exp": _time.time() + 3600}}
     asyncio.run(scheduling_chat.handle_meta_tool(
         fake, "schedule_recurring_task",
         {"name": "Weekly digest", "instruction": "Compile new publications",
          "schedule_kind": "interval", "schedule_expr": "1d",
          "agent_id": "web-research-1"},
-        user_id=user_id, chat_id="chat-1", websocket=object()))
+        user_id=user_id, chat_id="chat-1", websocket=approving_ws))
     proposal_id = next(iter(fake._schedule_proposals))
     asyncio.run(scheduling_chat.handle_decision(
-        fake, object(), user_id,
+        fake, approving_ws, user_id,
         {"proposal_id": proposal_id, "decision": "approve"}))
     jobs = store.list_jobs(user_id)
     assert len(jobs) == 1

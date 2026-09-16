@@ -106,4 +106,30 @@ async def orchestrator_module_factory():
                 timeout=30.0,
             )
 
+@pytest.fixture
+def user_skills_disabled(monkeypatch):
+    """Run a legacy turn seam with feature 077's user skills switched OFF.
+
+    Feature 088 made the per-turn skill catalog read an authority handoff:
+    with ``FF_USER_SKILLS`` on, ``handle_chat_message`` /
+    ``_dispatch_async_chat`` / ``subtasks.handle_meta_tool`` require a
+    registered human socket read (``human_request_authority``) plus a captured
+    turn-guidance origin, and raise ``SkillCatalogError('skill_lookup_
+    unavailable')`` without one. Suites that drive the turn with orchestrator
+    test doubles (MagicMock sockets, fake orchestrators) register neither and
+    are testing seams that have nothing to do with skills — the MoA panel, the
+    output supervisor, context editing, sub-task decomposition, the LLM
+    pre-flight gate. Turning the flag off is the product's own fail-open
+    posture for those seams and keeps each test asserting exactly what it
+    asserted before.
+
+    The handoff itself stays pinned by ``test_skill_turn_handoffs_088.py`` and
+    ``test_turn_guidance_ingress_088.py``, which drive it over the real Plane.
+    """
+
+    from shared.feature_flags import flags
+
+    monkeypatch.setitem(flags._flags, "user_skills", False)
+
+
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401

@@ -94,7 +94,11 @@ def test_empty_selection_is_explicit_insufficient_evidence():
     assert result["passages"] == []
 
 
-@pytest.mark.parametrize("text", ["é" * 15000, 'a\\"\n' * 4000, "paragraph\n\n" * 1500])
+# Short ids: the generated bodies are tens of thousands of characters and pytest
+# exports the full test id in PYTEST_CURRENT_TEST, which overflows the Windows
+# 32767-character environment-block limit.
+@pytest.mark.parametrize("text", ["é" * 15000, 'a\\"\n' * 4000, "paragraph\n\n" * 1500],
+                         ids=["multibyte", "escapes", "paragraphs"])
 def test_canonical_byte_bound_and_exact_passages(text):
     value = retained(text=text)
     assert len(canonical(value).encode("utf-8")) <= 8192

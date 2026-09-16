@@ -24,7 +24,13 @@ from shared.feature_flags import flags  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def chaining_on(monkeypatch):
+def chaining_on(monkeypatch, user_skills_disabled):
+    # ``user_skills_disabled``: feature 088 makes ``subtasks.handle_meta_tool``
+    # require the parent turn's captured guidance origin, which these fake
+    # orchestrators never hold, so every sub-task would be refused
+    # ``guidance_read_unavailable`` before the decomposition seam under test
+    # ran. The guidance inheritance itself is pinned over the real Plane by
+    # ``test_skill_turn_handoffs_088.py``.
     monkeypatch.setitem(flags._flags, "recursive_delegation", True)
 
 
