@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.routing import APIRoute
 from jose import jwt as jose_jwt
 
 import shared  # noqa: F401 — normalizes USE_MOCK_AUTH/KEYCLOAK_* env aliases before the import-time read below
@@ -35,7 +36,24 @@ else:
 # APIRouter for Auth & File endpoints (included in main app for OpenAPI docs)
 # =============================================================================
 
-auth_router = APIRouter()
+class _NativeCustodyRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded(request):
+            if "x-astral-session-custody" not in request.headers:
+                return await handler(request)
+            from orchestrator.native_session_custody import REQUEST_SECONDS
+            request.state._native_custody_deadline = time.time() + REQUEST_SECONDS
+            try:
+                async with asyncio.timeout(REQUEST_SECONDS):
+                    return await handler(request)
+            except TimeoutError:
+                raise HTTPException(503, "native_session_unavailable") from None
+        return bounded
+
+
+auth_router = APIRouter(route_class=_NativeCustodyRoute)
 
 
 def _get_keycloak_config():
@@ -145,6 +163,9 @@ async def proxy_token(request: Request):
     authorization_code/refresh_token grant allow-list, a field allow-list, a
     server-pinned client_id, and a per-IP rate limit.
     """
+    from orchestrator import native_session_custody
+    if native_session_custody.requested(request):
+        return await native_session_custody.token(request)
     authority, client_id, client_secret = _get_keycloak_config()
 
     if not authority or not client_id or not client_secret:
@@ -174,6 +195,8 @@ async def proxy_token(request: Request):
     token_url = f"{authority}/protocol/openid-connect/token"
 
     form = await request.form()
+    if "session_custody" in form:
+        raise HTTPException(400, "native_session_unavailable")
 
     grant_type = str(form.get("grant_type") or "")
     if grant_type not in _TOKEN_GRANT_TYPES:
@@ -410,6 +433,13 @@ async def require_user_id(
 # Feature 044 — native-client sign-out (FR-005 / SC-004)
 # =============================================================================
 
+async def _capture_native_logout(request: Request):
+    from orchestrator import native_session_custody
+    if native_session_custody.requested(request):
+        return await native_session_custody.capture_logout(request)
+    return None
+
+
 @auth_router.post(
     "/api/auth/logout",
     tags=["Auth"],
@@ -424,7 +454,11 @@ async def require_user_id(
     ),
 )
 async def native_logout(request: Request,
+                        custody=Depends(_capture_native_logout),
                         payload: dict = Depends(get_current_user_payload)):
+    if custody is not None:
+        from orchestrator import native_session_custody
+        return await native_session_custody.logout(request, custody, payload)
     try:
         body = await request.json()
     except Exception:
@@ -448,6 +482,13 @@ async def native_logout(request: Request,
         )
 
     user_id = (payload or {}).get("sub") or "unknown"
+    await _end_native_voice(request, user_id)
+    from orchestrator import web_auth
+    outcome = await web_auth._revoke_or_queue(user_id, refresh_token, client_id=client_id)
+    return await _finish_native_logout(payload, user_id, client_id, outcome)
+
+
+async def _end_native_voice(request, user_id):
     app_state = getattr(getattr(request, "app", None), "state", None)
     voice_services = getattr(
         getattr(app_state, "orchestrator", None), "voice_services", None
@@ -462,8 +503,10 @@ async def native_logout(request: Request,
             raise
         except Exception:
             logger.warning("native logout: voice cleanup failed", exc_info=True)
+
+
+async def _finish_native_logout(payload, user_id, client_id, outcome):
     from orchestrator import web_auth
-    outcome = await web_auth._revoke_or_queue(user_id, refresh_token, client_id=client_id)
 
     # Feature-025 offline grants die with the sign-out, matching web logout.
     try:
@@ -520,7 +563,15 @@ async def _json_body(request: Request) -> dict:
 )
 async def device_login_start(request: Request):
     from orchestrator import device_login
+    from orchestrator import native_session_custody
+    if native_session_custody.requested(request):
+        try:
+            return await native_session_custody.device_start(request)
+        except device_login.DeviceLoginError as exc:
+            raise HTTPException(exc.status, "native_session_unavailable") from None
     body = await _json_body(request)
+    if "session_custody" in body:
+        raise HTTPException(400, "native_session_unavailable")
     ip = request.client.host if request.client else "unknown"
     try:
         return await device_login.start(str(body.get("client", "")), ip)
@@ -535,7 +586,15 @@ async def device_login_start(request: Request):
 )
 async def device_login_poll(request: Request):
     from orchestrator import device_login
+    from orchestrator import native_session_custody
+    if native_session_custody.requested(request):
+        try:
+            return await native_session_custody.device_poll(request)
+        except device_login.DeviceLoginError as exc:
+            raise HTTPException(exc.status, "native_session_unavailable") from None
     body = await _json_body(request)
+    if "session_custody" in body:
+        raise HTTPException(400, "native_session_unavailable")
     ip = request.client.host if request.client else "unknown"
     try:
         return await device_login.poll(str(body.get("handle", "")), ip)

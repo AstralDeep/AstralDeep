@@ -31,6 +31,7 @@ from uuid import UUID
 
 from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
 from astralplane.repositories.history import (
+    SessionConsentObservation,
     SessionCredentialFence,
     SessionExecutionObservation,
     SessionExecutionState,
@@ -361,8 +362,11 @@ class WebSessionStore:
     def create(self, sid: str, *, user_id: str, access_token: str,
                refresh_token: str, hard_max_seconds: int,
                resumed: bool = False, issuing_issuer: str | None = None,
-               issuing_client_id: str | None = None) -> Dict[str, Any]:
+               issuing_client_id: str | None = None,
+               request_execution: bool = False) -> Dict[str, Any]:
         """Persist a new interactive session. Only this call sets the anchor."""
+        if type(request_execution) is not bool:
+            raise SessionStoreError("invalid session request bound")
         identity = (None if issuing_issuer is None and issuing_client_id is None else
                     SessionIssuingIdentity(user_id, issuing_issuer, issuing_client_id))
         if identity is not None and not all(hasattr(SessionRecord, field) for field in
@@ -395,7 +399,9 @@ class WebSessionStore:
             created_at=row["created_at"],
             **binding,
         )
-        with self._sessions.transaction() as transaction:
+        scope = (self._request_execution_transaction() if request_execution
+                 else self._sessions.transaction())
+        with scope as transaction:
             stored = self._sessions.repository.put(transaction, record=record)
             if _issuing_identity(stored) != identity:
                 raise SessionStoreError("session issuing storage unavailable")
@@ -403,12 +409,16 @@ class WebSessionStore:
         self._remember_row(row, observed)
         return row
 
-    def get(self, sid: str) -> Optional[Dict[str, Any]]:
+    def get(self, sid: str, *, request_execution: bool = False) -> Optional[Dict[str, Any]]:
         """Return the live session (cap-checked); expired sessions are deleted."""
+        if type(request_execution) is not bool:
+            raise SessionStoreError("invalid session request bound")
         # Other workers rotate this exact credential family. A process cache
         # cannot decide token validity or whether a logout has deleted a row.
         observed = self._cache.get(sid)
-        with self._sessions.transaction() as transaction:
+        scope = (self._request_execution_transaction() if request_execution
+                 else self._sessions.transaction())
+        with scope as transaction:
             record = self._sessions.repository.get_by_session_id_for_administration(
                 transaction, session_id=sid)
             if record is None:
@@ -425,10 +435,59 @@ class WebSessionStore:
         if int(time.time()) >= row["hard_expires_at"]:
             # 016 hard cap: only interactive login can start a new session.
             logger.info("session_store: session %s hit the 365-day cap — cleared", sid[:8])
-            self.delete(sid, expected_incarnation_id=record.incarnation_id)
+            self.delete(sid, expected_incarnation_id=record.incarnation_id,
+                        **({"request_execution": True} if request_execution else {}))
             self._record_death(sid, "hard_cap")
             return None
         return row
+
+    def verify_native_custody(self, *, issued: dict, original: dict | None,
+                              valid_until: datetime) -> dict:
+        """Observe exact old/new issuances together; return cookie metadata only.
+
+        This is a delivery check after normal IAM, not a consent or execution
+        grant. The public consent guard supplies owner/session locks and final
+        database-clock checks. Locks last only through this transaction.
+        """
+        if (type(issued) is not dict or (original is not None and type(original) is not dict)
+                or type(valid_until) is not datetime or valid_until.tzinfo is None
+                or valid_until.utcoffset() != timedelta(0)):
+            raise SessionStoreError("native session verification unavailable")
+        issued, original = dict(issued), None if original is None else dict(original)
+        identity = SessionIssuingIdentity(issued.get("user_id"), issued.get("issuing_issuer"),
+                                          issued.get("issuing_client_id"))
+        expected = [issued] if original is None else [original, issued]
+        if (any(row.get("user_id") != identity.owner_id or not _valid_incarnation(row.get("incarnation_id"))
+                or not _binding_string(row.get("sid"), 512) for row in expected)
+                or len({row["sid"] for row in expected}) != len(expected)):
+            raise SessionStoreError("native session verification unavailable")
+        cutoff = min(valid_until, *(datetime.fromtimestamp(row["hard_expires_at"], timezone.utc)
+                                   for row in expected))
+        observations = []
+        with self._request_execution_transaction() as transaction:
+            for row in sorted(expected, key=lambda item: item["sid"]):
+                record = self._sessions.repository.get(transaction, owner_id=identity.owner_id,
+                                                       session_id=row["sid"])
+                if (record is None or record.incarnation_id != row["incarnation_id"]
+                        or record.created_at != row["created_at"]
+                        or record.interactive_anchor != row["interactive_anchor"]
+                        or record.hard_expires_at != row["hard_expires_at"]
+                        or record.issuing_issuer != row.get("issuing_issuer")
+                        or record.issuing_client_id != row.get("issuing_client_id")
+                        or (row["sid"] == issued["sid"] and self._from_record(record) != issued)):
+                    raise SessionStoreError("native session verification unavailable")
+                state = self._sessions.repository.get_execution_state(
+                    transaction, owner_id=identity.owner_id, session_id=row["sid"])
+                if state is None or state.credential != self._sessions.repository.execution_fence(record):
+                    raise SessionStoreError("native session verification unavailable")
+                observation = SessionConsentObservation(state.credential, state.observed_at, cutoff)
+                self._sessions.repository.assert_current_consent(transaction, observation=observation)
+                observations.append(observation)
+            # Every lock is held; use current DB time again after the final wait.
+            for observation in observations:
+                self._sessions.repository.assert_current_consent(transaction, observation=observation)
+        return {key: issued[key] for key in ("sid", "user_id", "incarnation_id",
+                "issuing_issuer", "issuing_client_id", "hard_expires_at")}
 
     def latest_refresh_token_for(self, user_id: str) -> Optional[str]:
         """The live refresh token of the user's newest interactive session.
@@ -785,10 +844,15 @@ class WebSessionStore:
             )
         self._remember_row(self._from_record(stored), observed)
 
-    def delete(self, sid: str, *, expected_incarnation_id: str | None = None) -> Optional[Dict[str, Any]]:
+    def delete(self, sid: str, *, expected_incarnation_id: str | None = None,
+               request_execution: bool = False) -> Optional[Dict[str, Any]]:
         """Delete and return the exact durable credential for revocation."""
+        if type(request_execution) is not bool:
+            raise SessionStoreError("invalid session request bound")
         observed = self._cache.get(sid)
-        with self._sessions.transaction() as transaction:
+        scope = (self._request_execution_transaction() if request_execution
+                 else self._sessions.transaction())
+        with scope as transaction:
             record = self._sessions.repository.get_by_session_id_for_administration(
                 transaction,
                 session_id=sid,
@@ -937,17 +1001,19 @@ class WebSessionStore:
     async def acreate(self, sid: str, *, user_id: str, access_token: str,
                       refresh_token: str, hard_max_seconds: int,
                       resumed: bool = False, issuing_issuer: str | None = None,
-                      issuing_client_id: str | None = None) -> Dict[str, Any]:
+                      issuing_client_id: str | None = None,
+                      request_execution: bool = False) -> Dict[str, Any]:
         """Async twin of :meth:`create`, run off the event loop."""
         return await asyncio.to_thread(
             self.create, sid, user_id=user_id, access_token=access_token,
             refresh_token=refresh_token, hard_max_seconds=hard_max_seconds,
             resumed=resumed, issuing_issuer=issuing_issuer, issuing_client_id=issuing_client_id,
+            request_execution=request_execution,
         )
 
-    async def aget(self, sid: str) -> Optional[Dict[str, Any]]:
+    async def aget(self, sid: str, *, request_execution: bool = False) -> Optional[Dict[str, Any]]:
         """Async twin of :meth:`get`, run off the event loop."""
-        return await asyncio.to_thread(self.get, sid)
+        return await asyncio.to_thread(self.get, sid, request_execution=request_execution)
 
     async def aupdate_tokens(self, sid: str, *, access_token: str, refresh_token: str,
                             expected_incarnation_id: str | None = None) -> None:
@@ -963,10 +1029,12 @@ class WebSessionStore:
         return await asyncio.to_thread(self.mark_resumed, sid, resumed,
                                        expected_incarnation_id=expected_incarnation_id)
 
-    async def adelete(self, sid: str, *, expected_incarnation_id: str | None = None) -> Optional[Dict[str, Any]]:
+    async def adelete(self, sid: str, *, expected_incarnation_id: str | None = None,
+                      request_execution: bool = False) -> Optional[Dict[str, Any]]:
         """Async twin of :meth:`delete`, run off the event loop."""
         return await asyncio.to_thread(self.delete, sid,
-                                       expected_incarnation_id=expected_incarnation_id)
+                                       expected_incarnation_id=expected_incarnation_id,
+                                       request_execution=request_execution)
 
     async def adelete_for_user(self, user_id: str) -> int:
         """Async twin of :meth:`delete_for_user`, run off the event loop."""

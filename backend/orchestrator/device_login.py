@@ -169,26 +169,28 @@ def _fernet():
         raise DeviceLoginUnavailable(f"session encryption key unusable: {exc}") from None
 
 
-async def _default_post_form(url: str, data: Dict[str, str]) -> Tuple[int, Dict[str, Any]]:
+async def _bounded_json(method, url, *, data=None):
     import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:  # verified TLS default
-        resp = await client.post(url, data=data)
-        try:
-            body = resp.json()
-        except Exception:
-            body = {}
-        return resp.status_code, body if isinstance(body, dict) else {}
+    async with httpx.AsyncClient(timeout=10.0, trust_env=False, follow_redirects=False) as client:
+        async with client.stream(method, url, data=data) as response:
+            raw = bytearray()
+            async for chunk in response.aiter_bytes():
+                raw.extend(chunk)
+                if len(raw) > 65_536:
+                    raise DeviceLoginUnavailable("IdP response exceeded the bounded envelope")
+            try:
+                body = json.loads(raw)
+            except (ValueError, UnicodeError):
+                body = {}
+            return response.status_code, body if isinstance(body, dict) else {}
+
+
+async def _default_post_form(url: str, data: Dict[str, str]) -> Tuple[int, Dict[str, Any]]:
+    return await _bounded_json("POST", url, data=data)
 
 
 async def _default_get_json(url: str) -> Tuple[int, Dict[str, Any]]:
-    import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        try:
-            body = resp.json()
-        except Exception:
-            body = {}
-        return resp.status_code, body if isinstance(body, dict) else {}
+    return await _bounded_json("GET", url)
 
 
 async def _discover(http_get: Optional[HttpGetJson]) -> Dict[str, str]:
@@ -286,14 +288,19 @@ async def start(
     *,
     http_post: Optional[HttpPostForm] = None,
     http_get: Optional[HttpGetJson] = None,
+    custody=None,
 ) -> Dict[str, Any]:
     """Begin a device sign-in: returns the QR + short code + opaque handle."""
     if not flag_on():
         raise DeviceLoginUnavailable("FF_DEVICE_LOGIN is off")
     fernet = _fernet()
     client = _validate_client(client)
-    _check_start_rate(ip or "unknown")
+    if custody is None:
+        _check_start_rate(ip or "unknown")
     disco = await _discover(http_get)
+    if custody is not None:
+        from orchestrator.native_session_custody import assert_discovery
+        assert_discovery(custody, disco)
 
     poster = http_post or _default_post_form
     # PKCE (RFC 7636) on the device grant: realms that enforce a code-challenge
@@ -342,6 +349,18 @@ async def start(
     interval = max(int(body.get("interval", _DEFAULT_INTERVAL)), 1)
 
     now = time.time()
+    extra = {}
+    if custody is not None:
+        if (type(body.get("expires_in")) is not int or not 1 <= expires_in <= 600
+                or type(body.get("interval", _DEFAULT_INTERVAL)) is not int
+                or not 1 <= interval <= 600
+                or not verification_uri_complete.startswith(custody.issuer + "/")):
+            raise DeviceLoginUnavailable("native device grant unavailable")
+        await custody.current()
+        custody.expires = min(custody.expires, now + expires_in)
+        extra = {"custody": {"version": 1, "issuer": custody.issuer,
+                             "client": client, "owner": custody.owner,
+                             "expires": custody.expires}}
     handle = fernet.encrypt(json.dumps({
         "dc": str(body["device_code"]),
         "cv": code_verifier,
@@ -349,15 +368,18 @@ async def start(
         "iat": now,
         "exp": now + expires_in,
         "interval": interval,
+        **extra,
     }).encode()).decode("ascii")
     _POLL_STATE[_handle_digest(handle)] = {
         "next_ok": now + interval, "interval": interval, "used": False,
+        **({"custody": custody, "in_flight": False} if custody is not None else {}),
     }
 
     from shared.qr import encode_matrix, qr_png_base64
     await _audit(
         "device_login_started", "anonymous",
-        f"Device sign-in started for {client}; user_code {user_code}",
+        (f"Device sign-in started for {client}; user_code {user_code}" if custody is None
+         else "Native server-custody device sign-in started"),
     )
     return {
         "handle": handle,
@@ -377,6 +399,7 @@ async def poll(
     *,
     http_post: Optional[HttpPostForm] = None,
     http_get: Optional[HttpGetJson] = None,
+    custody=None,
 ) -> Dict[str, Any]:
     """Poll a pending device sign-in. Terminal states are terminal (SC-009)."""
     if not flag_on():
@@ -390,6 +413,15 @@ async def poll(
         exp = float(blob["exp"])
     except Exception:
         raise InvalidHandle("poll handle is invalid") from None
+
+    info = blob.get("custody")
+    if (info is not None) != (custody is not None):
+        raise InvalidHandle("poll handle mode mismatch")
+    if custody is not None:
+        binding, _finish = custody
+        if info != {"version": 1, "issuer": binding.issuer, "client": binding.client,
+                    "owner": binding.owner, "expires": binding.expires}:
+            raise InvalidHandle("poll handle binding mismatch")
 
     digest = _handle_digest(handle)
     now = time.time()
@@ -409,6 +441,10 @@ async def poll(
         return {"status": "slow_down", "interval": state["interval"]}
 
     disco = await _discover(http_get)
+    if custody is not None:
+        from orchestrator.native_session_custody import assert_discovery
+        await custody[0].current()
+        assert_discovery(custody[0], disco)
     poster = http_post or _default_post_form
     try:
         token_request = {
@@ -425,6 +461,9 @@ async def poll(
         raise DeviceLoginUnavailable(f"IdP token poll failed: {exc}") from None
 
     if status == 200 and body.get("access_token"):
+        if custody is not None:
+            state["used"] = True
+            return await custody[1](body)
         claims = _jwt_claims(str(body["access_token"]))
         sub = str(claims.get("sub", "") or "anonymous")
         state["used"] = True
