@@ -508,7 +508,8 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
 
 
 async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optional[str] = None,
-                        description: str = "", outcome: str = "failure") -> bool:
+                        description: str = "", outcome: str = "failure",
+                        request_execution: bool = False) -> bool:
     """Delete the original issued session; return no credential on stale cleanup."""
     incarnation = sess.get("incarnation_id")
     _evict_session_observation(sid, sess)
@@ -524,7 +525,8 @@ async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optiona
         sess["refresh_token"] = ""
         try:
             from orchestrator.session_store import _valid_incarnation
-            deleted = (await store.adelete(sid, expected_incarnation_id=incarnation)
+            deleted = (await store.adelete(sid, expected_incarnation_id=incarnation,
+                        **({"request_execution": True} if request_execution else {}))
                        if _valid_incarnation(incarnation) else None)
             sess["refresh_token"] = "" if deleted is None else deleted["refresh_token"]
             if deleted is not None:
@@ -1151,6 +1153,13 @@ def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -
     resp.set_cookie(COOKIE_NAME, _sign(sid), httponly=True, samesite="lax",
                     secure=_cookie_secure(request), max_age=HARD_MAX_SECONDS, path="/")
     return sid
+
+
+def _attach_stored_session_cookie(request: Request, row: dict, resp: Response) -> None:
+    """Attach only an already verified durable native issuance, never create it."""
+    resp.set_cookie(COOKIE_NAME, _sign(row["sid"]), httponly=True, samesite="lax",
+                    secure=_cookie_secure(request),
+                    max_age=max(0, int(row["hard_expires_at"] - time.time())), path="/")
 
 
 def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> RedirectResponse:
