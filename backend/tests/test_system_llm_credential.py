@@ -394,7 +394,7 @@ async def test_mid_clear_race_is_honest_failure_not_success(
 # ---------------------------------------------------------------------------
 
 async def test_user_socket_never_resolves_system_record(
-        orch, clean_system_row):
+        orch, clean_system_row, user_skills_disabled):
     await _seed_system(orch)  # a system row exists...
     uid = _uid()              # ...but this user is unconfigured
     ws = _register(orch, uid)

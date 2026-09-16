@@ -71,7 +71,7 @@ def _rendered_alerts(orch):
     return alerts
 
 
-async def test_unconfigured_watch_gets_exact_spoken_guidance(orch):
+async def test_unconfigured_watch_gets_exact_spoken_guidance(orch, user_skills_disabled):
     uid = _uid()
     ws = _watch_socket(orch, uid)
     chat_id = f"watch-gate-{uuid.uuid4().hex[:8]}"
@@ -105,7 +105,7 @@ async def test_unconfigured_watch_gets_exact_spoken_guidance(orch):
         assert "chrome_surface" not in str(payload)
 
 
-async def test_watch_works_after_configuring_on_another_client(orch):
+async def test_watch_works_after_configuring_on_another_client(orch, user_skills_disabled):
     uid = _uid()
     ws = _watch_socket(orch, uid)
     chat_id = f"watch-ok-{uuid.uuid4().hex[:8]}"

@@ -35,6 +35,9 @@ def executor(current):
     value.interactive = False
     value.remote_marker = value.approved_action_id = None
     value.orch = SimpleNamespace(tool_permissions=SimpleNamespace(get_tool_scope=lambda *a: "tools:read"))
+    # Captured episode guidance is executor state the real constructor and the
+    # capture step install; the reader-policy transaction fences it locally.
+    value._research_guidance = SimpleNamespace(assert_local=lambda: None)
     return value
 
 
@@ -168,4 +171,18 @@ async def test_locked_action_and_current_record_are_checked_before_policy_or_cal
         tx, owner_id=current.owner_id, assignment_id=current.assignment_id, action_id="action",
     )
     worker._assert_fixed_reader_policy.assert_not_called()
+    callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reader_policy_transaction_without_captured_guidance_refuses_before_any_transaction():
+    worker = executor(record())
+    worker._research_guidance = None
+    worker.store = SimpleNamespace(operation_lifecycle_transaction=AsyncMock(
+        side_effect=AssertionError("transaction opened")))
+    worker.claim, worker.binding = SimpleNamespace(fence=object()), object()
+    callback = Mock(side_effect=AssertionError("callback touched"))
+    with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
+        await worker._reader_policy_transaction(object(), "action", callback)
+    worker.store.operation_lifecycle_transaction.assert_not_awaited()
     callback.assert_not_called()

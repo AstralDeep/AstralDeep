@@ -19,6 +19,9 @@ from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
 from orchestrator.work_continuations import WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest
+from orchestrator.work_publication import (
+    WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,
+)
 from orchestrator.work_resume import WorkResumeService
 from orchestrator.work_service import WorkService
 from orchestrator.work_wake import WorkOwnerWakeRequest, WorkWakeService
@@ -166,6 +169,11 @@ class WorkReadRoute(APIRoute):
                     "assignment_event_key_conflict", "assignment_event_revision_conflict",
                     "assignment_history_capacity_exhausted",
                     "work_body_invalid", "work_body_too_large", "work_body_timeout", "work_disconnected",
+                    "assignment_publication_conflict", "assignment_publication_busy",
+                    "assignment_guidance_changed", "assignment_precondition_changed",
+                    "assignment_authorization_unavailable", "assignment_tool_unavailable",
+                    "assignment_scope_unavailable", "assignment_source_not_read_only",
+                    "work_result_unavailable", "work_proposal_expired",
                 }
                 unavailable = "work_read_unavailable" if request.method == "GET" else "work_control_unavailable"
                 return _json({"error": exc.code if exc.code in known else unavailable}, exc.status_code)
@@ -297,6 +305,20 @@ async def wake_work(identity: str, body: WorkOwnerWakeRequest, request: Request)
     """Acknowledge a manual owner event with current continuation checks."""
     return _json(await WorkWakeService(_service(request).assignments).wake(
         identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/result/proposals")
+async def propose_result_work(identity: str, body: WorkResultProposalRequest, request: Request):
+    """Review the exact rebuilt public result against one destination head; publish nothing."""
+    return _json(await WorkPublicationService(_service(request).assignments).propose(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/result/proposals/{submission_id}/save")
+async def save_result_work(identity: str, submission_id: str, body: WorkResultSaveRequest, request: Request):
+    """Save one reviewed proposal exactly once with its explicit approval digest."""
+    return _json(await WorkPublicationService(_service(request).assignments).save(
+        identity, submission_id, body, caller=_write_caller(request)))
 
 
 def _write_caller(request):

@@ -843,6 +843,24 @@ async def auth_callback(request: Request):
     return _clear_state_cookie(resp)
 
 
+def _advertise_native_custody(resp: JSONResponse) -> JSONResponse:
+    """Advertise feature-088 native session custody on ``/auth/session`` (T014).
+
+    The native clients probe the ANONYMOUS reply for the
+    ``X-Astral-Session-Custody: server_v1`` header before they offer the
+    custody exchange (``POST /auth/token`` with the same header); a reply
+    without it makes the client silently stay in legacy token-holding mode,
+    so the whole feature is unreachable end-to-end. The header is protocol
+    discovery only — it carries no session data, and the body shapes stay
+    byte-identical (the Android probe pins the exact key sets). It is never
+    advertised under mock auth: every custody route refuses there (503).
+    """
+    # Lazy: native_session_custody imports this module at load time.
+    from orchestrator.native_session_custody import HEADER, MODE
+    resp.headers[HEADER] = MODE
+    return resp
+
+
 @web_auth_router.get("/auth/session")
 async def auth_session(request: Request):
     """Report the current session/token for the WS handshake — refresh-aware
@@ -855,7 +873,10 @@ async def auth_session(request: Request):
         raw = request.cookies.get(COOKIE_NAME, "")
         sid = _unsign(raw) or ""
         reason = _DEATH_REASONS.pop(sid, None) or ("refresh_failed" if raw else "no_session")
-        return JSONResponse({"authenticated": False, "access_token": "", "resumed": False, "reason": reason})
+        # Anonymous discovery: no session storage is read before this reply
+        # (ensure_session returns without a cookie), and no cookie is set.
+        return _advertise_native_custody(JSONResponse(
+            {"authenticated": False, "access_token": "", "resumed": False, "reason": reason}))
     resumed = bool(sess.get("resumed", True))
     if not resumed:
         # One-shot: only the fetch immediately following interactive login
@@ -870,12 +891,13 @@ async def auth_session(request: Request):
                     await store.amark_resumed(sess["sid"], expected_incarnation_id=sess["incarnation_id"])
             except Exception:
                 logger.debug("web_auth: mark_resumed failed", exc_info=True)
-    return JSONResponse({
+    # Harmless on the authenticated branch: same discovery header, same body.
+    return _advertise_native_custody(JSONResponse({
         "authenticated": True,
         "access_token": sess.get("access_token", ""),
         "resumed": resumed,
         "user_id": sess.get("sub", ""),
-    })
+    }))
 
 
 @web_auth_router.post("/auth/logout")
