@@ -196,8 +196,14 @@ def test_the_synthetic_canary_is_the_only_allowlisted_typesafe_value() -> None:
         (REPO_ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
     )
     allowlisted = config["allowlist"]["regexes"]
-    typesafe_entries = [entry for entry in allowlisted if "ts_" in entry or "tsk_" in entry]
-    assert typesafe_entries == [CANARY]
+    typesafe_entries = [
+        entry for entry in allowlisted
+        if "ts_" in entry or "tsk_" in entry or entry.startswith("zqkfmp_")
+    ]
+    # One entry per canary shape, and nothing else. A third entry here would
+    # mean something real had been allowlisted.
+    assert typesafe_entries == [CANARY, "zqkfmp_(0canary9notarealkey)+"]
+    assert SHAPED_CANARY.startswith("zqkfmp_")
 
 
 def test_typesafe_env_names_are_scrubbed_from_harness_artifacts() -> None:

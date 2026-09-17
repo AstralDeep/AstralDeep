@@ -81,8 +81,10 @@ regexes = [
   # starts with {"realm_access":..., empty signature segment). Lives in
   # backend tests today and in deleted frontend/ files in git history.
   '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJyZWFsbV9hY2Nlc3M''',
-  # Feature 089 synthetic TypeSafe canary. It matches the TypeSafe rule
-  # shape on purpose so the T059 scan can prove the scrubbers work, and it
-  # is not a key.
+  # Feature 089 synthetic TypeSafe canaries, one per shape the rule matches.
+  # Both exist on purpose so the hygiene tests and the T059 scan can prove the
+  # scrubbers work against the shapes a real key actually takes. Neither is a
+  # key, neither is derived from one, and neither is a prefix of one.
   '''ts_live_CANARY0000NOTAREALKEY000000''',
+  '''zqkfmp_(0canary9notarealkey)+''',
 ]
