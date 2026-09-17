@@ -69,7 +69,12 @@ def _digest(value):
 def _amount(value):
     value = thaw(value)
     counters = {"model_calls", "tool_calls", "tokens", "elapsed_ms"}
-    _require(type(value) is dict and set(value) == counters | {"spend_micro_units", "currency"})
+    base = counters | {"spend_micro_units", "currency"}
+    # Plane 088.008 (FR-022) made AssignmentResourceAmount carry an additive
+    # per-dimension charge-basis map; thaw() now always emits the `basis` key
+    # (None for every pre-088.008 amount). Accept both the legacy 6-key shape
+    # and the basis-bearing 7-key shape; never a synthetic counter.
+    _require(type(value) is dict and set(value) in (base, base | {"basis"}))
     for name in counters:
         _integer(value[name])
     if value["spend_micro_units"] is None:
@@ -78,6 +83,12 @@ def _amount(value):
         _integer(value["spend_micro_units"])
         _require(type(value["currency"]) is str and 1 <= len(value["currency"]) <= 8
                  and value["currency"].strip() != "")
+    basis = value.get("basis")
+    if basis is not None:
+        _require(type(basis) is dict)
+        for dimension, provenance in basis.items():
+            _require(dimension in counters | {"spend_micro_units"}
+                     and provenance in ("observed", "estimated", "uncertain", "none"))
     return value
 
 

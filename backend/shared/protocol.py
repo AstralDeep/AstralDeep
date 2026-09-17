@@ -125,6 +125,57 @@ def _require_rfc3339_utc(value: object, field_name: str) -> str:
     return value
 
 
+def _validate_chat_selection(value: object) -> None:
+    """The closed version-1 composer selection shape (088 T011/T037).
+
+    Mirrors ``orchestrator.work_submit._selected_ids`` exactly — the same
+    input is accepted or refused identically whether it arrives on an
+    interactive Work admission or on an ordinary chat message. Existence and
+    freshness of the referenced heads are NOT checked here (that happens once,
+    per turn, against the live Plane rows); this is shape only.
+    """
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"version", "agent", "skills", "notes"}
+        or type(value.get("version")) is not int
+        or value["version"] != 1
+    ):
+        raise ProtocolValidationError("selection must be a closed version-1 object")
+    agent = value["agent"]
+    if agent is not None:
+        if (
+            not isinstance(agent, dict)
+            or set(agent) != {"agent_id", "revision_id"}
+            or not isinstance(agent.get("agent_id"), str)
+            or not 1 <= len(agent["agent_id"]) <= 255
+            or agent["agent_id"] != agent["agent_id"].strip()
+        ):
+            raise ProtocolValidationError("selection.agent is malformed")
+        _require_uuid4(agent["revision_id"], "selection.agent.revision_id")
+    for kind, id_field, maximum in (
+        ("skills", "skill_id", 20),
+        ("notes", "note_id", 8),
+    ):
+        entries = value[kind]
+        if not isinstance(entries, list) or len(entries) > maximum:
+            raise ProtocolValidationError(f"selection.{kind} must be a bounded array")
+        seen = set()
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {id_field, "revision"}
+                or type(entry.get("revision")) is not int
+                or not 1 <= entry["revision"] <= (2**53 - 1)
+            ):
+                raise ProtocolValidationError(f"selection.{kind} entry is malformed")
+            identity = _require_uuid4(entry[id_field], f"selection.{kind}.{id_field}")
+            if identity in seen:
+                raise ProtocolValidationError(f"selection.{kind} contains a duplicate identity")
+            seen.add(identity)
+    if agent is None and not value["skills"] and not value["notes"]:
+        raise ProtocolValidationError("selection must reference at least one head")
+
+
 def _require_snake_case(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _SNAKE_CASE.fullmatch(value) is None:
         raise ProtocolValidationError(f"{field_name} must be a snake-case value")
@@ -539,6 +590,14 @@ class UIEvent(Message):
                     "voice_origin is valid only on the chat_message action"
                 )
             VoiceOrigin.from_dict(self.payload["voice_origin"])
+        if "selection" in self.payload:
+            # 088 T011/T037 — additive optional composer selection; absent on
+            # every message today, so this branch is presently never taken.
+            if self.action != "chat_message":
+                raise ProtocolValidationError(
+                    "selection is valid only on the chat_message action"
+                )
+            _validate_chat_selection(self.payload["selection"])
 
         identity_fields = (
             "submission_id",

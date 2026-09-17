@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from orchestrator.work_admission import WorkAdmissionCoordinator
 from orchestrator.tool_permissions import VALID_SCOPES
@@ -35,6 +35,7 @@ from orchestrator.tool_permissions import VALID_SCOPES
 from .cron import compute_next_run_ms
 from .store import (
     EffectIdempotencyConflictError,
+    ScheduleActionError,
     ScheduledAttempt,
     StaleOccurrenceClaimError,
 )
@@ -176,6 +177,44 @@ _SKIP_BODY = {
 }
 
 
+def default_monitoring_dispatcher(transaction: Any, job: Dict[str, Any],
+                                   prior_assignment_id: str | None) -> str:
+    """Continue a policy job's already-bound monitoring episode; never creates one.
+
+    Called inside the SAME transaction as :meth:`ScheduledJobStore.admit_episode`
+    (088.007's ``admit_assignment_episode`` requires the episode's persistent
+    assignment to already be created or locked before admission). This default
+    supports only the *continues* half of that contract — it reuses the
+    assignment the most recent successful admission bound (``last_assignment_id``
+    on the policy). Minting the FIRST assignment for a policy job with none
+    bound yet needs real owner authority/claims the unattended scheduler does
+    not hold; that creation path is wired by a ``monitoring_dispatcher``
+    supplied to :class:`JobRunner`, never by this default.
+    """
+
+    if not prior_assignment_id:
+        raise ScheduleActionError("monitoring_assignment_unbound")
+    return prior_assignment_id
+
+
+#: Refusal reasons that stop a policy job outright (pause + one notice),
+#: as opposed to a transient refusal that only retries the next tick.
+_MONITORING_TERMINAL_REASONS = frozenset(
+    {"allowance_exhausted", "terminal_stop", "monitoring_assignment_unbound"}
+)
+_MONITORING_PAUSE_BODY = {
+    "allowance_exhausted": (
+        "It has used its full run allowance and has been paused. Raise its "
+        "run limit (or remove it) from your schedules to let it continue."
+    ),
+    "terminal_stop": "It was stopped and cannot run again.",
+    "monitoring_assignment_unbound": (
+        "It has no ongoing agent bound to check yet, so it has been paused. "
+        "Bind one before resuming it."
+    ),
+}
+
+
 #: Retry cap per occurrence (pre-fix: a retryable failure was re-claimed
 #: every tick FOREVER — ``next_attempt_at = now + 1s`` with no ceiling).
 #: Counts GENUINE run failures only (see ``JobRunner._failures``).
@@ -295,11 +334,18 @@ class JobRunner:
         offline_grants,
         *,
         handler_declarations: Dict[str, ScheduledHandlerDeclaration] | None = None,
+        monitoring_dispatcher: Callable[[Any, Dict[str, Any], str | None], str] | None = None,
     ) -> None:
         self.orch = orchestrator
         self.store = store
         self.grants = offline_grants
         self._coordinator: WorkAdmissionCoordinator | None = None
+        # 088.007: resolves/creates the persistent assignment a policy job's
+        # occurrence admits into, inside the SAME transaction as admission.
+        # Unset (default) means only already-bound policy jobs can run
+        # (``default_monitoring_dispatcher``); a legacy job with no policy
+        # row is entirely unaffected either way.
+        self._monitoring_dispatcher = monitoring_dispatcher or default_monitoring_dispatcher
         self._handler_declarations = dict(
             _DEFAULT_HANDLER_DECLARATIONS
             if handler_declarations is None
@@ -844,6 +890,81 @@ class JobRunner:
             "success", summary, str(attempt.operation_id), False, "success"
         )
 
+    async def _admit_monitoring_episode(self, attempt: ScheduledAttempt) -> bool:
+        """Admit a claimed occurrence into its policy's episode allowance, if any.
+
+        Returns ``False`` for a legacy job with no policy row: existing
+        recurrence semantics are entirely untouched. For a policy job, the
+        episode's assignment is resolved/continued and admitted together in
+        ONE transaction (088.007); ``True`` means this occurrence was just
+        admitted. Every refusal raises :class:`ScheduleActionError` (its
+        ``code`` is the typed admission reason) — the occurrence is never
+        dispatched into ``run_scheduled_turn`` on a refusal.
+        """
+
+        job = attempt.job
+        get_job_policy = getattr(self.store, "get_job_policy", None)
+        if get_job_policy is None:
+            # A store double that predates 088.007 (or a test fake) has no
+            # policy concept at all: behave exactly as a legacy job would.
+            return False
+        user_id, job_id = str(job["user_id"]), str(job["id"])
+        policy = await asyncio.to_thread(get_job_policy, user_id, job_id)
+        if policy is None:
+            return False
+
+        def admit() -> Any:
+            with self.store.transaction() as transaction:
+                assignment_id = self._monitoring_dispatcher(
+                    transaction, job, policy.get("last_assignment_id")
+                )
+                return self.store.admit_episode(
+                    attempt.claim,
+                    assignment_id=assignment_id,
+                    spend=1,
+                    transaction=transaction,
+                )
+
+        result = await asyncio.to_thread(admit)
+        if not result.admitted:
+            raise ScheduleActionError(result.reason)
+        return True
+
+    async def _refuse_monitoring_admission(
+        self, attempt: ScheduledAttempt, *, code: str
+    ) -> OccurrenceRunResult:
+        """Release a claimed occurrence a policy refused; never dispatches the turn."""
+
+        job = attempt.job
+        if code in _MONITORING_TERMINAL_REASONS:
+            self._forget_failures(attempt)
+            await self._pause_and_notify_once(
+                attempt,
+                title=f"Scheduled job paused: {job['name']}",
+                body=_MONITORING_PAUSE_BODY.get(
+                    code, "It could not be admitted for its next run."
+                ),
+                result_code=code,
+            )
+            return OccurrenceRunResult(
+                "failure",
+                _MONITORING_PAUSE_BODY.get(code, "Not admitted"),
+                str(attempt.operation_id),
+                False,
+                code,
+            )
+        # A transient refusal (an outstanding episode still resolving, or a
+        # policy read racing a concurrent Stop): retry the next tick, the
+        # job itself did not fail and is never paused for this.
+        self._observe_scheduler("terminal", job, result_code=code)
+        return OccurrenceRunResult(
+            "failure",
+            "Its ongoing agent could not be reached for this run; it will retry.",
+            str(attempt.operation_id),
+            True,
+            code,
+        )
+
     def _should_skip_stale(self, job: Dict[str, Any], scheduled_for: datetime) -> bool:
         """Stale guard decision (see the policy comment in ``run_occurrence``)."""
 
@@ -919,6 +1040,11 @@ class JobRunner:
             return await self._exhaust_claim_loop(attempt)
         if attempt.job.get("agent_id") == "__dreaming__":
             return await self._run_dreaming_occurrence(attempt)
+
+        try:
+            await self._admit_monitoring_episode(attempt)
+        except ScheduleActionError as exc:
+            return await self._refuse_monitoring_admission(attempt, code=exc.code)
 
         job = attempt.job
         user_id = str(job["user_id"])

@@ -37,6 +37,14 @@ from orchestrator.work_admission import (
 from persistent_agents.config import RunnerConfig
 from persistent_agents.dispatch_context import DispatchDenied, canonical
 from persistent_agents.execution import ActionExecutor, ApprovalPending, safe_text
+from persistent_agents.monitoring_observation import (
+    INCORPORATED_KINDS,
+    build_initial_result,
+    classify_observation,
+    event_observation,
+    extraction_facts,
+    prior_observation,
+)
 from persistent_agents.privacy import model_evidence, reviewed_urls
 from persistent_agents.runtime_values import (
     bounded_context,
@@ -94,14 +102,21 @@ class OneShotEpisodeResult:
 
 @dataclass(frozen=True, slots=True)
 class OneShotLifecycle:
-    """Explicit, unregistered capability; no default planner or episode exists."""
+    """Explicit, unregistered capability; no default planner or episode exists.
+
+    ``episode`` owns every kind unless ``chat`` names the fixed source-less
+    handler, which is selected only for ``operation.kind == "chat"`` records.
+    """
 
     sessions: object
     episode: Callable[[ActionExecutor], Awaitable[OneShotEpisodeResult]]
+    chat: Callable[[ActionExecutor], Awaitable[OneShotEpisodeResult]] | None = None
 
     def __post_init__(self):
         if self.sessions is None or not callable(self.episode):
             raise ValueError("one-shot lifecycle requires sessions and an episode")
+        if self.chat is not None and not callable(self.chat):
+            raise ValueError("one-shot chat handler must be callable")
 
 
 def _episode_lease(executor):
@@ -231,6 +246,20 @@ class AssignmentRunner:
         return (type(self.one_shot) is OneShotLifecycle
                 and self.one_shot.episode is run_research_episode)
 
+    def _fixed_chat(self):
+        """Only the exact source-less handler selects the bounded chat profile."""
+        from persistent_agents.chat_episode import run_chat_episode
+
+        return (type(self.one_shot) is OneShotLifecycle
+                and self.one_shot.chat is run_chat_episode)
+
+    def _operation_handler(self, record):
+        """Select the handler by the record's closed kind; legacy handlers own the rest."""
+        if (self._fixed_chat() and type(record) is AssignmentRecord
+                and record.operation is not None and record.operation.get("kind") == "chat"):
+            return self.one_shot.chat
+        return self.one_shot.episode
+
     def _assert_operation_capability(self, record):
         """Refuse unsupported fixed research before claim and again at dispatch.
 
@@ -238,7 +267,7 @@ class AssignmentRunner:
         the same tool bound and model reservation as admission and execution;
         the action ledger still decides current remaining allowance and policy.
         """
-        if not self._fixed_research():
+        if not self._fixed_research() and not self._fixed_chat():
             return
         from llm_config import research_profile as profile
         from persistent_agents.research_episode import source_request
@@ -248,6 +277,17 @@ class AssignmentRunner:
                 or type(record.operation.get("version")) is not int
                 or record.operation["version"] != 2):
             raise DispatchDenied("assignment_operation_profile_unavailable")
+        if record.operation.get("kind") == "chat":
+            from persistent_agents.research_input import chat_definition
+            if not self._fixed_chat():
+                raise DispatchDenied("assignment_operation_profile_unavailable")
+            chat_definition(record)
+            minimum = {"model_calls": 1, "tokens": profile.RESERVED_TOKENS,
+                       "elapsed_ms": profile.RESERVED_MILLISECONDS}
+            if any(type(record.definition.limits.get(name)) is not int
+                   or record.definition.limits[name] < amount for name, amount in minimum.items()):
+                raise DispatchDenied("assignment_operation_profile_unavailable")
+            return
         request = source_request(record)
         if (record.definition.consented_scopes != ("tools:read",)
                 or self.orch.tool_permissions.get_tool_scope(
@@ -429,7 +469,7 @@ class AssignmentRunner:
                 authority=authority, fence=claim.fence, callback=bind)
             renewal = asyncio.create_task(self._renew_operation(executor, asyncio.current_task()))
             self._assert_operation_capability(executor.record)
-            outcome = await self.one_shot.episode(executor)
+            outcome = await self._operation_handler(executor.record)(executor)
             if not isinstance(outcome, OneShotEpisodeResult):
                 raise DispatchDenied("assignment_completion_invalid")
             await self._finish_operation(executor, outcome)
@@ -507,6 +547,7 @@ class AssignmentRunner:
 
     async def _finish_operation(self, executor, outcome):
         """Commit a bounded explicit outcome; never synthesize a recurring wake."""
+        from persistent_agents.chat_episode import ChatCompletion
         from persistent_agents.research_episode import EphemeralResearchCompletion, ResearchCompletion
 
         record, completion = outcome.record, outcome.completion
@@ -522,16 +563,21 @@ class AssignmentRunner:
         # Research may yield or fail without producing content. Every successful
         # completion or content incorporation requires the closed result proof;
         # a handler cannot bypass it by choosing a different checkpoint key.
-        research_output = record.operation.get("kind") == "research" and (
+        kind = record.operation.get("kind")
+        fixed_kind = kind == "research" or (kind == "chat" and self._fixed_chat())
+        research_output = fixed_kind and (
             (completion.completed and completion.terminal_outcome != "failed")
             or completion.checkpoint != record.checkpoint
             or completion.activity is not None
             or bool(completion.incorporations)
             or bool(completion.event_receipts)
         )
-        if (proof is not None and type(proof) not in {ResearchCompletion, EphemeralResearchCompletion}) or (
+        expected_proofs = ({ChatCompletion} if kind == "chat"
+                           else {ResearchCompletion, EphemeralResearchCompletion})
+        if (proof is not None and type(proof) not in expected_proofs) or (
             proof is None and (research_output or completion.result_reference is not None
-                               or "research_result" in completion.checkpoint)
+                               or "research_result" in completion.checkpoint
+                               or "chat_result" in completion.checkpoint)
         ):
             raise DispatchDenied("assignment_research_result_invalid")
         lease = _episode_lease(executor)
@@ -716,7 +762,10 @@ class AssignmentRunner:
             # transient notification's receipt is uncertain.
             logger.warning("persistent_assignment_notification_unavailable")
 
-    async def _model(self, executor, key, system, context, *, task_id=None, event_id=None):
+    async def _model(self, executor, key, system, context, *, task_id=None, event_id=None,
+                     previous_contexts=()):
+        """Dispatch one metered model action; ``previous_contexts`` are older
+        projections of the same evidence whose already reserved intents stay valid."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": canonical(bounded_context(context))}]
         # Completion capacity includes reasoning as well as visible JSON. The
@@ -735,13 +784,16 @@ class AssignmentRunner:
             assignment_id=executor.record.assignment_id, action_key=key)
         if existing is not None:
             retained = thaw(existing.intent.request)
+            accepted = [messages]
+            for candidate in (context, *previous_contexts):
+                for project in (bounded_context, legacy_bounded_context):
+                    accepted.append([{"role": "system", "content": system},
+                                     {"role": "user", "content": canonical(project(candidate))}])
             if (not isinstance(retained, dict)
                     or set(retained) not in ({"kind", "messages", "max_output_tokens"},
                                             {"kind", "messages", "max_output_tokens", "reasoning_effort"})
                     or retained["kind"] != "model"
-                    or (retained["messages"] != messages and retained["messages"] != [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": canonical(legacy_bounded_context(context))}])
+                    or retained["messages"] not in accepted
                     or ("reasoning_effort" in retained and retained["reasoning_effort"] != "low")
                     or type(retained["max_output_tokens"]) is not int
                     or not 1 <= retained["max_output_tokens"] <= 8192
@@ -773,11 +825,16 @@ class AssignmentRunner:
             checkpoint = thaw(record.checkpoint)
             checkpoint["last_checked_at"] = datetime.now(UTC).isoformat()
             cursor = checkpoint.get("cursor")
-            if cursor and cursor["revision"] == observed["revision_digest"]:
+            observation = self._classify(record, observed)
+            if observation["kind"] not in INCORPORATED_KINDS:
+                # An unchanged complete source or insufficient evidence records
+                # its typed disposition and ends here: no event, no plan, no
+                # model call. Only the governed read itself was charged.
+                checkpoint["observation"] = observation
                 await self._finish(executor, record, checkpoint=checkpoint)
                 return
-            sequence = (cursor or {}).get("sequence", 0) + 1
-            revision = observed["revision_digest"]
+            sequence = observation["observation_sequence"]
+            revision = observation["revision_digest"]
             event = AssignmentSourceEvent(
                 event_id=str(uuid.uuid4()), source_key=digest(source),
                 item_key=digest(source["arguments"]), source_revision=f"{sequence}:{revision}",
@@ -796,14 +853,27 @@ class AssignmentRunner:
         event = events[0]
         plan_key = digest([record.instruction_revision, event.event_id])
         active = [task for task in record.tasks if task["plan_key"] == plan_key]
+        observation = None
         if not active:
-            proposal = await self._model(executor, plan_key + ":plan", _PLANNER, {
+            observation = self._event_observation(record, event)
+            if observation["kind"] == "initial":
+                # The first observation of a source yields exact attributed
+                # excerpts; changed-source assessment is the model's job only.
+                await self._extractive_episode(executor, record, event, observation)
+                return
+            planner_context = {
                 "instructions": record.definition.instructions,
                 "observation": model_evidence(event.context), "tools": list(record.definition.allowed_tools),
                 "prior_observation": model_evidence(record.checkpoint.get("last_observation")),
                 "prior_finding": record.checkpoint.get("last_finding"),
                 "maximum_tasks": min(8, record.definition.limits["max_tasks"]),
-            }, event_id=event.event_id)
+            }
+            # A planner intent reserved before the prior-result binding existed
+            # keeps its receipt: the older projection of this same evidence is
+            # still an exact match, never an assignment_action_binding_changed.
+            proposal = await self._model(executor, plan_key + ":plan", _PLANNER, {
+                **planner_context, "prior_result_digest": observation["prior_result_digest"],
+            }, event_id=event.event_id, previous_contexts=(planner_context,))
             tasks = parse_plan(proposal["text"], set(record.definition.allowed_tools),
                                min(8, record.definition.limits["max_tasks"]))
             identities = {task["id"]: str(uuid.uuid4()) for task in tasks}
@@ -855,6 +925,8 @@ class AssignmentRunner:
         checkpoint = thaw(record.checkpoint)
         checkpoint["last_checked_at"] = datetime.now(UTC).isoformat()
         checkpoint["last_observation"] = thaw(event.context)
+        checkpoint["observation"] = (observation if observation is not None
+                                     else self._event_observation(record, event))
         if finding != "UNCHANGED":
             checkpoint["last_finding"] = finding
         activity = None if finding == "UNCHANGED" else AssignmentActivityRecord(
@@ -866,6 +938,84 @@ class AssignmentRunner:
             incorporations=tuple({"task_id": task["task_id"], "parent_task_id": "__assignment__",
                                   "result_digest": task["result_digest"]} for task in tasks),
             completed=completion["completed"],
+        )
+
+    def _classify(self, record, observed):
+        """Typed outcome of a fresh governed read against the checkpoint's prior."""
+        source = thaw(record.definition.source)
+        try:
+            facts = extraction_facts(observed, source)
+            prior = prior_observation(record.checkpoint,
+                                      source_configuration_digest=facts["source_configuration_digest"])
+            return classify_observation(prior, observed, facts)
+        except ValueError:
+            raise DispatchDenied("assignment_observation_invalid") from None
+
+    def _event_observation(self, record, event):
+        """Typed record for an event the source ledger already admitted."""
+        source = thaw(record.definition.source)
+        observed = thaw(event.context)
+        try:
+            sequence, _, revision = str(event.source_revision).partition(":")
+            return event_observation(record.checkpoint, observed, extraction_facts(observed, source),
+                                     sequence=int(sequence), revision=revision)
+        except ValueError:
+            raise DispatchDenied("assignment_observation_invalid") from None
+
+    async def _bound_read_action(self, record, observed):
+        """Find the succeeded read whose retained result is exactly this event's context.
+
+        The batch key is the read's action key; a pre-permit failure retried in
+        a later control epoch lives under the executor's successor key chain.
+        """
+        key = record.checkpoint.get("last_batch_key")
+        for _ in range(256):
+            if type(key) is not str:
+                break
+            action = await self.store.call("get_action_by_key", owner_id=record.owner_id,
+                                           assignment_id=record.assignment_id, action_key=key)
+            if action is None:
+                break
+            retained = thaw(action.result)
+            if (action.state == "succeeded" and isinstance(retained, dict)
+                    and retained.get("result_available", True) is not False
+                    and retained.get("result") == observed
+                    and type(retained.get("result_digest")) is str):
+                return action.action_id, retained["result_digest"]
+            if action.state not in {"failed_not_started", "invalidated"} or action.ever_started:
+                break
+            key = digest([key, "successor", action.control_epoch])
+        raise DispatchDenied("assignment_research_result_invalid")
+
+    async def _extractive_episode(self, executor, record, event, observation):
+        """Initial observation: exact attributed passages, no plan, no model call."""
+        source = thaw(record.definition.source)
+        observed = thaw(event.context)
+        action_id, result_digest = await self._bound_read_action(record, observed)
+        try:
+            result = build_initial_result(observed, extraction_facts(observed, source),
+                                          source_action_id=action_id, source_result_digest=result_digest)
+        except ValueError:
+            raise DispatchDenied("assignment_research_result_invalid") from None
+        finding = "\n\n".join(passage["text"] for passage in result["passages"])
+        if finding:
+            await safe_text(finding, reviewed_urls(record.definition.source))
+        record = await self.store.call("assert_current_claim", fence=executor.claim.fence)
+        checkpoint = thaw(record.checkpoint)
+        checkpoint["last_checked_at"] = datetime.now(UTC).isoformat()
+        checkpoint["last_observation"] = observed
+        checkpoint["observation"] = observation
+        checkpoint["extractive_result"] = result
+        if finding:
+            checkpoint["last_finding"] = finding
+        activity = None if not finding else AssignmentActivityRecord(
+            f"finding:{event.event_id}", "finding", record.definition.name, finding,
+            {"event_id": event.event_id, "scope": result["scope"], "disposition": result["disposition"]},
+            notification_state="pending")
+        await self._finish(
+            executor, record, checkpoint=checkpoint, activity=activity,
+            receipts=({"event_id": event.event_id, "disposition": "completed",
+                       "result_digest": digest(finding if finding else result)},),
         )
 
     async def _delegated_task(self, executor, task, event, siblings):

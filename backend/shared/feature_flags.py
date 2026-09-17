@@ -239,6 +239,17 @@ class FeatureFlags:
             # them with NO server-side signal, so treat the flip as a release
             # step gated on store adoption, not a runtime tweak.
             "rail_caption_variant": self._read("FF_RAIL_CAPTION_VARIANT", False),
+            # 088 T046-T049: owner-issued framework credentials (durable
+            # hash-only bearer tokens for an SDK/MCP/A2A client, independent
+            # of any interactive session) plus the "Connections" chrome
+            # surface and the framework-caller admission path into Work.
+            # FAIL CLOSED — default OFF; with the flag off no credential can
+            # be issued or resolved, the Connections menu item and surface
+            # are absent, no MCP work tool is projected for a framework
+            # bearer, and the A2A/MCP JWT-only paths stay byte-identical.
+            # Read once at import (container recreate to enable). See
+            # specs/088-rewrite-integration/.
+            "framework_credentials": self._read("FF_FRAMEWORK_CREDENTIALS", False),
         }
 
     @staticmethod

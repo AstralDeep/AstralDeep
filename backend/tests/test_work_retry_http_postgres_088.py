@@ -16,6 +16,7 @@ import pytest
 from llm_config import research_profile as profile
 from llm_config.tests.test_research_profile_088 import reply
 from persistent_agents.runtime_values import thaw
+from shared.isolated_http import IsolatedHttpError
 from tests.test_work_research_preflight_postgres_088 import research_command
 from tests.test_work_runtime_postgres_088 import (
     fixture as fixture,
@@ -137,6 +138,110 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     assert await asyncio.to_thread(op.audit._repo.verify_chain, op.owner) is None
     record_testsuite_property("first_retry_safe_error", scheduled["safe_error_code"])
     record_testsuite_property("seconds_between_model_sends", sends[1] - sends[0])
+
+
+async def test_pre_send_provider_unreachable_retries_with_fresh_source(
+    integrated, monkeypatch, record_testsuite_property,
+):
+    op, runner, client = integrated
+    prior_reads = len(op.physical)
+    sends = []
+
+    async def transport(method, url, **kwargs):
+        sends.append(time.monotonic())
+        op.model_calls.append((method, url, kwargs))
+        if len(sends) == 1:
+            # Egress validation (URL policy / DNS) refuses before any socket
+            # exists: the isolated transport proves no request bytes left.
+            raise IsolatedHttpError("egress_blocked")
+        return SimpleNamespace(body=json.dumps(reply()).encode(), status_code=200)
+
+    monkeypatch.setattr("shared.isolated_http.request", transport)
+    body = retry_command(runner)
+    accepted = await client.post("/api/work/v1/operations", json=body)
+    assert accepted.status_code == 201, accepted.text
+    identity = accepted.json()["id"]
+    scheduled, first_actions, now = await wait_for(
+        op, identity, lambda row, _actions, _now: row["next_retry_at"] is not None
+    )
+    due = datetime.fromisoformat(scheduled["next_retry_at"].replace("Z", "+00:00"))
+    assert 4 <= (due - now).total_seconds() <= 5
+    assert scheduled["consecutive_failures"] == 1
+    assert scheduled["lifecycle"] == "active" and scheduled["phase"] == "failed"
+    assert scheduled["safe_error_code"] != "assignment_action_uncertain"
+    assert len(first_actions) == 2 and len(sends) == 1
+    # The charged read stands; the unsent model attempt cost nothing and holds nothing.
+    assert scheduled["usage"]["spent"].get("tokens", 0) == 0
+    assert scheduled["usage"]["spent"]["tool_calls"] == 1
+    assert scheduled["usage"]["spent"].get("model_calls", 0) == 0
+    assert all(value == 0 for value in scheduled["usage"]["outstanding"].values())
+    first_model = next(a for a in first_actions if a["intent"]["request"]["kind"] == "model")
+    assert first_model["state"] == "failed" and len(first_model["attempts"]) == 1
+    settled = first_model["attempts"][0]["outcome"]
+    assert settled["outcome"] == "failed"
+    assert settled["actual"]["tokens"] == 0 and settled["actual"]["model_calls"] == 0
+    final, actions, _ = await wait_for(
+        op, identity, lambda row, _actions, _now: row["lifecycle"] == "completed"
+    )
+    assert final["operation"]["terminal_outcome"] == "completed"
+    assert final["consecutive_failures"] == 1
+    assert len(sends) == 2 and sends[1] - sends[0] >= 5
+    # A discarded source is never reconstructed: the retry paid for a new read.
+    assert len(op.physical) == prior_reads + 2
+    reads = [a for a in actions if a["intent"]["request"]["kind"] == "tool"]
+    models = [a for a in actions if a["intent"]["request"]["kind"] == "model"]
+    assert len(reads) == len(models) == 2
+    assert len({a["action_id"] for a in reads}) == 2
+    assert len({a["intent"]["action_key"] for a in reads}) == 2
+    assert len({a["intent"]["action_key"] for a in models}) == 2
+    assert all(len(a["attempts"]) == 1 for a in actions)
+    assert sorted(a["state"] for a in models) == ["failed", "succeeded"]
+    assert final["usage"]["spent"]["tokens"] == 120
+    assert final["usage"]["spent"]["model_calls"] == 1
+    assert final["usage"]["spent"]["tool_calls"] == 2
+    assert all(value == 0 for value in final["usage"]["outstanding"].values())
+    result = await client.get(f"/api/work/v1/operations/{identity}/result")
+    assert result.status_code == 200 and result.json()["result"]["content"] is None
+    replay = await client.post("/api/work/v1/operations", json=body)
+    assert replay.status_code == 200 and replay.json()["id"] == identity
+    await runner.tick()
+    assert len(sends) == 2 and len(op.physical) == prior_reads + 2
+    serialized = json.dumps(thaw([final, actions]))
+    for text in ("Public release 088", "synthetic-provider-key", '"messages"', "egress_blocked"):
+        assert text not in serialized
+    assert await asyncio.to_thread(op.audit._repo.verify_chain, op.owner) is None
+    record_testsuite_property("pre_send_safe_error", scheduled["safe_error_code"])
+    record_testsuite_property("seconds_between_model_sends", sends[1] - sends[0])
+
+
+@pytest.mark.parametrize("code", ["unreachable", "deadline", "cleanup_uncertain", "child_failure"])
+async def test_ambiguous_transport_loss_after_permit_stays_uncertain(integrated, monkeypatch, code):
+    """Only provably pre-send codes retry; every other loss keeps its unknown charge."""
+    op, runner, client = integrated
+    prior_reads = len(op.physical)
+
+    async def transport(method, url, **kwargs):
+        op.model_calls.append((method, url, kwargs))
+        raise IsolatedHttpError(code)
+
+    monkeypatch.setattr("shared.isolated_http.request", transport)
+    body = retry_command(runner)
+    response = await client.post("/api/work/v1/operations", json=body)
+    assert response.status_code == 201, response.text
+    identity = response.json()["id"]
+    row, actions, _ = await wait_for(
+        op, identity, lambda row, _actions, _now: (
+            row["phase"] == "reconciliation" and row["claim_token"] is None
+        )
+    )
+    assert row["lifecycle"] == "active" and row["next_retry_at"] is None
+    assert row["safe_error_code"] == "assignment_action_uncertain"
+    assert row["usage"]["outstanding"]["tokens"] == profile.RESERVED_TOKENS
+    assert row["usage"]["spent"].get("tokens", 0) == 0
+    model = next(a for a in actions if a["intent"]["request"]["kind"] == "model")
+    assert model["state"] == "uncertain" and len(model["attempts"]) == 1
+    await runner.tick()
+    assert len(op.model_calls) == 1 and len(op.physical) == prior_reads + 1
 
 
 async def test_http_503_keeps_unknown_charge_and_never_retries_an_issued_effect(

@@ -564,3 +564,130 @@ async def test_cookie_without_durable_incarnation_cannot_borrow_current_row(
     with pytest.raises(AssignmentError, match="work_authority_unavailable"):
         await service.submit(selected, command())
     assert not fixture[-1] and totals(runtime, fixture[1]) == (0, 0, 0)
+
+
+def chat_command(**changes):
+    """The closed chat body: same limits, no source, no selection, no retention choice."""
+    from llm_config import research_profile as profile
+    values = {"kind": "chat", "source": None,
+              "limits": {"model_calls": 1, "tool_calls": 1, "tokens": profile.RESERVED_TOKENS,
+                         "elapsed_ms": profile.RESERVED_MILLISECONDS, "max_retries": 0}}
+    values.update(changes)
+    return command(**values)
+
+
+@pytest.fixture
+async def chat_service(service, runtime, fixture, monkeypatch, tmp_path):
+    """The source-only service plus the fixed USER model preflight chat needs."""
+    from cryptography.fernet import Fernet
+    from llm_config import research_profile as profile
+    from llm_config.user_store import UserLLMConfigStore
+    from orchestrator.work_submit import FixedResearchPreflight
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("AUDIT_HMAC_KEY_ID", "chat_submit_test")
+    monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-chat-submit-binding-" + "x" * 40)
+    monkeypatch.delenv("AUDIT_HMAC_SECRET_CHAT_SUBMIT_TEST", raising=False)
+    store = UserLLMConfigStore(plane_runtime=runtime, data_dir=str(tmp_path))
+    await store.set(fixture[1], provider="openai", base_url=profile.BASE_URL, model=profile.MODEL,
+                    api_key="synthetic-never-sent-provider-key")
+    return WorkSubmitService(service.assignments, service.audit, service.sessions,
+                             research_preflight=FixedResearchPreflight(store))
+
+
+@pytest.mark.asyncio
+async def test_chat_kind_admits_source_less_turn_with_closed_limits(chat_service, fixture, runtime):
+    accepted = await chat_service.submit(await context(fixture, runtime), chat_command())
+    record = accepted.record
+    assert accepted.created and totals(runtime, fixture[1]) == (1, 1, 1)
+    assert record.execution_profile == "one_shot" and record.operation["kind"] == "chat"
+    assert record.operation["version"] == 2 and record.operation["source_retention"] == "operation"
+    assert record.definition.source == {} and record.definition.allowed_tools == ()
+    assert record.definition.consented_scopes == () and record.definition.offline_grant_id is None
+    assert record.definition.limits["tokens"] == 129024 and record.definition.limits["max_tasks"] == 1
+    rows, _ = chat_service.audit.list_for_user(fixture[1])
+    assert len(rows) == 1 and rows[0].action_type == "work.accept"
+    assert rows[0].inputs_meta["kind"] == "chat"
+    assert chat_service.audit.verify_chain(fixture[1]) is None
+    serialized = json.dumps(thaw(record))
+    assert "synthetic-never-sent-provider-key" not in serialized
+    with runtime.transaction() as tx:
+        assert tx.fetch_one("SELECT count(*) AS n FROM persistent_assignment_action")["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_kind_replays_its_receipt_without_reacceptance(chat_service, fixture, runtime):
+    body = chat_command()
+    first = await chat_service.submit(await context(fixture, runtime), body)
+    replay = await chat_service.submit(await context(fixture, runtime, cookie=False, bearer=True), body)
+    assert first.created and not replay.created and replay.record == first.record
+    assert totals(runtime, fixture[1]) == (1, 1, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes,code", [
+    ({"source": {"url": "https://93.184.216.34/releases"}}, "work_submit_invalid"),
+    ({"source": {}}, "work_submit_invalid"),
+    ({"source_retention": "none"}, "work_submit_invalid"),
+    ({"selection": {"version": 1, "agent": None, "notes": [],
+                    "skills": [{"skill_id": str(uuid4()), "revision": 1}]}}, "work_submit_invalid"),
+    ({"kind": "search"}, "work_submit_invalid"),
+    ({"kind": "CHAT"}, "work_submit_invalid"),
+    ({"limits": {"model_calls": 1, "tool_calls": 1, "tokens": 129023, "elapsed_ms": 65000,
+                 "max_retries": 0}}, "work_research_budget_insufficient"),
+    ({"limits": {"model_calls": 1, "tool_calls": 1, "tokens": 129024, "elapsed_ms": 64999,
+                 "max_retries": 0}}, "work_research_budget_insufficient"),
+    ({"instructions": ""}, "work_submit_invalid"),
+    ({"conversation_id": "unowned"}, "assignment_destination_not_found"),
+])
+async def test_chat_kind_allowlist_refuses_sources_selection_and_short_budgets(
+    chat_service, fixture, runtime, changes, code,
+):
+    with pytest.raises(AssignmentError) as caught:
+        await chat_service.submit(await context(fixture, runtime), chat_command(**changes))
+    assert caught.value.code == code
+    assert totals(runtime, fixture[1]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_chat_kind_requires_the_model_preflight(service, fixture, runtime):
+    """Source-only acceptance never admits a turn it cannot qualify a model for."""
+    with pytest.raises(AssignmentError) as caught:
+        await service.submit(await context(fixture, runtime), chat_command())
+    assert (caught.value.code, caught.value.status_code) == ("work_chat_profile_unavailable", 503)
+    assert not fixture[-1] and totals(runtime, fixture[1]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_chat_kind_refuses_unqualified_user_configuration(chat_service, fixture, runtime):
+    await chat_service.research_preflight.config_store.clear(fixture[1])
+    with pytest.raises(AssignmentError) as caught:
+        await chat_service.submit(await context(fixture, runtime), chat_command())
+    assert (caught.value.code, caught.value.status_code) == ("work_research_profile_unavailable", 503)
+    assert totals(runtime, fixture[1]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_chat_kind_applies_the_phi_gate_to_the_owner_text(chat_service, fixture, runtime, monkeypatch):
+    monkeypatch.setattr(chat_service.assignments.phi_gate, "contains_phi", lambda _: True)
+    with pytest.raises(AssignmentError, match="assignment_sensitive_content_refused"):
+        await chat_service.submit(await context(fixture, runtime), chat_command())
+    assert totals(runtime, fixture[1]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure,code", [
+    ("phi", "assignment_phi_gate_unavailable"), ("chat", "assignment_destination_unavailable"),
+])
+async def test_chat_kind_policy_dependencies_fail_closed(chat_service, fixture, runtime, monkeypatch, failure, code):
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("synthetic dependency outage")
+    if failure == "phi":
+        monkeypatch.setattr(chat_service.assignments.phi_gate, "contains_phi", unavailable)
+        body = chat_command()
+    else:
+        monkeypatch.setattr(chat_service.assignments.orch.history, "get_chat", unavailable)
+        body = chat_command(conversation_id="some-chat")
+    with pytest.raises(AssignmentError) as caught:
+        await chat_service.submit(await context(fixture, runtime), body)
+    assert (caught.value.code, caught.value.status_code) == (code, 503)
+    assert totals(runtime, fixture[1]) == (0, 0, 0)

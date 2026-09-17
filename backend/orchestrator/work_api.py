@@ -9,14 +9,18 @@ import re
 import time
 from urllib.parse import urlsplit
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 
 from orchestrator import auth
 from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
-from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
+from orchestrator.work_controls import (
+    WorkControlRequest, WorkControlService, WorkDecideRequest, WorkDeleteRequest,
+)
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
 from orchestrator.work_continuations import WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest
 from orchestrator.work_publication import (
@@ -116,6 +120,7 @@ class _ReadDelivery:
         return cls(owner_id, _read_expiry(claims), token, cookie)
 
     async def verify(self, service):
+        """Re-verify the original credential; returns the delivery cap it allows."""
         if time.time() >= self.expires_at:
             raise HTTPException(401, "Not authenticated")
         # Reuse the exact normal production JWT/issuer/client/role policy, with
@@ -123,11 +128,15 @@ class _ReadDelivery:
         claims = await verify_user(await auth.verify_production_token(self.token))
         if claims.get("sub") != self.owner_id or _read_expiry(claims) != self.expires_at:
             raise HTTPException(401, "Not authenticated")
+        cap = self.expires_at
         if self.cookie_session is not None:
-            await service.assert_read_session(self.owner_id, claims, self.cookie_session)
+            observed = await service.assert_read_session(self.owner_id, claims, self.cookie_session)
+            if type(observed) is float and math.isfinite(observed):
+                cap = min(cap, observed)
         service._owner(self.owner_id, claims)
         if time.time() >= self.expires_at:
             raise HTTPException(401, "Not authenticated")
+        return cap
 
 
 class WorkReadRoute(APIRoute):
@@ -174,6 +183,8 @@ class WorkReadRoute(APIRoute):
                     "assignment_authorization_unavailable", "assignment_tool_unavailable",
                     "assignment_scope_unavailable", "assignment_source_not_read_only",
                     "work_result_unavailable", "work_proposal_expired",
+                    "assignment_proposal_changed", "assignment_approval_invalid",
+                    "assignment_deadline_exceeded",
                 }
                 unavailable = "work_read_unavailable" if request.method == "GET" else "work_control_unavailable"
                 return _json({"error": exc.code if exc.code in known else unavailable}, exc.status_code)
@@ -249,10 +260,113 @@ async def poll_work(identity: str, request: Request, after_revision: str | None 
     return _json(await _read(request, owner_id, claims, "poll", identity=identity, after_revision=revision))
 
 
+@work_router.get("/{identity}/measurements")
+async def measurements_work(identity: str, request: Request, owner_id: str = _OWNER,
+                            claims: dict = _CLAIMS):
+    """Disclose one operation's timing and claim accounting, never an estimate."""
+    return _json({"measurements": await _read(request, owner_id, claims, "measurements",
+                                              identity=identity)})
+
+
 @work_router.get("/{identity}/result")
 async def result_work(identity: str, request: Request, owner_id: str = _OWNER, claims: dict = _CLAIMS):
     """Deliver only the closed result reconstructed from its settled ledger."""
     return _json(await _read(request, owner_id, claims, "result", identity=identity))
+
+
+# Bounded SSE delivery: one poll per tick, never a held transaction or a refresh.
+SSE_INTERVAL_SECONDS = 2.0
+SSE_MAX_SECONDS = 900
+_SSE_ERRORS = frozenset({"work_not_found", "work_authentication_required", "work_read_unavailable"})
+
+
+def _sse(event, data, revision=None):
+    head = "" if revision is None else "id: %d\n" % revision
+    body = json.dumps(data, allow_nan=False)
+    return (head + "event: " + event + "\ndata: " + body + "\n\n").encode()
+
+
+def _sse_failure(exc):
+    if isinstance(exc, HTTPException):
+        return "work_authentication_required"
+    if isinstance(exc, AssignmentError) and exc.code in _SSE_ERRORS:
+        return exc.code
+    return "work_read_unavailable"
+
+
+async def _events(service, owner_id, claims, delivery, identity, after_revision, credential_cap, bound):
+    """Yield SSE frames until a cap, a refusal, or the client disconnects.
+
+    Every emission is preceded by a fresh poll (one bounded transaction) and by
+    ``_ReadDelivery.verify`` of the ORIGINAL token and cookie issuance; nothing
+    is ever refreshed. ``credential_cap`` (token expiry / issuance hard cap) can
+    only shrink; ``bound`` is the fixed 15-minute (or caller-shortened) limit.
+    Reaching the credential cap is an ``error``; reaching the time bound is an
+    ``end`` the client may resume from with ``Last-Event-ID``. Cancellation
+    (Starlette's disconnect listener, or the OSError of a closed peer on the
+    next tick) closes the generator; nothing is spawned, so no task outlives
+    the response. Keepalive comments make a closed peer visible within a tick.
+    """
+    last = after_revision
+    try:
+        while True:
+            try:
+                result = await service.poll(owner_id, claims, identity, after_revision=last)
+                credential_cap = min(credential_cap, await delivery.verify(service))
+            except (AssignmentError, HTTPException) as exc:
+                yield _sse("error", {"error": _sse_failure(exc)}, last)
+                return
+            if time.time() >= credential_cap:
+                # Past the cap, delivery would rest on an expired or capped issuance.
+                yield _sse("error", {"error": "work_authentication_required"}, last)
+                return
+            if result["changed"]:
+                last = result["revision"]
+                yield _sse("revision", result, last)
+            else:
+                yield b": tick\n\n"
+            remaining = min(credential_cap, bound) - time.time()
+            if remaining <= 0:
+                if credential_cap <= bound:
+                    yield _sse("error", {"error": "work_authentication_required"}, last)
+                else:
+                    yield _sse("end", {"reason": "work_stream_bounded", "revision": last}, last)
+                return
+            await asyncio.sleep(min(SSE_INTERVAL_SECONDS, remaining))
+    except Exception:  # noqa: BLE001 - a malformed reply or raw driver failure ends as a closed frame, never a truncated stream
+        yield _sse("error", {"error": "work_read_unavailable"}, last)
+
+
+@work_router.get("/{identity}/events")
+async def events_work(identity: str, request: Request, after_revision: str | None = None,
+                      max_seconds: str | None = None, owner_id: str = _OWNER, claims: dict = _CLAIMS):
+    """Stream revision events for one operation under the original credential.
+
+    ``Last-Event-ID`` (or ``after_revision``) resumes without a duplicate frame.
+    The stream is bounded by min(original token expiry, cookie issuance hard
+    cap, 15 minutes, ``max_seconds``) and ends with a final ``error`` event on
+    revocation, expiry or an inconclusive identity. The first read and
+    verification run before any byte is streamed, so refusals stay ordinary
+    JSON responses through the same closed error-code allowlist.
+    """
+    resume = request.headers.get("last-event-id")
+    if resume is not None and resume.strip() == "":
+        resume = None
+    revision = None if resume is None else _query_integer(resume.strip())
+    if revision is None and after_revision is not None:
+        revision = _query_integer(after_revision)
+    limit = SSE_MAX_SECONDS if max_seconds is None else _query_integer(max_seconds, SSE_MAX_SECONDS)
+    service = _service(request)
+    delivery = _ReadDelivery.capture(request, owner_id, claims)
+    await service.get(owner_id, claims, identity)
+    credential_cap = await delivery.verify(service)
+    if _service(request).assignments is not service.assignments:
+        raise AssignmentError("work_read_unavailable", 503)
+    bound = time.time() + min(limit, SSE_MAX_SECONDS)
+    return StreamingResponse(
+        _events(service, owner_id, claims, delivery, identity, revision, credential_cap, bound),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @work_router.post("/{identity}/pause")
@@ -297,6 +411,13 @@ async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request)
 async def reconcile_work(identity: str, action_id: str, body: WorkReconcileRequest, request: Request):
     """Record an owner's factual decision without recovering output or waking."""
     return _json(await WorkContinuationService(_service(request).assignments).reconcile(
+        identity, action_id, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/actions/{action_id}/decide")
+async def decide_work(identity: str, action_id: str, body: WorkDecideRequest, request: Request):
+    """Approve or reject one proposed action; approval grants no execution by itself."""
+    return _json(await WorkControlService(_service(request).assignments).decide(
         identity, action_id, body, caller=_write_caller(request)))
 
 

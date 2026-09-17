@@ -8,6 +8,13 @@ Two tabs (``params.tab``):
   (and therefore the same audit emission) as the
   ``feedback_admin_router`` endpoints in ``backend/feedback/api.py``
   (``feedback.proposals.apply_accepted`` / ``reject_proposal``).
+* ``diagnostics`` — deployment-wide runtime counters and gauges, the
+  same payload-free ``RuntimeObservability.snapshot()`` the admin-only
+  ``GET /api/runtime-reliability/metrics`` endpoint returns, rendered
+  read-only through Projection's ``build_diagnostics_view``. The view
+  carries no action: nothing here resets, exports or reconfigures the
+  collector, and no user, conversation, credential or target identity
+  is recorded in a sample.
 * ``tutorial`` — tutorial-step administration: full step list including
   archived rows (``OnboardingRepository.list_all_steps`` — the
   ``GET /api/admin/tutorial/steps`` internals), a per-step edit/create
@@ -106,10 +113,12 @@ async def render(orch, user_id, roles, params) -> str:
         return chrome_error_block("Admin role required to view this surface.")
     params = params or {}
     tab = params.get("tab") or "quality"
-    if tab not in ("quality", "tutorial"):
+    if tab not in ("quality", "diagnostics", "tutorial"):
         tab = "quality"
     if tab == "quality":
         body = await asyncio.to_thread(_render_quality, orch)
+    elif tab == "diagnostics":
+        body = await asyncio.to_thread(_render_diagnostics, orch, roles)
     else:
         body = await asyncio.to_thread(_render_tutorial, orch, params)
     return _tab_bar(tab) + body
@@ -118,7 +127,8 @@ async def render(orch, user_id, roles, params) -> str:
 def _tab_bar(active: str) -> str:
     """Tab buttons re-opening this surface with the chosen ``tab`` param."""
     buttons = []
-    for key, label in (("quality", "Tool quality"), ("tutorial", "Tutorial admin")):
+    for key, label in (("quality", "Tool quality"), ("diagnostics", "Runtime diagnostics"),
+                       ("tutorial", "Tutorial admin")):
         payload = json.dumps({"surface": SURFACE_KEY, "params": {"tab": key}})
         if key == active:
             cls = ("bg-astral-primary/20 text-astral-primary "
@@ -133,6 +143,37 @@ def _tab_bar(active: str) -> str:
         )
     inner = "".join(buttons)
     return f'<div class="flex items-center gap-2" role="tablist">{inner}</div>'
+
+
+# ----- Runtime diagnostics tab ----------------------------------------------
+
+def _render_diagnostics(orch, roles) -> str:
+    """Render the runtime-observability snapshot read-only for an admin.
+
+    The role check is repeated here so the builder can never be reached with an
+    unauthorized snapshot even if a future caller skips ``render``'s own gate;
+    a non-admin is given the refusal view and no sample at all. A collector that
+    is not wired, or one that cannot answer, is reported as unavailable rather
+    than as an empty deployment.
+    """
+    from astralprojection.chrome import render_html
+    from astralprojection.chrome.admin import build_diagnostics_view
+
+    if not _is_admin(roles):
+        logger.warning("admin_tools diagnostics denied for non-admin session")
+        return render_html(build_diagnostics_view(denied=True))
+    collector = getattr(orch, "runtime_observability", None)
+    snapshot = getattr(collector, "snapshot", None)
+    if not callable(snapshot):
+        return render_html(build_diagnostics_view(error="Runtime diagnostics are unavailable."))
+    try:
+        samples = [{"name": sample.name, "value": sample.value, "labels": dict(sample.labels)}
+                   for sample in snapshot()]
+    except Exception:
+        logger.exception("admin_tools: failed to read the runtime metric snapshot")
+        return render_html(build_diagnostics_view(error="Runtime diagnostics are unavailable."))
+    return ('<div data-admin-tab="diagnostics">'
+            + render_html(build_diagnostics_view(samples)) + "</div>")
 
 
 # ----- Tool quality tab -----------------------------------------------------

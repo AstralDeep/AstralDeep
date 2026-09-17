@@ -141,8 +141,24 @@ class _Host:
         return response.choices[0].message, None
 
 
-@pytest.fixture
-def engine(plane, monkeypatch):
+SOURCE_URL = "https://example.org/releases"
+# A prior complete observation seeded through the public lifecycle API. Its
+# digests name content the fixture host never serves, so the first governed
+# read of a seeded assignment is a meaningful change assessed by the model.
+PRIOR_REVISION = digest("fixture-prior-revision")
+PRIOR_RESULT = digest("fixture-prior-result")
+
+
+def prior_observation_record(definition):
+    return {"version": 1, "kind": "initial", "reason": None, "observation_sequence": 1,
+            "revision_digest": PRIOR_REVISION, "context_digest": PRIOR_RESULT,
+            "prior_revision_digest": None, "prior_result_digest": None,
+            "complete_source_set": [SOURCE_URL], "normalized_final_urls": [],
+            "completeness": {"body_complete": None, "extraction_complete": None, "excerpt_complete": True},
+            "source_configuration_digest": digest(thaw(definition.source))}
+
+
+def _engine(plane, monkeypatch, *, seed_prior):
     from persistent_agents import execution
     from persistent_agents import runner as runner_module
     monkeypatch.setattr(execution, "safe_text", AsyncMock())
@@ -160,13 +176,34 @@ def engine(plane, monkeypatch):
         plane.repositories.offline_grants.create_grant(tx, grant_id=grant, owner_id="owner", agent_id=None,
             encrypted_refresh_token=b"fixture-opaque-encrypted-token", issued_at=now, expires_at=now + 3600000)
         definition = AssignmentDefinition(name="Release monitor", instructions="Investigate meaningful release changes.",
-            source={"profile": "public_page", "agent_id": "web-research-1", "tool_name": "fetch_page", "arguments": {"url": "https://example.org/releases"}, "linked_document_urls": []},
+            source={"profile": "public_page", "agent_id": "web-research-1", "tool_name": "fetch_page", "arguments": {"url": SOURCE_URL}, "linked_document_urls": []},
             allowed_tools=("web-research-1:fetch_page",), consented_scopes=("tools:read",),
             offline_grant_id=grant, limits=limits)
         plane.repositories.assignments.create_assignment(tx, owner_id="owner", assignment_id=assignment_id,
             submission_id=str(uuid4()), submission_digest=digest("create"), definition=definition)
+        if seed_prior:
+            [claim] = plane.repositories.assignments.claim_due_for_administration(
+                tx, worker_id="prior-fixture", limit=1, lease_seconds=5)
+            checkpoint = {**thaw(claim.assignment.checkpoint),
+                          "observation": prior_observation_record(definition)}
+            plane.repositories.assignments.finish_episode(tx, fence=claim.fence, completion=AssignmentEpisodeCompletion(
+                expected_state_version=claim.assignment.state_version, checkpoint=checkpoint,
+                completion_digest=digest(["prior-fixture", assignment_id]),
+                next_wake_at=datetime.now(UTC) - timedelta(minutes=1)))
     yield host, runner, store, assignment_id
     store.close()
+
+
+@pytest.fixture
+def engine(plane, monkeypatch):
+    """An assignment with one seeded prior observation: its first read is a change."""
+    yield from _engine(plane, monkeypatch, seed_prior=True)
+
+
+@pytest.fixture
+def fresh_engine(plane, monkeypatch):
+    """An assignment that has never observed its source."""
+    yield from _engine(plane, monkeypatch, seed_prior=False)
 
 
 async def claim_and_run(runner, store):
@@ -687,4 +724,274 @@ def test_replacement_runner_delivers_committed_memory_to_every_model(engine, pla
         assert finished.checkpoint.get("last_finding") == prior_finding
         activity = await store.call("list_activity", owner_id="owner", assignment_id=identity)
         assert sum(item.activity_type == "finding" for item in activity) == (initial_finding != "UNCHANGED")
+    asyncio.run(scenario())
+
+
+# --- feature 088 T042: typed monitoring outcomes (FR-013, FR-014) -----------
+
+
+async def current_thawed(store, identity):
+    """The current record with its checkpoint as plain JSON values."""
+    return SimpleNamespace(**thaw(await current(store, identity)))
+
+
+async def _findings(store, identity):
+    activity = await store.call("list_activity", owner_id="owner", assignment_id=identity)
+    return [item for item in activity if item.activity_type == "finding"]
+
+
+async def _rewrite_checkpoint(store, identity, checkpoint):
+    """Replace the retained checkpoint through the public lifecycle API only."""
+    await control(store, identity, "pause")
+    await control(store, identity, "resume")
+    [claim] = await store.call("claim_due_for_administration", worker_id="checkpoint-fixture",
+                               limit=1, lease_seconds=5)
+    assert claim.assignment.assignment_id == identity
+    await store.call("finish_episode", fence=claim.fence, completion=AssignmentEpisodeCompletion(
+        expected_state_version=claim.assignment.state_version, checkpoint=checkpoint,
+        completion_digest=digest(["checkpoint-fixture", identity, checkpoint]),
+        wake_reason="checkpoint_fixture", next_wake_at=datetime.now(UTC) - timedelta(minutes=1)))
+
+
+async def _pause_resume(store, identity):
+    await control(store, identity, "pause")
+    await control(store, identity, "resume")
+
+
+def test_initial_observation_is_extractive_then_unchanged_then_changed(fresh_engine):
+    host, runner, store, identity = fresh_engine
+    async def scenario():
+        await claim_and_run(runner, store)
+        initial = await current_thawed(store, identity)
+        assert initial.phase == "waiting", initial.safe_error_code
+        assert host.physical_tools == 1 and host.physical_models == []
+        assert initial.usage["spent"].get("model_calls", 0) == 0
+        observation = initial.checkpoint["observation"]
+        retained = initial.checkpoint["last_observation"]
+        assert observation["kind"] == "initial" and observation["observation_sequence"] == 1
+        assert observation["prior_result_digest"] is None and observation["prior_revision_digest"] is None
+        assert observation["revision_digest"] == retained["revision_digest"]
+        assert observation["context_digest"] == digest(retained)
+        assert observation["complete_source_set"] == [SOURCE_URL]
+        assert observation["completeness"] == {"body_complete": None, "extraction_complete": None,
+                                               "excerpt_complete": True}
+        assert "text" not in observation and host.source_text not in json.dumps(observation)
+        assert initial.checkpoint["last_finding"] == host.source_text
+        result = initial.checkpoint["extractive_result"]
+        assert result["scope"] == "one_page_excerpts" and result["disposition"] == "evidence"
+        assert result["passages"] == [{"id": "p001", "text": host.source_text}]
+        [read] = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        assert result["source"]["action_id"] == read.action_id
+        assert result["source"]["result_digest"] == read.result["result_digest"]
+        assert result["source"]["revision_digest"] == retained["revision_digest"]
+        findings = await _findings(store, identity)
+        assert len(findings) == 1 and findings[0].summary == host.source_text
+        assert findings[0].references["scope"] == "one_page_excerpts"
+        assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
+
+        await _pause_resume(store, identity)
+        await claim_and_run(runner, store)
+        unchanged = await current_thawed(store, identity)
+        assert unchanged.phase == "waiting", unchanged.safe_error_code
+        assert host.physical_tools == 2 and host.physical_models == []
+        assert unchanged.usage["spent"].get("model_calls", 0) == 0
+        assert unchanged.usage["spent"]["tool_calls"] == 2
+        again = unchanged.checkpoint["observation"]
+        assert again["kind"] == "unchanged" and again["observation_sequence"] == 1
+        assert again["revision_digest"] == observation["revision_digest"]
+        assert again["prior_result_digest"] == observation["context_digest"]
+        assert unchanged.checkpoint["last_observation"] == retained
+        assert unchanged.checkpoint["last_finding"] == host.source_text
+        assert len(await _findings(store, identity)) == 1
+
+        host.source_text = "Release version 3 published."
+        await _pause_resume(store, identity)
+        await claim_and_run(runner, store)
+        changed = await current_thawed(store, identity)
+        assert changed.phase == "waiting", changed.safe_error_code
+        assert host.physical_tools == 3 and host.physical_models == ["plan", "child", "child", "join"]
+        third = changed.checkpoint["observation"]
+        assert third["kind"] == "changed" and third["observation_sequence"] == 2
+        assert third["prior_revision_digest"] == observation["revision_digest"]
+        assert third["prior_result_digest"] == observation["context_digest"]
+        assert third["revision_digest"] == changed.checkpoint["last_observation"]["revision_digest"]
+        assert third["revision_digest"] != observation["revision_digest"]
+        [plan] = [context for label, context in host.model_contexts if label == "plan"]
+        assert plan["prior_result_digest"] == observation["context_digest"]
+        assert plan["prior_finding"] == "Release version 2 published."
+        assert plan["prior_observation"] == {key: value for key, value in retained.items() if key != "revision_digest"}
+        assert changed.checkpoint["last_finding"] == "Version 2 was released."
+        assert len(await _findings(store, identity)) == 2
+    asyncio.run(scenario())
+
+
+def test_unchanged_observation_spends_no_model_allowance(engine):
+    host, runner, store, identity = engine
+    async def scenario():
+        await claim_and_run(runner, store)
+        first = await current_thawed(store, identity)
+        assert first.phase == "waiting", first.safe_error_code
+        assessed = first.checkpoint["observation"]
+        assert assessed["kind"] == "changed" and assessed["observation_sequence"] == 2
+        assert assessed["prior_revision_digest"] == PRIOR_REVISION
+        assert assessed["prior_result_digest"] == PRIOR_RESULT
+        [plan] = [context for label, context in host.model_contexts if label == "plan"]
+        assert plan["prior_result_digest"] == PRIOR_RESULT
+        assert first.usage["spent"]["model_calls"] == 4 and first.usage["spent"]["tool_calls"] == 1
+        findings = len(await _findings(store, identity))
+        await _pause_resume(store, identity)
+        await claim_and_run(runner, store)
+        second = await current_thawed(store, identity)
+        assert second.phase == "waiting", second.safe_error_code
+        assert host.physical_tools == 2 and host.physical_models == ["plan", "child", "child", "join"]
+        assert second.usage["spent"]["model_calls"] == 4 and second.usage["spent"]["tool_calls"] == 2
+        assert all(amount == 0 for amount in second.usage["outstanding"].values())
+        unchanged = second.checkpoint["observation"]
+        assert unchanged["kind"] == "unchanged" and unchanged["observation_sequence"] == 2
+        assert unchanged["revision_digest"] == assessed["revision_digest"]
+        assert unchanged["prior_result_digest"] == assessed["context_digest"]
+        assert unchanged["prior_revision_digest"] == assessed["revision_digest"]
+        assert second.checkpoint["last_observation"] == first.checkpoint["last_observation"]
+        assert second.checkpoint["last_finding"] == first.checkpoint["last_finding"]
+        assert len(await _findings(store, identity)) == findings
+        assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
+        actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        assert sum(action.intent.request["kind"] == "model" for action in actions) == 4
+    asyncio.run(scenario())
+
+
+def test_missing_prior_result_binding_is_insufficient_evidence_without_plan(fresh_engine):
+    host, runner, store, identity = fresh_engine
+    async def scenario():
+        await claim_and_run(runner, store)
+        initial = await current_thawed(store, identity)
+        assert initial.checkpoint["observation"]["kind"] == "initial"
+        # A legacy checkpoint whose cursor survived but whose retained bytes did not.
+        legacy = {"schema_version": 1, "cursor": initial.checkpoint["cursor"],
+                  "last_batch_key": initial.checkpoint["last_batch_key"],
+                  "source_configuration_digest": initial.checkpoint["source_configuration_digest"],
+                  "last_finding": initial.checkpoint["last_finding"]}
+        await _rewrite_checkpoint(store, identity, legacy)
+        await claim_and_run(runner, store)
+        record = await current_thawed(store, identity)
+        assert record.phase == "waiting", record.safe_error_code
+        assert host.physical_tools == 2 and host.physical_models == []
+        assert record.usage["spent"].get("model_calls", 0) == 0
+        observation = record.checkpoint["observation"]
+        assert observation["kind"] == "insufficient_evidence"
+        assert observation["reason"] == "prior_result_missing"
+        assert observation["prior_revision_digest"] == initial.checkpoint["cursor"]["revision"]
+        assert observation["prior_result_digest"] is None
+        assert observation["observation_sequence"] == 1
+        assert "last_observation" not in record.checkpoint
+        assert record.checkpoint["last_finding"] == initial.checkpoint["last_finding"]
+        assert record.checkpoint["cursor"] == initial.checkpoint["cursor"]
+        assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
+        assert len(await _findings(store, identity)) == 1
+        # Honest recovery: with no comparable prior the next read starts over
+        # as an initial extractive observation, never an invented comparison.
+        host.source_text = "Release version 4 published."
+        await _pause_resume(store, identity)
+        await claim_and_run(runner, store)
+        restarted = await current_thawed(store, identity)
+        assert restarted.phase == "waiting", restarted.safe_error_code
+        assert host.physical_models == []
+        assert restarted.checkpoint["observation"]["kind"] == "initial"
+        assert restarted.checkpoint["last_finding"] == "Release version 4 published."
+    asyncio.run(scenario())
+
+
+def test_legacy_checkpoint_upgrade_keeps_unchanged_and_changed_detection(fresh_engine):
+    host, runner, store, identity = fresh_engine
+    async def scenario():
+        await claim_and_run(runner, store)
+        initial = await current_thawed(store, identity)
+        retained = initial.checkpoint["last_observation"]
+        legacy = {key: value for key, value in thaw(initial.checkpoint).items()
+                  if key not in {"observation", "extractive_result"}}
+        await _rewrite_checkpoint(store, identity, legacy)
+        assert "observation" not in (await current_thawed(store, identity)).checkpoint
+        await claim_and_run(runner, store)
+        unchanged = await current_thawed(store, identity)
+        assert unchanged.phase == "waiting", unchanged.safe_error_code
+        assert host.physical_tools == 2 and host.physical_models == []
+        observation = unchanged.checkpoint["observation"]
+        assert observation["kind"] == "unchanged" and observation["observation_sequence"] == 1
+        assert observation["prior_revision_digest"] == retained["revision_digest"]
+        assert observation["prior_result_digest"] == digest(retained)
+        host.source_text = "Release version 3 published."
+        await _pause_resume(store, identity)
+        await claim_and_run(runner, store)
+        changed = await current_thawed(store, identity)
+        assert changed.phase == "waiting", changed.safe_error_code
+        assert host.physical_models == ["plan", "child", "child", "join"]
+        assert changed.checkpoint["observation"]["kind"] == "changed"
+        assert changed.checkpoint["observation"]["observation_sequence"] == 2
+        assert changed.checkpoint["observation"]["prior_result_digest"] == digest(retained)
+        [plan] = [context for label, context in host.model_contexts if label == "plan"]
+        assert plan["prior_result_digest"] == digest(retained)
+        assert plan["prior_observation"] == {key: value for key, value in retained.items() if key != "revision_digest"}
+    asyncio.run(scenario())
+
+
+def test_checkpoint_never_retains_discarded_source_text(engine):
+    host, runner, store, identity = engine
+    async def scenario():
+        marker = "DISCARDED-TAIL-MARKER-" + uuid4().hex
+        host.source_text = "Release notes line. " * 300 + marker
+        await claim_and_run(runner, store)
+        record = await current_thawed(store, identity)
+        assert record.phase == "waiting", record.safe_error_code
+        assert host.physical_models == ["plan", "child", "child", "join"]
+        assert marker not in json.dumps(thaw(record.checkpoint))
+        retained = record.checkpoint["last_observation"]
+        assert retained["truncated"] is True and len(retained["text"]) == 4096
+        observation = record.checkpoint["observation"]
+        assert observation["kind"] == "changed"
+        assert observation["completeness"]["excerpt_complete"] is False
+        assert observation["complete_source_set"] == [SOURCE_URL]
+        assert set(observation) == {"version", "kind", "reason", "observation_sequence", "revision_digest",
+                                    "context_digest", "prior_revision_digest", "prior_result_digest",
+                                    "complete_source_set", "normalized_final_urls", "completeness",
+                                    "source_configuration_digest"}
+        activity = await store.call("list_activity", owner_id="owner", assignment_id=identity)
+        assert all(marker not in item.summary for item in activity)
+        actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        assert all(marker not in json.dumps(thaw(action.intent.request)) for action in actions)
+    asyncio.run(scenario())
+
+
+def test_pre_upgrade_planner_intent_keeps_its_receipt(engine):
+    """A planner intent reserved without the prior-result binding still matches."""
+    host, runner, store, identity = engine
+    from persistent_agents import runner as runner_module
+    original_model = runner_module.AssignmentRunner._model
+    async def legacy_model(self, executor, key, system, context, **kwargs):
+        if key.endswith(":plan"):
+            context = {name: value for name, value in context.items() if name != "prior_result_digest"}
+            kwargs["previous_contexts"] = ()
+        return await original_model(self, executor, key, system, context, **kwargs)
+    async def scenario():
+        configured = host._call_llm
+        host._call_llm = AsyncMock(return_value=(None, None))
+        runner._model = legacy_model.__get__(runner)
+        await claim_and_run(runner, store)
+        failed = await current_thawed(store, identity)
+        assert failed.safe_error_code == "assignment_model_unconfigured"
+        actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        planner = next(action for action in actions if action.intent.request["kind"] == "model")
+        assert "prior_result_digest" not in planner.intent.request["messages"][1]["content"]
+        host._call_llm = configured
+        await _pause_resume(store, identity)
+        upgraded = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
+        await claim_and_run(upgraded, store)
+        resumed = await current_thawed(store, identity)
+        assert resumed.phase == "waiting", resumed.safe_error_code
+        assert host.physical_models == ["plan", "child", "child", "join"]
+        after = await store.call("list_actions", owner_id="owner", assignment_id=identity)
+        successor = next(action for action in after if action.intent.action_key ==
+            digest([planner.intent.action_key, "successor", planner.control_epoch]))
+        assert successor.state == "succeeded"
+        assert successor.intent.request_digest == planner.intent.request_digest
+        assert resumed.checkpoint["observation"]["kind"] == "changed"
     asyncio.run(scenario())

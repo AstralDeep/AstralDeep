@@ -37,6 +37,7 @@ import logging
 import re
 import uuid
 from datetime import UTC, datetime
+from typing import Optional
 
 from audit.hooks import record_generic
 from dreaming.consolidation import run_sweep
@@ -441,6 +442,83 @@ def _render_skills(orch, user_id: str) -> str:
     return f'<div class="space-y-2">{"".join(rows)}</div>'
 
 
+def _get_job_policy(store, user_id: str, job_id: str) -> Optional[dict]:
+    """Read one job's 088.007 policy row; ``None`` for a store/job without one.
+
+    A store double that predates the policy contract (or one that raises for
+    an unrecognized job id) is treated exactly like a legacy job — the run
+    policy form and Stop control simply do not appear for it.
+    """
+    get_job_policy = getattr(store, "get_job_policy", None)
+    if get_job_policy is None:
+        return None
+    try:
+        return get_job_policy(user_id, job_id)
+    except Exception:  # noqa: BLE001 - render never fails a tab over policy lookup
+        logger.debug("schedule_policy_lookup_failed", exc_info=True)
+        return None
+
+
+def _job_policy_html(job_id: str, policy: Optional[dict]) -> str:
+    """088 T040: edit an EXISTING run policy (run limit, monitor-changes) + Stop.
+
+    Never offers to CREATE a fresh policy row from this control: minting the
+    first monitoring episode for a policy job needs real owner authority the
+    unattended scheduler does not hold (``default_monitoring_dispatcher`` in
+    scheduler/runner.py continues an already-bound episode only), so a job
+    with no policy row (every job today) renders nothing here — offering
+    "Save" would let an owner create a policy admission can never satisfy,
+    permanently pausing an otherwise-healthy job on its first occurrence with
+    no UI path to unbrick it. Once a policy row exists, Save only updates the
+    owner-editable fields on it (never rebinds the assignment), and Stop is
+    offered until the job is already stopped.
+    """
+    if policy is None:
+        return ""
+    version = policy["version"]
+    max_runs = policy.get("max_runs")
+    monitor_changes = bool(policy.get("monitor_changes"))
+    terminal_stop = bool(policy.get("terminal_stop"))
+    allowance = (
+        f'{policy.get("admitted_runs", 0)} of {max_runs} runs admitted'
+        if max_runs is not None else "No run limit"
+    )
+    save_payload = {"job_id": job_id, "expected_policy_version": version}
+    save_btn = _btn("Save run policy", "chrome_job_policy_save", save_payload,
+                    cls=_BTN_GHOST, collect=True)
+    parts = [
+        '<div data-ui-form class="space-y-2 pt-2 border-t border-white/5">',
+        '<div class="text-[10px] uppercase tracking-wider text-astral-muted">Run policy</div>',
+    ]
+    if allowance:
+        parts.append(f'<div class="text-xs text-astral-muted">{esc(allowance)}</div>')
+    parts.append(
+        f'<div><label class="{_LABEL_CLS}" for="chrome-max-runs-{esc(job_id)}">'
+        f"Run limit (blank for none)</label>"
+        f'<input id="chrome-max-runs-{esc(job_id)}" name="max_runs" type="number" min="1" '
+        f'class="{_INPUT_CLS}" value="{esc("" if max_runs is None else str(max_runs))}"></div>'
+    )
+    parts.append(
+        f'<label class="flex items-center gap-2 text-xs text-astral-text">'
+        f'<input type="checkbox" name="monitor_changes"'
+        f'{" checked" if monitor_changes else ""}> Notify only when the source changes</label>'
+    )
+    parts.append(f'<div class="flex justify-end">{save_btn}</div>')
+    if terminal_stop:
+        parts.append(
+            '<p class="text-xs text-astral-muted">This job was stopped permanently.</p>'
+        )
+    else:
+        stop_payload = {"job_id": job_id, "submission_id": str(uuid.uuid4()),
+                        "expected_policy_version": version}
+        parts.append(
+            f'<div class="flex justify-end pt-1">'
+            f'{_btn("Stop permanently", "chrome_job_stop", stop_payload, cls=_BTN_DANGER)}</div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _render_schedule(orch, user_id: str) -> str:
     """Schedule tab: job list + inline run history; creation happens in chat."""
     store = _job_store(orch)
@@ -728,6 +806,46 @@ def _components_skills(orch, user_id):
             children.append(_sdui.text(
                 f"Enable '{e['scope']}' for this agent in Settings → Agents & permissions.", "caption"))
         out.append(_sdui.card(f"{e['tool_name']} · {e['agent_id']}", children))
+    return out
+
+
+def _job_policy_components(job_id: str, policy: Optional[dict]):
+    """Native counterpart of :func:`_job_policy_html` (088 T040).
+
+    Same "no create" rule: nothing renders for a job with no existing policy
+    row (see :func:`_job_policy_html` for why).
+    """
+
+    if policy is None:
+        return []
+    version = policy["version"]
+    max_runs = policy.get("max_runs")
+    monitor_changes = bool(policy.get("monitor_changes"))
+    terminal_stop = bool(policy.get("terminal_stop"))
+    fields = [
+        _sdui.field("max_runs", "Run limit (blank for none)", "number",
+                    default=max_runs, help="Leave blank for no run limit."),
+        _sdui.field("monitor_changes", "Notify only when the source changes", "boolean",
+                    default=monitor_changes),
+    ]
+    save_action = {"label": "Save run policy", "action": "chrome_job_policy_save",
+                  "variant": "secondary",
+                  "payload": {"job_id": job_id, "expected_policy_version": version}}
+    actions = [save_action]
+    if not terminal_stop:
+        actions.append({"label": "Stop permanently", "action": "chrome_job_stop",
+                        "variant": "danger",
+                        "payload": {"job_id": job_id, "submission_id": str(uuid.uuid4()),
+                                   "expected_policy_version": version}})
+    out = []
+    allowance = (
+        f'{policy.get("admitted_runs", 0)} of {max_runs} runs admitted'
+        if max_runs is not None else "No run limit"
+    )
+    out.append(_sdui.text(allowance, "caption"))
+    if terminal_stop:
+        out.append(_sdui.text("This job was stopped permanently.", "caption"))
+    out.append(_sdui.form(fields, actions=actions, title="Run policy"))
     return out
 
 
@@ -1138,6 +1256,145 @@ async def _handle_job_run_now(orch, websocket, user_id, roles, payload):
     )
     return (SURFACE_KEY, _params("schedule"), notice_block(
         "success", message))
+
+
+async def _handle_job_policy_save(orch, websocket, user_id, roles, payload):
+    """088 T040: save the bounded owner-editable run policy (run limit, monitor changes)."""
+    store = _job_store(orch)
+    if store is None:
+        return (SURFACE_KEY, _params("schedule"),
+                _unavailable("The scheduler is not available."))
+    job_id = str(payload.get("job_id") or "")
+    if not job_id:
+        return (SURFACE_KEY, _params("schedule"), notice_block("error", "Missing job id."))
+    raw_version = payload.get("expected_policy_version")
+    try:
+        expected_version = 0 if raw_version in (None, "") else int(raw_version)
+    except (TypeError, ValueError):
+        return (SURFACE_KEY, _params("schedule"),
+                notice_block("error", "Invalid run policy version."))
+    raw_max_runs = payload.get("max_runs")
+    try:
+        max_runs = None if raw_max_runs in (None, "") else int(raw_max_runs)
+    except (TypeError, ValueError):
+        return (SURFACE_KEY, _params("schedule"), notice_block(
+            "error", "The run limit must be a whole number, or blank for no limit."))
+    monitor_changes = bool(payload.get("monitor_changes"))
+    try:
+        await asyncio.to_thread(
+            store.set_job_policy, user_id, job_id,
+            max_runs=max_runs, monitor_changes=monitor_changes,
+            expected_version=expected_version,
+        )
+    except ScheduleActionError as exc:
+        messages = {
+            "schedule_policy_version_conflict": (
+                "This job's run policy changed elsewhere. Reload Schedule and try again."
+            ),
+            "schedule_policy_missing": "This job has no run policy to update. Reload Schedule.",
+        }
+        return (SURFACE_KEY, _params("schedule"), notice_block(
+            "error", messages.get(exc.code, "The run policy could not be saved.")))
+    except ValueError:
+        return (SURFACE_KEY, _params("schedule"), notice_block(
+            "error", "Invalid run policy. Check the run limit and try again."))
+    await record_generic(
+        claims=_claims(orch, websocket, user_id), event_class="schedule",
+        action_type="schedule.policy_save", description="Saved scheduled job run policy",
+        outputs_meta={"job_id": job_id},
+    )
+    return (SURFACE_KEY, _params("schedule"), notice_block("success", "Run policy saved."))
+
+
+async def _stop_bound_assignment(orch, websocket, user_id, assignment_id: str) -> bool:
+    """Best-effort ``AssignmentControl.STOP`` for one bound monitoring episode.
+
+    Never raises: a bound agent that cannot be stopped this way is reported to
+    the owner as still needing a manual Stop from Ongoing agents — the job
+    policy Stop itself (the caller) has already committed regardless.
+    """
+    from persistent_agents.models import AssignmentError, ControlRequest
+
+    service = getattr(orch, "persistent_assignments", None)
+    if service is None:
+        return False
+    claims = _claims(orch, websocket, user_id)
+    try:
+        record = await service.get(user_id, claims, assignment_id)
+        request = ControlRequest(
+            submission_id=str(uuid.uuid4()),
+            expected_instruction_revision=record.instruction_revision,
+            expected_control_epoch=record.control_epoch,
+        )
+        await service.control(user_id, claims, assignment_id, "stop", request)
+    except (AssignmentError, ValidationError, ValueError, TypeError, AttributeError):
+        return False
+    except Exception:  # noqa: BLE001 - the policy Stop already committed; never re-raise
+        logger.error("schedule_stop_bound_assignment_failed")
+        return False
+    runner = getattr(orch, "persistent_assignment_runner", None)
+    if runner is not None:
+        runner.notify(assignment_id)
+    return True
+
+
+async def _handle_job_stop(orch, websocket, user_id, roles, payload):
+    """088 T040: terminally stop a policy job, then Stop each bound ongoing agent.
+
+    Routes ``stop_assignment_job`` (refuses future claims, cancels unstarted
+    occurrences, keeps history/charges) and then ``AssignmentControl.STOP``
+    for every still-outstanding episode family it names — never an action the
+    server cannot dispatch: Stop is only ever offered for a job that already
+    carries a policy row (see :func:`_job_policy_html`/`_job_policy_components`).
+    """
+    store = _job_store(orch)
+    if store is None:
+        return (SURFACE_KEY, _params("schedule"),
+                _unavailable("The scheduler is not available."))
+    job_id = str(payload.get("job_id") or "")
+    if not job_id:
+        return (SURFACE_KEY, _params("schedule"), notice_block("error", "Missing job id."))
+    try:
+        expected_version = int(payload.get("expected_policy_version"))
+    except (TypeError, ValueError):
+        return (SURFACE_KEY, _params("schedule"),
+                notice_block("error", "Missing or invalid run policy version."))
+    try:
+        outcome = await asyncio.to_thread(
+            store.stop_job, user_id, job_id, expected_version=expected_version,
+        )
+    except ScheduleActionError as exc:
+        messages = {
+            "schedule_policy_version_conflict": (
+                "This job's run policy changed elsewhere. Reload Schedule and try again."
+            ),
+            "schedule_policy_missing": "This job has no run policy to stop.",
+        }
+        return (SURFACE_KEY, _params("schedule"), notice_block(
+            "error", messages.get(exc.code, "The job could not be stopped.")))
+    await record_generic(
+        claims=_claims(orch, websocket, user_id), event_class="schedule",
+        action_type="schedule.stop", description="Stopped scheduled job permanently",
+        outputs_meta={"job_id": job_id, "stopped": outcome.stopped},
+    )
+    unstopped = []
+    if flags.is_enabled("persistent_agents"):
+        for assignment_id in outcome.outstanding_assignment_ids:
+            stopped = await _stop_bound_assignment(
+                orch, websocket, user_id, str(assignment_id),
+            )
+            if not stopped:
+                unstopped.append(str(assignment_id))
+    elif outcome.outstanding_assignment_ids:
+        unstopped = [str(value) for value in outcome.outstanding_assignment_ids]
+    message = "Job stopped permanently." if outcome.stopped else "Job was already stopped."
+    if unstopped:
+        message += (
+            " Its ongoing agent could not be stopped automatically; "
+            "stop it from Ongoing agents."
+        )
+    return (SURFACE_KEY, _params("schedule"),
+            notice_block("success" if not unstopped else "info", message))
 
 
 async def _handle_dreaming_toggle(orch, websocket, user_id, roles, payload):
@@ -1561,6 +1818,27 @@ HANDLERS = {
     "chrome_job_resume": _handle_job_resume,
     "chrome_job_delete": _handle_job_delete,
     "chrome_job_run_now": _handle_job_run_now,
+    # 088 T040: ``_handle_job_policy_save``/``_handle_job_stop`` (below) are the
+    # host implementation for the run-policy form and its Stop control, fully
+    # unit-tested directly (backend/tests/chrome/test_surface_assignments.py).
+    # They are deliberately NOT registered here yet and NOT wired into
+    # ``_render_schedule``/``_components_schedule`` (see ``_job_policy_html``/
+    # ``_job_policy_components``): production constructs ``JobRunner`` with no
+    # ``monitoring_dispatcher`` (orchestrator.py), so ``default_monitoring_
+    # dispatcher`` (scheduler/runner.py) can only CONTINUE an already-bound
+    # policy episode, never mint a first one — and nothing today creates a
+    # policy row for a job to be already bound. Exposing "Save run policy" as
+    # a live control before a real dispatcher is wired would let an owner
+    # create a policy that can never be admitted, permanently pausing an
+    # otherwise-healthy job on its very first occurrence
+    # (``monitoring_assignment_unbound``) with no UI path to unbrick it —
+    # exactly the "unimplemented action in the UI" this surface must never
+    # ship. Wiring these two lines back in is a coordinated follow-up once (1)
+    # a real ``monitoring_dispatcher`` is wired at JobRunner construction and
+    # (2) this module's HANDLERS-set contract test
+    # (backend/tests/chrome/test_surface_personalization.py::
+    # test_module_contract_title_and_handlers) is extended to include them —
+    # both outside this workstream's assigned files.
     "chrome_assignment_create": _assignment_handler("create"),
     "chrome_assignment_revise": _assignment_handler("revise"),
     "chrome_assignment_pause": _assignment_handler("pause"),

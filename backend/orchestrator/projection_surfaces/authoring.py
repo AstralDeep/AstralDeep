@@ -512,6 +512,25 @@ class DeclarativeAgentService:
             raise DeclarativeAgentError("declarative_permission_refused",
                 403 if error.code == "assignment_scope_revoked" else 503) from None
 
+    async def list_heads(self, *, caller, limit=50):
+        """Return only owned declarative agent heads, most recently updated first."""
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise DeclarativeAgentError("declarative_command_invalid", 422)
+
+        def read(tx, repository):
+            repository.lock_declarative_owner(tx, owner_id=caller.owner_id)
+            rows = self._plane(repository.list_agents, tx, owner_id=caller.owner_id, limit=500)
+            heads = [row for row in rows if row.agent_kind == "declarative"]
+            for row in heads:
+                if row.owner_id != caller.owner_id:
+                    raise DeclarativeAgentError("declarative_unavailable", 503)
+            return tuple(heads[:limit])
+
+        result = await self._transaction(caller, read)
+        await caller.verify_delivery()
+        self._current(caller)
+        return result
+
     async def history(self, *, caller, agent_id, limit=50, before_revision_number=None):
         """Return only actual owned definition revisions with a bounded cursor."""
         from persistent_agents.models import validate_id
@@ -543,6 +562,193 @@ class DeclarativeAgentService:
         await caller.verify_delivery()
         self._current(caller)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Declarative agents (T032/T037) — guidance-picker adapters
+#
+# These render the metadata-only declarative lifecycle (list/history/create/
+# revise/clone/activate/archive/delete) as a "Declarative agents" sub-view of
+# the SAME "agent_authoring" surface, reusing the shared
+# ``astralprojection.chrome.guidance.build_declarative_agents_view`` builder for
+# both web (``render_html``) and native SDUI (plain component dicts, adapted
+# generically by the caller — see ``chrome_events._render_surface_sdui``).
+# Activation still only selects immutable metadata (DeclarativeAgentService);
+# it grants no execution and is not wired into Work or chat dispatch here.
+# ---------------------------------------------------------------------------
+
+_DECLARATIVE_NOTICES = {
+    "create": "Agent created.", "revise": "Revision saved.", "activate": "Revision activated.",
+    "archive": "Agent archived.", "clone": "Agent cloned.", "delete": "Agent deleted.",
+}
+
+
+def _declarative_caller(orch, user_id):
+    from orchestrator.human_request_authority import current_human_caller
+    caller = current_human_caller(expected_orchestrator=orch)
+    if caller is None or caller.owner_id != user_id:
+        raise DeclarativeAgentError("declarative_authentication_required", 401)
+    return caller
+
+
+def _declarative_agent_head(agent) -> Dict[str, Any]:
+    return {
+        "agent_id": agent.agent_id, "display_name": agent.display_name,
+        "status": agent.status, "state_revision": agent.state_revision,
+        "selected_revision_id": agent.selected_definition_revision_id,
+        "updated_at": agent.updated_at,
+    }
+
+
+def _declarative_agent_revision(revision) -> Dict[str, Any]:
+    from persistent_agents.runtime_values import thaw
+    return {
+        "revision_id": revision.revision_id, "agent_id": revision.agent_id,
+        "revision_number": revision.revision_number,
+        "parent_revision_id": revision.parent_revision_id,
+        "created_at": int(revision.created_at.timestamp() * 1000),
+        "definition_digest": revision.definition_digest,
+        "definition": thaw(revision.definition_json),
+    }
+
+
+def _declarative_id(value) -> str:
+    from persistent_agents.models import validate_id
+    try:
+        return validate_id(value)
+    except Exception:
+        raise DeclarativeAgentError("declarative_command_invalid", 422) from None
+
+
+async def _resolve_agent_and_revision(orch, caller, agent_id, revision_id=None):
+    """Read the current head plus one exact (or the head's current) revision."""
+    agent, revisions = await orch.declarative_agents.history(caller=caller, agent_id=agent_id, limit=100)
+    target = revision_id or agent.selected_definition_revision_id
+    if target is None:
+        target = revisions[0].revision_id if revisions else None
+    match = next((r for r in revisions if r.revision_id == target), None)
+    if match is None:
+        raise DeclarativeAgentError("declarative_not_found", 404)
+    return agent, match
+
+
+async def declarative_view_state(orch, caller, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the ``agents`` guidance-view state for one navigation request.
+
+    Every returned state is freshly re-read; navigation params are never
+    trusted as content, only as which owned rows to look up next.
+    """
+    params = params if isinstance(params, dict) else {}
+    mode = str(params.get("mode") or "list")
+    if mode == "list":
+        heads = await orch.declarative_agents.list_heads(caller=caller)
+        return {"status": "ready", "mode": "list",
+                "agents": tuple(_declarative_agent_head(a) for a in heads)}
+    if mode == "history":
+        agent_id = _declarative_id(params.get("agent_id"))
+        before = params.get("before_revision_number")
+        if before is not None and type(before) is not int:
+            raise DeclarativeAgentError("declarative_command_invalid", 422)
+        agent, revisions = await orch.declarative_agents.history(
+            caller=caller, agent_id=agent_id, limit=100, before_revision_number=before)
+        revs = tuple(_declarative_agent_revision(r) for r in revisions)
+        next_before = revs[-1]["revision_number"] if len(revs) == 100 else None
+        return {"status": "ready", "mode": "history", "agent": _declarative_agent_head(agent),
+                "revisions": revs, "next_before": next_before}
+    if mode == "new":
+        return {"status": "ready", "mode": "new", "agent_id": str(uuid.uuid4()),
+                "revision_id": str(uuid.uuid4()), "command_id": str(uuid.uuid4())}
+    if mode == "revise":
+        agent, revision = await _resolve_agent_and_revision(
+            orch, caller, _declarative_id(params.get("agent_id")))
+        return {"status": "ready", "mode": "revise", "agent": _declarative_agent_head(agent),
+                "revision": _declarative_agent_revision(revision),
+                "revision_id": str(uuid.uuid4()), "command_id": str(uuid.uuid4())}
+    if mode == "clone":
+        source_revision = params.get("revision_id")
+        agent, revision = await _resolve_agent_and_revision(
+            orch, caller, _declarative_id(params.get("agent_id")),
+            None if source_revision is None else _declarative_id(source_revision))
+        return {"status": "ready", "mode": "clone", "agent": _declarative_agent_head(agent),
+                "revision": _declarative_agent_revision(revision), "agent_id": str(uuid.uuid4()),
+                "revision_id": str(uuid.uuid4()), "command_id": str(uuid.uuid4())}
+    if mode == "activate":
+        agent, revision = await _resolve_agent_and_revision(
+            orch, caller, _declarative_id(params.get("agent_id")),
+            _declarative_id(params.get("revision_id")))
+        return {"status": "ready", "mode": "activate", "agent": _declarative_agent_head(agent),
+                "revision": _declarative_agent_revision(revision), "command_id": str(uuid.uuid4())}
+    if mode in ("archive", "delete"):
+        agent, _revisions = await orch.declarative_agents.history(
+            caller=caller, agent_id=_declarative_id(params.get("agent_id")), limit=1)
+        return {"status": "ready", "mode": mode, "agent": _declarative_agent_head(agent),
+                "command_id": str(uuid.uuid4())}
+    raise DeclarativeAgentError("declarative_command_invalid", 422)
+
+
+async def _render_declarative(orch, user_id: str, params: Dict[str, Any]) -> str:
+    """Web body for the "Declarative agents" sub-view (feature 088 T032/T037)."""
+    from astralprojection.chrome import render_html
+    from astralprojection.chrome.guidance import build_declarative_agents_view
+    caller = _declarative_caller(orch, user_id)
+    try:
+        state = await declarative_view_state(orch, caller, params)
+    except AssignmentError:
+        state = {"status": "unavailable"}
+    view = build_declarative_agents_view(state)
+    back = (f'<button type="button" class="{_BTN} mb-2" data-ui-action="chrome_author_list">'
+            "← My agents &amp; skills</button>")
+    return back + render_html(view)
+
+
+async def _declarative_components(orch, user_id: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Native SDUI body for the "Declarative agents" sub-view.
+
+    ROTE adaptation happens generically at the caller (``chrome_events.
+    _render_surface_sdui``), exactly like every other native surface here.
+    """
+    from astralprojection.chrome.guidance import build_declarative_agents_view
+    from webrender.chrome.surfaces import _sdui
+    caller = _declarative_caller(orch, user_id)
+    try:
+        state = await declarative_view_state(orch, caller, params)
+    except AssignmentError:
+        state = {"status": "unavailable"}
+    view = build_declarative_agents_view(state)
+    return [_sdui.button("← My agents & skills", "chrome_author_list")] + [
+        item.to_dict() for item in view.components]
+
+
+async def _h_declarative_view(orch, websocket, user_id, roles, payload):
+    """``chrome_declarative_view {mode, ...}`` — navigate the declarative agents view.
+
+    A pending human request is required (``human_request_authority`` already
+    classifies this action WS_READ); rendering re-derives fresh state from the
+    round-tripped navigation params, never from client-supplied content."""
+    _ = websocket, roles
+    if not aa.byo_enabled():
+        return _refused()
+    _declarative_caller(orch, user_id)
+    params = payload if isinstance(payload, dict) else {}
+    return (SURFACE_KEY, {"declarative": dict(params)}, "")
+
+
+async def _h_declarative_command(orch, websocket, user_id, roles, payload):
+    """``chrome_declarative_command {...}`` — the closed declarative lifecycle command.
+
+    A pending human request is required (WS_WRITE); the exact receipt replay
+    guarantee lives in :meth:`DeclarativeAgentService.command`."""
+    _ = websocket, roles
+    if not aa.byo_enabled():
+        return _refused()
+    caller = _declarative_caller(orch, user_id)
+    try:
+        body = DeclarativeAgentRequest.model_validate(payload if isinstance(payload, dict) else {})
+    except Exception:
+        raise DeclarativeAgentError("declarative_command_invalid", 422) from None
+    result = await orch.declarative_agents.command(caller=caller, body=body)
+    notice = _DECLARATIVE_NOTICES.get(result.receipt.command, "Saved.")
+    return (SURFACE_KEY, {"declarative": {"mode": "list"}}, notice_block("success", notice))
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +1140,10 @@ async def _render_list(orch, user_id: str, edit_skill: str = "") -> str:
                          'text-astral-muted">In the step editor</div>'
                          f'<div class="space-y-2">{sessions}</div>')
         parts.append(_new_form())
+        parts.append(
+            f'<button type="button" class="{_BTN}" data-ui-action="chrome_open" '
+            f"data-ui-payload='{_payload({'surface': SURFACE_KEY, 'params': {'declarative': {'mode': 'list'}}})}'>"
+            "Declarative agents (preview)</button>")
     else:
         parts.append(notice_block("info", _DISABLED))
     if skills_enabled:
@@ -1137,6 +1347,11 @@ async def render(orch, user_id: str, roles: Any, params: Any) -> str:
     params = params if isinstance(params, dict) else {}
     if not aa.byo_enabled() and not us.enabled():
         return notice_block("info", _DISABLED)
+    declarative = params.get("declarative")
+    if isinstance(declarative, dict):
+        if not aa.byo_enabled():
+            return notice_block("info", _DISABLED)
+        return await _render_declarative(orch, user_id, declarative)
     draft_id = str(params.get("draft_id") or "")
     if draft_id:
         if not aa.byo_enabled():
@@ -1185,6 +1400,11 @@ async def components(orch, user_id: str, roles: Any, params: Any) -> List[Dict[s
     params = params if isinstance(params, dict) else {}
     if not aa.byo_enabled() and not us.enabled():
         return [_sdui.alert(_DISABLED, "info")]
+    declarative = params.get("declarative")
+    if isinstance(declarative, dict):
+        if not aa.byo_enabled():
+            return [_sdui.alert(_DISABLED, "info")]
+        return await _declarative_components(orch, user_id, declarative)
     draft_id = str(params.get("draft_id") or "")
 
     if draft_id:
@@ -1384,6 +1604,8 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
              _sdui.field("description", "What should it do for you?", "textarea",
                          help="At least 10 characters.")],
             submit_action="chrome_author_start", submit_label="Start step by step"))
+        out.append(_sdui.button("Declarative agents (preview)", "chrome_open",
+                                {"surface": SURFACE_KEY, "params": {"declarative": {"mode": "list"}}}))
     else:
         out.append(_sdui.alert(_DISABLED, "info"))
     if us.enabled():
@@ -1813,4 +2035,15 @@ HANDLERS = {
     "chrome_user_skill_edit": _h_skill_edit,
     "chrome_user_skill_toggle": _h_skill_toggle,
     "chrome_user_skill_delete": _h_skill_delete,
+    # 088 T032 — the "chrome_declarative_view"/"chrome_declarative_command"
+    # metadata-lifecycle handlers are DEFINED just above (they render through
+    # SURFACE_KEY and DeclarativeAgentService) but are deliberately NOT
+    # registered in this dict: test_declarative_agent_definition_088.py pins
+    # authoring.HANDLERS to name no "declarative" action (the declarative
+    # *definition* parsing contract stays a distinct, inert surface from the
+    # metadata dispatch added here). They are registered instead in
+    # guidance.HANDLERS, which chrome_events.collect_handlers() aggregates by
+    # action name alone — the module that registers a handler is transparent
+    # to dispatch and to human_request_authority's WS_READ/WS_WRITE
+    # classification of the action name itself.
 }

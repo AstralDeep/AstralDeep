@@ -16,6 +16,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -24,6 +25,7 @@ from astralplane.errors import PlaneError
 from astralplane.repositories.scheduler import (
     OccurrenceState as PlaneOccurrenceState,
     ScheduledJob as PlaneScheduledJob,
+    ScheduledJobPolicy as PlaneScheduledJobPolicy,
     StagedChatLayout as PlaneStagedChatLayout,
     StagedChatMessage as PlaneStagedChatMessage,
     StagedChatPublication as PlaneStagedChatPublication,
@@ -147,6 +149,44 @@ class RunNowMaterialization:
     created: bool
 
 
+@dataclass(frozen=True)
+class EpisodeAdmission:
+    """Safe, owner-scoped outcome of one occurrence-to-assignment admission (088.007).
+
+    ``reason`` is one of ``admitted``/``replayed`` (both ``admitted=True``) or
+    a refusal: ``policy_missing``/``terminal_stop``/``episode_outstanding``/
+    ``allowance_exhausted``. Every refusal writes nothing and charges nothing.
+    """
+
+    job_id: uuid.UUID
+    owner_id: str
+    occurrence_id: uuid.UUID
+    assignment_id: uuid.UUID
+    admitted: bool
+    created: bool
+    reason: str
+    spend: int
+    policy: Optional[Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class JobStopOutcome:
+    """Safe, owner-scoped outcome of a terminal policy-job Stop (088.007).
+
+    History and charges are never erased. ``outstanding_assignment_ids`` are
+    the still-unresolved episode families the caller must stop separately
+    (each through its own assignment control).
+    """
+
+    job_id: uuid.UUID
+    owner_id: str
+    stopped: bool
+    policy: Dict[str, Any]
+    cancelled_occurrence_ids: tuple[uuid.UUID, ...]
+    cancelled_operation_ids: tuple[uuid.UUID, ...]
+    outstanding_assignment_ids: tuple[uuid.UUID, ...]
+
+
 def _as_uuid(value: Any) -> uuid.UUID | None:
     if value is None:
         return None
@@ -168,6 +208,10 @@ def _plane_terminal_code(error: PlaneError) -> str | None:
 
     value = dict(error.metadata).get("terminal_code")
     return None if value in {None, "None"} else value
+
+
+def _policy_version_conflict() -> ScheduleActionError:
+    return ScheduleActionError("schedule_policy_version_conflict")
 
 
 def _stale_plane_error(
@@ -287,6 +331,23 @@ class ScheduledJobStore:
             "operation_id": run.operation_id,
             "operation_execution_generation": run.operation_execution_generation,
             "occurrence_claim_generation": run.occurrence_claim_generation,
+        }
+
+    @staticmethod
+    def _policy_dict(policy: PlaneScheduledJobPolicy) -> Dict[str, Any]:
+        return {
+            "job_id": policy.job_id,
+            "owner_id": policy.owner_id,
+            "version": policy.version,
+            "max_runs": policy.max_runs,
+            "admitted_runs": policy.admitted_runs,
+            "per_episode_limits": dict(policy.per_episode_limits),
+            "max_outstanding_episodes": policy.max_outstanding_episodes,
+            "monitor_changes": policy.monitor_changes,
+            "definition_revision": policy.definition_revision,
+            "terminal_stop": policy.terminal_stop,
+            "last_assignment_id": policy.last_assignment_id,
+            "updated_at": policy.updated_at,
         }
 
     # ── Jobs ─────────────────────────────────────────────────────────────
@@ -589,6 +650,235 @@ class ScheduledJobStore:
             next_run_at=next_run_at,
             completed=completed,
             updated_at=_now_ms(),
+        )
+
+    # ── 088.007 optional job policy, episode admission and terminal Stop ──
+    #
+    # A job without a policy row keeps every pre-088.007 semantic untouched;
+    # nothing here is consulted by the due scan, claims, runs or effects
+    # above. Lock order matches Plane's documented contract: definition ->
+    # policy -> occurrence -> binding, and the caller creates or locks the
+    # episode's persistent assignment BEFORE calling ``admit_episode`` so the
+    # assignment-before-admission order the assignment repository documents
+    # holds across repositories too.
+
+    @contextmanager
+    def transaction(self):
+        """Expose the shared Plane transaction for cross-repository admission.
+
+        A caller that must create or continue a monitoring assignment
+        episode in the SAME transaction as :meth:`admit_episode` opens this
+        once and passes the yielded transaction to both calls; either
+        raising rolls back both, so an episode is never created without its
+        admission or charged without its episode.
+        """
+        with self._plane.transaction() as transaction:
+            yield transaction
+
+    def get_job_policy(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        """One owner-scoped policy row, or ``None`` for legacy job semantics."""
+
+        try:
+            policy = self._plane.call(
+                self._plane.repository.get_job_policy,
+                owner_id=user_id,
+                job_id=job_id,
+            )
+        except ValueError:
+            return None
+        return None if policy is None else self._policy_dict(policy)
+
+    def set_job_policy(
+        self,
+        user_id: str,
+        job_id: str,
+        *,
+        max_runs: Optional[int],
+        monitor_changes: bool,
+        expected_version: int,
+    ) -> Dict[str, Any]:
+        """Create (``expected_version=0``) or update the bounded owner form.
+
+        Only ``max_runs``/``monitor_changes`` are owner-editable through this
+        form. ``admitted_runs``, ``terminal_stop`` and ``last_assignment_id``
+        are scheduler-owned: they are always carried through unchanged from
+        the current row (unset on create), matching Plane's ``put_job_policy``
+        CAS contract exactly — a charge is never lowered and a Stop is never
+        cleared through this method.
+        """
+
+        if max_runs is not None and (
+            isinstance(max_runs, bool)
+            or not isinstance(max_runs, int)
+            or not 1 <= max_runs <= 1_000_000
+        ):
+            raise ValueError("max_runs must be a positive integer at most 1,000,000")
+        if not isinstance(monitor_changes, bool):
+            raise ValueError("monitor_changes must be a boolean")
+        if (
+            not isinstance(expected_version, int)
+            or isinstance(expected_version, bool)
+            or expected_version < 0
+        ):
+            raise ValueError("expected_version must be a non-negative integer")
+        now = _now_ms()
+        try:
+            with self._plane.transaction() as transaction:
+                current = self._plane.repository.get_job_policy(
+                    transaction, owner_id=user_id, job_id=job_id,
+                )
+                if expected_version == 0:
+                    if current is not None:
+                        raise _policy_version_conflict()
+                    candidate = PlaneScheduledJobPolicy(
+                        job_id=job_id,
+                        owner_id=user_id,
+                        version=1,
+                        max_runs=max_runs,
+                        admitted_runs=0,
+                        per_episode_limits=(),
+                        max_outstanding_episodes=1,
+                        monitor_changes=monitor_changes,
+                        definition_revision=1,
+                        terminal_stop=False,
+                        last_assignment_id=None,
+                        updated_at=now,
+                    )
+                else:
+                    if current is None or current.version != expected_version:
+                        raise _policy_version_conflict()
+                    candidate = replace(
+                        current,
+                        version=expected_version + 1,
+                        max_runs=max_runs,
+                        monitor_changes=monitor_changes,
+                        updated_at=now,
+                    )
+                updated = self._plane.repository.put_job_policy(
+                    transaction, policy=candidate, expected_version=expected_version,
+                )
+        except PlaneError as exc:
+            raise ScheduleActionError(
+                {"scheduled_job_policy_version_conflict": "schedule_policy_version_conflict",
+                 "scheduled_job_policy_missing": "schedule_policy_missing"}.get(
+                    exc.code, exc.code)
+            ) from exc
+        return self._policy_dict(updated)
+
+    def admit_episode(
+        self,
+        claim: OccurrenceClaim,
+        *,
+        assignment_id: str,
+        spend: int = 1,
+        transaction: Any = None,
+    ) -> EpisodeAdmission:
+        """Admit one claimed occurrence into ``assignment_id``'s episode allowance.
+
+        Admission, run/grant spend and the occurrence-to-assignment binding
+        commit together. Every refusal writes nothing; an exact replay of an
+        already-committed binding is idempotent (``reason="replayed"``). Pass
+        an externally opened ``transaction`` (see :meth:`transaction`) to
+        commit this admission atomically with the caller's own creation or
+        continuation of that episode's assignment record; omit it to admit
+        standalone against an assignment that already exists.
+        """
+
+        admitted_at = _now_ms()
+
+        def call(cursor: Any) -> Any:
+            return self._plane.repository.admit_assignment_episode(
+                cursor,
+                owner_id=str(claim.job["user_id"]),
+                job_id=str(claim.job["id"]),
+                occurrence_id=str(claim.occurrence_id),
+                claim_generation=claim.claim_generation,
+                lease_token=str(claim.lease_token),
+                lease_owner=claim.lease_owner,
+                assignment_id=str(assignment_id),
+                admitted_at=admitted_at,
+                spend=spend,
+            )
+
+        try:
+            if transaction is not None:
+                result = call(transaction)
+            else:
+                with self._plane.transaction() as cursor:
+                    result = call(cursor)
+        except PlaneError as exc:
+            raise _stale_plane_error(exc) from exc
+        return EpisodeAdmission(
+            job_id=_as_uuid(result.job_id),
+            owner_id=result.owner_id,
+            occurrence_id=_as_uuid(result.occurrence_id),
+            assignment_id=_as_uuid(result.assignment_id),
+            admitted=result.admitted,
+            created=result.created,
+            reason=result.reason,
+            spend=result.spend,
+            policy=None if result.policy is None else self._policy_dict(result.policy),
+        )
+
+    def stop_job(self, user_id: str, job_id: str, *, expected_version: int) -> JobStopOutcome:
+        """Terminally stop a policy job: refuse future claims, keep history/charges.
+
+        Atomically (inside Plane): ``terminal_stop`` is set under version
+        CAS, the definition leaves ``active`` so the due scan never
+        materializes it again, and every unstarted occurrence is cancelled.
+        Any operation those occurrences had already been admitted for is then
+        best-effort settled at the coordinator here, exactly like a claim the
+        scheduler recovers after a restart — a repeat Stop is a no-op that
+        returns the same still-outstanding episode families.
+        """
+
+        stopped_at = _now_ms()
+        try:
+            with self._plane.transaction() as transaction:
+                result = self._plane.repository.stop_assignment_job(
+                    transaction,
+                    owner_id=user_id,
+                    job_id=job_id,
+                    expected_version=expected_version,
+                    stopped_at=stopped_at,
+                )
+        except PlaneError as exc:
+            raise ScheduleActionError(
+                {"scheduled_job_policy_version_conflict": "schedule_policy_version_conflict",
+                 "scheduled_job_policy_missing": "schedule_policy_missing"}.get(
+                    exc.code, exc.code)
+            ) from exc
+        coordinator = self._coordinator
+        if coordinator is not None:
+            owner = OperationOwner(
+                owner_scope=OwnerScope.SCHEDULE,
+                owner_user_id=user_id,
+                connection_scope_id=None,
+            )
+            for operation_id in result.cancelled_operation_ids:
+                try:
+                    coordinator.cancel(
+                        owner=owner,
+                        operation_id=uuid.UUID(str(operation_id)),
+                        terminal_code="cancelled_job_stopped",
+                        request_running=False,
+                    )
+                except OperationNotFoundError:
+                    pass
+        return JobStopOutcome(
+            job_id=_as_uuid(result.job_id),
+            owner_id=result.owner_id,
+            stopped=result.stopped,
+            policy=self._policy_dict(result.policy),
+            cancelled_occurrence_ids=tuple(
+                _as_uuid(value) for value in result.cancelled_occurrence_ids
+            ),
+            cancelled_operation_ids=tuple(
+                _as_uuid(value) for value in result.cancelled_operation_ids
+            ),
+            outstanding_assignment_ids=tuple(
+                _as_uuid(value) for value in result.outstanding_assignment_ids
+            ),
         )
 
     # ── Scheduler-internal (cross-user) ──────────────────────────────────

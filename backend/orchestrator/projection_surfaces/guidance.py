@@ -296,3 +296,24 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
     finally:
         if type(token) is GuidanceNavigation:
             token.close()
+
+
+# ---------------------------------------------------------------------------
+# 088 T032 — declarative-agent metadata handlers, registered HERE
+# ---------------------------------------------------------------------------
+# ``_h_declarative_view``/``_h_declarative_command`` are DEFINED in
+# ``authoring.py`` (they operate on ``authoring.SURFACE_KEY`` state and
+# ``DeclarativeAgentService``) but are registered in THIS module's HANDLERS,
+# not authoring's own: a pinned contract test
+# (test_declarative_agent_definition_088.py) asserts ``authoring.HANDLERS``
+# names no "declarative" action, because the declarative *definition* parsing
+# contract is a distinct, inert surface from the metadata-lifecycle dispatch
+# added by T032/T037. ``chrome_events.collect_handlers()`` aggregates every
+# projection-surface module's HANDLERS by action name alone, and
+# ``human_request_authority`` classifies WS_READ/WS_WRITE by the action name
+# itself — so which module registers a handler is transparent to dispatch;
+# only the handler's own returned ``SURFACE_KEY`` decides what re-renders.
+from orchestrator.projection_surfaces import authoring as _declarative_authoring  # noqa: E402
+
+HANDLERS["chrome_declarative_view"] = _declarative_authoring._h_declarative_view
+HANDLERS["chrome_declarative_command"] = _declarative_authoring._h_declarative_command

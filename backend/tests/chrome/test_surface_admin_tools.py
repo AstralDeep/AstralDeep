@@ -160,10 +160,27 @@ class FakeOnboardingRepo:
         return dto
 
 
+class FakeObservability:
+    """Stands in for ``RuntimeObservability``; ``fail`` raises on snapshot."""
+
+    def __init__(self, samples=(), fail=False):
+        self.samples = tuple(samples)
+        self.fail = fail
+        self.calls = 0
+
+    def snapshot(self):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("collector unavailable")
+        return self.samples
+
+
 class FakeOrch:
-    def __init__(self, feedback_repo=None, onboarding_repo=None):
+    def __init__(self, feedback_repo=None, onboarding_repo=None, runtime_observability=None):
         self.feedback_repo = feedback_repo
         self.onboarding_repo = onboarding_repo
+        if runtime_observability is not None:
+            self.runtime_observability = runtime_observability
 
 
 def admin_orch(**kw):
@@ -197,6 +214,73 @@ def test_registered_in_surface_registry():
 # ---------------------------------------------------------------------------
 # Render — admin gate
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Render — runtime diagnostics tab (T052)
+# ---------------------------------------------------------------------------
+
+def _samples():
+    from orchestrator.runtime_observability import RuntimeMetricSample
+    return (RuntimeMetricSample(name="astral_admission_active", value=3,
+                                labels={"admission_class": "background"}),)
+
+
+def diagnostics_orch(**kw):
+    kw.setdefault("runtime_observability", FakeObservability(_samples()))
+    return admin_orch(**kw)
+
+
+def test_diagnostics_tab_renders_the_runtime_snapshot_read_only():
+    collector = FakeObservability(_samples())
+    orch = diagnostics_orch(runtime_observability=collector)
+    html = run(admin_tools.render(orch, "admin1", ["admin"], {"tab": "diagnostics"}))
+    assert 'data-admin-tab="diagnostics"' in html
+    assert "Runtime diagnostics" in html
+    assert "astral_admission_active" in html and "admission_class=background" in html
+    assert collector.calls == 1
+    # Observation only: the view offers no action of any kind.
+    assert "data-ui-action" not in html.split('data-admin-tab="diagnostics"', 1)[1]
+
+
+def test_diagnostics_tab_is_offered_in_the_tab_bar():
+    html = run(admin_tools.render(diagnostics_orch(), "admin1", ["admin"], {}))
+    assert 'data-admin-tab-btn="diagnostics"' in html
+    assert "&quot;tab&quot;: &quot;diagnostics&quot;" in html
+
+
+def test_diagnostics_tab_denies_non_admin_and_reads_no_sample():
+    collector = FakeObservability(_samples())
+    orch = diagnostics_orch(runtime_observability=collector)
+    html = run(admin_tools.render(orch, "u1", ["user"], {"tab": "diagnostics"}))
+    assert "astral-chrome-error" in html and "Admin role required" in html
+    assert "astral_admission_active" not in html
+    assert collector.calls == 0
+
+
+def test_diagnostics_builder_refuses_a_non_admin_caller_directly():
+    """Defense in depth: the builder is unreachable with an unauthorized snapshot."""
+    collector = FakeObservability(_samples())
+    html = admin_tools._render_diagnostics(diagnostics_orch(
+        runtime_observability=collector), ["user"])
+    assert "Access denied" in html and "astral_admission_active" not in html
+    assert collector.calls == 0
+
+
+def test_diagnostics_tab_reports_an_unwired_or_failing_collector_honestly():
+    absent = run(admin_tools.render(admin_orch(), "admin1", ["admin"], {"tab": "diagnostics"}))
+    assert "Runtime diagnostics are unavailable" in absent
+    failing = diagnostics_orch(runtime_observability=FakeObservability(fail=True))
+    broken = run(admin_tools.render(failing, "admin1", ["admin"], {"tab": "diagnostics"}))
+    assert "Runtime diagnostics are unavailable" in broken
+    # An unavailable collector is never rendered as an idle deployment.
+    assert "No runtime samples" not in absent and "No runtime samples" not in broken
+
+
+def test_diagnostics_empty_snapshot_is_an_explicit_empty_state():
+    orch = diagnostics_orch(runtime_observability=FakeObservability(()))
+    html = run(admin_tools.render(orch, "admin1", ["admin"], {"tab": "diagnostics"}))
+    assert "No runtime samples have been recorded yet" in html
+
 
 def test_render_denies_non_admin():
     html = run(admin_tools.render(admin_orch(), "u1", ["user"], {}))

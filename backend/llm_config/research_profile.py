@@ -5,6 +5,17 @@ usage observation is independent of answer validity and must be settled through
 an authentic permit by a future execution adapter. Provider body limits bound
 local memory; the reservation covers the entire qualified model context rather
 than estimating tokens from characters or subtracting cached/reasoning tokens.
+
+Feature 088 T016 (FR-019) adds ONE additive, opt-in local-inference profile
+(``LOCAL_PROFILE``, ``local-page-selection/v1``). The OpenAI profile stays the
+module default: every module constant, ``select_config``'s default, and the
+keyword defaults of ``build_request``/``parse_response`` are byte-identical to
+the pre-088.T016 behaviour. A caller opts in by passing ``profile=LOCAL_PROFILE``
+explicitly; ``select_config`` qualifies exactly the profile it was given and
+never falls back across profiles, providers or credentials. Both profiles
+expose the same reservation shape (``model_calls``/``tokens``/``elapsed_ms``)
+so the execution adapter charges either identically, and an unknown usage
+observation is always charged at the reserved maximum rather than zero.
 """
 
 from __future__ import annotations
@@ -16,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 
 from audit.pii import PrivateBindingKey
+from llm_config.local_endpoint import classify_endpoint
 from llm_config.user_store import CapturedUserLLMConfig, UserLLMConfigStore
 from persistent_agents.research_result import page_passages
 
@@ -28,6 +40,20 @@ OUTPUT_TOKENS = 1024
 RESERVED_TOKENS = CONTEXT_TOKENS + OUTPUT_TOKENS
 RESERVED_MILLISECONDS = 65000
 MAX_REQUEST_BYTES = 65536
+# Local-inference profile bound (opt-in). A local runtime (Ollama, LM Studio,
+# vLLM/sglang behind ``custom``) advertises no qualified context, so the bound
+# is DECLARED, not derived: the whole 32k context plus the fixed 1024-token
+# answer is reserved for every call, and unknown usage is charged at that
+# maximum. 65 536 request bytes (``MAX_REQUEST_BYTES``) cannot exceed 32 768
+# tokens, so the reservation always covers the entire admitted body. The
+# elapsed bound is the execution adapter's 120 s action ceiling because local
+# hardware is slower than a hosted vendor; it is a charge bound, not a promise.
+LOCAL_PROFILE_NAME = "local-page-selection/v1"
+LOCAL_CONTEXT_TOKENS = 32768
+LOCAL_OUTPUT_TOKENS = 1024
+LOCAL_RESERVED_TOKENS = LOCAL_CONTEXT_TOKENS + LOCAL_OUTPUT_TOKENS
+LOCAL_RESERVED_MILLISECONDS = 120000
+LOCAL_PROVIDERS = ("ollama", "lmstudio", "custom")
 MAX_RESPONSE_BYTES = 1024 * 1024
 # Match Plane's exact JSON integer domain; no float conversion or clamping.
 _MAX_COUNTER = 2**53 - 1
@@ -47,6 +73,106 @@ class ResearchProfileUnavailable(ValueError):
 
 def _refuse():
     raise ResearchProfileUnavailable("research_profile_unavailable")
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchProfile:
+    """One declared accounting bound; ``model``/``base_url`` are exact or bound.
+
+    The OpenAI profile pins both. The local profile leaves them ``None`` until
+    ``select_config`` binds the exact persisted USER row (``bind``); an unbound
+    local profile cannot build a request or parse a response.
+    """
+
+    name: str
+    providers: tuple[str, ...]
+    model: str | None
+    base_url: str | None
+    context_tokens: int
+    output_tokens: int
+    reserved_milliseconds: int
+    local: bool = False
+
+    @property
+    def reserved_tokens(self) -> int:
+        return self.context_tokens + self.output_tokens
+
+    @property
+    def bound(self) -> bool:
+        return type(self.model) is str and type(self.base_url) is str
+
+    @property
+    def endpoint(self) -> str:
+        if not self.bound:
+            _refuse()
+        return self.base_url + "/chat/completions"
+
+    def reservation(self) -> dict:
+        """Return the exact shape the execution adapter reserves and charges."""
+        return {
+            "model_calls": 1,
+            "tokens": self.reserved_tokens,
+            "elapsed_ms": self.reserved_milliseconds,
+        }
+
+    def bind(self, *, model: str, base_url: str) -> "ResearchProfile":
+        """Bind the local profile to one exact row; the OpenAI profile is fixed."""
+        if not self.local or self.bound:
+            _refuse()
+        return ResearchProfile(
+            self.name,
+            self.providers,
+            model,
+            base_url,
+            self.context_tokens,
+            self.output_tokens,
+            self.reserved_milliseconds,
+            True,
+        )
+
+
+OPENAI_PROFILE = ResearchProfile(
+    PROFILE,
+    ("openai",),
+    MODEL,
+    BASE_URL,
+    CONTEXT_TOKENS,
+    OUTPUT_TOKENS,
+    RESERVED_MILLISECONDS,
+    False,
+)
+LOCAL_PROFILE = ResearchProfile(
+    LOCAL_PROFILE_NAME,
+    LOCAL_PROVIDERS,
+    None,
+    None,
+    LOCAL_CONTEXT_TOKENS,
+    LOCAL_OUTPUT_TOKENS,
+    LOCAL_RESERVED_MILLISECONDS,
+    True,
+)
+# Closed, ordered catalog; the default (first) stays the OpenAI profile.
+PROFILES = (OPENAI_PROFILE, LOCAL_PROFILE)
+DEFAULT_PROFILE = OPENAI_PROFILE
+
+
+def _same_profile(candidate, declared) -> bool:
+    """Bound copies of a declared profile keep its identity, never its values."""
+    return type(candidate) is ResearchProfile and (
+        candidate == declared
+        or (
+            declared.local
+            and candidate.bound
+            and candidate == declared.bind(model=candidate.model, base_url=candidate.base_url)
+        )
+    )
+
+
+def _declared_profile(profile):
+    for declared in PROFILES:
+        if _same_profile(profile, declared):
+            return declared
+    _refuse()
 
 
 def _text(value, maximum, *, empty=False):
@@ -78,43 +204,29 @@ class ResearchConfigSelection:
     revision: str
     _capture: CapturedUserLLMConfig = field(repr=False)
     _api_key: str = field(repr=False)
+    profile: ResearchProfile = field(default=OPENAI_PROFILE, repr=False)
 
     @property
     def owner_id(self) -> str:
         """Return the USER owner without exposing credential material."""
         return self._capture.owner_id
 
+    @property
+    def local(self) -> bool:
+        """True only for the opt-in local-inference profile."""
+        return self.profile.local
+
+    @property
+    def reservation(self) -> dict:
+        """Same ``model_calls``/``tokens``/``elapsed_ms`` shape for every profile."""
+        return self.profile.reservation()
+
     def matches(self, record) -> bool:
         """Compare the entire encrypted selection with a current Plane row."""
         return self._capture.matches(record)
 
 
-def select_config(
-    capture: CapturedUserLLMConfig,
-    *,
-    store: UserLLMConfigStore,
-    binding_key: PrivateBindingKey,
-) -> ResearchConfigSelection:
-    """Qualify only one exact persisted USER profile; never resolve aliases.
-
-    Revision includes ciphertext and full timestamp precision. It is a keyed raw
-    row-content revision, not an independently allocated config incarnation.
-    Opening a corrupt row fails without legacy deletion or cache mutation.
-    """
-    if (
-        type(capture) is not CapturedUserLLMConfig
-        or type(binding_key) is not PrivateBindingKey
-    ):
-        _refuse()
-    row = capture._record
-    if (row.scope, row.provider, row.base_url, row.model) != (
-        "user",
-        "openai",
-        BASE_URL,
-        MODEL,
-    ):
-        _refuse()
-    api_key = store.open_captured_user_key(capture)
+def _printable_secret(api_key):
     _text(api_key, 8192)
     if (
         api_key == "not-needed"
@@ -122,8 +234,80 @@ def select_config(
         or any(ord(char) < 33 or ord(char) > 126 for char in api_key)
     ):
         _refuse()
+    return api_key
+
+
+def _bind_local(row, allowlist):
+    """Bind the local profile to one exact literal-local USER row, or refuse."""
+    if row.scope != "user" or row.provider not in LOCAL_PROVIDERS:
+        _refuse()
+    if type(row.base_url) is not str or type(row.model) is not str:
+        _refuse()
+    # The row is used verbatim as the endpoint prefix: no surrounding
+    # whitespace and no trailing slash (the store never persists either).
+    if row.base_url != row.base_url.strip() or row.base_url.endswith("/"):
+        _refuse()
+    _text(row.model, 256)
+    if row.model != row.model.strip() or any(ord(char) < 33 for char in row.model):
+        _refuse()
+    if not classify_endpoint(row.base_url, allowlist=allowlist).local:
+        _refuse()
+    return LOCAL_PROFILE.bind(model=row.model, base_url=row.base_url)
+
+
+def select_config(
+    capture: CapturedUserLLMConfig,
+    *,
+    store: UserLLMConfigStore,
+    binding_key: PrivateBindingKey,
+    profile: ResearchProfile = OPENAI_PROFILE,
+    local_allowlist: tuple[str, ...] = (),
+) -> ResearchConfigSelection:
+    """Qualify only one exact persisted USER profile; never resolve aliases.
+
+    Revision includes ciphertext and full timestamp precision. It is a keyed raw
+    row-content revision, not an independently allocated config incarnation.
+    Opening a corrupt row fails without legacy deletion or cache mutation.
+
+    ``profile`` names the ONE profile to qualify (default: OpenAI). The local
+    profile is admitted only when the USER row's provider is a local runtime
+    (``ollama``/``lmstudio``/``custom``) AND its ``base_url`` is a literal
+    loopback/RFC1918 host or an exactly allowlisted origin (``local_allowlist``
+    plus ``RESEARCH_LOCAL_ENDPOINT_ALLOWLIST``). A remote row never becomes
+    local, an OpenAI row is never re-qualified as local, and no other profile
+    is tried when the named one refuses.
+    """
+    if (
+        type(capture) is not CapturedUserLLMConfig
+        or type(binding_key) is not PrivateBindingKey
+        or type(local_allowlist) is not tuple
+        or any(type(item) is not str for item in local_allowlist)
+    ):
+        _refuse()
+    declared = _declared_profile(profile)
+    row = capture._record
+    if declared is OPENAI_PROFILE:
+        if (row.scope, row.provider, row.base_url, row.model) != (
+            "user",
+            "openai",
+            BASE_URL,
+            MODEL,
+        ):
+            _refuse()
+        bound = OPENAI_PROFILE
+        api_key = _printable_secret(store.open_captured_user_key(capture))
+    else:
+        bound = _bind_local(row, local_allowlist)
+        if profile.bound and profile != bound:
+            # An explicitly pre-bound local profile must name THIS row exactly.
+            _refuse()
+        api_key = store.open_captured_user_key(capture)
+        _text(api_key, 8192, empty=True)
+        # Keyless local runtimes are admitted as an empty secret; a present key
+        # must satisfy the same printable-secret rule as a hosted vendor's.
+        api_key = "" if api_key in ("", "not-needed") else _printable_secret(api_key)
     private_row = {
-        "profile": PROFILE,
+        "profile": bound.name,
         "scope": row.scope,
         "owner_id": row.owner_id,
         "provider": row.provider,
@@ -139,6 +323,7 @@ def select_config(
         binding_key.sign("config", _canonical(private_row)),
         capture,
         api_key,
+        bound,
     )
 
 
@@ -150,14 +335,22 @@ class ResearchRequest:
     passage_ids: tuple[str, ...]
 
 
-def build_request(instruction: str, observation: dict) -> ResearchRequest:
+def build_request(
+    instruction: str, observation: dict, *, profile: ResearchProfile = OPENAI_PROFILE
+) -> ResearchRequest:
     """Build the entire fixed body from one retained, caller-authorized source.
 
     Source/action authorization and privacy scanning precede this pure helper.
     No input is truncated to fit. Local JSON bytes are bounded separately from
     the full-context reservation; no optimistic tokenizer estimate is used.
+    ``profile`` must be bound (the OpenAI profile always is; a local profile
+    only after ``select_config``) — the framing is identical, only the model
+    name and output bound come from the profile.
     """
     _text(instruction, 32768)
+    _declared_profile(profile)
+    if not profile.bound:
+        _refuse()
     try:
         passages = page_passages(observation)
         content = _canonical({"task": instruction, "passages": passages}).decode(
@@ -165,11 +358,11 @@ def build_request(instruction: str, observation: dict) -> ResearchRequest:
         )
         body = _canonical(
             {
-                "model": MODEL,
+                "model": profile.model,
                 "stream": False,
                 "store": False,
                 "n": 1,
-                "max_completion_tokens": OUTPUT_TOKENS,
+                "max_completion_tokens": profile.output_tokens,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": _SYSTEM},
@@ -239,18 +432,20 @@ class ResearchUsage:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    context_tokens: int = CONTEXT_TOKENS
+    output_tokens: int = OUTPUT_TOKENS
 
     @property
     def exceeds_profile(self) -> bool:
         """Signal a reservation/profile violation without dropping actual usage."""
         return (
-            self.prompt_tokens > CONTEXT_TOKENS
-            or self.completion_tokens > OUTPUT_TOKENS
-            or self.total_tokens > CONTEXT_TOKENS
+            self.prompt_tokens > self.context_tokens
+            or self.completion_tokens > self.output_tokens
+            or self.total_tokens > self.context_tokens
         )
 
 
-def _usage(value):
+def _usage(value, profile=OPENAI_PROFILE):
     if type(value) is not dict:
         return None
     required = {"prompt_tokens", "completion_tokens", "total_tokens"}
@@ -291,7 +486,9 @@ def _usage(value):
             if type(count) is not int or not 0 <= count <= total:
                 return None
     return ResearchUsage(
-        *(value[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens"))
+        *(value[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")),
+        profile.context_tokens,
+        profile.output_tokens,
     )
 
 
@@ -335,14 +532,24 @@ class ResearchResponse:
 
 
 def parse_response(
-    body: bytes, *, status_code: int, passage_ids: tuple[str, ...]
+    body: bytes,
+    *,
+    status_code: int,
+    passage_ids: tuple[str, ...],
+    profile: ResearchProfile = OPENAI_PROFILE,
 ) -> ResearchResponse:
     """Parse whole response and usage before validating a selected answer.
 
     Unknown usage is never zero consumption. Non-success/error bodies cannot
     assert known billing. A well-formed successful response may retain usage even
     when model, finish reason, refusal, answer shape or selection is unusable.
+    ``profile`` supplies the exact expected model and the bounds an observed
+    usage is compared against; an unbound profile parses nothing.
     """
+    # A forged or unbound profile is a caller error, never a provider verdict.
+    _declared_profile(profile)
+    if not profile.bound:
+        _refuse()
     try:
         if type(status_code) is not int or status_code != 200:
             _refuse()
@@ -366,9 +573,9 @@ def parse_response(
                 _text(value[key], 256)
     except ResearchProfileUnavailable:
         return ResearchResponse(None, None, "response_invalid")
-    usage = _usage(value["usage"])
+    usage = _usage(value["usage"], profile)
     try:
-        if value["model"] != MODEL:
+        if value["model"] != profile.model:
             _refuse()
         choices = value["choices"]
         if (

@@ -175,7 +175,6 @@ class FixedResearchPreflight:
 
     async def prepare(self, *, owner_id, runtime, definition, source_bound):
         """Check complete declared ceilings and capture uncached private config."""
-        from audit.pii import private_binding_key
         from llm_config import research_profile as profile
         source = definition.source
         if (not isinstance(source, Mapping) or source.get("profile") != "public_page"
@@ -188,6 +187,23 @@ class FixedResearchPreflight:
         minimum["model_calls"] += 1
         minimum["tokens"] += profile.RESERVED_TOKENS
         minimum["elapsed_ms"] += profile.RESERVED_MILLISECONDS
+        return await self._capture(owner_id=owner_id, runtime=runtime, definition=definition,
+                                   minimum=minimum)
+
+    async def prepare_chat(self, *, owner_id, runtime, definition):
+        """Qualify one source-less model turn: same model reservation, no reader."""
+        from llm_config import research_profile as profile
+        if (definition.source != {} or definition.allowed_tools != ()
+                or definition.consented_scopes != () or definition.offline_grant_id is not None):
+            raise AssignmentError("work_chat_profile_unavailable", 503)
+        minimum = {"model_calls": 1, "tokens": profile.RESERVED_TOKENS,
+                   "elapsed_ms": profile.RESERVED_MILLISECONDS}
+        return await self._capture(owner_id=owner_id, runtime=runtime, definition=definition,
+                                   minimum=minimum)
+
+    async def _capture(self, *, owner_id, runtime, definition, minimum):
+        from audit.pii import private_binding_key
+        from llm_config import research_profile as profile
         if any(definition.limits[name] < amount for name, amount in minimum.items()):
             raise AssignmentError("work_research_budget_insufficient", 422)
         try:
@@ -285,7 +301,48 @@ class WorkSubmitService:
         self._current(context)
         return WorkSubmissionResult(record, False) if record is not None else None
 
+    async def _chat_definition(self, context, authority, body):
+        """A chat turn admits no source, selection or retention choice.
+
+        The same content policy as research applies to the owner's text: the
+        PHI gate and conversation ownership. There is no tool or egress to check.
+        """
+        from persistent_agents.privacy import content_text, privacy_text
+        if (body["source"] is not None or "selection" in body
+                or body.get("source_retention", "operation") != "operation"):
+            _invalid()
+        try:
+            limits = _limits(body["limits"])
+            name, instructions = _text(body["name"], 120), _text(body["instructions"], 4096)
+            conversation = _text(body["conversation_id"], 128, optional=True)
+        except (ValueError, TypeError, AttributeError):
+            _invalid()
+        assignments = self.assignments
+        assignments._owner(context.owner_id, authority.claims)
+        try:
+            protected = privacy_text(content_text({"name": name, "instructions": instructions}), ())
+            contains_phi = await asyncio.to_thread(assignments.phi_gate.contains_phi, protected)
+        except ValueError as exc:
+            raise AssignmentError("assignment_sensitive_content_refused", 422) from exc
+        except Exception as exc:
+            raise AssignmentError("assignment_phi_gate_unavailable", 503) from exc
+        if contains_phi:
+            raise AssignmentError("assignment_sensitive_content_refused", 422)
+        if conversation is not None:
+            try:
+                owned = await asyncio.to_thread(assignments.orch.history.get_chat, conversation,
+                                                user_id=context.owner_id)
+            except Exception as exc:
+                raise AssignmentError("assignment_destination_unavailable", 503) from exc
+            if owned is None:
+                raise AssignmentError("assignment_destination_not_found", 404)
+        return AssignmentDefinition(name=name, instructions=instructions, source={},
+            allowed_tools=(), consented_scopes=(), offline_grant_id=None, limits=limits,
+            conversation_id=conversation)
+
     async def _definition(self, context, authority, body):
+        if body["kind"] == "chat":
+            return await self._chat_definition(context, authority, body)
         if body["kind"] != "research" or not isinstance(body["source"], dict) or set(body["source"]) != {"url"}:
             _invalid()
         try:
@@ -414,12 +471,22 @@ class WorkSubmitService:
             return accepted
         try:
             self._check_new_admission()
+            kind = body["kind"]
+            if kind not in {"research", "chat"}:
+                _invalid()
+            preflight = self.research_preflight
+            if kind == "chat" and preflight is None:
+                # Source-only acceptance never admits a model turn it cannot qualify.
+                raise AssignmentError("work_chat_profile_unavailable", 503)
             authority = await refresh_work_submission_authority(context, sessions=self.sessions)
             definition = await self._definition(context, authority, body)
-            preflight = self.research_preflight
-            prepared = None if preflight is None else await preflight.prepare(
-                owner_id=context.owner_id, runtime=self.store.plane_runtime, definition=definition,
-                source_bound=self.assignments.tool_bound("web-research-1:fetch_page"))
+            if kind == "chat":
+                prepared = await preflight.prepare_chat(owner_id=context.owner_id,
+                    runtime=self.store.plane_runtime, definition=definition)
+            else:
+                prepared = None if preflight is None else await preflight.prepare(
+                    owner_id=context.owner_id, runtime=self.store.plane_runtime, definition=definition,
+                    source_bound=self.assignments.tool_bound("web-research-1:fetch_page"))
             state = authority.observation
             hard_expiry = datetime.fromtimestamp(state.credential.hard_expires_at, timezone.utc)
             if not state.started_at < deadline <= min(hard_expiry, state.started_at + timedelta(days=1)):
@@ -427,7 +494,7 @@ class WorkSubmitService:
             observation = replace(state, valid_until=min(state.valid_until, deadline))
             selected = (None if "selection" not in body else await self._prepare_selection(
                 context, observation, body["selection"], definition, prepared))
-            operation = AssignmentOperationSpec("research", AssignmentOperationAuthority(
+            operation = AssignmentOperationSpec(kind, AssignmentOperationAuthority(
                 context.owner_id, "interactive", "session_incarnation", state.credential.incarnation_id,
                 deadline), deadline, body.get("source_retention", "operation"))
             identity = str(uuid4())
@@ -450,9 +517,12 @@ class WorkSubmitService:
                 if preflight is not None and selected is None:
                     preflight.assert_current(transaction, runtime=self.store.plane_runtime,
                                              owner_id=context.owner_id, prepared=prepared)
-                    preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
-                        orchestrator=self.assignments.orch, owner_id=context.owner_id,
-                        claims=authority.claims)
+                    if kind == "research":
+                        # A chat turn authorizes no reader; its policy fence is
+                        # the owner/session/config lock already taken above.
+                        preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
+                            orchestrator=self.assignments.orch, owner_id=context.owner_id,
+                            claims=authority.claims)
                 create = getattr(repository, "create_operation", None)
                 append = getattr(self.audit, "insert_in_transaction", None)
                 if not callable(create) or not callable(append):
@@ -472,7 +542,7 @@ class WorkSubmitService:
                     preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
                         orchestrator=self.assignments.orch, owner_id=context.owner_id,
                         claims=authority.claims)
-                inputs_meta = {"operation_id": identity, "kind": "research", "version": 2}
+                inputs_meta = {"operation_id": identity, "kind": kind, "version": 2}
                 if selected is not None:
                     inputs_meta["selection"] = {"version": 1, "skills": len(body["selection"]["skills"]),
                         "notes": len(body["selection"]["notes"]),

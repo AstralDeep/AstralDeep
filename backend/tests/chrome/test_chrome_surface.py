@@ -269,3 +269,70 @@ def test_web_menu_keeps_take_the_tour():
     web = menu_model_dict(["user"])  # defaults: include_tour=True
     surfaces = [i["surface"] for g in web["menu"] for i in g["items"]]
     assert "tour" in surfaces and "guide" in surfaces
+
+
+# --- 088 T048: Connections surface, reached through the REAL registry -------
+
+def test_connections_surface_disabled_by_default_shows_a_plain_message(monkeypatch):
+    monkeypatch.delenv("FF_FRAMEWORK_CREDENTIALS", raising=False)
+    orch = FakeOrch(device="browser")
+    run(chrome_events.handle_chrome_event(
+        orch, orch.ws, "chrome_open", {"surface": "connections"}, "u1"))
+    html = _last(orch, "chrome_render")["html"]
+    assert "not enabled on this server" in html
+
+
+def test_connections_surface_native_disabled_message_is_a_single_alert(monkeypatch):
+    monkeypatch.delenv("FF_FRAMEWORK_CREDENTIALS", raising=False)
+    orch = FakeOrch(device="windows")
+    run(chrome_events.handle_chrome_event(
+        orch, orch.ws, "chrome_open", {"surface": "connections"}, "u1"))
+    frame = _last(orch, "chrome_surface")
+    assert _types(frame["components"]) == ["alert"]
+    assert "not enabled" in frame["components"][0]["message"]
+
+
+@pytest.fixture
+def _connections_on():
+    """Flip the process-wide flag singleton directly (env vars are read once
+    at import — see ``shared/feature_flags.py``), mirroring every other
+    flag-toggling test in this suite (e.g. ``test_artifact_export.py``)."""
+    from shared.feature_flags import flags
+    prior = flags._flags.get("framework_credentials")
+    flags._flags["framework_credentials"] = True
+    yield
+    flags._flags["framework_credentials"] = prior
+
+
+def test_connections_surface_enabled_but_unwired_shows_unavailable(_connections_on):
+    orch = FakeOrch(device="browser")  # no .framework_credentials attribute
+    run(chrome_events.handle_chrome_event(
+        orch, orch.ws, "chrome_open", {"surface": "connections"}, "u1"))
+    html = _last(orch, "chrome_render")["html"]
+    assert "unavailable" in html.lower()
+
+
+class _StubCredentialsForReload:
+    """A minimally-working stub so the post-refusal re-render can list (empty)
+    without crashing — the refusal itself never calls into this."""
+
+    def list(self, *, owner_id):
+        return []
+
+
+def test_connections_issue_and_revoke_refuse_without_a_live_human_caller(_connections_on):
+    """No ``current_human_caller`` bound (this fake never binds one, exactly
+    like a real socket outside the 076/agentic human-request machinery) —
+    mint/revoke must fail closed, never silently act as some other owner."""
+    orch = FakeOrch(device="browser")
+    orch.framework_credentials = _StubCredentialsForReload()  # never called for issue/revoke
+    run(chrome_events.handle_chrome_event(
+        orch, orch.ws, "chrome_connection_issue",
+        {"fields": {"name": "x", "scopes": ["operations.read"],
+                    "expires_in_seconds": 3600, "max_admissions": 10}}, "u1"))
+    html = _last(orch, "chrome_render")["html"]
+    assert "sign in" in html.lower()
+    run(chrome_events.handle_chrome_event(
+        orch, orch.ws, "chrome_connection_revoke", {"credential_id": "whatever"}, "u1"))
+    html = _last(orch, "chrome_render")["html"]
+    assert "sign in" in html.lower()

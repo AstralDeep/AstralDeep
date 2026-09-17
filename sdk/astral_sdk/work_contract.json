@@ -1,0 +1,281 @@
+{
+  "contract_format_version": 1,
+  "dispatchable_tool_names": [
+    "astral_submit_operation",
+    "astral_get_operation",
+    "astral_list_operations",
+    "astral_get_operation_events",
+    "astral_cancel_operation",
+    "astral_pause_operation",
+    "astral_get_artifact"
+  ],
+  "framework_credential_scopes": [
+    "agents.read",
+    "artifacts.read",
+    "operations.control",
+    "operations.read",
+    "operations.submit"
+  ],
+  "mcp": {
+    "audience": "astral-mcp",
+    "entry_scopes": [
+      "mcp:discover",
+      "mcp:tools:read",
+      "mcp:tools:invoke"
+    ],
+    "protocol_version": "2026-07-28",
+    "supported_protocol_versions": [
+      "2026-07-28"
+    ]
+  },
+  "operation": {
+    "dispositions": [
+      "active",
+      "awaiting_approval",
+      "awaiting_authority",
+      "awaiting_event",
+      "budget_blocked",
+      "cancelled",
+      "completed",
+      "failed",
+      "paused",
+      "queued",
+      "reconciliation_required",
+      "retry_eligible",
+      "unsupported_version"
+    ],
+    "fields": [
+      "id",
+      "revision",
+      "instruction_revision",
+      "control_epoch",
+      "title",
+      "kind",
+      "disposition",
+      "lifecycle",
+      "phase",
+      "created_at",
+      "updated_at",
+      "next_wake_at",
+      "deadline_at",
+      "schema_supported",
+      "safe_error_code",
+      "usage"
+    ],
+    "money_status_values": [
+      "reported",
+      "unknown"
+    ],
+    "safe_error_codes": [
+      "assignment_action_uncertain",
+      "assignment_approval_required",
+      "assignment_authorization_required",
+      "assignment_authorization_unavailable",
+      "assignment_budget_exhausted",
+      "assignment_deadline_exceeded",
+      "assignment_failed",
+      "assignment_interrupted",
+      "assignment_owner_retired",
+      "assignment_precondition_changed",
+      "assignment_result_quarantined",
+      "assignment_retry_exhausted"
+    ],
+    "usage_basis_values": [
+      "estimated",
+      "none",
+      "observed",
+      "uncertain"
+    ],
+    "usage_dimensions": [
+      "model_calls",
+      "tool_calls",
+      "tokens",
+      "elapsed_ms",
+      "spend_micro_units"
+    ]
+  },
+  "source": "AstralDeep backend (orchestrator.mcp_projection, orchestrator.work_operations, orchestrator.work_service, orchestrator.mcp_authz, astralplane.repositories.framework_credentials)",
+  "tools": {
+    "astral_cancel_operation": {
+      "description": "Cancel one Work operation.",
+      "facade_method": "cancel",
+      "input_schema": {
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          },
+          "submission_id": {
+            "description": "A fresh UUID4 per attempt.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
+    },
+    "astral_get_artifact": {
+      "description": "Read one Work operation's retained result.",
+      "facade_method": "result",
+      "input_schema": {
+        "properties": {
+          "operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "artifacts.read"
+    },
+    "astral_get_operation": {
+      "description": "Read one Work operation's current status.",
+      "facade_method": "get",
+      "input_schema": {
+        "properties": {
+          "operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "operations.read"
+    },
+    "astral_get_operation_events": {
+      "description": "Poll one Work operation for a revision change.",
+      "facade_method": "poll",
+      "input_schema": {
+        "properties": {
+          "after_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id"
+        ],
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "operations.read"
+    },
+    "astral_list_operations": {
+      "description": "List the credential owner's recent Work operations.",
+      "facade_method": "list",
+      "input_schema": {
+        "properties": {
+          "after_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "operations.read"
+    },
+    "astral_pause_operation": {
+      "description": "Pause one Work operation.",
+      "facade_method": "pause",
+      "input_schema": {
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          },
+          "submission_id": {
+            "description": "A fresh UUID4 per attempt.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
+    },
+    "astral_submit_operation": {
+      "description": "Submit one chat-kind Work operation for the credential's owner.",
+      "facade_method": "submit",
+      "input_schema": {
+        "properties": {
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deadline_in_seconds": {
+            "maximum": 86400,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "description": "Client-chosen key; a repeat call with the SAME key and content returns the original operation unchanged.",
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "instructions": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "idempotency_key",
+          "name",
+          "instructions"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.submit"
+    }
+  }
+}
