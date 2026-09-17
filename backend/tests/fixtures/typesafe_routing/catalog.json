@@ -1,0 +1,111 @@
+{
+  "_comment": [
+    "Feature 089 (T014): the agent and tool catalog the routing fixtures are",
+    "labeled against. Agent ids and tool names are the real bundled ones, so a",
+    "fixture that passes here means something about the product; the",
+    "descriptions are abridged, because the corpus is about routing decisions",
+    "and not about the wording of a catalog entry.",
+    "No prompt or answer in this directory carries a credential, a key prefix,",
+    "PHI, or any real patient, user or institutional record."
+  ],
+  "agents": [
+    {
+      "agent_id": "weather-1",
+      "name": "Weather",
+      "description": "Live conditions, hourly and daily forecasts, historical weather, alerts",
+      "tools": [
+        {"name": "weather-1__get_current_weather", "description": "Current temperature, wind and conditions for a location"},
+        {"name": "weather-1__get_hourly_forecast", "description": "Hour-by-hour forecast for the next day"},
+        {"name": "weather-1__get_daily_forecast", "description": "Daily highs and lows for the coming week"},
+        {"name": "weather-1__get_weather_alerts", "description": "Active severe-weather alerts for a location"},
+        {"name": "weather-1__compare_locations", "description": "Compare current conditions across several locations"},
+        {"name": "weather-1__geocode_location", "description": "Resolve a place name to coordinates"}
+      ]
+    },
+    {
+      "agent_id": "general-1",
+      "name": "General",
+      "description": "Host telemetry, encyclopedia lookups, arXiv search and arithmetic",
+      "tools": [
+        {"name": "general-1__get_system_status", "description": "Host operating system, memory and subsystem health"},
+        {"name": "general-1__get_cpu_info", "description": "CPU cores, load and clock frequency"},
+        {"name": "general-1__get_memory_info", "description": "Physical memory use and available pools"},
+        {"name": "general-1__search_wikipedia", "description": "Look up a summary of an entity, concept or topic"},
+        {"name": "general-1__search_arxiv", "description": "Search arXiv preprints"},
+        {"name": "general-1__calculate_math", "description": "Evaluate an arithmetic or algebraic expression"}
+      ]
+    },
+    {
+      "agent_id": "ml-services-1",
+      "name": "ML Services",
+      "description": "Model benchmarking, clinical time-series projection and hosted model inventory",
+      "tools": [
+        {"name": "ml-services-1__classify_model_benchmark", "description": "Benchmark model performance metrics"},
+        {"name": "ml-services-1__forecaster_time_series", "description": "Project a clinical volume time series"},
+        {"name": "ml-services-1__list_models", "description": "List the hosted inference models available"}
+      ]
+    },
+    {
+      "agent_id": "dice-roller-1",
+      "name": "Dice Roller",
+      "description": "Polyhedral dice rolls and probability summaries",
+      "tools": [
+        {"name": "dice-roller-1__roll_dice", "description": "Roll dice and summarize the distribution"}
+      ]
+    },
+    {
+      "agent_id": "summarizer-1",
+      "name": "Summarizer",
+      "description": "Condense text or a document into key points",
+      "tools": [
+        {"name": "summarizer-1__summarize_text", "description": "Summarize text into takeaways"},
+        {"name": "summarizer-1__compare_texts", "description": "Compare two texts and report the differences"}
+      ]
+    },
+    {
+      "agent_id": "web-research-1",
+      "name": "Web Research",
+      "description": "Live web search and page extraction with citations",
+      "tools": [
+        {"name": "web-research-1__web_search", "description": "Search the public web and return cited results"},
+        {"name": "web-research-1__extract_url", "description": "Extract the readable text of a page"}
+      ]
+    },
+    {
+      "agent_id": "remote-compute-1",
+      "name": "Remote Compute",
+      "description": "Cluster status, queue inspection and batch job control",
+      "tools": [
+        {"name": "remote-compute-1__inspect_compute_cluster", "description": "Cluster GPU and memory utilization"},
+        {"name": "remote-compute-1__list_queue", "description": "Active and pending batch jobs"},
+        {"name": "remote-compute-1__submit_job", "description": "Submit a batch job to the cluster"}
+      ]
+    },
+    {
+      "agent_id": "journal-review-1",
+      "name": "Journal Review",
+      "description": "Journal metrics, venue matching and citation statistics",
+      "tools": [
+        {"name": "journal-review-1__evaluate_journal", "description": "Citation statistics for a journal"},
+        {"name": "journal-review-1__find_matching_journals", "description": "Match a manuscript to candidate venues"}
+      ]
+    }
+  ],
+  "collision_catalog": {
+    "_comment": "Two agents exposing the same unqualified verb. A decision that cannot tell them apart is worse than no decision.",
+    "agents": [
+      {
+        "agent_id": "remote-compute-1",
+        "name": "Remote Compute",
+        "description": "Cluster status and batch jobs",
+        "tools": [{"name": "remote-compute-1__get_status", "description": "Cluster queue and node status"}]
+      },
+      {
+        "agent_id": "general-1",
+        "name": "General",
+        "description": "Host telemetry",
+        "tools": [{"name": "general-1__get_status", "description": "This host's operating system and memory status"}]
+      }
+    ]
+  }
+}

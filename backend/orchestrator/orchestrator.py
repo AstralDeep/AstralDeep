@@ -227,7 +227,10 @@ class _PersonalAgentExitWaiter:
         repr=False,
     )
 _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
-    {"chrome_llm_save", "llm_config_set"}
+    # Feature 089 adds the TypeSafe save. It travels the same durable
+    # credential-operation path as the LLM save because it is the same kind of
+    # thing: one write that must not be replayed and must not be lost.
+    {"chrome_llm_save", "llm_config_set", "chrome_typesafe_save"}
 )
 
 _READ_ONLY_UI_ACTIONS = frozenset(
@@ -1555,6 +1558,30 @@ class Orchestrator:
         from llm_config.user_store import UserLLMConfigStore
         self._llm_store = UserLLMConfigStore(
             data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
+
+        # Feature 089: the user's own TypeSafe credential and their
+        # data-sharing acknowledgment. Both sit beside the LLM store rather
+        # than inside it, because neither participates in the first-run gate:
+        # a user with a TypeSafe key and no LLM configuration is still
+        # unconfigured, and clearing a TypeSafe key never re-gates anyone.
+        # The TypeSafe store shares the LLM store's Fernet key, so one
+        # credential-key rotation covers both.
+        from llm_config.data_sharing import DataSharingStore
+        from llm_config.typesafe_store import TypeSafeCredentialStore
+        # Outcome recording is fire-and-forget, so the tasks need an owner or
+        # the loop can collect them mid-write.
+        self._typesafe_outcome_tasks: set = set()
+        self._typesafe_confirm_turns: set = set()
+        self._typesafe_turn_styles: dict = {}
+        self._typesafe_store = TypeSafeCredentialStore(
+            data_dir=data_dir,
+            plane_runtime=self.runtime_composition.plane.runtime,
+            plane_repositories=self.runtime_composition.plane.repositories,
+        )
+        self._data_sharing_store = DataSharingStore(
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
@@ -15923,6 +15950,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_to_agent[llm_name] = agent_id
             tool_to_unqualified[llm_name] = skill.id
 
+        # Feature 089 seam I1: start routing the moment the eligible set is
+        # known, so the call overlaps the rest of prompt preparation. The task
+        # is awaited just before round one; everything between here and there
+        # is time the user does not pay for.
+        self._typesafe_tool_agent_hint = dict(tool_to_agent)
+        typesafe_task, typesafe_fingerprint = await self._typesafe_start_routing(
+            websocket=websocket,
+            user_id=user_id,
+            chat_id=chat_id,
+            message=message,
+            eligible=eligible,
+            tools_desc=tools_desc,
+            selected_tools=selected_tools,
+        )
+        typesafe_decision = None
+        typesafe_verdict = None
+
         # Feature 008-llm-text-only-chat (FR-001/FR-002/FR-010).
         # When zero tools survive the filter stack, fall through to a
         # plain LLM chat (text-only mode) instead of the legacy
@@ -16430,10 +16474,78 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.debug("phase step start failed (non-fatal)", exc_info=True)
                 _stream_token = _NARRATIVE_STREAM_CHAT.set(chat_id)
                 _NARRATIVE_STREAMED.set(False)
+                # Feature 089 seam I2. Round one is the only round routing may
+                # narrow; rounds two and later always see the full eligible
+                # list, so a wrong first guess costs at most one round.
+                round_one_tools = tools_desc
+                round_one_choice = None
+                if turn_count == 1:
+                    typesafe_outcome = await self._typesafe_await_decision(
+                        typesafe_task, user_id=user_id, chat_id=chat_id
+                    )
+                    typesafe_task = None
+                    typesafe_decision = getattr(typesafe_outcome, "decision", None)
+                    if typesafe_outcome is not None:
+                        await self._typesafe_audit_fallback(user_id, typesafe_outcome)
+                    from orchestrator.typesafe_routing import (
+                        apply_round_one,
+                        security_verdict,
+                    )
+
+                    typesafe_verdict = security_verdict(typesafe_decision)
+                    self._typesafe_set_turn_verdict(chat_id, typesafe_verdict)
+                    self._typesafe_set_turn_style(chat_id, typesafe_decision)
+                    if typesafe_verdict.requires_confirmation:
+                        await self._typesafe_audit_verdict(
+                            user_id, typesafe_decision, verdict="confirm_tools"
+                        )
+                    if typesafe_verdict.refuses:
+                        await self._typesafe_refuse_turn(
+                            websocket, chat_id, user_id, typesafe_decision
+                        )
+                        return
+                    plan = apply_round_one(
+                        typesafe_decision,
+                        tools_desc,
+                        self._provider_preset_for(user_id),
+                    )
+                    round_one_tools = plan.tools_desc
+                    round_one_choice = (
+                        plan.tool_choice if plan.tool_choice != "auto" else None
+                    )
+                    if plan.narrowed:
+                        logger.info(
+                            "typesafe round-one narrowed chat=%s tier=%s tools=%d",
+                            chat_id,
+                            plan.tier.value,
+                            len(round_one_tools),
+                        )
+
+                # Feature 089 (T004): zero-duration markers that anchor the
+                # Send-to-first-model-call and Send-to-first-tool-dispatch
+                # measurements (SC-001, SC-002). They carry only the chat id
+                # and the round number, never message content. Round 1 is the
+                # only round TypeSafe routing may narrow, so only round 1 is
+                # marked.
+                if turn_count == 1:
+                    with perf_span("turn.first_llm_call_start", chat=chat_id):
+                        pass
+                # Invariant 1: with no routing decision the call is made with
+                # exactly the historical arguments, so an unkeyed turn is
+                # byte-identical to before 089. The keyword is added only when
+                # a forced choice was actually decided -- which also keeps the
+                # many tests and callers that stub _call_llm with the older
+                # signature working unchanged.
+                _round_kwargs = {"feature": call_feature}
+                if turn_count == 1 and round_one_choice is not None:
+                    _round_kwargs["tool_choice"] = round_one_choice
                 try:
                     with perf_span("turn.route", chat=chat_id):
                         llm_msg, usage = await self._call_llm(
-                            websocket, messages, tools_desc, feature=call_feature,
+                            websocket,
+                            messages,
+                            round_one_tools if turn_count == 1 else tools_desc,
+                            **_round_kwargs,
                         )
                 except Exception:
                     if _phase_recorder is not None and _phase_step_id:
@@ -16513,6 +16625,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     # Execute tools
                     tool_results = []
+                    # Feature 089 (T004): no-op marker for the first tool
+                    # dispatch of a turn. It measures when work actually
+                    # starts, which is what a narrowed first round is meant to
+                    # bring forward.
+                    if turn_count == 1:
+                        with perf_span("turn.first_tool_dispatch", chat=chat_id):
+                            pass
                     with perf_span("turn.tools", chat=chat_id):
                         if len(llm_msg.tool_calls) == 1:
                             tc = llm_msg.tool_calls[0]
@@ -17212,6 +17331,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
             _perm_memo.__exit__(None, None, None)
             _tool_notices.__exit__(None, None, None)
+            # Feature 089 seam I6: a turn that ended -- cancelled, disconnected,
+            # refused or simply finished -- must not leave a routing call in
+            # flight. It has nothing left to narrow.
+            try:
+                from orchestrator.typesafe_routing.runner import cancel_routing
+
+                cancel_routing(typesafe_task)
+            except Exception:
+                logger.debug("routing task cancellation failed", exc_info=True)
+            # The verdict belongs to this turn only. Leaving it set would make
+            # the next turn on the same chat inherit a confirmation
+            # requirement nothing asked for.
+            self._typesafe_set_turn_verdict(chat_id, None)
+            self._typesafe_set_turn_style(chat_id, None)
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
             if active_request_token is not None:
@@ -17431,7 +17564,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _call_llm(self, websocket, messages, tools_desc=None, temperature=None,
                         feature: str = "tool_dispatch", response_format=None,
                         reasoning_effort=None, allow_stream: bool = False,
-                        stream_chat_id: Optional[str] = None):
+                        stream_chat_id: Optional[str] = None,
+                        tool_choice=None):
         """Helper to call LLM with retries and exponential backoff.
 
         Feature 052 (FR-015): when the caller opts in — ``allow_stream=True``
@@ -17579,6 +17713,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if (_vision_cache is not None and cap_key in _vision_cache
                 and self._messages_have_images(messages)):
             self._strip_image_parts(messages)
+        # Feature 089: a forced tool_choice is a hint, not a requirement. An
+        # endpoint that rejects the dict form gets one immediate retry with
+        # "auto", and that retry does NOT count against MAX_RETRIES -- the call
+        # never actually reached the model, so charging it a retry would let a
+        # routing optimization eat the turn's error budget.
+        _forced_choice = tool_choice if tool_choice not in (None, "auto") else None
+        _forced_choice_retried = False
         while attempt < self.MAX_RETRIES:
             attempt += 1
             try:
@@ -17588,7 +17729,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
                 if tools_desc:
                     kwargs["tools"] = tools_desc
-                    kwargs["tool_choice"] = "auto"
+                    # Feature 089 seam I3: the default stays exactly "auto", so
+                    # every existing caller produces byte-identical arguments.
+                    kwargs["tool_choice"] = (
+                        "auto" if _forced_choice is None else _forced_choice
+                    )
                 if temperature is not None:
                     kwargs["temperature"] = temperature
                 kwargs.update(extra_kwargs)
@@ -17698,6 +17843,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     # Each durable attempt is accounted independently. Provider
                     # compatibility probes and retries require another reservation.
                     raise
+                # Feature 089 seam I3: did the endpoint reject the forced
+                # tool_choice? Drop back to "auto" and retry immediately. The
+                # request never reached the model, so this is not a retry
+                # attempt: a routing hint must not be able to spend the turn's
+                # error budget.
+                if _forced_choice is not None and not _forced_choice_retried:
+                    _forced_choice_retried = True
+                    _forced_choice = None
+                    logger.info(
+                        "LLM endpoint rejected a forced tool_choice; retrying with auto"
+                    )
+                    attempt -= 1
+                    continue
+
                 # 076 (FR-016): did the endpoint reject the image parts (a
                 # text-only model)? Strip them in place, remember it for this
                 # (base_url, model) and retry text-only once — the request is
@@ -19278,7 +19437,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tool_name, args, actor_principal=user_id, trust=trust,
                     agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name))
-                if _hitl.requires_confirmation(risks):
+                # Feature 089 seam I4. A confirm_tools verdict ADDS a
+                # confirmation requirement for every tool call in this turn. It
+                # is deliberately an `or`, never an assignment: a risk the
+                # existing assessment already found still requires
+                # confirmation, and nothing here can make a denied or
+                # approval-required call allowed.
+                _typesafe_confirms = self._typesafe_turn_requires_confirmation(chat_id)
+                if _hitl.requires_confirmation(risks) or _typesafe_confirms:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
                     from orchestrator import hitl_confirmation
                     pending = await hitl_confirmation.evaluate(
@@ -23330,6 +23496,366 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return [ws for ws in self._sockets_on_chat(user_id, chat_id)
                 if ws is not websocket]
 
+    # ------------------------------------------------------------------
+    # Feature 089 — TypeSafe routing seams
+    # ------------------------------------------------------------------
+
+    def _typesafe_notifier(self, websocket):
+        """The adapter's only channel to the user: one chat_status frame."""
+
+        async def _notify(status: str, message: str) -> None:
+            await self._send_chat_status(websocket, status, message)
+
+        return _notify
+
+    async def _typesafe_start_routing(
+        self,
+        *,
+        websocket,
+        user_id: str,
+        chat_id,
+        message: str,
+        eligible,
+        tools_desc,
+        selected_tools,
+        history_messages=None,
+        active_agent=None,
+    ):
+        """Seam I1. Build the bounded request and start the routing task.
+
+        Returns ``(task, key_fingerprint)``, or ``(None, None)`` when there is
+        nothing to route. Never raises: a turn must not be able to fail because
+        routing could not start.
+        """
+        try:
+            from orchestrator.typesafe_routing import RoutingRequest, start_routing
+            from orchestrator.typesafe_routing.questions import AgentOption, ToolOption
+
+            store = getattr(self, "_typesafe_store", None)
+            if store is None or not tools_desc:
+                return None, None
+            stored = await store.get_key(user_id)
+            if stored is None:
+                return None, None
+
+            # Names the model sees are exactly the names the LLM will be
+            # offered, so a decision can be applied without translation.
+            names_by_agent: dict[str, list] = {}
+            for entry in tools_desc:
+                function = (entry or {}).get("function") or {}
+                llm_name = function.get("name")
+                if not llm_name:
+                    continue
+                agent_id = self._tool_to_agent_lookup(llm_name, eligible)
+                if agent_id is None:
+                    continue
+                names_by_agent.setdefault(agent_id, []).append(
+                    ToolOption(llm_name, (function.get("description") or "")[:200])
+                )
+
+            agents = []
+            for agent_id in names_by_agent:
+                card = (getattr(self, "agent_cards", {}) or {}).get(agent_id)
+                agents.append(
+                    AgentOption(
+                        agent_id,
+                        str(getattr(card, "name", "") or agent_id),
+                        str(getattr(card, "description", "") or "")[:200],
+                    )
+                )
+
+            request = RoutingRequest.build(
+                current_request=message or "",
+                history=history_messages or (),
+                active_agent=active_agent,
+                selected_tools=selected_tools or (),
+                agents=agents,
+                tools_by_agent=names_by_agent,
+            )
+            if request.is_empty:
+                return None, None
+
+            task = await start_routing(
+                user_id=user_id,
+                request=request,
+                api_key=stored.api_key,
+                fingerprint=stored.fingerprint,
+                notifier=self._typesafe_notifier(websocket),
+            )
+            with perf_span("turn.typesafe_start", chat=chat_id):
+                pass
+            return task, stored.fingerprint
+        except Exception:
+            logger.debug("TypeSafe routing could not start (non-fatal)", exc_info=True)
+            return None, None
+
+    def _typesafe_turn_requires_confirmation(self, chat_id) -> bool:
+        """True when this turn's TypeSafe verdict was ``confirm_tools``."""
+        if not chat_id:
+            return False
+        return bool(getattr(self, "_typesafe_confirm_turns", set()) and
+                    chat_id in self._typesafe_confirm_turns)
+
+    def _typesafe_set_turn_verdict(self, chat_id, verdict) -> None:
+        """Record the turn's verdict so the per-call gate step can read it."""
+        if not chat_id:
+            return
+        turns = getattr(self, "_typesafe_confirm_turns", None)
+        if turns is None:
+            turns = self._typesafe_confirm_turns = set()
+        if verdict is not None and getattr(verdict, "requires_confirmation", False):
+            turns.add(chat_id)
+        else:
+            turns.discard(chat_id)
+
+    def _typesafe_style_layout(self, chat_id, components, ops):
+        """Seam I5's composer half. Returns a validated layout, or ``None``.
+
+        The components handed to the composer are the **upserted** ones, so the
+        ids it references are the identities the canvas actually holds. Using
+        the pre-upsert components would produce refs to ids that do not exist
+        yet, and the designer's validator would drop every one of them.
+
+        The result goes through the designer's own ``validate_layout`` before
+        it is used, so a composed layout is held to exactly the same contract
+        as a model-produced one.
+        """
+        style = self._typesafe_turn_styles.get(chat_id) if chat_id else None
+        if not style:
+            return None
+        try:
+            from orchestrator import ui_designer
+            from orchestrator.typesafe_routing import layout as typesafe_layout
+
+            identified = []
+            for index, component in enumerate(components):
+                component_id = None
+                if index < len(ops or []):
+                    component_id = (ops[index] or {}).get("component_id")
+                component_id = component_id or component.get("component_id") or component.get("id")
+                if not component_id:
+                    return None
+                identified.append({"type": component.get("type"), "component_id": component_id})
+
+            composed = typesafe_layout.compose(style, identified)
+            if not composed:
+                return None
+
+            from webrender import allowed_primitive_types
+
+            allowed_ids = {c["component_id"] for c in identified}
+            clean, referenced = ui_designer.validate_layout(
+                composed, allowed_ids, set(allowed_primitive_types())
+            )
+            if sorted(referenced) != sorted(allowed_ids):
+                logger.info(
+                    "typesafe layout: validator dropped refs for chat %s; "
+                    "falling back to the designer", chat_id
+                )
+                return None
+            observability = getattr(self, "runtime_observability", None)
+            if observability is not None:
+                try:
+                    observability.record_typesafe(
+                        "layout_applied", result_code="success", phase=style
+                    )
+                except Exception:
+                    logger.debug("typesafe layout metric failed", exc_info=True)
+            return clean
+        except Exception:
+            logger.debug("typesafe style layout failed (non-fatal)", exc_info=True)
+            return None
+
+    def _typesafe_set_turn_style(self, chat_id, decision) -> None:
+        """Record this turn's presentation style for the delivery seam."""
+        if not chat_id:
+            return
+        styles = getattr(self, "_typesafe_turn_styles", None)
+        if styles is None:
+            styles = self._typesafe_turn_styles = {}
+        style = getattr(decision, "style", None) if decision is not None else None
+        if style and style != "as_delivered":
+            styles[chat_id] = style
+        else:
+            styles.pop(chat_id, None)
+
+    def _provider_preset_for(self, user_id: str):
+        """The user's provider preset key, for the forced-choice allowlist.
+
+        Read from the cached config synchronously: this runs on the hot path
+        just before round one, and a miss only costs the forced choice, which
+        the shortlist does not depend on.
+        """
+        try:
+            store = getattr(self, "_llm_store", None)
+            if store is None:
+                return None
+            config = store.get_sync(user_id)
+            return getattr(config, "provider", None)
+        except Exception:
+            logger.debug("provider preset lookup failed (non-fatal)", exc_info=True)
+            return None
+
+    async def _typesafe_refuse_turn(self, websocket, chat_id, user_id, decision) -> None:
+        """Seam I2's refusal branch: render the refusal, audit it, end the turn.
+
+        The alert carries no detail about why. A screen that explains its own
+        threshold teaches an attacker how to get under it, and the honest
+        message to a user who tripped it by accident is the same either way.
+        """
+        try:
+            from astralprims import Alert
+
+            await self._safe_send(websocket, json.dumps({
+                "type": "ui_render",
+                "chat_id": chat_id,
+                "components": [Alert(
+                    title="This request was not run",
+                    message=(
+                        "A safety check flagged this request, so nothing was run. "
+                        "If that looks wrong, rephrase it and try again."
+                    ),
+                    variant="error",
+                ).to_dict()],
+            }))
+        except Exception:
+            logger.debug("refusal render failed (non-fatal)", exc_info=True)
+        await self._typesafe_audit_verdict(user_id, decision, verdict="refuse")
+        await self._send_chat_status(websocket, "done", "")
+
+    async def _typesafe_audit_verdict(self, user_id: str, decision, *, verdict: str) -> None:
+        """Audit ``typesafe.security_verdict``. Carries scores, never text."""
+        recorder = getattr(self, "audit_recorder", None)
+        if recorder is None or decision is None:
+            return
+        try:
+            from datetime import timezone as _tz
+            from uuid import uuid4
+
+            from audit.schemas import AuditEventCreate
+
+            security = decision.security
+            started = datetime.now(_tz.utc)
+            await recorder.record(AuditEventCreate(
+                actor_user_id=user_id,
+                auth_principal=user_id,
+                event_class="typesafe",
+                action_type="typesafe.security_verdict",
+                description=f"TypeSafe security screen returned {verdict}",
+                correlation_id=str(uuid4()),
+                outcome="failure" if verdict == "refuse" else "success",
+                inputs_meta={
+                    "verdict": verdict,
+                    "threat_category": security.threat_category,
+                    "jailbreak_probability": round(security.jailbreak_probability, 3),
+                    "harm_score": round(security.harm_score, 3),
+                },
+                outputs_meta={},
+                started_at=started,
+                completed_at=started,
+            ))
+        except Exception:
+            logger.debug("TypeSafe verdict audit failed (non-fatal)", exc_info=True)
+
+    def _tool_to_agent_lookup(self, llm_name, eligible):
+        """Map an LLM-facing tool name back to its agent id."""
+        mapping = getattr(self, "_typesafe_tool_agent_hint", None)
+        if isinstance(mapping, dict) and llm_name in mapping:
+            return mapping[llm_name]
+        if "__" in llm_name:
+            return llm_name.split("__", 1)[0]
+        for agent_id, skill in eligible or ():
+            if getattr(skill, "id", None) == llm_name:
+                return agent_id
+        return None
+
+    async def _typesafe_await_decision(self, task, *, user_id: str, chat_id=None):
+        """Seam I2. Collect the decision within the remaining budget."""
+        if task is None:
+            return None
+        try:
+            from orchestrator.typesafe_routing import await_decision
+
+            with perf_span("turn.typesafe", chat=chat_id):
+                outcome = await await_decision(task, user_id=user_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("TypeSafe decision could not be collected", exc_info=True)
+            return None
+        self._typesafe_record_outcome(user_id, outcome)
+        self._typesafe_record_metrics(outcome)
+        return outcome
+
+    def _typesafe_record_metrics(self, outcome) -> None:
+        """Publish the turn's routing outcome and tier as closed-vocabulary tokens."""
+        observability = getattr(self, "runtime_observability", None)
+        if observability is None or outcome is None:
+            return
+        try:
+            decision = getattr(outcome, "decision", None)
+            observability.record_typesafe(
+                "routing",
+                result_code=outcome.outcome.value,
+                phase=decision.tier.value if decision is not None else None,
+            )
+        except Exception:
+            logger.debug("TypeSafe metric emission failed (non-fatal)", exc_info=True)
+
+    async def _typesafe_audit_fallback(self, user_id: str, outcome) -> None:
+        """Audit ``typesafe.routing_fallback``. Records why, never what."""
+        recorder = getattr(self, "audit_recorder", None)
+        if recorder is None or outcome is None:
+            return
+        result = outcome.outcome.value
+        if not result.startswith("fallback"):
+            return
+        try:
+            from datetime import timezone as _tz
+            from uuid import uuid4
+
+            from audit.schemas import AuditEventCreate
+
+            started = datetime.now(_tz.utc)
+            await recorder.record(AuditEventCreate(
+                actor_user_id=user_id,
+                auth_principal=user_id,
+                event_class="typesafe",
+                action_type="typesafe.routing_fallback",
+                description=f"TypeSafe routing fell back to standard routing ({result})",
+                correlation_id=str(uuid4()),
+                outcome="failure",
+                inputs_meta={
+                    "result_code": result,
+                    "attempts": int(getattr(outcome, "attempts", 0) or 0),
+                    "elapsed_ms": int(getattr(outcome, "elapsed_ms", 0) or 0),
+                },
+                outputs_meta={},
+                started_at=started,
+                completed_at=started,
+            ))
+        except Exception:
+            logger.debug("TypeSafe fallback audit failed (non-fatal)", exc_info=True)
+
+    def _typesafe_record_outcome(self, user_id: str, outcome) -> None:
+        """Fire-and-forget the turn's verdict on the key it was observed on."""
+        store = getattr(self, "_typesafe_store", None)
+        credential_outcome = getattr(outcome, "credential_outcome", None)
+        fingerprint = getattr(outcome, "fingerprint", None)
+        if store is None or not credential_outcome or not fingerprint:
+            return
+        try:
+            task = asyncio.create_task(
+                store.record_outcome_async(user_id, credential_outcome, fingerprint)
+            )
+            # Keep a reference so the task is not garbage collected mid-flight,
+            # and drop it when it finishes.
+            self._typesafe_outcome_tasks.add(task)
+            task.add_done_callback(self._typesafe_outcome_tasks.discard)
+        except Exception:
+            logger.debug("TypeSafe outcome scheduling failed", exc_info=True)
+
+
     async def _send_chat_status(self, websocket, status: str, message: str = ""):
         """Send a chat_status frame; a VirtualWebSocket-bound frame also fans
         to the user's real sockets on the task's chat (055 bg-continuity) so
@@ -23611,8 +24137,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             turn_marker = str(await asyncio.to_thread(
                 self.history.get_latest_message_id, chat_id, user_id=user_id) or "")
             layout_key = layout_key_for(chat_id, turn_marker)
-            layout = await self._run_designer(
-                websocket, components, chat_id, user_id, user_request, layout_key)
+            # Feature 089 seam I5. When TypeSafe already said how this result
+            # should read, arranging it is a lookup rather than a judgment, so
+            # the deterministic composer runs first and the designer call is
+            # not made at all. Anything the composer will not arrange returns
+            # None and the designer runs exactly as before.
+            layout = self._typesafe_style_layout(chat_id, components, ops)
+            if layout is None:
+                layout = await self._run_designer(
+                    websocket, components, chat_id, user_id, user_request, layout_key)
         except Exception:
             logger.exception("ui_designer crashed — flat ui_upsert already delivered")
             layout = None
@@ -25769,6 +26302,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")
             shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
+            # Feature 089: the sidebar profile widget. Display only — the
+            # values come from the session's own claims and carry no id or
+            # address; authorization is unaffected by what is shown here.
+            from html import escape as _html_escape
+            identity = {"name": "Signed in", "role": "Member", "initials": "A"}
+            try:
+                from orchestrator.web_auth import session_identity
+                identity = await asyncio.to_thread(session_identity, request)
+            except Exception:
+                logger.debug("shell: session identity unavailable", exc_info=True)
+            for placeholder, key in (
+                ("%%ASTRAL_USER_NAME%%", "name"),
+                ("%%ASTRAL_USER_ROLE%%", "role"),
+                ("%%ASTRAL_USER_INITIALS%%", "initials"),
+            ):
+                shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
+
             # Feature 028 (FR-011): server-derived resume flag — false only on
             # the load right after interactive sign-in; the client echoes it
             # into register_ui so auth.session_resumed keeps 016 semantics.
@@ -25789,6 +26339,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("attachment accept-list injection failed", exc_info=True)
             shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
+            # Feature 089 (T052): the landing's example scenarios and the
+            # sidebar's agent directory, injected into the SHELL — which only
+            # the web client fetches — so no native registration frame gains a
+            # field or a target check. See backend/orchestrator/web_landing.py.
+            landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
+            try:
+                from orchestrator import web_landing
+                from orchestrator.web_auth import session_subject
+                _subject = await asyncio.to_thread(session_subject, request)
+                landing_json = web_landing.as_script_json(
+                    await web_landing.payload(self, _subject)
+                )
+            except Exception:
+                logger.debug("shell: landing payload unavailable", exc_info=True)
+            shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
+
             # Feature 052: per-file content-hash asset URLs — a changed file is
             # fetched under a new URL, unchanged files stay immutable-cached.
             shell = _apply_asset_versions(shell, _projection_static_dir)

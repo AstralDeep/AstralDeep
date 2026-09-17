@@ -416,6 +416,28 @@ class RuntimeObservability:
             labels["result_code"] = result_code
         self.record(f"scheduler_effect_{event}_total", labels=labels)
 
+    def record_typesafe(
+        self,
+        event: str,
+        *,
+        result_code: str,
+        phase: str | None = None,
+    ) -> None:
+        """Feature 089: one counter per TypeSafe routing outcome.
+
+        Every label value is a closed vocabulary token from the adapter's
+        ``Outcome``, ``Tier`` or ``Verdict`` enums. No user id, chat id, key
+        fingerprint, tool name or request text can reach a metric label: the
+        base class refuses anything outside the reviewed label allow-list and
+        anything that is not a bounded snake_case token, so a leak here is a
+        validation error rather than an exported string.
+        """
+        labels = self._base_labels()
+        labels["result_code"] = result_code
+        if phase is not None:
+            labels["phase"] = phase
+        self.record(f"typesafe_{event}_total", labels=labels)
+
     def observe_retention(
         self,
         *,

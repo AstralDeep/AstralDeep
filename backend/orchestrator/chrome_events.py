@@ -299,8 +299,17 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
             getattr(mod, "TITLE", surface_key),
             chrome_error_block("This surface failed to load. Please retry.", surface_key)))
         return
+    # Feature 089: a surface may declare a subtitle, an icon, section tabs and
+    # a footer action row; the ones that declare nothing render exactly as
+    # before. Declaring is opt-in per surface module, so a native surface is
+    # unaffected either way (this is the web path only).
     await _push_modal(orch, websocket, render_modal_shell(
-        getattr(mod, "TITLE", surface_key), (notice_html or "") + body, surface_key))
+        getattr(mod, "TITLE", surface_key), (notice_html or "") + body, surface_key,
+        subtitle=getattr(mod, "SUBTITLE", ""),
+        icon=getattr(mod, "ICON", ""),
+        sections=tuple(getattr(mod, "SECTIONS", ()) or ()),
+        footer_html=getattr(mod, "footer_html", lambda: "")()
+        if callable(getattr(mod, "footer_html", None)) else ""))
 
 
 async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str,

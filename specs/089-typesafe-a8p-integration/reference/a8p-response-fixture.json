@@ -1,0 +1,579 @@
+{
+  "query": "What are the current conditions in Louisville and how is routing performing?",
+  "agent_id": "weather-1",
+  "ui_html": "\n            <div class=\"hero-box\">\n                <div class=\"hero-header\">\n                    <h1 class=\"hero-title\">Louisville, KY — Operational Brief</h1>\n                    \n                </div>\n                <p class=\"hero-subtitle\">Live conditions, model throughput and route health</p>\n                <div class=\"hero-tags-row\"><span class=\"hero-tag\">#weather-1</span><span class=\"hero-tag\">#ml-services-1</span><span class=\"hero-tag\">#AU-9 Sealed</span></div>\n                <div class=\"hero-strip-row\"><div class=\"hero-metric-item\"><div class=\"hm-label\">Temperature</div><div class=\"hm-val\">68°F</div></div><div class=\"hero-metric-item\"><div class=\"hm-label\">Humidity</div><div class=\"hm-val\">62%</div></div><div class=\"hero-metric-item\"><div class=\"hm-label\">Wind</div><div class=\"hm-val\">8 mph</div></div></div>\n                \n            </div>\n            \n\n            <div class=\"stat-group-container\">\n                <div class=\"stat-group-title\">Current conditions</div>\n                <div class=\"stat-group-grid\">\n                    \n                <div class=\"stat-item\">\n                    <div class=\"stat-header\">\n                        \n                        <span class=\"stat-label\">Temperature</span>\n                    </div>\n                    <div class=\"stat-body\">\n                        <span class=\"stat-value\">68°F</span>\n                        <span class=\"stat-trend trend-up\">+3°</span>\n                    </div>\n                </div>\n                \n                <div class=\"stat-item\">\n                    <div class=\"stat-header\">\n                        \n                        <span class=\"stat-label\">Feels like</span>\n                    </div>\n                    <div class=\"stat-body\">\n                        <span class=\"stat-value\">66°F</span>\n                        <span class=\"stat-trend trend-down\">-1°</span>\n                    </div>\n                </div>\n                \n                <div class=\"stat-item\">\n                    <div class=\"stat-header\">\n                        \n                        <span class=\"stat-label\">Wind</span>\n                    </div>\n                    <div class=\"stat-body\">\n                        <span class=\"stat-value\">8 mph</span>\n                        <span class=\"stat-trend trend-neutral\">210°</span>\n                    </div>\n                </div>\n                \n                <div class=\"stat-item\">\n                    <div class=\"stat-header\">\n                        \n                        <span class=\"stat-label\">Pressure</span>\n                    </div>\n                    <div class=\"stat-body\">\n                        <span class=\"stat-value\">1014 hPa</span>\n                        <span class=\"stat-trend trend-neutral\">steady</span>\n                    </div>\n                </div>\n                \n                </div>\n            </div>\n            \n\n            <div class=\"astral-grid grid-cols-3\" style=\"gap: 16px;\">\n                \n            <div class=\"metric-card\">\n                <div class=\"metric-header-row\">\n                    <div class=\"metric-title\">Routing p50</div>\n                    \n                </div>\n                <div class=\"metric-value-row\">\n                    <span class=\"metric-value\">186 ms</span>\n                    <span class=\"metric-change trend-down\">-14 ms</span>\n                </div>\n                <div class=\"metric-sub\">TypeSafe System One</div>\n                \n            </div>\n            \n\n            <div class=\"metric-card\">\n                <div class=\"metric-header-row\">\n                    <div class=\"metric-title\">Routing p95</div>\n                    \n                </div>\n                <div class=\"metric-value-row\">\n                    <span class=\"metric-value\">365 ms</span>\n                    <span class=\"metric-change trend-up\">+9 ms</span>\n                </div>\n                <div class=\"metric-sub\">260 catalog options</div>\n                \n            </div>\n            \n\n            <div class=\"metric-card\">\n                <div class=\"metric-header-row\">\n                    <div class=\"metric-title\">Fallbacks</div>\n                    \n                </div>\n                <div class=\"metric-value-row\">\n                    <span class=\"metric-value\">0</span>\n                    \n                </div>\n                <div class=\"metric-sub\">last 200 turns</div>\n                \n            </div>\n            \n            </div>\n            \n\n            <div class=\"astral-grid grid-cols-2\" style=\"gap: 16px;\">\n                \n            <div class=\"gauge-card\">\n                <div class=\"gauge-title\">Humidity</div>\n                <div class=\"gauge-svg-container\">\n                    <svg viewBox=\"0 0 120 120\" class=\"gauge-svg\">\n                        <circle cx=\"60\" cy=\"60\" r=\"46\" fill=\"none\" stroke=\"#1c1d38\" stroke-width=\"10\" stroke-dasharray=\"216.7 100\" stroke-dashoffset=\"-36\" stroke-linecap=\"round\"/>\n                        <circle cx=\"60\" cy=\"60\" r=\"46\" fill=\"none\" stroke=\"#8b5cf6\" stroke-width=\"10\" stroke-dasharray=\"216.7 100\" stroke-dashoffset=\"46.346000000000004\" stroke-linecap=\"round\" class=\"gauge-meter\"/>\n                    </svg>\n                    <div class=\"gauge-center-val\">\n                        <span class=\"gauge-num\">62.0</span>\n                        <span class=\"gauge-unit\">%</span>\n                    </div>\n                </div>\n                <div class=\"gauge-status-badge badge-nominal\">NOMINAL</div>\n                <div class=\"gauge-sub\">Relative humidity</div>\n            </div>\n            \n\n            <div class=\"chart-container donut-card\">\n                <div class=\"chart-header\">\n                    <div>\n                        <div class=\"chart-title\">Tool dispatch mix</div>\n                        <div class=\"chart-subtitle\">last 200 turns</div>\n                    </div>\n                </div>\n                <div class=\"donut-content-row\">\n                    <div class=\"donut-svg-wrap\">\n                        <svg viewBox=\"0 0 120 120\" class=\"donut-svg\">\n                            <circle cx=\"60\" cy=\"60\" r=\"42\" fill=\"none\" stroke=\"#1e293b\" stroke-width=\"14\"/>\n                            <circle cx=\"60\" cy=\"60\" r=\"42\" fill=\"none\" stroke=\"#8b5cf6\" stroke-width=\"14\" stroke-dasharray=\"108.19 155.70\" stroke-dashoffset=\"-0.00\" opacity=\"0.95\" class=\"donut-slice\"><title>weather: 82.0 (41.0%)</title></circle><circle cx=\"60\" cy=\"60\" r=\"42\" fill=\"none\" stroke=\"#6366f1\" stroke-width=\"14\" stroke-dasharray=\"71.25 192.64\" stroke-dashoffset=\"-108.19\" opacity=\"0.95\" class=\"donut-slice\"><title>research: 54.0 (27.0%)</title></circle><circle cx=\"60\" cy=\"60\" r=\"42\" fill=\"none\" stroke=\"#a855f7\" stroke-width=\"14\" stroke-dasharray=\"51.46 212.43\" stroke-dashoffset=\"-179.45\" opacity=\"0.95\" class=\"donut-slice\"><title>compute: 39.0 (19.5%)</title></circle><circle cx=\"60\" cy=\"60\" r=\"42\" fill=\"none\" stroke=\"#c084fc\" stroke-width=\"14\" stroke-dasharray=\"32.99 230.90\" stroke-dashoffset=\"-230.90\" opacity=\"0.95\" class=\"donut-slice\"><title>other: 25.0 (12.5%)</title></circle>\n                        </svg>\n                        <div class=\"donut-center-text\">\n                            <div class=\"donut-center-val\">200</div>\n                            <div class=\"donut-center-lbl\">turns</div>\n                        </div>\n                    </div>\n                    <div class=\"donut-legend-list\">\n                        \n                <div class=\"donut-legend-item\">\n                    <span class=\"legend-color-dot\" style=\"background:#8b5cf6;\"></span>\n                    <span class=\"donut-legend-label\">weather</span>\n                    <span class=\"donut-legend-val\">82 </span>\n                    <span class=\"donut-legend-pct\">(41.0%)</span>\n                </div>\n                \n                <div class=\"donut-legend-item\">\n                    <span class=\"legend-color-dot\" style=\"background:#6366f1;\"></span>\n                    <span class=\"donut-legend-label\">research</span>\n                    <span class=\"donut-legend-val\">54 </span>\n                    <span class=\"donut-legend-pct\">(27.0%)</span>\n                </div>\n                \n                <div class=\"donut-legend-item\">\n                    <span class=\"legend-color-dot\" style=\"background:#a855f7;\"></span>\n                    <span class=\"donut-legend-label\">compute</span>\n                    <span class=\"donut-legend-val\">39 </span>\n                    <span class=\"donut-legend-pct\">(19.5%)</span>\n                </div>\n                \n                <div class=\"donut-legend-item\">\n                    <span class=\"legend-color-dot\" style=\"background:#c084fc;\"></span>\n                    <span class=\"donut-legend-label\">other</span>\n                    <span class=\"donut-legend-val\">25 </span>\n                    <span class=\"donut-legend-pct\">(12.5%)</span>\n                </div>\n                \n                    </div>\n                </div>\n            </div>\n            \n            </div>\n            \n\n            <div class=\"stepper-container\">\n                <h3 class=\"stepper-main-title\">Turn pipeline</h3>\n                <div class=\"card-subtitle\">Speculative route → dispatch → seal</div>\n                <div class=\"stepper-track\">\n                    \n                <div class=\"stepper-step stepper-completed\">\n                    <div class=\"stepper-node-wrap\">\n                        <div class=\"stepper-circle\">✓</div>\n                        <div class=\"stepper-line\"></div>\n                    </div>\n                    <div class=\"stepper-body\">\n                        <div class=\"stepper-num\">Step 1</div>\n                        <div class=\"stepper-title\">Screen</div>\n                        <div class=\"stepper-desc\">Security verdict: allow</div>\n                    </div>\n                </div>\n                \n                <div class=\"stepper-step stepper-completed\">\n                    <div class=\"stepper-node-wrap\">\n                        <div class=\"stepper-circle\">✓</div>\n                        <div class=\"stepper-line\"></div>\n                    </div>\n                    <div class=\"stepper-body\">\n                        <div class=\"stepper-num\">Step 2</div>\n                        <div class=\"stepper-title\">Route</div>\n                        <div class=\"stepper-desc\">weather-1 selected</div>\n                    </div>\n                </div>\n                \n                <div class=\"stepper-step stepper-active\">\n                    <div class=\"stepper-node-wrap\">\n                        <div class=\"stepper-circle\">3</div>\n                        <div class=\"stepper-line\"></div>\n                    </div>\n                    <div class=\"stepper-body\">\n                        <div class=\"stepper-num\">Step 3</div>\n                        <div class=\"stepper-title\">Dispatch</div>\n                        <div class=\"stepper-desc\">get_current_weather</div>\n                    </div>\n                </div>\n                \n                <div class=\"stepper-step stepper-pending\">\n                    <div class=\"stepper-node-wrap\">\n                        <div class=\"stepper-circle\">4</div>\n                        <div class=\"stepper-line\"></div>\n                    </div>\n                    <div class=\"stepper-body\">\n                        <div class=\"stepper-num\">Step 4</div>\n                        <div class=\"stepper-title\">Seal</div>\n                        <div class=\"stepper-desc\">AU-9 ledger append</div>\n                    </div>\n                </div>\n                \n                </div>\n            </div>\n            \n\n            <div class=\"chart-container\">\n                <div class=\"chart-header\">\n                    <div>\n                        <div class=\"chart-title\">Turns per agent</div>\n                        <div class=\"chart-subtitle\">rolling 7 days</div>\n                    </div>\n                    <div class=\"chart-legend\"><div class=\"chart-legend-item\"><span class=\"legend-color-dot\" style=\"background:#8b5cf6;\"></span><span>weather-1</span></div><div class=\"chart-legend-item\"><span class=\"legend-color-dot\" style=\"background:#6366f1;\"></span><span>ml-services-1</span></div></div>\n                </div>\n                <div class=\"svg-chart-wrap\">\n                    <svg viewBox=\"0 0 540 220\" class=\"responsive-svg-chart\">\n                        <line x1=\"60\" y1=\"25.0\" x2=\"530\" y2=\"25.0\" stroke=\"#26334d\" stroke-dasharray=\"3 3\"/><text x=\"52\" y=\"29.0\" fill=\"#64748b\" font-size=\"10\" text-anchor=\"end\">25</text><line x1=\"60\" y1=\"78.3\" x2=\"530\" y2=\"78.3\" stroke=\"#26334d\" stroke-dasharray=\"3 3\"/><text x=\"52\" y=\"82.3\" fill=\"#64748b\" font-size=\"10\" text-anchor=\"end\">16</text><line x1=\"60\" y1=\"131.7\" x2=\"530\" y2=\"131.7\" stroke=\"#26334d\" stroke-dasharray=\"3 3\"/><text x=\"52\" y=\"135.7\" fill=\"#64748b\" font-size=\"10\" text-anchor=\"end\">8</text><line x1=\"60\" y1=\"185.0\" x2=\"530\" y2=\"185.0\" stroke=\"#26334d\" stroke-dasharray=\"3 3\"/><text x=\"52\" y=\"189.0\" fill=\"#64748b\" font-size=\"10\" text-anchor=\"end\">0</text>\n                        <text x=\"92.9\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Mon</text><rect x=\"69.9\" y=\"109.1\" width=\"20.0\" height=\"75.9\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 12.0 </title></rect><text x=\"79.9\" y=\"105.1\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">12.0</text><rect x=\"92.9\" y=\"140.7\" width=\"20.0\" height=\"44.3\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 7.0 </title></rect><text x=\"102.9\" y=\"136.7\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">7.0</text><text x=\"158.6\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Tue</text><rect x=\"135.6\" y=\"71.2\" width=\"20.0\" height=\"113.8\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 18.0 </title></rect><text x=\"145.6\" y=\"67.2\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">18.0</text><rect x=\"158.6\" y=\"128.1\" width=\"20.0\" height=\"56.9\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 9.0 </title></rect><text x=\"168.6\" y=\"124.1\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">9.0</text><text x=\"224.3\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Wed</text><rect x=\"201.3\" y=\"96.5\" width=\"20.0\" height=\"88.5\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 14.0 </title></rect><text x=\"211.3\" y=\"92.5\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">14.0</text><rect x=\"224.3\" y=\"115.4\" width=\"20.0\" height=\"69.6\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 11.0 </title></rect><text x=\"234.3\" y=\"111.4\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">11.0</text><text x=\"290.0\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Thu</text><rect x=\"267.0\" y=\"45.9\" width=\"20.0\" height=\"139.1\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 22.0 </title></rect><text x=\"277.0\" y=\"41.9\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">22.0</text><rect x=\"290.0\" y=\"134.4\" width=\"20.0\" height=\"50.6\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 8.0 </title></rect><text x=\"300.0\" y=\"130.4\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">8.0</text><text x=\"355.7\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Fri</text><rect x=\"332.7\" y=\"64.8\" width=\"20.0\" height=\"120.2\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 19.0 </title></rect><text x=\"342.7\" y=\"60.8\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">19.0</text><rect x=\"355.7\" y=\"102.8\" width=\"20.0\" height=\"82.2\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 13.0 </title></rect><text x=\"365.7\" y=\"98.8\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">13.0</text><text x=\"421.4\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Sat</text><rect x=\"398.4\" y=\"134.4\" width=\"20.0\" height=\"50.6\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 8.0 </title></rect><text x=\"408.4\" y=\"130.4\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">8.0</text><rect x=\"421.4\" y=\"159.7\" width=\"20.0\" height=\"25.3\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 4.0 </title></rect><text x=\"431.4\" y=\"155.7\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">4.0</text><text x=\"487.1\" y=\"208\" fill=\"#94a3b8\" font-size=\"11\" font-weight=\"500\" text-anchor=\"middle\">Sun</text><rect x=\"464.1\" y=\"147.1\" width=\"20.0\" height=\"37.9\" rx=\"4\" fill=\"#8b5cf6\" opacity=\"0.9\"><title>weather-1: 6.0 </title></rect><text x=\"474.1\" y=\"143.1\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">6.0</text><rect x=\"487.1\" y=\"166.0\" width=\"20.0\" height=\"19.0\" rx=\"4\" fill=\"#6366f1\" opacity=\"0.9\"><title>ml-services-1: 3.0 </title></rect><text x=\"497.1\" y=\"162.0\" fill=\"#cbd5e1\" font-size=\"9\" text-anchor=\"middle\">3.0</text>\n                    </svg>\n                </div>\n            </div>\n            \n\n            <div class=\"chart-container radar-card\">\n                <div class=\"chart-header\">\n                    <div>\n                        <div class=\"chart-title\">Route quality</div>\n                        <div class=\"chart-subtitle\">TypeSafe vs. standard</div>\n                    </div>\n                    <div class=\"chart-legend\"><div class=\"chart-legend-item\"><span class=\"legend-color-dot\" style=\"background:#8b5cf6;\"></span><span>TypeSafe</span></div><div class=\"chart-legend-item\"><span class=\"legend-color-dot\" style=\"background:#6366f1;\"></span><span>Standard</span></div></div>\n                </div>\n                <div class=\"svg-chart-wrap radar-wrap\">\n                    <svg viewBox=\"0 0 480 270\" class=\"responsive-svg-chart\">\n                        <polygon points=\"160.0,112.5 181.4,128.0 173.2,153.2 146.8,153.2 138.6,128.0\" fill=\"none\" stroke=\"#26334d\" stroke-dasharray=\"2 2\" stroke-width=\"1\"/><polygon points=\"160.0,90.0 202.8,121.1 186.5,171.4 133.5,171.4 117.2,121.1\" fill=\"none\" stroke=\"#26334d\" stroke-dasharray=\"2 2\" stroke-width=\"1\"/><polygon points=\"160.0,67.5 224.2,114.1 199.7,189.6 120.3,189.6 95.8,114.1\" fill=\"none\" stroke=\"#26334d\" stroke-dasharray=\"2 2\" stroke-width=\"1\"/><polygon points=\"160.0,45.0 245.6,107.2 212.9,207.8 107.1,207.8 74.4,107.2\" fill=\"none\" stroke=\"#26334d\" stroke-dasharray=\"2 2\" stroke-width=\"1\"/><line x1=\"160\" y1=\"135\" x2=\"160.0\" y2=\"45.0\" stroke=\"#26334d\" stroke-width=\"1\"/><text x=\"160.0\" y=\"31.0\" fill=\"#94a3b8\" font-size=\"10\" font-weight=\"500\" text-anchor=\"middle\">Latency</text><line x1=\"160\" y1=\"135\" x2=\"245.6\" y2=\"107.2\" stroke=\"#26334d\" stroke-width=\"1\"/><text x=\"262.7\" y=\"105.6\" fill=\"#94a3b8\" font-size=\"10\" font-weight=\"500\" text-anchor=\"start\">Accuracy</text><line x1=\"160\" y1=\"135\" x2=\"212.9\" y2=\"207.8\" stroke=\"#26334d\" stroke-width=\"1\"/><text x=\"223.5\" y=\"226.4\" fill=\"#94a3b8\" font-size=\"10\" font-weight=\"500\" text-anchor=\"start\">Coverage</text><line x1=\"160\" y1=\"135\" x2=\"107.1\" y2=\"207.8\" stroke=\"#26334d\" stroke-width=\"1\"/><text x=\"96.5\" y=\"226.4\" fill=\"#94a3b8\" font-size=\"10\" font-weight=\"500\" text-anchor=\"end\">Stability</text><line x1=\"160\" y1=\"135\" x2=\"74.4\" y2=\"107.2\" stroke=\"#26334d\" stroke-width=\"1\"/><text x=\"57.3\" y=\"105.6\" fill=\"#94a3b8\" font-size=\"10\" font-weight=\"500\" text-anchor=\"end\">Cost</text>\n                        <polygon points=\"160.0,55.8 238.7,109.4 199.1,188.9 109.7,204.2 101.8,116.1\" fill=\"#8b5cf6\" fill-opacity=\"0.22\" stroke=\"#8b5cf6\" stroke-width=\"2\" stroke-linejoin=\"round\"/><circle cx=\"160.0\" cy=\"55.8\" r=\"3.5\" fill=\"#8b5cf6\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"238.7\" cy=\"109.4\" r=\"3.5\" fill=\"#8b5cf6\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"199.1\" cy=\"188.9\" r=\"3.5\" fill=\"#8b5cf6\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"109.7\" cy=\"204.2\" r=\"3.5\" fill=\"#8b5cf6\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"101.8\" cy=\"116.1\" r=\"3.5\" fill=\"#8b5cf6\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><polygon points=\"160.0,79.2 220.8,115.3 202.3,193.2 112.4,200.5 88.1,111.6\" fill=\"#6366f1\" fill-opacity=\"0.22\" stroke=\"#6366f1\" stroke-width=\"2\" stroke-linejoin=\"round\"/><circle cx=\"160.0\" cy=\"79.2\" r=\"3.5\" fill=\"#6366f1\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"220.8\" cy=\"115.3\" r=\"3.5\" fill=\"#6366f1\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"202.3\" cy=\"193.2\" r=\"3.5\" fill=\"#6366f1\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"112.4\" cy=\"200.5\" r=\"3.5\" fill=\"#6366f1\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/><circle cx=\"88.1\" cy=\"111.6\" r=\"3.5\" fill=\"#6366f1\" stroke=\"#0a0e17\" stroke-width=\"1.5\"/>\n                    </svg>\n                </div>\n            </div>\n            \n\n            <div class=\"astral-card\">\n                <div class=\"card-header-row\">\n                    <div>\n                        <h3 class=\"card-title\">Hourly forecast</h3>\n                        \n                    </div>\n                    \n                </div>\n                <div class=\"card-body\">\n            <div class=\"table-container\">\n                \n                <table class=\"astral-table\">\n                    <thead><tr><th>Hour</th><th>Temp</th><th>Precip</th><th>Wind</th></tr></thead>\n                    <tbody><tr><td>09:00</td><td>64°F</td><td>0%</td><td>6 mph</td></tr>\n<tr><td>10:00</td><td>66°F</td><td>0%</td><td>7 mph</td></tr>\n<tr><td>11:00</td><td>68°F</td><td>5%</td><td>8 mph</td></tr>\n<tr><td>12:00</td><td>71°F</td><td>10%</td><td>9 mph</td></tr>\n<tr><td>13:00</td><td>73°F</td><td>15%</td><td>11 mph</td></tr>\n<tr><td>14:00</td><td>74°F</td><td>20%</td><td>12 mph</td></tr></tbody>\n                </table>\n            </div>\n            </div>\n            </div>\n            \n\n            <div class=\"key-value-card\">\n                <h4 class=\"kv-title\">Route record</h4>\n                <dl class=\"kv-list\"><div class=\"kv-item\"><dt>Agent</dt><dd>weather-1</dd></div><div class=\"kv-item\"><dt>Tool</dt><dd>get_current_weather</dd></div><div class=\"kv-item\"><dt>Verdict</dt><dd>allow</dd></div><div class=\"kv-item\"><dt>Budget used</dt><dd>212 ms of 1500 ms</dd></div></dl>\n            </div>\n            \n<p class=\"text-body\">Conditions are stable; no advisories are in effect for the next six hours.</p>\n\n            <div class=\"action-group-wrapper\">\n                <div class=\"action-group-title\">Next steps</div>\n                <div class=\"action-group-buttons\">\n                    \n                <button class=\"btn btn-primary btn-action-pill\" data-action=\"forecast\" onclick=\"sendPrompt('Open 7-day forecast')\">\n                    \n                    <span>Open 7-day forecast</span>\n                </button>\n                \n                <button class=\"btn btn-secondary btn-action-pill\" data-action=\"compare\" onclick=\"sendPrompt('Compare with yesterday')\">\n                    \n                    <span>Compare with yesterday</span>\n                </button>\n                \n                <button class=\"btn btn-ghost btn-action-pill\" data-action=\"export\" onclick=\"sendPrompt('Export brief')\">\n                    \n                    <span>Export brief</span>\n                </button>\n                \n                </div>\n            </div>\n            ",
+  "components": [
+    {
+      "type": "hero",
+      "title": "Louisville, KY — Operational Brief",
+      "subtitle": "Live conditions, model throughput and route health",
+      "tags": [
+        "weather-1",
+        "ml-services-1",
+        "AU-9 Sealed"
+      ],
+      "metrics_strip": [
+        {
+          "label": "Temperature",
+          "value": "68°F"
+        },
+        {
+          "label": "Humidity",
+          "value": "62%"
+        },
+        {
+          "label": "Wind",
+          "value": "8 mph"
+        }
+      ],
+      "actions": []
+    },
+    {
+      "type": "stat_group",
+      "title": "Current conditions",
+      "stats": [
+        {
+          "label": "Temperature",
+          "value": "68°F",
+          "change": "+3°",
+          "trend": "up"
+        },
+        {
+          "label": "Feels like",
+          "value": "66°F",
+          "change": "-1°",
+          "trend": "down"
+        },
+        {
+          "label": "Wind",
+          "value": "8 mph",
+          "change": "210°",
+          "trend": "neutral"
+        },
+        {
+          "label": "Pressure",
+          "value": "1014 hPa",
+          "change": "steady",
+          "trend": "neutral"
+        }
+      ]
+    },
+    {
+      "type": "grid",
+      "columns": 3,
+      "gap": "16px",
+      "children": [
+        {
+          "type": "metric_card",
+          "title": "Routing p50",
+          "value": "186 ms",
+          "subtitle": "TypeSafe System One",
+          "change": "-14 ms",
+          "trend": "down"
+        },
+        {
+          "type": "metric_card",
+          "title": "Routing p95",
+          "value": "365 ms",
+          "subtitle": "260 catalog options",
+          "change": "+9 ms",
+          "trend": "up"
+        },
+        {
+          "type": "metric_card",
+          "title": "Fallbacks",
+          "value": "0",
+          "subtitle": "last 200 turns",
+          "trend": "neutral"
+        }
+      ]
+    },
+    {
+      "type": "grid",
+      "columns": 2,
+      "gap": "16px",
+      "children": [
+        {
+          "type": "gauge",
+          "title": "Humidity",
+          "value": 62.0,
+          "min_val": 0.0,
+          "max_val": 100.0,
+          "unit": "%",
+          "status": "nominal",
+          "subtitle": "Relative humidity"
+        },
+        {
+          "type": "donut_chart",
+          "title": "Tool dispatch mix",
+          "subtitle": "last 200 turns",
+          "segments": [
+            {
+              "label": "weather",
+              "value": 82.0
+            },
+            {
+              "label": "research",
+              "value": 54.0
+            },
+            {
+              "label": "compute",
+              "value": 39.0
+            },
+            {
+              "label": "other",
+              "value": 25.0
+            }
+          ],
+          "center_label": "turns",
+          "center_value": "200"
+        }
+      ]
+    },
+    {
+      "type": "pipeline_stepper",
+      "title": "Turn pipeline",
+      "subtitle": "Speculative route → dispatch → seal",
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Screen",
+          "status": "completed",
+          "description": "Security verdict: allow"
+        },
+        {
+          "step_number": 2,
+          "name": "Route",
+          "status": "completed",
+          "description": "weather-1 selected"
+        },
+        {
+          "step_number": 3,
+          "name": "Dispatch",
+          "status": "active",
+          "description": "get_current_weather"
+        },
+        {
+          "step_number": 4,
+          "name": "Seal",
+          "status": "pending",
+          "description": "AU-9 ledger append"
+        }
+      ]
+    },
+    {
+      "type": "bar_chart",
+      "title": "Turns per agent",
+      "subtitle": "rolling 7 days",
+      "categories": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ],
+      "series": [
+        {
+          "name": "weather-1",
+          "values": [
+            12.0,
+            18.0,
+            14.0,
+            22.0,
+            19.0,
+            8.0,
+            6.0
+          ]
+        },
+        {
+          "name": "ml-services-1",
+          "values": [
+            7.0,
+            9.0,
+            11.0,
+            8.0,
+            13.0,
+            4.0,
+            3.0
+          ]
+        }
+      ]
+    },
+    {
+      "type": "radar_chart",
+      "title": "Route quality",
+      "subtitle": "TypeSafe vs. standard",
+      "axes": [
+        "Latency",
+        "Accuracy",
+        "Coverage",
+        "Stability",
+        "Cost"
+      ],
+      "series": [
+        {
+          "name": "TypeSafe",
+          "values": [
+            88.0,
+            92.0,
+            74.0,
+            95.0,
+            68.0
+          ]
+        },
+        {
+          "name": "Standard",
+          "values": [
+            62.0,
+            71.0,
+            80.0,
+            90.0,
+            84.0
+          ]
+        }
+      ],
+      "max_val": 100.0
+    },
+    {
+      "type": "card",
+      "title": "Hourly forecast",
+      "children": [
+        {
+          "type": "table",
+          "columns": [
+            "Hour",
+            "Temp",
+            "Precip",
+            "Wind"
+          ],
+          "rows": [
+            [
+              "09:00",
+              "64°F",
+              "0%",
+              "6 mph"
+            ],
+            [
+              "10:00",
+              "66°F",
+              "0%",
+              "7 mph"
+            ],
+            [
+              "11:00",
+              "68°F",
+              "5%",
+              "8 mph"
+            ],
+            [
+              "12:00",
+              "71°F",
+              "10%",
+              "9 mph"
+            ],
+            [
+              "13:00",
+              "73°F",
+              "15%",
+              "11 mph"
+            ],
+            [
+              "14:00",
+              "74°F",
+              "20%",
+              "12 mph"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "type": "key_value",
+      "pairs": {
+        "Agent": "weather-1",
+        "Tool": "get_current_weather",
+        "Verdict": "allow",
+        "Budget used": "212 ms of 1500 ms"
+      },
+      "title": "Route record"
+    },
+    {
+      "type": "text",
+      "content": "Conditions are stable; no advisories are in effect for the next six hours.",
+      "variant": "body"
+    },
+    {
+      "type": "action_group",
+      "title": "Next steps",
+      "actions": [
+        {
+          "type": "button",
+          "label": "Open 7-day forecast",
+          "action": "forecast",
+          "payload": {},
+          "variant": "primary"
+        },
+        {
+          "type": "button",
+          "label": "Compare with yesterday",
+          "action": "compare",
+          "payload": {},
+          "variant": "secondary"
+        },
+        {
+          "type": "button",
+          "label": "Export brief",
+          "action": "export",
+          "payload": {},
+          "variant": "ghost"
+        }
+      ]
+    }
+  ],
+  "astral_components": [
+    {
+      "type": "hero",
+      "title": "Louisville, KY — Operational Brief",
+      "subtitle": "Live conditions, model throughput and route health",
+      "variant": "default",
+      "badges": []
+    },
+    {
+      "type": "stat_group",
+      "title": "Current conditions",
+      "items": [
+        {
+          "label": "Temperature",
+          "value": "68°F",
+          "hint": "Feels like 66°F"
+        },
+        {
+          "label": "Feels like",
+          "value": "66°F"
+        },
+        {
+          "label": "Wind",
+          "value": "8 mph",
+          "hint": "Direction 210°"
+        },
+        {
+          "label": "Pressure",
+          "value": "1014 hPa"
+        }
+      ],
+      "columns": 4
+    },
+    {
+      "type": "grid",
+      "columns": 3,
+      "children": [
+        {
+          "type": "metric",
+          "title": "Routing p50",
+          "value": "186 ms",
+          "subtitle": "TypeSafe System One",
+          "variant": "default"
+        },
+        {
+          "type": "metric",
+          "title": "Routing p95",
+          "value": "365 ms",
+          "subtitle": "260 catalog options",
+          "variant": "default"
+        },
+        {
+          "type": "metric",
+          "title": "Fallbacks",
+          "value": "0",
+          "subtitle": "last 200 turns",
+          "variant": "default"
+        }
+      ],
+      "gap": 20
+    },
+    {
+      "type": "grid",
+      "columns": 2,
+      "children": [
+        {
+          "type": "gauge",
+          "label": "Humidity",
+          "value": 0.62,
+          "display_value": "62%",
+          "thresholds": [
+            {
+              "at": 0.0,
+              "variant": "default"
+            },
+            {
+              "at": 0.7,
+              "variant": "warning"
+            },
+            {
+              "at": 0.9,
+              "variant": "error"
+            }
+          ]
+        },
+        {
+          "type": "donut_chart",
+          "title": "Tool dispatch mix",
+          "labels": [],
+          "data": [],
+          "center_label": "turns",
+          "center_value": "200"
+        }
+      ],
+      "gap": 20
+    },
+    {
+      "type": "pipeline_stepper",
+      "title": "Turn pipeline",
+      "steps": [
+        {
+          "label": "Screen",
+          "status": "done",
+          "detail": "Security verdict: allow"
+        },
+        {
+          "label": "Route",
+          "status": "done",
+          "detail": "weather-1 selected"
+        },
+        {
+          "label": "Dispatch",
+          "status": "active",
+          "detail": "get_current_weather"
+        },
+        {
+          "label": "Seal",
+          "status": "pending",
+          "detail": "audit ledger append"
+        }
+      ],
+      "orientation": "horizontal"
+    },
+    {
+      "type": "bar_chart",
+      "title": "Turns per agent",
+      "labels": [
+        "Mon",
+        "Tue",
+        "Wed",
+        "Thu",
+        "Fri",
+        "Sat",
+        "Sun"
+      ],
+      "datasets": [
+        {
+          "label": "weather-1",
+          "data": [
+            12,
+            18,
+            14,
+            22,
+            19,
+            8,
+            6
+          ]
+        },
+        {
+          "label": "ml-services-1",
+          "data": [
+            7,
+            9,
+            11,
+            8,
+            13,
+            4,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "type": "radar_chart",
+      "title": "Route quality",
+      "axes": [
+        "Latency",
+        "Accuracy",
+        "Coverage",
+        "Stability",
+        "Cost"
+      ],
+      "datasets": [
+        {
+          "label": "TypeSafe",
+          "data": [
+            88,
+            92,
+            74,
+            95,
+            68
+          ]
+        },
+        {
+          "label": "Standard",
+          "data": [
+            62,
+            71,
+            80,
+            90,
+            84
+          ]
+        }
+      ]
+    },
+    {
+      "type": "card",
+      "title": "Hourly forecast",
+      "content": [],
+      "variant": "default"
+    },
+    {
+      "type": "keyvalue",
+      "title": "Route record",
+      "items": [
+        {
+          "key": "Agent",
+          "value": "weather-1"
+        },
+        {
+          "key": "Tool",
+          "value": "get_current_weather"
+        },
+        {
+          "key": "Verdict",
+          "value": "allow"
+        },
+        {
+          "key": "Budget used",
+          "value": "212 ms of 1500 ms"
+        }
+      ],
+      "columns": 2
+    },
+    {
+      "type": "text",
+      "content": "Conditions are stable; no advisories are in effect for the next six hours.",
+      "variant": "body"
+    },
+    {
+      "type": "action_group",
+      "buttons": [],
+      "align": "start"
+    }
+  ],
+  "astral_ui_html": {
+    "1920": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"4\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div class=\"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\" style=\"gap:20px\"><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div></div><div class=\"grid grid-cols-1 sm:grid-cols-2\" style=\"gap:20px\"><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"horizontal\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-radar-chart\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Route quality</h3><svg viewBox=\"0 0 100 100\" class=\"astral-radar-svg w-48\" role=\"img\" aria-label=\"Radar chart: Route quality\"><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"12\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"24\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"36\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"45\" fill=\"none\" stroke-width=\"0.5\"></circle><polygon class=\"astral-series-1 astral-radar-area\" points=\"50.0,8.32 91.45,36.53 70.6,78.36 23.55,86.41 19.37,40.05\"></polygon><polygon class=\"astral-series-2 astral-radar-area\" points=\"50.0,20.63 81.99,39.61 72.27,80.66 24.94,84.49 12.16,37.7\"></polygon></svg><ul class=\"astral-legend flex flex-wrap gap-2 mt-2\"><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-1\" aria-hidden=\"true\"></span>TypeSafe</li><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-2\" aria-hidden=\"true\"></span>Standard</li></ul><table class=\"astral-sr-only\"><caption>Route quality</caption><thead><tr><th scope=\"col\"></th><th scope=\"col\">Latency</th><th scope=\"col\">Accuracy</th><th scope=\"col\">Coverage</th><th scope=\"col\">Stability</th><th scope=\"col\">Cost</th></tr></thead><tbody><tr><th scope=\"row\">TypeSafe</th><td>88</td><td>92</td><td>74</td><td>95</td><td>68</td></tr><tr><th scope=\"row\">Standard</th><td>62</td><td>71</td><td>80</td><td>90</td><td>84</td></tr></tbody></table></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "1440": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"4\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div class=\"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\" style=\"gap:20px\"><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div></div><div class=\"grid grid-cols-1 sm:grid-cols-2\" style=\"gap:20px\"><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"horizontal\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-radar-chart\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Route quality</h3><svg viewBox=\"0 0 100 100\" class=\"astral-radar-svg w-48\" role=\"img\" aria-label=\"Radar chart: Route quality\"><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"12\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"24\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"36\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"45\" fill=\"none\" stroke-width=\"0.5\"></circle><polygon class=\"astral-series-1 astral-radar-area\" points=\"50.0,8.32 91.45,36.53 70.6,78.36 23.55,86.41 19.37,40.05\"></polygon><polygon class=\"astral-series-2 astral-radar-area\" points=\"50.0,20.63 81.99,39.61 72.27,80.66 24.94,84.49 12.16,37.7\"></polygon></svg><ul class=\"astral-legend flex flex-wrap gap-2 mt-2\"><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-1\" aria-hidden=\"true\"></span>TypeSafe</li><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-2\" aria-hidden=\"true\"></span>Standard</li></ul><table class=\"astral-sr-only\"><caption>Route quality</caption><thead><tr><th scope=\"col\"></th><th scope=\"col\">Latency</th><th scope=\"col\">Accuracy</th><th scope=\"col\">Coverage</th><th scope=\"col\">Stability</th><th scope=\"col\">Cost</th></tr></thead><tbody><tr><th scope=\"row\">TypeSafe</th><td>88</td><td>92</td><td>74</td><td>95</td><td>68</td></tr><tr><th scope=\"row\">Standard</th><td>62</td><td>71</td><td>80</td><td>90</td><td>84</td></tr></tbody></table></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "1280": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"4\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div class=\"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\" style=\"gap:20px\"><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div></div><div class=\"grid grid-cols-1 sm:grid-cols-2\" style=\"gap:20px\"><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"horizontal\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-radar-chart\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Route quality</h3><svg viewBox=\"0 0 100 100\" class=\"astral-radar-svg w-48\" role=\"img\" aria-label=\"Radar chart: Route quality\"><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"12\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"24\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"36\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"45\" fill=\"none\" stroke-width=\"0.5\"></circle><polygon class=\"astral-series-1 astral-radar-area\" points=\"50.0,8.32 91.45,36.53 70.6,78.36 23.55,86.41 19.37,40.05\"></polygon><polygon class=\"astral-series-2 astral-radar-area\" points=\"50.0,20.63 81.99,39.61 72.27,80.66 24.94,84.49 12.16,37.7\"></polygon></svg><ul class=\"astral-legend flex flex-wrap gap-2 mt-2\"><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-1\" aria-hidden=\"true\"></span>TypeSafe</li><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-2\" aria-hidden=\"true\"></span>Standard</li></ul><table class=\"astral-sr-only\"><caption>Route quality</caption><thead><tr><th scope=\"col\"></th><th scope=\"col\">Latency</th><th scope=\"col\">Accuracy</th><th scope=\"col\">Coverage</th><th scope=\"col\">Stability</th><th scope=\"col\">Cost</th></tr></thead><tbody><tr><th scope=\"row\">TypeSafe</th><td>88</td><td>92</td><td>74</td><td>95</td><td>68</td></tr><tr><th scope=\"row\">Standard</th><td>62</td><td>71</td><td>80</td><td>90</td><td>84</td></tr></tbody></table></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "1024": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"3\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div class=\"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\" style=\"gap:20px\"><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div></div><div class=\"grid grid-cols-1 sm:grid-cols-2\" style=\"gap:20px\"><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"horizontal\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-radar-chart\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Route quality</h3><svg viewBox=\"0 0 100 100\" class=\"astral-radar-svg w-48\" role=\"img\" aria-label=\"Radar chart: Route quality\"><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"12\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"24\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"36\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"45\" fill=\"none\" stroke-width=\"0.5\"></circle><polygon class=\"astral-series-1 astral-radar-area\" points=\"50.0,8.32 91.45,36.53 70.6,78.36 23.55,86.41 19.37,40.05\"></polygon><polygon class=\"astral-series-2 astral-radar-area\" points=\"50.0,20.63 81.99,39.61 72.27,80.66 24.94,84.49 12.16,37.7\"></polygon></svg><ul class=\"astral-legend flex flex-wrap gap-2 mt-2\"><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-1\" aria-hidden=\"true\"></span>TypeSafe</li><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-2\" aria-hidden=\"true\"></span>Standard</li></ul><table class=\"astral-sr-only\"><caption>Route quality</caption><thead><tr><th scope=\"col\"></th><th scope=\"col\">Latency</th><th scope=\"col\">Accuracy</th><th scope=\"col\">Coverage</th><th scope=\"col\">Stability</th><th scope=\"col\">Cost</th></tr></thead><tbody><tr><th scope=\"row\">TypeSafe</th><td>88</td><td>92</td><td>74</td><td>95</td><td>68</td></tr><tr><th scope=\"row\">Standard</th><td>62</td><td>71</td><td>80</td><td>90</td><td>84</td></tr></tbody></table></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "768": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"3\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div class=\"grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3\" style=\"gap:20px\"><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div></div><div class=\"grid grid-cols-1 sm:grid-cols-2\" style=\"gap:20px\"><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"horizontal\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-radar-chart\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Route quality</h3><svg viewBox=\"0 0 100 100\" class=\"astral-radar-svg w-48\" role=\"img\" aria-label=\"Radar chart: Route quality\"><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"12\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"24\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"36\" fill=\"none\" stroke-width=\"0.5\"></circle><circle class=\"astral-radar-ring\" cx=\"50\" cy=\"50\" r=\"45\" fill=\"none\" stroke-width=\"0.5\"></circle><polygon class=\"astral-series-1 astral-radar-area\" points=\"50.0,8.32 91.45,36.53 70.6,78.36 23.55,86.41 19.37,40.05\"></polygon><polygon class=\"astral-series-2 astral-radar-area\" points=\"50.0,20.63 81.99,39.61 72.27,80.66 24.94,84.49 12.16,37.7\"></polygon></svg><ul class=\"astral-legend flex flex-wrap gap-2 mt-2\"><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-1\" aria-hidden=\"true\"></span>TypeSafe</li><li class=\"flex items-center gap-1 text-[11px] text-astral-muted\"><span class=\"astral-legend-swatch astral-series-2\" aria-hidden=\"true\"></span>Standard</li></ul><table class=\"astral-sr-only\"><caption>Route quality</caption><thead><tr><th scope=\"col\"></th><th scope=\"col\">Latency</th><th scope=\"col\">Accuracy</th><th scope=\"col\">Coverage</th><th scope=\"col\">Stability</th><th scope=\"col\">Cost</th></tr></thead><tbody><tr><th scope=\"row\">TypeSafe</th><td>88</td><td>92</td><td>74</td><td>95</td><td>68</td></tr><tr><th scope=\"row\">Standard</th><td>62</td><td>71</td><td>80</td><td>90</td><td>84</td></tr></tbody></table></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "390": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"1\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"vertical\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-table-wrap rounded-lg border border-white/10\"><div class=\"p-3 border-b border-white/5 bg-astral-primary/5 flex items-center justify-between\"><div class=\"text-sm font-medium text-astral-text\">Route quality</div></div><div class=\"overflow-x-auto\"><table class=\"w-full text-sm\" aria-label=\"Route quality\"><thead><tr class=\"bg-astral-primary/10 border-b border-white/5\"></tr></thead><tbody><tr class=\"border-b border-white/5 hover:bg-white/5 transition-colors\"><td class=\"px-4 py-3 text-astral-text\">TypeSafe</td><td class=\"px-4 py-3 text-astral-text\">88</td><td class=\"px-4 py-3 text-astral-text\">92</td><td class=\"px-4 py-3 text-astral-text\">74</td><td class=\"px-4 py-3 text-astral-text\">95</td><td class=\"px-4 py-3 text-astral-text\">68</td></tr><tr class=\"border-b border-white/5 hover:bg-white/5 transition-colors\"><td class=\"px-4 py-3 text-astral-text\">Standard</td><td class=\"px-4 py-3 text-astral-text\">62</td><td class=\"px-4 py-3 text-astral-text\">71</td><td class=\"px-4 py-3 text-astral-text\">80</td><td class=\"px-4 py-3 text-astral-text\">90</td><td class=\"px-4 py-3 text-astral-text\">84</td></tr></tbody></table></div></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>",
+    "320": "<div class=\"dynamic-renderer space-y-3\"><div class=\"astral-hero astral-hero--default rounded-xl p-5\"><div class=\"flex items-center\"><h2 class=\"text-2xl font-bold text-astral-text tracking-tight\">Louisville, KY — Operational Brief</h2></div><p class=\"text-sm text-astral-muted mt-1\">Live conditions, model throughput and route health</p></div><div class=\"astral-stat-group\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Current conditions</h3><dl class=\"astral-stat-grid grid gap-2\" data-columns=\"1\"><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Temperature</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">68°F </dd><dd class=\"text-[11px] text-astral-muted\">Feels like 66°F</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Feels like</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">66°F </dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Wind</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">8 mph </dd><dd class=\"text-[11px] text-astral-muted\">Direction 210°</dd></div><div class=\"astral-stat rounded-lg border border-white/10 bg-white/5 p-3\"><dt class=\"text-xs text-astral-muted\">Pressure</dt><dd class=\"astral-stat-value text-lg font-semibold text-astral-text\">1014 hPa </dd></div></dl></div><div aria-label=\"Routing p50: 186 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p50</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">186 ms</p><p class=\"text-xs text-astral-muted mt-1\">TypeSafe System One</p></div></div><div aria-label=\"Routing p95: 365 ms\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Routing p95</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">365 ms</p><p class=\"text-xs text-astral-muted mt-1\">260 catalog options</p></div></div><div aria-label=\"Fallbacks: 0\" class=\"astral-metric astral-metric--default rounded-xl p-4 bg-gradient-to-br from-astral-primary/20 to-astral-primary/5 border border-white/5 relative\"><p class=\"text-xs text-astral-muted font-medium uppercase tracking-wider mb-1\">Fallbacks</p><div class=\"flex-1\"><p class=\"text-2xl font-bold text-astral-text\">0</p><p class=\"text-xs text-astral-muted mt-1\">last 200 turns</p></div></div><div class=\"astral-gauge astral-state-default flex flex-col items-center gap-1\"><svg viewBox=\"0 0 100 56\" class=\"astral-gauge-svg w-32\" role=\"img\" aria-label=\"Humidity: 62%\"><path class=\"astral-gauge-track\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"126.0\"></path><path class=\"astral-gauge-fill\" d=\"M 10 50 A 40 40 0 0 1 90 50\" fill=\"none\" stroke-width=\"8\" stroke-linecap=\"round\" stroke-dasharray=\"78.12 126.0\"></path></svg><p class=\"astral-gauge-value text-lg font-semibold text-astral-text\">62%</p><p class=\"text-xs text-astral-muted\">Humidity</p></div><div class=\"astral-pipeline-stepper\"><h3 class=\"text-sm font-semibold text-astral-text mb-2\">Turn pipeline</h3><ol class=\"astral-stepper-list flex gap-3\" data-orientation=\"vertical\"><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Screen</span><span class=\"text-[11px] text-astral-muted\">Security verdict: allow</span></li><li class=\"astral-step astral-state-success flex items-center gap-2\" data-status=\"done\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Route</span><span class=\"text-[11px] text-astral-muted\">weather-1 selected</span></li><li class=\"astral-step astral-state-info flex items-center gap-2\" aria-current=\"step\" data-status=\"active\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Dispatch</span><span class=\"text-[11px] text-astral-muted\">get<em>current</em>weather</span></li><li class=\"astral-step astral-state-default flex items-center gap-2\" data-status=\"pending\"><span class=\"astral-step-dot\" aria-hidden=\"true\"></span><span class=\"text-xs text-astral-text\">Seal</span><span class=\"text-[11px] text-astral-muted\">audit ledger append</span></li></ol></div><div class=\"astral-chart-card w-full\"><p class=\"text-sm font-medium text-astral-text mb-3\">Turns per agent</p><div class=\"astral-chart\" data-chart-type=\"bar\" data-chart=\"{&quot;labels&quot;: [&quot;Mon&quot;, &quot;Tue&quot;, &quot;Wed&quot;, &quot;Thu&quot;, &quot;Fri&quot;, &quot;Sat&quot;, &quot;Sun&quot;], &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6], &quot;datasets&quot;: [{&quot;label&quot;: &quot;weather-1&quot;, &quot;data&quot;: [12, 18, 14, 22, 19, 8, 6]}, {&quot;label&quot;: &quot;ml-services-1&quot;, &quot;data&quot;: [7, 9, 11, 8, 13, 4, 3]}]}\" role=\"img\" aria-label=\"Bar chart: Turns per agent\" style=\"min-height:320px\"></div><span class=\"astral-sr-only\">7 data points, range 6 to 22</span></div><div class=\"astral-table-wrap rounded-lg border border-white/10\"><div class=\"p-3 border-b border-white/5 bg-astral-primary/5 flex items-center justify-between\"><div class=\"text-sm font-medium text-astral-text\">Route quality</div></div><div class=\"overflow-x-auto\"><table class=\"w-full text-sm\" aria-label=\"Route quality\"><thead><tr class=\"bg-astral-primary/10 border-b border-white/5\"></tr></thead><tbody><tr class=\"border-b border-white/5 hover:bg-white/5 transition-colors\"><td class=\"px-4 py-3 text-astral-text\">TypeSafe</td><td class=\"px-4 py-3 text-astral-text\">88</td><td class=\"px-4 py-3 text-astral-text\">92</td><td class=\"px-4 py-3 text-astral-text\">74</td><td class=\"px-4 py-3 text-astral-text\">95</td><td class=\"px-4 py-3 text-astral-text\">68</td></tr><tr class=\"border-b border-white/5 hover:bg-white/5 transition-colors\"><td class=\"px-4 py-3 text-astral-text\">Standard</td><td class=\"px-4 py-3 text-astral-text\">62</td><td class=\"px-4 py-3 text-astral-text\">71</td><td class=\"px-4 py-3 text-astral-text\">80</td><td class=\"px-4 py-3 text-astral-text\">90</td><td class=\"px-4 py-3 text-astral-text\">84</td></tr></tbody></table></div></div><div class=\"astral-card\"><div class=\"mb-3\"><h3 class=\"text-base font-semibold text-astral-text flex items-center gap-2\"><span class=\"w-1 h-4 rounded-full bg-astral-primary inline-block\"></span>Hourly forecast</h3></div><div class=\"space-y-3\"></div></div><div class=\"astral-kv rounded-lg p-4\"><p class=\"text-sm font-semibold text-astral-text mb-3\">Route record</p><dl class=\"grid grid-cols-1 sm:grid-cols-2 gap-3\"><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">weather-1</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">get_current_weather</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">allow</dd></div><div class=\"astral-kv-item\"><dt class=\"text-xs text-astral-muted font-medium uppercase tracking-wider\"></dt><dd class=\"text-sm font-semibold text-astral-text mt-0.5\">212 ms of 1500 ms</dd></div></dl></div><p class=\"text-sm text-astral-text leading-relaxed\">Conditions are stable; no advisories are in effect for the next six hours.</p><div class=\"astral-action-group flex flex-col gap-2\" role=\"group\"><div class=\"flex flex-wrap gap-2 justify-start\"></div></div></div>"
+  }
+}

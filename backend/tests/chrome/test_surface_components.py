@@ -171,11 +171,27 @@ def test_llm_components_form_multi_action():
     forms = [c for c in _flat(comps) if c.get("type") == "param_picker"]
     assert len(forms) == 1
     acts = [a["action"] for a in forms[0]["actions"]]
-    assert acts == ["chrome_llm_models", "chrome_llm_test", "chrome_llm_save"]
+    # Feature 089 appends the TypeSafe save. It is last because it is optional:
+    # the three actions before it are how a user gets working at all.
+    assert acts == [
+        "chrome_llm_models",
+        "chrome_llm_test",
+        "chrome_llm_save",
+        "chrome_typesafe_save",
+    ]
     kinds = {f["name"]: f["kind"] for f in forms[0]["fields"]}
     assert kinds["api_key"] == "password"           # write-only key
+    assert kinds["typesafe_api_key"] == "password"  # 089: also write-only
+    assert kinds["data_sharing_acknowledged"] == "boolean"
+    # The acknowledgment sits below every credential input and above the
+    # actions, which is the placement US7 specifies.
+    names = [f["name"] for f in forms[0]["fields"]]
+    assert names.index("data_sharing_acknowledged") > names.index("api_key")
+    assert names.index("data_sharing_acknowledged") > names.index("typesafe_api_key")
+    assert names[-1] == "data_sharing_acknowledged"
     handlers = collect_handlers()
-    for a in ("chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear"):
+    for a in ("chrome_llm_models", "chrome_llm_test", "chrome_llm_save",
+              "chrome_llm_clear", "chrome_typesafe_save", "chrome_typesafe_clear"):
         assert a in handlers
 
 

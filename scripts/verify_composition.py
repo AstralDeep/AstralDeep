@@ -724,11 +724,13 @@ def _plane_schema_literal_import(
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
         raise CompositionError(f"Plane {stem} schema must contain only the reviewed literal tuple")
     items = list(declarations[0].value.elts)
-    # 088.006 writes multiline SQL as literal_string.strip(). Normalize only
-    # that exact syntax in its reviewed module; never execute candidate calls
-    # or broaden other imported schemas' literal grammar.
+    # 088.006 writes multiline SQL as literal_string.strip(), and 089.001
+    # follows it. Normalize only that exact syntax in the reviewed modules;
+    # never execute candidate calls or broaden other imported schemas'
+    # literal grammar.
     for index, item in enumerate(items):
-        if (stem in {"selected_input", "scheduler_policy", "framework_credential"}
+        if (stem in {"selected_input", "scheduler_policy", "framework_credential",
+                     "typesafe_credential"}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
@@ -756,6 +758,9 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("selected_input", "SELECTED_INPUT_SCHEMA_STATEMENTS"),
         ("scheduler_policy", "SCHEDULER_POLICY_SCHEMA_STATEMENTS"),
         ("framework_credential", "FRAMEWORK_CREDENTIAL_SCHEMA_STATEMENTS"),
+        # Feature 089 (089.001): the TypeSafe credential and data-sharing
+        # acknowledgment tables.
+        ("typesafe_credential", "TYPESAFE_CREDENTIAL_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

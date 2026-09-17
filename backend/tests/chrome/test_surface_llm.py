@@ -135,6 +135,9 @@ def test_registry_resolves_llm_surface():
 def test_handlers_cover_contract_actions():
     assert set(llm_surface.HANDLERS) == {
         "chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear",
+        # Feature 089: the TypeSafe key lives on the same surface, because it
+        # is the same decision the user is making in the same place.
+        "chrome_typesafe_save", "chrome_typesafe_clear",
     }
     for fn in llm_surface.HANDLERS.values():
         assert asyncio.iscoroutinefunction(fn)

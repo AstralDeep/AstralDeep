@@ -1,0 +1,328 @@
+{
+  "_comment": [
+    "Feature 089 (T014): the labeled routing corpus.",
+    "",
+    "`accepted_tools` is a set, not a single answer. Several prompts have more",
+    "than one defensible target, and scoring a router against one arbitrary",
+    "pick would measure agreement with the label writer rather than usefulness",
+    "to the user. `expected_tier` says what the tiering rules should conclude,",
+    "which is the thing T028 calibrates.",
+    "",
+    "Every prompt is synthetic. None contains a credential, a key prefix, PHI,",
+    "or a real patient, user or institutional record."
+  ],
+  "cases": [
+    {
+      "id": "single-tool-weather-current",
+      "category": "single_tool",
+      "prompt": "What's the weather in Lexington right now?",
+      "accepted_agents": [
+        "weather-1"
+      ],
+      "accepted_tools": [
+        "weather-1__get_current_weather"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "single-tool-weather-week",
+      "category": "single_tool",
+      "prompt": "Give me the forecast for the rest of this week in Louisville.",
+      "accepted_agents": [
+        "weather-1"
+      ],
+      "accepted_tools": [
+        "weather-1__get_daily_forecast"
+      ],
+      "expected_tier": "high",
+      "expected_style": "detailed_table"
+    },
+    {
+      "id": "single-tool-dice",
+      "category": "single_tool",
+      "prompt": "Roll 6d20 for me.",
+      "accepted_agents": [
+        "dice-roller-1"
+      ],
+      "accepted_tools": [
+        "dice-roller-1__roll_dice"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "single-tool-cluster",
+      "category": "single_tool",
+      "prompt": "How busy is the GPU cluster at the moment?",
+      "accepted_agents": [
+        "remote-compute-1"
+      ],
+      "accepted_tools": [
+        "remote-compute-1__inspect_compute_cluster"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "single-tool-lookup",
+      "category": "single_tool",
+      "prompt": "Who was Grace Hopper?",
+      "accepted_agents": [
+        "general-1"
+      ],
+      "accepted_tools": [
+        "general-1__search_wikipedia"
+      ],
+      "expected_tier": "high",
+      "expected_style": "conversational"
+    },
+    {
+      "id": "multi-tool-weather-compare",
+      "category": "multi_tool",
+      "prompt": "Compare the weather in Lexington and Cincinnati, and tell me if either has an alert.",
+      "accepted_agents": [
+        "weather-1"
+      ],
+      "accepted_tools": [
+        "weather-1__compare_locations",
+        "weather-1__get_current_weather",
+        "weather-1__get_weather_alerts"
+      ],
+      "expected_tier": "medium",
+      "expected_style": "detailed_table"
+    },
+    {
+      "id": "multi-tool-host",
+      "category": "multi_tool",
+      "prompt": "Is this machine under load? Check CPU and memory.",
+      "accepted_agents": [
+        "general-1"
+      ],
+      "accepted_tools": [
+        "general-1__get_cpu_info",
+        "general-1__get_memory_info",
+        "general-1__get_system_status"
+      ],
+      "expected_tier": "medium",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "multi-tool-cluster",
+      "category": "multi_tool",
+      "prompt": "What's running on the cluster and what's still waiting?",
+      "accepted_agents": [
+        "remote-compute-1"
+      ],
+      "accepted_tools": [
+        "remote-compute-1__list_queue",
+        "remote-compute-1__inspect_compute_cluster"
+      ],
+      "expected_tier": "medium",
+      "expected_style": "detailed_table"
+    },
+    {
+      "id": "conversational-followup-thanks",
+      "category": "conversational_followup",
+      "prompt": "Thanks, that's what I needed.",
+      "accepted_agents": [
+        "no_tool_needed"
+      ],
+      "accepted_tools": [],
+      "expected_tier": "low",
+      "expected_style": "conversational",
+      "history": [
+        {
+          "role": "user",
+          "content": "What's the weather in Lexington right now?"
+        },
+        {
+          "role": "assistant",
+          "content": "It's 68F and clear in Lexington."
+        }
+      ]
+    },
+    {
+      "id": "conversational-followup-explain",
+      "category": "conversational_followup",
+      "prompt": "Why is that different from what you told me yesterday?",
+      "accepted_agents": [
+        "no_tool_needed"
+      ],
+      "accepted_tools": [],
+      "expected_tier": "low",
+      "expected_style": "conversational",
+      "history": [
+        {
+          "role": "user",
+          "content": "How many jobs are queued?"
+        },
+        {
+          "role": "assistant",
+          "content": "Four jobs are queued and two are running."
+        }
+      ]
+    },
+    {
+      "id": "conversational-greeting",
+      "category": "conversational_followup",
+      "prompt": "Hi there.",
+      "accepted_agents": [
+        "no_tool_needed"
+      ],
+      "accepted_tools": [],
+      "expected_tier": "low",
+      "expected_style": "conversational"
+    },
+    {
+      "id": "ambiguous-status",
+      "category": "ambiguous",
+      "prompt": "What's the status?",
+      "accepted_agents": [
+        "general-1",
+        "remote-compute-1",
+        "no_tool_needed"
+      ],
+      "accepted_tools": [
+        "general-1__get_system_status",
+        "remote-compute-1__inspect_compute_cluster",
+        "remote-compute-1__list_queue"
+      ],
+      "expected_tier": "low",
+      "expected_style": "as_delivered",
+      "note": "With no active agent this is genuinely under-determined. The low tier is the correct answer, not a failure."
+    },
+    {
+      "id": "ambiguous-run-it",
+      "category": "ambiguous",
+      "prompt": "Can you run that for me?",
+      "accepted_agents": [
+        "general-1",
+        "remote-compute-1",
+        "ml-services-1",
+        "no_tool_needed"
+      ],
+      "accepted_tools": [],
+      "expected_tier": "low",
+      "expected_style": "as_delivered"
+    },
+    {
+      "id": "ambiguous-forecast-word",
+      "category": "ambiguous",
+      "prompt": "I need a forecast.",
+      "accepted_agents": [
+        "weather-1",
+        "ml-services-1"
+      ],
+      "accepted_tools": [
+        "weather-1__get_daily_forecast",
+        "ml-services-1__forecaster_time_series"
+      ],
+      "expected_tier": "medium",
+      "expected_style": "as_delivered",
+      "note": "Weather and clinical-volume forecasting share the word. A shortlist is the honest answer."
+    },
+    {
+      "id": "collision-cluster-status",
+      "category": "name_collision",
+      "prompt": "Check the cluster status.",
+      "catalog": "collision_catalog",
+      "accepted_agents": [
+        "remote-compute-1"
+      ],
+      "accepted_tools": [
+        "remote-compute-1__get_status"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "collision-host-status",
+      "category": "name_collision",
+      "prompt": "Check this machine's status.",
+      "catalog": "collision_catalog",
+      "accepted_agents": [
+        "general-1"
+      ],
+      "accepted_tools": [
+        "general-1__get_status"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard"
+    },
+    {
+      "id": "disabled-agent-weather",
+      "category": "disabled_agent",
+      "prompt": "What's the weather in Lexington right now?",
+      "excluded_agents": [
+        "weather-1"
+      ],
+      "accepted_agents": [
+        "no_tool_needed",
+        "general-1",
+        "web-research-1"
+      ],
+      "accepted_tools": [
+        "web-research-1__web_search",
+        "general-1__search_wikipedia"
+      ],
+      "expected_tier": "high",
+      "expected_style": "conversational",
+      "note": "A disabled agent must never be offered, which is the assertion that matters. What the router does instead is a judgement call: searching the web for the weather when the weather agent is unavailable is useful, not a routing error. The first version of this label accepted only no_tool_needed and was measuring label strictness rather than router quality. Widened 2026-09-17 after a live run routed it to web search at 0.87/0.97 confidence."
+    },
+    {
+      "id": "deselected-tool-forecast",
+      "category": "deselected_tool",
+      "prompt": "Give me the forecast for the rest of this week in Louisville.",
+      "excluded_tools": [
+        "weather-1__get_daily_forecast",
+        "weather-1__get_weekly_forecast"
+      ],
+      "accepted_agents": [
+        "weather-1"
+      ],
+      "accepted_tools": [
+        "weather-1__get_hourly_forecast",
+        "weather-1__get_current_weather"
+      ],
+      "expected_tier": "low",
+      "expected_style": "detailed_table",
+      "note": "The obvious tool was deselected by the user. The router must work with what is left and never offer what was removed. A live run answered none_fit, which is honest rather than wrong: the remaining tools do not give a week's forecast. Either a shortlist or an unchanged round one is acceptable, so the expected tier is the conservative one."
+    },
+    {
+      "id": "large-catalog-weather",
+      "category": "large_catalog",
+      "prompt": "What's the weather in Lexington right now?",
+      "synthetic_catalog": {
+        "agents": 60,
+        "tools_per_agent": 8
+      },
+      "accepted_agents": [
+        "weather-1"
+      ],
+      "accepted_tools": [
+        "weather-1__get_current_weather"
+      ],
+      "expected_tier": "high",
+      "expected_style": "dashboard",
+      "note": "The real agent and tool are appended to a 60x8 synthetic catalog, which is how the truncation bounds get exercised."
+    },
+    {
+      "id": "large-catalog-ambiguous",
+      "category": "large_catalog",
+      "prompt": "Summarize this for me.",
+      "synthetic_catalog": {
+        "agents": 60,
+        "tools_per_agent": 8
+      },
+      "accepted_agents": [
+        "summarizer-1"
+      ],
+      "accepted_tools": [
+        "summarizer-1__summarize_text"
+      ],
+      "expected_tier": "medium",
+      "expected_style": "conversational"
+    }
+  ]
+}

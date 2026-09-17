@@ -118,6 +118,17 @@ class FeatureFlags:
             # + four enforcement invariants live in orchestrator/delegation.py.
             # See specs/048-recursive-delegation-chains/.
             "recursive_delegation": self._read("FF_RECURSIVE_DELEGATION", False),
+            # 089-typesafe-a8p-integration: one TypeSafe System One call per
+            # turn narrows the first LLM round, adds an additive security
+            # screen, and picks the result arrangement -- for users who saved
+            # their OWN TypeSafe key. Default ON, because with no key the flag
+            # changes nothing: routing already costs zero calls and produces a
+            # byte-identical round one. OFF is an operations kill switch that
+            # puts every user on that same no-key path. It is not a rollout
+            # percentage: a routing decision that depended on which bucket a
+            # user landed in would not be reproducible from a commit.
+            # See specs/089-typesafe-a8p-integration/.
+            "typesafe_routing": self._read("FF_TYPESAFE_ROUTING", True),
             # 055-uniform-artifacts US1: welcome components carry wel_
             # identities and clients purge them locally at turn start; the
             # turn-start welcome-blanking ui_render (which killed client

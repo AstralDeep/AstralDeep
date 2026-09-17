@@ -1,0 +1,1091 @@
+{
+  "viewport": {
+    "w": 1440,
+    "h": 900
+  },
+  "missing": [
+    "feed",
+    "feed",
+    "responseCard",
+    "cardHeader",
+    "expandChip",
+    "pendingTurn"
+  ],
+  "sidebar": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 0,
+      "y": 0,
+      "w": 350,
+      "h": 900,
+      "right": 350,
+      "bottom": 900
+    },
+    "padding": [
+      22,
+      22,
+      22,
+      22
+    ],
+    "gap": 16,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 1,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 900,
+    "clientH": 900,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 5
+  },
+  "main": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 350,
+      "y": 0,
+      "w": 1090,
+      "h": 900,
+      "right": 1440,
+      "bottom": 900
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 0,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "hidden",
+    "scrollH": 900,
+    "clientH": 900,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "radial-gradient(circle at 50% 0%, rgb(30, 27, 75) 0%, rgb(16, 18, 41) 55%, rgb(8, 9, 21) 100%)",
+    "children": 2
+  },
+  "canvas": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 350,
+      "y": 0,
+      "w": 1090,
+      "h": 813,
+      "right": 1440,
+      "bottom": 813
+    },
+    "padding": [
+      32,
+      48,
+      32,
+      48
+    ],
+    "gap": 0,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "block",
+    "position": "static",
+    "overflowY": "auto",
+    "scrollH": 2116,
+    "clientH": 813,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "pageScroll": {
+    "horizontal": 0,
+    "vertical": 0,
+    "bodyOverflow": "hidden"
+  },
+  "fonts": {
+    "families": {
+      "Open Sans": 237
+    },
+    "weights": {
+      "400": 96,
+      "600": 66,
+      "700": 73,
+      "800": 2
+    },
+    "textNodes": 237
+  },
+  "brand": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 22,
+      "w": 305,
+      "h": 57,
+      "right": 327,
+      "bottom": 79
+    },
+    "padding": [
+      0,
+      0,
+      14,
+      0
+    ],
+    "gap": 12,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 1,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 56,
+    "clientH": 56,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "brandLogo": {
+    "present": true,
+    "box": {
+      "x": 22,
+      "y": 22,
+      "w": 42,
+      "h": 42,
+      "right": 64,
+      "bottom": 64
+    }
+  },
+  "brandText": {
+    "present": true,
+    "lines": 2
+  },
+  "dirHead": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 95,
+      "w": 305,
+      "h": 21,
+      "right": 327,
+      "bottom": 116
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 0,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 21,
+    "clientH": 21,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "agentCount": {
+    "present": true,
+    "box": {
+      "x": 260.33,
+      "y": 95,
+      "w": 66.67,
+      "h": 21,
+      "right": 327,
+      "bottom": 116
+    }
+  },
+  "searchBox": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 132,
+      "w": 305,
+      "h": 36,
+      "right": 327,
+      "bottom": 168
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 0,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "block",
+    "position": "relative",
+    "overflowY": "visible",
+    "scrollH": 36,
+    "clientH": 36,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "searchInput": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 132,
+      "w": 305,
+      "h": 36,
+      "right": 327,
+      "bottom": 168
+    },
+    "padding": [
+      8,
+      12,
+      8,
+      32
+    ],
+    "gap": 0,
+    "radius": 8,
+    "borderTop": 1,
+    "borderRight": 1,
+    "borderBottom": 1,
+    "borderLeft": 1,
+    "display": "inline-block",
+    "position": "static",
+    "overflowY": "clip",
+    "scrollH": 34,
+    "clientH": 34,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 0
+  },
+  "searchIcon": {
+    "present": true,
+    "box": {
+      "x": 32,
+      "y": 143,
+      "w": 14,
+      "h": 14,
+      "right": 46,
+      "bottom": 157
+    }
+  },
+  "agentList": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 188,
+      "w": 305,
+      "h": 614,
+      "right": 327,
+      "bottom": 802
+    },
+    "padding": [
+      0,
+      4,
+      0,
+      0
+    ],
+    "gap": 8,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "auto",
+    "scrollH": 1200,
+    "clientH": 614,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 11
+  },
+  "agentItems": {
+    "n": 11,
+    "first": {
+      "x": 22,
+      "y": 188,
+      "w": 301,
+      "h": 101.81,
+      "right": 323,
+      "bottom": 289.81
+    },
+    "parts": {
+      "icon": true,
+      "name": true,
+      "desc": true,
+      "dot": true
+    }
+  },
+  "recentWork": {
+    "present": false
+  },
+  "recentToggle": {
+    "present": false
+  },
+  "profile": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 22,
+      "y": 818,
+      "w": 305,
+      "h": 60,
+      "right": 327,
+      "bottom": 878
+    },
+    "padding": [
+      10,
+      12,
+      10,
+      12
+    ],
+    "gap": 0,
+    "radius": 10,
+    "borderTop": 1,
+    "borderRight": 1,
+    "borderBottom": 1,
+    "borderLeft": 1,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 58,
+    "clientH": 58,
+    "scrollbar": 0,
+    "hasShadow": true,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "profileParts": {
+    "avatar": {
+      "x": 35,
+      "y": 829,
+      "w": 38,
+      "h": 38,
+      "right": 73,
+      "bottom": 867
+    },
+    "dot": {
+      "x": 64,
+      "y": 858,
+      "w": 9,
+      "h": 9,
+      "right": 73,
+      "bottom": 867
+    },
+    "name": {
+      "x": 83,
+      "y": 831,
+      "w": 106.64,
+      "h": 19,
+      "right": 189.64,
+      "bottom": 850
+    },
+    "role": {
+      "x": 83,
+      "y": 850,
+      "w": 106.64,
+      "h": 15,
+      "right": 189.64,
+      "bottom": 865
+    },
+    "cog": {
+      "x": 284,
+      "y": 833,
+      "w": 30,
+      "h": 30,
+      "right": 314,
+      "bottom": 863
+    }
+  },
+  "landing": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 32,
+      "w": 994,
+      "h": 2052.16,
+      "right": 1392,
+      "bottom": 2084.16
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 22,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 2052,
+    "clientH": 2052,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 3
+  },
+  "pageHeader": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 32,
+      "w": 994,
+      "h": 70,
+      "right": 1392,
+      "bottom": 102
+    },
+    "padding": [
+      0,
+      0,
+      14,
+      0
+    ],
+    "gap": 14,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 1,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 69,
+    "clientH": 69,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "pageTitle": {
+    "box": {
+      "x": 398,
+      "y": 32,
+      "w": 370.31,
+      "h": 32,
+      "right": 768.31,
+      "bottom": 64
+    }
+  },
+  "pageSubtitle": {
+    "box": {
+      "x": 398,
+      "y": 68,
+      "w": 370.31,
+      "h": 19,
+      "right": 768.31,
+      "bottom": 87
+    }
+  },
+  "statusStrip": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 1040,
+      "y": 62,
+      "w": 352,
+      "h": 25,
+      "right": 1392,
+      "bottom": 87
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 8,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 25,
+    "clientH": 25,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 4
+  },
+  "statusPills": {
+    "n": 4
+  },
+  "overview": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 124,
+      "w": 994,
+      "h": 167.38,
+      "right": 1392,
+      "bottom": 291.38
+    },
+    "padding": [
+      16,
+      20,
+      16,
+      20
+    ],
+    "gap": 0,
+    "radius": 8,
+    "borderTop": 1,
+    "borderRight": 1,
+    "borderBottom": 1,
+    "borderLeft": 1,
+    "display": "block",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 165,
+    "clientH": 165,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "overviewHeader": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 419,
+      "y": 141,
+      "w": 952,
+      "h": 27,
+      "right": 1371,
+      "bottom": 168
+    },
+    "padding": [
+      0,
+      0,
+      8,
+      0
+    ],
+    "gap": 12,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 1,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 26,
+    "clientH": 26,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "overviewGrid": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 419,
+      "y": 180,
+      "w": 952,
+      "h": 94.38,
+      "right": 1371,
+      "bottom": 274.38
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 18,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "grid",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 94,
+    "clientH": 94,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 3,
+    "columns": 3
+  },
+  "overviewItems": {
+    "n": 3,
+    "steps": 3
+  },
+  "scenarios": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 313.38,
+      "w": 994,
+      "h": 1770.78,
+      "right": 1392,
+      "bottom": 2084.16
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 14,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 1771,
+    "clientH": 1771,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "scenariosHead": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 313.38,
+      "w": 994,
+      "h": 74,
+      "right": 1392,
+      "bottom": 387.38
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 12,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 74,
+    "clientH": 74,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "scenariosTitle": {
+    "box": {
+      "x": 398,
+      "y": 313.38,
+      "w": 156.23,
+      "h": 23,
+      "right": 554.23,
+      "bottom": 336.38
+    }
+  },
+  "filterTabs": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 348.38,
+      "w": 914.3,
+      "h": 39,
+      "right": 1312.3,
+      "bottom": 387.38
+    },
+    "padding": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "gap": 6,
+    "radius": 8,
+    "borderTop": 1,
+    "borderRight": 1,
+    "borderBottom": 1,
+    "borderLeft": 1,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 37,
+    "clientH": 37,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 6,
+    "n": 6
+  },
+  "filterTabActive": {
+    "n": 1,
+    "distinct": true
+  },
+  "scenarioGrid": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 401.38,
+      "w": 994,
+      "h": 1682.78,
+      "right": 1392,
+      "bottom": 2084.16
+    },
+    "padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "gap": 14,
+    "radius": 0,
+    "borderTop": 0,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "grid",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 1683,
+    "clientH": 1683,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 12,
+    "columns": 2
+  },
+  "scenarioCards": {
+    "n": 12,
+    "box": {
+      "x": 398,
+      "y": 401.38,
+      "w": 490,
+      "h": 274.77,
+      "right": 888,
+      "bottom": 676.14
+    },
+    "radius": 12,
+    "border": 1,
+    "parts": {
+      "tag": true,
+      "badge": true,
+      "title": true,
+      "desc": true,
+      "run": true
+    }
+  },
+  "feed": {
+    "present": false
+  },
+  "turns": {
+    "user": 0,
+    "assistant": 0,
+    "userBox": null,
+    "userBubbleBox": null,
+    "userBubbleGapLeft": null,
+    "userBubbleGapRight": null,
+    "assistantBox": null,
+    "assistantFillsWidth": null
+  },
+  "responseCard": {
+    "present": false
+  },
+  "cardHeader": {
+    "present": false
+  },
+  "expandChip": {
+    "present": false
+  },
+  "pendingTurn": {
+    "present": false
+  },
+  "composer": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 350,
+      "y": 813,
+      "w": 1090,
+      "h": 87,
+      "right": 1440,
+      "bottom": 900
+    },
+    "padding": [
+      18,
+      48,
+      18,
+      48
+    ],
+    "gap": 12,
+    "radius": 0,
+    "borderTop": 1,
+    "borderRight": 0,
+    "borderBottom": 0,
+    "borderLeft": 0,
+    "display": "flex",
+    "position": "static",
+    "overflowY": "visible",
+    "scrollH": 86,
+    "clientH": 86,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": true,
+    "backgroundImage": "none",
+    "children": 2
+  },
+  "composerInput": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 398,
+      "y": 832,
+      "w": 838.47,
+      "h": 50,
+      "right": 1236.47,
+      "bottom": 882
+    },
+    "padding": [
+      14,
+      18,
+      14,
+      18
+    ],
+    "gap": 0,
+    "radius": 10,
+    "borderTop": 1,
+    "borderRight": 1,
+    "borderBottom": 1,
+    "borderLeft": 1,
+    "display": "block",
+    "position": "static",
+    "overflowY": "clip",
+    "scrollH": 48,
+    "clientH": 48,
+    "scrollbar": 0,
+    "hasShadow": false,
+    "hasBackdrop": false,
+    "backgroundImage": "none",
+    "children": 0
+  },
+  "composerSend": {
+    "box": {
+      "x": 1248.47,
+      "y": 832,
+      "w": 143.53,
+      "h": 50,
+      "right": 1392,
+      "bottom": 882
+    }
+  },
+  "composerControls": {
+    "n": 0,
+    "rows": 1,
+    "allLeftOfSend": true,
+    "boxes": []
+  },
+  "fullscreen": {
+    "present": true,
+    "visible": false,
+    "box": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 0,
+      "right": 0,
+      "bottom": 0
+    },
+    "coversViewport": false,
+    "icon": true,
+    "title": true,
+    "badges": 3,
+    "subtitle": true,
+    "exit": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 0,
+      "right": 0,
+      "bottom": 0
+    },
+    "kbdHint": true,
+    "canvas": {
+      "present": true,
+      "visible": false,
+      "box": {
+        "x": 0,
+        "y": 0,
+        "w": 0,
+        "h": 0,
+        "right": 0,
+        "bottom": 0
+      },
+      "padding": [
+        32,
+        40,
+        60,
+        40
+      ],
+      "gap": 0,
+      "radius": 0,
+      "borderTop": 0,
+      "borderRight": 0,
+      "borderBottom": 0,
+      "borderLeft": 0,
+      "display": "block",
+      "position": "static",
+      "overflowY": "auto",
+      "scrollH": 0,
+      "clientH": 0,
+      "scrollbar": 0,
+      "hasShadow": false,
+      "hasBackdrop": false,
+      "backgroundImage": "none",
+      "children": 1
+    }
+  },
+  "modal": {
+    "present": true,
+    "visible": true,
+    "box": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "right": 1440,
+      "bottom": 900
+    },
+    "card": {
+      "present": true,
+      "visible": true,
+      "box": {
+        "x": 400,
+        "y": 113,
+        "w": 640,
+        "h": 674,
+        "right": 1040,
+        "bottom": 787
+      },
+      "padding": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "gap": 0,
+      "radius": 16,
+      "borderTop": 1,
+      "borderRight": 1,
+      "borderBottom": 1,
+      "borderLeft": 1,
+      "display": "flex",
+      "position": "static",
+      "overflowY": "hidden",
+      "scrollH": 672,
+      "clientH": 672,
+      "scrollbar": 0,
+      "hasShadow": true,
+      "hasBackdrop": false,
+      "backgroundImage": "none",
+      "children": 4
+    },
+    "centered": {
+      "dx": 0,
+      "dy": 0
+    },
+    "icon": true,
+    "title": true,
+    "subtitle": true,
+    "close": true,
+    "tabs": 4,
+    "tabStrip": {
+      "x": 401,
+      "y": 191,
+      "w": 638,
+      "h": 45,
+      "right": 1039,
+      "bottom": 236
+    },
+    "body": {
+      "x": 401,
+      "y": 236,
+      "w": 638,
+      "h": 480,
+      "right": 1039,
+      "bottom": 716
+    },
+    "footer": {
+      "x": 401,
+      "y": 716,
+      "w": 638,
+      "h": 70,
+      "right": 1039,
+      "bottom": 786
+    }
+  }
+}

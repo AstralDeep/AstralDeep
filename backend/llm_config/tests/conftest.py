@@ -5,6 +5,10 @@ The persisted store consumes the application Plane runtime and its typed
 implementation of that exact repository contract; no SQL or retired Deep
 database facade is present in the fixture.
 
+Feature 089 adds the sibling ``encrypted_typesafe_credential`` repository to
+the same fixture catalog, including the fingerprint condition on
+``record_outcome`` -- the behavior the store's idempotency depends on.
+
 ``CREDENTIAL_ENCRYPTION_KEY`` is monkeypatched to a per-test generated
 Fernet key so no dev key file is ever written by the suite.
 """
@@ -18,7 +22,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from astralplane.repositories import RepositoryNotFoundError
-from astralplane.repositories.secrets import EncryptedLLMConfigRecord
+from astralplane.repositories.preferences import DataSharingAcknowledgmentRecord
+from astralplane.repositories.secrets import (
+    EncryptedLLMConfigRecord,
+    EncryptedTypeSafeCredentialRecord,
+)
 from cryptography.fernet import Fernet
 
 from llm_config.user_store import UserLLMConfigStore
@@ -159,14 +167,150 @@ class InMemoryEncryptedLLMConfigRepository:
         self._storage.system = None
 
 
+
+class InMemoryTypeSafeCredentialRepository:
+    """Typed Plane double for the 089.001 TypeSafe credential table."""
+
+    def __init__(self, storage: "CredentialPlaneFixture") -> None:
+        self._storage = storage
+
+    @staticmethod
+    def _record(owner_id: str, row: dict[str, Any]) -> EncryptedTypeSafeCredentialRecord:
+        return EncryptedTypeSafeCredentialRecord(
+            owner_id=owner_id,
+            api_key_ciphertext=row["api_key_enc"],
+            key_fingerprint=row["key_fingerprint"],
+            last_verified_at=row.get("last_verified_at"),
+            last_verification_outcome=row.get("last_verification_outcome", "unverified"),
+            last_outcome_at=row.get("last_outcome_at"),
+            created_at=_stored_time(row.get("created_at")),
+            updated_at=_stored_time(row.get("updated_at")),
+        )
+
+    def get_user(
+        self,
+        _executor: object,
+        *,
+        owner_id: str,
+    ) -> EncryptedTypeSafeCredentialRecord | None:
+        row = self._storage.typesafe.get(owner_id)
+        return None if row is None else self._record(owner_id, row)
+
+    def get_user_for_update(
+        self,
+        transaction: object,
+        *,
+        owner_id: str,
+    ) -> EncryptedTypeSafeCredentialRecord | None:
+        return self.get_user(transaction, owner_id=owner_id)
+
+    def upsert_user(
+        self,
+        _transaction: object,
+        *,
+        owner_id: str,
+        api_key_ciphertext: str,
+        key_fingerprint: str,
+        verified_at: datetime,
+    ) -> EncryptedTypeSafeCredentialRecord:
+        now = datetime.now(UTC)
+        existing = self._storage.typesafe.get(owner_id)
+        self._storage.typesafe[owner_id] = {
+            "api_key_enc": api_key_ciphertext,
+            "key_fingerprint": key_fingerprint,
+            "last_verified_at": verified_at,
+            "last_verification_outcome": "valid",
+            "last_outcome_at": verified_at,
+            "created_at": (
+                existing.get("created_at", now) if existing is not None else now
+            ),
+            "updated_at": now,
+        }
+        return self._record(owner_id, self._storage.typesafe[owner_id])
+
+    def delete_user(self, _transaction: object, *, owner_id: str) -> bool:
+        return self._storage.typesafe.pop(owner_id, None) is not None
+
+    def record_outcome(
+        self,
+        _transaction: object,
+        *,
+        owner_id: str,
+        outcome: str,
+        at: datetime,
+        expected_fingerprint: str,
+    ) -> bool:
+        row = self._storage.typesafe.get(owner_id)
+        # The fingerprint is the whole point: an outcome observed on a key the
+        # owner has since replaced must update nothing.
+        if row is None or row["key_fingerprint"] != expected_fingerprint:
+            return False
+        row["last_verification_outcome"] = outcome
+        row["last_outcome_at"] = at
+        if outcome == "valid":
+            row["last_verified_at"] = at
+        row["updated_at"] = datetime.now(UTC)
+        return True
+
+
+
+class InMemoryDataSharingRepository:
+    """Typed Plane double for the 089.001 data-sharing acknowledgment table."""
+
+    def __init__(self, storage: "CredentialPlaneFixture") -> None:
+        self._storage = storage
+
+    def get_user(self, _executor: object, *, owner_id: str):
+        row = self._storage.acknowledgments.get(owner_id)
+        if row is None:
+            return None
+        return DataSharingAcknowledgmentRecord(
+            owner_id=owner_id,
+            notice_version=row["notice_version"],
+            acknowledged_at=row["acknowledged_at"],
+            first_acknowledged_at=row["first_acknowledged_at"],
+        )
+
+    def acknowledge(
+        self,
+        _transaction: object,
+        *,
+        owner_id: str,
+        notice_version: str,
+        at: datetime,
+    ):
+        existing = self._storage.acknowledgments.get(owner_id)
+        first = existing["first_acknowledged_at"] if existing else at
+        self._storage.acknowledgments[owner_id] = {
+            "notice_version": notice_version,
+            "acknowledged_at": max(at, first),
+            "first_acknowledged_at": first,
+        }
+        return self.get_user(None, owner_id=owner_id)
+
+    def has_acknowledged(
+        self, executor: object, *, owner_id: str, notice_version: str
+    ) -> bool:
+        record = self.get_user(executor, owner_id=owner_id)
+        return record is not None and record.notice_version == notice_version
+
+
 class CredentialPlaneFixture:
     """Minimal application Plane runtime/catalog for credential-store tests."""
 
     def __init__(self) -> None:
         self.users: dict[str, dict[str, Any]] = {}
         self.system: dict[str, Any] | None = None
+        self.typesafe: dict[str, dict[str, Any]] = {}
+        self.acknowledgments: dict[str, dict[str, Any]] = {}
         repository = InMemoryEncryptedLLMConfigRepository(self)
-        self.repositories = SimpleNamespace(encrypted_llm_config=repository)
+        self.repositories = SimpleNamespace(
+            encrypted_llm_config=repository,
+            encrypted_typesafe_credential=InMemoryTypeSafeCredentialRepository(self),
+            preferences=SimpleNamespace(
+                data_sharing=InMemoryDataSharingRepository(self)
+            ),
+        )
         self.plane_runtime = self
         self.plane_repositories = self.repositories
 
@@ -199,6 +343,28 @@ def fake_db(credential_plane) -> CredentialPlaneFixture:
 @pytest.fixture
 def store(fernet_key, credential_plane) -> UserLLMConfigStore:
     return UserLLMConfigStore(
+        plane_runtime=credential_plane,
+        plane_repositories=credential_plane.repositories,
+    )
+
+
+@pytest.fixture
+def typesafe_store(fernet_key, credential_plane):
+    """A TypeSafe credential store over the same in-memory Plane fixture."""
+    from llm_config.typesafe_store import TypeSafeCredentialStore
+
+    return TypeSafeCredentialStore(
+        plane_runtime=credential_plane,
+        plane_repositories=credential_plane.repositories,
+    )
+
+
+@pytest.fixture
+def data_sharing_store(credential_plane):
+    """A data-sharing store over the same in-memory Plane fixture."""
+    from llm_config.data_sharing import DataSharingStore
+
+    return DataSharingStore(
         plane_runtime=credential_plane,
         plane_repositories=credential_plane.repositories,
     )

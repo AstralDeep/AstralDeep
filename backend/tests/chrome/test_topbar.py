@@ -15,16 +15,35 @@ def _pulse_off_by_default(monkeypatch):
     monkeypatch.delenv("FF_PULSE_DIGEST", raising=False)
 
 
-def test_topbar_has_brand_status_and_settings_trigger():
+def test_topbar_has_status_and_settings_trigger():
     html = render_topbar(roles=["user"])
-    # Brand is the AstralDeep logo image (served from the static mount).
-    assert 'src="/static/img/AstralDeep.png"' in html
-    assert 'alt="AstralDeep"' in html
-    assert 'data-tour-target="topbar.brand"' in html
+    # Feature 089: the brand is the sidebar's own #astral-brand block (see
+    # test_brand_lives_in_the_sidebar_exactly_once), so this renderer emits
+    # only the control cluster.
+    assert 'src="/static/img/AstralDeep.png"' not in html
+    assert 'data-tour-target="topbar.brand"' not in html
     assert 'id="astral-status"' in html
     assert 'id="astral-settings-btn"' in html
     assert 'aria-haspopup="menu"' in html and 'aria-expanded="false"' in html
     assert 'id="astral-settings-menu"' in html and 'role="menu"' in html
+
+
+def test_brand_lives_in_the_sidebar_exactly_once():
+    """Feature 089: one logo, one tour target, and it returns to the landing.
+
+    Two brand blocks would give the tour two targets to choose between and a
+    reader two things that look like the same control.
+    """
+    from astralprojection.resources import template_path
+
+    shell = template_path("shell.html").read_text(encoding="utf-8")
+    assert shell.count('data-tour-target="topbar.brand"') == 1
+    assert shell.count('src="/static/img/AstralDeep.png"') == 1
+    assert 'id="astral-brand"' in shell
+    brand = shell[shell.index('id="astral-brand"'):]
+    assert 'aria-label="Return to the dashboard"' in brand[:400]
+    assert shell.index('id="astral-sidebar"') < shell.index('id="astral-brand"')
+    assert shell.index('id="astral-brand"') < shell.index('id="astral-main"')
 
 
 def test_menu_contains_account_and_help_groups_for_everyone():

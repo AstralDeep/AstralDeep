@@ -1,0 +1,98 @@
+a8p desktop parity — 2026-09-17T22:01:44.960Z
+
+## 1920x1080 — 98.5% (98.5/100)
+  PASS auto   A1 (4) Two-column frame, full height, no page scroll, canvas scrolls internally
+  PASS auto   A2 (3) Sidebar 350px wide, right border, 22px padding, 16px vertical gap
+  PASS review A3 (2) Main column background is a theme-derived radial gradient anchored top-center
+  PASS auto   A4 (2) Canvas padding 32px 48px with a thin custom scrollbar
+  PASS auto   A5 (3) Open Sans on every text element; heading weights 700–800, body 400–600
+  PASS auto   B1 (4) Brand block: logo + stacked name/subtitle, bottom divider, returns to landing
+  PASS auto   B2 (3) Section header row with a right-aligned count badge
+  PASS auto   B3 (4) Search input with a leading magnifier that filters the list live
+  PASS auto   B4 (5) Scrollable agent list filling the remaining height; icon, name, description, status dot
+  PASS auto   B5 (2) Recent work section below the agent list, collapsible
+  PASS auto   B6 (4) Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right
+  PASS auto   C1 (4) Page header: title + subtitle left, status pill strip right
+  PART auto   C2 (3) Overview panel: header row + 3-column grid of numbered steps
+         panel.h: 165.4 vs 149.3; panel.padding: 26 vs 16
+  PASS auto   C3 (4) Scenarios header: title left, horizontal filter tabs with the active one highlighted
+  PASS auto   C4 (5) Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift
+  PASS auto   C5 (2) Landing hides once a conversation has a response and returns on "return to dashboard"
+  PASS auto   D1 (5) Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width
+  PASS auto   D2 (5) Response card: 14px radius, bordered, elevated, full canvas width
+  PASS auto   D3 (4) Card header: agent badge/name + routing meta chips left, actions right
+  PASS auto   D4 (3) Hover overlay with an expand chip that opens the full-screen view
+  PASS review D5 (5) Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)
+  PASS auto   D6 (2) Progress/thinking state shown inline at the position of the pending turn
+  PASS auto   E1 (3) Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding
+  PASS auto   E2 (4) One wide input (10px radius, 14px 18px padding) with the primary Send button at its right
+  PASS auto   E3 (3) 088 composer controls inside the bar, left of Send, on one row at ≥1280px
+  PASS auto   F1 (6) Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas
+  PASS auto   F2 (6) Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions
+  CSP violations: 0
+
+## 1440x900 — 98.5% (98.5/100)
+  PASS auto   A1 (4) Two-column frame, full height, no page scroll, canvas scrolls internally
+  PASS auto   A2 (3) Sidebar 350px wide, right border, 22px padding, 16px vertical gap
+  PASS review A3 (2) Main column background is a theme-derived radial gradient anchored top-center
+  PASS auto   A4 (2) Canvas padding 32px 48px with a thin custom scrollbar
+  PASS auto   A5 (3) Open Sans on every text element; heading weights 700–800, body 400–600
+  PASS auto   B1 (4) Brand block: logo + stacked name/subtitle, bottom divider, returns to landing
+  PASS auto   B2 (3) Section header row with a right-aligned count badge
+  PASS auto   B3 (4) Search input with a leading magnifier that filters the list live
+  PASS auto   B4 (5) Scrollable agent list filling the remaining height; icon, name, description, status dot
+  PASS auto   B5 (2) Recent work section below the agent list, collapsible
+  PASS auto   B6 (4) Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right
+  PASS auto   C1 (4) Page header: title + subtitle left, status pill strip right
+  PART auto   C2 (3) Overview panel: header row + 3-column grid of numbered steps
+         panel.padding: 26 vs 16
+  PASS auto   C3 (4) Scenarios header: title left, horizontal filter tabs with the active one highlighted
+  PASS auto   C4 (5) Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift
+  PASS auto   C5 (2) Landing hides once a conversation has a response and returns on "return to dashboard"
+  PASS auto   D1 (5) Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width
+  PASS auto   D2 (5) Response card: 14px radius, bordered, elevated, full canvas width
+  PASS auto   D3 (4) Card header: agent badge/name + routing meta chips left, actions right
+  PASS auto   D4 (3) Hover overlay with an expand chip that opens the full-screen view
+  PASS review D5 (5) Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)
+  PASS auto   D6 (2) Progress/thinking state shown inline at the position of the pending turn
+  PASS auto   E1 (3) Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding
+  PASS auto   E2 (4) One wide input (10px radius, 14px 18px padding) with the primary Send button at its right
+  PASS auto   E3 (3) 088 composer controls inside the bar, left of Send, on one row at ≥1280px
+  PASS auto   F1 (6) Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas
+  PASS auto   F2 (6) Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions
+  CSP violations: 0
+
+## 1280x800 — 96.5% (96.5/100)
+  PASS auto   A1 (4) Two-column frame, full height, no page scroll, canvas scrolls internally
+  PASS auto   A2 (3) Sidebar 350px wide, right border, 22px padding, 16px vertical gap
+  PASS review A3 (2) Main column background is a theme-derived radial gradient anchored top-center
+  PASS auto   A4 (2) Canvas padding 32px 48px with a thin custom scrollbar
+  PASS auto   A5 (3) Open Sans on every text element; heading weights 700–800, body 400–600
+  PASS auto   B1 (4) Brand block: logo + stacked name/subtitle, bottom divider, returns to landing
+  PASS auto   B2 (3) Section header row with a right-aligned count badge
+  PASS auto   B3 (4) Search input with a leading magnifier that filters the list live
+  PASS auto   B4 (5) Scrollable agent list filling the remaining height; icon, name, description, status dot
+  PASS auto   B5 (2) Recent work section below the agent list, collapsible
+  PASS auto   B6 (4) Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right
+  PASS auto   C1 (4) Page header: title + subtitle left, status pill strip right
+  PART auto   C2 (3) Overview panel: header row + 3-column grid of numbered steps
+         panel.padding: 26 vs 16
+  PART auto   C3 (4) Scenarios header: title left, horizontal filter tabs with the active one highlighted
+         tab.h: 44 vs 74
+  PASS auto   C4 (5) Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift
+  PASS auto   C5 (2) Landing hides once a conversation has a response and returns on "return to dashboard"
+  PASS auto   D1 (5) Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width
+  PASS auto   D2 (5) Response card: 14px radius, bordered, elevated, full canvas width
+  PASS auto   D3 (4) Card header: agent badge/name + routing meta chips left, actions right
+  PASS auto   D4 (3) Hover overlay with an expand chip that opens the full-screen view
+  PASS review D5 (5) Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)
+  PASS auto   D6 (2) Progress/thinking state shown inline at the position of the pending turn
+  PASS auto   E1 (3) Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding
+  PASS auto   E2 (4) One wide input (10px radius, 14px 18px padding) with the primary Send button at its right
+  PASS auto   E3 (3) 088 composer controls inside the bar, left of Send, on one row at ≥1280px
+  PASS auto   F1 (6) Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas
+  PASS auto   F2 (6) Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions
+  CSP violations: 0
+
+lowest viewport score: 96.5%  (target ≥ 90%)
+PASS

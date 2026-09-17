@@ -207,7 +207,7 @@
               "const": "https://github.com/AstralDeep/AstralPrimitives.git"
             },
             "path": {"const": "components/AstralPrimitives"},
-            "contract_version": {"const": "0.3.0"}
+            "contract_version": {"const": "0.4.0"}
           }
         }
       ]

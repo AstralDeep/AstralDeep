@@ -31,6 +31,7 @@ from uuid import uuid4
 from audit.recorder import Recorder
 from audit.schemas import AuditEventCreate
 
+from .log_scrub import TYPESAFE_KEY_PATTERN, _is_api_key_field
 from .types import CredentialSource, ResolvedConfig
 
 logger = logging.getLogger("LLMConfig.AuditEvents")
@@ -46,22 +47,30 @@ _KEY_PREFIX_PATTERNS = (
     re.compile(r"\bxai-[A-Za-z0-9_\-]{20,}\b"),  # xAI-style
     re.compile(r"\bor-[A-Za-z0-9_\-]{20,}\b"),  # OpenRouter-style
     re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}\b"),  # Google API-key-style (Gemini)
+    TYPESAFE_KEY_PATTERN,  # TypeSafe System One (feature 089)
 )
 
 
 def _assert_no_api_key(payload: Dict[str, Any]) -> None:
     """Defence-in-depth check: raise if any payload value contains an
-    API-key-shaped substring or a literal ``api_key`` key.
+    API-key-shaped substring, or any field name that ends in ``api_key``.
+
+    Feature 089 widened the field test from equality to a suffix match, so
+    ``typesafe_api_key`` is refused by the same rule that refuses ``api_key``
+    rather than needing its own.
 
     This is intentionally conservative — false positives here are
     preferable to a leaked key. Callers MUST pass already-redacted
     payloads.
     """
-    if "api_key" in payload:
+    offending = [key for key in payload if _is_api_key_field(key)]
+    if offending:
         raise ValueError(
-            "Audit-event payload contains forbidden field 'api_key'. "
-            "FR-002 / FR-006 forbid recording the user's API key under "
-            "any circumstances."
+            f"Audit-event payload contains forbidden credential field(s) "
+            f"{sorted(offending)!r}. FR-002 / FR-006 forbid recording the "
+            f"user's API key under any circumstances, and feature 089 extends "
+            f"that to the TypeSafe key: any field whose name ends in "
+            f"'api_key' is refused."
         )
     for k, v in payload.items():
         if isinstance(v, str):

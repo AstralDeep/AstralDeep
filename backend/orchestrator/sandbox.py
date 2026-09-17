@@ -71,6 +71,12 @@ _SECRET_ENV_DENYLIST = (
     "VOICE_CONTROL_SECRET", "LIVEKIT_API_SECRET", "LIVEKIT_API_KEY",
     # Kept for completeness if ever set as a single URL (the DB_* parts stay).
     "DATABASE_URL",
+    # Feature 089: TypeSafe routing configuration. A correctly configured
+    # Astral process never has these set at all -- production refuses to boot
+    # with them (session_store.assert_production_posture). They are scrubbed
+    # anyway so a misconfigured development host cannot hand an operator key to
+    # generated code.
+    "TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "TYPESAFE_DEFAULT_MODEL",
 )
 
 #: Prefixes scrubbed wholesale. ``audit/pii.py`` resolves rotation keys as

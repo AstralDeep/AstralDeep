@@ -51,7 +51,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 ## Non-negotiable engineering rules
 
 - Backend code is Python and must remain compatible with the production Python 3.11 image. Ruff's target is `py311`, even if a host virtualenv is newer.
-- Do not add a third-party runtime dependency without explicit lead-developer approval. Reuse existing libraries and stdlib seams first.
+- Any dependency may be added (Constitution V, v3.0.0); declare it in the owning repository's manifest and name it in the PR description.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
 - Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization, including Spec Kit commit hooks. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.

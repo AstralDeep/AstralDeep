@@ -32,6 +32,14 @@ OTHER_SECRET_ENV_NAMES: tuple[str, ...] = (
     "AGENT_API_KEY",
     "WEB_SESSION_SECRET",
     "WEB_SESSION_ENC_KEY",
+    "CREDENTIAL_ENCRYPTION_KEY",
+    # Feature 089. These names must never configure an Astral process -- the
+    # production boot gate refuses them outright (FR-005). They are listed here
+    # so that if one is nevertheless present in a developer's environment, its
+    # value is scrubbed from every harness artifact rather than captured in one.
+    "TYPESAFE_API_KEY",
+    "TYPESAFE_BASE_URL",
+    "TYPESAFE_DEFAULT_MODEL",
 )
 
 Mode = Literal["in_process", "external"]

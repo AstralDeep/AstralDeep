@@ -1,0 +1,11 @@
+{
+  "canary_shape": "cnry_<45 chars>",
+  "fingerprint": "1c62e1de13e8",
+  "capture_works": true,
+  "log_records_examined": 2,
+  "typesafe_tests_exit": 0,
+  "container_scanned": false,
+  "container_note": null,
+  "hits": [],
+  "pass": true
+}

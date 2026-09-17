@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import inspect
 import json
+import logging
 import re
 import unicodedata
 from uuid import UUID, uuid4
@@ -301,6 +302,48 @@ class WorkSubmitService:
         self._current(context)
         return WorkSubmissionResult(record, False) if record is not None else None
 
+
+    async def _typesafe_screen_chat(self, owner_id: str, instructions: str) -> None:
+        """Seam I7: screen an HTTP-submitted chat instruction before admitting it.
+
+        This path never reaches ``handle_chat_message``, so it gets none of the
+        turn seams. It asks the three security questions only -- there is no
+        round one to narrow and no canvas to arrange here, and paying for the
+        routing half would spend the owner's quota on answers nobody reads.
+
+        A ``confirm_tools`` verdict cannot be satisfied by a background
+        submission: there is nobody to confirm. It is therefore treated as a
+        pass and left to the executor's own gate stack, which is unchanged. A
+        refusal is the only verdict that stops admission, and the refuse tier
+        is currently disabled, so today this is inert by design.
+        """
+        try:
+            from orchestrator.typesafe_routing import screen_instruction
+            from orchestrator.typesafe_routing.security_policy import Verdict
+
+            store = getattr(self.assignments.orch, "_typesafe_store", None)
+            if store is None:
+                return
+            stored = await store.get_key(owner_id)
+            if stored is None:
+                return
+            verdict = await screen_instruction(
+                user_id=owner_id,
+                text=instructions,
+                api_key=stored.api_key,
+                fingerprint=stored.fingerprint,
+            )
+        except AssignmentError:
+            raise
+        except Exception:
+            # A screen that cannot reach its service must not block work.
+            logging.getLogger("Orchestrator.WorkSubmit").debug(
+                "typesafe submission screen unavailable", exc_info=True
+            )
+            return
+        if verdict is Verdict.REFUSE:
+            raise AssignmentError("assignment_sensitive_content_refused", 422)
+
     async def _chat_definition(self, context, authority, body):
         """A chat turn admits no source, selection or retention choice.
 
@@ -328,6 +371,7 @@ class WorkSubmitService:
             raise AssignmentError("assignment_phi_gate_unavailable", 503) from exc
         if contains_phi:
             raise AssignmentError("assignment_sensitive_content_refused", 422)
+        await self._typesafe_screen_chat(context.owner_id, instructions)
         if conversation is not None:
             try:
                 owned = await asyncio.to_thread(assignments.orch.history.get_chat, conversation,
