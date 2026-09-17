@@ -25,6 +25,11 @@ from tests.test_work_submit_postgres_088 import (
     command, context, fixture as fixture, runtime as runtime,
     service as service, signing_key as signing_key,
 )
+from tests.test_work_save_postgres_088 import (
+    approval_for, completed as completed, gate_orchestrator as gate_orchestrator,
+    operation as operation, path as save_operation_path, plane as plane,
+    post as save_post, proposal_body, research as research, saved as saved,
+)
 
 
 @pytest.fixture
@@ -309,3 +314,135 @@ def test_legacy_chrome_wire_fields_remain_absent(frame):
 def test_work_correlation_is_mandatory_and_scoped(frame):
     with pytest.raises(ProtocolValidationError):
         frame.to_json()
+
+
+# ---------------------------------------------------------------------------
+# Feature 088 T043 — chrome_work_result_save (WS-driven propose/save).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+async def save_surface(saved, monkeypatch):
+    """A real WS socket over the SAME completed-operation/chat as the HTTP save tests."""
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
+    orch = saved.op.executor.orch
+    orch.web_sessions = saved.op.sessions
+    orch.sent = []
+    raw = saved.fixture[3]()
+    claims = await auth.verify_user(await auth.verify_production_token(raw))
+    claims.update(_raw_token=raw)
+
+    async def unused(*_):
+        raise AssertionError("fixture transport is handled by captured safe_send")
+
+    socket = WebSocket({"type": "websocket", "path": "/ws", "headers": [
+        (b"cookie", ("astral_session=" + web_auth._sign(saved.op.sid)).encode()),
+        (b"origin", b"https://app.invalid"),
+    ]}, unused, unused)
+    socket.client_state = WebSocketState.CONNECTED
+    socket.application_state = WebSocketState.CONNECTED
+    # Add this test's socket without disturbing gate_orchestrator's own
+    # "untouched" registration, which its teardown asserts stays exactly as
+    # it was.
+    orch.ui_sessions[socket] = claims
+    orch._ws_active_chat[id(socket)] = saved.chat_id
+
+    async def send(ws, frame):
+        assert ws is socket
+        orch.sent.append(json.loads(frame))
+        return True
+
+    orch._safe_send = send
+    try:
+        yield saved, orch, socket
+    finally:
+        orch.ui_sessions.pop(socket, None)
+        orch._ws_active_chat.pop(id(socket), None)
+
+
+def _propose_payload(saved_value, command):
+    return {"version": 1, "command": "propose", "operation_id": saved_value.op.completed.assignment_id,
+            **{k: command[k] for k in ("submission_id", "publication_id", "expected_revision",
+                                       "conversation_id", "expected_workspace_revision",
+                                       "expected_workspace_publication_id")}}
+
+
+def _save_payload(saved_value, action_id, review):
+    return {"version": 1, "command": "save", "operation_id": saved_value.op.completed.assignment_id,
+            "action_id": action_id, **approval_for(review)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)
+async def test_ws_propose_then_save_matches_the_http_route(save_surface):
+    saved_value, orch, socket = save_surface
+    command = proposal_body(saved_value)
+    handled = await chrome_events.handle_chrome_event(
+        orch, socket, "chrome_work_result_save", _propose_payload(saved_value, command), saved_value.op.owner)
+    assert handled is True
+    assert len(orch.sent) == 1
+    review_frame = orch.sent[-1]
+    assert "Review the exact content" in review_frame["html"]
+    assert "Reviewed result destination" in review_frame["html"]
+    assert command["submission_id"] in review_frame["html"]
+
+    # The review is identical to the HTTP route's own review of the same body.
+    http_review = await save_post(saved_value, save_operation_path(saved_value), command)
+    assert http_review.status_code == 200, http_review.text
+    review = http_review.json()
+
+    handled = await chrome_events.handle_chrome_event(
+        orch, socket, "chrome_work_result_save",
+        _save_payload(saved_value, command["submission_id"], review), saved_value.op.owner)
+    assert handled is True
+    assert len(orch.sent) == 2
+    saved_frame = orch.sent[-1]
+    assert "Result saved" in saved_frame["html"]
+    # The save re-renders the Work surface through the shared chrome modal path
+    # (region "modal", type "chrome_render") exactly as every other WS mutation
+    # handler does; the correlated surface_key rides only the read-delivery frame.
+    assert saved_frame["type"] == "chrome_render" and saved_frame["region"] == "modal"
+
+    # The canvas actually carries the exact committed publication (real DB row).
+    with saved_value.op.runtime.transaction() as tx:
+        chat = saved_value.op.runtime.repositories.history.conversations.get(
+            tx, owner_id=saved_value.op.owner, conversation_id=saved_value.chat_id)
+    assert (chat.render_revision, chat.publication_id) == (1, command["publication_id"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)
+async def test_ws_save_never_authenticates_a_foreign_or_forged_caller(save_surface):
+    saved_value, orch, socket = save_surface
+    command = proposal_body(saved_value)
+    payload = _propose_payload(saved_value, command)
+
+    # A different registered owner id is refused before any Plane write.
+    handled = await chrome_events.handle_chrome_event(
+        orch, socket, "chrome_work_result_save", payload, "someone-else")
+    assert handled is True
+    assert "Save request refused" in orch.sent[-1]["html"] or "went wrong" in orch.sent[-1]["html"]
+
+    # No cross-origin WebSocket frame can drive a Work write either — a browser
+    # does not itself enforce same-origin on an outgoing WS frame.
+    socket.scope["headers"] = [(b"cookie", ("astral_session=" + web_auth._sign(saved_value.op.sid)).encode()),
+                               (b"origin", b"https://evil.invalid")]
+    handled = await chrome_events.handle_chrome_event(
+        orch, socket, "chrome_work_result_save", payload, saved_value.op.owner)
+    assert handled is True
+    last = orch.sent[-1]["html"]
+    assert "Save request refused" in last or "went wrong" in last
+
+    with saved_value.op.runtime.transaction() as tx:
+        chat = saved_value.op.runtime.repositories.history.conversations.get(
+            tx, owner_id=saved_value.op.owner, conversation_id=saved_value.chat_id)
+    assert (chat.render_revision, chat.publication_id) == (0, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)
+async def test_ws_malformed_save_command_is_a_silent_no_op(save_surface):
+    saved_value, orch, socket = save_surface
+    handled = await chrome_events.handle_chrome_event(
+        orch, socket, "chrome_work_result_save", {"command": "propose"}, saved_value.op.owner)
+    assert handled is True
+    assert not orch.sent

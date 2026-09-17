@@ -1688,6 +1688,8 @@ class Orchestrator:
         self.human_request_boundary = HumanRequestBoundary(self)
         from personalization.explicit_note_service import ExplicitNoteService
         self.explicit_notes = ExplicitNoteService(self)
+        from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
+        self.declarative_agents = DeclarativeAgentService(self)
 
         # Feature 004 — component feedback & tool-improvement loop
         from feedback.repository import FeedbackRepository
@@ -15194,16 +15196,26 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def handle_chat_message(
         self, websocket, message: str, chat_id: str, display_message: str = None,
         user_id: str = None, draft_agent_id: str = None, selected_tools=None,
-        attachments=None, operation_context=None, voice_dispatch=None,
+        attachments=None, operation_context=None, voice_dispatch=None, selection=None,
     ):
-        """Keep one original guidance handoff within the actual admitted turn."""
+        """Keep one original guidance handoff within the actual admitted turn.
+
+        ``selection`` (088 T011/T037) is the composer's optional, closed
+        version-1 {agent, skills, notes} identity — the SAME shape HTTP Work
+        accepts. It is existence-checked against the turn's guidance binding
+        below and never consumed further here; a stale, foreign or malformed
+        selection is dropped (never fails the turn), and an absent selection
+        (the default — no client submits one yet) leaves this function byte
+        identical to before.
+        """
         from orchestrator import user_skills
         from orchestrator.human_request_authority import (
             current_socket_human_read, retire_socket_human_read,
         )
         from orchestrator.turn_guidance_authority import (
-            bind_foreground_guidance, bind_machine_guidance, bind_voice_guidance,
-            capture_turn_guidance_from_human, current_turn_guidance, use_turn_guidance,
+            bind_foreground_guidance, bind_machine_guidance, bind_turn_selection,
+            bind_voice_guidance, capture_turn_guidance_from_human, current_turn_guidance,
+            use_turn_guidance,
         )
         from orchestrator.user_skill_catalog import SkillCatalogError
         from persistent_agents.models import AssignmentError
@@ -15246,6 +15258,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     retire_socket_human_read(caller)
             if binding.origin.owner_id != (user_id or self._get_user_id(websocket)):
                 raise SkillCatalogError("skill_authentication_required", 401)
+            if selection is not None:
+                try:
+                    binding = await bind_turn_selection(binding, expected_orchestrator=self,
+                                                        selection=selection)
+                except AssignmentError:
+                    # Stale, foreign or malformed: proceed without it rather
+                    # than fail an otherwise-ordinary chat turn.
+                    pass
             with use_turn_guidance(binding, expected_orchestrator=self):
                 return await execute()
         except AssignmentError as exc:

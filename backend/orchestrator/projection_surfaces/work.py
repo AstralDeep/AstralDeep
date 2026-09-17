@@ -4,14 +4,32 @@ This registered adapter owns its complete render-and-send lifetime. Generic
 surface callbacks must not deliver its snapshots after the caller guard exits.
 Only closed read navigation is accepted; no command, token or owner comes from
 params. Reads remain available without a configured model provider.
+
+Feature 088 T043/T044 adds the one WS-driven mutation, ``chrome_work_result_save``
+(``rote.work.SAVE_ACTION``): the review ("propose") and exact Save steps behind
+the Projection Save-result button. Both route through the SAME
+``orchestrator.work_publication.WorkPublicationService`` the HTTP
+``/api/work/v1/operations/{id}/result/proposals[...]`` routes use, and the
+SAME exact-approval boundary those routes enforce (FR-005) -- this module adds
+no new authority, it only sources ``WorkCallerAuthority`` from the socket's own
+already-registered IAM (bearer token + signed cookie) instead of an HTTP
+``Request``, mirroring ``authenticate_work_control_request`` the same way
+``chrome_note_*``'s ``_HumanSocketRequest`` mirrors POST semantics for its own
+domain, including the WS_WRITE Origin recheck a browser does not itself
+enforce on outgoing WebSocket frames (see ``_ws_publication_caller``).
 """
 from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import logging
+import os
+import time
+from uuid import uuid4
 
 from fastapi import HTTPException
+from starlette.requests import HTTPConnection
 
 from orchestrator.work_service import _identity
 from orchestrator.work_surface_authority import WorkSurfaceRead
@@ -19,7 +37,6 @@ from persistent_agents.models import AssignmentError
 from shared.protocol import ChromeRender, ChromeSurface
 
 TITLE = "Recent work"
-HANDLERS = {}
 logger = logging.getLogger("Orchestrator.WorkSurface")
 
 
@@ -38,19 +55,73 @@ def _params(value):
     return {**value, "mode": mode}
 
 
+async def _conversation_title(orch, owner_id, conversation_id):
+    """Best-effort current title of one of the owner's own chats, or None."""
+    if not conversation_id:
+        return None
+
+    def read(tx, _repository):
+        history = orch.persistent_assignments.store.plane_runtime.repositories.history
+        return history.conversations.get(tx, owner_id=owner_id, conversation_id=conversation_id)
+
+    try:
+        chat = await orch.persistent_assignments.store.transaction(read)
+    except Exception:
+        return None
+    return getattr(chat, "title", None) if chat is not None else None
+
+
+async def _save_bindings(orch, websocket, owner_id, row):
+    """Server-issued propose bindings for the socket's currently active chat.
+
+    Read-only: a fresh submission/publication identity plus the exact current
+    workspace head, so the client's Save button carries only bindings Deep
+    itself re-verifies at propose time. No active chat means no Save offer.
+    """
+    chat_id = (getattr(orch, "_ws_active_chat", None) or {}).get(id(websocket), "")
+    if not chat_id:
+        return None
+
+    def read(tx, _repository):
+        history = orch.persistent_assignments.store.plane_runtime.repositories.history
+        return history.conversations.get(tx, owner_id=owner_id, conversation_id=chat_id)
+
+    try:
+        chat = await orch.persistent_assignments.store.transaction(read)
+    except Exception:
+        return None
+    if chat is None:
+        return None
+    return {
+        "submission_id": str(uuid4()), "publication_id": str(uuid4()),
+        "expected_revision": row["revision"], "conversation_id": chat_id,
+        "conversation_title": chat.title or "",
+        "expected_workspace_revision": chat.render_revision,
+        "expected_workspace_publication_id": chat.publication_id,
+    }
+
+
+async def _augmented_result_state(service, orch, websocket, owner_id, claims, operation_id):
+    """The result view plus, when a result is available, fresh Save bindings."""
+    state = {"mode": "result", "status": "ready"}
+    state.update(await service.result_view(owner_id, claims, operation_id))
+    if ((state.get("result") or {}).get("result") or {}).get("available") is True:
+        state["save"] = await _save_bindings(orch, websocket, owner_id, state["operation"])
+    return state
+
+
 async def _state(read, params):
     mode = params["mode"]
-    state = {"mode": mode, "status": "ready"}
     if mode == "list":
-        state["page"] = await read.service.list(read.owner_id, read.captured,
-                                                after_id=params.get("after_id"))
-    elif mode == "detail":
-        state["operation"] = await read.service.get(read.owner_id, read.captured,
-                                                   params["operation_id"])
-    else:
-        state.update(await read.service.result_view(read.owner_id, read.captured,
-                                                   params["operation_id"]))
-    return state
+        return {"mode": mode, "status": "ready",
+                "page": await read.service.list(read.owner_id, read.captured,
+                                                after_id=params.get("after_id"))}
+    if mode == "detail":
+        return {"mode": mode, "status": "ready",
+                "operation": await read.service.get(read.owner_id, read.captured,
+                                                   params["operation_id"])}
+    return await _augmented_result_state(read.service, read.orch, read.websocket,
+                                         read.owner_id, read.captured, params["operation_id"])
 
 
 async def deliver(orch, websocket, user_id, params, request_generation, *, work_read=None):
@@ -103,3 +174,201 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
     finally:
         if type(read) is WorkSurfaceRead:
             read.close()
+
+
+# ---------------------------------------------------------------------------
+# Feature 088 T043 — the one WS-driven mutation, chrome_work_result_save.
+# ---------------------------------------------------------------------------
+
+class _WsPublicationBinding:
+    """Minimal ``WorkCallerAuthority._binding`` sourced from the socket itself.
+
+    Exposes exactly the attributes ``WorkCallerAuthority`` and
+    ``WorkPublicationService`` read off ``_binding`` (``runtime``,
+    ``assignments``, ``store``, ``sessions``, and its own
+    ``assert_current(assignments)`` recheck) without the HTTP-request/ASGI
+    ``app`` wiring check ``work_control_authority._Composition`` performs —
+    there is no ``fastapi.Request`` here, only the socket's own registration.
+    """
+
+    __slots__ = ("orch", "assignments", "store", "runtime", "sessions")
+
+    def __init__(self, orch, assignments):
+        self.orch = orch
+        self.assignments = assignments
+        self.store = assignments.store
+        self.runtime = self.store.plane_runtime
+        self.sessions = getattr(orch, "web_sessions", None)
+
+    def assert_current(self, assignments):
+        if (assignments is not self.assignments or self.assignments.orch is not self.orch
+                or getattr(self.orch, "persistent_assignments", None) is not self.assignments
+                or self.assignments.store is not self.store
+                or self.store.plane_runtime is not self.runtime
+                or getattr(self.orch, "web_sessions", None) is not self.sessions):
+            raise AssignmentError("work_control_unavailable", 503)
+
+
+async def _ws_publication_caller(orch, websocket, user_id):
+    """Build one real ``WorkCallerAuthority`` from the socket's own IAM.
+
+    Save is a genuine Work write bound by the same exact-approval boundary
+    (FR-005) the HTTP routes enforce; this adds no shortcut around it, it only
+    sources the caller from the socket's already-registered bearer token and
+    signed cookie the way ``WorkSurfaceRead`` already does for reads, plus the
+    WS_WRITE Origin recheck ``_HumanSocketRequest`` applies for its own
+    domain (a browser does not itself enforce same-origin on an outgoing
+    WebSocket frame, so the server must).
+    """
+    import json
+
+    from orchestrator import auth
+    from orchestrator.session_store import WebSessionStore
+    from orchestrator.work_api import _origin
+    from orchestrator.work_control_authority import WorkCallerAuthority
+    from orchestrator.work_submit_authority import (
+        AuthenticatedWorkRequest, _expiry, _signed_selection, capture_human_caller,
+    )
+    from orchestrator.work_surface_authority import _transport_headers
+    from persistent_agents.service import AssignmentService
+
+    claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
+    if (websocket is None or getattr(websocket, "closed", False)
+            or not isinstance(claims, dict) or claims.get("sub") != user_id
+            or claims.get("act") or any(claims.get(key) for key in
+                ("machine_class", "machine_turn_class", "_machine_turn", "delegated"))):
+        raise AssignmentError("work_authentication_required", 401)
+    token = claims.get("_raw_token")
+    if not isinstance(token, str) or not token:
+        raise AssignmentError("work_authentication_required", 401)
+    assignments = getattr(orch, "persistent_assignments", None)
+    if type(assignments) is not AssignmentService:
+        raise AssignmentError("work_control_unavailable", 503)
+    sessions = getattr(orch, "web_sessions", None)
+    if type(sessions) is not WebSessionStore:
+        raise AssignmentError("work_control_unavailable", 503)
+
+    headers = _transport_headers(websocket)
+    transport = HTTPConnection({"type": "websocket", "headers": headers})
+    origins = transport.headers.getlist("origin")
+    base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL")
+    if not base or len(origins) != 1:
+        raise AssignmentError("work_origin_refused", 403)
+    if _origin(origins[0]) != _origin(base, base=True):
+        raise AssignmentError("work_origin_refused", 403)
+
+    session_id = _signed_selection(transport)
+    verified = await auth.verify_user(await auth.verify_production_token(token))
+    if verified.get("sub") != user_id:
+        raise AssignmentError("work_authentication_required", 401)
+    expiry = _expiry(verified, user_id)
+    deadline = time.monotonic() + 15
+    until = datetime.now(timezone.utc) + timedelta(seconds=15)
+    context = AuthenticatedWorkRequest(
+        user_id, expiry, json.dumps(verified, allow_nan=False, separators=(",", ":")),
+        session_id, None, assignments.store.plane_runtime)
+    context.assert_current(assignments.store.plane_runtime)
+    caller = await capture_human_caller(transport, context=context, sessions=sessions, until=until)
+    binding = _WsPublicationBinding(orch, assignments)
+    guard = WorkCallerAuthority(context, caller, binding, token, deadline, until)
+    await assignments.store.transaction(
+        lambda tx, _repository: guard.assert_current(tx, assignments=assignments),
+        bound_session_waits=True)
+    guard._assert_local(assignments)
+    return guard
+
+
+async def render(orch, user_id, roles, params) -> str:
+    """Render pre-built state from this module's own handler responses only.
+
+    Reachable ONLY through ``HANDLERS`` return tuples (the generic
+    ``chrome_open``/surface="work" path always calls ``deliver`` instead — see
+    ``chrome_events._handle_chrome_event``), so ``params`` here is
+    server-built state from ``_handle_result_save``, never client input.
+    """
+    from astralprojection.chrome import render_html
+    from astralprojection.chrome.work import build_work_view
+
+    state = params if isinstance(params, dict) else {"mode": "list", "status": "unavailable"}
+    return render_html(build_work_view(state))
+
+
+async def components(orch, user_id, roles, params):
+    """Native counterpart of :func:`render` — same server-built state only."""
+    from astralprojection.chrome.work import build_work_view
+
+    state = params if isinstance(params, dict) else {"mode": "list", "status": "unavailable"}
+    return [item.to_dict() for item in build_work_view(state).components]
+
+
+async def _handle_result_save(orch, websocket, user_id, roles, payload):
+    """``chrome_work_result_save`` — the propose/save steps behind Save result.
+
+    Both commands run through the exact same
+    ``orchestrator.work_publication.WorkPublicationService`` the HTTP routes
+    use, gated by the same exact-approval boundary; this handler only differs
+    in how it sources the caller (see ``_ws_publication_caller``).
+    """
+    from rote.work import validate_work_save_command
+    from webrender.chrome import notice_block
+
+    from orchestrator.work_publication import (
+        WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,
+    )
+    from orchestrator.work_service import WorkService
+
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        validate_work_save_command(payload)
+    except ValueError:
+        return None
+    operation_id = payload.get("operation_id")
+    command = payload.get("command")
+    message = "The save outcome could not be confirmed. Reload the result before retrying."
+    try:
+        caller = await _ws_publication_caller(orch, websocket, user_id)
+        assignments = orch.persistent_assignments
+        service = WorkPublicationService(assignments)
+        claims = caller.context.claims
+        if command == "propose":
+            body = WorkResultProposalRequest(
+                version=1, submission_id=payload["submission_id"],
+                expected_revision=payload["expected_revision"],
+                publication_id=payload["publication_id"],
+                conversation_id=payload["conversation_id"],
+                expected_workspace_revision=payload["expected_workspace_revision"],
+                expected_workspace_publication_id=payload["expected_workspace_publication_id"])
+            review = await service.propose(operation_id, body, caller=caller)
+            row = await WorkService(assignments).get(user_id, claims, operation_id)
+            conversation_title = await _conversation_title(orch, user_id, payload["conversation_id"])
+            state = {"mode": "review", "status": "ready", "operation": row, "review": review,
+                     "approve": {"submission_id": str(uuid4()), "expired": False},
+                     "conversation_title": conversation_title}
+            return "work", state, ""
+        body = WorkResultSaveRequest(
+            version=1, submission_id=payload["submission_id"],
+            expected_revision=payload["expected_revision"],
+            proposal_digest=payload["proposal_digest"])
+        await service.save(operation_id, payload["action_id"], body, caller=caller)
+        state = await _augmented_result_state(
+            WorkService(assignments), orch, websocket, user_id, claims, operation_id)
+        return "work", state, notice_block("success", "Result saved.")
+    except AssignmentError as exc:
+        message = f"Save request refused ({exc.code}). Reload the result and try again."
+    except (KeyError, TypeError, ValueError):
+        message = "Invalid save request. Reload the result and try again."
+    except Exception:
+        logger.exception("work: result-save action failed")
+    try:
+        fallback_claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}
+        state = await _augmented_result_state(
+            WorkService(orch.persistent_assignments), orch, websocket, user_id,
+            fallback_claims, operation_id)
+    except Exception:
+        state = {"mode": "list", "status": "unavailable"}
+    return "work", state, notice_block("error", message)
+
+
+HANDLERS = {
+    "chrome_work_result_save": _handle_result_save,
+}

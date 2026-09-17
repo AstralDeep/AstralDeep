@@ -21,6 +21,7 @@ def projection_chrome_availability() -> dict[str, bool]:
     remote = False
     computer = False
     skills = False
+    connections = False
     try:
         from dreaming.pulse import pulse_enabled
 
@@ -34,6 +35,7 @@ def projection_chrome_availability() -> dict[str, bool]:
         remote = bool(flags.is_enabled("remote_compute"))
         computer = bool(flags.is_enabled("computer_use"))
         skills = bool(flags.is_enabled("user_skills"))
+        connections = bool(flags.is_enabled("framework_credentials"))
     except Exception:
         logger.warning("Unable to resolve agent chrome availability; hiding it", exc_info=True)
     workspace = {}
@@ -48,7 +50,7 @@ def projection_chrome_availability() -> dict[str, bool]:
             # An unavailable capability cannot hide an unrelated menu/control.
             workspace[output] = False
             logger.warning("Unable to resolve %s chrome availability; hiding it", feature, exc_info=True)
-    return {
+    values = {
         "pulse_enabled": pulse,
         "byo_enabled": byo,
         "remote_enabled": remote,
@@ -57,6 +59,27 @@ def projection_chrome_availability() -> dict[str, bool]:
         "notes_enabled": True,
         **workspace,
     }
+    if connections:
+        # KNOWN GAP: AstralProjection's ``webrender.chrome.render_topbar`` (a
+        # single-purpose web-topbar renderer with its own explicit keyword
+        # list, not a **kwargs passthrough) does not yet accept
+        # ``connections_enabled`` even though ``build_menu_model``/
+        # ``menu_model_dict`` — which every other delivery channel uses — has
+        # carried it since 088 T048. Every current caller of THIS function
+        # spreads its return dict into one of three sinks: the REST
+        # ``GET /api/chrome/menu`` and the native ``chrome_menu`` WS push (both
+        # ``menu_model_dict``, both fine) and the web shell's inline
+        # ``render_topbar(...)`` call, which raises ``TypeError`` on any
+        # unrecognized keyword (caught there and logged, degrading the WHOLE
+        # topbar to a bare shell — not a crash, but visibly broken for every
+        # signed-in web user). Add the key ONLY when Connections is actually
+        # enabled, so the byte-identical-when-off contract holds today and the
+        # narrower flag-on web-topbar regression is confined to an operator
+        # who has deliberately turned on this still-integrating feature.
+        # Remove this guard once ``render_topbar`` accepts (and forwards)
+        # ``connections_enabled`` like it already does ``notes_enabled``.
+        values["connections_enabled"] = True
+    return values
 
 
 def projection_native_chrome_availability(claims: dict) -> dict[str, bool]:

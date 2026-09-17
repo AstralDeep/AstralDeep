@@ -119,6 +119,27 @@ async def test_real_owner_pagination_legacy_isolation_and_read_only_projection(r
 
 
 @pytest.mark.asyncio
+async def test_metadata_envelope_discloses_money_status_without_measurement_fields(records):
+    """T052: the money disclosure joins the read; timing stays on its own route."""
+    _, service, ids, _ = records
+    operation = await service.get("owner", {"sub": "owner"}, ids[0])
+    assert set(operation) == {
+        "id", "revision", "instruction_revision", "control_epoch", "title", "kind",
+        "disposition", "lifecycle", "phase", "created_at", "updated_at", "next_wake_at",
+        "deadline_at", "schema_supported", "safe_error_code", "usage"}
+    # Plane already records that no price has been reported; dropping that made
+    # an unknown spend and a reported spend read identically.
+    assert operation["usage"]["money_status"] == "unknown"
+    assert set(operation["usage"]) == {"spent", "daily", "outstanding", "money_status"}
+    # The ledger/timing read is a separate disclosure, never folded in here.
+    assert not {"tasks", "intervals", "claim_count", "observed_ms"} & set(operation)
+    measurements = await service.measurements("owner", {"sub": "owner"}, ids[0])
+    assert measurements["id"] == operation["id"]
+    assert measurements["revision"] == operation["revision"]
+    assert "usage" not in measurements and "title" not in measurements
+
+
+@pytest.mark.asyncio
 async def test_real_poll_observes_committed_control_and_no_poll_side_effect(records):
     _, service, ids, _ = records
     owner = {"sub": "owner"}

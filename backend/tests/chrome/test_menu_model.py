@@ -146,6 +146,24 @@ def test_to_dict_non_admin_has_no_admin_anything():
         assert marker not in flat
 
 
+def test_connections_absent_by_default_present_when_enabled():
+    # 088 T048: Connections is flag-gated exactly like Pulse/My agents — its
+    # default-off absence must not disturb the pinned pre-088 Account order.
+    off = build_menu_model(["user"], pulse_enabled=False)
+    assert "connections" not in [i.key for g in off.menu for i in g.items]
+    on = build_menu_model(["user"], pulse_enabled=False, connections_enabled=True)
+    account = next(g for g in on.menu if g.key == "account")
+    assert [(i.key, i.label, i.surface) for i in account.items][-1] == (
+        "connections", "Connections", "connections")
+
+
+def test_connections_surface_resolves_in_the_host_registry():
+    m = build_menu_model(["user"], pulse_enabled=False, connections_enabled=True)
+    account = next(g for g in m.menu if g.key == "account")
+    item = next(i for i in account.items if i.key == "connections")
+    assert item.surface in SURFACE_MODULES
+
+
 def test_pulse_requires_an_explicit_host_policy_input(monkeypatch):
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
     assert not any(c.key == "pulse" for c in build_menu_model(["user"]).topbar)

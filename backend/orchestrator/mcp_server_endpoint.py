@@ -22,7 +22,11 @@ from orchestrator.mcp_authz import (
     challenge_header,
     protected_resource_metadata,
 )
-from orchestrator.mcp_projection import project_tools, resolve_projected_tool
+from orchestrator.mcp_projection import (
+    FRAMEWORK_WORK_AGENT_ID,
+    project_tools,
+    resolve_projected_tool,
+)
 from orchestrator.work_admission import AdmissionClass, OperationState
 from shared.protocol import (
     MCP_HEADER_MISMATCH,
@@ -473,6 +477,77 @@ class MCPNoCredentialsCORSMiddleware:
         await self.app(scope, receive, send_without_credentials)
 
 
+def _framework_bearer_resolver(orchestrator: Any):
+    """A sync ``token -> FrameworkCaller | None`` closure, or ``None`` (088 T049).
+
+    ``None`` when the flag is off or the service isn't wired — restoring the
+    JWT-only path exactly (``authorize_mcp_request`` never even inspects the
+    token shape when this is ``None``).
+    """
+    try:
+        from shared.feature_flags import flags
+
+        if not flags.is_enabled("framework_credentials"):
+            return None
+    except Exception:
+        return None
+    service = getattr(orchestrator, "framework_credentials", None)
+    if service is None:
+        return None
+    return service.resolve_bearer
+
+
+async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, arguments: Any):
+    """Route one framework-projected Work tool call; returns an ``MCPResponse``.
+
+    ``claims["_framework_caller"]`` is the exact ``FrameworkCaller``
+    ``mcp_authz.authorize_mcp_request``'s framework branch already resolved
+    for THIS request — never re-derived from a bearer this function does not
+    have, and never persisted or logged beyond this one dispatch.
+    """
+    from shared.protocol import MCPResponse
+
+    from orchestrator.framework_credentials import FrameworkCaller
+    from orchestrator.work_operations import FrameworkWorkOperations, dispatch_name
+    from persistent_agents.models import AssignmentError
+
+    method_name = dispatch_name(tool_name)
+    ops = getattr(orchestrator, "framework_work_operations", None)
+    caller = claims.get("_framework_caller") if isinstance(claims, dict) else None
+    if (method_name is None or not isinstance(ops, FrameworkWorkOperations)
+            or not isinstance(caller, FrameworkCaller)):
+        return MCPResponse(result_type="complete",
+                           error={"message": "Tool is unavailable or not authorized"})
+    args = arguments if isinstance(arguments, dict) else {}
+    try:
+        if method_name == "submit":
+            result = await ops.submit(
+                caller, idempotency_key=args.get("idempotency_key"), name=args.get("name"),
+                instructions=args.get("instructions"), conversation_id=args.get("conversation_id"),
+                deadline_in_seconds=args.get("deadline_in_seconds"))
+        elif method_name == "get":
+            result = await ops.get(caller, args.get("operation_id"))
+        elif method_name == "list":
+            result = await ops.list(caller, limit=args.get("limit", 50), after_id=args.get("after_id"))
+        elif method_name == "poll":
+            result = await ops.poll(caller, args.get("operation_id"),
+                                    after_revision=args.get("after_revision"))
+        elif method_name in ("cancel", "pause"):
+            result = await getattr(ops, method_name)(
+                caller, args.get("operation_id"), submission_id=args.get("submission_id"),
+                expected_revision=args.get("expected_revision"))
+        elif method_name == "result":
+            result = await ops.result(caller, args.get("operation_id"))
+        else:  # pragma: no cover - dispatch_name only returns the names handled above
+            return MCPResponse(result_type="complete",
+                               error={"message": "Tool is unavailable or not authorized"})
+    except AssignmentError as exc:
+        return MCPResponse(result_type="complete", error={"message": exc.code})
+    except (TypeError, ValueError, AttributeError):
+        return MCPResponse(result_type="complete", error={"message": "invalid arguments"})
+    return MCPResponse(result_type="complete", result=result)
+
+
 def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
     router = APIRouter()
     base_url = canonical_public_base_url(public_base_url)
@@ -557,6 +632,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     query_params=request.query_params,
                     cookies=request.cookies,
                     required_scopes=required_scopes,
+                    resolve_framework_bearer=_framework_bearer_resolver(orchestrator),
                 )
             except MCPAuthError as exc:
                 result_code = exc.error
@@ -662,6 +738,32 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                                 "isError": True,
                                 "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                             }
+                        elif projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
+                            # 088 T049: a framework Work tool never reaches the
+                            # ordinary agent dispatch stack (permission memo,
+                            # taint tracking, MoA, delegation) — it is a
+                            # different admission model entirely, gated by its
+                            # own scope and Plane's execution-authority guard.
+                            try:
+                                tool_response = await _wait_for_disconnect(
+                                    request,
+                                    _dispatch_work_tool(
+                                        orchestrator, claims, projected.skill_id,
+                                        params.get("arguments", {}),
+                                    ),
+                                )
+                                result = _tool_result(tool_response)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                logger.exception("mcp: framework work tool dispatch failed")
+                                result = {
+                                    "resultType": "complete",
+                                    "content": [{"type": "text", "text": "Tool execution failed"}],
+                                    "structuredContent": {},
+                                    "isError": True,
+                                    "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                                }
                         else:
                             try:
                                 tool_response = await _wait_for_disconnect(

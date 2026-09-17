@@ -728,7 +728,8 @@ def _plane_schema_literal_import(
     # that exact syntax in its reviewed module; never execute candidate calls
     # or broaden other imported schemas' literal grammar.
     for index, item in enumerate(items):
-        if (stem == "selected_input" and isinstance(item, ast.Call)
+        if (stem in {"selected_input", "scheduler_policy", "framework_credential"}
+                and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
                 and isinstance(item.func.value, ast.Constant)
@@ -753,6 +754,8 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("declarative_agent", "DECLARATIVE_AGENT_SCHEMA_STATEMENTS"),
         ("guidance", "GUIDANCE_SCHEMA_STATEMENTS"),
         ("selected_input", "SELECTED_INPUT_SCHEMA_STATEMENTS"),
+        ("scheduler_policy", "SCHEDULER_POLICY_SCHEMA_STATEMENTS"),
+        ("framework_credential", "FRAMEWORK_CREDENTIAL_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

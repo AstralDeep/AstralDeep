@@ -6,9 +6,10 @@ discarded after validation rather than being stored on an orchestrator session.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from jose import jwt as jose_jwt
@@ -32,6 +33,17 @@ _SCOPE_IMPLICATIONS = {
     "mcp:tools:read": frozenset({"mcp:discover", "mcp:tools:read"}),
     "mcp:tools:invoke": frozenset(MCP_SCOPES),
 }
+
+# 088 T049: a resolved framework credential (see
+# ``orchestrator.framework_credentials.FrameworkCaller``) always maps to the
+# full coarse MCP scope triad — the credential's OWN narrower
+# operations.*/artifacts.read/agents.read scopes are the fine-grained gate
+# ``orchestrator.mcp_projection`` applies per tool. Kept local (no import of
+# ``orchestrator.framework_credentials`` here) so this module's own tests stay
+# free of that dependency; ``authorize_mcp_request``'s caller passes a plain
+# resolver callable instead.
+_FRAMEWORK_MCP_SCOPES = frozenset(MCP_SCOPES)
+_FRAMEWORK_TOKEN_PREFIX = "afk_"
 
 
 @dataclass(frozen=True)
@@ -224,7 +236,22 @@ async def authorize_mcp_request(
     query_params: Mapping[str, str],
     cookies: Mapping[str, str],
     required_scopes: Iterable[str],
+    resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
 ) -> dict[str, Any]:
+    """Validate one MCP bearer — a JWT, or (088 T049) a framework credential.
+
+    ``resolve_framework_bearer`` is an ADDITIONAL, entirely optional credential
+    class: omitted (every caller before 088 T049, and every JWT-shaped bearer
+    even when it IS supplied), behavior is byte-identical to the JWT-only path.
+    When supplied and the bearer has the framework token shape (``afk_...``,
+    see ``orchestrator.framework_credentials``), it is resolved INSTEAD of JWT
+    decoding — a synchronous callable returning a
+    ``orchestrator.framework_credentials.FrameworkCaller`` or ``None`` (any
+    reason: malformed, revoked, expired, exhausted, unknown), run off the
+    event loop. A resolved caller always carries the full coarse MCP scope
+    triad; the credential's OWN narrower scopes ride the returned claims as
+    ``_framework_scopes`` for ``mcp_projection`` to gate per tool.
+    """
     required = tuple(required_scopes)
     token = bearer_from_headers(
         headers,
@@ -232,6 +259,27 @@ async def authorize_mcp_request(
         cookies,
         required_scopes=required,
     )
+    if resolve_framework_bearer is not None and token.startswith(_FRAMEWORK_TOKEN_PREFIX):
+        caller = await asyncio.to_thread(resolve_framework_bearer, token)
+        if caller is None:
+            raise MCPAuthError(401, "invalid_token", "invalid bearer token", required)
+        missing = tuple(scope for scope in required if scope not in _FRAMEWORK_MCP_SCOPES)
+        if missing:
+            raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
+        return {
+            "sub": caller.owner_id,
+            "iss": "astral-framework",
+            "aud": MCP_AUDIENCE,
+            "scope": " ".join(MCP_SCOPES),
+            "realm_access": {"roles": ["user"]},
+            "_framework_credential_id": caller.credential_id,
+            "_framework_scopes": sorted(caller.scopes),
+            # The resolved caller itself, for THIS request's dispatch only
+            # (``mcp_server_endpoint._dispatch_work_tool``) — never re-derived
+            # from a bearer that boundary does not have, and never returned to
+            # the client, logged, or serialized as part of this dict.
+            "_framework_caller": caller,
+        }
     try:
         payload = await decode_mcp_token(token)
     except MCPAuthError:

@@ -1,0 +1,6 @@
+{
+  "safe_error_code": "assignment_human_required",
+  "http_status": 403,
+  "commands": ["decide", "reconcile", "delete"],
+  "note": "decide/reconcile/delete always refuse assignment_human_required BEFORE any read or mutation (orchestrator.work_operations.FrameworkWorkOperations). They are never projected as MCP tools at all (absent from orchestrator.mcp_projection._WORK_TOOL_SPECS and orchestrator.work_operations.DISPATCHABLE_TOOL_NAMES) — a framework caller cannot even name them over the wire; this refusal is only reachable by calling the Python facade directly, which backend/tests/test_framework_conformance_088.py does to prove it."
+}

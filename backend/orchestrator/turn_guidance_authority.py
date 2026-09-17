@@ -181,6 +181,12 @@ class TurnGuidanceBinding:
     task: object = field(default_factory=asyncio.current_task, repr=False)
     closed: bool = False
     foreground: object = field(default=None, repr=False)
+    # 088 T011/T037 — the composer's exact selected agent/skill/note heads for
+    # this turn, existence-checked once at capture time (``bind_turn_selection``).
+    # ``None`` (the overwhelming default: no client submits one yet) means this
+    # binding behaves exactly as it always has — nothing downstream reads this
+    # field today, so its absence changes nothing (FR-023 byte-identical pin).
+    selection: object = field(default=None, repr=False)
 
     def close(self):
         object.__setattr__(self, "closed", True)
@@ -507,6 +513,99 @@ def inherit_turn_guidance(parent, *, expected_orchestrator, websocket, chat_id, 
     # another hop: spent==maximum remains valid until the admitted wall bound.
     return TurnGuidanceBinding(parent.origin, websocket, chat_id, parent=parent,
                                budget=budget, budget_limits=tuple(limits))
+
+
+# ---------------------------------------------------------------------------
+# 088 T011/T037 — the composer's selection (agent revision + skills + notes)
+#
+# This binds the SAME closed, existence-checked identifiers HTTP Work already
+# requires (``orchestrator.work_submit._selected_ids``) into an ordinary chat
+# turn. It is a read-only, current-heads check at capture time — never a grant,
+# never a value read (note plaintext is never opened here), and never a
+# durable commitment: nothing downstream consumes ``TurnGuidanceBinding.
+# selection`` yet, so an absent selection changes nothing (FR-023).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TurnSelectionBinding:
+    """Bounded, existence-checked identifiers only; never an opened note value."""
+    agent: object = None
+    skills: tuple = ()
+    notes: tuple = ()
+
+    def recheck(self, tx, repositories, owner_id):
+        """Re-assert every reference is still exactly the current head."""
+        _selection_current(tx, repositories, owner_id, self.agent, self.skills, self.notes)
+
+
+def _selection_current(tx, repositories, owner_id, agent, skills, notes):
+    from astralplane.repositories.agents import AgentRevisionRecord, UserAgentRecord
+    from astralplane.repositories.guidance_models import ExplicitNoteRecord, SkillHead
+    if agent is not None:
+        agent_id, revision_id = agent
+        head = repositories.agents.get_agent(tx, owner_id=owner_id, agent_id=agent_id)
+        if (type(head) is not UserAgentRecord or head.owner_id != owner_id
+                or head.agent_kind != "declarative" or head.status != "active"
+                or head.deleted_at is not None or head.selected_definition_revision_id != revision_id):
+            _refuse()
+        revision = repositories.agents.get_revision(tx, owner_id=owner_id, agent_id=agent_id,
+                                                    revision_id=revision_id)
+        if (type(revision) is not AgentRevisionRecord or revision.owner_id != owner_id
+                or revision.agent_id != agent_id or revision.revision_id != revision_id):
+            _refuse()
+    for skill_id, revision in skills:
+        head = repositories.preferences.skills.get(tx, owner_id=owner_id, skill_id=skill_id)
+        if (type(head) is not SkillHead or head.owner_id != owner_id or head.revision != revision
+                or not head.enabled or head.deleted_at is not None):
+            _refuse()
+    for note_id, revision in notes:
+        note = repositories.preferences.personalization.get_explicit_note(
+            tx, owner_id=owner_id, note_id=note_id, include_disabled=False)
+        if (type(note) is not ExplicitNoteRecord or note.owner_id != owner_id
+                or note.note_id != note_id or note.revision != revision):
+            _refuse()
+
+
+def _selection_identifiers(value):
+    """Validate the closed version-1 shape and return hashable identifiers.
+
+    Reuses the exact same validator HTTP Work applies to its own
+    ``selection`` body, so a chat turn and a Work admission accept and refuse
+    identically shaped input.
+    """
+    from orchestrator.work_submit import _selected_ids
+    try:
+        _selected_ids(value)
+    except AssignmentError:
+        _refuse()
+    agent = None if value["agent"] is None else (value["agent"]["agent_id"], value["agent"]["revision_id"])
+    skills = tuple(sorted((entry["skill_id"], entry["revision"]) for entry in value["skills"]))
+    notes = tuple(sorted((entry["note_id"], entry["revision"]) for entry in value["notes"]))
+    return agent, skills, notes
+
+
+async def bind_turn_selection(binding, *, expected_orchestrator, selection):
+    """Existence-check every selected head now, exactly as HTTP Work does at capture.
+
+    A stale, forgotten or malformed selection refuses (``AssignmentError``);
+    it is the caller's choice whether to drop it or fail the whole turn — this
+    never mutates or re-derives ``selection`` itself.
+    """
+    from dataclasses import replace
+    if type(binding) is not TurnGuidanceBinding:
+        _refuse()
+    binding.local(expected_orchestrator)
+    agent, skills, notes = _selection_identifiers(selection)
+    reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)
+    try:
+        def check(tx, repositories):
+            _selection_current(tx, repositories, binding.origin.owner_id, agent, skills, notes)
+            return TurnSelectionBinding(agent, skills, notes)
+        resolved = await reader.transaction(check, expected_orchestrator=expected_orchestrator)
+        await reader.verify_delivery()
+    finally:
+        reader.close()
+    return replace(binding, selection=resolved)
 
 
 @contextmanager

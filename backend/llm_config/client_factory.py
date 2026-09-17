@@ -23,10 +23,12 @@ is observed on the very next call.
 """
 from __future__ import annotations
 
-from typing import Optional, Protocol, Tuple
+from dataclasses import dataclass
+from typing import Iterable, Optional, Protocol, Tuple
 
 from openai import OpenAI
 
+from .local_endpoint import classify_endpoint
 from .types import CredentialSource, LLMUnavailable, ResolvedConfig
 
 
@@ -91,6 +93,54 @@ class LLMConfigLike(Protocol):
     api_key: str
     base_url: str
     model: str
+
+
+@dataclass(frozen=True, slots=True)
+class LocalInferenceFrame:
+    """Non-sensitive local-inference tag for one resolved configuration.
+
+    Feature 088 T016 (FR-019): lets audit/accounting code identify a config
+    that points at local inference (literal loopback/RFC1918 host or an exact
+    allowlisted origin) WITHOUT re-reading the record. ``audit_base_url`` is
+    the value to place in audit payloads: unchanged for remote providers, and
+    reduced to ``scheme://<class>`` for local endpoints so a user's private
+    network topology never lands in a durable row. Carries no ``api_key``.
+    """
+
+    local: bool
+    endpoint_class: str
+    keyless: bool
+    model: str
+    audit_base_url: str
+
+
+def local_inference_frame(
+    config: Optional[LLMConfigLike], *, allowlist: Iterable[str] = ()
+) -> LocalInferenceFrame:
+    """Tag ``config`` as local or remote inference by its literal ``base_url``.
+
+    Purely lexical (no DNS, no connection) and free of side effects; a
+    ``None`` config is a remote, keyed, empty frame so callers can treat the
+    absence of configuration exactly like the fail-closed ``build_llm_client``
+    branch. Remote providers are returned byte-for-byte (``audit_base_url``
+    equals ``base_url``), so this helper changes nothing for them.
+    """
+    if config is None:
+        return LocalInferenceFrame(False, "remote", False, "", "")
+    base_url = getattr(config, "base_url", "")
+    base_url = base_url if type(base_url) is str else ""
+    model = getattr(config, "model", "")
+    model = model if type(model) is str else ""
+    api_key = getattr(config, "api_key", "")
+    keyless = not api_key or api_key == KEYLESS_API_KEY_SENTINEL
+    verdict = classify_endpoint(base_url, allowlist=allowlist)
+    return LocalInferenceFrame(
+        local=verdict.local,
+        endpoint_class=verdict.endpoint_class,
+        keyless=keyless,
+        model=model,
+        audit_base_url=verdict.redacted_base_url if verdict.local else base_url,
+    )
 
 
 def build_llm_client(

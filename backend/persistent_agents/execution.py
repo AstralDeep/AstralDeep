@@ -162,15 +162,27 @@ class ActionExecutor:
                     or action.intent.transient_input is not None))):
             raise DispatchDenied("assignment_operation_profile_unavailable")
 
+    def _chat_kind(self, record=None) -> bool:
+        """The source-less chat profile shares every fence but has no reader."""
+        current = self.record if record is None else record
+        return self.one_shot and current.operation.get("kind") == "chat"
+
     async def refresh(self, request=None, *, authority=None, _research=None):
         if self.one_shot:
+            from persistent_agents.research_input import ResearchInput, route
             if _research is None:
-                self._operation_reader(request)
+                if self._chat_kind():
+                    # A chat turn prepares only its own fixed model route.
+                    if (request != route() or self.operation_sessions is None or self.interactive
+                            or self.remote_marker is not None or self.approved_action_id is not None):
+                        raise DispatchDenied("assignment_operation_profile_unavailable")
+                else:
+                    self._operation_reader(request)
             else:
-                from persistent_agents.research_input import ResearchInput, route
                 if (type(_research) is not ResearchInput or request != route()
                         or self.operation_sessions is None or self.interactive
-                        or self.remote_marker is not None or self.approved_action_id is not None):
+                        or self.remote_marker is not None or self.approved_action_id is not None
+                        or (_research.kind == "chat") != self._chat_kind()):
                     raise DispatchDenied("assignment_operation_profile_unavailable")
                 _research.assert_record(self.record)
                 if _research._ephemeral is not None:
@@ -183,9 +195,16 @@ class ActionExecutor:
             current = await self.store.call_for_operation("assert_current_assignment_execution",
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
             with turn_permission_memo():
-                checks = await self.service.validate_execution(
-                    current.owner_id, authority.claims, current,
-                    SimpleNamespace(request=request), authority=authority)
+                if self._chat_kind(current):
+                    from persistent_agents.chat_episode import chat_execution_checks
+                    if request != route():
+                        raise DispatchDenied("assignment_operation_profile_unavailable")
+                    checks = chat_execution_checks(self.service, current.owner_id,
+                        authority.claims, current, authority=authority)
+                else:
+                    checks = await self.service.validate_execution(
+                        current.owner_id, authority.claims, current,
+                        SimpleNamespace(request=request), authority=authority)
             # Permission/source checks can await. Revalidate the same snapshot,
             # never rotate the JWT after the ordinary delegation gate has run.
             self.record = await self.store.call_for_operation("assert_current_assignment_execution",
@@ -768,24 +787,32 @@ class ActionExecutor:
                 and (private._guidance is not None or self._research_guidance is None
                      or self._research_guidance.captured is not None)):
             raise DispatchDenied("assignment_research_binding_changed")
+        chat = private.kind == "chat"
+        if chat != self._chat_kind() or (chat and private.source_action_id is not None):
+            raise DispatchDenied("assignment_research_binding_changed")
         def final_check():
             private.assert_local(orchestrator=self.orch, runtime=self.store.plane_runtime)
         def guarded(tx, repository, current):
             repository.assert_current_assignment_execution(tx, fence=self.claim.fence,
-                binding=self.binding, authority=authority.observation, action_id=private.source_action_id)
+                binding=self.binding, authority=authority.observation,
+                action_id=action_id if chat else private.source_action_id)
             # Take all action row locks in stable order before waiting on the
             # current USER configuration. Later callbacks only revisit these rows.
+            identities = {action_id} if chat else {private.source_action_id, action_id}
             locked = {identity: repository.get_action(tx, owner_id=private.owner_id,
                 assignment_id=private.assignment_id, action_id=identity)
-                for identity in sorted({private.source_action_id, action_id})}
-            source = locked[private.source_action_id]
+                for identity in sorted(identities)}
+            source = None if chat else locked[private.source_action_id]
             config = self.store.plane_runtime.repositories.encrypted_llm_config.get_user_for_update(
                 tx, owner_id=private.owner_id)
             private.assert_current(current, source, config)
             final_check()
             if private._ephemeral is not None:
                 private._ephemeral.assert_executor(self)
-            self._assert_fixed_reader_policy(tx, authority)
+            if not chat:
+                # A chat turn holds no reader consent; the fixed reader policy
+                # fence applies only where a source read was authorized.
+                self._assert_fixed_reader_policy(tx, authority)
             self._assert_research_guidance(tx, repository, current, authority)
             result = callback(tx, repository, current)
             self._final_research_guidance(tx, repository, authority)
@@ -896,11 +923,79 @@ class ActionExecutor:
             private.assert_action(existing)
             return await self._execute_research(existing, private, checks, window)
 
+    async def chat_turn(self, key: str):
+        """Attempt only the fixed USER source-less chat profile, never raw prompts.
+
+        This entry remains unregistered and cannot complete an operation; the
+        chat handler owns that lifecycle. It shares research's reservation,
+        permit, settlement and cached-result guards without any reader step.
+        """
+        import re
+        from llm_config import research_profile as profile
+        from persistent_agents.chat_episode import CHAT_KEY_PREFIX, chat_action_key
+        from persistent_agents.research_input import ResearchInput, route
+
+        if (not self.one_shot or self.operation_sessions is None or self.interactive
+                or self.remote_marker is not None or self.approved_action_id is not None
+                or not self._chat_kind() or type(key) is not str
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", key)):
+            raise DispatchDenied("assignment_operation_profile_unavailable")
+        async with _OperationAuthorityWindow(self.operation_authority_lock) as window:
+            initial = await self.refresh(route())
+            if key != chat_action_key(self.record):
+                raise DispatchDenied("assignment_research_binding_changed")
+            current = self.record
+            existing = await self.store.transaction(lambda tx, repository: repository.get_action_by_key(
+                tx, owner_id=current.owner_id, assignment_id=current.assignment_id,
+                action_key=CHAT_KEY_PREFIX + key), bound_session_waits=True)
+            key_id = None
+            if existing is not None:
+                transient = existing.intent.transient_input
+                if transient is None or not hasattr(transient, "binding_key_id"):
+                    raise DispatchDenied("assignment_research_binding_changed")
+                key_id = transient.binding_key_id
+            private = await ResearchInput.capture_chat(current, config_store=self.orch._llm_store,
+                key_id=key_id, guidance=self._research_guidance)
+            await safe_text(canonical(private.body()["messages"]))
+            checks = await self.refresh(route(), authority=initial["authority"], _research=private)
+            maximum = AssignmentResourceAmount(model_calls=1, tokens=profile.RESERVED_TOKENS,
+                                               elapsed_ms=profile.RESERVED_MILLISECONDS)
+            if existing is not None:
+                private.assert_action(existing)
+                if existing.intent.maximum != maximum:
+                    raise DispatchDenied("assignment_research_binding_changed")
+                if (existing.intent.permission_digest != checks["permission_digest"]
+                        or existing.intent.precondition_digest != checks["precondition_digest"]):
+                    raise DispatchDenied("assignment_precondition_changed")
+                if existing.state == "succeeded":
+                    def cached(tx, repository, _current):
+                        actual = repository.get_action(tx, owner_id=private.owner_id,
+                            assignment_id=private.assignment_id, action_id=existing.action_id)
+                        return private.chat_result(actual)
+                    return await self._research_transaction(private, checks["authority"], cached,
+                                                            action_id=existing.action_id)
+                if existing.ever_started or existing.state in {"started", "uncertain", "reconciliation"}:
+                    raise DispatchDenied("assignment_action_uncertain")
+            if current.definition.limits.get("currency") is not None:
+                raise DispatchDenied("assignment_cost_bound_unavailable")
+            if existing is None:
+                intent = AssignmentActionIntent(action_key=CHAT_KEY_PREFIX + key, request=route(),
+                    request_digest=private.payload_binding, maximum=maximum,
+                    permission_digest=checks["permission_digest"], precondition_digest=checks["precondition_digest"],
+                    transient_input=private.transient(), boundary="unreplayable")
+                existing = await self.store.call_for_operation("put_action_for_execution",
+                    fence=self.claim.fence, binding=self.binding, authority=checks["authority"].observation,
+                    intent=intent)
+            if existing.intent.maximum != maximum:
+                raise DispatchDenied("assignment_research_binding_changed")
+            private.assert_action(existing)
+            return await self._execute_research(existing, private, checks, window)
+
     async def _execute_research(self, action, private, operation_checks, window):
         """Meter one fixed effect, preserve authentic liability and guard result use."""
         from astralplane.repositories.assignment_models import AssignmentResultDisposition
         from llm_config import research_profile as profile
-        from persistent_agents.research_input import route
+        from persistent_agents.research_input import PRE_SEND_FAILURE, UnsentAttempt, route
 
         attempt_id = str(uuid.uuid4())
         reserve_values = dict(
@@ -968,22 +1063,47 @@ class ActionExecutor:
         async def observe(permit, status, response):
             nonlocal observed
             elapsed = max(1, int((time.monotonic() - effect_started) * 1000))
-            parsed = (profile.parse_response(response.body, status_code=response.status_code,
-                passage_ids=private.passage_ids) if status == "succeeded" else None)
+            unsent = response if status == "succeeded" and type(response) is UnsentAttempt else None
+            parsed = (private.parse(response.body, status_code=response.status_code)
+                      if status == "succeeded" and unsent is None else None)
             actual = None
             result = {}
             outcome = "uncertain"
-            if parsed is not None and parsed.usage is not None:
+            refusal = "assignment_research_response_refused"
+            if unsent is not None:
+                # The request provably never left this process: the issued
+                # permit settles as a failed attempt with known-zero provider
+                # usage, releasing its reservation for Plane's bounded retry.
+                actual = AssignmentResourceAmount(model_calls=0, tokens=0, elapsed_ms=elapsed)
+                outcome, refusal = "failed", PRE_SEND_FAILURE
+                result = {"code": PRE_SEND_FAILURE}
+            elif parsed is not None and parsed.usage is not None:
                 # Usage is factual even for wrong model, refusal, malformed
                 # selection or overrun. It is never clamped to a lower reservation.
                 actual = AssignmentResourceAmount(model_calls=1, tokens=parsed.usage.total_tokens,
                                                    elapsed_ms=elapsed)
                 outcome = "failed"
-                if parsed.passage_ids is not None and elapsed <= profile.RESERVED_MILLISECONDS:
+                if private.kind == "chat":
+                    usable = parsed.text is not None and elapsed <= profile.RESERVED_MILLISECONDS
+                    if usable:
+                        try:
+                            # A refused answer is still a charged, settled attempt.
+                            await safe_text(parsed.text)
+                        except DispatchDenied as denied:
+                            usable, refusal = False, str(denied)
+                        except Exception:  # noqa: BLE001 - an unavailable gate never skips settlement
+                            usable, refusal = False, "assignment_phi_redaction_unavailable"
+                    if usable:
+                        from persistent_agents.chat_episode import chat_result_value
+                        result = chat_result_value(parsed.text)
+                        outcome = "succeeded"
+                    else:
+                        result = {"code": refusal}
+                elif parsed.passage_ids is not None and elapsed <= profile.RESERVED_MILLISECONDS:
                     result = private.selection_result(parsed.passage_ids)
                     outcome = "succeeded"
                 else:
-                    result = {"code": "assignment_research_response_refused"}
+                    result = {"code": refusal}
             receipt_digest = private.receipt_digest(action_id=action.action_id, attempt_id=attempt_id,
                 outcome=outcome, result=result, actual=actual)
             ephemeral = private._ephemeral is not None
@@ -1038,7 +1158,7 @@ class ActionExecutor:
             if saved.get("result_available") is False:
                 raise DispatchDenied("assignment_result_unavailable")
             if outcome != "succeeded":
-                raise DispatchDenied("assignment_research_response_refused")
+                raise DispatchDenied(refusal)
 
         context = PersistentDispatchContext(owner_id=private.owner_id, kind="model", agent_id=None,
             tool_name=None, arguments=route(), timeout_seconds=65, max_input_bytes=65536,

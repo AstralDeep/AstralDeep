@@ -6,7 +6,12 @@ Plane retains its liability and refuses deletion until settlement is understood.
 """
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from typing import Literal
+
+from astralplane.repositories.assignment_models import (
+    AssignmentActionDecision, AssignmentActionRecord, AssignmentRecord,
+)
+from pydantic import Field, ValidationError, field_validator
 
 from orchestrator.work_control_audit import WorkControlAudit
 from orchestrator.work_control_authority import WorkCallerAuthority
@@ -30,6 +35,23 @@ class WorkControlRequest(WorkDeleteRequest):
     @classmethod
     def canonical_submission(cls, value):
         return validate_id(value)
+
+
+class WorkDecideRequest(WorkControlRequest):
+    """An owner's approve/reject decision about one proposed action.
+
+    ``proposal_digest`` must equal the stored intent's request digest, so a
+    decision never applies to a proposal the owner did not review. Approval
+    only records the decision: execution still requires the runner's current
+    authority checks at claim time, exactly as for any other approved action.
+    """
+
+    proposal_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    decision: Literal["approve", "reject"]
+
+
+_PLANE_DECISION = {"approve": "approve", "reject": "decline"}
+_DECIDED_STATES = frozenset({"approved", "declined"})
 
 
 def _method(repository, name):
@@ -125,6 +147,86 @@ class WorkControlService:
         await self._transaction(transaction, caller)
         await caller.verify_delivery()
         return {"id": identity, "deleted": True}
+
+    async def decide(self, identity, action_id, body: WorkDecideRequest, *, caller=None):
+        """Approve or reject one proposed action once; exact replay is a receipt read.
+
+        Like ``reconcile``, ``expected_revision`` is a transient CAS observation
+        excluded from the immutable decision digest, so a lost acknowledgement can
+        be replayed after a later control changed the revision. A replay with
+        different content is refused (``assignment_approval_invalid``), a stale
+        revision on first application is a revision conflict, and the decision
+        audit row commits in the same transaction as the Plane decision.
+        """
+        if type(caller) is not WorkCallerAuthority:
+            raise AssignmentError("work_authentication_required", 401)
+        owner_id, claims = caller.context.owner_id, caller.context.claims
+        self._caller(caller, owner_id, claims)
+        self.assignments._owner(owner_id, claims)
+        if type(body) is not WorkDecideRequest:
+            raise AssignmentError("work_control_invalid", 422)
+        try:
+            body = WorkDecideRequest.model_validate(body.model_dump())
+        except ValidationError:
+            raise AssignmentError("work_control_invalid", 422) from None
+        identity, action_id = _identity(identity), _identity(action_id)
+        signature = digest({"api_version": 1, "operation_id": identity, "action_id": action_id,
+                            "command": "decide", **body.model_dump(exclude={"expected_revision"})})
+
+        def transaction(tx, repository):
+            read = _owned_operation(tx, repository, owner_id, identity)
+            action = _method(repository, "get_action")(
+                tx, owner_id=owner_id, assignment_id=identity, action_id=action_id)
+            if (type(action) is not AssignmentActionRecord or action.owner_id != owner_id
+                    or action.assignment_id != identity):
+                raise AssignmentError("work_not_found", 404)
+            if body.proposal_digest != action.intent.request_digest:
+                raise AssignmentError("assignment_proposal_changed", 409)
+            decided_before = action.state in _DECIDED_STATES
+            decision = AssignmentActionDecision(
+                body.proposal_digest, _PLANE_DECISION[body.decision], body.submission_id, signature,
+                action.intent.permission_digest, action.intent.precondition_digest)
+            current = read.assignment
+            # Plane replays an identical stored decision and refuses a different
+            # one (or a stale/expired proposal) as assignment_approval_invalid.
+            decided = _method(repository, "decide_action")(
+                tx, owner_id=owner_id, assignment_id=identity, action_id=action_id,
+                expected_instruction_revision=current.instruction_revision,
+                expected_control_epoch=current.control_epoch,
+                expected_state_version=body.expected_revision, decision=decision)
+            if (type(decided) is not AssignmentActionRecord or decided.action_id != action_id
+                    or decided.state not in _DECIDED_STATES):
+                raise AssignmentError("work_control_unavailable", 503)
+            updated = _owned_operation(tx, repository, owner_id, identity)
+            applied = not decided_before
+            if applied:
+                self._append_decision(tx, owner_id=owner_id, record=updated.assignment,
+                                      submission_id=body.submission_id, action_id=action_id,
+                                      decision=body.decision)
+            return {"operation": _public(updated, owner_id), "action_id": action_id,
+                    "state": decided.state, "applied": applied}
+
+        result = await self._transaction(transaction, caller)
+        await caller.verify_delivery()
+        return result
+
+    def _append_decision(self, tx, *, owner_id, record, submission_id, action_id, decision):
+        """Append the ``work.action.decide`` row through the bound audit adapter.
+
+        Metadata is identifiers plus the wire decision only; the proposal
+        content, digests and any private intent never enter the audit row.
+        """
+        self.audit.assert_current()
+        if (type(record) is not AssignmentRecord or record.owner_id != owner_id
+                or decision not in _PLANE_DECISION):
+            raise AssignmentError("work_control_unavailable", 503)
+        try:
+            metadata = {"submission_id": validate_id(submission_id),
+                        "action_id": validate_id(action_id), "decision": decision}
+        except (ValueError, TypeError, AttributeError):
+            raise AssignmentError("work_control_unavailable", 503) from None
+        self.audit._insert(tx, owner_id=owner_id, record=record, action_type="work.action.decide",
+                           description="Work owner decision", metadata=metadata)
 
     async def _transaction(self, callback, caller):
         def current(transaction, repository):

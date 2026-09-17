@@ -482,4 +482,289 @@ def test_transport_payload_cannot_override_form_or_add_fields(host, command, pay
     run(surf.HANDLERS[f"chrome_assignment_{command}"](orch, socket, "owner", [], payload))
     orch.persistent_assignments.create.assert_not_awaited()
     orch.persistent_assignments.revise.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 088 T040 — schedule-tab policy Stop routes to AssignmentControl.STOP for
+# each bound ongoing agent (scheduler.store mechanics are covered by
+# backend/scheduler/tests/test_policy_allowance_088.py; this file owns the
+# assignment-service side of the wiring).
+#
+# ``_handle_job_policy_save``/``_handle_job_stop`` are exercised DIRECTLY
+# (never through ``surf.HANDLERS``): they are deliberately not registered
+# there yet (see the long comment above ``chrome_assignment_create`` in
+# personalization.py) because production wires no real ``monitoring_
+# dispatcher`` into ``JobRunner`` (orchestrator.py) — the unattended
+# scheduler can only CONTINUE an already-bound policy episode, never mint a
+# first one — and this module's HANDLERS-set is an exhaustive contract
+# elsewhere (test_surface_personalization.py::
+# test_module_contract_title_and_handlers) that this workstream's assigned
+# files do not include. Registering these two names is a coordinated
+# follow-up alongside that contract-test update and the real dispatcher.
+# ---------------------------------------------------------------------------
+
+
+class _FakeJobStore:
+    def __init__(self, *, stop_result=None, stop_error=None,
+                 policy_result=None, policy_error=None):
+        self.stop_calls = []
+        self.policy_calls = []
+        self._stop_result = stop_result
+        self._stop_error = stop_error
+        self._policy_result = policy_result
+        self._policy_error = policy_error
+
+    def stop_job(self, user_id, job_id, *, expected_version):
+        self.stop_calls.append((user_id, job_id, expected_version))
+        if self._stop_error is not None:
+            raise self._stop_error
+        return self._stop_result
+
+    def set_job_policy(self, user_id, job_id, *, max_runs, monitor_changes, expected_version):
+        self.policy_calls.append(
+            (user_id, job_id, max_runs, monitor_changes, expected_version)
+        )
+        if self._policy_error is not None:
+            raise self._policy_error
+        return self._policy_result
+
+    def get_job_policy(self, user_id, job_id):
+        return None
+
+    def list_jobs(self, user_id):
+        return [{"id": "job-1", "name": "Watch a page", "status": "active",
+                 "schedule_kind": "interval", "schedule_expr": "3600", "timezone": "UTC",
+                 "next_run_at": None, "last_run_at": None, "agent_id": "web-research-1"}]
+
+    def list_runs(self, user_id, job_id):
+        return []
+
+
+def test_job_stop_routes_to_assignment_control_stop_for_each_outstanding_family(host):
+    orch, socket, _, row = host
+    # ``service.get`` returns the RAW record (attribute access), unlike the
+    # ``public_record``-projected dict other tests in this module compare
+    # against — a plain SimpleNamespace exercises that contract precisely.
+    orch.persistent_assignments.get = AsyncMock(return_value=SimpleNamespace(
+        instruction_revision=row["instruction_revision"], control_epoch=row["control_epoch"],
+    ))
+    outcome = SimpleNamespace(stopped=True, outstanding_assignment_ids=(row["assignment_id"],))
+    store = _FakeJobStore(stop_result=outcome)
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "submission_id": str(uuid4()), "expected_policy_version": 3},
+    ))
+
+    assert surface_key == surf.SURFACE_KEY
+    assert store.stop_calls == [("owner", "job-1", 3)]
+    orch.persistent_assignments.control.assert_awaited_once()
+    call = orch.persistent_assignments.control.await_args
+    assert call.args[0] == "owner"
+    assert call.args[2] == row["assignment_id"]
+    assert call.args[3] == "stop"
+    request = call.args[4]
+    assert request.expected_instruction_revision == row["instruction_revision"]
+    assert request.expected_control_epoch == row["control_epoch"]
+    assert "stopped permanently" in notice.lower()
+    assert "automatically" not in notice.lower()
+
+
+def test_job_stop_reports_when_a_bound_agent_cannot_be_stopped_automatically(host):
+    orch, socket, _, row = host
+    orch.persistent_assignments.get = AsyncMock(return_value=SimpleNamespace(
+        instruction_revision=row["instruction_revision"], control_epoch=row["control_epoch"],
+    ))
+    orch.persistent_assignments.control.side_effect = AssignmentError("assignment_revision_conflict")
+    outcome = SimpleNamespace(stopped=True, outstanding_assignment_ids=(row["assignment_id"],))
+    store = _FakeJobStore(stop_result=outcome)
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "submission_id": str(uuid4()), "expected_policy_version": 3},
+    ))
+
+    # The job policy Stop itself already committed regardless of the
+    # per-assignment outcome — this is never surfaced as a failure.
+    assert "stopped permanently" in notice.lower()
+    assert "ongoing agents" in notice.lower()
+
+
+def test_job_stop_never_calls_assignment_control_when_the_feature_is_off(host, monkeypatch):
+    orch, socket, _, row = host
+    monkeypatch.setattr(surf.flags, "is_enabled", lambda key: key != "persistent_agents")
+    outcome = SimpleNamespace(stopped=True, outstanding_assignment_ids=(row["assignment_id"],))
+    store = _FakeJobStore(stop_result=outcome)
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "submission_id": str(uuid4()), "expected_policy_version": 3},
+    ))
+
     orch.persistent_assignments.control.assert_not_awaited()
+    assert "ongoing agents" in notice.lower()
+
+
+def test_job_stop_surfaces_a_stale_policy_version_as_a_safe_notice(host):
+    from scheduler.store import ScheduleActionError
+
+    orch, socket, _, row = host
+    store = _FakeJobStore(stop_error=ScheduleActionError("schedule_policy_version_conflict"))
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "submission_id": str(uuid4()), "expected_policy_version": 1},
+    ))
+
+    orch.persistent_assignments.control.assert_not_awaited()
+    assert "reload" in notice.lower()
+
+
+def test_job_stop_requires_a_job_id_and_a_policy_version(host):
+    orch, socket, _, row = host
+    store = _FakeJobStore()
+    orch.scheduled_job_store = store
+
+    missing_job = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"], {"expected_policy_version": 1},
+    ))
+    assert "missing job" in missing_job[2].lower()
+
+    missing_version = run(surf._handle_job_stop(
+        orch, socket, "owner", ["user"], {"job_id": "job-1"},
+    ))
+    assert "policy version" in missing_version[2].lower()
+    assert store.stop_calls == []
+
+
+def test_job_policy_save_only_updates_owner_editable_fields(host):
+    orch, socket, _, row = host
+    store = _FakeJobStore(policy_result={"job_id": "job-1", "version": 2})
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_policy_save(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "max_runs": "5", "monitor_changes": True, "expected_policy_version": 1},
+    ))
+
+    assert store.policy_calls == [("owner", "job-1", 5, True, 1)]
+    assert "saved" in notice.lower()
+
+
+def test_job_policy_save_blank_run_limit_means_no_limit(host):
+    orch, socket, _, row = host
+    store = _FakeJobStore(policy_result={"job_id": "job-1", "version": 1})
+    orch.scheduled_job_store = store
+
+    run(surf._handle_job_policy_save(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "max_runs": "", "monitor_changes": False, "expected_policy_version": 0},
+    ))
+
+    assert store.policy_calls == [("owner", "job-1", None, False, 0)]
+
+
+def test_job_policy_save_rejects_a_non_numeric_run_limit(host):
+    orch, socket, _, row = host
+    store = _FakeJobStore()
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_policy_save(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "max_runs": "not-a-number", "monitor_changes": False,
+         "expected_policy_version": 0},
+    ))
+
+    assert store.policy_calls == []
+    assert "whole number" in notice.lower()
+
+
+def test_job_policy_save_surfaces_a_stale_version_conflict(host):
+    from scheduler.store import ScheduleActionError
+
+    orch, socket, _, row = host
+    store = _FakeJobStore(policy_error=ScheduleActionError("schedule_policy_version_conflict"))
+    orch.scheduled_job_store = store
+
+    surface_key, params, notice = run(surf._handle_job_policy_save(
+        orch, socket, "owner", ["user"],
+        {"job_id": "job-1", "max_runs": "5", "monitor_changes": False, "expected_policy_version": 1},
+    ))
+
+    assert "reload" in notice.lower()
+
+
+def test_stop_permanently_control_is_offered_only_for_a_policy_job_and_never_twice_stopped():
+    active = surf._job_policy_html("job-1", {
+        "version": 1, "max_runs": 5, "admitted_runs": 1, "monitor_changes": False,
+        "terminal_stop": False, "last_assignment_id": None,
+    })
+    assert "chrome_job_stop" in active
+    assert "1 of 5 runs admitted" in active
+
+    # 088 T040 fix: a job with NO existing policy row (every job today, since
+    # nothing yet binds a first monitoring assignment) renders NOTHING here —
+    # never a "create a policy" form the scheduler could never admit.
+    legacy = surf._job_policy_html("job-1", None)
+    assert legacy == ""
+
+    stopped = surf._job_policy_html("job-1", {
+        "version": 2, "max_runs": None, "admitted_runs": 1, "monitor_changes": False,
+        "terminal_stop": True, "last_assignment_id": None,
+    })
+    assert "chrome_job_stop" not in stopped
+    assert "stopped permanently" in stopped.lower()
+
+
+def test_stop_permanently_control_native_components_mirror_the_web_form():
+    active = surf._job_policy_components("job-1", {
+        "version": 1, "max_runs": None, "admitted_runs": 0, "monitor_changes": True,
+        "terminal_stop": False, "last_assignment_id": None,
+    })
+    payload = json.dumps(active)
+    assert "chrome_job_stop" in payload
+    assert "No run limit" in payload
+
+    legacy = surf._job_policy_components("job-1", None)
+    assert legacy == []
+
+
+def test_job_policy_actions_are_not_yet_registered_pending_a_real_dispatcher():
+    """Locks in the 088 T040 gating decision (see the comment above
+    ``chrome_assignment_create`` in personalization.py): these two names must
+    stay OUT of ``HANDLERS`` until a real ``monitoring_dispatcher`` is wired
+    at JobRunner construction (orchestrator.py) AND the exhaustive HANDLERS
+    contract test (test_surface_personalization.py::
+    test_module_contract_title_and_handlers, outside this workstream's
+    assigned files) is extended for them together. Regressing this silently
+    would either brick a first-run policy job or fail that contract test.
+    """
+    assert "chrome_job_policy_save" not in surf.HANDLERS
+    assert "chrome_job_stop" not in surf.HANDLERS
+    # The implementations exist and are independently tested above/below —
+    # only their registration is withheld.
+    assert callable(surf._handle_job_policy_save)
+    assert callable(surf._handle_job_stop)
+
+
+def test_schedule_tab_never_renders_the_policy_form_for_a_legacy_job(host):
+    """Defense in depth for the same gating decision: even a job present in
+    ``_render_schedule``/``_components_schedule`` (every real job today, since
+    nothing binds a first monitoring assignment) must show no run-policy
+    markup and no reference to the two withheld action names.
+    """
+    orch, socket, _, row = host
+    orch.scheduled_job_store = _FakeJobStore()
+
+    html = surf._render_schedule(orch, "owner")
+    assert "Run policy" not in html
+    assert "chrome_job_stop" not in html
+    assert "chrome_job_policy_save" not in html
+
+    components = json.dumps(surf._components_schedule(orch, "owner"))
+    assert "chrome_job_stop" not in components
+    assert "chrome_job_policy_save" not in components

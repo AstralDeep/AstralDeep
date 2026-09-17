@@ -149,13 +149,49 @@ def bearer_from_headers(headers) -> str:
     return token.strip()
 
 
+def _a2a_framework_resolver(orchestrator):
+    """A sync ``token -> FrameworkCaller | None`` closure, or ``None`` (088 T049).
+
+    Mirrors ``mcp_server_endpoint._framework_bearer_resolver`` exactly: ``None``
+    when the flag is off or the service isn't wired, restoring the
+    first-party-JWT-only A2A path byte-for-byte.
+    """
+    try:
+        from shared.feature_flags import flags
+
+        if not flags.is_enabled("framework_credentials"):
+            return None
+    except Exception:
+        return None
+    service = getattr(orchestrator, "framework_credentials", None)
+    if service is None:
+        return None
+    return service.resolve_bearer
+
+
 async def authenticate_a2a_request(
-    validator: A2ASecurityValidator, headers
+    validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
 ) -> Optional[A2APrincipal]:
-    """Validate the request bearer with the entry-gate validator."""
+    """Validate the request bearer — a first-party JWT, or (088 T049) a
+    framework credential when ``resolve_framework_bearer`` is supplied and the
+    bearer has that shape. Omitted (every caller before 088 T049), behavior is
+    byte-identical to the JWT-only path.
+    """
     token = bearer_from_headers(headers)
     if not token:
         return None
+    if resolve_framework_bearer is not None and token.startswith("afk_"):
+        caller = await asyncio.to_thread(resolve_framework_bearer, token)
+        if caller is None:
+            return None
+        claims = {
+            "sub": caller.owner_id, "iss": "astral-framework", "aud": "astral-a2a",
+            "realm_access": {"roles": ["user"]},
+            "_framework_credential_id": caller.credential_id,
+            "_framework_scopes": sorted(caller.scopes),
+            "_framework_caller": caller,
+        }
+        return A2APrincipal(claims, token)
     claims = await validator.validate_token(token)
     if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
         return None
@@ -270,7 +306,7 @@ class OrchestratorA2AExecutor(AgentExecutor):
         tool_name = mcp_request.params.get("name", "")
         arguments = mcp_request.params.get("arguments", {})
 
-        from orchestrator.mcp_projection import resolve_projected_tool
+        from orchestrator.mcp_projection import FRAMEWORK_WORK_AGENT_ID, resolve_projected_tool
 
         projected = await asyncio.to_thread(
             resolve_projected_tool,
@@ -286,15 +322,25 @@ class OrchestratorA2AExecutor(AgentExecutor):
             )
             return
 
-        result = await self.orchestrator.execute_authorized_tool(
-            claims=claims,
-            user_id=claims["sub"],
-            agent_id=projected.agent_id,
-            tool_name=projected.skill_id,
-            arguments=arguments,
-            channel="a2a",
-            delegation_subject_token=subject_token,
-        )
+        if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
+            # 088 T049: a framework Work tool never reaches the ordinary agent
+            # dispatch stack (delegation/taint/MoA) — same admission model as
+            # the MCP endpoint's identical branch, on the SAME facade.
+            from orchestrator.mcp_server_endpoint import _dispatch_work_tool
+
+            result = await _dispatch_work_tool(
+                self.orchestrator, claims, projected.skill_id, arguments,
+            )
+        else:
+            result = await self.orchestrator.execute_authorized_tool(
+                claims=claims,
+                user_id=claims["sub"],
+                agent_id=projected.agent_id,
+                tool_name=projected.skill_id,
+                arguments=arguments,
+                channel="a2a",
+                delegation_subject_token=subject_token,
+            )
 
         if result and result.error:
             error_msg = result.error.get("message", "Tool failed") if isinstance(result.error, dict) else str(result.error)
@@ -508,7 +554,10 @@ def setup_orchestrator_a2a(app, orchestrator):
             # Authenticate BEFORE the SDK parses a method: tasks/list,
             # tasks/get and tasks/cancel are served by the request handler
             # without ever reaching the executor.
-            principal = await authenticate_a2a_request(validator, request.headers)
+            principal = await authenticate_a2a_request(
+                validator, request.headers,
+                resolve_framework_bearer=_a2a_framework_resolver(orchestrator),
+            )
             if principal is None:
                 return _unauthenticated_response()
             request.scope[PRINCIPAL_SCOPE_KEY] = principal

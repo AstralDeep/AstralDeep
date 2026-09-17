@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astral-sdk"
+version = "0.1.0"
+description = "Python SDK for Astral's owner-issued framework credentials (Work-over-MCP)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "httpx>=0.27",
+]
+
+# Every extra below is imported lazily, inside a function body, by exactly one
+# astral_sdk.integrations submodule (or astral_sdk.mcp_bridge for `mcp`).
+# None of these ever enter backend/requirements.txt or the product image
+# (Constitution V) — this package is built, tested and distributed entirely
+# outside that image (see the `sdk` CI job in .github/workflows/ci.yml).
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.25"]
+langchain = ["langchain-core>=0.2"]
+pydantic-ai = ["pydantic-ai>=0.0.9"]
+crewai = ["crewai>=0.30"]
+autogen = ["autogen-agentchat>=0.2"]
+agent-framework = []
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["astral_sdk*"]
+
+[tool.setuptools.package-data]
+astral_sdk = ["work_contract.json"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
