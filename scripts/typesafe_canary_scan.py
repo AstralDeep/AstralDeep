@@ -35,11 +35,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "backend" / "tests"))
 
-#: A synthetic key in the real shape: a short lowercase prefix, an underscore,
-#: a long lowercase-alphanumeric tail containing a digit. Invented letters.
-CANARY = "cnry_9f3kd82mxq7vb4nzt6hjw15plr0asy3cg8ue2difomkp4"
+#: The same synthetic key the hygiene tests use, in the real shape: a short
+#: lowercase prefix, an underscore, a long lowercase-alphanumeric tail with
+#: digits. Invented letters, not derived from and not a prefix of any real key.
+#: One canary in the repository rather than several, so there is one thing to
+#: allowlist and one shape to reason about.
+CANARY = "zqkfmp_" + ("0canary9notarealkey" * 6)[:101]
 #: The prefix on its own. A redaction that leaves this behind has still leaked.
-CANARY_PREFIX = "cnry_"
+CANARY_PREFIX = "zqkfmp_"
 
 #: Directories whose contents are written by a run and are therefore evidence.
 ARTIFACT_ROOTS = ("build", "backend/tmp", "backend/data", ".pytest_cache")

@@ -1,6 +1,6 @@
 {
-  "canary_shape": "cnry_<45 chars>",
-  "fingerprint": "1c62e1de13e8",
+  "canary_shape": "zqkfmp_<101 chars>",
+  "fingerprint": "e253bef573da",
   "capture_works": true,
   "log_records_examined": 2,
   "typesafe_tests_exit": 0,
