@@ -1,0 +1,848 @@
+{
+  "generated": "2026-09-17T22:01:44.960Z",
+  "baseUrl": "http://127.0.0.1:8001",
+  "viewports": [
+    {
+      "viewport": "1920x1080",
+      "items": [
+        {
+          "id": "A1",
+          "group": "A",
+          "weight": 4,
+          "auto": true,
+          "title": "Two-column frame, full height, no page scroll, canvas scrolls internally",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "A2",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Sidebar 350px wide, right border, 22px padding, 16px vertical gap",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "A3",
+          "group": "A",
+          "weight": 2,
+          "auto": false,
+          "title": "Main column background is a theme-derived radial gradient anchored top-center",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A4",
+          "group": "A",
+          "weight": 2,
+          "auto": true,
+          "title": "Canvas padding 32px 48px with a thin custom scrollbar",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A5",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Open Sans on every text element; heading weights 700–800, body 400–600",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B1",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Brand block: logo + stacked name/subtitle, bottom divider, returns to landing",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B2",
+          "group": "B",
+          "weight": 3,
+          "auto": true,
+          "title": "Section header row with a right-aligned count badge",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B3",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Search input with a leading magnifier that filters the list live",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B4",
+          "group": "B",
+          "weight": 5,
+          "auto": true,
+          "title": "Scrollable agent list filling the remaining height; icon, name, description, status dot",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "B5",
+          "group": "B",
+          "weight": 2,
+          "auto": true,
+          "title": "Recent work section below the agent list, collapsible",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "B6",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C1",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Page header: title + subtitle left, status pill strip right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C2",
+          "group": "C",
+          "weight": 3,
+          "auto": true,
+          "title": "Overview panel: header row + 3-column grid of numbered steps",
+          "verdict": "partial",
+          "detail": "panel.h: 165.4 vs 149.3; panel.padding: 26 vs 16",
+          "earned": 1.5
+        },
+        {
+          "id": "C3",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Scenarios header: title left, horizontal filter tabs with the active one highlighted",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C4",
+          "group": "C",
+          "weight": 5,
+          "auto": true,
+          "title": "Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "C5",
+          "group": "C",
+          "weight": 2,
+          "auto": true,
+          "title": "Landing hides once a conversation has a response and returns on \"return to dashboard\"",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "D1",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D2",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Response card: 14px radius, bordered, elevated, full canvas width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D3",
+          "group": "D",
+          "weight": 4,
+          "auto": true,
+          "title": "Card header: agent badge/name + routing meta chips left, actions right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "D4",
+          "group": "D",
+          "weight": 3,
+          "auto": true,
+          "title": "Hover overlay with an expand chip that opens the full-screen view",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "D5",
+          "group": "D",
+          "weight": 5,
+          "auto": false,
+          "title": "Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D6",
+          "group": "D",
+          "weight": 2,
+          "auto": true,
+          "title": "Progress/thinking state shown inline at the position of the pending turn",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "E1",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "E2",
+          "group": "E",
+          "weight": 4,
+          "auto": true,
+          "title": "One wide input (10px radius, 14px 18px padding) with the primary Send button at its right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "E3",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "088 composer controls inside the bar, left of Send, on one row at ≥1280px",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "F1",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        },
+        {
+          "id": "F2",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        }
+      ],
+      "csp": [],
+      "errors": [],
+      "earned": 98.5,
+      "total": 100,
+      "score": 98.5
+    },
+    {
+      "viewport": "1440x900",
+      "items": [
+        {
+          "id": "A1",
+          "group": "A",
+          "weight": 4,
+          "auto": true,
+          "title": "Two-column frame, full height, no page scroll, canvas scrolls internally",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "A2",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Sidebar 350px wide, right border, 22px padding, 16px vertical gap",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "A3",
+          "group": "A",
+          "weight": 2,
+          "auto": false,
+          "title": "Main column background is a theme-derived radial gradient anchored top-center",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A4",
+          "group": "A",
+          "weight": 2,
+          "auto": true,
+          "title": "Canvas padding 32px 48px with a thin custom scrollbar",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A5",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Open Sans on every text element; heading weights 700–800, body 400–600",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B1",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Brand block: logo + stacked name/subtitle, bottom divider, returns to landing",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B2",
+          "group": "B",
+          "weight": 3,
+          "auto": true,
+          "title": "Section header row with a right-aligned count badge",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B3",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Search input with a leading magnifier that filters the list live",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B4",
+          "group": "B",
+          "weight": 5,
+          "auto": true,
+          "title": "Scrollable agent list filling the remaining height; icon, name, description, status dot",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "B5",
+          "group": "B",
+          "weight": 2,
+          "auto": true,
+          "title": "Recent work section below the agent list, collapsible",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "B6",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C1",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Page header: title + subtitle left, status pill strip right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C2",
+          "group": "C",
+          "weight": 3,
+          "auto": true,
+          "title": "Overview panel: header row + 3-column grid of numbered steps",
+          "verdict": "partial",
+          "detail": "panel.padding: 26 vs 16",
+          "earned": 1.5
+        },
+        {
+          "id": "C3",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Scenarios header: title left, horizontal filter tabs with the active one highlighted",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C4",
+          "group": "C",
+          "weight": 5,
+          "auto": true,
+          "title": "Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "C5",
+          "group": "C",
+          "weight": 2,
+          "auto": true,
+          "title": "Landing hides once a conversation has a response and returns on \"return to dashboard\"",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "D1",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D2",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Response card: 14px radius, bordered, elevated, full canvas width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D3",
+          "group": "D",
+          "weight": 4,
+          "auto": true,
+          "title": "Card header: agent badge/name + routing meta chips left, actions right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "D4",
+          "group": "D",
+          "weight": 3,
+          "auto": true,
+          "title": "Hover overlay with an expand chip that opens the full-screen view",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "D5",
+          "group": "D",
+          "weight": 5,
+          "auto": false,
+          "title": "Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D6",
+          "group": "D",
+          "weight": 2,
+          "auto": true,
+          "title": "Progress/thinking state shown inline at the position of the pending turn",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "E1",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "E2",
+          "group": "E",
+          "weight": 4,
+          "auto": true,
+          "title": "One wide input (10px radius, 14px 18px padding) with the primary Send button at its right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "E3",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "088 composer controls inside the bar, left of Send, on one row at ≥1280px",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "F1",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        },
+        {
+          "id": "F2",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        }
+      ],
+      "csp": [],
+      "errors": [],
+      "earned": 98.5,
+      "total": 100,
+      "score": 98.5
+    },
+    {
+      "viewport": "1280x800",
+      "items": [
+        {
+          "id": "A1",
+          "group": "A",
+          "weight": 4,
+          "auto": true,
+          "title": "Two-column frame, full height, no page scroll, canvas scrolls internally",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "A2",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Sidebar 350px wide, right border, 22px padding, 16px vertical gap",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "A3",
+          "group": "A",
+          "weight": 2,
+          "auto": false,
+          "title": "Main column background is a theme-derived radial gradient anchored top-center",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A4",
+          "group": "A",
+          "weight": 2,
+          "auto": true,
+          "title": "Canvas padding 32px 48px with a thin custom scrollbar",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "A5",
+          "group": "A",
+          "weight": 3,
+          "auto": true,
+          "title": "Open Sans on every text element; heading weights 700–800, body 400–600",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B1",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Brand block: logo + stacked name/subtitle, bottom divider, returns to landing",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B2",
+          "group": "B",
+          "weight": 3,
+          "auto": true,
+          "title": "Section header row with a right-aligned count badge",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "B3",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Search input with a leading magnifier that filters the list live",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "B4",
+          "group": "B",
+          "weight": 5,
+          "auto": true,
+          "title": "Scrollable agent list filling the remaining height; icon, name, description, status dot",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "B5",
+          "group": "B",
+          "weight": 2,
+          "auto": true,
+          "title": "Recent work section below the agent list, collapsible",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "B6",
+          "group": "B",
+          "weight": 4,
+          "auto": true,
+          "title": "Profile widget pinned to the sidebar bottom: avatar + online dot, name, role, cog at right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C1",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Page header: title + subtitle left, status pill strip right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "C2",
+          "group": "C",
+          "weight": 3,
+          "auto": true,
+          "title": "Overview panel: header row + 3-column grid of numbered steps",
+          "verdict": "partial",
+          "detail": "panel.padding: 26 vs 16",
+          "earned": 1.5
+        },
+        {
+          "id": "C3",
+          "group": "C",
+          "weight": 4,
+          "auto": true,
+          "title": "Scenarios header: title left, horizontal filter tabs with the active one highlighted",
+          "verdict": "partial",
+          "detail": "tab.h: 44 vs 74",
+          "earned": 2
+        },
+        {
+          "id": "C4",
+          "group": "C",
+          "weight": 5,
+          "auto": true,
+          "title": "Scenario card grid: same auto-fit column count as the reference, 12px radius, tag + badge + title + description + run, hover lift",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "C5",
+          "group": "C",
+          "weight": 2,
+          "auto": true,
+          "title": "Landing hides once a conversation has a response and returns on \"return to dashboard\"",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "D1",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Vertical feed, 24px gap; user turns right-aligned bubbles, assistant turns full width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D2",
+          "group": "D",
+          "weight": 5,
+          "auto": true,
+          "title": "Response card: 14px radius, bordered, elevated, full canvas width",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D3",
+          "group": "D",
+          "weight": 4,
+          "auto": true,
+          "title": "Card header: agent badge/name + routing meta chips left, actions right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "D4",
+          "group": "D",
+          "weight": 3,
+          "auto": true,
+          "title": "Hover overlay with an expand chip that opens the full-screen view",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "D5",
+          "group": "D",
+          "weight": 5,
+          "auto": false,
+          "title": "Components inside cards use a8p component styling (tiles, SVG charts, gauges, steppers, sticky-header tables)",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 5
+        },
+        {
+          "id": "D6",
+          "group": "D",
+          "weight": 2,
+          "auto": true,
+          "title": "Progress/thinking state shown inline at the position of the pending turn",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 2
+        },
+        {
+          "id": "E1",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "Composer bar pinned to the bottom of the main column: top border, blurred background, 18px 48px padding",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "E2",
+          "group": "E",
+          "weight": 4,
+          "auto": true,
+          "title": "One wide input (10px radius, 14px 18px padding) with the primary Send button at its right",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 4
+        },
+        {
+          "id": "E3",
+          "group": "E",
+          "weight": 3,
+          "auto": true,
+          "title": "088 composer controls inside the bar, left of Send, on one row at ≥1280px",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 3
+        },
+        {
+          "id": "F1",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Full-screen result overlay: viewport-covering, icon badge, title row with badges, subtitle, exit + ESC hint, scrollable canvas",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        },
+        {
+          "id": "F2",
+          "group": "F",
+          "weight": 6,
+          "auto": true,
+          "title": "Settings dialog: centered card with slide-up (reduced motion respected), icon + title + subtitle + close, tab strip, tab content, footer actions",
+          "verdict": "pass",
+          "detail": "",
+          "earned": 6
+        }
+      ],
+      "csp": [],
+      "errors": [],
+      "earned": 96.5,
+      "total": 100,
+      "score": 96.5
+    }
+  ],
+  "minScore": 96.5,
+  "pass": true
+}

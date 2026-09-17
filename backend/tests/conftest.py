@@ -133,3 +133,43 @@ def user_skills_disabled(monkeypatch):
 
 
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401
+
+
+# ---------------------------------------------------------------------------
+# Feature 089 — credential stores over an in-memory Plane double
+# ---------------------------------------------------------------------------
+#
+# The llm_config suite already has a narrow in-memory implementation of the
+# exact Plane repository contract. Reusing it here keeps these tests free of
+# Postgres and of the running product's data, which a durable store would
+# otherwise leak between tests.
+
+
+@pytest.fixture
+def credential_plane_089():
+    from llm_config.tests.conftest import CredentialPlaneFixture
+
+    return CredentialPlaneFixture()
+
+
+@pytest.fixture
+def typesafe_store(monkeypatch, credential_plane_089):
+    from cryptography.fernet import Fernet
+
+    from llm_config.typesafe_store import TypeSafeCredentialStore
+
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    return TypeSafeCredentialStore(
+        plane_runtime=credential_plane_089,
+        plane_repositories=credential_plane_089.repositories,
+    )
+
+
+@pytest.fixture
+def data_sharing_store(credential_plane_089):
+    from llm_config.data_sharing import DataSharingStore
+
+    return DataSharingStore(
+        plane_runtime=credential_plane_089,
+        plane_repositories=credential_plane_089.repositories,
+    )

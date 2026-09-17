@@ -1,0 +1,78 @@
+Responsive checklist — 2026-09-17T22:00:56.423Z
+
+## 1024x768 — PASS
+  PASS R1 No horizontal page scroll
+  PASS R2 1024–1279: sidebar 280–300px, 2-column scenario grid, 24px canvas padding
+  n/a  R3 <1024 drawer
+  n/a  R4 <768 composer
+  PASS R5 Response cards single column; component grids respect the web ROTE column cap
+  PASS R8 Tables scroll inside their own container, never past the card
+  PASS R9 Chart text ≥ 11px; donut and radar use the table form below 700px
+  PASS R6 <768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally
+  PASS R7 <768: overview and scenario grid single column; filter tabs a scrollable chip row
+  PASS R10 Every control ≥ 44×44 CSS px below 1024
+  PASS R11 No overlapping or clipped controls; every 088 capability within two interactions
+  PASS R12 Orientation change re-registers the viewport and keeps the draft and scroll position
+  PASS R13 Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)
+
+## 768x1024 — PASS
+  PASS R1 No horizontal page scroll
+  n/a  R2 1024–1279 sidebar band
+  PASS R3 <1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored
+  PASS R4 <768: composer pinned above the safe-area inset, overflow menu, Send always visible
+  PASS R5 Response cards single column; component grids respect the web ROTE column cap
+  PASS R8 Tables scroll inside their own container, never past the card
+  PASS R9 Chart text ≥ 11px; donut and radar use the table form below 700px
+  PASS R6 <768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally
+  PASS R7 <768: overview and scenario grid single column; filter tabs a scrollable chip row
+  PASS R10 Every control ≥ 44×44 CSS px below 1024
+  PASS R11 No overlapping or clipped controls; every 088 capability within two interactions
+  PASS R12 Orientation change re-registers the viewport and keeps the draft and scroll position
+  PASS R13 Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)
+
+## 390x844 — PASS
+  PASS R1 No horizontal page scroll
+  n/a  R2 1024–1279 sidebar band
+  PASS R3 <1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored
+  PASS R4 <768: composer pinned above the safe-area inset, overflow menu, Send always visible
+  PASS R5 Response cards single column; component grids respect the web ROTE column cap
+  PASS R8 Tables scroll inside their own container, never past the card
+  PASS R9 Chart text ≥ 11px; donut and radar use the table form below 700px
+  PASS R6 <768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally
+  PASS R7 <768: overview and scenario grid single column; filter tabs a scrollable chip row
+  PASS R10 Every control ≥ 44×44 CSS px below 1024
+  PASS R11 No overlapping or clipped controls; every 088 capability within two interactions
+  PASS R12 Orientation change re-registers the viewport and keeps the draft and scroll position
+  PASS R13 Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)
+
+## 320x640 — PASS
+  PASS R1 No horizontal page scroll
+  n/a  R2 1024–1279 sidebar band
+  PASS R3 <1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored
+  PASS R4 <768: composer pinned above the safe-area inset, overflow menu, Send always visible
+  PASS R5 Response cards single column; component grids respect the web ROTE column cap
+  PASS R8 Tables scroll inside their own container, never past the card
+  PASS R9 Chart text ≥ 11px; donut and radar use the table form below 700px
+  PASS R6 <768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally
+  PASS R7 <768: overview and scenario grid single column; filter tabs a scrollable chip row
+  PASS R10 Every control ≥ 44×44 CSS px below 1024
+  PASS R11 No overlapping or clipped controls; every 088 capability within two interactions
+  PASS R12 Orientation change re-registers the viewport and keeps the draft and scroll position
+  PASS R13 Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)
+
+## 1280x800@200% — PASS
+  PASS R1 No horizontal page scroll
+  n/a  R2 1024–1279 sidebar band
+  n/a  R3 <1024 drawer
+  n/a  R4 <768 composer
+  PASS R5 Response cards single column; component grids respect the web ROTE column cap
+  PASS R8 Tables scroll inside their own container, never past the card
+  PASS R9 Chart text ≥ 11px; donut and radar use the table form below 700px
+  PASS R6 <768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally
+  PASS R7 <768: overview and scenario grid single column; filter tabs a scrollable chip row
+  PASS R10 Every control ≥ 44×44 CSS px below 1024
+  PASS R11 No overlapping or clipped controls; every 088 capability within two interactions
+  PASS R12 Orientation change re-registers the viewport and keeps the draft and scroll position
+  PASS R13 Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)
+
+PASS — 13/13 at every viewport

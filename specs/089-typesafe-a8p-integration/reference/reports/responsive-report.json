@@ -1,0 +1,440 @@
+{
+  "generated": "2026-09-17T22:00:56.423Z",
+  "baseUrl": "http://127.0.0.1:8001",
+  "viewports": [
+    {
+      "viewport": "1024x768",
+      "items": [
+        {
+          "id": "R1",
+          "title": "No horizontal page scroll",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R2",
+          "title": "1024–1279: sidebar 280–300px, 2-column scenario grid, 24px canvas padding",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R3",
+          "title": "<1024 drawer",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R4",
+          "title": "<768 composer",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R5",
+          "title": "Response cards single column; component grids respect the web ROTE column cap",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R8",
+          "title": "Tables scroll inside their own container, never past the card",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R9",
+          "title": "Chart text ≥ 11px; donut and radar use the table form below 700px",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R6",
+          "title": "<768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R7",
+          "title": "<768: overview and scenario grid single column; filter tabs a scrollable chip row",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R10",
+          "title": "Every control ≥ 44×44 CSS px below 1024",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R11",
+          "title": "No overlapping or clipped controls; every 088 capability within two interactions",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R12",
+          "title": "Orientation change re-registers the viewport and keeps the draft and scroll position",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R13",
+          "title": "Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)",
+          "pass": true,
+          "detail": ""
+        }
+      ],
+      "errors": [],
+      "pass": true
+    },
+    {
+      "viewport": "768x1024",
+      "items": [
+        {
+          "id": "R1",
+          "title": "No horizontal page scroll",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R2",
+          "title": "1024–1279 sidebar band",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R3",
+          "title": "<1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R4",
+          "title": "<768: composer pinned above the safe-area inset, overflow menu, Send always visible",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R5",
+          "title": "Response cards single column; component grids respect the web ROTE column cap",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R8",
+          "title": "Tables scroll inside their own container, never past the card",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R9",
+          "title": "Chart text ≥ 11px; donut and radar use the table form below 700px",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R6",
+          "title": "<768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R7",
+          "title": "<768: overview and scenario grid single column; filter tabs a scrollable chip row",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R10",
+          "title": "Every control ≥ 44×44 CSS px below 1024",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R11",
+          "title": "No overlapping or clipped controls; every 088 capability within two interactions",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R12",
+          "title": "Orientation change re-registers the viewport and keeps the draft and scroll position",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R13",
+          "title": "Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)",
+          "pass": true,
+          "detail": ""
+        }
+      ],
+      "errors": [],
+      "pass": true
+    },
+    {
+      "viewport": "390x844",
+      "items": [
+        {
+          "id": "R1",
+          "title": "No horizontal page scroll",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R2",
+          "title": "1024–1279 sidebar band",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R3",
+          "title": "<1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R4",
+          "title": "<768: composer pinned above the safe-area inset, overflow menu, Send always visible",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R5",
+          "title": "Response cards single column; component grids respect the web ROTE column cap",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R8",
+          "title": "Tables scroll inside their own container, never past the card",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R9",
+          "title": "Chart text ≥ 11px; donut and radar use the table form below 700px",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R6",
+          "title": "<768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R7",
+          "title": "<768: overview and scenario grid single column; filter tabs a scrollable chip row",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R10",
+          "title": "Every control ≥ 44×44 CSS px below 1024",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R11",
+          "title": "No overlapping or clipped controls; every 088 capability within two interactions",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R12",
+          "title": "Orientation change re-registers the viewport and keeps the draft and scroll position",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R13",
+          "title": "Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)",
+          "pass": true,
+          "detail": ""
+        }
+      ],
+      "errors": [],
+      "pass": true
+    },
+    {
+      "viewport": "320x640",
+      "items": [
+        {
+          "id": "R1",
+          "title": "No horizontal page scroll",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R2",
+          "title": "1024–1279 sidebar band",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R3",
+          "title": "<1024: off-canvas drawer with a visible toggle, focus trap, Esc and backdrop close, focus restored",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R4",
+          "title": "<768: composer pinned above the safe-area inset, overflow menu, Send always visible",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R5",
+          "title": "Response cards single column; component grids respect the web ROTE column cap",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R8",
+          "title": "Tables scroll inside their own container, never past the card",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R9",
+          "title": "Chart text ≥ 11px; donut and radar use the table form below 700px",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R6",
+          "title": "<768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R7",
+          "title": "<768: overview and scenario grid single column; filter tabs a scrollable chip row",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R10",
+          "title": "Every control ≥ 44×44 CSS px below 1024",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R11",
+          "title": "No overlapping or clipped controls; every 088 capability within two interactions",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R12",
+          "title": "Orientation change re-registers the viewport and keeps the draft and scroll position",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R13",
+          "title": "Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)",
+          "pass": true,
+          "detail": ""
+        }
+      ],
+      "errors": [],
+      "pass": true
+    },
+    {
+      "viewport": "1280x800@200%",
+      "items": [
+        {
+          "id": "R1",
+          "title": "No horizontal page scroll",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R2",
+          "title": "1024–1279 sidebar band",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R3",
+          "title": "<1024 drawer",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R4",
+          "title": "<768 composer",
+          "pass": true,
+          "detail": "n/a at this viewport",
+          "skipped": true
+        },
+        {
+          "id": "R5",
+          "title": "Response cards single column; component grids respect the web ROTE column cap",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R8",
+          "title": "Tables scroll inside their own container, never past the card",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R9",
+          "title": "Chart text ≥ 11px; donut and radar use the table form below 700px",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R6",
+          "title": "<768: overlay and settings become full-viewport sheets; settings tabs scroll horizontally",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R7",
+          "title": "<768: overview and scenario grid single column; filter tabs a scrollable chip row",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R10",
+          "title": "Every control ≥ 44×44 CSS px below 1024",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R11",
+          "title": "No overlapping or clipped controls; every 088 capability within two interactions",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R12",
+          "title": "Orientation change re-registers the viewport and keeps the draft and scroll position",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "id": "R13",
+          "title": "Keyboard, focus-visible, accessible names, reduced motion and 200% text (088 FR-028)",
+          "pass": true,
+          "detail": ""
+        }
+      ],
+      "errors": [],
+      "pass": true
+    }
+  ],
+  "pass": true
+}

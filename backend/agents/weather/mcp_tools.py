@@ -20,7 +20,8 @@ import requests
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from astralprims import (
-    Text, Card, Table, MetricCard, Alert, Grid, PlotlyChart, create_ui_response
+    Text, Card, Table, MetricCard, Alert, Grid, PlotlyChart, create_ui_response,
+    Gauge, StatGroup
 )
 from shared.stream_sdk import streaming_tool, StreamComponents
 from .data_models import ExtendedWeatherData, HistoricalWeatherData, WeatherAlert
@@ -381,6 +382,23 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
     return data["latitude"], data["longitude"]
 
 
+
+def _fraction(percent) -> float:
+    """A 0-100 reading as the 0-1 fraction ``Gauge`` and ``ProgressBar`` use.
+
+    Returns 0.0 for a missing or unparseable reading rather than raising: a
+    weather panel that fails because one field was absent is worse than a
+    gauge reading zero beside the number that says otherwise.
+    """
+    try:
+        value = float(percent)
+    except (TypeError, ValueError):
+        return 0.0
+    if value != value:  # NaN
+        return 0.0
+    return max(0.0, min(1.0, value / 100.0))
+
+
 def get_current_weather(
     city: Optional[str] = None,
     state: Optional[str] = None,
@@ -437,33 +455,50 @@ def get_current_weather(
                 title=f"Current Weather - {location_str}",
                 id="current-weather-card",
                 content=[
-                    Grid(
+                    # Feature 089: current conditions are a set of readings,
+                    # which is what a stat group is. Non-web clients receive
+                    # the ROTE fallback -- a grid of metric tiles -- so their
+                    # rendering is unchanged.
+                    StatGroup(
+                        title="Current conditions",
                         columns=4,
-                        children=[
-                            MetricCard(
-                                title="Temperature",
-                                value=f"{current.get('temperature_2m', 'N/A')}°F",
-                                subtitle=f"Feels like {current.get('apparent_temperature', 'N/A')}°F",
-                                variant=variant,
-                                id="temp-metric"
-                            ),
-                            MetricCard(
-                                title="Humidity",
-                                value=f"{current.get('relative_humidity_2m', 'N/A')}%",
-                                id="humidity-metric"
-                            ),
-                            MetricCard(
-                                title="Wind",
-                                value=f"{current.get('wind_speed_10m', 'N/A')} mph",
-                                subtitle=f"Direction: {current.get('wind_direction_10m', 'N/A')}°",
-                                id="wind-metric"
-                            ),
-                            MetricCard(
-                                title="Pressure",
-                                value=f"{current.get('pressure_msl', 'N/A')} hPa",
-                                id="pressure-metric"
-                            ),
-                        ]
+                        id="current-conditions",
+                        items=[
+                            {
+                                "label": "Temperature",
+                                "value": f"{current.get('temperature_2m', 'N/A')}°F",
+                                "hint": (
+                                    "Feels like "
+                                    f"{current.get('apparent_temperature', 'N/A')}°F"
+                                ),
+                                "variant": variant,
+                            },
+                            {
+                                "label": "Wind",
+                                "value": f"{current.get('wind_speed_10m', 'N/A')} mph",
+                                "hint": (
+                                    "Direction "
+                                    f"{current.get('wind_direction_10m', 'N/A')}°"
+                                ),
+                            },
+                            {
+                                "label": "Pressure",
+                                "value": f"{current.get('pressure_msl', 'N/A')} hPa",
+                            },
+                        ],
+                    ),
+                    # Humidity is a bounded percentage, which is the one thing
+                    # a gauge reads better than a number does.
+                    Gauge(
+                        label="Humidity",
+                        value=_fraction(current.get("relative_humidity_2m")),
+                        display_value=f"{current.get('relative_humidity_2m', 'N/A')}%",
+                        id="humidity-gauge",
+                        thresholds=[
+                            {"at": 0.0, "variant": "default"},
+                            {"at": 0.70, "variant": "warning"},
+                            {"at": 0.90, "variant": "error"},
+                        ],
                     ),
                     Alert(
                         message=weather_desc,

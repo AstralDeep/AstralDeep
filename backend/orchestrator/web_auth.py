@@ -663,6 +663,47 @@ def session_roles(request: Request) -> list:
     return _roles_from_token((sess or {}).get("access_token", "") or "")
 
 
+def session_subject(request: Request) -> str:
+    """The signed-in subject id, or "" when there is no session.
+
+    Mock auth has no cookie to read, so :func:`get_session` returns None for
+    it; without this the shell would decide a development session has no user
+    and render an empty agent directory.
+    """
+    if _is_mock():
+        return "test_user"
+    return str((get_session(request) or {}).get("sub", "") or "")
+
+
+def session_identity(request: Request) -> dict:
+    """Feature 089 — the display name, role line and initials for the sidebar.
+
+    Read from the access token's claims WITHOUT signature verification, the
+    same way :func:`session_roles` is: this decides what the profile widget
+    shows, nothing more. Every authorization decision is still made from the
+    validated JWT server-side. Falls back to neutral wording rather than to
+    an empty widget, and never renders a raw subject id or an email address.
+    """
+    if _is_mock():
+        return {"name": "Local operator", "role": "Development session", "initials": "LO"}
+    sess = get_session(request) or {}
+    payload = _jwt_payload(sess.get("access_token", "") or "")
+    name = str(
+        payload.get("name")
+        or " ".join(
+            part for part in (payload.get("given_name"), payload.get("family_name")) if part
+        ).strip()
+        or payload.get("preferred_username")
+        or ""
+    ).strip()
+    if not name or "@" in name:
+        name = "Signed in"
+    roles = _roles_from_token(sess.get("access_token", "") or "")
+    role = "Administrator" if "admin" in roles else ("Member" if roles else "Guest")
+    initials = "".join(part[0] for part in name.split()[:2] if part).upper() or "A"
+    return {"name": name, "role": role, "initials": initials}
+
+
 def _roles_from_token(token: str) -> list:
     """Realm + client roles from a JWT's claims (non-validating decode)."""
     payload = _jwt_payload(token)

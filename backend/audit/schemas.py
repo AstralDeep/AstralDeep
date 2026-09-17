@@ -67,6 +67,20 @@ EVENT_CLASSES = (
     # correlation_id) ride the hash chain so a full delegation chain is
     # reconstructable from the audit log alone (048 T018 / 056 FR-026).
     "delegation",
+    # Feature 089 — TypeSafe System One routing.
+    # ``typesafe_credential``: the user saving, replacing, removing or having
+    # an unreadable TypeSafe key discarded. Carries the 12-character key
+    # fingerprint, never the key.
+    "typesafe_credential",
+    # ``typesafe``: the per-turn routing record. ``typesafe.security_verdict``
+    # carries the three scores and the verdict; ``typesafe.routing_fallback``
+    # carries the outcome class, attempt count and elapsed time. Neither
+    # carries request text.
+    "typesafe",
+    # ``llm_data_sharing``: the third-party data-sharing notice.
+    # ``.acknowledged`` when a user accepts a notice version; ``.save_blocked``
+    # when a credential save was refused for want of one.
+    "llm_data_sharing",
 )
 
 OUTCOMES = ("in_progress", "success", "failure", "interrupted")

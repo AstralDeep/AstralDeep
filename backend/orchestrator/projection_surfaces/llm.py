@@ -28,6 +28,7 @@ rest) and the server-owned provider catalog
 """
 from __future__ import annotations
 
+import asyncio
 import html as _htmlmod
 import logging
 import re
@@ -47,6 +48,25 @@ from webrender.chrome import esc, notice_block
 logger = logging.getLogger("Orchestrator.Chrome.LLM")
 
 TITLE = "LLM settings"
+# Feature 089 — the web dialog's chrome. A surface that declares nothing gets
+# the plain dialog; these three sections are the three concerns this form
+# already had, so the tabs describe the page rather than reorganising it.
+SUBTITLE = "Your provider, your keys, and what leaves this machine"
+ICON = "\u2699"
+SECTIONS = (
+    ("provider", "Provider"),
+    ("routing", "Smart routing"),
+    ("sharing", "Data sharing"),
+)
+
+
+def footer_html() -> str:
+    """The dialog's action row. Same actions, same handlers, new placement."""
+    return (
+        f'{_button("chrome_llm_models", "Load models")}'
+        f'{_button("chrome_llm_test", "Test connection")}'
+        f'{_button("chrome_llm_save", "Save", primary=True)}'
+    )
 
 FIRST_RUN_TITLE = "Set up your AI provider"
 
@@ -317,6 +337,145 @@ def _button(action: str, label: str, primary: bool = False, collect: bool = True
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Feature 089 — TypeSafe key and the data-sharing acknowledgment
+# ---------------------------------------------------------------------------
+
+
+def _typesafe_store(orch: Any):
+    """The TypeSafe credential store, or ``None`` when it is not wired."""
+    return getattr(orch, "_typesafe_store", None)
+
+
+def _data_sharing_store(orch: Any):
+    return getattr(orch, "_data_sharing_store", None)
+
+
+async def _typesafe_status(orch: Any, user_id: str):
+    """The renderable status. A missing store reads as "not set"."""
+    from llm_config.typesafe_store import TypeSafeKeyStatus
+
+    store = _typesafe_store(orch)
+    if store is None:
+        return TypeSafeKeyStatus()
+    try:
+        return await store.status(user_id)
+    except Exception:
+        logger.debug("TypeSafe status read failed (non-fatal)", exc_info=True)
+        return TypeSafeKeyStatus()
+
+
+async def _acknowledgment_state(orch: Any, user_id: str):
+    from llm_config.data_sharing import AcknowledgmentState
+
+    store = _data_sharing_store(orch)
+    if store is None:
+        return AcknowledgmentState()
+    try:
+        return await store.state(user_id)
+    except Exception:
+        logger.debug("data-sharing state read failed (non-fatal)", exc_info=True)
+        return AcknowledgmentState()
+
+
+def _typesafe_status_line(status: Any) -> tuple[str, str]:
+    """Return ``(text, badge variant)`` for a status. Never shows key material."""
+    when = getattr(status, "at", None)
+    stamp = when.date().isoformat() if when is not None else "an earlier date"
+    name = getattr(status, "name", "not_set")
+    if name == "active":
+        return "Active", "success"
+    if name == "rejected":
+        return f"Key rejected on {stamp} — update or remove it", "error"
+    if name == "unavailable":
+        return "Temporarily unavailable — using standard routing", "warning"
+    return "Not set — standard routing", "neutral"
+
+
+_TYPESAFE_HEADING = "TypeSafe routing (optional)"
+_TYPESAFE_HELP = (
+    "Uses your own TypeSafe API key for faster agent routing, result layout and "
+    "an extra safety check. Without a key, Astral uses standard routing."
+)
+
+
+def _typesafe_block(status: Any) -> str:
+    """The web TypeSafe section. Returns "" when it should be hidden."""
+    from llm_config.data_sharing import FIELD_NAME  # noqa: F401 - documents the pairing
+
+    line, variant = _typesafe_status_line(status)
+    badge_styles = {
+        "success": "bg-green-500/10 text-green-400 border-green-500/20",
+        "error": "bg-red-500/10 text-red-400 border-red-500/20",
+        "warning": "bg-amber-500/10 text-amber-300 border-amber-500/20",
+        "neutral": "bg-white/5 text-astral-muted border-white/10",
+    }
+    badge = (
+        f'<span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 '
+        f'rounded-full border {badge_styles[variant]}">{esc(line)}</span>'
+    )
+    placeholder = "Saved key hidden" if getattr(status, "is_set", False) else ""
+    remove = (
+        _button("chrome_typesafe_clear", "Remove", collect=False)
+        if getattr(status, "is_set", False)
+        else ""
+    )
+    return (
+        '<div class="bg-white/5 border border-white/10 rounded-lg p-4 space-y-3">'
+        f'<div class="flex items-center justify-between">'
+        f'<span class="{_LABEL_TEXT_CLS}">{esc(_TYPESAFE_HEADING)}</span>{badge}</div>'
+        f'<p class="text-xs text-astral-muted">{esc(_TYPESAFE_HELP)}</p>'
+        f'<label class="{_LABEL_CLS}">'
+        f'<span class="{_LABEL_TEXT_CLS}">TypeSafe API key</span>'
+        f'<input type="password" name="typesafe_api_key" value="" '
+        f'placeholder="{esc(placeholder)}" autocomplete="off" class="{_INPUT_CLS}">'
+        "</label>"
+        '<div class="flex flex-wrap gap-2">'
+        f'{_button("chrome_typesafe_save", "Save TypeSafe key")}'
+        f"{remove}"
+        "</div></div>"
+    )
+
+
+def _data_sharing_block(state: Any, error: Optional[str] = None) -> str:
+    """The web data-sharing warning and checkbox.
+
+    Placed below every credential input and above the actions, because that is
+    the moment the user is actually deciding to hand over a key.
+    """
+    from llm_config import data_sharing as ds
+
+    acknowledged = bool(getattr(state, "acknowledged", False))
+    when = getattr(state, "acknowledged_at", None)
+    note = (
+        f'<p class="astral-data-sharing-note">Acknowledged on '
+        f"{esc(when.date().isoformat())}.</p>"
+        if acknowledged and when is not None
+        else ""
+    )
+    error_block = (
+        f'<p class="astral-data-sharing-error" role="alert">{esc(error)}</p>'
+        if error
+        else ""
+    )
+    # Colors come from the ThemeView warning role, not from a palette class:
+    # the same block has to look right under every theme a user can pick.
+    return (
+        f'<div class="astral-data-sharing-warning" role="note" '
+        f'id="{ds.WARNING_ELEMENT_ID}">'
+        f'<p class="astral-data-sharing-title">⚠ {esc(ds.NOTICE_TITLE)}</p>'
+        f'<p class="astral-data-sharing-body">{esc(ds.NOTICE_BODY)}</p>'
+        "</div>"
+        '<label class="astral-data-sharing-ack">'
+        f'<input type="checkbox" name="{ds.FIELD_NAME}" id="{ds.CHECKBOX_ELEMENT_ID}" '
+        f'aria-describedby="{ds.WARNING_ELEMENT_ID}"'
+        f'{" checked" if acknowledged else ""}>'
+        f"<span>{esc(ds.CHECKBOX_LABEL)}</span></label>"
+        f"{note}{error_block}"
+    )
+
+
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     """Render the provider-setup / LLM settings form body.
 
@@ -341,6 +500,16 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     models = params.get("models") if isinstance(params.get("models"), list) else None
 
     endpoint_block = _endpoint_block(provider, base_url)
+
+    # Feature 089. The TypeSafe section is hidden during first run: the user is
+    # being asked for the one credential the product cannot start without, and
+    # an optional second one next to it reads as a second requirement.
+    typesafe_status = await _typesafe_status(orch, user_id)
+    acknowledgment = await _acknowledgment_state(orch, user_id)
+    typesafe_block = "" if first_run else _typesafe_block(typesafe_status)
+    data_sharing_block = _data_sharing_block(
+        acknowledgment, error=params.get("data_sharing_error")
+    )
 
     key_optional = preset is not None and not preset.key_required
     key_label = "API key" + (" (optional for local runtimes)" if key_optional else "")
@@ -393,9 +562,14 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f"devices. {esc(_LOCAL_RUNTIME_NOTE)}</p>"
         )
 
+    # Feature 089: the three concerns become the dialog's three sections. The
+    # form wrapper still spans all of them, so Save collects every field
+    # regardless of which section is on screen — switching tabs must never
+    # silently drop what someone typed on another one.
     return (
         f"{intro}"
         f"<div data-ui-form data-llm-endpoints='{_provider_endpoints_json()}' class=\"space-y-4\">"
+        '<div data-section="provider">'
         '<div class="bg-white/5 border border-white/10 rounded-lg p-4 space-y-3">'
         f'<div class="flex items-center justify-between">'
         f'<span class="{_LABEL_TEXT_CLS}">AI provider</span>{saved_badge}</div>'
@@ -409,12 +583,11 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Model</span>'
         f"{_model_field(model, models)}</label>"
         "</div>"
-        '<div class="flex flex-wrap gap-2">'
-        f'{_button("chrome_llm_models", "Load models")}'
-        f'{_button("chrome_llm_test", "Test connection")}'
-        f'{_button("chrome_llm_save", "Save", primary=True)}'
-        f"{clear_btn}"
-        "</div></div>"
+        f'<div class="flex flex-wrap gap-2 mt-3">{clear_btn}</div>'
+        "</div>"
+        f'<div data-section="routing">{typesafe_block}</div>'
+        f'<div data-section="sharing">{data_sharing_block}</div>'
+        "</div>"
     )
 
 
@@ -479,6 +652,35 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         form_fields.append(_sdui.field("model", "Model", "text", default=model,
                                        help="e.g. gpt-4o-mini"))
 
+    # Feature 089: the TypeSafe field reaches every native client through the
+    # existing SDUI field vocabulary, so no client changes.
+    typesafe_status = await _typesafe_status(orch, user_id)
+    if not first_run:
+        status_line, _variant = _typesafe_status_line(typesafe_status)
+        form_fields.append(
+            _sdui.field(
+                "typesafe_api_key",
+                "TypeSafe API key (optional)",
+                "password",
+                help=f"{_TYPESAFE_HELP} Status: {status_line}.",
+            )
+        )
+
+    # The acknowledgment sits below every credential input and above the
+    # actions, in first-run mode too.
+    from llm_config import data_sharing as _ds
+
+    acknowledgment = await _acknowledgment_state(orch, user_id)
+    form_fields.append(
+        _sdui.field(
+            _ds.FIELD_NAME,
+            _ds.CHECKBOX_LABEL,
+            "boolean",
+            default=bool(getattr(acknowledgment, "acknowledged", False)),
+            help=_ds.NOTICE_BODY,
+        )
+    )
+
     intro = ("AstralDeep runs on the AI provider YOU connect — nothing is "
              "built in. Pick a provider, add your API key, choose a model, "
              "and save to get started." if first_run else
@@ -501,17 +703,32 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                               "caption"))
     if provider in ("ollama", "lmstudio") or first_run:
         out.append(_sdui.text(_LOCAL_RUNTIME_NOTE, "caption"))
-    out.append(_sdui.form(
-        form_fields,
-        actions=[
-            {"label": "Load models", "action": "chrome_llm_models"},
-            {"label": "Test connection", "action": "chrome_llm_test"},
-            {"label": "Save", "action": "chrome_llm_save", "variant": "primary"},
-        ],
-    ))
+    out.append(_sdui.alert(_ds.NOTICE_BODY, "warning", _ds.NOTICE_TITLE))
+    acknowledged_at = getattr(acknowledgment, "acknowledged_at", None)
+    if getattr(acknowledgment, "acknowledged", False) and acknowledged_at is not None:
+        out.append(
+            _sdui.text(
+                f"Acknowledged on {acknowledged_at.date().isoformat()}.", "caption"
+            )
+        )
+    actions = [
+        {"label": "Load models", "action": "chrome_llm_models"},
+        {"label": "Test connection", "action": "chrome_llm_test"},
+        {"label": "Save", "action": "chrome_llm_save", "variant": "primary"},
+    ]
+    if not first_run:
+        actions.append(
+            {"label": "Save TypeSafe key", "action": "chrome_typesafe_save"}
+        )
+    out.append(_sdui.form(form_fields, actions=actions))
     if saved is not None:
         out.append(_sdui.button("Clear configuration", "chrome_llm_clear",
                                 variant="secondary"))
+    if not first_run and getattr(typesafe_status, "is_set", False):
+        out.append(
+            _sdui.button("Remove TypeSafe key", "chrome_typesafe_clear",
+                         variant="danger")
+        )
     return out
 
 
@@ -525,6 +742,80 @@ def _keep_params(fields: Dict[str, str], provider: str) -> Dict[str, Any]:
         "base_url": fields.get("base_url", ""),
         "model": fields.get("model", ""),
     }
+
+
+
+def _submitted_acknowledgment(payload: Any) -> Optional[bool]:
+    """Read the checkbox as a tri-state.
+
+    Present and truthy is a yes, present and falsey is an explicit no, and
+    absent is "the client did not send the field" -- which falls back to what
+    is stored, so a client that has not been updated keeps working.
+    """
+    fields = _fields(payload)
+    from llm_config.data_sharing import FIELD_NAME
+
+    if FIELD_NAME not in fields:
+        raw_payload = payload if isinstance(payload, dict) else {}
+        if FIELD_NAME not in raw_payload:
+            return None
+        raw = raw_payload.get(FIELD_NAME)
+    else:
+        raw = fields.get(FIELD_NAME)
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return None
+    normalized = str(raw).strip().lower()
+    if normalized in ("1", "true", "yes", "on", "checked"):
+        return True
+    if normalized in ("0", "false", "no", "off", "", "unchecked"):
+        return False
+    return None
+
+
+async def _require_acknowledgment(
+    orch: Any, websocket: Any, user_id: str, payload: Any, *, target: str
+):
+    """Run the acknowledgment gate. Returns ``None`` when the save may proceed.
+
+    This is the **first** step of every credential save: it happens before any
+    validation and before any provider request, so an unacknowledged save
+    cannot leak the user's request content to a provider on its way to being
+    rejected.
+    """
+    from llm_config import data_sharing as ds
+
+    store = _data_sharing_store(orch)
+    if store is None:
+        # Without the store there is nothing to enforce against. Failing the
+        # save here would lock every user out of settings over a wiring
+        # problem, so the gate is skipped and the absence is logged.
+        logger.warning("data-sharing store unavailable; acknowledgment not enforced")
+        return None
+
+    submitted = _submitted_acknowledgment(payload)
+    result = await asyncio.to_thread(
+        ds.require_acknowledgment, store, user_id, submitted
+    )
+    if result.allowed:
+        if result.newly_acknowledged:
+            actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+            await ds.record_acknowledged(
+                getattr(orch, "audit_recorder", None),
+                actor_user_id=actor_user_id,
+                auth_principal=auth_principal,
+            )
+        return None
+
+    actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+    await ds.record_save_blocked(
+        getattr(orch, "audit_recorder", None),
+        actor_user_id=actor_user_id,
+        auth_principal=auth_principal,
+        target=target,
+    )
+    return result
 
 
 async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
@@ -633,6 +924,14 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep_params(fields, provider)
+    # Feature 089 US7: acknowledgment first, before validation and before any
+    # provider request.
+    blocked = await _require_acknowledgment(
+        orch, websocket, user_id, payload, target="the LLM provider"
+    )
+    if blocked is not None:
+        keep["data_sharing_error"] = blocked.error
+        return (SURFACE_KEY, keep, notice_block("error", blocked.error))
     try:
         api_key, used_saved = await _resolve_api_key(orch, websocket, user_id, fields)
     except SavedKeyEndpointChanged as exc:
@@ -726,9 +1025,91 @@ async def _handle_clear(orch: Any, websocket: Any, user_id: str, roles: Any, pay
         "info", "No stored AI provider configuration."))
 
 
+
+async def _handle_typesafe_save(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
+    """``chrome_typesafe_save {fields}`` — probe-gated persist of the user's key.
+
+    The order is the point: acknowledge, validate, probe, then persist. A key
+    that fails any step never reaches the store, so a rejected save leaves a
+    working stored key exactly as it was (FR-003).
+    """
+    _ = roles
+    from llm_config.typesafe_handlers import TypeSafeSaveError, save_key
+
+    blocked = await _require_acknowledgment(
+        orch, websocket, user_id, payload, target="TypeSafe"
+    )
+    if blocked is not None:
+        return (SURFACE_KEY, {"data_sharing_error": blocked.error},
+                notice_block("error", blocked.error))
+
+    store = _typesafe_store(orch)
+    if store is None:
+        return (SURFACE_KEY, {}, notice_block(
+            "error", "TypeSafe settings are unavailable — try reloading."))
+
+    fields = _fields(payload)
+    actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+    try:
+        await save_key(
+            store,
+            user_id,
+            fields.get("typesafe_api_key"),
+            recorder=getattr(orch, "audit_recorder", None),
+            actor_user_id=actor_user_id,
+            auth_principal=auth_principal,
+        )
+    except TypeSafeSaveError as exc:
+        return (SURFACE_KEY, {}, notice_block("error", str(exc)))
+    except Exception:
+        logger.exception("TypeSafe key save failed")
+        return (SURFACE_KEY, {}, notice_block(
+            "error", "Couldn't save the TypeSafe key — try again."))
+
+    # Deliberately no unlock_after_save: the TypeSafe key is not the LLM gate,
+    # and a user with a TypeSafe key and no LLM configuration stays gated.
+    return (SURFACE_KEY, {}, notice_block(
+        "success", "TypeSafe key saved. Routing will use it from your next message."))
+
+
+async def _handle_typesafe_clear(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
+    """``chrome_typesafe_clear`` — remove the key. Never re-gates the user."""
+    _ = roles
+    _ = payload
+    from llm_config.typesafe_handlers import clear_key
+
+    store = _typesafe_store(orch)
+    if store is None:
+        return (SURFACE_KEY, {}, notice_block(
+            "error", "TypeSafe settings are unavailable — try reloading."))
+
+    actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+    try:
+        removed = await clear_key(
+            store,
+            user_id,
+            recorder=getattr(orch, "audit_recorder", None),
+            actor_user_id=actor_user_id,
+            auth_principal=auth_principal,
+        )
+    except Exception:
+        logger.exception("TypeSafe key clear failed")
+        return (SURFACE_KEY, {}, notice_block(
+            "error", "Couldn't remove the TypeSafe key — try again."))
+
+    # No regate_after_clear: removing this key returns the user to standard
+    # routing, which is a working state, not a gated one.
+    if removed:
+        return (SURFACE_KEY, {}, notice_block(
+            "success", "TypeSafe key removed. Astral will use standard routing."))
+    return (SURFACE_KEY, {}, notice_block("info", "No TypeSafe key was stored."))
+
+
 HANDLERS = {
     "chrome_llm_models": _handle_models,
     "chrome_llm_test": _handle_test,
     "chrome_llm_save": _handle_save,
     "chrome_llm_clear": _handle_clear,
+    "chrome_typesafe_save": _handle_typesafe_save,
+    "chrome_typesafe_clear": _handle_typesafe_clear,
 }

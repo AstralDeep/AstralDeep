@@ -1,6 +1,39 @@
 <!--
   Sync Impact Report
   ==================
+  Version change: 2.9.0 → 3.0.0 (MAJOR — Principle V redefined: the lead-
+    developer approval gate on new dependencies is removed; any dependency
+    may be installed)
+
+  Amendment (2026-09-17, v3.0.0) — open dependency policy:
+    V. Dependency Management (REDEFINED) — any first- or third-party,
+        runtime, test, eval, benchmark, or tooling dependency MAY be added
+        without lead-developer approval. Dependencies are still declared in
+        the owning repository's manifest so builds stay reproducible, and
+        SHOULD be noted in the PR that adds them. The eval/benchmark
+        isolation carve-out is removed as unnecessary.
+    VII. Security — the Cresco bridge keeps its architecture constraints
+        (first-party bridge agent, wsapi seam, FF_CRESCO, egress-validated
+        dial-out) but no longer forbids new libraries such as pycrescolib.
+    XI. Continuous Integration — CI-only tooling note aligned with V.
+    Technology Stack — eval/benchmark harness and Cresco entries aligned
+        with V.
+    Development Workflow — removed the requirement that PRs introducing
+        dependencies include lead-developer approval.
+    Rationale: owner/lead-developer decision (2026-09-17, feature 089
+        planning) to allow any dependency to be installed.
+    Principles added: None
+    Principles removed: None
+    Sections added: None
+    Sections removed: None
+    Templates and guidance requiring updates:
+      ✅ AGENTS.md — dependency rule aligned with Principle V
+      ✅ .specify/templates/*.md — no dependency-approval references (no
+         change needed)
+      ⚠ CLAUDE.md — historical per-feature "no new dependencies" notes
+         describe past features' choices and are intentionally unchanged
+
+  Previous amendment:
   Version change: 2.8.0 → 2.9.0 (MINOR — Principle X materially adds a
     fail-closed bootstrap path for evidence inputs that cannot exist until an
     exact candidate SHA is remotely addressable, without weakening merge or
@@ -560,28 +593,18 @@ All code MUST adhere to established style standards.
 
 ### V. Dependency Management
 
-No new third-party library may be added without explicit
-approval from a lead developer.
+Any dependency may be installed. No lead-developer approval is
+required to add a library.
 
-- Proposed dependencies MUST be documented in the PR
-  description with rationale.
-- Lead developer approval MUST be recorded in the PR review.
-- Transitive dependency impact MUST be considered.
-- First-party packages owned by the project (e.g.,
-  `astralprims`) are not third-party dependencies, but their
-  introduction MUST still be documented in the PR.
-- A **test-, eval-, or benchmark-only dependency** (for
-  example, a property-based-testing generator, or an external
-  attack-benchmark corpus adapted by a measurement harness) MAY
-  be introduced WITHOUT counting as a product-runtime
-  dependency, PROVIDED it is: (a) declared in a separate
-  manifest (e.g., `requirements-eval.txt`) that is never
-  installed into the product image's runtime layer; (b) never
-  imported by any product-runtime module; (c) enforced by an
-  automated isolation guard that fails CI if a product module
-  imports it; and (d) documented in the PR. Promoting such a
-  dependency into the product runtime still requires
-  lead-developer approval under this principle.
+- Any first-party or third-party package — runtime, test, eval,
+  benchmark, or tooling — MAY be added.
+- Every dependency MUST be declared in the owning repository's
+  manifest (e.g., `backend/requirements.txt`, `pyproject.toml`,
+  a lockfile, or a separate tooling/eval manifest) so builds are
+  reproducible; undeclared, ad-hoc installs into an image are not
+  permitted.
+- A PR that adds a dependency SHOULD name it and its purpose in
+  the description.
 
 ### VI. Documentation
 
@@ -654,9 +677,9 @@ system boundaries.
 - **Cresco** (the CrescoEdge distributed edge-computing fabric) is
   an approved external-infrastructure integration. It MUST be
   reached ONLY through a first-party Python bridge agent over the
-  fabric's `wsapi` WebSocket seam, using existing dependencies (no
-  new third-party library; `pycrescolib` MUST NOT be adopted at
-  runtime), behind a fail-closed feature flag (`FF_CRESCO`, default
+  fabric's `wsapi` WebSocket seam (any supporting library,
+  including `pycrescolib`, is permitted under Principle V), behind a
+  fail-closed feature flag (`FF_CRESCO`, default
   off). The Cresco fabric (a JVM/OSGi + ActiveMQ system) MUST remain
   external infrastructure: it MUST NOT be embedded in the product
   image, used as an internal message bus, or allowed to replace the
@@ -934,13 +957,9 @@ constitution requires it.
 - Verification failures and publish failures MUST be
   distinguishable; a publish failure MUST NOT mask green
   verification gates.
-- CI-only tooling (linters, coverage tools, scanners) installed
-  in the pipeline environment is not a product dependency under
-  Principle V, but adding one MUST still be documented in the
-  PR that introduces it. This carve-out also covers the
-  isolated dependencies of an eval/benchmark harness (Principle
-  V), PROVIDED the automated isolation guard proves no
-  product-runtime module imports them.
+- CI-only tooling (linters, coverage tools, scanners) may be
+  installed in the pipeline environment freely under Principle
+  V; it is declared in the CI tooling manifest.
 - No branch may merge to main with a failing required gate.
 
 **Rationale**: Principles III, IV, VII, and X are only as real
@@ -1101,14 +1120,13 @@ an ungoverned back channel for unverified claims.
   container images published to GitHub Container Registry; protected
   publication uses native short-lived GitHub Actions identity rather than
   repository-scoped Apps
-- **Eval/Benchmark Harnesses**: eval-only dependency manifests
-  (e.g., `requirements-eval.txt`) kept out of the product
-  runtime and enforced by an automated isolation guard
-  (Principle V); harness principals namespaced and torn down
+- **Eval/Benchmark Harnesses**: dependencies declared in their
+  own manifests (e.g., `requirements-eval.txt`) per Principle V;
+  harness principals namespaced and torn down
 - **Cresco Integration**: the CrescoEdge edge-computing fabric is
   approved external infrastructure, reached only via a first-party
-  Python bridge agent over its `wsapi` WebSocket seam (existing
-  `websockets` dependency; no new third-party library), behind
+  Python bridge agent over its `wsapi` WebSocket seam (any
+  supporting library permitted under Principle V), behind
   `FF_CRESCO` (default off); the JVM fabric is never embedded in the
   product image (Principles I, VII)
 - **Defense-track Documentation**: documentation/research-only
@@ -1124,8 +1142,6 @@ an ungoverned back channel for unverified claims.
 - PRs MUST pass the Principle XI CI gate set (maintained-language lint, tests,
   changed-code coverage, image build, boot smoke, secret scan)
   before merge.
-- PRs introducing new dependencies MUST include lead developer
-  approval.
 - PRs that modify the database schema MUST include the
   corresponding migration script and evidence that it ran
   successfully against a representative dataset.
@@ -1179,4 +1195,4 @@ guidance when conflicts arise.
   adherence to these principles. Violations MUST be resolved
   before merge.
 
-**Version**: 2.9.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-08-02
+**Version**: 3.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-17

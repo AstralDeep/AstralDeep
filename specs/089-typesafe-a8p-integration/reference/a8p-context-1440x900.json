@@ -1,0 +1,15 @@
+{
+  "filtersLive": true,
+  "cardHoverLift": true,
+  "landingReturns": true,
+  "expandOpensFullscreen": true,
+  "componentKinds": {
+    "metric": true,
+    "chart": true,
+    "gauge": true,
+    "stepper": true,
+    "table": true
+  },
+  "tableStickyHeader": false,
+  "modalAnimates": true
+}

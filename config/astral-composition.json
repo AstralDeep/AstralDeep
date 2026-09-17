@@ -5,20 +5,20 @@
     "astral-projection": {
       "repository": "https://github.com/AstralDeep/AstralProjection.git",
       "path": "components/AstralProjection",
-      "commit": "447ac077828fbc8c1a97a417d32d30e4a8c7b830",
+      "commit": "03284ccbec81b4a0a67ed2c54021d0503ffc0a95",
       "contract_version": "astralprojection.contract/v1"
     },
     "astral-plane": {
       "repository": "https://github.com/AstralDeep/AstralPlane.git",
       "path": "components/AstralPlane",
-      "commit": "1aee0db3a4e1690d01ff649c3d54bde30a2925bf",
+      "commit": "70508449046127c7a9af914bcc7da01501ab2fea",
       "contract_version": "astralplane.contract/v1"
     },
     "astral-primitives": {
       "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
       "path": "components/AstralPrimitives",
-      "commit": "8dadde18ea84b511e130ccc332cf2f62de2990cf",
-      "contract_version": "0.3.0"
+      "commit": "3d61e20bf26f8842af02ee4463ef8ed48f0fd810",
+      "contract_version": "0.4.0"
     },
     "lets": {
       "repository": "https://github.com/AstralDeep/LETS.git",
@@ -37,18 +37,18 @@
   "compatibility": {
     "ui_protocol": {
       "version": "1",
-      "sha256": "1a9aa2ce2917b6d8afe487c93a0841a5120549ed1b74ab27bc7a96572efa187a"
+      "sha256": "1382fcc2ddc3cad54d21b313da1d7aaf27f556df850a6281736d5567163e0c2b"
     },
     "data_plane": {
       "contract_version": "astralplane.contract/v1",
-      "schema_revision": "088.008",
+      "schema_revision": "089.001",
       "read_compatible_from": "066.001",
-      "migration_sha256": "4cddbddbc3eed66232f35bc24452451f92aa2b3e90968eb6fd6754f9a64358d8",
+      "migration_sha256": "35741bd0de148f836cd8b75b160531013836a61bd46b9e17e7790641412979d8",
       "blob_layout_version": "astralplane.blob-layout/v1"
     },
     "primitives": {
-      "package_version": "0.3.0",
-      "contract_sha256": "910d9f27c303cc30c171110ade2186cf7a07b5b72b32e97fefc7b8ab9d7422de"
+      "package_version": "0.4.0",
+      "contract_sha256": "780cc25af43ee4fccd88390685863bfe068d6cfd85494dde6ada5b24d70435f7"
     },
     "lets": {
       "release": "v1.0.11",

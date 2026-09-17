@@ -60,6 +60,44 @@ def is_dev_mode() -> bool:
     return os.getenv("ASTRAL_ENV", "").strip().lower() in _DEV_VALUES
 
 
+# Feature 089 (FR-005): TypeSafe routing is strictly bring-your-own-key. There
+# is no deployment-wide TypeSafe credential, and no durable table that could
+# represent one. These are the environment names the vendor SDK would otherwise
+# fall back to, so a process that has them set is configured to do something the
+# feature forbids -- most likely routing every user's traffic through one
+# operator key. Production refuses to boot; development warns.
+TYPESAFE_ENV_NAMES = (
+    "TYPESAFE_API_KEY",
+    "TYPESAFE_BASE_URL",
+    "TYPESAFE_DEFAULT_MODEL",
+)
+
+
+def typesafe_env_names_present() -> tuple[str, ...]:
+    """Return the forbidden TypeSafe environment names that are currently set."""
+    return tuple(
+        name for name in TYPESAFE_ENV_NAMES if os.getenv(name, "").strip()
+    )
+
+
+def warn_on_typesafe_environment() -> tuple[str, ...]:
+    """Log a development-mode warning for any TypeSafe environment name set.
+
+    Returns the offending names so a caller (or a test) can assert on them.
+    Production does not call this: it refuses to start instead.
+    """
+    present = typesafe_env_names_present()
+    if present:
+        logger.warning(
+            "%s set in the environment. Feature 089 never reads TypeSafe "
+            "configuration from the environment: routing uses each user's own "
+            "saved key. These variables have no effect and production mode "
+            "refuses to start with them set.",
+            ", ".join(present),
+        )
+    return present
+
+
 # Shipped placeholder values that must never reach production.
 _DEV_PLACEHOLDER_SECRETS = (
     "dev-audit-hmac-secret-change-me-in-prod",
@@ -76,11 +114,28 @@ def assert_production_posture() -> None:
     from ``Orchestrator.start`` for embedded callers.
 
     Development mode (``ASTRAL_ENV=development``) skips everything except the
-    advisory warnings — local dev stays friction-free (spec A13)."""
+    advisory warnings — local dev stays friction-free (spec A13).
+
+    Feature 089 adds one refusal: any of ``TYPESAFE_API_KEY``,
+    ``TYPESAFE_BASE_URL`` or ``TYPESAFE_DEFAULT_MODEL`` set in the environment
+    fails the gate, because routing is bring-your-own-key and no
+    deployment-wide TypeSafe credential is representable (FR-005)."""
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
+        warn_on_typesafe_environment()
         return
     problems = []
+    typesafe_present = typesafe_env_names_present()
+    if typesafe_present:
+        problems.append(
+            f"{', '.join(typesafe_present)} set in the environment. Feature 089 "
+            f"routing is bring-your-own-key: there is no deployment-wide "
+            f"TypeSafe credential and no table that can hold one. A process "
+            f"configured this way would either do nothing with the value or "
+            f"route every user through one operator key. Unset "
+            f"{', '.join(typesafe_present)}; users save their own key in LLM "
+            f"settings."
+        )
     if mock_on:
         problems.append(
             "USE_MOCK_AUTH is enabled. Mock authentication accepts any token as "

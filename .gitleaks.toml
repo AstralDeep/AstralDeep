@@ -13,9 +13,34 @@
 #   - throwaway CI-only values used by .github/workflows/ci.yml
 #     (ci-test-agent-key, ci-test-hmac-secret, DB password astral_ci) and the
 #     local-dev compose default DB password (astral_dev)
+#
+# Feature 089 adds two named TypeSafe rules below the [extend] block and one
+# allowlisted synthetic canary. Tests must use that canary, which matches the
+# rule's shape on purpose and is not a credential.
 
 [extend]
 useDefault = true
+
+# Feature 089: TypeSafe System One keys. The default ruleset's generic
+# high-entropy detectors catch most key shapes, but a named rule fails with a
+# message that says which credential leaked, and it fires on the lowercase
+# prefixed form the generic rule scores too low to flag. The pattern was
+# derived from a real key's observed format under T003a; only the pattern lives
+# here, never a key and never a prefix sample.
+[[rules]]
+id = "typesafe-system-one-key"
+description = "TypeSafe System One API key"
+regex = '''\b[a-z]{2,10}_(?=[a-z0-9_]{0,240}[0-9])[a-z0-9_]{40,}\b|\b(?i:ts|tsk|tsai)[-_](?i:live[-_])?[A-Za-z0-9_\-]{20,}\b'''
+keywords = ["ts_", "tsk_", "tsai_", "ts-", "tsk-"]
+tags = ["key", "typesafe", "feature-089"]
+
+[[rules]]
+id = "typesafe-api-key-assignment"
+description = "TypeSafe API key assigned to a variable or field"
+regex = '''(?i)typesafe[_\-.]?api[_\-.]?key["'\s]*[:=]["'\s]*([A-Za-z0-9_\-]{16,})'''
+secretGroup = 1
+keywords = ["typesafe_api_key", "typesafe-api-key", "TYPESAFE_API_KEY"]
+tags = ["key", "typesafe", "feature-089"]
 
 [allowlist]
 description = "Verified intentional dev/test placeholders — not credentials"
@@ -56,4 +81,8 @@ regexes = [
   # starts with {"realm_access":..., empty signature segment). Lives in
   # backend tests today and in deleted frontend/ files in git history.
   '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJyZWFsbV9hY2Nlc3M''',
+  # Feature 089 synthetic TypeSafe canary. It matches the TypeSafe rule
+  # shape on purpose so the T059 scan can prove the scrubbers work, and it
+  # is not a key.
+  '''ts_live_CANARY0000NOTAREALKEY000000''',
 ]

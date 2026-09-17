@@ -19,6 +19,13 @@ matching common API-key-shaped tokens) with the literal ``"<redacted>"``.
 The :class:`LLMKeyRedactionFilter` is a :mod:`logging` ``Filter`` that
 runs the scrubber over every log record's ``args`` and ``msg`` before
 emission.
+
+Feature 089 widened this in two ways. Key-name matching is no longer an
+equality test against ``"api_key"``: any key that *ends* in ``api_key``
+is redacted, so ``typesafe_api_key``, ``userApiKey`` and ``llm.api_key``
+are all covered without a new rule per credential. And the token-shape
+list gained a TypeSafe pattern, because the TypeSafe key travels the same
+settings and probe paths the LLM key does.
 """
 from __future__ import annotations
 
@@ -30,6 +37,28 @@ from typing import Any
 
 _REDACTED = "<redacted>"
 
+# TypeSafe System One key shape (feature 089, FR-035).
+#
+# Only the *pattern* is committed -- never a key and never a prefix sample. It
+# was derived from the observed format of a real key under T003a, after a
+# guessed prefix list was checked against one and did **not** match: a scrubber
+# that misses the credential it exists for is worse than none, because it
+# creates the belief that logs are safe.
+#
+# Two alternatives:
+#
+# 1. A short lowercase prefix, an underscore, then a long lowercase-alnum tail.
+#    The tail must be at least 40 characters and must contain a digit. Both
+#    bounds are there to keep ordinary snake_case out: without the digit gate,
+#    identifiers like ``test_the_circuit_opens_after_three_consecutive_fallbacks``
+#    redact themselves out of every debug line.
+# 2. The shorter, hyphen- or underscore-separated vendor spellings, which the
+#    synthetic test canary uses.
+TYPESAFE_KEY_PATTERN = re.compile(
+    r"\b[a-z]{2,10}_(?=[a-z0-9_]{0,240}[0-9])[a-z0-9_]{40,}\b"
+    r"|\b(?:ts|tsk|tsai)[-_](?:live[-_])?[A-Za-z0-9_\-]{20,}\b"
+)
+
 # API-key-shaped tokens we redact wherever they appear in free-form text.
 _KEY_TOKEN_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),  # OpenAI (also sk-ant-/sk-or-/sk-proj-)
@@ -38,7 +67,26 @@ _KEY_TOKEN_PATTERNS = (
     re.compile(r"\bor-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"\bsk_live_[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}\b"),  # Google API keys (Gemini)
+    # TypeSafe System One (feature 089). The prefix set is deliberately wider
+    # than one vendor spelling: a redaction that fires on a non-key is harmless,
+    # a redaction that misses a key is not. Confirm the exact prefix against the
+    # owner's real key before relying on the T059 canary scan.
+    TYPESAFE_KEY_PATTERN,
 )
+
+
+def _is_api_key_field(name: Any) -> bool:
+    """True for ``api_key`` and for any field name that ends in it.
+
+    Matching on the suffix rather than the exact string is what makes one rule
+    cover ``api_key``, ``typesafe_api_key``, ``userApiKey`` and ``llm.api_key``.
+    Comparison is case-insensitive and ignores ``-``/``.``/``_`` separators, so a
+    camelCase or dotted spelling cannot slip past a snake_case rule.
+    """
+    if not isinstance(name, str):
+        return False
+    normalized = name.replace("-", "").replace("_", "").replace(".", "").lower()
+    return normalized.endswith("apikey")
 
 
 def _redact_text(text: str) -> str:
@@ -48,9 +96,13 @@ def _redact_text(text: str) -> str:
 
 
 def redact_llm_config(value: Any) -> Any:
-    """Return ``value`` with any ``api_key`` field replaced by
+    """Return ``value`` with every API-key field replaced by
     ``"<redacted>"`` and any API-key-shaped token in free text replaced
     similarly. Leaves the input shape otherwise unchanged.
+
+    A field counts as an API key when its name ends in ``api_key`` under
+    :func:`_is_api_key_field`, which covers the TypeSafe key alongside the
+    LLM one.
 
     Handles ``dict``, ``list``, ``tuple``, ``str``, and JSON-serialized
     strings; all other types pass through unchanged. Recurses into
@@ -58,7 +110,7 @@ def redact_llm_config(value: Any) -> Any:
     """
     if isinstance(value, dict):
         return {
-            k: (_REDACTED if k == "api_key" else redact_llm_config(v))
+            k: (_REDACTED if _is_api_key_field(k) else redact_llm_config(v))
             for k, v in value.items()
         }
     if isinstance(value, list):
