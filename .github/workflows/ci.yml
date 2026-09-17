@@ -124,6 +124,7 @@ jobs:
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           python -m coverage run --source=scripts \
             --omit=scripts/windows_release_candidate.py \
+            --omit=scripts/export_work_contract.py \
             -m pytest "${RELEASE_TOOL_TESTS[@]}" -q \
             --deselect=backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs \
             --deselect=backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts \

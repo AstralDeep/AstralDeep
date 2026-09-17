@@ -201,7 +201,15 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     assert "coverage run --source=scripts" in job
     assert "coverage report --fail-under=90" in job
     omissions = set(re.findall(r"--omit=([^\s\\]+)", job))
-    assert omissions == {"scripts/windows_release_candidate.py"}
+    assert omissions == {
+        "scripts/windows_release_candidate.py",
+        # export_work_contract.py imports the live backend + astralplane to
+        # emit the SDK contract; it cannot run in this stdlib-only lane, so it
+        # is covered by scripts/tests/test_export_work_contract.py in the
+        # product-image backend suite instead (same posture as the Windows
+        # release candidate builder above).
+        "scripts/export_work_contract.py",
+    }
     assert not any("*" in omission for omission in omissions)
 
     expected_scripts = {
@@ -210,6 +218,7 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
         "install_local_components.py",
