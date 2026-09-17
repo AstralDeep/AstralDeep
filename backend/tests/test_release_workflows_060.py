@@ -1771,6 +1771,7 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
     job_ids = set(_job_ids(workflow))
     assert job_ids == {
         "lint",
+        "sdk",
         "release-tooling-tests",
         "component-contract-tests",
         "composition-declarations",
