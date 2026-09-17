@@ -87,6 +87,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     )
     assert job_ids == {
         "lint",
+        "sdk",
         "release-tooling-tests",
         "component-contract-tests",
         "composition-declarations",
