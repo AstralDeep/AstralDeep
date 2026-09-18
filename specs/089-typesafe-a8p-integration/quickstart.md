@@ -27,9 +27,17 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q tests/tes
 - Expected: startup refuses with an explicit message.
 - Then remove the variable.
 
+**Reach the stack at `http://localhost:8001`, not `http://127.0.0.1:8001`.** Keycloak matches
+`redirect_uri` as an exact string and only the `localhost` spelling is a registered dev redirect
+URI for `astral-frontend` (see `docs/keycloak-realm-settings.md`). The two are interchangeable
+for every other purpose here — the parity and responsive harnesses below take either — but
+signing in at `127.0.0.1` fails with `Invalid parameter: redirect_uri`, and the failure looks
+like a broken realm rather than a typo. `web_auth._redirect_uri` derives the value from the
+request, so the address bar is the whole of it.
+
 ## 2. Settings: bring your own key (US1)
 
-1. Sign in on the web client at a desktop viewport. Open **Settings → LLM settings**.
+1. Sign in on the web client at a desktop viewport, at `http://localhost:8001` (§1). Open **Settings → LLM settings**.
    - Expected: a "TypeSafe routing (optional)" section with status "Not set — standard routing".
 2. Save an invalid key.
    - Expected: "TypeSafe rejected this key."; the status is unchanged.
