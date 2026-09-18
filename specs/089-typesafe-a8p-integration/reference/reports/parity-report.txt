@@ -1,4 +1,4 @@
-a8p desktop parity — 2026-09-17T22:01:44.960Z
+a8p desktop parity — 2026-09-18T00:36:34.465Z
 
 ## 1920x1080 — 98.5% (98.5/100)
   PASS auto   A1 (4) Two-column frame, full height, no page scroll, canvas scrolls internally
