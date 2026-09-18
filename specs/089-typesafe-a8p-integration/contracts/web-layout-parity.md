@@ -36,19 +36,19 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 
 | # | Item | Weight | Check |
 |---|---|---|---|
-| B1 | Brand block at top: logo image + stacked product name/subtitle, bottom divider; clicking returns to landing | 4 | [auto] structure, [review] look |
+| B1 | Brand block at top: logo image only — no product name, no tagline — bottom divider; clicking returns to landing | 4 | [auto] structure, [review] look |
 | B2 | Section header row "Agent Directory" with count badge right-aligned | 3 | [auto] |
 | B3 | Search input with leading magnifier icon, filters the agent list live | 4 | [auto] |
-| B4 | Scrollable agent list filling remaining height; each item shows icon, name, short description, status dot | 5 | [auto] structure, [review] item styling |
-| B5 | Recent work section placed below the agent list (088 capability), collapsible | 2 | [auto] |
-| B6 | User profile widget pinned to sidebar bottom: avatar with online dot, name, role, settings cog button at right | 4 | [auto] |
+| B4 | Scrollable agent list filling remaining height; each item shows name and short description flush to the card's left edge, plus a status dot — no per-agent icon | 5 | [auto] structure, [review] item styling |
+| B5 | History section placed below the agent list (088 capability), collapsible | 2 | [auto] |
+| B6 | Account row pinned to sidebar bottom: picture, name, role, then the settings cog; the cog opens the settings dialog | 4 | [auto] |
 
 ## C. Landing / empty state (weight 18)
 
 | # | Item | Weight | Check |
 |---|---|---|---|
 | C1 | Page header row: title + subtitle left; status pill strip right (system live, agents ready, audit status, resume chat when applicable) | 4 | [auto] |
-| C2 | Overview panel: header row + 3-column grid of numbered steps | 3 | [auto] |
+| C2 | No explanatory overview panel: the examples section follows the page header directly | 3 | [auto] |
 | C3 | Scenarios section header with title left and horizontal filter tabs (active tab highlighted) | 4 | [auto] |
 | C4 | Scenario card grid, `auto-fit` with a 350px minimum track — the same column count as the reference at each viewport (4 at 1920, 2 at 1440 and 1280) — with rounded 12px cards: agent tag + category badge header, title, description, run action; hover lift | 5 | [auto] grid, [review] card |
 | C5 | Landing hides once a conversation has a response and reappears on "return to dashboard" | 2 | [auto] |
@@ -77,13 +77,74 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 | # | Item | Weight | Check |
 |---|---|---|---|
 | F1 | Full-screen result overlay covering the viewport: header with icon badge, title row with badges, subtitle; "Exit Full Screen" button with ESC hint; scrollable canvas | 6 | [auto] structure, [review] look |
-| F2 | Settings dialog: centered modal card with slide-up animation (reduced-motion respected), header icon badge + title + subtitle + close; tab strip; tab content; footer action row | 6 | [auto] structure, [review] look |
+| F2 | Settings dialog: centered modal card with slide-up animation (reduced-motion respected), header icon badge + title + subtitle + close; **left menu rail** (the settings menu) + right options pane; footer action row when the surface declares one | 6 | [auto] structure, [review] look |
+
+> **Owner directive, 2026-09-18 — five rows superseded.** The owner
+> directed five deliberate departures from the a8p reference after reviewing
+> the built console. Parity with a8p is the contract's purpose, so where the
+> owner has since decided against a8p's choice, the row states the decision
+> and the harness scores that instead. The reference captures are unchanged
+> and still hold for every other row.
+>
+> - **B1** — the sidebar's wordmark and "Multi-agent workspace" tagline are
+>   gone. The logo alone identifies the product; the console's own title and
+>   subtitle already sit at the top of the page, so the sidebar was saying it
+>   twice.
+> - **B4** — the per-agent initials badge is gone and the name/description
+>   move to the card's left edge. Ten two-letter badges down the sidebar were
+>   noise, and they distinguished nothing the name did not.
+> - **B6** — the profile widget is the settings cog alone. The name, role and
+>   avatar head the settings dialog the cog opens, so the identity is one
+>   click away instead of permanently occupying the sidebar's bottom. The
+>   model's action controls (Pulse, Recent work, Workspace timeline) moved
+>   into that dialog's rail with it. **Native clients are unaffected**: the
+>   chrome model still carries them in `topbar`, and only the web renderer
+>   changed.
+> - **C2** — the "How a turn runs" panel (Route / Gate / Render) is gone. It
+>   explained the architecture to someone who had not asked; the examples
+>   below it demonstrate the same thing by being run.
+> - **F2** — the gear opens the settings dialog directly and the menu is the
+>   dialog's **left rail**, not a dropdown and not a tab strip. Every settings
+>   surface therefore shows the menu, so moving between them is one click
+>   rather than close-reopen-pick. a8p's tab strip remains available to any
+>   surface that declares `SECTIONS`; the rail is the level above it.
+>
+> Two rows that read on the same regions are deliberately unchanged: **B2**
+> (the directory's header and count badge) and **B5** (Recent work).
+
+> **Owner directive, 2026-09-19 — B6 reversed, B5 amended.** A second
+> walkthrough of the built console changed two of the decisions above. The
+> reference captures are still unchanged.
+>
+> - **B6** — the account row carries the signed-in person again: a default
+>   drawn avatar, their name and their role, then the cog at the row's right
+>   edge. A console showing no sign of whose account it is reads as signed
+>   out, and one click away turned out to be one click too many for something
+>   a person checks at a glance. The settings dialog keeps its own account
+>   block, from the same `web_auth.identity_from_claims`, so the two cannot
+>   disagree. The model's action controls stay in the dialog's rail, and
+>   native clients remain unaffected either way.
+> - **B5** — the section is titled **History**, and its header carries one
+>   icon-only New-chat button. It had carried two adjacent buttons, "+ New
+>   chat" and a Recent-chats button that opened the list directly beneath it.
+>   The collapse control was also inert: `client.js` re-homes the toggle into
+>   that header, which broke the adjacent-sibling rule that had hidden the
+>   list, so the chevron turned and nothing else happened. The section now
+>   carries the collapsed state itself.
+> - **F2 addition** — where a surface declares `SECTIONS`, its tab strip
+>   renders inside the pane beside the rail rather than across the whole
+>   dialog. Run full width it sat above the rail too, reading as navigation
+>   for the rail as well as for the pane.
 
 > **C4 correction (2026-09-17).** The row first read “3 columns at ≥1440, 2 at 1280”. The reference at `bcdc014` uses `grid-template-columns: repeat(auto-fit, minmax(350px, 1fr))`, which yields 4 columns at 1920, 2 at 1440 and 2 at 1280. The contract’s purpose is parity with the reference, so the row now states the reference’s own rule and the scorer compares against the captured column count rather than a written constant.
 
 **Total weight: 100.**
 
 **Mapping rule**: Where a region's a8p content has no Astral equivalent (for example the "AU-9 Sealed" demo badge), the equivalent 088 status or capability is placed in that slot. The item is scored on structure and position, not on literal text.
+
+**Owner-directive rule**: a row the owner has since directed away from a8p is scored against the directive, not the capture, and the directive is recorded in this file with its date. The reference captures are never re-shot to match: they are the record of what was compared, and a row that no longer compares to them says so in its own text.
+
+**No emoji**: nothing this console renders carries an emoji — not example titles, not agent glyphs, not status marks. Where a8p or an earlier Astral build used one, the replacement is a word, a drawn SVG icon, or nothing. This is a standing project rule, not a row of this contract, and it applies to every client.
 
 ## Responsive checklist (viewports <1280px; pass/fail, 100% required — SC-012)
 

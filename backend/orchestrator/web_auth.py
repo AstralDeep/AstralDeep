@@ -675,19 +675,29 @@ def session_subject(request: Request) -> str:
     return str((get_session(request) or {}).get("sub", "") or "")
 
 
-def session_identity(request: Request) -> dict:
-    """Feature 089 — the display name, role line and initials for the sidebar.
+#: The neutral identity shown when nothing better can be derived. Never an
+#: empty widget and never a raw subject id.
+ANONYMOUS_IDENTITY = {"name": "Signed in", "role": "Guest", "initials": "A"}
 
-    Read from the access token's claims WITHOUT signature verification, the
-    same way :func:`session_roles` is: this decides what the profile widget
-    shows, nothing more. Every authorization decision is still made from the
-    validated JWT server-side. Falls back to neutral wording rather than to
-    an empty widget, and never renders a raw subject id or an email address.
+#: What a development session is called on screen.
+MOCK_IDENTITY = {"name": "Local operator", "role": "Development session", "initials": "LO"}
+
+
+def identity_from_claims(payload: dict, roles=None) -> dict:
+    """Display name, role line and initials from a token's claims.
+
+    The ONE derivation, shared by the shell's own render and by the settings
+    dialog's account block, so the two can never disagree about who is signed
+    in. Display only: every authorization decision is still made from the
+    validated JWT server-side, and this never renders a subject id or an
+    email address.
+
+    Args:
+        payload: the token's claims (already decoded; not re-verified here).
+        roles: the session's roles, when the caller has already extracted
+            them. Absent, they are read from the claims.
     """
-    if _is_mock():
-        return {"name": "Local operator", "role": "Development session", "initials": "LO"}
-    sess = get_session(request) or {}
-    payload = _jwt_payload(sess.get("access_token", "") or "")
+    payload = payload if isinstance(payload, dict) else {}
     name = str(
         payload.get("name")
         or " ".join(
@@ -697,11 +707,27 @@ def session_identity(request: Request) -> dict:
         or ""
     ).strip()
     if not name or "@" in name:
-        name = "Signed in"
-    roles = _roles_from_token(sess.get("access_token", "") or "")
+        name = ANONYMOUS_IDENTITY["name"]
+    if roles is None:
+        roles = list((payload.get("realm_access") or {}).get("roles") or [])
+        for client in (payload.get("resource_access") or {}).values():
+            roles.extend((client or {}).get("roles") or [])
     role = "Administrator" if "admin" in roles else ("Member" if roles else "Guest")
     initials = "".join(part[0] for part in name.split()[:2] if part).upper() or "A"
     return {"name": name, "role": role, "initials": initials}
+
+
+def session_identity(request: Request) -> dict:
+    """Feature 089 — the display name, role line and initials for the shell.
+
+    Read from the access token's claims WITHOUT signature verification, the
+    same way :func:`session_roles` is: this decides what is displayed,
+    nothing more.
+    """
+    if _is_mock():
+        return dict(MOCK_IDENTITY)
+    token = (get_session(request) or {}).get("access_token", "") or ""
+    return identity_from_claims(_jwt_payload(token), _roles_from_token(token))
 
 
 def _roles_from_token(token: str) -> list:

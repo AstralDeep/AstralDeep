@@ -280,6 +280,55 @@
 
 **Checkpoint**: The web client matches a8p on desktop and works well on all web screen sizes.
 
+### Post-walkthrough owner refinements (2026-09-18)
+
+The owner walked the built console and directed seven departures from strict
+a8p parity. Five of them supersede rows of `contracts/web-layout-parity.md`,
+which now records each with its date and reason; the harness scores the
+directives. The chrome MODEL is untouched throughout, so no native client
+changes — only the web renderer moved (SC-011 holds).
+
+- [X] T071 [US6] Sidebar brand: logo only. Remove the wordmark and the tagline from `shell.html`, and their styles from `astral.css`. (Contract B1.)
+- [X] T072 [US6] Agent directory: remove the per-agent initials badge; name and description sit at the card's left padding. (Contract B4.)
+- [X] T073 [US6] Account row: the settings cog alone. Drop the avatar, name and role from the sidebar; the identity heads the settings dialog instead, from one shared `web_auth.identity_from_claims` used by both the shell and the dialog. The model's `action` controls (Pulse, Recent work, Workspace timeline) render as rail entries rather than icons beside the gear. (Contract B6.)
+- [X] T074 [US6] Composer: `Advanced` loses its visible label and keeps its icon, its title and a screen-reader name. (Contract E3 — unchanged, still one row at ≥1280.)
+- [X] T075 [US6] Settings: the gear opens the dialog directly (`chrome_open`, no dropdown) and the menu becomes the dialog's left rail — new `P:backend/webrender/chrome/settings_nav.py`, built from the same `build_menu_model`, wired through `render_modal_shell(nav_html=…)`. `client.js` stops swallowing the gear click when no popover exists, and the tour opens the dialog to spotlight a `sidebar.*` step. (Contract F2.)
+- [X] T076 [US6] Landing: remove the "How a turn runs" overview panel and its styles. (Contract C2.)
+- [X] T077 [US6] Rewrite the curated examples in `D:backend/orchestrator/welcome.py` — plainer titles spanning the adaptive designer, live host data, a live external API, research, summarizing, a domain specialist and the smallest end-to-end turn. Shared with every client by construction; `web_landing.py` drops its emoji-glyph split. Tests derive their counts from the catalog rather than pinning them.
+- [X] T078 [US6] New `agent_intro` surface: clicking an agent opens a dialog with its description, its own example prompts (Run sends an ordinary `chat_message`; Load fills the composer client-side), its tools and a link to its permissions. Visibility is the directory's own rule, checked for the body and the heading alike. Adds a per-render `title(orch, user_id, params)` hook to the chrome dispatcher.
+- [X] T079 [US6] Rewrite every built-in agent's card description in the console's voice and give each one `examples` on its card (`BaseA2AAgent.examples` → card metadata). These feed the TypeSafe router's agent-selection prompt as well as the UI, so they stay capability-bearing; `ml_services`' per-service call order moves to a comment, where it is readable and where nothing was executing from it anyway.
+- [X] T080 No emoji anywhere the product renders — the welcome catalog, the recent-chats glyphs, two warning banners, the attachment chip and the benchmark report's verdicts. `D:backend/tests/test_no_emoji.py` enforces it over the orchestrator, agents, shared layer and render layer, deliberately skipping tests (several feed emoji in on purpose) and allowing typographic marks with a documented reason each.
+- [X] T081 Two defects found while doing the above, fixed here: the User-guide surface bound its content sections to `SECTIONS`, the name the dispatcher reads as a modal **tab strip**, so the dialog printed the repr of a section dict across its top — the dispatcher now ignores a `SECTIONS` it cannot read as `(key, label)` pairs; and the guide's own copy still directed people to a top bar and a Settings menu that no longer exist.
+- [X] T082 Update the parity harness (`P:tests/web_layout_parity/regions.mjs`, `probe.mjs`) to score B1, B4, B6, C2 and F2 against the directives, and amend the contract in place with a dated correction block.
+
+
+### Second walkthrough: what the console actually did (2026-09-19)
+
+The owner ran the built console again and reported thirteen things. One of
+them — results stopping at the text and never drawing the components the turn
+produced — is the feature's own central capability, and it turned out to be
+three faults in the same place: feature 089 made `canvas` a node *inside* the
+conversation feed, and three code paths still empty the feed without giving
+`canvas` a new home. The rest are the console's own surfaces.
+
+Still web-renderer and orchestrator only. The chrome MODEL, the native clients
+and the CI workflows are untouched (SC-011 holds).
+
+- [X] T083 The committed workspace was being appended to a detached node. `commitSnapshotCandidate` replaced the transcript — which contains the live response card whose body IS `canvas` — and then appended the round's components to the orphan. "New chat" did the same through `chat.innerHTML = ""`. Both go through one `resetFeed()` now. A turn's own live frames additionally rendered into a card still marked `hidden`, because `reduceTransientFrame` never revealed it. (`P:backend/webrender/static/client.js`)
+- [X] T084 Turn numbering counted rebuilds rather than turns: every re-decoded transcript advanced the counter, so a new chat's first message could read "Turn 3". The transcript's own user messages number it, and a result card carries the number of the turn it answers instead of taking one of its own.
+- [X] T085 An empty-but-revealed response card counted as workspace content, so a late welcome frame was discarded instead of placed. A card's header and expand chip are its frame, not its content.
+- [X] T086 [US6] Sidebar: "Recent work" is **History**; the collapse arrow works (it had been styled through an adjacent-sibling selector that stopped matching when `client.js` re-homed the toggle); the duplicate "Recent chats" button is gone from that header and "New chat" is icon-only. (Contract B5.)
+- [X] T087 [US6] The recent-chats list drops its own heading, its count and its per-row picture: the sidebar already says "History" above it, and the picture was an agent tag most chats have no value for, so the list drew a column of blanks. (`D:backend/orchestrator/history_surface.py`, `P:backend/webrender/renderer.py`.)
+- [X] T088 [US6] The account row carries the signed-in person again — a default drawn avatar, their name and their role — beside the cog. T073 took it off on the owner's direction; the owner's second walkthrough put it back, because a console with no sign of whose account it is reads as signed out. Contract B6 and the parity harness record both dates. The settings dialog still heads itself with the same identity from the same derivation.
+- [X] T089 Chats are named after what they are about. The naming call fired on a message-count condition that was off by one, so it almost never ran and every chat stayed "New Chat"; and when it did run, a reply whose text arrived empty (what several providers do with a reasoning model) returned in silence rather than falling back. It now runs whenever the chat still has a placeholder name — so an existing "New Chat" is named on its next turn — asks for the two-to-four words the sidebar has room for, and always ends with a name.
+- [X] T090 [US6] The settings dialog is static. Moving between sections replaced the whole dialog, which threw away the rail's scroll, moved focus, and — when a render was slow — put "This is taking longer than expected" where the dialog had been. Only the pane changes now; the card, the rail and the account block stay. The tab strip moved inside the pane, where it belongs: run across the whole dialog it read as navigation for the rail as well.
+- [X] T091 One chat's turn no longer holds up another's. `_serialized_chat` took a lock per **websocket**, so a long turn blocked every other conversation in the same tab. The lock is per (socket, conversation): ordering within a conversation is what has to hold.
+- [X] T092 Voice is preflighted in the background at registration. When the service cannot be reached the mic says so instead of half-starting a session that fails on its way up; a click on it answers with the reason rather than nothing. The composer's running commentary under the input is gone — states that need a decision still surface, so voice cannot fail silently (088 FR-028).
+- [X] T093 The composer's **Advanced** button works. 088 shipped the picker's view builder, its client handler and its consumption at submission, but nothing on the server ever answered the request the composer sends: `chrome_open {surface: guidance, params: {view: "selection"}}` fell through the private-notes validator and came back `explicit_note_request_invalid`. The guidance surface now builds the selection state from the user's own agents, skills and notes, narrows an incoming selection to what still exists at that revision, and stamps what it rendered so the composer adopts exactly that. (`D:backend/orchestrator/projection_surfaces/guidance.py`.)
+- [X] T094 Close buttons sit in the middle of their targets. `.astral-modal-close` centred its glyph on a text baseline inside a 44px box; the chip's `×` carried a 19px line box inside a 16px button. Both are drawn glyphs in a centred box now.
+- [X] T095 Two diagnostics for failures that had been leaving nothing behind: a failed metadata operation logs its traceback, and a turn that loses its human-request capture names the guard that refused it. No request content in either.
+- [X] T096 Bring the browser contract suite back onto the shipped shell. `tooling/web-ci/tests/continuity-contract-060.spec.js` still built the pre-089 DOM, with the feed beside the canvas rather than inside it; twelve of its seventy-one tests had been failing on this branch unnoticed. Its shell matches `shell.html` now, and two tests pin T083 and T084.
+
 ---
 
 ## Phase 9: Polish and qualification

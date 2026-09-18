@@ -48,7 +48,10 @@ def test_first_screen_has_three_choices_and_discloses_the_rest():
     more = comps[2]
     assert more["type"] == "collapsible"
     assert more["title"] == "More examples" and more["default_open"] is False
-    assert len([n for n in _walk(more["content"]) if n["type"] == "button"]) == 3
+    # Three on the first screen, the rest behind the disclosure — derived, so
+    # adding a curated example does not silently break the contract it tests.
+    assert (len([n for n in _walk(more["content"]) if n["type"] == "button"])
+            == len(WELCOME_EXAMPLES) - 3)
     assert not any(n["type"] in {"text", "card"} for n in _walk(comps))
     assert json.dumps(comps), "wire-serializable"
 
@@ -84,7 +87,8 @@ def test_unavailable_tools_keep_explicit_consent_separate_from_examples():
     assert [n["action"] for n in actions] == ["enable_recommended_agents", "chrome_open"]
     assert actions[1]["payload"] == {"surface": "agents"}
     assert "never write access" in str(consent)
-    assert len([n for n in _walk(comps) if n.get("action") == "chat_message"]) == 6
+    assert (len([n for n in _walk(comps) if n.get("action") == "chat_message"])
+            == len(WELCOME_EXAMPLES))
 
 
 def test_welcome_components_carry_no_workspace_identity():
@@ -107,4 +111,4 @@ def test_voice_profile_gets_readable_text():
     )
     assert "How can I help?" in text
     for title, _, _ in WELCOME_EXAMPLES:
-        assert title.split(" ", 1)[1] in text, f"example {title!r} unreadable on voice"
+        assert title in text, f"example {title!r} unreadable on voice"

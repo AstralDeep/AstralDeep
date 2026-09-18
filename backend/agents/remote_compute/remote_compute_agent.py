@@ -34,11 +34,20 @@ class RemoteComputeAgent(BaseA2AAgent):
 
     agent_id = "remote-compute-1"
     service_name = "Remote Compute"
-    description = ("Work with your registered clusters and machines over SSH — check "
-                   "the queue, job status/history, host facts, files and processes, and "
-                   "act: submit and cancel jobs, create and delete paths, upload files, "
-                   "control services and packages, signal processes. Destructive "
-                   "operations always ask you to confirm first.")
+    description = (
+        "Works with the clusters and machines you have registered, over SSH: "
+        "read the queue, job history, host facts, files and processes, then "
+        "act — submit or cancel jobs, move files, control services. Anything "
+        "destructive asks you first."
+    )
+    examples = [
+        {"title": "What is running",
+         "prompt": "Show the current job queue on my cluster with state and elapsed time"},
+        {"title": "How busy is it",
+         "prompt": "Show GPU and memory load per node on my cluster"},
+        {"title": "Submit a job",
+         "prompt": "Submit the batch script at ~/jobs/train.sbatch and tell me its job id"},
+    ]
     skill_tags = ["remote", "cluster", "slurm", "hpc", "ssh", "control"]
 
     def __init__(

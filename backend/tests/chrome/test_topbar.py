@@ -1,12 +1,30 @@
-"""Feature 027 — T011: top bar + static settings menu structure and gating.
+"""Feature 027 — T011: the account row + the settings menu, and their gating.
 
 Structural invariants (not byte-exact): menu groups/entries per
-contracts/settings-surfaces.md, admin DOM-absence (SC-005), ARIA menu
-markup (FR-017), sign-out plain link, and modal/notice escaping.
+contracts/settings-surfaces.md, admin DOM-absence (SC-005), sign-out plain
+link, and modal/notice escaping.
+
+The menu moved. It used to be a dropdown the top-bar renderer emitted; it is
+now the settings dialog's left rail, built from the same model by
+``render_settings_nav``. So the inventory assertions live against the rail
+and the account-row assertions stay here — one menu, one builder, two
+renderers.
 """
 import pytest
 
-from webrender.chrome import chrome_error_block, notice_block, render_modal_shell, render_topbar
+from webrender.chrome import (
+    chrome_error_block,
+    notice_block,
+    render_modal_shell,
+    render_settings_nav,
+    render_topbar,
+)
+from webrender.chrome.menu_model import build_menu_model
+
+
+def _nav(roles=None, **availability):
+    """The rail a session with these roles and host flags would see."""
+    return render_settings_nav(build_menu_model(roles, **availability))
 
 
 @pytest.fixture(autouse=True)
@@ -24,8 +42,12 @@ def test_topbar_has_status_and_settings_trigger():
     assert 'data-tour-target="topbar.brand"' not in html
     assert 'id="astral-status"' in html
     assert 'id="astral-settings-btn"' in html
-    assert 'aria-haspopup="menu"' in html and 'aria-expanded="false"' in html
-    assert 'id="astral-settings-menu"' in html and 'role="menu"' in html
+    # The gear opens the settings dialog; it is not a popover toggle, and no
+    # menu is rendered into the shell for it to toggle.
+    assert 'aria-haspopup="dialog"' in html
+    assert 'data-ui-action="chrome_open"' in html
+    assert 'id="astral-settings-menu"' not in html
+    assert 'role="menu"' not in html
 
 
 def test_brand_lives_in_the_sidebar_exactly_once():
@@ -49,7 +71,7 @@ def test_brand_lives_in_the_sidebar_exactly_once():
 
 
 def test_menu_contains_account_and_help_groups_for_everyone():
-    html = render_topbar(roles=["user"])
+    html = _nav(["user"])
     for label in ("Account", "Help"):
         assert label in html
     for entry in ("Agents &amp; permissions", "LLM settings", "Personalization",
@@ -58,31 +80,53 @@ def test_menu_contains_account_and_help_groups_for_everyone():
 
 
 def test_menu_entries_carry_chrome_open_actions():
-    html = render_topbar(roles=["user"])
+    html = _nav(["user"])
     assert 'data-ui-action="chrome_open"' in html
     for surface in ("agents", "llm", "personalization", "audit", "theme", "tour", "guide"):
         assert f'&quot;surface&quot;: &quot;{surface}&quot;' in html, f"missing surface payload: {surface}"
 
 
-def test_workspace_timeline_promoted_to_topbar_icon():
-    """Feature 045: the workspace timeline is a dedicated icon button next to
-    Settings (one click back to an earlier canvas), not a Settings-menu entry."""
-    html = render_topbar(roles=["user"])
-    # The icon button is present, labelled, and tour-targetable.
-    assert 'id="astral-timeline-btn"' in html
-    assert 'aria-label="Workspace timeline"' in html
-    assert 'data-tour-target="topbar.timeline"' in html
-    # It fires the same chrome_open surface the menu entry used to.
-    assert '&quot;surface&quot;: &quot;workspace_timeline&quot;' in html
-    # It sits OUTSIDE (before) the Settings dropdown…
-    assert html.index('id="astral-timeline-btn"') < html.index('id="astral-settings"')
-    # …and is no longer an item inside the Settings menu.
-    assert 'data-menu-key="timeline"' not in html
+def test_the_gear_opens_the_rails_own_first_entry():
+    """The gear and the rail cannot disagree about where settings start."""
+    from webrender.chrome.topbar import settings_entry_surface
+
+    model = build_menu_model(["user"])
+    surface = settings_entry_surface(model)
+    assert surface == model.menu[0].items[0].surface
+    assert f'&quot;surface&quot;: &quot;{surface}&quot;' in render_topbar(roles=["user"])
+
+
+def test_the_rail_marks_where_you_are():
+    """An entry for the surface on screen is the current one, and only it."""
+    html = render_settings_nav(build_menu_model(["user"]), "theme")
+    assert html.count('aria-current="true"') == 1
+    marked = html[html.index('aria-current="true"'):]
+    assert "Theme</button>" in marked[:400]
+
+
+def test_workspace_timeline_is_a_rail_entry_not_an_account_row_icon():
+    """The workspace timeline is still one click from the gear, but the click
+    lands in the dialog's rail instead of on an icon beside the gear — the
+    account row carries the gear alone now. The MODEL is unchanged, so native
+    clients still receive it as a top-bar control."""
+    nav = _nav(["user"])
+    assert 'data-menu-key="timeline"' in nav
+    assert "Workspace timeline" in nav
+    assert '&quot;surface&quot;: &quot;workspace_timeline&quot;' in nav
+    assert 'data-tour-target="sidebar.timeline"' in nav
+    # It is a rail entry above the Account group, not an account-row icon.
+    assert nav.index('data-menu-key="timeline"') < nav.index('data-menu-key="agents"')
+    assert 'id="astral-timeline-btn"' not in render_topbar(roles=["user"])
+    # The model still carries it for every other client.
+    assert any(c.key == "timeline" for c in build_menu_model(["user"]).topbar)
 
 
 def test_sign_out_is_plain_link_outside_js():
-    html = render_topbar(roles=["user"])
-    assert 'href="/auth/logout"' in html and 'role="menuitem"' in html
+    html = _nav(["user"])
+    assert 'href="/auth/logout"' in html
+    # Last in the rail, and visibly distinct, exactly as it was in the menu.
+    assert html.rindex("Sign out") > html.rindex("User guide")
+    assert "is-danger" in html
 
 
 def test_new_chat_button_in_topbar_for_every_role():
@@ -95,7 +139,7 @@ def test_new_chat_button_in_topbar_for_every_role():
         assert 'id="astral-newchat-btn"' in html
         assert 'aria-label="New chat"' in html
         assert 'data-tour-target="topbar.new-chat"' in html
-        assert html.index('id="astral-newchat-btn"') < html.index('id="astral-settings"')
+        assert html.index('id="astral-newchat-btn"') < html.index('id="astral-settings-btn"')
         # NOT a chrome_open surface — no settings-menu entry for it.
         assert 'data-menu-key="new-chat"' not in html
 
@@ -110,7 +154,7 @@ def test_canvas_page_actions_live_in_the_topbar_hidden_by_default():
         html = render_topbar(roles=roles, export_enabled=True, share_enabled=True)
         for btn_id in ('id="astral-export-page-btn"', 'id="astral-share-page-btn"'):
             assert btn_id in html
-            assert html.index(btn_id) < html.index('id="astral-settings"')
+            assert html.index(btn_id) < html.index('id="astral-settings-btn"')
         # The handler hooks: export by class, share by class + canvas scope.
         assert "astral-export-canvas" in html
         assert 'data-share-scope="canvas"' in html
@@ -135,38 +179,34 @@ def test_conversation_restore_control_is_in_the_floating_panel():
 
 # ── Feature 033 (C-U8) — Pulse digest top-bar icon (flag-gated) ──────────────
 
-def test_pulse_icon_absent_when_host_disables_it():
-    """Host policy OFF: the Pulse button is absent from the DOM entirely."""
-    html = render_topbar(roles=["user"], pulse_enabled=False)
-    assert 'id="astral-pulse-btn"' not in html
-    assert '&quot;surface&quot;: &quot;pulse&quot;' not in html
+def test_pulse_absent_when_host_disables_it():
+    """Host policy OFF: Pulse is absent from the rail and the row entirely."""
+    nav = _nav(["user"], pulse_enabled=False)
+    assert "Pulse digest" not in nav
+    assert '&quot;surface&quot;: &quot;pulse&quot;' not in nav
+    assert '&quot;surface&quot;: &quot;pulse&quot;' not in render_topbar(
+        roles=["user"], pulse_enabled=False)
 
 
-def test_pulse_icon_present_when_host_enables_it():
-    """Host policy ON: the Pulse icon button appears, labelled, firing chrome_open →
-    surface 'pulse', and sits before the Settings dropdown."""
-    html = render_topbar(roles=["user"], pulse_enabled=True)
-    assert 'id="astral-pulse-btn"' in html
-    assert 'aria-label="Pulse digest"' in html
-    assert 'data-tour-target="topbar.pulse"' in html
-    assert 'data-ui-action="chrome_open"' in html
-    assert '&quot;surface&quot;: &quot;pulse&quot;' in html
-    # It sits OUTSIDE (before) the Settings dropdown.
-    assert html.index('id="astral-pulse-btn"') < html.index('id="astral-settings"')
+def test_pulse_present_when_host_enables_it():
+    """Host policy ON: Pulse is a rail entry firing chrome_open → 'pulse'."""
+    nav = _nav(["user"], pulse_enabled=True)
+    assert "Pulse digest" in nav
+    assert 'data-menu-key="pulse"' in nav
+    assert 'data-tour-target="sidebar.pulse"' in nav
+    assert 'data-ui-action="chrome_open"' in nav
+    assert '&quot;surface&quot;: &quot;pulse&quot;' in nav
+    assert 'id="astral-pulse-btn"' not in render_topbar(roles=["user"], pulse_enabled=True)
 
 
-def test_pulse_icon_on_for_any_role():
+def test_pulse_on_for_any_role():
     """Pulse is per-user (not admin-gated) — present for a plain user too."""
-    assert 'id="astral-pulse-btn"' in render_topbar(
-        roles=["user"], pulse_enabled=True
-    )
-    assert 'id="astral-pulse-btn"' in render_topbar(
-        roles=None, pulse_enabled=True
-    )
+    assert "Pulse digest" in _nav(["user"], pulse_enabled=True)
+    assert "Pulse digest" in _nav(None, pulse_enabled=True)
 
 
 def test_admin_group_present_for_admin():
-    html = render_topbar(roles=["admin", "user"])
+    html = _nav(["admin", "user"])
     assert "Admin tools" in html
     assert "Tool quality" in html and "Tutorial admin" in html
     assert "admin_tools" in html
@@ -174,14 +214,14 @@ def test_admin_group_present_for_admin():
 
 def test_admin_group_dom_absent_for_non_admin():
     """SC-005: zero admin references in a non-admin's rendered output."""
-    html = render_topbar(roles=["user"])
-    for marker in ("Admin tools", "Tool quality", "Tutorial admin", "admin_tools"):
-        assert marker not in html, f"admin marker leaked to non-admin DOM: {marker}"
+    for html in (_nav(["user"]), render_topbar(roles=["user"])):
+        for marker in ("Admin tools", "Tool quality", "Tutorial admin", "admin_tools"):
+            assert marker not in html, f"admin marker leaked to non-admin DOM: {marker}"
 
 
 def test_admin_group_dom_absent_for_empty_roles():
-    html = render_topbar(roles=None)
-    assert "Admin tools" not in html
+    assert "Admin tools" not in _nav(None)
+    assert "Admin tools" not in render_topbar(roles=None)
 
 
 def test_modal_shell_escapes_title():

@@ -30,10 +30,21 @@ class ConnectorsAgent(BaseA2AAgent):
     agent_id = "connectors-1"
     service_name = "Claude Connectors Agent"
     description = (
-        "Specialized agent for office productivity, developer tools, "
-        "and creative connectors (Excel, PowerPoint, Word, Outlook, "
-        "pitch templates, code review, constitution critique, and more)."
+        "Builds the office documents you ask for — spreadsheets, decks, letters, "
+        "email drafts and pitch templates — and reviews code or a written "
+        "argument against a standard you name."
     )
+    examples = [
+        {"title": "Build a deck",
+         "prompt": "Draft a six-slide deck outlining a quarterly research update, "
+                   "then give me the PowerPoint"},
+        {"title": "Make a spreadsheet",
+         "prompt": "Build an Excel workbook tracking grant spend by month with a "
+                   "summary sheet"},
+        {"title": "Review some code",
+         "prompt": "Review the file I attached for correctness and error handling, "
+                   "most serious findings first"},
+    ]
     skill_tags = [
         "office", "productivity", "documents", "email",
         "dev-tools", "code-review",

@@ -7,12 +7,16 @@ Navigation tokens carry no IAM authority: the original CurrentHumanCaller does.
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from datetime import datetime, timezone
 import re
 from uuid import UUID, uuid4
 
-from astralprojection.chrome.guidance import NOTE_CATEGORY_LABELS, build_notes_view
+from astralprojection.chrome.guidance import (
+    NOTE_CATEGORY_LABELS,
+    build_guidance_view,
+)
 
 from orchestrator.human_request_authority import (
     CurrentHumanCaller, _HumanSocketRequest, current_human_caller,
@@ -21,9 +25,19 @@ from personalization.explicit_note_service import ExplicitNoteCommand, ExplicitN
 from personalization.explicit_notes import normalize_note_value
 from persistent_agents.models import AssignmentError
 
+logger = logging.getLogger("Orchestrator.Chrome.Guidance")
+
 TITLE = "Private notes"
 HANDLERS = {}
-_ACTIONS = frozenset({"chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget"})
+_ACTIONS = frozenset({"chrome_note_search", "chrome_note_save", "chrome_note_toggle",
+                      "chrome_note_forget", "chrome_turn_selection_set"})
+
+#: The guidance view the composer's Advanced button opens. Absent, the
+#: surface is the private-notes list it has always been.
+SELECTION_VIEW = "selection"
+#: Bounds on what one selection may name, mirroring the view builder's own.
+MAX_SELECTION_SKILLS = 20
+MAX_SELECTION_NOTES = 8
 _MAX_REVISION = 2**53 - 2
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _UTC_DATE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z", re.ASCII)
@@ -58,6 +72,52 @@ def _date(value):
     return result
 
 
+def _selection_reference(value, key):
+    _require(type(value) is dict and set(value) == {key, "revision"})
+    _identity(value[key])
+    _revision(value["revision"])
+
+
+def _selection_input(value):
+    """The exact version-1 selection shape the client and Work both use.
+
+    Validated as a shape only. Whether the things it names still exist, and
+    still at those revisions, is decided by re-reading them — never by
+    trusting the request.
+    """
+    _require(type(value) is dict and set(value) == {"version", "agent", "skills", "notes"})
+    _require(value["version"] == 1)
+    agent = value["agent"]
+    if agent is not None:
+        _require(type(agent) is dict and set(agent) == {"agent_id", "revision_id"})
+        _identity(agent["agent_id"])
+        _identity(agent["revision_id"])
+    for key, maximum in (("skills", MAX_SELECTION_SKILLS), ("notes", MAX_SELECTION_NOTES)):
+        entries = value[key]
+        _require(type(entries) is list and len(entries) <= maximum)
+        identity = "skill_id" if key == "skills" else "note_id"
+        for entry in entries:
+            _selection_reference(entry, identity)
+        _require(len({entry[identity] for entry in entries}) == len(entries))
+    return value
+
+
+def _selection_payload(chosen) -> dict:
+    """The version-1 selection shape ``work_submit._selected_ids`` accepts."""
+    return {"version": 1,
+            "agent": None if chosen["agent"] is None else dict(chosen["agent"]),
+            "skills": [dict(item) for item in chosen["skills"]],
+            "notes": [dict(item) for item in chosen["notes"]]}
+
+
+def _is_selection(action, payload) -> bool:
+    """Is this request about the per-chat selection rather than the notes?"""
+    if action == "chrome_turn_selection_set":
+        return True
+    return (action == "chrome_open"
+            and (payload.get("params") or {}).get("view") == SELECTION_VIEW)
+
+
 def _request(action, payload):
     """Snapshot all command fields before any read, IAM, audit or rendering wait."""
     try:
@@ -67,6 +127,14 @@ def _request(action, payload):
             _require(set(payload) <= {"surface", "params"} and payload.get("surface") == "guidance")
             params = payload.get("params", {})
             _require(type(params) is dict)
+            if params.get("view") == SELECTION_VIEW:
+                # The picker carries the selection the composer currently
+                # holds, so opening it shows what is already chosen instead of
+                # appearing to have forgotten it.
+                _require(set(params) <= {"view", "selection"})
+                if params.get("selection") is not None:
+                    _selection_input(params["selection"])
+                return payload
             mode = params.get("mode", "list")
             _require(type(mode) is str and mode in {"list", "new", "edit", "forget"})
             allowed = ({"mode", "search", "after_id"} if mode == "list" else {"mode"}
@@ -79,6 +147,8 @@ def _request(action, payload):
                 _search(params["search"])
             if "after_id" in params:
                 _identity(params["after_id"])
+        elif action == "chrome_turn_selection_set":
+            _selection_input(payload)
         elif action == "chrome_note_search":
             _require(set(payload) == {"fields"} and type(payload["fields"]) is dict
                      and set(payload["fields"]) == {"search"})
@@ -200,6 +270,122 @@ def _service_current(orch, service, caller):
     service._current(caller)
 
 
+async def _offered_agents(orch, caller):
+    """The user's own declarative agents that have an active revision."""
+    try:
+        heads = await orch.declarative_agents.list_heads(caller=caller)
+    except Exception:
+        logger.debug("selection: declarative agents unavailable", exc_info=True)
+        return ()
+    out = []
+    for head in heads:
+        revision_id = getattr(head, "selected_definition_revision_id", None)
+        if getattr(head, "status", "") != "active" or not revision_id:
+            continue
+        out.append({"agent_id": head.agent_id, "revision_id": revision_id,
+                    "display_name": str(head.display_name or head.agent_id)[:120]})
+        if len(out) >= MAX_SELECTION_SKILLS:
+            break
+    return tuple(out)
+
+
+async def _offered_skills(orch, caller):
+    """The user's own skills, current revision each."""
+    try:
+        from orchestrator import user_skills
+
+        store = user_skills.store_for(orch)
+        if store is None:
+            return ()
+        skills = await store.list(caller=caller)
+    except Exception:
+        logger.debug("selection: skills unavailable", exc_info=True)
+        return ()
+    out = []
+    for skill in skills:
+        skill_id = getattr(skill, "skill_id", "")
+        revision = getattr(skill, "revision", 0)
+        if not skill_id or not isinstance(revision, int) or revision < 1:
+            continue
+        out.append({"skill_id": skill_id, "revision": revision,
+                    "name": str(skill.name or "")[:60],
+                    "command": str(getattr(skill, "command", "") or ""),
+                    "enabled": bool(skill.enabled)})
+        if len(out) >= MAX_SELECTION_SKILLS:
+            break
+    return tuple(out)
+
+
+def _offered_notes(notes):
+    """The note rows the picker offers, from the same read the notes list uses."""
+    out = []
+    for note in notes:
+        metadata = note.metadata
+        if metadata.category not in NOTE_CATEGORY_LABELS:
+            continue
+        out.append({"note_id": metadata.note_id, "revision": metadata.revision,
+                    "category": metadata.category, "enabled": bool(metadata.enabled)})
+        if len(out) >= MAX_SELECTION_NOTES:
+            break
+    return tuple(out)
+
+
+def _narrow_selection(selection, agents, skills, notes):
+    """Keep only what is still on offer at exactly the revision named.
+
+    A skill deleted, or a note edited, since the selection was made is simply
+    no longer selected — the alternative is a picker that refuses to draw
+    because of something the person cannot see.
+    """
+    chosen = {"agent": None, "skills": [], "notes": []}
+    if not isinstance(selection, dict):
+        return chosen
+    agent = selection.get("agent")
+    if isinstance(agent, dict):
+        for entry in agents:
+            if (entry["agent_id"] == agent.get("agent_id")
+                    and entry["revision_id"] == agent.get("revision_id")):
+                chosen["agent"] = {"agent_id": entry["agent_id"],
+                                   "revision_id": entry["revision_id"]}
+                break
+    for kind, offered, identity in (("skills", skills, "skill_id"), ("notes", notes, "note_id")):
+        current = {entry[identity]: entry["revision"] for entry in offered}
+        seen = set()
+        for entry in selection.get(kind) or []:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get(identity)
+            if key in seen or current.get(key) != entry.get("revision"):
+                continue
+            seen.add(key)
+            chosen[kind].append({identity: key, "revision": entry["revision"]})
+    return chosen
+
+
+async def _selection_state(orch, service, caller, action, payload):
+    """The selection picker's state, and the notes the read is verified against."""
+    page = await service.list(caller=caller, after_id=None, search="")
+    notes = page.notes
+    agents = await _offered_agents(orch, caller)
+    skills = await _offered_skills(orch, caller)
+    offered_notes = _offered_notes(notes)
+    if action == "chrome_turn_selection_set":
+        incoming = payload
+        notice = "cleared" if (payload["agent"] is None and not payload["skills"]
+                               and not payload["notes"]) else "saved"
+    else:
+        incoming = (payload.get("params") or {}).get("selection")
+        notice = None
+    state = {
+        "view": SELECTION_VIEW, "status": "ready",
+        "agents": agents, "skills": skills, "notes": offered_notes,
+        "selected": _narrow_selection(incoming, agents, skills, offered_notes),
+    }
+    if notice is not None:
+        state["notice"] = notice
+    return state, notes
+
+
 async def _state(service, caller, action, payload):
     notice = None
     if action == "chrome_open":
@@ -247,9 +433,12 @@ async def _state(service, caller, action, payload):
 
 async def deliver(orch, websocket, user_id, action, payload, request_generation, *, guidance_navigation=None):
     """Complete correlated render/send. No current token means no read or mutation."""
+    import json
+
     from astralprojection.chrome import render_html
     from astralprojection.models import LayoutView
     from orchestrator.chrome_events import _device_type, _note_open_surface
+    from webrender import esc
     from rote.adapter import ComponentAdapter
     from shared.protocol import ChromeRender, ChromeSurface
     from webrender.chrome import render_modal_shell
@@ -261,22 +450,36 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
             raise AssignmentError("explicit_note_navigation_unavailable", 503)
         token.assert_current(orch, websocket, caller, request_generation)
         pending = token.pending
+        capabilities = pending.captured.get("_client_capabilities")
+        selection = _is_selection(action, payload if type(payload) is dict else {})
+        required = "guidance_selection_v1" if selection else "guidance_notes_v1"
         if (user_id != caller.owner_id or pending.message.get("action") != action
                 or pending.message.get("payload") != payload
-                or type(pending.captured.get("_client_capabilities")) is not list
-                or "guidance_notes_v1" not in pending.captured["_client_capabilities"]):
+                or type(capabilities) is not list or required not in capabilities):
             raise AssignmentError("explicit_note_surface_unavailable", 503)
         service = getattr(orch, "explicit_notes", None)
         if type(service) is not ExplicitNoteService:
             raise AssignmentError("explicit_note_service_unavailable", 503)
         request = _request(action, _payload(pending))
-        state, notes = await _state(service, caller, action, request)
+        if selection:
+            state, notes = await _selection_state(orch, service, caller, action, request)
+        else:
+            state, notes = await _state(service, caller, action, request)
         _service_current(orch, service, caller)
         token.assert_current(orch, websocket, caller, request_generation)
         device = _device_type(orch, websocket)
-        view = build_notes_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
+        view = build_guidance_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
         if device == "browser":
-            frame = ChromeRender(html=render_modal_shell(view.title, render_html(view), "guidance"),
+            body = render_html(view)
+            if selection:
+                # Stamp what was rendered as selected on the surface root. The
+                # composer adopts exactly this, so what it will send with the
+                # next turn is what the picker just showed, at these revisions
+                # -- not whatever the browser happened to be holding.
+                body = ('<div data-chrome-surface="guidance" data-astral-selection="'
+                        + esc(json.dumps(_selection_payload(state["selected"])))
+                        + '">' + body + "</div>")
+            frame = ChromeRender(html=render_modal_shell(view.title, body, "guidance"),
                 surface_key="guidance", request_generation=request_generation).to_json()
         else:
             components = ComponentAdapter.adapt_guidance_surface(state, orch.rote.get_profile(websocket))

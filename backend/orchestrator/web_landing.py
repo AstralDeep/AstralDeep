@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 # ``welcome._slug`` derives from the example's title, so a renamed example
 # fails the mapping loudly in the test rather than silently losing its tab.
 SCENARIO_CATEGORIES: Dict[str, str] = {
-    "business_dashboard": "Dashboards",
-    "weather_outlook": "Live data",
-    "research_brief": "Research",
-    "summarize_a_page": "Research",
+    "build_a_business_dashboard": "Dashboards",
+    "brief_me_with_citations": "Research",
+    "read_a_page_for_me": "Research",
+    "choose_a_journal_for_a_paper": "Research",
+    "weather_for_the_week_ahead": "Live data",
+    "check_on_this_machine": "Live data",
     "roll_some_dice": "Utilities",
-    "system_status": "Live data",
 }
 
 #: Tab order on the landing. "All" is prepended by the client.
@@ -57,13 +58,9 @@ def scenarios() -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     for title, caption, query in WELCOME_EXAMPLES:
         slug = _slug(title)
-        # The title carries a leading emoji for the button label; the card
-        # shows the emoji as its own glyph instead of inside the text.
-        glyph, _, plain = title.partition(" ")
         out.append({
             "id": slug,
-            "glyph": glyph,
-            "title": plain or title,
+            "title": title,
             "description": caption,
             "prompt": query,
             "category": SCENARIO_CATEGORIES.get(slug, "Utilities"),

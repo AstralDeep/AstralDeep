@@ -30,12 +30,19 @@ class ComputerUseAgent(BaseA2AAgent):
     agent_id = "computer-use-1"
     service_name = "My computer"
     description = (
-        "Control your own computer that runs the AstralDeep desktop client — from your "
-        "phone or any other signed-in device. Start a session, look at the screen, click, "
-        "type, press keys, scroll, open apps, switch windows, use the clipboard and read "
-        "files. Running commands and writing or deleting files always ask you to approve "
-        "first, and whoever is sitting at the computer can pause or stop at any time."
+        "Drives your own computer from any device you are signed in on: look at "
+        "the screen, click, type, switch windows, use the clipboard, read files. "
+        "Commands and writes ask you to approve first, and whoever is sitting at "
+        "that computer can stop it at any time."
     )
+    examples = [
+        {"title": "What is on screen",
+         "prompt": "Start a session on my computer and show me what is on the screen"},
+        {"title": "Find a window",
+         "prompt": "List the open windows on my computer and bring the browser to the front"},
+        {"title": "Fetch something",
+         "prompt": "Read the contents of the file on my desktop called notes.txt"},
+    ]
     skill_tags = ["computer", "desktop", "remote-control", "screen", "automation", "windows"]
 
     def __init__(self, port: int = None, *, orchestrator=None):

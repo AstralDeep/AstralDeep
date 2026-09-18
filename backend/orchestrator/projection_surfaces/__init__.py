@@ -16,6 +16,7 @@ logger = logging.getLogger("Orchestrator.ProjectionSurfaces")
 SURFACE_MODULES = {
     "work": "orchestrator.projection_surfaces.work",
     "agents": "orchestrator.projection_surfaces.agents",
+    "agent_intro": "orchestrator.projection_surfaces.agent_intro",
     "drafts": "orchestrator.projection_surfaces.drafts",
     "llm": "orchestrator.projection_surfaces.llm",
     "llm_system": "orchestrator.projection_surfaces.llm_system",

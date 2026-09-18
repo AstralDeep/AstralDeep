@@ -1491,3 +1491,168 @@ LLM_MODEL=zai-org/GLM-5.3-Flash
 MODEL_TIERS={"small":"google/gemma-4-31B-it","medium":"zai-org/GLM-5.3-Flash","large":"zai-org/GLM-5.3-Flash"}
 # then, in the web UI: Settings -> LLM settings -> Model -> zai-org/GLM-5.3-Flash -> Save
 ```
+
+---
+
+## Post-walkthrough owner refinements (2026-09-18)
+
+Ten changes and two defect fixes, all web-renderer-only. Evidence below is from
+the local candidate stack; it is not release evidence.
+
+**Suites.** Deep's backend suite was run before and after, on the same
+container image with the working tree mounted, and the failure sets compared
+line by line: **9036 passed** after, against 9033 before, and **no test fails
+after that did not fail before**. The 103 failures and 175 errors that remain
+are the pre-existing set on this branch (missing `jsonschema`, a `scripts`
+package shadowing, the `088.003 → 089.001` schema-revision guard, and the
+chain/voice/authorize groups) — none of them touch the regions changed here.
+Five modules that cannot be collected in this environment at all were excluded
+by path from both runs, so the comparison is like for like. Projection's own
+suite was compared the same way: **4 failures before, 4 after, the same four**.
+
+Four real regressions were found by that comparison and fixed before the final
+run: an import of the renamed agent-tag table, an assertion that an unknown
+agent still gets a glyph, a card builder that required an attribute a test
+double does not set, and two hard-coded example counts.
+
+**By hand, signed in, at 1440×900.** The landing shows the logo alone in the
+sidebar, ten agent cards with no icons and text at the left edge, no overview
+panel, and the seven new examples across four filter tabs. The cog at the
+sidebar's bottom opens the settings dialog with the menu down its left side and
+the account block above it; picking *User guide* keeps the rail and swaps the
+pane. Clicking *Journal Review Agent* opens a dialog headed by that agent, with
+its three examples, its five tools and a link to its permissions; *Load* closes
+the dialog, fills the composer and focuses it.
+
+**Two defects fixed in passing**, both pre-existing:
+
+1. The User-guide dialog had been printing `{'slug': 'intro', 'title': …}`
+   across its top, because `guide.py` imported the guide's content sections
+   under the name the dispatcher reads as the modal's **tab strip**. Fixed at
+   both ends: the import is renamed, and the dispatcher now ignores a
+   `SECTIONS` that cannot be read as `(key, label)` string pairs, so the next
+   module to collide on that name degrades to no tabs instead of a repr.
+2. The identity derivation that names the signed-in person existed only on the
+   shell's request path, so the settings dialog had no way to say whose account
+   it was. It is one shared function now (`web_auth.identity_from_claims`),
+   used by the shell and by the dialog, from the same validated claims.
+
+**Not covered.** The parity harness was updated to score the five superseded
+rows but has not been re-run end to end — it needs the a8p reference stack up
+alongside this one. The scores in the section above are from 2026-09-17 and
+predate these changes.
+
+---
+
+## Second walkthrough (2026-09-19)
+
+Thirteen reports from the owner, fourteen changes. Evidence below is from the
+local candidate stack; it is not release evidence.
+
+### The one that mattered
+
+Results had stopped drawing. The turn ran, the tools ran, the components were
+built and persisted — `messages` for the reported chat holds seven assistant
+rows of components — and the canvas stayed empty. Feature 089 had made
+`canvas` the newest response card's *body*, a node inside the conversation
+feed, and three paths still emptied the feed without giving `canvas` a new
+home:
+
+1. `commitSnapshotCandidate` replaced the transcript, which detached the card,
+   then appended the committed workspace to the orphan.
+2. "New chat" did the same through `chat.innerHTML = ""`.
+3. A turn's own live frames rendered into a card still marked `hidden`, so
+   nothing appeared while the work was happening either.
+
+All three now go through one `resetFeed()` and one reveal.
+
+### Suites
+
+**Projection.** `pytest tests/` in the product image against a read-only mount
+of the working tree: **2827 passed, 4 failed** — the same four that fail on
+this branch before these changes (`tests/ci/test_workflows.py`, two in
+`tests/test_protocol.py`, and `tests/test_resources.py`, which needs the
+`build` module the image does not carry). The generated export and offline
+artifacts were regenerated after the CSS and modal-shell changes, so
+`test_export_assets.py` is green.
+
+**Browser contract.** `tooling/web-ci/tests/continuity-contract-060.spec.js`:
+**73 passed, 0 failed**. It had been **12 failing of 71** on this branch before
+these changes, unnoticed — its synthetic shell still put the feed beside the
+canvas instead of inside it, the way the shipped `shell.html` has had it since
+T052. The harness matches the shell now. Six of the twelve were the stale DOM;
+four were assertions written against the flat canvas; two were the live-card
+reveal fixed in T085. Two new tests pin the defects above: components must land
+in the visible feed, and turn numbering must follow the transcript. Both fail
+against the pre-fix `client.js` and pass after.
+
+**Deep.** The suites over the changed regions (`-k 'guidance or selection or
+topbar or welcome or history or chrome or title or note'`, plus `tests/chrome`
+whole): **954 passed, 3 failed**, and all three fail on this branch already —
+two in `test_remote_flag_off_063.py` (`projection_chrome_availability` carries
+two keys that test does not know about; `chrome_availability.py` is untouched
+here) and one in `test_voice_backend_rollback_075.py` (the `088.003 → 089.001`
+schema-revision guard). `test_no_emoji.py` is green. A fourth failure was
+genuinely ours and is fixed: `test_etf_removal.py` imported the per-agent tag
+table the recent-chats list no longer has; it now makes the stronger claim that
+nothing in a row is keyed by agent at all.
+
+**Lint.** The tracked ESLint config over `backend/webrender/static/**/*.js`:
+clean.
+
+### By hand, at 1440×900
+
+A mock-auth candidate on its own port, against the same database, so the
+owner's signed-in session was left alone. The sidebar reads **History** with
+one icon-only New-chat button; the collapse arrow collapses and expands the
+list; the rows carry no picture and no heading above them; the account row
+carries the avatar, the name and the role, then the cog. The cog opens the
+settings dialog, and moving through Agents → LLM → Personalization → Audit →
+Theme keeps the *same* card node (probed by a marker attribute), the same rail
+and its scroll, with the heading and the pane changing and no slow-render card
+at any point. The LLM pane's tab strip sits beside the rail, not over it. Every
+rail entry renders something meaningful.
+
+Two entries could not be exercised on that candidate — Private notes and My
+agents & skills — because both go through the human-request authority, which
+refuses under mock auth by design (`AuthenticatedWorkRequest.assert_current`
+fails closed on `USE_MOCK_AUTH`). That is the same guard that makes chat turns
+unavailable there, so turn-time behaviour was covered by the suites rather than
+by hand on that candidate.
+
+Voice: the candidate's speech service answers 503, so the preflight marks the
+mic unavailable, the button carries the reason as its title, and clicking it
+answers with "Voice is not available on this deployment." The status line under
+the composer stays hidden throughout.
+
+### Measured, not guessed
+
+Close-button centring was measured rather than eyeballed: every button on the
+landing and in the settings dialog now has its glyph within 2px of the centre
+of its own box, except the History chevron, which is deliberately right-aligned
+in a `space-between` row. The chip's clear control measures 0.0/0.0 against an
+18px box (it was a 19px line box inside a 16px button).
+
+### Not covered
+
+- The selection picker's delivery path (`chrome_open {view: "selection"}` end to
+  end over the socket) is covered by unit tests over the request validator, the
+  narrowing and the view builder, plus the existing guidance socket suites. It
+  was not walked in a browser, for the mock-auth reason above.
+- The parity harness was updated for B5, B6 and the F2 addition but not re-run
+  end to end; it needs the a8p reference stack up alongside this one. The
+  scores in the sections above predate these changes.
+
+### Two things for the operator, not the code
+
+- `MODEL_TIERS` routes the medium tier to `zai-org/GLM-5.2-FP8`, which the
+  configured endpoint answers `404 model_not_found` for. Every turn that
+  compacts pays a wasted round-trip and falls back. The per-user model
+  (`GLM-5.3-Flash`) is fine; it is the operator default in `.env` that is
+  stale.
+- `.env` carries inline comments after values (`FF_FIRST_TURN_CONTRACT=true
+  # ...`). Compose strips those; `docker run --env-file` does not. A container
+  started the second way reads the comment as part of the value and silently
+  loses the flag — which, for that flag, means the welcome components lose
+  their `wel_` identities and the landing renders blank.
+

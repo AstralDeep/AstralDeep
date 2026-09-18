@@ -27,9 +27,14 @@ def test_unnegotiated_native_notes_are_hidden(capabilities):
 def test_web_notes_do_not_require_a_model_or_work_feature(monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setattr(flags, "is_enabled", lambda _: False)
+    from webrender.chrome import render_settings_nav
+    from webrender.chrome.menu_model import build_menu_model
+
     values = chrome_availability.projection_chrome_availability()
-    html = render_topbar(roles=["user"], **values)
+    html = render_settings_nav(build_menu_model(["user"], **values))
     assert "Private notes" in html and values["work_enabled"] is False
+    # …and nowhere else: the account row carries the gear alone.
+    assert "Private notes" not in render_topbar(roles=["user"], **values)
 
 
 @pytest.mark.asyncio

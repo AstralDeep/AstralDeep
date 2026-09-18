@@ -7,11 +7,11 @@ condensed, voice spoken) — the history surface is server-driven and
 cross-platform, never a web-only client render.
 
 The loaded state is a single ``chat_history`` primitive (rendered by
-``webrender.render_chat_history``) — scannable conversation rows with an agent
-glyph, title, last-message preview, relative time and a saved-components marker
-— instead of a bare stack of title-only buttons. All enrichment (relative time,
-agent icon, saved flag) is derived here from the recent-chats rows the
-orchestrator already supplies, so no new query or schema is needed.
+``webrender.render_chat_history``) — scannable conversation rows with a title,
+a last-message preview, a relative time and a saved-components marker — instead
+of a bare stack of title-only buttons. All enrichment (relative time, saved
+flag) is derived here from the recent-chats rows the orchestrator already
+supplies, so no new query or schema is needed.
 
 Pure builders (no orchestrator/DB dependency) so they are unit-testable on
 their own; the orchestrator only supplies the recent-chats rows.
@@ -26,36 +26,18 @@ from webrender.renderer import skeleton_component
 #: Cap the rendered list; older chats stay reachable via search/scroll.
 MAX_HISTORY_ITEMS = 20
 
-_HEADING = {"type": "text", "content": "Recent chats", "variant": "h3"}
-
-#: Decorative per-agent glyphs (hidden from assistive tech in the renderer).
-#: Unknown/None agents fall back to a neutral speech-bubble.
-_AGENT_ICONS = {
-    "weather": "\U0001F324️",
-    "summarizer": "\U0001F4DD",
-    "dice_roller": "\U0001F3B2",
-    "medical": "\U0001FA7A",
-    "journal_review": "\U0001F4D3",
-    "web_research": "\U0001F50E",
-    "ml_services": "\U0001F9E0",
-    "connectors": "\U0001F517",
-    "general": "\U0001F4AC",
-}
-_DEFAULT_ICON = "\U0001F4AC"
-
 
 def history_skeleton_components(label: str = "Loading your chats…") -> List[Dict[str, Any]]:
-    """The loading state: a heading + a chat-history skeleton."""
-    return [dict(_HEADING), skeleton_component(variant="chat-history", count=6, label=label)]
+    """The loading state: a chat-history skeleton.
+
+    No heading: whatever hosts this list already has one, and a second one
+    under it was the sidebar saying "History" and then "Recent chats"."""
+    return [skeleton_component(variant="chat-history", count=6, label=label)]
 
 
 def _chat_id(chat: Dict[str, Any]) -> Optional[str]:
     cid = chat.get("id") or chat.get("chat_id")
     return str(cid) if cid else None
-
-
-def _agent_icon(agent_id: Optional[str]) -> str:
-    return _AGENT_ICONS.get(str(agent_id or "").strip(), _DEFAULT_ICON)
 
 
 def _relative_time(value: Any, *, now: Optional[float] = None) -> str:
@@ -96,9 +78,13 @@ def history_surface_components(chats: Sequence[Dict[str, Any]]) -> List[Dict[str
     """The loaded state: a single ``chat_history`` primitive.
 
     Each recent-chats row becomes an item with its title, last-message preview,
-    relative time, agent glyph and saved-components marker. A chat with no id is
-    skipped (it cannot be opened). With no openable chats the surface renders a
-    friendly empty state (handled by the renderer).
+    relative time and saved-components marker. A chat with no id is skipped (it
+    cannot be opened). With no openable chats the surface renders a friendly
+    empty state (handled by the renderer).
+
+    Rows carry no picture. The only thing there was to draw was a tag for the
+    agent that answered, and most chats have no single agent, so what the list
+    actually showed was a column of blanks.
     """
     items: List[Dict[str, Any]] = []
     for chat in list(chats or [])[:MAX_HISTORY_ITEMS]:
@@ -113,7 +99,6 @@ def history_surface_components(chats: Sequence[Dict[str, Any]]) -> List[Dict[str
             "title": title,
             "preview": str(chat.get("preview") or "").strip(),
             "time": _relative_time(chat.get("updated_at")),
-            "icon": _agent_icon(chat.get("agent_id")),
             "saved": bool(chat.get("has_saved_components")),
         })
     return [{"type": "chat_history", "title": "Recent chats", "items": items}]

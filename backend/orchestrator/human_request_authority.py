@@ -40,7 +40,7 @@ from persistent_agents.models import AssignmentError
 
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
 _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
-                           "chrome_note_search"})
+                           "chrome_note_search", "chrome_turn_selection_set"})
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_user_skill_delete", "chrome_declarative_command",
                            "chrome_note_save", "chrome_note_toggle", "chrome_note_forget"})

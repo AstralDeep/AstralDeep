@@ -176,7 +176,7 @@ def build_reconcile_messages(value: str, category: str,
         "Actions:\n"
         '- "ADD": the new fact is genuinely new; keep it alongside the others.\n'
         '- "UPDATE": the new fact replaces or refines ONE existing fact (same '
-        'fact, changed/➜more-precise value). Set "target" to that fact\'s number '
+        'fact, changed/more-precise value). Set "target" to that fact\'s number '
         'and "value" to the single best merged statement.\n'
         '- "DELETE": the new fact says an existing fact is no longer true and is '
         'not itself worth keeping. Set "target" to that fact\'s number.\n'

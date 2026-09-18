@@ -40,6 +40,13 @@ def test_etf_knowledge_stem_retired():
     assert "etf_tracker" in RETIRED_KNOWLEDGE_STEMS
 
 
-def test_etf_history_icon_removed():
-    from orchestrator.history_surface import _AGENT_ICONS
-    assert "etf_tracker_1" not in _AGENT_ICONS
+def test_history_rows_name_no_agent_at_all():
+    # The retired agent had a per-agent glyph in the recent-chats list. There
+    # are no per-agent glyphs any more -- the rows carry no picture -- so the
+    # claim is now the stronger one: nothing in a row is keyed by agent.
+    from orchestrator.history_surface import history_surface_components
+    items = history_surface_components([
+        {"id": "c1", "title": "Anything", "agent_id": "etf_tracker_1", "updated_at": 0},
+    ])[0]["items"]
+    assert items and all("icon" not in item for item in items)
+    assert all("etf" not in str(value).lower() for item in items for value in item.values())

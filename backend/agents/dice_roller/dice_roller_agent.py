@@ -23,7 +23,16 @@ class DiceRollerAgent(BaseA2AAgent):
 
     agent_id = "dice-roller-1"
     service_name = "Dice Roller"
-    description = """Rolls N six-sided dice and reports each roll and the total."""
+    description = (
+        "Rolls dice and reports every roll and the total — the smallest "
+        "honest end-to-end test of routing, permissions and rendering."
+    )
+    examples = [
+        {"title": "Six dice",
+         "prompt": "Roll exactly six six-sided dice and show the normalized results."},
+        {"title": "Many rolls",
+         "prompt": "Roll 100 six-sided dice and chart how often each face came up"},
+    ]
     skill_tags = []
 
     def __init__(self, port: int = None):

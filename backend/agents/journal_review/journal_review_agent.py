@@ -30,12 +30,21 @@ class JournalReviewAgent(BaseA2AAgent):
     agent_id = "journal-review-1"
     service_name = "Journal Review Agent"
     description = (
-        "Evaluates scientific journals to recommend optimal publication "
-        "venues for research papers. Considers citation impact, topical fit, "
-        "review timelines, acceptance rates, submission requirements, open "
-        "access options, and audience relevance to help researchers choose "
-        "where to submit their work."
+        "Finds the right venue for a paper: matching journals, impact and "
+        "acceptance figures, review timelines, open-access terms, and a "
+        "side-by-side comparison of the shortlist."
     )
+    examples = [
+        {"title": "Where should this go",
+         "prompt": "Find journals that fit a paper on self-supervised learning for "
+                   "chest CT and rank them by fit"},
+        {"title": "Compare the shortlist",
+         "prompt": "Compare Radiology, Medical Image Analysis and IEEE TMI on impact, "
+                   "review time and open-access terms"},
+        {"title": "Survey the field",
+         "prompt": "Show the top venues in medical imaging with their impact and "
+                   "acceptance rates"},
+    ]
     skill_tags = ["journals", "publishing", "peer-review", "citation-impact",
                   "research", "academic", "science"]
 

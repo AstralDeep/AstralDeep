@@ -1211,6 +1211,51 @@ def _designer_device(rote, websocket) -> Optional[Dict[str, Any]]:
         return None
 
 
+
+#: What a chat is called before anything has looked at what it is about. Any
+#: of these means "not named yet", whoever wrote it.
+_PLACEHOLDER_CHAT_TITLES = frozenset({"new chat", "untitled chat", "untitled", "chat"})
+
+#: A title is a label, not a sentence. Four words is what the sidebar shows.
+_TITLE_MAX_WORDS = 4
+_TITLE_MAX_CHARS = 48
+
+
+def _chat_needs_a_name(chat_data) -> bool:
+    """True when this chat still carries a placeholder title."""
+    if not isinstance(chat_data, dict):
+        return False
+    title = str(chat_data.get("title") or "").strip()
+    return not title or title.lower() in _PLACEHOLDER_CHAT_TITLES
+
+
+def _title_from(text) -> str:
+    """A short title from a model reply or, failing that, the request itself.
+
+    Takes the first line (a model that explains itself does so on later ones),
+    drops surrounding quotes and a trailing full stop, and keeps the first few
+    words. Returns "" when there is nothing usable, so the caller can leave
+    the chat's existing name alone rather than replacing it with noise.
+    """
+    if not isinstance(text, str):
+        return ""
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    line = line.strip().strip('"').strip("'").strip()
+    # A model that was asked for a title sometimes labels it as one.
+    for label in ("chat title:", "title:"):
+        if line.lower().startswith(label):
+            line = line[len(label):].strip().strip('"').strip("'").strip()
+            break
+    line = line.rstrip(".!,;:").strip()
+    if not line:
+        return ""
+    words = line.split()
+    if len(words) > _TITLE_MAX_WORDS:
+        words = words[:_TITLE_MAX_WORDS]
+    title = " ".join(words)[:_TITLE_MAX_CHARS].strip()
+    return "" if title.lower() in _PLACEHOLDER_CHAT_TITLES else title
+
+
 class Orchestrator:
     @_transactional_runtime_construction
     def __init__(self):
@@ -1291,7 +1336,12 @@ class Orchestrator:
         # which keeps auto-progress working across refresh / device changes.
         self._job_context: Dict[str, Dict[str, Any]] = {}
         self.cancelled_sessions: Dict[str, bool] = {}  # websocket id -> cancelled flag
-        self._chat_locks: Dict[int, asyncio.Lock] = {}  # per-websocket lock for chat serialization
+        # Per (socket, chat) lock. It used to be per socket, which meant one
+        # slow turn held up every other chat in the same tab: switching to
+        # another conversation and sending sat there until the first one
+        # finished. Ordering within a conversation is what has to be kept, and
+        # that is what the key names.
+        self._chat_locks: Dict[tuple, asyncio.Lock] = {}
         self._registered_events: Dict[int, asyncio.Event] = {}  # gate non-register messages until auth completes
         # Feature 065: only non-secret signed scope is retained for an active
         # UI socket. The bearer is sent once and never stored server-side.
@@ -7962,7 +8012,8 @@ class Orchestrator:
             if frame.human_request is not None:
                 if ((frame.action == "chrome_open" and frame.surface == "guidance")
                         or frame.action in {"chrome_note_search", "chrome_note_save",
-                                            "chrome_note_toggle", "chrome_note_forget"}):
+                                            "chrome_note_toggle", "chrome_note_forget",
+                                            "chrome_turn_selection_set"}):
                     from orchestrator.projection_surfaces.guidance import capture_navigation
 
                     frame.guidance_navigation = capture_navigation(self, pending=frame.human_request)
@@ -7978,8 +8029,13 @@ class Orchestrator:
         except asyncio.CancelledError:
             frame.close_work_read()
             raise
-        except (AssignmentError, TimeoutError):
+        except (AssignmentError, TimeoutError) as exc:
             frame.close_work_read()
+            # Whatever happens next, the cause is worth one line: a turn that
+            # loses its capture here is refused several frames later with a
+            # deliberately opaque code, and nothing else names the reason.
+            logger.warning("human request capture failed action=%s cause=%s",
+                           frame.action, getattr(exc, "code", type(exc).__name__))
             if frame.action != "chat_message":
                 await self._send_connection_admission_refusal(
                     context, frame, code="operation_failed", retryable=False,
@@ -9391,7 +9447,11 @@ class Orchestrator:
                 )
         except Exception:
             if work.frame.human_request is not None:
-                logger.warning("Metadata request failed operation_id=%s", work.operation_id)
+                # With the traceback swallowed, a settings dialog that refused
+                # to open left nothing behind but this line. It carries no
+                # request content — the frame is not logged, only the failure.
+                logger.warning("Metadata request failed operation_id=%s",
+                               work.operation_id, exc_info=True)
             else:
                 logger.exception(
                     "Connection operation failed operation_id=%s",
@@ -13809,8 +13869,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context=None,
         voice_dispatch=None,
     ):
-        """Run handle_chat_message under a per-websocket lock so messages
-        are serialized but the WS receive loop is never blocked."""
+        """Run handle_chat_message under a per-conversation lock, so turns in
+        one chat stay in order while another chat's turn runs alongside it.
+        The WS receive loop is never blocked either way."""
         ws_id = id(websocket)
         try:
             if operation_context is None:
@@ -13824,7 +13885,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     voice_dispatch=voice_dispatch,
                 )
             else:
-                lock = self._chat_locks.setdefault(ws_id, asyncio.Lock())
+                lock = self._chat_locks.setdefault((ws_id, chat_id), asyncio.Lock())
                 async with lock:
                     workspace_locks = getattr(self, "_workspace_locks", None)
                     if workspace_locks is None:
@@ -13892,6 +13953,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # (>30 s old, no active task) into 'interrupted' on the
             # next chat load.
             self._chat_recorders.pop(ws_id, None)
+
+    def _drop_chat_locks(self, websocket) -> None:
+        """Forget every conversation lock this socket held.
+
+        The locks are keyed by (socket, chat) now, so a socket owns as many
+        entries as it had conversations; dropping one key would leak the rest
+        for the lifetime of the process.
+        """
+        ws_id = id(websocket)
+        for key in [k for k in self._chat_locks if k[0] == ws_id]:
+            self._chat_locks.pop(key, None)
 
     async def _dispatch_async_chat(
         self, websocket, message: str, chat_id: str, display_message: str = None,
@@ -15382,6 +15454,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             with use_turn_guidance(binding, expected_orchestrator=self):
                 return await execute()
         except AssignmentError as exc:
+            # The refusal reaching the client is deliberately opaque, but an
+            # operator reading the log needs to know WHICH guard refused.
+            logger.warning("turn guidance refused: %s (%s)", exc.code, exc.status_code)
             raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
         finally:
             if origin is not None:
@@ -15903,20 +15978,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.warning("attachment turn-processing failed (non-fatal)", exc_info=True)
 
-        # Async title summarization for new chats
+        # Name the chat after what it is about, in the background.
+        #
+        # This used to fire only when the turn was the chat's very first, by
+        # counting saved messages — and the count was off, so in practice it
+        # fired for almost nothing and the sidebar was a column of chats all
+        # called "New Chat". The condition is now the thing it actually cares
+        # about: the chat does not have a name yet. A chat that missed its
+        # first turn gets named on its next one, and a chat that already has a
+        # name is never renamed behind the person's back.
         chat_data = await asyncio.to_thread(self.history.get_chat, chat_id, user_id=user_id)
-        if (
-            scheduled_history_stage is None
-            and chat_data
-            and len(chat_data.get("messages", []))
-            + (
-                1
-                if conversation_stage is not None
-                and conversation_stage.publication_role != "assistant_result"
-                else 0
-            )
-            == 1
-        ):
+        if scheduled_history_stage is None and _chat_needs_a_name(chat_data):
             asyncio.create_task(
                 self.summarize_chat_title(chat_id, msg_to_save, user_id=user_id, websocket=websocket)
             )
@@ -25862,7 +25934,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._clear_voice_control_binding(websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
-            self._chat_locks.pop(id(websocket), None)
+            self._drop_chat_locks(websocket)
             self._registered_events.pop(id(websocket), None)
             (getattr(self, "_agent_host_sockets", None) or {}).pop(id(websocket), None)
             # Feature 054: persisted LLM config SURVIVES disconnect by design;
@@ -25914,7 +25986,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._clear_voice_control_binding(websocket)
             if websocket in self.ui_sessions:
                 del self.ui_sessions[websocket]
-            self._chat_locks.pop(id(websocket), None)
+            self._drop_chat_locks(websocket)
             self._registered_events.pop(id(websocket), None)
             (getattr(self, "_agent_host_sockets", None) or {}).pop(id(websocket), None)
             # Feature 054: persisted LLM config SURVIVES disconnect by design;
@@ -26942,7 +27014,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             
             await asyncio.sleep(5)  # Check every 5 seconds
 
-    async def summarize_chat_title(self, chat_id: str, message: str, user_id: str = 'legacy', websocket=None):
+    async def summarize_chat_title(self, chat_id: str, message: str, user_id: str = 'legacy', websocket=None):  # noqa: E501
         """Generate a concise title for the chat using LLM.
 
         Feature 006: routes through the per-user / operator-default
@@ -26969,10 +27041,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 client.chat.completions.create,
                 model=resolved.model,
                 messages=[
-                    {"role": "system", "content": "Summarize the following user request into a concise 3-5 word title. Return ONLY the title, no quotes or other text."},
+                    {"role": "system", "content": "Name what this request is about in 2 to 4 words, as a title. Reply with the title alone: no quotes, no punctuation at the end, no explanation."},
                     {"role": "user", "content": message}
                 ],
-                max_tokens=20
+                max_tokens=24
             )
             usage = getattr(response, "usage", None)
             total_tokens = getattr(usage, "total_tokens", None) if usage else None
@@ -26992,9 +27064,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     usage=usage, outcome="success",
                 )
             content = strip_reasoning_markup(response.choices[0].message.content)
-            if not content:
+            title = _title_from(content) or _title_from(message)
+            if not title:
                 return
-            title = content.strip().strip('"')
 
             # Update history and notify UI
             self.history.update_chat_title(chat_id, title, user_id=user_id)
@@ -27014,7 +27086,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # 066 (FR-020): a chat with a completed turn must never stay
             # "New Chat" — deterministic fallback from the user's message.
             try:
-                fallback = " ".join((message or "").split())[:48].strip()
+                fallback = _title_from(message)
                 if fallback:
                     self.history.update_chat_title(
                         chat_id, fallback, user_id=user_id)

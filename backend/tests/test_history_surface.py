@@ -1,9 +1,9 @@
 """Feature 037 / 040 — server-driven chat-history surface tests.
 
 Covers the history component builders (skeleton + the recent-chats
-``chat_history`` primitive), their web rendering, the relative-time/agent-icon
-enrichment, and ROTE adaptation (watch condense + voice collapse). Pure Python —
-no DB, no socket.
+``chat_history`` primitive), their web rendering, the relative-time and
+saved-components enrichment, and ROTE adaptation (watch condense + voice
+collapse). Pure Python — no DB, no socket.
 """
 from __future__ import annotations
 
@@ -37,10 +37,11 @@ def _row(**kw):
 # Skeleton (loading) state — feature 037
 # --------------------------------------------------------------------------
 
-def test_skeleton_components_have_heading_and_skeleton():
+def test_skeleton_is_the_placeholder_alone():
+    # No heading of its own: the surface that hosts the list already has one.
     comps = history_skeleton_components()
-    assert comps[0]["type"] == "text" and comps[0]["content"] == "Recent chats"
-    assert any(c["type"] == "skeleton" and c["variant"] == "chat-history" for c in comps)
+    assert [c["type"] for c in comps] == ["skeleton"]
+    assert comps[0]["variant"] == "chat-history"
     assert "astral-skeleton" in render(comps)
 
 
@@ -73,14 +74,13 @@ def test_surface_accepts_chat_id_key():
     assert comps[0]["items"][0]["chat_id"] == "x9"
 
 
-def test_surface_enriches_preview_time_icon_saved():
+def test_surface_enriches_preview_time_and_saved():
     comps = history_surface_components([
         _row(agent_id="weather", preview="Clear skies today",
              updated_at=NOW_MS - 2 * 3600 * 1000, has_saved_components=True),
     ])
     it = comps[0]["items"][0]
     assert it["preview"] == "Clear skies today"
-    assert it["icon"]  # an agent glyph is present
     assert it["saved"] is True
     # rendered HTML surfaces the saved marker + preview text
     html = render(comps)
@@ -88,10 +88,17 @@ def test_surface_enriches_preview_time_icon_saved():
     assert "Clear skies today" in html
 
 
-def test_unknown_agent_falls_back_to_default_icon():
-    comps = history_surface_components([_row(agent_id="does-not-exist")])
-    # still gets a (default) icon rather than crashing or rendering blank
-    assert comps[0]["items"][0]["icon"]
+def test_rows_carry_no_picture_and_the_list_carries_no_heading():
+    # The avatar was a tag for the agent that answered, which most chats do not
+    # have, so the list showed a column of blanks; and the heading repeated
+    # whatever heading already hosts the list.
+    comps = history_surface_components([_row(agent_id="weather"), _row(chat_id="c2")])
+    assert all("icon" not in it for it in comps[0]["items"])
+    html = render(comps)
+    assert "astral-history-avatar" not in html
+    assert "astral-history-head" not in html
+    assert "astral-history-count" not in html
+    assert "astral-history-item" in html
 
 
 def test_surface_empty_and_idless_render_empty_state():
@@ -164,4 +171,4 @@ def test_voice_collapses_loading_state():
                                  DeviceProfile.from_dict({"device_type": "voice"}))
     assert all(c["type"] == "text" for c in out)
     joined = " ".join(c["content"] for c in out)
-    assert "Recent chats" in joined and "Loading" in joined
+    assert "Loading" in joined

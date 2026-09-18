@@ -87,6 +87,7 @@ class BaseA2AAgent:
     Optional overrides:
         - skill_tags: Default tags to add to all skills
         - card_metadata: Extra metadata for the agent card (e.g. required_credentials)
+        - examples: Ready-made prompts that show what the agent is for
     """
 
     agent_id: str = ""
@@ -94,6 +95,14 @@ class BaseA2AAgent:
     description: str = ""
     skill_tags: List[str] = []
     card_metadata: Dict[str, Any] = {}
+    #: Two or three prompts a person can run as-is to see what this agent does,
+    #: as ``{"title": str, "prompt": str}``. They ride the agent card, so the
+    #: agent that owns the capability is the one that writes its own examples
+    #: and every client reads the same list — no client-side catalog of
+    #: hand-maintained sample queries that drifts from the tools on offer.
+    #: They are ordinary prompts: running one is a normal turn through the
+    #: normal routing, permission and audit path, with no privileged shortcut.
+    examples: List[Dict[str, str]] = []
 
     def __init__(self, mcp_server, port: int = None, port_env_var: str = None, default_port_offset: int = 0):
         """
@@ -252,6 +261,16 @@ class BaseA2AAgent:
 
         metadata = dict(self.card_metadata) if self.card_metadata else {}
         metadata["public_key_jwk"] = self._public_key_jwk
+        # getattr, not self.examples: a card can be built from anything that
+        # walks like an agent (the protocol tests build one from a namespace),
+        # and having no examples is an ordinary state, not a missing attribute.
+        declared = getattr(self, "examples", None) or []
+        if declared:
+            metadata["examples"] = [
+                {"title": str(e.get("title", "")), "prompt": str(e.get("prompt", ""))}
+                for e in declared
+                if isinstance(e, dict) and e.get("prompt")
+            ]
 
         return AgentCard(
             name=self.service_name,
