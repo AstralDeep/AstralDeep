@@ -8739,6 +8739,79 @@ class Orchestrator:
 
         from llm_config.ws_handlers import LLMConfigOperationFailure, handle_llm_config_set
 
+        # Feature 089 (US7/FR): the data-sharing acknowledgment gate lives in the
+        # surface handlers, but a credential save does not reach them -- it is
+        # admitted as a durable operation and executed here instead, which is the
+        # path the real web client takes. Without this the gate never ran for an
+        # ordinary browser save: a never-acknowledged user could store provider
+        # credentials, and the endpoint probe reached the provider first. Both
+        # credential actions travel this path, so both are gated here, before any
+        # key is resolved and before any provider request is made.
+        from orchestrator.projection_surfaces.llm import _require_acknowledgment
+
+        blocked = await _require_acknowledgment(
+            self,
+            context.websocket,
+            work.owner.owner_user_id or "legacy",
+            work.frame.parsed.get("payload"),
+            target=("TypeSafe" if work.frame.action == "chrome_typesafe_save"
+                    else "the LLM provider"),
+        )
+        if blocked is not None:
+            # Refusing is not enough on its own: this dialog cannot be
+            # dismissed, so a refusal with no explanation is a dead end. Put the
+            # inline message back on the surface the way the surface handler
+            # does, then fail the operation.
+            try:
+                from orchestrator.chrome_events import _render_surface, _roles
+                from orchestrator.projection_surfaces.llm import (
+                    SURFACE_KEY,
+                    _fields as _ack_fields,
+                    _keep_params,
+                    _provider_key as _ack_provider,
+                )
+                from webrender.chrome import notice_block
+
+                if work.frame.action == "chrome_typesafe_save":
+                    _params = {"data_sharing_error": blocked.error}
+                else:
+                    _f = _ack_fields(work.frame.parsed.get("payload"))
+                    _params = _keep_params(_f, _ack_provider(_f))
+                    _params["data_sharing_error"] = blocked.error
+                from orchestrator import llm_gate
+
+                if llm_gate.is_gated(self, context.websocket):
+                    # The first-run dialog is mandatory. Re-pushing the
+                    # ordinary settings surface here would quietly turn a
+                    # dialog the person cannot dismiss into one they can,
+                    # and drop what they had typed.
+                    await llm_gate.push_setup_dialog(
+                        self,
+                        context.websocket,
+                        work.owner.owner_user_id or "legacy",
+                        params_extra=_params,
+                    )
+                else:
+                    await _render_surface(
+                        self,
+                        context.websocket,
+                        work.owner.owner_user_id or "legacy",
+                        _roles(self, context.websocket),
+                        SURFACE_KEY,
+                        _params,
+                        notice_block("error", blocked.error),
+                    )
+            except Exception:
+                logger.warning(
+                    "acknowledgment refusal could not be rendered on the surface",
+                    exc_info=True,
+                )
+            raise LLMConfigOperationFailure(
+                state=OperationState.FAILED,
+                code="validation_failed",
+                safe_summary=blocked.error,
+            )
+
         if work.frame.action == "chrome_llm_save":
             from orchestrator.projection_surfaces.llm import (
                 SavedKeyEndpointChanged,
