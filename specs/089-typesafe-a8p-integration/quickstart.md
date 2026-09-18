@@ -40,7 +40,10 @@ request, so the address bar is the whole of it.
 1. Sign in on the web client at a desktop viewport, at `http://localhost:8001` (§1). Open **Settings → LLM settings**.
    - Expected: a "TypeSafe routing (optional)" section with status "Not set — standard routing".
 2. Save an invalid key.
-   - Expected: "TypeSafe rejected this key."; the status is unchanged.
+   - Expected: "TypeSafe rejected that key. Check it and try again."; the status is
+     unchanged. (The product's wording, checked against
+     `llm_config/typesafe_handlers.py`. This step previously asserted "TypeSafe
+     rejected this key.", which the product never emits.)
 3. Save your real key.
    - Expected: status "Active"; the field is empty with a "Saved key hidden" placeholder.
 4. Open the same surface on an existing native client build (no client changes).

@@ -188,7 +188,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--container", default="astraldeep")
     parser.add_argument("--json", type=Path, default=None)
+    parser.add_argument(
+        "--perf-only", action="store_true",
+        help="Read the server-side overlap window from the container log and "
+             "stop. Drives no turns -- use it after the completion walkthrough, "
+             "which drives them from inside the container where docker logs is "
+             "not reachable.")
+    parser.add_argument(
+        "--since", default=None,
+        help="Log start for --perf-only: a docker --since value, such as the "
+             "UTC stamp the walkthrough prints (2026-09-17T14:03:11) or 900s.")
     args = parser.parse_args(argv)
+
+    if args.perf_only:
+        if not args.since:
+            parser.error("--perf-only needs --since")
+        perf = _perf_windows(args.container, args.since)
+        if "error" in perf:
+            print(f"could not read the container log: {perf['error']}")
+            return 1
+        stats = _stats(
+            "turn.typesafe_start to turn.first_llm_call_start",
+            perf.get("windows", []))
+        print("Server-side preparation window (the routing call overlaps this)")
+        print(f"{'measure':<52}{'n':>5}{'p50':>9}{'p95':>9}{'max':>9}")
+        print(f"{stats['measure']:<52}{stats['n']:>5}{stats['p50_ms']:>9.1f}"
+              f"{stats['p95_ms']:>9.1f}{stats['max_ms']:>9.1f}")
+        if not stats["n"]:
+            print("")
+            print("No paired markers in that window. Either no turn ran, or the "
+                  "window is wrong -- pass the stamp the walkthrough printed.")
+            return 1
+        if args.json:
+            args.json.write_text(json.dumps(
+                {"preparation_window": stats}, indent=2), encoding="utf-8")
+        return 0
 
     fixtures = ROOT / "backend/tests/fixtures/typesafe_routing/prompts.json"
     prompts = [c["prompt"] for c in json.loads(fixtures.read_text(encoding="utf-8"))["cases"]]
