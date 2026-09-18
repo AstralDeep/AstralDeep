@@ -916,15 +916,16 @@ Two corrections came out of walking it:
 The candidate stack's database still holds **one** `user_typesafe_credential` row and eleven
 `user_llm_config` rows. T070 says to remove them "unless the owner asks to keep them", and that
 clause is a decision point rather than a default, because qualification is **not finished**:
-SC-002, T021, T069 and T062 are all blocked on the environment change in §7c, and every one of
-them needs a credential on this stack when it is unblocked. Removing them now would mean the
-owner re-enters them to resume.
+SC-002, T021, T069 and T062 all wait on the single human sign-in in §7c — no longer an
+environment change, and no longer an administrator's — and every one of them needs a credential
+on this stack when it happens. Removing them now would mean the owner re-enters them to resume,
+most likely in the same sitting.
 
 So the choice is stated rather than made:
 
 1. **Remove now** — Settings → LLM settings → *Remove* for the TypeSafe key and *Clear
    configuration* for the provider, or an owner-scoped delete. Re-entry is a two-minute settings
-   task when §7c is resolved.
+   task once the sign-in in §7c has happened.
 2. **Keep until qualification finishes** — the credentials stay on the owner's own machine, in
    the owner's own database, encrypted under `CREDENTIAL_ENCRYPTION_KEY`, and are removed when the
    blocked items are done.
