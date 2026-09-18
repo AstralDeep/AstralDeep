@@ -128,8 +128,28 @@ test-060: check-060-selection ## Run the focused 060 setup/contract suite
 # Python suite runs in the product image against a read-only mount.
 # Invoked through node against the locked CLI rather than through npx: npx is
 # a .cmd on Windows and does not survive a POSIX shell's PATH.
-test-web: ## Run the web client's browser contract suite (Playwright, no stack needed)
-	cd $(WEB_CI) && $(NODE) node_modules/@playwright/test/cli.js test 	  tests/continuity-contract-060.spec.js
+# The same twelve specs ci.yml runs, in the same order, in the same pinned
+# image. Naming one of them was the mistake this target was made to stop: a
+# lane that runs part of a suite reports green for the part nobody is looking
+# at. The image is not incidental either -- several of these specs shell out
+# to python3 with a POSIX PYTHONPATH, so they cannot run on a Windows host at
+# all, and running them anywhere else would be running something other than
+# what CI runs.
+WEB_SPECS := \
+  tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js \
+  tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js \
+  tests/canvas-review-088.spec.js tests/native-export-088.spec.js \
+  tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js \
+  tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js \
+  tests/first-task-088.spec.js tests/selection-088.spec.js
+
+PLAYWRIGHT_IMAGE = $(shell cat $(WEB_CI)/playwright-image.txt)
+
+test-web: ## Run the web client's browser suites in the pinned Playwright image
+	docker run --rm --volume "$(HOST_PWD)/$(PROJECTION):/workspace" \
+	  --workdir /workspace/tooling/web-ci "$(PLAYWRIGHT_IMAGE)" \
+	  node node_modules/@playwright/test/cli.js test $(WEB_SPECS) \
+	  --browser=chromium --workers=1
 
 test-projection: ## Run the AstralProjection Python suite in the product image
 	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 \

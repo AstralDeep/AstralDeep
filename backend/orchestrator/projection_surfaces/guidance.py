@@ -128,12 +128,11 @@ def _request(action, payload):
             params = payload.get("params", {})
             _require(type(params) is dict)
             if params.get("view") == SELECTION_VIEW:
-                # The picker carries the selection the composer currently
-                # holds, so opening it shows what is already chosen instead of
-                # appearing to have forgotten it.
-                _require(set(params) <= {"view", "selection"})
-                if params.get("selection") is not None:
-                    _selection_input(params["selection"])
+                # Nothing but the view. The 088 open contract is that this
+                # request carries no client state at all -- not a session id,
+                # not the binding the composer is holding -- so the picker
+                # opens from what the server can see for itself.
+                _require(set(params) == {"view"})
                 return payload
             mode = params.get("mode", "list")
             _require(type(mode) is str and mode in {"list", "new", "edit", "forget"})
@@ -374,7 +373,12 @@ async def _selection_state(orch, service, caller, action, payload):
         notice = "cleared" if (payload["agent"] is None and not payload["skills"]
                                and not payload["notes"]) else "saved"
     else:
-        incoming = (payload.get("params") or {}).get("selection")
+        # An open render shows nothing selected. The per-chat binding lives in
+        # the browser and the open request may not carry it, so the server has
+        # nothing to show as chosen until it is told -- and a render that
+        # claimed an empty selection would then be adopted and wipe the real
+        # one, which is why only a selection command stamps below.
+        incoming = None
         notice = None
     state = {
         "view": SELECTION_VIEW, "status": "ready",
@@ -471,7 +475,7 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
         view = build_guidance_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
         if device == "browser":
             body = render_html(view)
-            if selection:
+            if action == "chrome_turn_selection_set":
                 # Stamp what was rendered as selected on the surface root. The
                 # composer adopts exactly this, so what it will send with the
                 # next turn is what the picker just showed, at these revisions
