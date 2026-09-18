@@ -232,7 +232,9 @@ def _perf_windows(container: str, since: str) -> dict:
         elif match.group("name") == "turn.first_llm_call_start" and chat in opened:
             preparation = (moment - opened.pop(chat)) * 1000.0
             windows.append(preparation)
-            routing = routing_ms.get(chat)
+            # pop, not get: a turn whose routing call never logged a duration
+            # (a failure path) must not silently borrow the previous turn's.
+            routing = routing_ms.pop(chat, None)
             if routing is not None:
                 added.append(max(0.0, routing - preparation))
         elif match.group("name") == "turn.first_tool_dispatch" and chat in sent_at:
