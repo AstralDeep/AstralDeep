@@ -126,7 +126,7 @@ call", so the signal is not lost.
 
 ---
 
-## Five defects this work found in itself
+## Seven defects this work found in itself
 
 **The committed key pattern was wrong.** The first TypeSafe pattern was
 inferred from other vendors' prefixes. Checked against a real key, **it did
@@ -155,6 +155,24 @@ TypeSafe commit in the Plane repository and is recorded as a follow-up.
 **The quickstart's fault-injection switch was never installed.** `ASTRAL_TEST_TYPESAFE_FAULT`
 existed as a wrapper class and a posture check that nothing ever called, so section 4 of the
 walkthrough could not be performed and had never been. Fixed, with six tests pinning the path.
+
+**Every chat turn failed for a signed-in user, on a race.** With `FF_USER_SKILLS` at its
+default of on, the admission executor sets `_CONNECTION_OPERATION_CONTEXT` around a frame and
+resets it in its `finally` while the chat turn is still running, so the turn observed the
+variable populated on entry to `handle_chat_message` and **empty 32 ms later** inside
+`current_socket_human_read` — which then refused the turn its own registered caller. Confirmed
+on a real Keycloak session, not just the local mock posture. The chat path already threads the
+context through as an argument and the helper threw it away to re-read the variable; it now
+takes the threaded value, with the ContextVar as fallback. This is a **baseline defect, not
+089's** — the feature touches none of those files — but it is fixed here because it made the
+product unusable and this is the branch that found it.
+
+**A resumed chat that restored nothing left a blank workspace.** Feature 060 deliberately
+selects the work view before a resumed conversation's first registration, so the landing does
+not flash. Nothing settled that anticipation when the snapshot restored nothing visible: the
+landing and empty-state are both hidden in the work view and the feed collapses around a hidden
+placeholder, so a signed-in user saw an empty void with no recovery for the whole session. Fixed
+in `client.js` without weakening the 060 contract.
 
 **This feature's own routing tests never saw a realistic tool list.** Seven of seventeen failed
 on any Compose-started stack: they assert round one saw the *full* eligible list and hardcode the
@@ -217,10 +235,9 @@ with `scripts/verify_composition.py`.
 - **T021's native-client half** — no native client build was available. 089 changes no client
   code (SC-011: 0 client-directory changes across five repositories), so the same server-driven
   surface reaches a native client, but that is an argument rather than an observation.
-- **Two follow-ups against the baseline, not this feature.** `skill_lookup_unavailable` fails
-  every chat turn when `FF_USER_SKILLS` is on, traced to `current_socket_human_read` reading a
-  ContextVar the chat path threads in explicitly; whether the production-auth path behaves the
-  same is unresolved and needs one realm-authenticated turn. And `docker run --env-file` against
-  a commented `.env` silently disables flags, which is how the suite comparison ran.
+- **One follow-up against the baseline, not this feature.** `docker run --env-file` against a
+  commented `.env` silently disables flags, which is how the suite comparison ran. (The other
+  baseline item, `skill_lookup_unavailable`, was **settled and fixed** on 2026-09-18 once a real
+  realm session was available — see above and verification.md §7g.)
 - **Restoring `chrome_typesafe_save` to the durable path**, which needs a fenced TypeSafe commit
   in AstralPlane.

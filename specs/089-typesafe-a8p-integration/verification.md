@@ -539,63 +539,65 @@ against the real web client. The record should say plainly what that does and do
 * For latency it is **representative**, because the identity provider is not in the turn path:
   once a session exists, no per-turn call reaches Keycloak in either posture.
 
-### 7g. Every chat turn fails when user skills are enabled (pre-existing, not 089)
+### 7g. Every chat turn fails when user skills are enabled — a real defect, now fixed
 
-The first turn driven through the browser died with `skill_lookup_unavailable`, the same error
-an earlier raw-socket driver had hit. The note handed to this session guessed it was an artifact
-of that driver and that "the browser is the real client". **The guess was wrong**: the browser
-reproduced it exactly, on the first try and every retry.
+**Resolved 2026-09-18 on a real realm-authenticated session.** The earlier version of this
+section recorded the failure, proved it was not 089's, and then explicitly declined to call it a
+product defect, because every turn it had seen ran under the mock-auth posture of §7f and the
+production path might have behaved differently. The owner then signed in with their own account
+and asked for the work to continue. It does not behave differently. **The first turn on a real
+Keycloak session, with `FF_USER_SKILLS` at its default of on, failed with
+`skill_lookup_unavailable` exactly as the mock session had.**
 
-Instrumenting the refusal point (`human_request_authority.current_socket_human_read`) gave the
-cause in one line:
+So: in the default configuration, a signed-in user could not complete a single chat message.
+
+**The cause is a race on a ContextVar, and the instrumentation caught it in the act.** Two log
+lines 32 ms apart, on the same turn:
 
 ```
-DIAG089 - skill_lookup refusal: ctx=none pending_type=NoneType purpose=None
-          orch_match=False ws_match=False method=None
+15:06:08,064 DIAG089C guidance: threaded_ctx=True  ... threaded_human_request=_HumanSocketRequest
+                                contextvar=True    ... cv_human_request=_HumanSocketRequest
+15:06:08,096 DIAG089  skill_lookup refusal: ctx=none pending_type=NoneType purpose=None
+                                orch_match=False ws_match=False method=None
 ```
 
-`ctx=none`: `_CONNECTION_OPERATION_CONTEXT` is unset in the task the chat turn runs in. The
-chat path threads its operation context **explicitly** -- `_serialized_chat` reads the
-ContextVar once and passes `operation_context` down, and `_handle_chat_message_with_guidance`
-resolves `context = operation_context or _CONNECTION_OPERATION_CONTEXT.get()`. But the guidance
-capture two lines later calls `current_socket_human_read`, which reads the **ContextVar
-directly** and ignores the value that was just threaded in. When the turn runs in a task that
-did not inherit the variable, the lookup refuses and the turn dies.
+`handle_chat_message` reads `_CONNECTION_OPERATION_CONTEXT` and finds it populated. Thirty-two
+milliseconds later, inside `current_socket_human_read`, the same variable is **empty**. The
+admission executor sets that variable around a frame and resets it in its `finally`
+(`orchestrator.py:9186` and `:9283`), while the chat turn keeps running past that point. The
+turn is then refused its own registered caller and dies.
 
-It is the same shape as the two defects in 7e -- a seam between a handler and the path that
-reaches it -- and it is **not 089's**. `git diff` over the feature's whole range shows 089
-touches none of `human_request_authority.py`, `turn_guidance_authority.py`, `user_skills.py`,
-nor any `_CONNECTION_OPERATION_CONTEXT` line in `orchestrator.py`. The guidance block blames to
-`f750ce8a` (2026-09-13), which predates the feature branch. `FF_USER_SKILLS` defaults to `True`,
-so the default configuration is the failing one.
+The chat path already threads the context through as an ordinary argument —
+`_serialized_chat` reads it once and passes `operation_context` down, and the guidance block
+resolves `context = operation_context or _CONNECTION_OPERATION_CONTEXT.get()`. It then threw
+that value away by calling a helper that re-read the ContextVar. The earlier note in this
+section named the narrow fix correctly; it is the one applied.
 
-**One thing this section will not claim.** The refusal itself is documented and deliberate.
-`tests/conftest.py::user_skills_disabled` describes exactly this symptom: with `FF_USER_SKILLS`
-on, the turn "require[s] a registered human socket read (`human_request_authority`) plus a
-captured turn-guidance origin, and raise[s] `SkillCatalogError('skill_lookup_unavailable')`
-without one" -- written for suites that drive turns with MagicMock sockets. A browser is not a
-test double, so seeing it there is a real observation. But **this session could not determine
-whether a session issued by the production realm registers that context**, because it never had
-one: every turn here ran in the mock-auth posture of 7f, and the admission path that sets
-`_CONNECTION_OPERATION_CONTEXT` may legitimately differ there. A durable credential save *does*
-carry the context in this posture (the 7e.1 gate runs on it, verified in 8.17), which makes a
-blanket "mock auth has no operation context" explanation wrong -- but chat is a different lane
-and was not traced further.
+**Fixed:** `current_socket_human_read` takes an `operation_context` argument and uses it when
+given, falling back to the ContextVar so every other caller is unchanged. The chat call site
+passes the context it already holds. A regression test
+(`test_threaded_operation_context_survives_a_reset_context_var`) pins both halves: with the
+variable deliberately reset to `None`, the call **refuses without** the threaded context and
+**succeeds with** it.
 
-So it is recorded as **an open question against the baseline, not a fix and not a proven product
-defect**: either the real client path fails the same way -- in which case the narrow fix is to
-have `current_socket_human_read` accept the operation context the chat path already threads in,
-instead of re-reading the ContextVar -- or it is specific to mock auth, in which case the
-production path deserves the same instrumentation to say so. It is a core authentication and
-guidance seam, a cross-cutting change, and outside this feature's scope either way. **Resolving
-it needs one turn on a realm-authenticated session**, which is a genuine owner action, unlike
-the one 7a claimed.
+**Verified on the owner's own session**, `FF_USER_SKILLS` on, nothing else changed:
 
-**Qualification therefore ran with `FF_USER_SKILLS=false`**, which the flag's own contract
-describes as fail-open and byte-identical to pre-077 behavior. The effect on the numbers is
-stated rather than assumed: user-skill guidance contributes to prompt assembly, which is part of
-the *preparation* the routing call overlaps, so switching it off makes preparation **shorter**
-and the SC-002 added wait **larger**. The measurement below is therefore conservative.
+```
+15:07:24,618 perf turn.typesafe duration_ms=462 chat=8c5e4e51…
+15:07:24,618 typesafe round-one narrowed chat=8c5e4e51… tier=high tools=1
+15:07:24,618 perf turn.first_llm_call_start duration_ms=0 chat=8c5e4e51…
+```
+
+A complete, correctly-routed turn with a correct answer. This is also the first evidence in this
+record of 089's routing working on a **production-realm session** rather than the mock posture —
+the gap §7f was explicit about not being able to close.
+
+Two things worth keeping from how this was found. The bug was invisible to 10,000 tests because
+it is a **timing** property of the seam, not a logic property of either side: both the executor
+and the helper are individually correct, and the tests that drive turns with doubles never
+reproduce the executor's reset landing mid-turn. And the original diagnosis was **published as
+unresolved rather than guessed at** — which is what made it cheap to settle the moment a real
+session existed, instead of having to relitigate a claim that had been overstated.
 
 ### 7h. Two stale local-stack settings, and a fixed verification driver (2026-09-18)
 
@@ -749,6 +751,42 @@ taken after a full `docker compose build`, with the container's copy of the chan
 diffed against the working tree to confirm they matched.
 
 
+### 7l. A resumed chat that restores nothing leaves a blank workspace (fixed)
+
+Found the same way as everything else in §7e: by looking at the product with a real account.
+Signed in, the entire canvas was empty — not "sparse", empty. The panel measured 1090×775 with
+three children and **every one of them invisible**:
+
+| Child | State |
+|---|---|
+| `.astral-landing` (7,538 chars of markup: "AstralDeep Console", the three-step explainer, the example cards) | `display: none` |
+| `.astral-canvas-empty` | `display: none` |
+| `.astral-feed` | `display: flex`, **height 0** — its only child is a live-turn placeholder carrying `hidden` |
+
+Forcing `data-astral-view="start"` rendered the landing perfectly, so nothing was broken about
+the content. The view state was wrong.
+
+**Why.** A returning user with a remembered chat opens a `hydration` request at registration, and
+feature 060's continuity contract *deliberately* selects the work view **before** that
+registration is sent, so the landing does not flash on the way to restored content. There is a
+test asserting exactly that ("an existing conversation selects work before its first
+registration"), so the anticipation is intended and must be preserved.
+
+The defect is that the anticipation is a bet, and nothing settled the bet when it lost. If the
+snapshot restores nothing visible, the view stays on `work` forever: `syncWorkspaceView` returns
+early once the view is `work`, and its hydration clause re-asserted `work` on every subsequent
+mutation regardless.
+
+**Fixed** in `AstralProjection/backend/webrender/static/client.js`: the hydration clause expires
+once `hydrationApplied` is set, and the authoritative hydration completion calls
+`settleEmptyHydration()`, which returns to `start` when neither mounted region holds content.
+The 060 contract is untouched — `hydrationApplied` is still false at registration time.
+
+This is a **web-only client change** under owner exception E2, in the repository whose client the
+feature already touches; `check_089_scope.py` still reports zero client-directory changes,
+because `webrender` is the web surface, not a native client directory.
+
+
 ## 8. Evidence log
 
 Append one row per recorded run. Never record key material, key prefixes, credentials, raw evidence or PHI.
@@ -810,6 +848,10 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-18 | T062 | §5 | Deep + real browser | injection prompt | refused before any tool ran; audit `typesafe.security_verdict` `confirm_tools`, harm 3.0, jailbreak 0.99, **no prompt text** | local |
 | 2026-09-18 | T062 | §3, §7j | Deep + instrumented seam | quickstart dice prompt | **Defect in the quickstart**: it asked for a d20 the catalog has no tool for, so `tier=LOW` (correct) looked like a failure. `Roll 6d6 for me.` → `tier=high tools=1`. Corrected | local |
 | 2026-09-18 | T062 | §4, §7k | Deep | `ASTRAL_TEST_TYPESAFE_FAULT` on a running stack | **Defect**: the switch was never installed — nothing wrapped the adapter client, so section 4 had never been walked. Fixed, with 6 tests pinning the path | local |
+| 2026-09-18 | — | §7g | Deep + **real Keycloak session** | first turn on the owner's own account, `FF_USER_SKILLS` at its default | **`skill_lookup_unavailable` — identical to the mock posture.** The open question is answered: a real product defect, not a mock-auth artifact. In the default configuration a signed-in user could not complete one chat message | local |
+| 2026-09-18 | — | §7g | Deep | instrumented both context sources on one turn | ContextVar populated at `handle_chat_message` and **empty 32 ms later** inside `current_socket_human_read`; the admission executor resets it mid-turn. Fixed by threading the context the chat path already holds; regression test pins both halves | local |
+| 2026-09-18 | T032 | SC-002 | Deep + **real Keycloak session** | keyed turn after the fix | `turn.typesafe 462 ms`, `round-one narrowed tier=high tools=1`, `turn.first_llm_call_start` — 089's routing working on a **production-realm** session, the gap §7f said the mock posture could not close | local |
+| 2026-09-18 | — | §7l | Projection + real browser | signed-in landing | **Defect**: canvas 1090×775 with three children, all `display:none` or zero-height — a resumed chat that restores nothing left the work view latched on. Fixed in `client.js`; 060's "work before first registration" contract preserved | local |
 
 ### Measurement sections
 
