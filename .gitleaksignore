@@ -19,3 +19,12 @@ b7d66e7621cfd4aa1af84d8e97293e1b4fba18f4:frontend/src/__tests__/llm_config_hook.
 40cc17aba0c6bd4d7ca3e22b76829b7b657e5b90:windows-client/tests/test_remote_machines_surface.py:private-key:42
 # Reviewed 079 test-only constructed JWT: private-owner payload, invalid literal signature.
 756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3:scripts/tests/test_verify_persistent_agents_079.py:generic-api-key:35
+# Feature 089's first synthetic TypeSafe canary, in the script that was
+# renamed to scripts/verification/ in 6c83bcf6. It is a constructed
+# non-key that exists so the scrubber tests have the real shape to work
+# against; the current canary is allowlisted by pattern in .gitleaks.toml,
+# and this one survives only in history under its old prefix.
+fdb27520616773aaa35e169977882426536e10d2:scripts/typesafe_canary_scan.py:typesafe-system-one-key:40
+# A verification row quoting an audit record's fields -- threat_category,
+# jailbreak_probability and the rest. Prose about a refusal, not a secret.
+d38a02f1f56c9778d9ba6ae4fa8b25de1123ebee:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315

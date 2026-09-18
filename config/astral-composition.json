@@ -17,7 +17,7 @@
     "astral-primitives": {
       "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
       "path": "components/AstralPrimitives",
-      "commit": "3d61e20bf26f8842af02ee4463ef8ed48f0fd810",
+      "commit": "880b3448a6b0d67e7d0a7802ed67948b3e71841e",
       "contract_version": "0.4.0"
     },
     "lets": {
