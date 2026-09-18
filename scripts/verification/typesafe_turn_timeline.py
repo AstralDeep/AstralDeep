@@ -46,6 +46,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 #: Frames that mean "something is on screen now".
 PROGRESS_FRAMES = {
+    # `operation_status` is the frame the orchestrator emits when it ACCEPTS the
+    # turn (chrome_events.emit_operation_status -> protocol.OperationStatus,
+    # `type: "operation_status"`), and it is what actually puts the first
+    # progress state on screen. Leaving it out of this set measured the first
+    # *render* instead, which is a different and much larger number -- 2.8 s at
+    # p50 against the 7 ms the client sees.
+    "operation_status",
     "status", "ui_render", "ui_update", "ui_append", "ui_upsert",
     "ui_stream_data", "turn_phase", "processing_async", "chat_message",
 }
@@ -86,15 +93,24 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
     completed = 0
     hung = 0
 
+    # The chat frame must carry the same envelope the web client sends:
+    # a session/chat id plus per-turn submission and generation identifiers.
+    # A minimal {type, action, payload} frame is accepted by the socket and
+    # then silently dropped, which is why an earlier raw driver saw turns
+    # "complete" with no markers at all.
+    session_id = str(uuid.uuid4())
+    connection_generation = None
+
     async with websockets.connect(uri, max_size=50 * 1024 * 1024) as ws:
         await ws.send(json.dumps({
             "type": "register_ui",
             "token": token,
             "capabilities": ["text", "images"],
-            "session_id": f"turn-timeline-{uuid.uuid4().hex[:8]}",
+            "session_id": session_id,
         }))
         while True:
             frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+            connection_generation = connection_generation or frame.get("connection_generation")
             if frame.get("type") == "system_config":
                 break
             if frame.get("type") in {"auth_required", "error"}:
@@ -109,11 +125,26 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
         for index in range(turns):
             prompt = prompts[index % len(prompts)]
             sent = time.perf_counter()
-            await ws.send(json.dumps({
+            submission_id = str(uuid.uuid4())
+            request_generation = str(uuid.uuid4())
+            envelope = {
                 "type": "ui_event",
                 "action": "chat_message",
-                "payload": {"message": prompt},
-            }))
+                "session_id": session_id,
+                "submission_id": submission_id,
+                "request_generation": request_generation,
+                "payload": {
+                    "message": prompt,
+                    "chat_id": session_id,
+                    "submission_id": submission_id,
+                    "request_generation": request_generation,
+                    "snapshot_purpose": "commit",
+                },
+            }
+            if connection_generation:
+                envelope["connection_generation"] = connection_generation
+                envelope["payload"]["connection_generation"] = connection_generation
+            await ws.send(json.dumps(envelope))
             first: Optional[float] = None
             deadline = time.monotonic() + per_turn_timeout
             while time.monotonic() < deadline:
@@ -127,6 +158,18 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
                 if first is None and frame.get("type") in PROGRESS_FRAMES:
                     first = (time.perf_counter() - sent) * 1000.0
                     to_first_frame.append(first)
+                # The turn ends with a TERMINAL `operation_status` frame
+                # (`state: completed|failed`), which is what the web client
+                # itself waits for. The two names below were guesses and the
+                # orchestrator sends neither, so every turn used to sit here
+                # until `per_turn_timeout` expired: a 2.5 s turn was measured
+                # as 90 s, and a 40-turn run took an hour instead of two
+                # minutes. The timing numbers were unaffected -- they come
+                # from the perf log -- but the run never finished.
+                if (frame.get("type") == "operation_status"
+                        and frame.get("terminal")):
+                    completed += 1
+                    break
                 if frame.get("type") in {"turn_complete", "chat_complete", "error"}:
                     completed += 1
                     break
@@ -157,6 +200,14 @@ def _perf_windows(container: str, since: str) -> dict:
 
     opened: dict[str, float] = {}
     windows: list[float] = []
+    # SC-002 needs the two halves paired per turn, not two independent
+    # distributions: the added wait is max(0, routing - preparation) for the
+    # SAME turn, and percentiles of the difference are not the difference of
+    # percentiles.
+    routing_ms: dict[str, float] = {}
+    added: list[float] = []
+    sent_at: dict[str, float] = {}
+    to_tool: list[float] = []
     stamp = re.compile(r"^(?P<t>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+)")
     for line in (raw.stdout + raw.stderr).splitlines():
         match = PERF_LINE.search(line)
@@ -175,9 +226,18 @@ def _perf_windows(container: str, since: str) -> dict:
         moment += float("0." + re.split(r"[.,]", ts.group("t"))[-1])
         if match.group("name") == "turn.typesafe_start":
             opened[chat] = moment
+            sent_at[chat] = moment
+        elif match.group("name") == "turn.typesafe":
+            routing_ms[chat] = float(match.group("ms"))
         elif match.group("name") == "turn.first_llm_call_start" and chat in opened:
-            windows.append((moment - opened.pop(chat)) * 1000.0)
-    return {"windows": windows}
+            preparation = (moment - opened.pop(chat)) * 1000.0
+            windows.append(preparation)
+            routing = routing_ms.get(chat)
+            if routing is not None:
+                added.append(max(0.0, routing - preparation))
+        elif match.group("name") == "turn.first_tool_dispatch" and chat in sent_at:
+            to_tool.append((moment - sent_at.pop(chat)) * 1000.0)
+    return {"windows": windows, "added_wait": added, "routing_to_tool": to_tool}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -214,6 +274,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"{'measure':<52}{'n':>5}{'p50':>9}{'p95':>9}{'max':>9}")
         print(f"{stats['measure']:<52}{stats['n']:>5}{stats['p50_ms']:>9.1f}"
               f"{stats['p95_ms']:>9.1f}{stats['max_ms']:>9.1f}")
+        added = _stats("SC-002 added wait max(0, routing - preparation)",
+                       perf.get("added_wait", []))
+        to_tool = _stats("routing open to first tool dispatch",
+                         perf.get("routing_to_tool", []))
+        for row in (added, to_tool):
+            print(f"{row['measure']:<52}{row['n']:>5}{row['p50_ms']:>9.1f}"
+                  f"{row['p95_ms']:>9.1f}{row['max_ms']:>9.1f}")
+        if added["n"]:
+            print("")
+            print(f"SC-002 bound: p95 added wait <= 150 ms -> "
+                  f"{added['p95_ms']:.1f} ms "
+                  f"{'PASS' if added['p95_ms'] <= 150 else 'FAIL'}")
         if not stats["n"]:
             print("")
             print("No paired markers in that window. Either no turn ran, or the "
@@ -221,7 +293,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
         if args.json:
             args.json.write_text(json.dumps(
-                {"preparation_window": stats}, indent=2), encoding="utf-8")
+                {"preparation_window": stats, "added_wait": added,
+                 "routing_to_first_tool_dispatch": to_tool}, indent=2),
+                encoding="utf-8")
         return 0
 
     fixtures = ROOT / "backend/tests/fixtures/typesafe_routing/prompts.json"
@@ -240,6 +314,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "preparation_window": _stats(
             "turn.typesafe_start to turn.first_llm_call_start", perf.get("windows", [])
         ),
+        "added_wait": _stats(
+            "SC-002 added wait max(0, routing - preparation)", perf.get("added_wait", [])
+        ),
+        "routing_to_first_tool_dispatch": _stats(
+            "routing open to first tool dispatch", perf.get("routing_to_tool", [])
+        ),
     }
     if "error" in perf:
         report["preparation_window_error"] = perf["error"]
@@ -251,11 +331,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "",
         f"{'measure':<52}{'n':>5}{'p50':>9}{'p95':>9}{'max':>9}",
     ]
-    for key in ("send_to_first_frame", "preparation_window"):
+    for key in ("send_to_first_frame", "preparation_window", "added_wait",
+                "routing_to_first_tool_dispatch"):
         s = report[key]
         lines.append(
             f"{s['measure']:<52}{s['n']:>5}{s['p50_ms']:>9.1f}"
             f"{s['p95_ms']:>9.1f}{s['max_ms']:>9.1f}"
+        )
+    if report["added_wait"]["n"]:
+        lines.append("")
+        lines.append(
+            f"SC-002 bound: p95 added wait <= 150 ms -> "
+            f"{report['added_wait']['p95_ms']:.1f} ms "
+            f"{'PASS' if report['added_wait']['p95_ms'] <= 150 else 'FAIL'}"
         )
     lines.append("")
     sys.stdout.write("\n".join(lines) + "\n")
