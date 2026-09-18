@@ -1,9 +1,31 @@
 .DEFAULT_GOAL := help
 
 # Path translation for Docker volume mounts under Cygwin / Git Bash / native.
-# Docker CLI on Windows wants Y:/... not /cygdrive/y/... — cygpath -m and `pwd -W`
-# both yield that form; native shells fall through to $(CURDIR).
-HOST_PWD := $(shell cygpath -m "$(CURDIR)" 2>/dev/null || pwd -W 2>/dev/null || echo "$(CURDIR)")
+#
+# Docker CLI on Windows wants Y:/... and what make puts in CURDIR depends on which
+# make is first on PATH: Cygwin's says /cygdrive/y/..., MSYS2's says /y/..., a native
+# one says Y:/... already. cygpath translates for the flavour that shipped it, not
+# the one that set CURDIR, and the ordinary Windows dev box has them mismatched --
+# Cygwin make with Git's MSYS cygpath -- where `cygpath -m /cygdrive/y/WORK` returns
+# Y:/Program Files/Git/cygdrive/y/WORK. Docker Desktop then creates that directory
+# and mounts it empty, so every container target below runs against nothing and says
+# so in whatever way that tool says "no files": 0 tests collected, 0 leaks found.
+# make's own text functions cannot be mismatched, so use those and call nothing.
+DRIVE_LETTERS := a b c d e f g h i j k l m n o p q r s t u v w x y z                  A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
+UNIX_PWD := $(patsubst /cygdrive/%,/%,$(CURDIR))
+PWD_DRIVE := $(firstword $(subst /, ,$(UNIX_PWD)))
+ifeq ($(filter $(PWD_DRIVE),$(DRIVE_LETTERS)),)
+HOST_PWD := $(CURDIR)
+else
+HOST_PWD := $(PWD_DRIVE):$(patsubst /$(PWD_DRIVE)%,%,$(UNIX_PWD))
+endif
+
+# The mirror of the same hazard, on the other side of the colon: under an MSYS2
+# make, MSYS rewrites arguments that look like absolute POSIX paths, so the
+# container-side /workspace becomes Y:/Program Files/Git/workspace before docker
+# sees it. These two say "leave my arguments alone" and are inert everywhere else.
+export MSYS_NO_PATHCONV := 1
+export MSYS2_ARG_CONV_EXCL := *
 
 .PHONY: help up down restart apply-config build ps logs logs-db shell psql \
         bootstrap composition-preflight sync sync-backend sync-components \
@@ -151,16 +173,30 @@ test-web: ## Run the web client's browser suites in the pinned Playwright image
 	  node node_modules/@playwright/test/cli.js test $(WEB_SPECS) \
 	  --browser=chromium --workers=1
 
-test-projection: ## Run the AstralProjection Python suite in the product image
-	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 \
-	  -v "$(HOST_PWD)/$(PROJECTION):/proj:ro" -w /proj \
-	  astraldeep:latest python -m pytest tests/ -q -p no:cacheprovider
+# Several of these tests shell out to git to ask what is tracked, and as a submodule
+# this component's .git is a pointer -- "gitdir: ../../.git/modules/AstralProjection"
+# -- at a directory the mount does not contain, so git says "not a git repository"
+# and the test reads as a product failure. Mounting the component where that
+# relative pointer expects to find it, plus the gitdir it names, makes both it and
+# the module's own core.worktree resolve. Read-only: nothing here needs to write.
+PROJECTION_GITDIR := $(wildcard .git/modules/AstralProjection)
+ifeq ($(PROJECTION_GITDIR),)
+PROJECTION_GIT_MOUNT :=
+else
+PROJECTION_GIT_MOUNT := -v "$(HOST_PWD)/.git/modules/AstralProjection:/.git/modules/AstralProjection:ro"
+endif
 
-# Known: test-projection carries four failures in this image that are about the
-# image rather than the code -- ci/test_workflows, two in test_protocol, and
-# test_resources, which needs `python -m build`. They fail on main too. Do not
-# deselect them; a suite nobody can read the result of is how twelve failing
-# browser tests went unnoticed on a feature branch for a week.
+test-projection: ## Run the AstralProjection Python suite in the product image
+	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 $(PROJECTION_GIT_MOUNT) 	  -v "$(HOST_PWD)/$(PROJECTION):/components/AstralProjection:ro" 	  -w /components/AstralProjection 	  astraldeep:latest python -m pytest tests/ -q -p no:cacheprovider
+
+# Known: three of these fail in this image for reasons that are about the image and
+# the host, not the code, and they fail on main too. test_transformation_record
+# compares file modes, and a Docker bind mount from Windows reports every file 755.
+# The two in test_resources build a wheel and read the offline cache, which needs
+# `python -m build` and a network the product image has neither of. Do not deselect
+# them; a suite nobody can read the result of is how twelve failing browser tests
+# went unnoticed on a feature branch for a week. CI runs all three on a real
+# checkout and they pass there.
 test: test-backend test-projection test-web ## Run all tests
 
 ## ---------- Release evidence (feature 060) ----------
