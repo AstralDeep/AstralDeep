@@ -560,14 +560,29 @@ def _voice_guidance_message(message):
         and type(message["payload"].get("voice_origin")) is dict))
 
 
-async def current_socket_human_read(*, expected_orchestrator, websocket):
+async def current_socket_human_read(*, expected_orchestrator, websocket,
+                                    operation_context=None):
     """Original registered chat caller for one internal skill lookup, never a write.
 
     The consumer verifies delivery before using its read result, then calls
     retire_socket_human_read in finally. This does not bound the chat/model run.
+
+    ``operation_context`` is the connection operation context the caller already
+    holds. Pass it whenever you have it. Re-reading the ContextVar here is a
+    race: the admission executor sets it around a frame and resets it in its
+    ``finally``, while a chat turn keeps running past that point, so a turn can
+    observe the variable populated when it enters ``handle_chat_message`` and
+    empty a few milliseconds later inside this function. That is not
+    theoretical -- it made every chat turn fail with ``skill_lookup_unavailable``
+    for any signed-in user whenever ``FF_USER_SKILLS`` was on, which is the
+    default. The threaded value is an ordinary argument and cannot be reset out
+    from under the turn.
     """
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
-    pending = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request")
+    context = operation_context
+    if not isinstance(context, dict):
+        context = _CONNECTION_OPERATION_CONTEXT.get() or {}
+    pending = context.get("human_request")
     if (type(pending) is not _HumanSocketRequest or pending.purpose != "skill_lookup"
             or pending.boundary.orchestrator is not expected_orchestrator
             or pending.websocket is not websocket or pending.method != "WS_READ"):

@@ -15356,7 +15356,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     chat_id=chat_id, scheduled_attempt=scheduled[0], scheduled_store=scheduled[1])
                 origin = binding.origin
             else:
-                caller = await current_socket_human_read(expected_orchestrator=self, websocket=websocket)
+                # Pass the context resolved above rather than letting the
+                # authority re-read the ContextVar: by this point the admission
+                # executor that set it may already have reset it in its finally,
+                # and the turn would be refused its own registered caller.
+                caller = await current_socket_human_read(
+                    expected_orchestrator=self, websocket=websocket,
+                    operation_context=context)
                 try:
                     origin = await capture_turn_guidance_from_human(caller, expected_orchestrator=self)
                     binding = bind_foreground_guidance(origin, expected_orchestrator=self,
