@@ -148,9 +148,9 @@ def _primitives(root: Path) -> None:
     component = root / COMPONENT_PATHS["astral-primitives"]
     _write(
         component / "pyproject.toml",
-        '[project]\nname = "astralprims"\nversion = "0.3.0"\n',
+        '[project]\nname = "astralprims"\nversion = "0.4.0"\n',
     )
-    _write(component / "src/astralprims/__init__.py", '__version__ = "0.3.0"\n')
+    _write(component / "src/astralprims/__init__.py", '__version__ = "0.4.0"\n')
     _write(component / "src/astralprims/primitives.py", "class Text: pass\n")
 
 
@@ -228,7 +228,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "repository": CANONICAL_REPOSITORIES["astral-primitives"],
                 "path": COMPONENT_PATHS["astral-primitives"],
                 "commit": commits["astral-primitives"],
-                "contract_version": "0.3.0",
+                "contract_version": "0.4.0",
             },
             "lets": {
                 "repository": CANONICAL_REPOSITORIES["lets"],
@@ -259,7 +259,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
             "primitives": {
-                "package_version": "0.3.0",
+                "package_version": "0.4.0",
                 "contract_sha256": composition.compute_primitives_digest(
                     root / COMPONENT_PATHS["astral-primitives"]
                 ),
