@@ -83,7 +83,17 @@ None in this repository.
 
 ## Outstanding
 
-T057, the rehearsal of a **populated** `088.008 → 089.001` upgrade on the
-candidate stack with the synthetic dataset, a repeat start and the rollback
-procedure. The migration itself is exercised against a real schema; what is
-outstanding is the rehearsal on populated data.
+Nothing. T057 -- the rehearsal of a **populated** `088.008 -> 089.001` upgrade
+on the candidate stack with the synthetic dataset, a repeat start and the
+rollback procedure -- was completed on 2026-09-17 and is recorded in
+verification.md 8.9.4: the rollback restores `088.008` and drops both tables,
+the upgrade applies exactly `astralplane-089-typesafe-credentials`, the repeat
+start reports `already_current=True` with zero steps, and `users` and
+`user_llm_config` are byte-identical end to end.
+
+One follow-up is owed to this repository rather than outstanding against this
+PR: restoring `chrome_typesafe_save` to the durable credential path needs a
+**fenced TypeSafe commit** here. Deep currently routes that action through the
+ordinary chrome dispatch instead, because the durable executor it was pointed at
+could only perform an LLM config set -- see the AstralDeep PR and
+verification.md 7e.2.

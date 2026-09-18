@@ -69,13 +69,23 @@ request, so the address bar is the whole of it.
 
 Send, one at a time:
 - "What's the 7-day forecast for Lexington, KY?"
-- "Roll 4d20"
+- "Roll 6d6 for me."
 - "Thanks, that helps"
 
 **Expected in the `perf turn.typesafe` logs**:
-- The first two turns show tier high or medium.
-- The third shows low (`no_tool_needed`).
+- The first two turns log `typesafe round-one narrowed ... tier=high` (or `medium`).
+- The third logs nothing: a low-tier decision does not narrow, so there is no line.
 - All three answers are correct.
+
+> **Use a six-sided request.** This step used to say "Roll 4d20" and expect a narrowing
+> tier. The default agent catalog's Dice Roller "rolls N six-sided dice" and nothing
+> else, so a d20 request has **no matching tool** and a LOW decision is the correct
+> answer -- confirmed by instrumenting the decision seam: `Roll 6d20 for me.` returns
+> `tier=LOW` against a 124-tool catalog, while `Roll 6d6 for me.` returns
+> `tier=high tools=1`. The old step made a correct refusal to narrow look like a
+> routing failure. (The routing fixture `prompts.json` labels `Roll 6d20 for me.` as
+> high because the bench builds its own catalog, one that contains a d20 tool; that
+> label is right for the bench and wrong for this stack.)
 - A multi-step request uses the full tool list after round 1 (visible in debug logs of `tools_desc` size).
 
 ## 4. Resilience (US3)
