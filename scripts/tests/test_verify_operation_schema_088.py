@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from test_verify_composition import (
     COMPONENT_PATHS,
-    EXPECTED_PLANE_MIGRATION_SHA256_088,
+    EXPECTED_PLANE_MIGRATION_SHA256,
     REPOSITORY_ROOT,
     _codes,
     _repin_component,
@@ -91,7 +91,7 @@ def test_both_reviewed_imports_match_independent_canonical_digest_without_execut
 def test_exact_pinned_operation_and_assignment_files_match_qualified_088_digest() -> None:
     root = REPOSITORY_ROOT / COMPONENT_PATHS["astral-plane"]
     # Reading the pinned files must not import AstralPlane or initialize its runtime.
-    assert composition._plane_migration_digest(root) == EXPECTED_PLANE_MIGRATION_SHA256_088
+    assert composition._plane_migration_digest(root) == EXPECTED_PLANE_MIGRATION_SHA256
 
 
 @pytest.mark.parametrize("operation_import", [

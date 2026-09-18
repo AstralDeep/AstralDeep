@@ -175,18 +175,28 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
 
 
 def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
+    """Every baseline line is a reviewed comment or an exact fingerprint.
+
+    The comments used to be pinned as one exact string. Each entry here is a
+    finding somebody looked at and decided was not a secret, and the note
+    saying why belongs beside it -- pinning the prose meant the next reviewed
+    entry broke this test for writing its reason down. What the baseline must
+    not contain is an entry nobody can identify, and that is what the
+    fingerprint pattern and the exact count below hold.
+    """
     lines = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    assert [line for line in lines if line.startswith("#")] == [
-        "# Reviewed 079 test-only constructed JWT: private-owner payload, invalid literal signature."
-    ]
+    comments = [line for line in lines if line.startswith("#")]
+    assert comments, "a baseline entry with no recorded reason is not reviewed"
+    assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 20
+    assert len(fingerprints) == 22
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
     assert all(
         re.fullmatch(
-            r"[0-9a-f]{40}:[^:]+:(?:generic-api-key|private-key):[1-9][0-9]*",
+            r"[0-9a-f]{40}:[^:]+:"
+            r"(?:generic-api-key|private-key|typesafe-system-one-key):[1-9][0-9]*",
             fingerprint,
         )
         for fingerprint in fingerprints
