@@ -30,18 +30,27 @@ unattended and closes, in order:
 
 Two rules it keeps. The **access token** lives in this process's memory only:
 never printed, never written, never passed on a command line. The **TypeSafe
-key** is read from the terminal with ``getpass`` and goes straight to the
-settings save handler -- never an environment variable, never a file, never a
-log line, and never into the report.
+key** goes straight to the settings save handler -- never an environment
+variable, never a file this writes, never a log line, never the report.
 
-Usage, from the repository root with the candidate stack up::
+The key is read first, before the device wait, either from the terminal with
+``getpass`` or, when there is no terminal, from stdin -- the piped entry path
+FR-044 allows. Stage it once::
 
     docker cp scripts/verification/complete_089_qualification.py \\
         astraldeep:/tmp/complete_089.py
+
+On a terminal, which prompts for the key::
+
     docker exec -it astraldeep python /tmp/complete_089.py
 
-``-it`` matters: the device code is shown on the terminal and the key is read
-from it. The JSON report lands at ``/tmp/089_report.json``.
+Piped, which is what an unattended runner wants::
+
+    grep -m1 '^TYPESAFE_API_KEY=' <owner env> | cut -d= -f2- \\
+      | docker exec -i astraldeep python /tmp/complete_089.py
+
+Either way the device code is printed to stdout and the JSON report lands at
+``/tmp/089_report.json``.
 """
 from __future__ import annotations
 
@@ -383,17 +392,24 @@ def main():
     if "--turns" in sys.argv:
         turns = int(sys.argv[sys.argv.index("--turns") + 1])
 
+    # The key reaches the settings save handler and nothing else: never an
+    # environment variable, never a file this writes, never a log line, never
+    # the report. On a terminal it is typed; otherwise it is read from stdin,
+    # which is the piped entry path FR-044 allows for the bench scripts.
+    if sys.stdin is not None and sys.stdin.isatty():
+        say("Paste the TypeSafe API key.")
+        key = getpass.getpass("TypeSafe key (hidden): ").strip()
+    else:
+        key = (sys.stdin.readline() or "").strip()
+        say("read the TypeSafe key from stdin (" + str(len(key)) + " characters)")
+    if not key:
+        raise SystemExit("no key supplied on the terminal or stdin")
+
     token = device_login()
     c = claims_of(token)
     say("token claims: azp=" + str(c.get("azp"))
         + " sub=" + str(c.get("sub"))[:8] + "...")
     say("")
-    say("Paste the TypeSafe API key. It goes straight to the settings save")
-    say("handler -- never an environment variable, a file, a log or the report.")
-    key = getpass.getpass("TypeSafe key (hidden): ").strip()
-    if not key:
-        raise SystemExit("no key entered")
-
     report = asyncio.run(run(token, key, turns))
     report["azp"] = c.get("azp")
     ok = [s for s in report["steps"] if s.get("ok")]
