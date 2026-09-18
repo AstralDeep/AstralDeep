@@ -20,25 +20,37 @@ class MlServicesAgent(BaseA2AAgent):
 
     agent_id = "ml-services-1"
     service_name = "ML Services"
+    # The per-service call order that used to live in this card's description
+    # is kept here as a comment rather than shipped in it. Nothing executes from the
+    # card text: it reaches the router (truncated to 200 characters) and the
+    # agent dialog, never a tool-calling prompt, so the prose was inert there
+    # and unreadable here. Keep the note current when a workflow changes.
+    #
+    #   CLASSify:   classify_submit_dataset (returns column types)
+    #               -> set_column_types
+    #               -> propose_training_config (renders a picker whose Submit
+    #                  triggers classify_start_training_job automatically)
+    #               -> classify_start_training_job
+    #   Forecaster: forecaster_submit_dataset -> set_column_roles
+    #               -> forecaster_start_training_job
+    #   LLM-Factory: list_models, chat completions, embeddings, transcription
+    #               through an OpenAI-compatible Router deployment.
     description = (
-        "One agent for three user-configured external ML services; each service is "
-        "an optional credential bundle (URL + API key) and credentials never leave "
-        "the user's session in plaintext. "
-        "CLASSify — trains and evaluates classifiers on tabular CSV datasets. "
-        "Workflow: classify_submit_dataset (returns column types) -> set_column_types "
-        "-> propose_training_config (renders an interactive picker; its Submit button "
-        "triggers classify_start_training_job automatically) -> "
-        "classify_start_training_job. "
-        "Forecaster — trains and runs forecasts on tabular time-series data. "
-        "Workflow: forecaster_submit_dataset -> set_column_roles -> "
-        "forecaster_start_training_job. "
-        "LLM-Factory — routes chat completions, embeddings, and audio transcription "
-        "through an OpenAI-compatible Router deployment (list_models, "
-        "chat_with_model, create_embedding, transcribe_audio). "
-        "Do NOT call read_spreadsheet or other file-reading tools before the "
-        "submit_dataset step of either training pipeline — the tools read and "
-        "validate the CSV themselves."
+        "Three external ML services you connect with your own keys: CLASSify "
+        "trains and evaluates classifiers on tabular data, Forecaster fits and "
+        "runs time-series forecasts, LLM-Factory routes chat, embeddings and "
+        "transcription. Keys never leave your session in plaintext."
     )
+    examples = [
+        {"title": "Train a classifier",
+         "prompt": "Submit the CSV I attached to CLASSify and walk me through "
+                   "training a classifier on it"},
+        {"title": "Forecast a series",
+         "prompt": "Use Forecaster on the time series I attached and chart the next "
+                   "12 periods"},
+        {"title": "What can I run",
+         "prompt": "List the models available through LLM-Factory"},
+    ]
     skill_tags = ["machine-learning", "classification", "timeseries", "embeddings", "transcription"]
 
     # Feature 029 (FR-008): credentials saved while the predecessor agents

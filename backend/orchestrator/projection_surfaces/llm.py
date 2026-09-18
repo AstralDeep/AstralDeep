@@ -464,7 +464,7 @@ def _data_sharing_block(state: Any, error: Optional[str] = None) -> str:
     return (
         f'<div class="astral-data-sharing-warning" role="note" '
         f'id="{ds.WARNING_ELEMENT_ID}">'
-        f'<p class="astral-data-sharing-title">⚠ {esc(ds.NOTICE_TITLE)}</p>'
+        f'<p class="astral-data-sharing-title">{esc(ds.NOTICE_TITLE)}</p>'
         f'<p class="astral-data-sharing-body">{esc(ds.NOTICE_BODY)}</p>'
         "</div>"
         '<label class="astral-data-sharing-ack">'

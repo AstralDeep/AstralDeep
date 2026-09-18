@@ -635,9 +635,11 @@ def test_welcome_buttons_have_unique_accessible_names():
             # astralprims to_dict() merges `attributes` at the top level.
             labels.append(child.get("aria-label"))
             assert child.get("aria-label") == child.get("label")
-    assert len(labels) == 6
+    from orchestrator.welcome import WELCOME_EXAMPLES
+
+    assert len(labels) == len(WELCOME_EXAMPLES)
     assert all(labels)
-    assert len(set(labels)) == 6  # all distinct
+    assert len(set(labels)) == len(WELCOME_EXAMPLES)  # all distinct
 
 
 # ---------------------------------------------------------------------------

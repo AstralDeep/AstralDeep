@@ -16,6 +16,7 @@ PROJECTION = ROOT / "components" / "AstralProjection"
 HOST_SURFACES = frozenset(
     {
         "admin_tools",
+        "agent_intro",
         "agents",
         "attachments",
         "audit",

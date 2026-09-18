@@ -534,8 +534,9 @@ def _render_schedule(orch, user_id: str) -> str:
     execution_enabled = flags.is_enabled("scheduler_execution")
     if not execution_enabled:
         hint = (
-            f'<div class="{_CARD_CLS} text-sm">⚠️ Unattended execution is currently '
-            "<strong>unavailable</strong>: scheduled jobs will not run until an "
+            f'<div class="{_CARD_CLS} text-sm"><strong>Note.</strong> Unattended '
+            "execution is currently <strong>unavailable</strong>: scheduled jobs "
+            "will not run until an "
             "administrator enables it (pending a security review). You can still create "
             "and manage jobs.</div>" + hint
         )

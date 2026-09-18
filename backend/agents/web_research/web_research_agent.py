@@ -31,13 +31,21 @@ class WebResearchAgent(BaseA2AAgent):
     agent_id = "web-research-1"
     service_name = "Web Research"
     description = (
-        "Searches the web, fetches pages through the platform's egress-gated "
-        "HTTP layer, and synthesizes cited research briefs. Offers keyless "
-        "DuckDuckGo search, which may be blocked by the provider; when the "
-        "optional SEARCH_API_URL + SEARCH_API_KEY credentials are saved, a "
-        "Tavily-compatible search provider is preferred. Briefs cite only "
-        "sources that were actually fetched — sources are never fabricated."
+        "Searches the web, reads the pages it finds, and writes a cited brief. "
+        "Every citation is a source it actually fetched; none are invented. "
+        "Works keyless, and uses your own search key when you save one."
     )
+    examples = [
+        {"title": "Brief me",
+         "prompt": "Research the latest developments in small modular reactors and "
+                   "give me a cited brief"},
+        {"title": "Who is saying what",
+         "prompt": "Find recent coverage of EU AI Act enforcement and group it by "
+                   "position, with sources"},
+        {"title": "Check a claim",
+         "prompt": "Find primary sources for the claim that global EV sales grew "
+                   "year over year, and say how strong the evidence is"},
+    ]
     skill_tags = ["research", "web", "search", "sources", "brief"]
 
     card_metadata = {

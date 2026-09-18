@@ -1,6 +1,6 @@
 """Encrypted offline-grant store for unattended job authorization (feature 025).
 
-⚠️ SECURITY-CRITICAL — gated by task T057 (lead-dev security review) before merge.
+SECURITY-CRITICAL — gated by task T057 (lead-dev security review) before merge.
 
 At consent time (user present, live session) we store an encrypted reference to
 the user's canonical Keycloak session credential and a hard 365-day grant cap.

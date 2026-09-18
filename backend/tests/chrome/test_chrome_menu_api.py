@@ -1,7 +1,7 @@
 """Feature 042 — GET /api/chrome/menu + single-source equivalence.
 
 Verifies the REST delivery channel, role-gating, and that the REST body, the
-`chrome_menu` WS frame, and the web `render_topbar` all derive from the ONE
+`chrome_menu` WS frame, and the web settings rail all derive from the ONE
 builder (Constitution XII — no divergence).
 """
 import json
@@ -16,7 +16,6 @@ from orchestrator.chrome_availability import (
     projection_chrome_availability, projection_native_chrome_availability,
 )
 from shared.protocol import ChromeMenu
-from webrender.chrome import render_topbar
 from webrender.chrome.menu_model import menu_model_dict
 
 
@@ -88,12 +87,15 @@ def test_rest_body_equals_unnegotiated_native_model():
 
 
 def test_rest_body_matches_web_topbar_labels():
-    """The web shell (render_topbar) and REST agree on items/order — one source."""
+    """The web rail and REST agree on items/order — one source."""
+    from webrender.chrome import render_settings_nav
+    from webrender.chrome.menu_model import build_menu_model
+
     body = _client({"realm_access": {"roles": ["admin", "user"]}}).get("/api/chrome/menu").json()
-    html = render_topbar(
-        roles=["admin", "user"],
-        **projection_chrome_availability(),
-    )
+    # The web renders the menu as the settings dialog's rail, not a dropdown
+    # in the shell; it is still built from the same model as the REST body.
+    html = render_settings_nav(build_menu_model(
+        ["admin", "user"], **projection_chrome_availability()))
     # Every menu item label the REST model advertises is present in the web DOM,
     # in the same order (the web renders from the same builder).
     labels = [i["label"] for g in body["menu"] for i in g["items"]]

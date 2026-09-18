@@ -22,7 +22,22 @@ class MedicalAgent(BaseA2AAgent):
 
     agent_id = "medical-1"
     service_name = "Medical Agent"
-    description = "Specialist agent tailored for medical professionals, offering data analysis and synthetic patient data generation."
+    description = (
+        "Searches patient records for a cohort, generates synthetic patients "
+        "for testing, and runs statistical analysis over clinical tables and "
+        "CSV files."
+    )
+    examples = [
+        {"title": "Build a cohort",
+         "prompt": "Find patients over 65 with a documented degenerative condition "
+                   "and chart the age distribution"},
+        {"title": "Synthetic records",
+         "prompt": "Generate 200 synthetic patients with realistic vitals and show "
+                   "the summary statistics"},
+        {"title": "Analyze a table",
+         "prompt": "Analyze the CSV I attached and report which variables correlate "
+                   "with the outcome column"},
+    ]
     skill_tags = ["medical", "analysis", "data"]
 
     def __init__(self, port: int = DEFAULT_PORT):

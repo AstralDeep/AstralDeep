@@ -24,7 +24,12 @@ from shared.feature_flags import flags
 
 
 def _slug(title: str) -> str:
-    """Deterministic ascii slug from an example title (emoji dropped)."""
+    """Deterministic ascii slug from an example title.
+
+    Anything that is not an ascii letter or digit is a separator, so a title
+    keeps a stable identity through punctuation and through the stray
+    non-ascii character a future title might carry.
+    """
     return "_".join(re.findall(r"[a-z0-9]+", title.lower())) or "example"
 
 
@@ -34,30 +39,48 @@ def _stamp(comp: Dict[str, Any], ident: str) -> Dict[str, Any]:
     comp["component_id"] = ident
     return comp
 
-#: (title, caption, query) — the complete curated example catalog. Queries target the
-#: post-029 agent catalog: connectors dashboards, weather, web_research,
-#: summarizer, dice_roller, general system metrics.
+#: (title, caption, query) — the complete curated example catalog, and the only
+#: definition of it: the welcome canvas every client renders and the web
+#: console's "Start here" cards are both built from this list, so they cannot
+#: drift apart.
+#:
+#: Each one is chosen to answer "what is this thing for?" in a single click and
+#: to land on a different part of the catalog — the adaptive designer, live
+#: host data, a live external API, the research and summarizing agents, a
+#: domain specialist, and the smallest possible end-to-end turn.
+#:
+#: Titles are plain text. Nothing here carries an emoji, by project rule, and
+#: the renderers no longer split a glyph off the front of a title.
 WELCOME_EXAMPLES = [
-    ("📊 Business dashboard",
-     "Hero, metrics, charts and a schedule — arranged by the adaptive designer.",
+    ("Build a business dashboard",
+     "A hero, live metrics, two charts and today's schedule, arranged by the "
+     "adaptive designer rather than a fixed template.",
      "Build a rich dashboard for a dog grooming business — booking requests, "
      "monthly revenue line chart, most popular services pie chart, and today's "
      "schedule as a table"),
-    ("⛅ Weather outlook",
-     "A week of forecasts charted, not just described.",
-     "What's the weather forecast for Lexington, KY this week? Show it with charts"),
-    ("🔎 Research brief",
-     "Web research distilled into a multi-part brief with citations.",
+    ("Brief me, with citations",
+     "Web research read and distilled into a multi-part brief that cites only "
+     "the pages it actually opened.",
      "Research the latest developments in small modular reactors and give me a cited brief"),
-    ("📄 Summarize a page",
-     "TL;DR, key points and quotable lines from any URL.",
+    ("Read a page for me",
+     "The TL;DR, the key points and the quotable lines from any URL.",
      "Summarize https://en.wikipedia.org/wiki/Dog_grooming — give me a TL;DR and key points"),
-    ("🎲 Roll some dice",
-     "Six six-sided rolls with normalized inputs and results.",
-     "Roll exactly six six-sided dice and show the normalized results."),
-    ("🖥️ System status",
-     "Live host metrics as KPI tiles and gauges.",
+    ("Weather for the week ahead",
+     "Seven days of forecast for any city, drawn rather than described.",
+     "What's the weather forecast for Lexington, KY this week? Show it with charts"),
+    ("Check on this machine",
+     "CPU, memory and disk read live from the host and laid out as KPI tiles "
+     "and gauges.",
      "Show current system status with CPU and memory metrics"),
+    ("Choose a journal for a paper",
+     "A domain specialist at work: match a paper to venues, then compare the "
+     "shortlist on impact, fit and review time.",
+     "Find journals that fit a paper on self-supervised learning for chest CT, "
+     "then compare the top three on impact and review time"),
+    ("Roll some dice",
+     "Six six-sided rolls, normalized — the shortest honest path from a "
+     "sentence to a rendered, audited result.",
+     "Roll exactly six six-sided dice and show the normalized results."),
 ]
 
 
@@ -85,7 +108,7 @@ def enable_agents_card() -> Dict[str, Any]:
     render a false promise. Do not "restore" it for fresh users: that would be
     telling them agents are off while their agents work.
     """
-    return Card(title="🔌 Agents are off for this account", content=[
+    return Card(title="Agents are off for this account", content=[
         Text(content=("Replies will be plain text until agents are enabled. "
                       "Enabling grants read-only permissions for the built-in "
                       "public agents — search, data, file and system reads, "
@@ -114,13 +137,17 @@ def welcome_components(tools_available: bool = True) -> List[Dict[str, Any]]:
     """
     examples = {}
     for title, _caption, query in WELCOME_EXAMPLES:
-        label = title.split(" ", 1)[1]
+        # The title IS the label. It used to be the title with a leading emoji
+        # chopped off, which made the label silently depend on the glyph still
+        # being there.
+        label = title
         examples[_slug(title)] = Button(
             label=label, action="chat_message", payload={"message": query},
             variant="secondary",
             attributes={"aria-label": label, "data-welcome": "example"},
         )
-    primary = ("research_brief", "summarize_a_page", "weather_outlook")
+    primary = ("brief_me_with_citations", "read_a_page_for_me",
+               "build_a_business_dashboard")
     tree = [
         Hero(
             title="How can I help?", variant="subtle",

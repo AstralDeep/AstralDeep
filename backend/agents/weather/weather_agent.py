@@ -27,7 +27,20 @@ class WeatherAgent(BaseA2AAgent):
 
     agent_id = "weather-1"
     service_name = "Weather Agent"
-    description = "Specialist agent for weather data, forecasts, and visualizations using Open-Meteo API."
+    description = (
+        "Current conditions, hourly and daily forecasts, historical readings "
+        "and severe-weather alerts for any place, charted rather than "
+        "described. Open-Meteo, no key required."
+    )
+    examples = [
+        {"title": "A week ahead",
+         "prompt": "What's the weather forecast for Lexington, KY this week? "
+                   "Show it with charts"},
+        {"title": "Two cities",
+         "prompt": "Compare this week's forecast for Denver and Miami side by side"},
+        {"title": "Today, hour by hour",
+         "prompt": "Chart today's hourly temperature and precipitation for Chicago"},
+    ]
     skill_tags = ["weather", "forecast", "geocoding", "visualization"]
 
     def __init__(self, port: int = None):

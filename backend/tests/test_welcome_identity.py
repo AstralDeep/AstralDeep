@@ -83,9 +83,12 @@ def test_adapted_welcome_groups_remain_retirable(device_type, monkeypatch):
 
 
 def test_slug_is_deterministic_ascii():
-    assert _slug("📊 Business dashboard") == "business_dashboard"
-    assert _slug("⛅ Weather outlook") == "weather_outlook"
-    assert _slug("🎲🎲🎲") == "example"  # emoji-only degenerates to a stable token
+    assert _slug("Build a business dashboard") == "build_a_business_dashboard"
+    assert _slug("Brief me, with citations") == "brief_me_with_citations"
+    # Titles are plain text now, but the slug still has to survive a stray
+    # non-ascii character rather than collapse two titles onto one identity.
+    assert _slug("Café report") == "caf_report"
+    assert _slug("——") == "example"  # nothing sluggable degenerates to a stable token
 
 
 def test_flag_off_restores_idless_tree(monkeypatch):

@@ -1,6 +1,6 @@
 """Executes a due scheduled job under fresh, scope-bounded authority (feature 025, US5).
 
-⚠️ Touches the security-critical offline-grant path — covered by the T057 review.
+SECURITY-CRITICAL: touches the offline-grant path — covered by the T057 review.
 
 Per run (FR-021/FR-024/SC-008):
   1. start a ``job_run`` (correlation id for audit grouping),

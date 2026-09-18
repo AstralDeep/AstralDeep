@@ -29,11 +29,17 @@ class SummarizerAgent(BaseA2AAgent):
     agent_id = "summarizer-1"
     service_name = "Summarizer"
     description = (
-        "Summarizes text or web pages into a structured TL;DR, key points, and "
-        "notable quotes, and compares two documents side by side with a table "
-        "of key differences. Long inputs are truncated with an explicit notice. "
-        "Page fetches go through the platform's egress-gated HTTP layer."
+        "Turns a page or a block of text into a TL;DR, key points and quotable "
+        "lines, and puts two documents side by side with a table of what "
+        "differs. Long inputs are cut with a notice, never silently."
     )
+    examples = [
+        {"title": "Summarize a page",
+         "prompt": "Summarize https://en.wikipedia.org/wiki/Dog_grooming — give me "
+                   "a TL;DR and key points"},
+        {"title": "Compare two documents",
+         "prompt": "Compare the two documents I attached and table the key differences"},
+    ]
     skill_tags = ["summarize", "digest", "compare", "tldr"]
 
     def __init__(self, port: int = None):

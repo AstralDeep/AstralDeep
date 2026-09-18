@@ -21,18 +21,22 @@ def test_every_curated_example_is_nonempty_and_has_one_capability_disposition() 
     """Each tile is either tool-backed or explicitly UI-composition-only."""
 
     expected_titles = {
-        "Business dashboard",
-        "Weather outlook",
-        "Research brief",
-        "Summarize a page",
+        "Build a business dashboard",
+        "Brief me, with citations",
+        "Read a page for me",
+        "Weather for the week ahead",
+        "Check on this machine",
+        "Choose a journal for a paper",
         "Roll some dice",
-        "System status",
     }
-    actual_titles = {
-        title.removeprefix(title.split(maxsplit=1)[0]).strip()
-        for title, _caption, _query in WELCOME_EXAMPLES
-    }
+    # The title is the whole title. It used to be read with the first token
+    # stripped off, because that token was an emoji; a plain-text title must
+    # not be silently truncated by a test that still assumes one.
+    actual_titles = {title for title, _caption, _query in WELCOME_EXAMPLES}
     assert actual_titles == expected_titles
+    assert not any(ord(ch) > 0x2100 for title, _, _ in WELCOME_EXAMPLES for ch in title), (
+        "welcome titles are plain text: no emoji"
+    )
     assert all(caption.strip() and query.strip() for _, caption, query in WELCOME_EXAMPLES)
 
 
@@ -50,7 +54,7 @@ def test_dice_example_matches_the_selected_tool_bounds_and_fixed_side_count() ->
 
 
 def test_weather_example_has_a_real_weekly_forecast_tool_contract() -> None:
-    _title, _caption, query = _example("Weather outlook")
+    _title, _caption, query = _example("Weather for the week ahead")
     schema = WEATHER_TOOLS["get_weekly_forecast"]["input_schema"]
 
     assert "Lexington, KY" in query
@@ -59,7 +63,7 @@ def test_weather_example_has_a_real_weekly_forecast_tool_contract() -> None:
 
 
 def test_research_example_requests_only_the_registered_brief_inputs() -> None:
-    _title, _caption, query = _example("Research brief")
+    _title, _caption, query = _example("Brief me, with citations")
     schema = RESEARCH_TOOLS["research_brief"]["input_schema"]
 
     assert schema["required"] == ["topic"]
@@ -68,7 +72,7 @@ def test_research_example_requests_only_the_registered_brief_inputs() -> None:
 
 
 def test_summary_example_uses_a_supported_absolute_http_url() -> None:
-    _title, _caption, query = _example("Summarize a page")
+    _title, _caption, query = _example("Read a page for me")
     schema = SUMMARY_TOOLS["summarize_url"]["input_schema"]
     url = next(part for part in query.split() if part.startswith("https://"))
     parsed = urlparse(url)
@@ -79,7 +83,7 @@ def test_summary_example_uses_a_supported_absolute_http_url() -> None:
 
 
 def test_composition_examples_do_not_claim_an_unsupported_bounded_tool() -> None:
-    for title_fragment in ("Business dashboard", "System status"):
+    for title_fragment in ("Build a business dashboard", "Check on this machine"):
         _title, _caption, query = _example(title_fragment)
         assert "dice" not in query.lower()
         assert "d20" not in query.lower()

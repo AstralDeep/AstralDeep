@@ -273,6 +273,100 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
         current_surface_socket.reset(token)
 
 
+async def _surface_title(mod, surface_key: str, orch, user_id, params) -> str:
+    """The dialog's heading for this render.
+
+    A surface whose heading depends on what it is showing (an agent's own
+    dialog is headed by that agent's name) declares an async
+    ``title(orch, user_id, params)``; the rest keep their fixed ``TITLE``.
+    It is async because a heading that names a record has to answer the same
+    "may this account see it?" question the body does, and that question
+    reaches the database.
+
+    A title() that raises falls back to ``TITLE`` rather than failing the
+    render — a heading is never worth losing a dialog over, and the fallback
+    reveals nothing.
+    """
+    maker = getattr(mod, "title", None)
+    if callable(maker):
+        try:
+            made = await maker(orch, user_id, params or {})
+            if made:
+                return str(made)
+        except Exception:
+            logger.debug("chrome: surface %s title() failed", surface_key, exc_info=True)
+    return getattr(mod, "TITLE", surface_key)
+
+
+def _surface_sections(mod) -> tuple:
+    """The surface's tab strip: a tuple of ``(key, label)`` string pairs.
+
+    Anything else is dropped. A module that binds ``SECTIONS`` to something
+    other than a tab strip — the User guide imported its own content sections
+    under that name for a while — used to have the dispatcher print a repr of
+    whatever it found across the top of the dialog. A tab strip that cannot be
+    read as one is no tab strip.
+    """
+    raw = getattr(mod, "SECTIONS", ()) or ()
+    if isinstance(raw, (str, bytes, dict)):
+        return ()
+    out = []
+    for entry in raw:
+        if (isinstance(entry, (tuple, list)) and len(entry) == 2
+                and all(isinstance(part, str) for part in entry)):
+            out.append((entry[0], entry[1]))
+        elif isinstance(entry, str):
+            out.append((entry, entry))
+    return tuple(out)
+
+
+def _session_identity(orch, websocket, roles) -> dict:
+    """Who the settings dialog belongs to, for its account block.
+
+    Derived from the SAME validated ``register_ui`` claims the roles come
+    from, through the one shared derivation in ``web_auth``, so the dialog
+    and the shell cannot disagree about who is signed in. Display only.
+    """
+    try:
+        from orchestrator.web_auth import (
+            MOCK_IDENTITY,
+            identity_from_claims,
+            _is_mock,
+        )
+
+        if _is_mock():
+            return dict(MOCK_IDENTITY)
+        return identity_from_claims(orch.ui_sessions.get(websocket) or {}, roles)
+    except Exception:
+        logger.debug("chrome: session identity unavailable", exc_info=True)
+        return {}
+
+
+def _settings_nav_html(roles, surface_key: str, identity=None) -> str:
+    """The settings dialog's left rail for this session, or "" if unavailable.
+
+    The gear opens the dialog instead of a dropdown, so the menu has to travel
+    with every surface the dialog shows. It is built from the same
+    ``build_menu_model`` the shell's gear and the native ``chrome_menu`` frame
+    use, with the same host availability inputs, so what the rail offers can
+    never drift from what the menu offers.
+
+    A rail is navigation, not authority: a failure here leaves the dialog
+    without one rather than taking the surface down, and every entry it draws
+    still goes through the ordinary ``chrome_open`` checks.
+    """
+    try:
+        from webrender.chrome import render_settings_nav
+        from webrender.chrome.menu_model import build_menu_model
+        from orchestrator.chrome_availability import projection_chrome_availability
+
+        model = build_menu_model(roles, **projection_chrome_availability())
+        return render_settings_nav(model, surface_key, identity=identity)
+    except Exception:
+        logger.debug("chrome: settings rail unavailable", exc_info=True)
+        return ""
+
+
 async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str,
                                params: dict, notice_html: str = ""):
     """Web path — server-rendered HTML modal (feature 027; behavior unchanged)."""
@@ -303,13 +397,20 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
     # a footer action row; the ones that declare nothing render exactly as
     # before. Declaring is opt-in per surface module, so a native surface is
     # unaffected either way (this is the web path only).
+    # The rail is the settings menu. A surface that is not one of its entries
+    # (an agent's own dialog, opened from the directory) declares NO_NAV and
+    # renders as a plain dialog, so opening an agent does not look like
+    # opening settings.
+    nav_html = "" if getattr(mod, "NO_NAV", False) else _settings_nav_html(
+        roles, surface_key, _session_identity(orch, websocket, roles))
     await _push_modal(orch, websocket, render_modal_shell(
-        getattr(mod, "TITLE", surface_key), (notice_html or "") + body, surface_key,
+        await _surface_title(mod, surface_key, orch, user_id, params), (notice_html or "") + body, surface_key,
         subtitle=getattr(mod, "SUBTITLE", ""),
         icon=getattr(mod, "ICON", ""),
-        sections=tuple(getattr(mod, "SECTIONS", ()) or ()),
+        sections=_surface_sections(mod),
         footer_html=getattr(mod, "footer_html", lambda: "")()
-        if callable(getattr(mod, "footer_html", None)) else ""))
+        if callable(getattr(mod, "footer_html", None)) else "",
+        nav_html=nav_html))
 
 
 async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str,
@@ -324,7 +425,7 @@ async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str
         await _push_surface(orch, websocket, surface_key, "Not available", False,
                             [_sdui.alert(f"Unknown settings surface: {surface_key}", "error")])
         return
-    title = getattr(mod, "TITLE", surface_key)
+    title = await _surface_title(mod, surface_key, orch, user_id, params)
     if getattr(mod, "ADMIN_ONLY", False) and "admin" not in roles:
         logger.warning("chrome: non-admin %s denied surface %s (native)", user_id, surface_key)
         await _audit_admin_rejection(orch, websocket, user_id, surface_key)
@@ -483,8 +584,9 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
-    if (action.startswith("chrome_note_") or (action == "chrome_open"
-            and isinstance(payload, dict) and payload.get("surface") == "guidance")):
+    if (action.startswith("chrome_note_") or action == "chrome_turn_selection_set"
+            or (action == "chrome_open"
+                and isinstance(payload, dict) and payload.get("surface") == "guidance")):
         from orchestrator.projection_surfaces import get_surface
         return await get_surface("guidance").deliver(orch, websocket, user_id, action,
             payload, request_generation, guidance_navigation=guidance_navigation)

@@ -150,7 +150,7 @@ def off_vs_on_summary(records: List[RunRecord]) -> str:
         off, on = pair
         any_rows = True
         delta = on.asr - off.asr
-        verdict = "✅ no regression" if on.asr <= off.asr else "❌ REGRESSION"
+        verdict = "no regression" if on.asr <= off.asr else "REGRESSION"
         lines.append(
             f"| {rec.key.benchmark} | {off.asr:.3f} | {on.asr:.3f} | "
             f"{delta:+.3f} | {verdict} |")

@@ -30,7 +30,20 @@ class GeneralAgent(BaseA2AAgent):
 
     agent_id = "general-1"
     service_name = "General Agent"
-    description = "Unified agent with patient data, system monitoring, and search capabilities."
+    description = (
+        "Reads this host's CPU, memory and disk, searches Wikipedia and arXiv, "
+        "does arithmetic, restyles the workspace, and reads the files you "
+        "attach — documents, spreadsheets, slides, images and DICOM."
+    )
+    examples = [
+        {"title": "Machine health",
+         "prompt": "Show current system status with CPU and memory metrics"},
+        {"title": "Look something up",
+         "prompt": "Search Wikipedia and arXiv for retrieval-augmented generation "
+                   "and summarize what you find"},
+        {"title": "Read what I attached",
+         "prompt": "Read the spreadsheet I attached and chart the totals by month"},
+    ]
 
     def __init__(
         self,
