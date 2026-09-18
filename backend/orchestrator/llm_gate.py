@@ -59,6 +59,16 @@ def _gated_map(orch) -> dict:
     return m
 
 
+def is_gated(orch, websocket) -> bool:
+    """Is this socket currently held by the mandatory first-run dialog?
+
+    A refusal has to re-push whichever dialog the person is actually looking
+    at; the mandatory one cannot be replaced with the dismissible settings
+    surface without changing what they are allowed to do.
+    """
+    return bool(_gated_map(orch).get(id(websocket)))
+
+
 def _user_sockets(orch, user_id: str) -> list:
     """All live UI sockets registered to ``user_id``."""
     out = []
@@ -76,7 +86,8 @@ def _roles_for(orch, websocket) -> list:
     return roles
 
 
-async def push_setup_dialog(orch, websocket, user_id: str) -> None:
+async def push_setup_dialog(orch, websocket, user_id: str, *,
+                            params_extra: dict | None = None) -> None:
     """Push the mandatory provider-setup dialog to one socket.
 
     Device-aware: web → mandatory ``chrome_render`` modal (no ✕,
@@ -97,6 +108,11 @@ async def push_setup_dialog(orch, websocket, user_id: str) -> None:
     claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}
     principal = (claims.get("preferred_username") or claims.get("email") or "")
     params = {"first_run": True, "principal": principal}
+    # A refusal re-pushes this same dialog carrying what the person already
+    # typed and the reason it was refused. Without that the dialog comes back
+    # empty and unexplained, and this is the dialog that cannot be dismissed.
+    if params_extra:
+        params.update(params_extra)
     if dtype in ("windows", "android", "ios", "macos"):
         from shared.protocol import ChromeSurface
         comps = list(await llm_surface.components(orch, user_id, roles, params) or [])

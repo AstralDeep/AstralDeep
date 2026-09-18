@@ -155,6 +155,32 @@ def device_login():
     raise SystemExit("device code expired without approval")
 
 
+def password_grant(user, password, client):
+    """A direct grant, for an unattended run against a LOCAL realm.
+
+    This is not a way around the sign-in the real realm asks for. It is the
+    ordinary OAuth password grant, and the only realm it is ever pointed at
+    here is one provisioned locally for the qualification, with a throwaway
+    account of its own. The stack verifies the resulting token exactly as it
+    verifies any other: real RS256 signature, real issuer, real ``azp``. No
+    gate is stubbed, weakened or bypassed -- the token is simply issued by a
+    realm this run owns.
+    """
+    form = {"grant_type": "password", "client_id": client,
+            "username": user, "password": password,
+            "scope": "openid profile email"}
+    secret = os.getenv("KC_SECRET", "")
+    if secret:
+        # The web client is confidential, so the grant carries its secret.
+        # A public client (the desktop/watch posture) needs none.
+        form["client_secret"] = secret
+    status, t = _post(AUTH + "/protocol/openid-connect/token", form)
+    if status != 200 or not t.get("access_token"):
+        raise SystemExit("password grant refused: " + json.dumps(t)[:300])
+    say("signed in as " + user + " against " + AUTH)
+    return t["access_token"]
+
+
 def claims_of(token):
     """Non-validating decode, for the report. The stack does the real check."""
     try:
@@ -163,6 +189,19 @@ def claims_of(token):
         return json.loads(base64.urlsafe_b64decode(part).decode())
     except Exception:
         return {}
+
+
+def ui_event(action, payload):
+    """One ui_event frame, with the identifiers the dispatcher requires.
+
+    Feature 065's durable dispatch drops any ui_event that does not carry a
+    canonical uuid4 ``submission_id`` and ``request_generation`` -- silently,
+    with `return None` and no log line, which is exactly as confusing to debug
+    as it sounds. A real client mints both per submission; so does this.
+    """
+    return {"type": "ui_event", "action": action, "payload": payload,
+            "submission_id": str(uuid.uuid4()),
+            "request_generation": str(uuid.uuid4())}
 
 
 def now_utc():
@@ -200,8 +239,7 @@ class Walk:
 
     async def act(self, action, payload, seconds=20.0):
         """Send one ui_event and return (frames, the longest html in them)."""
-        await self.ws.send(json.dumps({
-            "type": "ui_event", "action": action, "payload": payload}))
+        await self.ws.send(json.dumps(ui_event(action, payload)))
         frames = await self.collect(seconds)
         html = ""
         for f in frames:
@@ -211,7 +249,66 @@ class Walk:
                     html = v
         return frames, html
 
-    # -- T021 / T069 / T062 sections 2 and 2a ---------------------------
+    # -- T069 / US7, on the dialog a new account actually meets -----------
+
+    async def first_run(self, creds):
+        """The mandatory first-run dialog, and the acknowledgment gate on it.
+
+        A new account meets this before anything else: until a provider is
+        saved, every chrome action is answered with this dialog instead. That
+        makes it the honest place to test the acknowledgment, and it is the
+        quickstart's own section 2a step 5 -- "open the first-run LLM dialog as
+        a new test user".
+        """
+        _, html = await self.act("chrome_open", {"surface": "llm"})
+        mandatory = 'data-mandatory="1"' in html
+        self.record("T069", "first-run dialog shown", mandatory,
+                    "a new account is met by the mandatory dialog" if mandatory
+                    else "no mandatory dialog; this account is already set up")
+        self.record("T069", "acknowledgment on the first-run dialog",
+                    ACK_FIELD in html,
+                    "the data-sharing field is on the first-run dialog"
+                    if ACK_FIELD in html else "no " + ACK_FIELD + " field")
+        # Feature 089 moved the surface actions into the dialog footer; a
+        # dialog that cannot be dismissed must still offer a way to save.
+        self.record("T069", "first-run dialog has a save action",
+                    "chrome_llm_save" in html,
+                    "the dialog offers a save action"
+                    if "chrome_llm_save" in html
+                    else "MANDATORY DIALOG WITH NO SAVE ACTION")
+
+        api_key = creds.get("OPENAI_API_KEY", "")
+        base = {"provider": creds.get("LLM_PROVIDER", "custom"),
+                "api_key": api_key,
+                "base_url": creds.get("OPENAI_BASE_URL", ""),
+                "model": creds.get("LLM_MODEL", "")}
+        if not api_key:
+            self.record("T069", "acknowledgment gate", False,
+                        "no provider credential supplied; the gate cannot be "
+                        "exercised")
+            return
+
+        # Save without the box: refused, and no provider request is made.
+        fields = dict(base)
+        fields[ACK_FIELD] = False
+        _, html = await self.act("chrome_llm_save", {"fields": fields}, 60)
+        self.record("T069", "save without acknowledgment", ACK_ERROR in html,
+                    "refused with the documented message" if ACK_ERROR in html
+                    else "expected the acknowledgment refusal; got: " + html[:200])
+
+        # Save with the box: proceeds, and clears the first-run gate.
+        fields = dict(base)
+        fields[ACK_FIELD] = True
+        _, html = await self.act("chrome_llm_save", {"fields": fields}, 90)
+        ok = "saved" in html.lower() and "rejected" not in html.lower()
+        self.record("T069", "save with acknowledgment", ok,
+                    "the save proceeds once acknowledged" if ok
+                    else "save did not report success: " + html[:200])
+        self.record("FR-035", "provider key never echoed", api_key not in html,
+                    "the provider key does not appear in the surface"
+                    if api_key not in html else "KEY MATERIAL IN THE SURFACE")
+
+    # -- T021 / T062 section 2 -------------------------------------------
 
     async def settings(self):
         _, html = await self.act("chrome_open", {"surface": "llm"})
@@ -223,17 +320,9 @@ class Walk:
                     "status reads " + repr(STATUS_UNSET) if STATUS_UNSET in html
                     else "initial status is not the unset line (a key may "
                          "already be saved for this user)")
-        self.record("T069", "acknowledgment present", ACK_FIELD in html,
+        self.record("T021", "acknowledgment present", ACK_FIELD in html,
                     "the data-sharing field is on the surface" if ACK_FIELD in html
                     else "no " + ACK_FIELD + " field found")
-
-        # T069: a save without the box must refuse, and reach no provider.
-        _, html = await self.act("chrome_typesafe_save", {
-            "fields": {KEY_FIELD: "sk-invalid-089-walkthrough", ACK_FIELD: False}})
-        self.record("T069", "save without acknowledgment", ACK_ERROR in html,
-                    "refused with the documented message" if ACK_ERROR in html
-                    else "expected the acknowledgment refusal; got: "
-                         + html[:200])
 
         # T021: an invalid key is rejected by TypeSafe, status unchanged.
         _, html = await self.act("chrome_typesafe_save", {
@@ -294,9 +383,8 @@ class Walk:
         started = now_utc()
         for i in range(count):
             sent = time.perf_counter()
-            await self.ws.send(json.dumps({
-                "type": "ui_event", "action": "chat_message",
-                "payload": {"message": prompts[i % len(prompts)]}}))
+            await self.ws.send(json.dumps(ui_event(
+                "chat_message", {"message": prompts[i % len(prompts)]})))
             first = None
             done = False
             stop = time.monotonic() + 120
@@ -342,7 +430,7 @@ class Walk:
                 "completed": completed, "hung": hung}
 
 
-async def run(token, key, turns):
+async def run(token, creds, turns):
     import websockets
 
     report = {"steps": [], "turns": None}
@@ -377,7 +465,9 @@ async def run(token, key, turns):
         say("registered over the socket; the 088 gate accepted the token.")
         say("")
 
-        walk = Walk(ws, key)
+        walk = Walk(ws, creds.get("TYPESAFE_API_KEY", ""))
+        await walk.first_run(creds)
+        say("")
         await walk.settings()
         say("")
         report["turns"] = await walk.turns(turns)
@@ -392,25 +482,54 @@ def main():
     if "--turns" in sys.argv:
         turns = int(sys.argv[sys.argv.index("--turns") + 1])
 
-    # The key reaches the settings save handler and nothing else: never an
-    # environment variable, never a file this writes, never a log line, never
-    # the report. On a terminal it is typed; otherwise it is read from stdin,
-    # which is the piped entry path FR-044 allows for the bench scripts.
+    # Credentials reach the settings save handlers and nothing else: never an
+    # environment variable for an Astral process, never a file this writes,
+    # never a log line, never the report. Read FIRST, before the device wait,
+    # so stdin is not left dangling.
+    #
+    # On a terminal only the TypeSafe key is asked for. Otherwise the whole
+    # owner env file is piped in -- the entry path FR-044 allows -- and the
+    # four values used are picked out of it. Piping matters for more than
+    # convenience: the account that approves the device code may never have
+    # used this stack, and without a provider every turn would die at the
+    # first-run gate and waste the run.
+    creds = {}
     if sys.stdin is not None and sys.stdin.isatty():
         say("Paste the TypeSafe API key.")
-        key = getpass.getpass("TypeSafe key (hidden): ").strip()
+        creds["TYPESAFE_API_KEY"] = getpass.getpass("TypeSafe key (hidden): ").strip()
+        say("No provider credential on a terminal run: the signed-in account "
+            "must already have one configured, or the turns will not run.")
     else:
-        key = (sys.stdin.readline() or "").strip()
-        say("read the TypeSafe key from stdin (" + str(len(key)) + " characters)")
-    if not key:
-        raise SystemExit("no key supplied on the terminal or stdin")
+        wanted = ("TYPESAFE_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+                  "LLM_MODEL", "LLM_PROVIDER")
+        for line in sys.stdin:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            name = name.strip()
+            if name in wanted:
+                creds[name] = value.strip().strip('"').strip("'")
+        say("read " + str(len(creds)) + " of " + str(len(wanted))
+            + " known settings from stdin: " + ", ".join(sorted(creds)))
+    if not creds.get("TYPESAFE_API_KEY"):
+        raise SystemExit(
+            "no TYPESAFE_API_KEY on the terminal or stdin. Pipe the owner env "
+            "file in, or run with -it to be prompted.")
 
-    token = device_login()
+    # Unattended when the realm is a local one this run provisioned; the
+    # device code otherwise, because the real realm wants a person.
+    kc_user = os.getenv("KC_USER", "")
+    if kc_user:
+        token = password_grant(kc_user, os.getenv("KC_PASS", ""),
+                               os.getenv("KC_CLIENT", "astral-frontend"))
+    else:
+        token = device_login()
     c = claims_of(token)
     say("token claims: azp=" + str(c.get("azp"))
         + " sub=" + str(c.get("sub"))[:8] + "...")
     say("")
-    report = asyncio.run(run(token, key, turns))
+    report = asyncio.run(run(token, creds, turns))
     report["azp"] = c.get("azp")
     ok = [s for s in report["steps"] if s.get("ok")]
     report["summary"] = {"passed": len(ok), "of": len(report["steps"])}

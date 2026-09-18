@@ -341,3 +341,57 @@ def test_the_turn_path_never_reads_the_acknowledgment_store() -> None:
             body = ast.unparse(node)
             assert "_data_sharing_store" not in body
             assert "require_acknowledgment" not in body
+
+# -- the durable credential path is gated too ----------------------------
+
+
+def test_the_durable_credential_operation_applies_the_gate() -> None:
+    """The gate must run where the web client's save actually executes.
+
+    A credential save is not handled by the surface handler in a browser: it
+    is admitted as a durable operation and executed by
+    ``_handle_llm_credential_operation``. The gate lived only in the surface
+    handlers, so an ordinary browser save skipped it entirely -- a
+    never-acknowledged user could store provider credentials, and the endpoint
+    probe reached the provider before anything checked. Both credential
+    actions travel that path, so the gate belongs at the top of it.
+    """
+    import ast
+    import inspect
+    import pathlib as _p
+
+    from orchestrator import orchestrator as orch_module
+
+    source = _p.Path(orch_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    target = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AsyncFunctionDef)
+                and node.name == "_handle_llm_credential_operation"):
+            target = node
+            break
+    assert target is not None, "_handle_llm_credential_operation not found"
+
+    called = [
+        n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, "attr", "")
+        for n in ast.walk(target) if isinstance(n, ast.Call)
+    ]
+    assert "_require_acknowledgment" in called, (
+        "the durable credential path must run the data-sharing gate"
+    )
+
+    # And it must run BEFORE the key is resolved, so no provider request is
+    # made on the way to a refusal.
+    def line_of(name):
+        return min((n.lineno for n in ast.walk(target)
+                    if isinstance(n, ast.Call)
+                    and (getattr(n.func, "id", "") == name
+                         or getattr(n.func, "attr", "") == name)), default=None)
+
+    gate, resolve = line_of("_require_acknowledgment"), line_of("_resolve_api_key")
+    assert gate is not None
+    if resolve is not None:
+        assert gate < resolve, (
+            "the gate must run before the API key is resolved and probed"
+        )
+    _ = inspect  # the import documents that this is a source-level contract
