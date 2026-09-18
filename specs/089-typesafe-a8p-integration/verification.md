@@ -365,6 +365,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T070 | FR-044 | Deep + candidate stack | auth posture reverted; T059 scan re-read | `USE_MOCK_AUTH` back to `false`, shell behind the real gate (302); **zero** key material in any log or artifact. The deletion itself is left as the owner's decision while qualification is blocked (§8.14) | local |
 | 2026-09-17 | T062 | — | Deep + candidate stack | quickstart walked | 7 of 9 sections completed; §2 and §2a not reached (§7c). Two corrections made: §7's command and the env-inert test's working directory | local |
 | 2026-09-17 | T058 | SC-008 | all four | full suites, each in its own image and database | Deep **153 failed / 10463 passed vs 162 / 10072 at baseline — 0 new**; Projection **4 vs 5 — 0 new**; Plane 2502 passed, 0 new; Primitives 69 passed. Two product defects found and fixed (§8.10.1) | local |
+| 2026-09-17 | T055 | SC-010, SC-012 | candidate stack @ final pin | both harnesses re-run against the rebuilt image | **98.5 / 98.5 / 96.5%**, 0 CSP violations; responsive **13/13**; reports refreshed in `reference/reports/` | local |
 
 ### Measurement sections
 
