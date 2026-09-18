@@ -266,11 +266,11 @@ a decision only the owner can make. Nothing below is blocked on code.
 
 | Task | What it needs | Why it cannot be done without the owner |
 |---|---|---|
-| T004 (second half) | A local origin the realm will redirect to | The seam half is measured (§8.16). The end-to-end half needs turns that reach the markers, and no turn can run on this stack; see §7c. |
+| T004 (second half) | **One human sign-in** on the local stack | The seam half is measured (§8.16). The end-to-end half needs turns that reach the markers. A turn can run (§7c, corrected); it needs an authenticated person, and this session holds no realm account. |
 | T015 | The TypeSafe key, piped to the bench script over stdin | Measures real p50/p95/p99 against question and option counts, and sets `ATTEMPT_TIMEOUT_MS`, `MAX_ROUTING_AGENTS`, `MAX_TOOLS_PER_AGENT`, the forced-choice allowlist and the tier thresholds. The values in code now are provisional and labelled as such. |
-| T021, T069 | A local origin the realm will redirect to | **Not a credential problem.** See §7c: no chat turn can run on this stack under either auth posture, so the walkthroughs cannot be driven. |
+| T021, T069 | **One human sign-in** on the local stack | **Not a credential problem, and not a realm-configuration problem** — §7c corrected both. The walkthroughs need an authenticated session, which needs a person with a realm account. |
 | T028 | The TypeSafe key | Tier calibration to SC-005 (>=95% high-tier acceptance) against the T014 labels. |
-| T032 | A local origin the realm will redirect to | SC-001, SC-003 and SC-004 are measured at the seam (§8.16) and pass. SC-002 needs the overlap window, which needs a turn; see §7c. |
+| T032 | **One human sign-in** on the local stack | SC-001, SC-003 and SC-004 are measured at the seam (§8.16) and pass. SC-002 needs the overlap window, which needs a turn, which needs an authenticated person; see §7c. |
 | T036 | The TypeSafe key | Security calibration to SC-006. **`REFUSE_TIER_ENABLED` stays `False` until this passes**, and a would-be refusal is served one step down as `confirm_tools`. |
 | T070 | The owner's instruction on whether to keep the credentials | Removes them from the candidate stack at the end of qualification. |
 
@@ -294,33 +294,81 @@ Only the pattern is committed. No key and no prefix sample appears in any tracke
 regression test now carries a synthetic key **in the real shape** (invented prefix letters) so
 this class of miss fails a test rather than reaching a log file.
 
-### 7c. No chat turn can run on the local candidate stack (found 2026-09-17)
+### 7c. A chat turn CAN run on this stack. The earlier finding was wrong (corrected 2026-09-17)
 
-This blocks T021, T069, the end-to-end half of T004, SC-002 in T032, and T062. It is an
-environment fact, not a defect, and neither posture has a way around it:
+**Superseded.** The first version of this section said no chat turn could run locally, and that
+unblocking it needed a realm administrator to register a redirect URI. Both halves are wrong,
+and the error was mine: I tested one spelling of one flow and generalised from it.
 
-**With real auth** (`USE_MOCK_AUTH=false`, the stack's normal setting) the shell redirects to
-the realm and Keycloak answers `Invalid parameter: redirect_uri`. The client
-`astral-frontend` has no `http://127.0.0.1:8001/auth/callback` registered, so the sign-in
-cannot complete and the shell is never served.
+**The redirect URI was already registered — under a different spelling.** Keycloak matches
+`redirect_uri` as an exact string, and `127.0.0.1` and `localhost` are different strings. Every
+local run used `http://127.0.0.1:8001`, which the realm refuses. `docs/keycloak-realm-settings.md`
+has said all along that `http://localhost:8001/auth/callback` is the registered dev URI, and it
+is. Probing the realm's authorize endpoint with each spelling, same client, same parameters:
 
-**With mock auth** the shell is served, but a chat turn fails at
-`SkillCatalogError("skill_lookup_unavailable")` before it reaches any 089 code. The cause is
-`turn_guidance_authority.verify_delivery`, which calls
-`auth.verify_production_token(origin.token)`; the mock literal `dev-token` is not a production
-token, and refusing it is the **correct** behaviour. The 088 guidance authority is meant to
-require a real token, and weakening that to make a measurement possible would be trading a
-security property for a number.
+| `redirect_uri` | Realm response |
+|---|---|
+| `http://127.0.0.1:8001/auth/callback` | **HTTP 400**, `Invalid parameter: redirect_uri` |
+| `http://localhost:8001/auth/callback` | **HTTP 200**, the realm's sign-in form |
 
-What would unblock it, either one:
+`web_auth._redirect_uri` builds the value from `request.base_url`, so reaching the *unmodified*
+stack at `http://localhost:8001` produces the registered spelling by itself. Driven end to end,
+`GET /` now redirects to `/auth/login`, which redirects to the realm, which serves the login
+form. No code change, no config change, no realm change — only the hostname in the address bar.
 
-1. register `http://127.0.0.1:8001/auth/callback` (or a host the owner prefers) as a redirect
-   URI for `astral-frontend` in the Astral realm; or
-2. run the candidate stack behind an origin that is already registered.
+**And the authorization-code flow is not the only way in.** Feature 068's kiosk sign-in uses the
+RFC 8628 device authorization grant against the public client `astral-watch`, which needs no
+redirect URI at all. The realm advertises `urn:ietf:params:oauth:grant-type:device_code`, and
+`astral-watch` accepts a device authorization request (with PKCE, which it requires) and returns
+a verification URI on a 600-second window. `astral-watch` is already in this deployment's
+`KEYCLOAK_ALLOWED_AZP`, so the resulting token passes `is_azp_allowed`, `verify_production_token`
+and the 088 guidance authority's `verify_delivery` unchanged.
 
-Until then the layout work is qualified (it needs no turn: the parity harness renders through
-the client's own component path), and the routing work is qualified at the seam, which is where
-every latency criterion is actually defined.
+**What is actually required is a human signing in once** — which is the design working, not a
+defect. Both routes end at a credential prompt that only a person holding a realm account can
+answer. This session holds no realm credentials; the owner-designated credential source contains
+LLM and TypeSafe keys only, and no realm account.
+
+Two things this section will not do to get a number. Neither is a close call:
+
+* **Mint a service-account token.** `client_credentials` with the web client's secret would
+  produce a genuine realm-signed token, and this deployment's allow-list is deliberately three
+  *human-interactive* clients. Standing a service account in for a human turn would make the
+  SC-002 measurement unrepresentative as well as going around the gate.
+* **Forge a session from the database.** The stack persists sessions; reading one out and
+  presenting it as a cookie would circumvent authentication on the owner's behalf without being
+  asked. The original section was right that a security property is not worth a number; that
+  judgment survives its factual errors.
+
+**So the remaining owner action is much smaller than this section previously claimed.** It is
+not a realm configuration change and needs no administrator: open `http://localhost:8001` and
+sign in, or approve one device code. Everything downstream is staged and waiting.
+
+`scripts/verification/complete_089_qualification.py` is that staging. **The owner runs it, not
+the implementer** — the one step nobody else can take is approving the code with their own realm
+account:
+
+```bash
+docker cp scripts/verification/complete_089_qualification.py astraldeep:/tmp/complete_089.py
+docker exec -it astraldeep python /tmp/complete_089.py
+```
+
+It prints a URL and a short code, and once approved it registers over the WebSocket the way a
+native client does, opens the LLM settings surface and drives one real turn, writing
+`/tmp/089_report.json`. The token lives in that process's memory only; the script never prints
+it and never writes it down.
+
+It is deliberately a **first probe rather than the whole walkthrough**. It establishes that the
+gate opens and captures the exact frame shapes the remaining assertions must be written against.
+Those shapes have never been observed on this stack, and guessing them into a longer script
+would produce confident-looking noise instead of evidence.
+
+One boundary worth recording, because it shaped the outcome: the implementer's own attempt to
+run this flow was **refused by the operator sandbox as credential exploration**, which is the
+correct call on the shape of the action — a process completing a device-code flow and reading
+the resulting token looks exactly like credential harvesting, whoever is doing it. Handing the
+script to the owner is the better arrangement regardless of the refusal.
+
 
 
 ## 8. Evidence log
@@ -366,6 +414,9 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T062 | — | Deep + candidate stack | quickstart walked | 7 of 9 sections completed; §2 and §2a not reached (§7c). Two corrections made: §7's command and the env-inert test's working directory | local |
 | 2026-09-17 | T058 | SC-008 | all four | full suites, each in its own image and database | Deep **153 failed / 10463 passed vs 162 / 10072 at baseline — 0 new**; Projection **4 vs 5 — 0 new**; Plane 2502 passed, 0 new; Primitives 69 passed. Two product defects found and fixed (§8.10.1) | local |
 | 2026-09-17 | T055 | SC-010, SC-012 | candidate stack @ final pin | both harnesses re-run against the rebuilt image | **98.5 / 98.5 / 96.5%**, 0 CSP violations; responsive **13/13**; reports refreshed in `reference/reports/` | local |
+| 2026-09-17 | T062 | §7c | realm (read-only probe) | `GET /protocol/openid-connect/auth` with each local spelling | `127.0.0.1` → **400 `Invalid parameter: redirect_uri`**; `localhost` → **200, the sign-in form**. The dev redirect URI was registered all along; every local run used the other spelling. **§7c corrected** | local |
+| 2026-09-17 | T062 | §7c | candidate stack + realm | `GET http://localhost:8001/` followed through | 302 → `/auth/login` → realm → **the realm's login form**, on the unmodified stack. No code, config or realm change — only the hostname | local |
+| 2026-09-17 | T062 | §7c | realm (read-only probe) | RFC 8628 device authorization for `astral-watch` | **accepted** (PKCE required), 600 s window. Needs no redirect URI, and `astral-watch` is already in `KEYCLOAK_ALLOWED_AZP`, so the token passes `verify_production_token` and the 088 guidance authority unchanged | local |
 
 ### Measurement sections
 
@@ -660,10 +711,11 @@ are counted as drawn, because `repeat(2, minmax(0px, 1fr))` is not three columns
 
 #### 8.15.6 Local auth posture for this run
 
-The candidate stack ran with `USE_MOCK_AUTH=true`. The registered Keycloak client has no
-`http://127.0.0.1:8001/auth/callback` redirect URI, so the real OIDC flow cannot complete at
-this origin, and the layout qualification does not depend on which identity provider issued the
-session. The setting is local to the candidate stack and is reverted with the stack; the
+The candidate stack ran with `USE_MOCK_AUTH=true`, and the layout qualification does not
+depend on which identity provider issued the session. The reason given here originally — that
+the realm had no redirect URI for this stack — was wrong: it had one for `localhost`, and the
+run used `127.0.0.1`. See §7c. Nothing measured in §8.15 changes; the parity harness renders
+through the client's own component path and never signs in. The setting is local to the candidate stack and is reverted with the stack; the
 profile widget shows the mock principal's display name, which is what `session_identity`
 returns for it.
 
