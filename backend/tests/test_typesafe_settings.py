@@ -369,10 +369,27 @@ def test_the_llm_save_handler_still_unlocks_the_gate() -> None:
     assert "unlock_after_save" in _handler_source("_handle_save")
 
 
-def test_the_save_is_a_durable_credential_operation() -> None:
+def test_the_save_is_not_routed_to_an_executor_that_cannot_perform_it() -> None:
+    """The TypeSafe save must reach a handler that actually saves.
+
+    It was listed in ``_LLM_CREDENTIAL_SAVE_ACTIONS`` so it would travel the
+    durable credential path, on the reasoning that it is the same kind of
+    write. The reasoning was sound; the change was not. That set routes an
+    action to ``_handle_llm_credential_operation``, which only knows how to
+    perform an LLM config set, and the TypeSafe store has no fenced commit for
+    it to call. A save from the web client therefore did nothing at all -- no
+    probe, no persistence, no message, no log line.
+
+    This test replaces the one that pinned the routing. Nothing pinned the
+    routing to an executor that could honour it, which is how the feature's
+    headline capability shipped inert. Restoring durability means adding a
+    fenced TypeSafe commit first, and then this test changes with it.
+    """
     from orchestrator.orchestrator import _LLM_CREDENTIAL_SAVE_ACTIONS
 
-    assert "chrome_typesafe_save" in _LLM_CREDENTIAL_SAVE_ACTIONS
+    assert "chrome_typesafe_save" not in _LLM_CREDENTIAL_SAVE_ACTIONS
+    # The handler it reaches instead is the one that performs the save.
+    assert "save_key" in _handler_source("_handle_typesafe_save")
 
 
 # -- probe behavior -------------------------------------------------------

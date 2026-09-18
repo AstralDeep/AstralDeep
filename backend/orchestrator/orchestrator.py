@@ -227,10 +227,17 @@ class _PersonalAgentExitWaiter:
         repr=False,
     )
 _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
-    # Feature 089 adds the TypeSafe save. It travels the same durable
-    # credential-operation path as the LLM save because it is the same kind of
-    # thing: one write that must not be replayed and must not be lost.
-    {"chrome_llm_save", "llm_config_set", "chrome_typesafe_save"}
+    # Feature 089 originally listed the TypeSafe save here too, reasoning that
+    # it is the same kind of write. The reasoning was sound and the change was
+    # not: this set routes an action to _handle_llm_credential_operation, which
+    # only knows how to perform an LLM config set, and the TypeSafe store has no
+    # fenced commit for it to call. A TypeSafe save from the web client
+    # therefore did nothing at all -- no probe, no persistence, no message, no
+    # log line -- which is to say the feature's headline capability did not
+    # work through its own UI. It travels the ordinary chrome dispatch to
+    # _handle_typesafe_save until a fenced TypeSafe commit exists to make the
+    # durable path real.
+    {"chrome_llm_save", "llm_config_set"}
 )
 
 _READ_ONLY_UI_ACTIONS = frozenset(
