@@ -100,8 +100,10 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
             if frame.get("type") in {"auth_required", "error"}:
                 raise SystemExit(
                     "register_ui refused: "
-                    f"{frame.get('message') or frame.get('type')}. The stack is "
-                    "running real auth; this driver needs the development posture."
+                    f"{frame.get('message') or frame.get('type')}. Pass --token "
+                    "a real access token: the mock literal is refused by the 088 "
+                    "guidance authority by design. See verification.md 7c for the "
+                    "two ways to get one without a realm configuration change."
                 )
 
         for index in range(turns):
