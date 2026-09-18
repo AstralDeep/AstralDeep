@@ -254,11 +254,47 @@ class TypeSafeAdapterClient:
 _adapter_client: Optional[TypeSafeAdapterClient] = None
 
 
+def _maybe_fault_injecting(client: TypeSafeAdapterClient) -> Any:
+    """Wrap the client when the quickstart's fault switch is set.
+
+    T013 added `ASTRAL_TEST_TYPESAFE_FAULT` so quickstart section 4 can be walked
+    without editing code, but nothing ever installed the wrapper, so the switch
+    did nothing on a running stack. This is that installation.
+
+    It stays inert unless the variable is set, and `configured_fault` itself
+    returns None in production posture -- a fault injector a production process
+    respects is a denial-of-service control with a friendly name. The import is
+    deliberately local and failure-tolerant: the wrapper lives under `tests/`,
+    which a trimmed deployment image may not carry, and its absence must never
+    keep the real client from being created.
+    """
+    import os
+
+    if not (os.getenv("ASTRAL_TEST_TYPESAFE_FAULT") or "").strip():
+        return client
+    try:
+        from tests.fakes.typesafe_fake import FaultInjectingClient, configured_fault
+    except Exception:  # pragma: no cover - absent in a trimmed image
+        logger.warning(
+            "ASTRAL_TEST_TYPESAFE_FAULT is set but the fault injector is not "
+            "importable; continuing with the real client"
+        )
+        return client
+    if configured_fault() is None:
+        return client
+    logger.warning(
+        "TypeSafe fault injection is ACTIVE (%s). This is a development-only "
+        "switch; routing calls will fail deliberately.",
+        os.environ.get("ASTRAL_TEST_TYPESAFE_FAULT"),
+    )
+    return FaultInjectingClient(client)
+
+
 def adapter_client() -> TypeSafeAdapterClient:
     """Return the process-wide adapter client, creating it on first use."""
     global _adapter_client
     if _adapter_client is None:
-        _adapter_client = TypeSafeAdapterClient()
+        _adapter_client = _maybe_fault_injecting(TypeSafeAdapterClient())
     return _adapter_client
 
 
