@@ -42,6 +42,39 @@ TOOL_B = "get_daily_forecast"
 # -- harness -------------------------------------------------------------
 
 
+#: Platform meta-tools that the orchestrator injects into EVERY chat turn when
+#: their flags are on (agentic creation, chat memory, scheduling, desktop
+#: codegen). They are not part of any agent card, so a test that asserts "round
+#: one saw the full eligible list" has to account for them or pin them off.
+#:
+#: Pinning them off is what this fixture does, and it is deliberate: these tests
+#: are about what TypeSafe routing does to the tool list, not about which
+#: platform tools a given deployment enables. Without it the expectations below
+#: silently depend on deployment configuration -- which is exactly how they came
+#: to pass in CI and in the T058 suite run (whose `docker run --env-file` left
+#: the flags unparseable, hence false) while failing in any environment that
+#: reads the same `.env` through compose. See verification.md 7i.
+_PLATFORM_META_TOOL_FLAGS = (
+    "agentic_creation",
+    "memory_chat",
+    "scheduling_chat",
+    "desktop_codegen",
+)
+
+
+@pytest.fixture(autouse=True)
+def platform_meta_tools_disabled(monkeypatch):
+    """Keep the eligible tool list to the registered agent's own tools."""
+    from shared.feature_flags import flags as global_flags
+
+    original = global_flags.is_enabled
+    monkeypatch.setattr(
+        global_flags,
+        "is_enabled",
+        lambda name: False if name in _PLATFORM_META_TOOL_FLAGS else original(name),
+    )
+
+
 @pytest.fixture
 def orch(orchestrator_factory):
     o = orchestrator_factory()
@@ -342,6 +375,65 @@ async def test_round_two_always_sees_the_full_eligible_list(
     assert first == [TOOL_A]
     assert sorted(second) == sorted([TOOL_A, TOOL_B])
     assert "tool_choice" not in calls[1]["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_narrowing_also_removes_the_platform_meta_tools(
+    orch, monkeypatch, user_skills_disabled
+):
+    """With the platform meta-tools ON, round one is still only the routed tool.
+
+    Every other test in this module pins the meta-tools off so its expectations
+    say what they mean. This one deliberately turns them back on, because the
+    interaction is real product behaviour and nothing else covers it: a keyed
+    high-tier turn narrows away `remember`, `create_capability`,
+    `schedule_recurring_task` and friends along with the unrouted agent tools,
+    and round two gets all of them back. See verification.md 7i.
+    """
+    from shared.feature_flags import flags as global_flags
+
+    narrowed = global_flags.is_enabled  # the autouse fixture's view
+    monkeypatch.setattr(
+        global_flags,
+        "is_enabled",
+        lambda name: True if name in _PLATFORM_META_TOOL_FLAGS else narrowed(name),
+    )
+
+    _register(orch)
+    _install_key(orch)
+    _install_fake(
+        orch, monkeypatch, FakeTypeSafeClient(default=high_confidence(AGENT, TOOL_A))
+    )
+
+    replies = [
+        _msg(tool_calls=[SimpleNamespace(
+            id="c1", function=SimpleNamespace(name=TOOL_A, arguments="{}")
+        )]),
+        _msg(content="all done"),
+    ]
+    calls = []
+
+    async def fake_llm(websocket, messages, tools_desc=None, **kwargs):
+        calls.append({"tools_desc": tools_desc, "kwargs": dict(kwargs)})
+        return replies[min(len(calls) - 1, len(replies) - 1)], _usage()
+
+    monkeypatch.setattr(orch, "_call_llm", fake_llm)
+    monkeypatch.setattr(orch, "execute_single_tool", AsyncMock(return_value=None))
+
+    await _turn(orch, _ws(orch), f"ts-{uuid.uuid4().hex[:8]}")
+
+    assert len(calls) >= 2
+    first = [(e.get("function") or {}).get("name") for e in (calls[0]["tools_desc"] or [])]
+    second = [(e.get("function") or {}).get("name") for e in (calls[1]["tools_desc"] or [])]
+
+    # Round one: the routed tool alone -- no agent siblings, no meta-tools.
+    assert first == [TOOL_A]
+    # Round two: the agent's tools back, and the meta-tools with them.
+    assert {TOOL_A, TOOL_B} <= set(second)
+    assert "create_capability" in second, (
+        "round two should restore the platform meta-tools; if this fails the "
+        "meta-tool flags are off and this test is no longer testing anything"
+    )
 
 
 # -- turns that must not call at all --------------------------------------
