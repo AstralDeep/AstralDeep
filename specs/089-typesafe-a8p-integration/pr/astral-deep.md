@@ -88,7 +88,7 @@ Real-service latency: **p50 186–240 ms, p95 205–365 ms**, near-flat from 4 t
 | Criterion | Result |
 |---|---|
 | SC-001 — unkeyed turns unchanged | **PASS**. 0 calls, 0.0 ms p95, with and without the kill switch. The first progress frame is emitted on accept, *before* the routing seam opens, so routing cannot delay it. |
-| SC-002 — keyed added wait ≤ 150 ms | **Outstanding.** See below. |
+| SC-002 — keyed added wait ≤ 150 ms | **PASS**. 203 keyed turns driven through the real socket: added wait `max(0, routing − preparation)` is **0.0 ms at p50, p95 and max**. Every routing call finished inside the preparation it overlapped. |
 | SC-003 — ≤ 1.5 s under every injected failure | **PASS**. Seven failure modes, 25 turns each, all inside the budget, no hung turn, no decision from a failed call. |
 | SC-004 — ≤ 5 ms once the circuit is open | **PASS**. 0.0 ms p95, 0 calls. |
 | SC-005 — ≥ 95% high-tier acceptance | **PASS**. 1.000 (11/11); agent and tool accuracy 1.000. |
@@ -96,22 +96,25 @@ Real-service latency: **p50 186–240 ms, p95 205–365 ms**, near-flat from 4 t
 | SC-007 — no key escapes | **PASS**. 0 hits for a synthetic canary or its prefix across 407 tests, log records, credential value objects, artifacts and the container log. |
 | SC-011 — no client or workflow change | **PASS**. 0 across all five repositories, 197 changed files. |
 
-### SC-002 is outstanding, and why
+### How SC-002 was measured
 
-The keyed seam's p95 is 274.6 ms **with nothing overlapping it**. That is an
-upper bound, not the "added wait" the criterion bounds: the turn opens routing
-early and collects the decision several hundred lines later, after the history
-load, tool assembly, permission checks and prompt build — all of which is time
-the routing call was already spending. The added wait is
-`max(0, routing − preparation)`, and preparation has not been measured.
+The keyed seam's p95 is 274.6 ms **with nothing overlapping it** — an upper bound, not the
+"added wait" the criterion bounds. The turn opens routing early and collects the decision
+several hundred lines later, after the history load, tool assembly, permission checks and prompt
+build, all of which is time the routing call was already spending. So the added wait is
+`max(0, routing − preparation)`, paired **per turn** — percentiles of a difference are not the
+difference of percentiles.
 
-It has not been measured because **no chat turn can run on the local candidate
-stack** (verification.md §7c): with real auth the realm rejects the local
-redirect URI, and with mock auth the 088 guidance authority correctly refuses
-the mock token. `scripts/verification/typesafe_turn_timeline.py` is written and does the
-correlation; it is ready the moment a turn can complete.
+Across 203 keyed turns driven over the same WebSocket the web client uses, that quantity was
+**0.0 ms on every single turn**. Routing never finished later than the preparation it overlapped,
+so it never delayed the first model call at all.
 
-**SC-002 is recorded as outstanding, not as passed.**
+Read it with three qualifications, all recorded in verification.md §7f–§7g and §8.16: the local
+posture is the product's own `USE_MOCK_AUTH` development path, which is not evidence about the
+production realm; `FF_USER_SKILLS` and the four platform meta-tool flags were off for the batch,
+which makes preparation *shorter* and the added wait *larger*, so the number is conservative;
+and the client-side half — Send to the first frame that puts something on screen — is **9.6 ms
+at p50**, on a frame emitted when the turn is accepted, before the routing seam opens.
 
 ### The refusal tier is disabled
 
@@ -123,7 +126,7 @@ call", so the signal is not lost.
 
 ---
 
-## Two defects this work found in itself
+## Five defects this work found in itself
 
 **The committed key pattern was wrong.** The first TypeSafe pattern was
 inferred from other vendors' prefixes. Checked against a real key, **it did
@@ -135,6 +138,33 @@ and is regression-tested with a synthetic key in the real shape.
 
 **ROTE did not enforce web-only for un-negotiated clients.** Fixed in
 AstralProjection; described in that PR.
+
+**The data-sharing gate never ran on the path the web client uses.** US7's gate lived in the
+surface handlers; a browser save is admitted as a durable operation and executed elsewhere,
+which never consulted it. On an account that had never acknowledged, the save went through, a
+config row was written and the endpoint probe reached the provider. Fixed at the top of the
+durable path, and re-verified through the browser.
+
+**A TypeSafe key saved from the web client was never saved at all.** `chrome_typesafe_save` was
+routed to an executor that only knows how to perform an LLM config set, and the TypeSafe store
+has no fenced commit for it to call. The result through a real browser: no probe, no
+persistence, no message, no log line, status `Not set` forever. The feature's headline
+capability did not work through its own UI. Fixed; restoring the durable routing needs a fenced
+TypeSafe commit in the Plane repository and is recorded as a follow-up.
+
+**The quickstart's fault-injection switch was never installed.** `ASTRAL_TEST_TYPESAFE_FAULT`
+existed as a wrapper class and a posture check that nothing ever called, so section 4 of the
+walkthrough could not be performed and had never been. Fixed, with six tests pinning the path.
+
+**This feature's own routing tests never saw a realistic tool list.** Seven of seventeen failed
+on any Compose-started stack: they assert round one saw the *full* eligible list and hardcode the
+fixture agent's two tools, while the orchestrator injects seven platform meta-tools into every
+turn. They passed in CI and in the full-suite comparison because that runner uses
+`docker run --env-file`, which passes inline comments through as part of the value — and 56 of
+this `.env`'s variables carry one, so `FeatureFlags._read` silently read them as false. The
+regression comparison stands (both sides ran the same way); the absolute "the TypeSafe tests
+pass" claim did not. Fixed, and a new test pins what the seven were hiding: narrowing removes the
+platform meta-tools from round one, and round two restores them.
 
 ---
 
@@ -181,11 +211,16 @@ with `scripts/verify_composition.py`.
 
 ## Outstanding at the time of writing
 
-- **T021, T069, T062** — the credential and first-run walkthroughs and the
-  quickstart, all blocked by §7c.
-- **T032's SC-002 half** — same blocker.
 - **The refusal tier's benign corpus** — several hundred prompts from real traffic, after which
   re-running `scripts/verification/typesafe_routing_bench.py --mode benign` decides whether
   `REFUSE_TIER_ENABLED` flips. No code changes with it.
-- **T057** — the populated migration rehearsal.
-- **T070** — removing the owner's credentials from the candidate stack.
+- **T021's native-client half** — no native client build was available. 089 changes no client
+  code (SC-011: 0 client-directory changes across five repositories), so the same server-driven
+  surface reaches a native client, but that is an argument rather than an observation.
+- **Two follow-ups against the baseline, not this feature.** `skill_lookup_unavailable` fails
+  every chat turn when `FF_USER_SKILLS` is on, traced to `current_socket_human_read` reading a
+  ContextVar the chat path threads in explicitly; whether the production-auth path behaves the
+  same is unresolved and needs one realm-authenticated turn. And `docker run --env-file` against
+  a commented `.env` silently disables flags, which is how the suite comparison ran.
+- **Restoring `chrome_typesafe_save` to the durable path**, which needs a fenced TypeSafe commit
+  in AstralPlane.
