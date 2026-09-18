@@ -166,7 +166,10 @@ def test_speech_field_present_for_watch_payloads():
 # ---------------------------------------------------------------------------
 
 def test_manifest_lists_expected_vocabulary():
-    assert len(MANIFEST["component_types"]) == 35
+    # 41 since feature 089: the six additive composite readouts. Only the web
+    # renderer draws them; a watch receives each one's ladder fallback, which
+    # the next test exercises for every type in the manifest.
+    assert len(MANIFEST["component_types"]) == 41
     names = {item["name"] for item in MANIFEST["push_types"]}
     assert len(MANIFEST["push_types"]) == len(names) == 72
     assert {"voice_local_turn_bound", "voice_local_announcement",

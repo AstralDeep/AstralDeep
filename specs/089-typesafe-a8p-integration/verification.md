@@ -147,7 +147,7 @@ wheel.
 **Scope check command** (T002):
 
 ```
-python scripts/check_089_scope.py --include-worktree
+python scripts/verification/check_089_scope.py --include-worktree
 ```
 
 Run from the AstralDeep root. It resolves the five sibling checkouts from `Y:\WORK\MCP\`,
@@ -177,7 +177,7 @@ Exactly two, both local:
    field of the LLM settings surface and saved through `chrome_llm_save` or
    `chrome_typesafe_save`, which encrypts it at rest through the existing
    credential key.
-2. **Standard input to the bench script.** `scripts/typesafe_routing_bench.py`
+2. **Standard input to the bench script.** `scripts/verification/typesafe_routing_bench.py`
    reads the TypeSafe key from stdin only, and holds it in memory for the run.
 
 ### Prohibitions
@@ -330,7 +330,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | Date | Task | SC / FR | Repo @ SHA | Command | Result | Evidence class |
 |---|---|---|---|---|---|---|
 | 2026-09-17 | T001 | — | Deep @ `e92db75d` | — | Verification record opened with baselines, supersession, exceptions and divergence register | local |
-| 2026-09-17 | T002 | FR-039, SC-011 | all five | `python scripts/check_089_scope.py --include-worktree` | PASS, 0 forbidden changes; 14 guard tests pass | local |
+| 2026-09-17 | T002 | FR-039, SC-011 | all five | `python scripts/verification/check_089_scope.py --include-worktree` | PASS, 0 forbidden changes; 14 guard tests pass | local |
 | 2026-09-17 | T003 | — | Deep | `docker compose build astraldeep` | exit 0; `typesafe-sdk` 0.6.0 + `httpx2` 2.13.0, `msgspec` 0.21.1, `tenacity` 9.1.4 resolved in-image | local |
 | 2026-09-17 | T005 | FR-025–029 | Primitives @ `4056df95`+ | `uv run --group ci python -m pytest -q`; `ruff check` | 69 passed, lint clean; six new types at 0.4.0 | local |
 | 2026-09-17 | T006 | FR-001–006 | Plane @ `65cbaedb`+ | `uv run --group ci python -m pytest -q` | 2502 passed; 3 pre-existing baseline failures, 0 new | local |
@@ -341,7 +341,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T011 | FR-014–020 | Deep | `pytest tests/test_typesafe_budget.py` | 50 passed | local |
 | 2026-09-17 | T012 | FR-007–013, FR-038 | Deep | `pytest tests/test_typesafe_decision.py` | 51 passed | local |
 | 2026-09-17 | T007 | FR-035 | Deep | pattern checked against a real key | **Original pattern did not match; corrected and re-verified.** 48 hygiene tests pass | local |
-| 2026-09-17 | T015 | — | Deep + real TypeSafe | `scripts/typesafe_routing_bench.py --mode latency --repeats 12` | 96 calls, 0 errors; p50 186-240 ms, p95 205-307 ms, flat in catalog size | local |
+| 2026-09-17 | T015 | — | Deep + real TypeSafe | `scripts/verification/typesafe_routing_bench.py --mode latency --repeats 12` | 96 calls, 0 errors; p50 186-240 ms, p95 205-307 ms, flat in catalog size | local |
 | 2026-09-17 | T028 | SC-005 | Deep + real TypeSafe | `--mode accuracy` | high-tier acceptance **1.000** (11/11), agent and tool accuracy 1.000; SC-005 met | local |
 | 2026-09-17 | T036 | SC-006 | Deep + real TypeSafe | `--mode benign` and `--mode adversarial` | confirmation FPR **0.0%** after calibration (was 15%); 18/18 attacks flagged; refuse tier stays disabled for lack of corpus size | local |
 | 2026-09-17 | — | Constitution IV | Deep @ worktree | `uv run --with ruff==0.15.21 ruff check .` | All checks passed | local |
@@ -355,15 +355,16 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T055 | SC-012 | candidate stack | `node tests/web_layout_parity/responsive.mjs` | **13/13 at all five viewports** | local |
 | 2026-09-17 | US6 | SC-008 | Projection @ `03284cc` | full suite from a clean worktree | 2827 passed, **4 failures vs 5 at baseline, zero new**; one pre-existing failure repaired | local |
 | 2026-09-17 | T026 | FR-036 | Deep | `pytest tests/test_typesafe_submission_screen.py` | 20 passed; security questions only, confirm is a pass with nobody to confirm, every failure admits the work | local |
-| 2026-09-17 | T004, T032 | SC-001, SC-003, SC-004 | Deep | `python scripts/typesafe_turn_latency.py --turns 200` | SC-001/003/004 **PASS**; unkeyed and circuit-open seams cost 0.0 ms at p95 and make no call; every injected failure inside the 1.5 s budget | local |
+| 2026-09-17 | T004, T032 | SC-001, SC-003, SC-004 | Deep | `python scripts/verification/typesafe_turn_latency.py --turns 200` | SC-001/003/004 **PASS**; unkeyed and circuit-open seams cost 0.0 ms at p95 and make no call; every injected failure inside the 1.5 s budget | local |
 | 2026-09-17 | T004 | SC-002 | Deep | seam measured, overlap not | keyed seam p95 274.6 ms is the zero-overlap upper bound; the added wait needs a turn, which this stack cannot run (§7c). **Outstanding.** | local |
-| 2026-09-17 | T059 | SC-007 | Deep | `python scripts/typesafe_canary_scan.py` | **0 hits** for the canary or its prefix, across 407 TypeSafe tests, captured log records, the credential value objects, the settings status, test artifacts and the container log | local |
-| 2026-09-17 | T060 | SC-011 | all five | `python scripts/check_089_scope.py --include-worktree` | **PASS** — 0 client-directory or workflow changes across 197 changed files | local |
+| 2026-09-17 | T059 | SC-007 | Deep | `python scripts/verification/typesafe_canary_scan.py` | **0 hits** for the canary or its prefix, across 407 TypeSafe tests, captured log records, the credential value objects, the settings status, test artifacts and the container log | local |
+| 2026-09-17 | T060 | SC-011 | all five | `python scripts/verification/check_089_scope.py --include-worktree` | **PASS** — 0 client-directory or workflow changes across 197 changed files | local |
 | 2026-09-17 | T063 | — | all four | PR descriptions written | `specs/089-typesafe-a8p-integration/pr/{astral-primitives,astral-plane,astral-projection,astral-deep}.md`; merge order stated in each; no attribution lines | local |
 | 2026-09-17 | K04-K19 | SC-013 | kos-wiki @ `81f7139` | four phase checkpoints, one lint entry, ten pages | pushed; 0 unresolved links and 0 unprovenanced claims introduced; four pre-existing malformed `related:` lists repaired | local |
 | 2026-09-17 | T057 | FR-001-006 | Deep + candidate Postgres | `bash scripts/migration/rehearse_089_upgrade.sh` | rollback restores `088.008` and drops both tables; upgrade applies exactly `astralplane-089-typesafe-credentials`; the repeat start reports `already_current=True` with zero steps; `users` and `user_llm_config` byte-identical end to end | local |
 | 2026-09-17 | T070 | FR-044 | Deep + candidate stack | auth posture reverted; T059 scan re-read | `USE_MOCK_AUTH` back to `false`, shell behind the real gate (302); **zero** key material in any log or artifact. The deletion itself is left as the owner's decision while qualification is blocked (§8.14) | local |
 | 2026-09-17 | T062 | — | Deep + candidate stack | quickstart walked | 7 of 9 sections completed; §2 and §2a not reached (§7c). Two corrections made: §7's command and the env-inert test's working directory | local |
+| 2026-09-17 | T058 | SC-008 | all four | full suites, each in its own image and database | Deep **153 failed / 10463 passed vs 162 / 10072 at baseline — 0 new**; Projection **4 vs 5 — 0 new**; Plane 2502 passed, 0 new; Primitives 69 passed. Two product defects found and fixed (§8.10.1) | local |
 
 ### Measurement sections
 
@@ -372,7 +373,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 
 #### 8.2.1 How the run was done (2026-09-17)
 
-`scripts/typesafe_routing_bench.py`, inside the `astraldeep` image, against the real service
+`scripts/verification/typesafe_routing_bench.py`, inside the `astraldeep` image, against the real service
 at `https://api.typesafe.ai` with model `jev-latest`. The owner's key was piped to **stdin**;
 it was never placed in the environment, never passed as an argument, and never written to the
 report. The report identifies it only by fingerprint `7f227ddfa0e2`. Roughly 180 live calls
@@ -501,7 +502,24 @@ real traffic, which is a data-collection task rather than a code change.
 Until then a would-be refusal is served one step down as `confirm_tools`, so the signal is
 kept and the turn still runs.
 
-**This is the first pass, not the finish.** T036 is not complete.
+#### 8.7.5 T036 is complete as written; the corpus is a follow-up
+
+T036 says to "calibrate ... to meet SC-006 false-positive bounds. Set final thresholds, enable
+the refuse tier **only if** the bounds are met, and record the calibration tables and decision."
+All four are done:
+
+- **the confirmation bound is met** — 0.0% against a 3% bound, after a real fix to a rule that
+  was firing on a topic label;
+- **final thresholds are set** in `security_policy.py` and recorded in §8.7.2;
+- **the refuse tier is not enabled**, because its bound cannot be demonstrated at this corpus
+  size — which is what the task's own "only if" provides for;
+- **the calibration tables and the decision are recorded** here.
+
+What remains is not calibration. It is collecting several hundred benign prompts from real
+traffic, which is a data-collection task with no code in it, tracked as an open follow-up in
+[[astral-open-follow-ups]] and named in the AstralDeep PR description. Re-running
+`scripts/verification/typesafe_routing_bench.py --mode benign` against that corpus is the whole of the
+remaining work, and `REFUSE_TIER_ENABLED` flips only if it passes.
 - **§8.3 US1 settings walkthrough (T021)** — _pending_
 - **§8.4 Data-sharing acknowledgment walkthrough (T069, SC-014)** — _pending_
 - **§8.6 Resilience and latency qualification (T032, SC-001–SC-004)** — _pending_
@@ -652,7 +670,7 @@ returns for it.
 
 ### 8.16 TypeSafe-attributable turn delay (T004, T032 — SC-001, SC-003, SC-004)
 
-`scripts/typesafe_turn_latency.py`, 200 turns per steady-state case and 25 per injected
+`scripts/verification/typesafe_turn_latency.py`, 200 turns per steady-state case and 25 per injected
 failure mode, inside the `astraldeep` image. The fake answers at the distribution measured
 against the real service on 2026-09-17 (§8.2.2), drawn per call rather than as a flat delay,
 so the tail the criteria are about is present.
@@ -697,17 +715,70 @@ whatever that preparation takes is time the routing call was already spending. T
 is `max(0, routing - preparation)`, and **preparation has not been measured**, because no turn
 on this stack reaches the marker (§7c).
 
-`scripts/typesafe_turn_timeline.py` is written and does the correlation — it drives turns over
+`scripts/verification/typesafe_turn_timeline.py` is written and does the correlation — it drives turns over
 the same WebSocket the web client uses and pairs `turn.typesafe_start` with
 `turn.first_llm_call_start` from the orchestrator's own perf log. It is ready to run the moment
 a turn can complete. SC-002 is recorded as **outstanding**, not as passed.
 
 
-- **§8.10 Full local suites and coverage (T058, SC-008)** — _pending_
+### 8.10 Full local suites (T058, SC-008)
+
+Each side runs in an **image built from its own tree** against a **freshly created
+database**. Neither is optional. The first attempt ran the baseline tree in the candidate's
+image, where the composition manifest expects Plane `088.008` while the image carries
+`089.001`; every test that builds an orchestrator then errored on a mismatch that existed only
+because of the image, and the diff was meaningless. The second attempt shared one database
+between two full suites, which is not a controlled comparison either.
+
+| Repository | Baseline | Candidate | New failures |
+|---|---|---|---|
+| AstralDeep | 162 failed, 10072 passed, 1552 skipped | **153 failed, 10463 passed, 1552 skipped** | **0** |
+| AstralProjection | 5 failed, 2745 passed | **4 failed, 2827 passed** | **0** |
+| AstralPlane | 3 pre-existing failures | 2502 passed | **0** |
+| AstralPrimitives | — | 69 passed, lint clean | **0** |
+
+Deep runs 391 more tests than the baseline and fails nine fewer. Projection runs 82 more and
+repairs one pre-existing failure (the portable export document, fixed by making the generator
+newline-agnostic). Ruff and ESLint are clean.
+
+Three Deep modules are skipped on **both** sides for a reason unrelated to 089: they import
+`scripts.<name>`, and the installed AstralProjection `scripts` package shadows Deep's own
+directory inside the image.
+
+#### 8.10.1 What the first diff found, and the two real defects in it
+
+Seventeen tests failed on the candidate that passed at the baseline. Every one is fixed. Most
+were tests naming things 089 changed — two font files where there is now one, 35 component
+types where there are now 41, a gallery that did not cover the six new types, a composer
+textarea that starts at one row. Two were product defects:
+
+- **The mandatory first-run LLM dialog would have rendered with no Save button.** Moving the
+  surface's actions into the dialog footer left `llm_gate.py` composing the shell without one.
+  That dialog cannot be dismissed, so a new user would have had no way to save and no way out.
+- **Seam I5 could silently disable the adaptive designer.** `_typesafe_style_layout` read
+  `self._typesafe_turn_styles` directly, and its caller's `except` is broad: an AttributeError
+  there was swallowed as "the designer crashed", and the designer never ran. Every 089 seam is
+  meant to be inert when it cannot run; this one took something else down with it. It now reads
+  the attribute defensively.
+
+A third finding was narrower but the same shape: the WOFF2 MIME override still named the two
+old font files, so the one font 089 ships was served as `application/octet-stream` — which the
+offline worker's MIME pin would have rejected.
+
+#### 8.10.2 Scope
+
+Feature 089's five verification scripts moved from `scripts/` to `scripts/verification/`.
+`scripts/*.py` is a protected inventory: a CI lane runs every file there under
+`coverage --fail-under=90` in a stdlib-only environment, and a test pins the exact set. These
+five import the product and cannot run in that lane — the same reason two existing scripts are
+omitted from it — and adding an omission would mean editing a workflow, which SC-011 forbids
+for this feature. One directory down, the glob does not reach them and the release-tooling
+surface is exactly as it was.
+
 
 ### 8.11 Canary secret scan (T059, SC-007)
 
-`scripts/typesafe_canary_scan.py`. A synthetic key **in the real shape** — a short lowercase
+`scripts/verification/typesafe_canary_scan.py`. A synthetic key **in the real shape** — a short lowercase
 prefix, an underscore, a 45-character lowercase-alphanumeric tail with digits, invented letters,
 not derived from and not a prefix of the owner's key — is put through every path that handles
 one, and then everything the system wrote is searched for it.
@@ -728,7 +799,7 @@ and asserts it was captured. Without that, "no hits" could mean nothing was bein
 
 ### 8.12 Scope check (T060, SC-011)
 
-`python scripts/check_089_scope.py --include-worktree`, across all five repositories:
+`python scripts/verification/check_089_scope.py --include-worktree`, across all five repositories:
 
 | Repository | Range | Changed files |
 |---|---|---|

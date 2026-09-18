@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 FIXTURES = ROOT / "backend/tests/fixtures/typesafe_routing"

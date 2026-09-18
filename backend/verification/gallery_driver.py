@@ -5,7 +5,7 @@ Two things:
 * :func:`build_gallery` — a **pure** function returning one flat list of
   astralprims component dicts covering EVERY renderable type
   (``webrender.allowed_primitive_types()`` / Projection ``contracts/ui_protocol.json``
-  ``component_types`` — 35 today) plus the interactive variants
+  ``component_types`` — 41 since feature 089) plus the interactive variants
   (button+action+payload, input, a multi-field ``param_picker`` with a
   password field and a ``submit_action``, a paginated ``table`` with
   ``total_rows > page_size``, ``file_upload``, ``file_download`` and
@@ -48,7 +48,7 @@ _LONG_TEXT = (
 def build_gallery() -> List[Dict[str, Any]]:
     """Return the canonical gallery: one flat component-dict list.
 
-    Covers all 35 renderable types (each at least once) plus the interactive
+    Covers all 41 renderable types (each at least once) plus the interactive
     and edge variants US2 verifies. Every element is a plain dict with a
     ``"type"`` key — no astralprims classes, no sockets — so it serializes and
     ROTE-adapts exactly like agent output.
@@ -176,6 +176,47 @@ def build_gallery() -> List[Dict[str, Any]]:
         {"type": "generative", "spec": {"kind": "callout",
                                         "title": "Generative widget",
                                         "body": "Composed from the constrained grammar."}},
+
+        # --- feature 089 composite readouts ----------------------------------
+        # Web-only types. On every other profile ROTE substitutes the ladder
+        # fallback before the frame leaves, so a native client sees a grid, a
+        # progress bar, a timeline, a pie chart or a table here -- which is
+        # exactly what this gallery exists to let someone check.
+        {"type": "stat_group", "title": "Current conditions", "columns": 4, "items": [
+            {"label": "Temperature", "value": "68\u00b0F", "hint": "Feels like 66\u00b0F"},
+            {"label": "Wind", "value": "8 mph", "hint": "Direction 210\u00b0"},
+            {"label": "Pressure", "value": "1014 hPa"},
+            {"label": "Visibility", "value": "10 mi"},
+        ]},
+        {"type": "gauge", "label": "Humidity", "value": 0.62, "display_value": "62%",
+         "thresholds": [{"at": 0.0, "variant": "default"},
+                        {"at": 0.70, "variant": "warning"},
+                        {"at": 0.90, "variant": "error"}]},
+        {"type": "pipeline_stepper", "title": "Turn pipeline", "steps": [
+            {"label": "Screen", "status": "done", "detail": "verdict: allow"},
+            {"label": "Route", "status": "done", "detail": "weather-1 selected"},
+            {"label": "Dispatch", "status": "active", "detail": "get_current_weather"},
+            {"label": "Seal", "status": "pending", "detail": "audit ledger append"},
+        ]},
+        {"type": "donut_chart", "title": "Tool dispatch mix",
+         "center_label": "turns", "center_value": "200", "segments": [
+            {"label": "weather", "value": 82},
+            {"label": "research", "value": 54},
+            {"label": "compute", "value": 39},
+            {"label": "other", "value": 25},
+         ]},
+        {"type": "radar_chart", "title": "Route quality",
+         "axes": ["Latency", "Accuracy", "Coverage", "Stability", "Cost"],
+         "datasets": [
+            {"label": "TypeSafe", "data": [88, 92, 74, 95, 68]},
+            {"label": "Standard", "data": [62, 71, 80, 90, 84]},
+         ]},
+        {"type": "action_group", "title": "Next steps", "actions": [
+            {"type": "button", "label": "Open 7-day forecast", "action": "chat_message",
+             "payload": {"message": "7-day forecast for Lexington"}},
+            {"type": "button", "label": "Compare with yesterday", "action": "chat_message",
+             "payload": {"message": "Compare with yesterday"}},
+        ]},
 
         # --- edge cases ------------------------------------------------------
         {"type": "text", "content": _LONG_TEXT, "variant": "body"},
@@ -325,7 +366,7 @@ def _build_capture_orch(user_id: str, device: str):
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="verification.gallery_driver",
-        description="Push the canonical 35-type component gallery to a UI client "
+        description="Push the canonical 41-type component gallery to a UI client "
                     "over the real send path (feature 044 / US2).")
     p.add_argument("--user", required=True, help="target user id (session owner)")
     p.add_argument("--device", default="browser",

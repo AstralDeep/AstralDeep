@@ -119,8 +119,14 @@ async def push_setup_dialog(orch, websocket, user_id: str) -> None:
         body = await llm_surface.render(orch, user_id, roles, params)
         await orch._safe_send(websocket, ChromeRender(
             region="modal",
+            # Feature 089 moved the surface's actions into the dialog footer.
+            # This dialog cannot be dismissed, so rendering it without one
+            # would leave a new user with no way to save and no way out.
             html=render_modal_shell(
-                llm_surface.FIRST_RUN_TITLE, body, SURFACE_KEY, mandatory=True),
+                llm_surface.FIRST_RUN_TITLE, body, SURFACE_KEY, mandatory=True,
+                subtitle=getattr(llm_surface, "SUBTITLE", ""),
+                icon=getattr(llm_surface, "ICON", ""),
+                footer_html=llm_surface.footer_html()),
         ).to_json())
     _gated_map(orch)[id(websocket)] = True
 

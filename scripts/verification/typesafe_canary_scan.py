@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "backend" / "tests"))
 

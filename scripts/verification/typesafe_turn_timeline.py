@@ -42,7 +42,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Sequence
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 #: Frames that mean "something is on screen now".
 PROGRESS_FRAMES = {

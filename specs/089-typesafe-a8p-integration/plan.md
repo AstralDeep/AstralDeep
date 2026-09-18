@@ -245,7 +245,7 @@ backend/orchestrator/orchestrator.py                       # seams I1–I6, _cal
 backend/orchestrator/session_store.py                      # production-posture TYPESAFE_* refusal
 backend/orchestrator/sandbox.py, verification/config.py, .gitleaks.toml
 backend/tests/test_typesafe_*.py                           # adapter, store, settings, turn seams, security, layout, env inertness
-scripts/typesafe_routing_bench.py                          # local-only measurement spike
+scripts/verification/typesafe_routing_bench.py                          # local-only measurement spike
 config/astral-composition.json                             # repins
 
 # AstralPrimitives

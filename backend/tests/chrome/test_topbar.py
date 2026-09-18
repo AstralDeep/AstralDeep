@@ -38,7 +38,9 @@ def test_brand_lives_in_the_sidebar_exactly_once():
 
     shell = template_path("shell.html").read_text(encoding="utf-8")
     assert shell.count('data-tour-target="topbar.brand"') == 1
-    assert shell.count('src="/static/img/AstralDeep.png"') == 1
+    # The reference carries its content-hash token, like every other
+    # static reference in the shell.
+    assert shell.count('/static/img/AstralDeep.png?v=%%ASTRAL_V:') == 1
     assert 'id="astral-brand"' in shell
     brand = shell[shell.index('id="astral-brand"'):]
     assert 'aria-label="Return to the dashboard"' in brand[:400]

@@ -233,10 +233,27 @@ def test_the_checkbox_is_described_by_the_warning(data_sharing_store) -> None:
 def test_the_checkbox_sits_below_the_credentials_and_above_the_actions(
     data_sharing_store, typesafe_store
 ) -> None:
-    html = _render(_orch(data_sharing_store, typesafe_store))
-    assert html.index('name="api_key"') < html.index(f'name="{ds.FIELD_NAME}"')
-    assert html.index('name="typesafe_api_key"') < html.index(f'name="{ds.FIELD_NAME}"')
-    assert html.index(f'name="{ds.FIELD_NAME}"') < html.index("chrome_llm_save")
+    """A person reads the notice after the fields it is about and before the
+    button that acts on them.
+
+    Feature 089 moved the actions into the dialog's footer, which the shell
+    renders after the body, so "above the actions" is now a fact about the
+    composed dialog rather than about the body alone. It is asserted on the
+    composed dialog for exactly that reason -- asserting it on the body would
+    stop checking anything at all.
+    """
+    from webrender.chrome import render_modal_shell
+
+    body = _render(_orch(data_sharing_store, typesafe_store))
+    assert body.index('name="api_key"') < body.index(f'name="{ds.FIELD_NAME}"')
+    assert body.index('name="typesafe_api_key"') < body.index(f'name="{ds.FIELD_NAME}"')
+
+    dialog = render_modal_shell(
+        llm_surface.TITLE, body, "llm",
+        subtitle=llm_surface.SUBTITLE, icon=llm_surface.ICON, sections=llm_surface.SECTIONS,
+        footer_html=llm_surface.footer_html(),
+    )
+    assert dialog.index(f'name="{ds.FIELD_NAME}"') < dialog.index("chrome_llm_save")
 
 
 def test_the_warning_renders_during_first_run_too(data_sharing_store) -> None:
