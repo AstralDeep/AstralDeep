@@ -405,6 +405,72 @@ strings is a **second copy** of them, and nothing was pinning the two together. 
 `quickstart.md`, with the source named beside it so the next edit has somewhere to check.
 
 
+### 7e. Two defects the browser found that nothing else could (2026-09-17)
+
+Once a real sign-in was possible (§7c), T021 and T069 were driven through the
+**actual web client** — Playwright, a real Keycloak session, the product's own controls. Both
+tasks exist to exercise the client, and both immediately found defects that 10,000 passing
+tests did not, because both live in the gap between a handler and the path that reaches it.
+
+#### 7e.1 The data-sharing acknowledgment gate never ran for a browser save
+
+US7's gate lives in the LLM **surface handlers**. A credential save from a browser never
+reaches them: it is admitted as a durable operation and executed by
+`_handle_llm_credential_operation`, which built the config and called `handle_llm_config_set`
+without consulting the gate.
+
+Reproduced on an account that had never acknowledged: the box was left unchecked, the save went
+through, a `user_llm_config` row was written, and the endpoint probe **reached the provider** —
+with the acknowledgment table empty and no fail-open warning logged. The mandatory first-run
+dialog then closed, so the person was never told anything had been skipped. The gate's own
+docstring promises it runs "before any validation and before any provider request"; on the path
+the product actually uses, it did not run at all.
+
+Fixed: the gate runs at the top of the durable path, before the key is resolved and before any
+provider request, for both credential actions. Refusing alone was not enough — the first-run
+dialog cannot be dismissed, so a refusal with no explanation is a dead end, and re-pushing the
+ordinary settings surface would have quietly turned an undismissable dialog into a dismissable
+one and dropped what had been typed. The refusal now re-pushes whichever dialog the person is
+looking at, carrying the documented message and their entries.
+
+Re-verified through the browser, **6 of 6**: the mandatory dialog appears, the box starts
+unchecked, an unchecked save is refused with `Check this box to confirm you understand how your
+data is shared.`, **nothing is persisted and no provider request is made**, a checked save
+proceeds and writes one config row and one acknowledgment row, and the key never appears in the
+document.
+
+#### 7e.2 A TypeSafe key saved from the web client was never saved at all
+
+Feature 089 added `chrome_typesafe_save` to `_LLM_CREDENTIAL_SAVE_ACTIONS` so it would travel
+the durable credential path, "because it is the same kind of thing: one write that must not be
+replayed and must not be lost." The reasoning was sound. The change was not: that set routes an
+action to an executor that only knows how to perform an LLM config set, and **the TypeSafe store
+has no fenced commit for it to call**. The action fell to the branch that reads a `config` key
+the TypeSafe surface never sends, so the executor performed an LLM config set with an empty
+config.
+
+The result, on a real signed-in browser: **no probe, no persistence, no message, no log line.**
+The status stayed `Not set` forever. The feature's headline capability — bring your own
+TypeSafe key — did not work through its own UI.
+
+Nothing caught it because the test that existed pinned the **routing**
+(`chrome_typesafe_save in _LLM_CREDENTIAL_SAVE_ACTIONS`) and nothing pinned the routing to an
+executor that could honour it. `_handle_typesafe_save` is thoroughly unit-tested; the web client
+simply never reached it.
+
+Fixed by routing the action through the ordinary chrome dispatch to the handler that performs
+the save. **Restoring the durable routing needs a fenced TypeSafe commit in the Plane repository
+first** — recorded as a follow-up rather than done here, because it is a cross-repository
+change and the feature has to work in the meantime.
+
+#### 7e.3 The shape both share
+
+Each is a **seam between a handler and the path that reaches it**. Unit tests covered both
+handlers. An integration test covered neither seam, and the one test that touched the second
+seam pinned the half that was wrong. The walkthrough tasks were written to be done by a person
+in a browser, and when finally done that way they found both in the first sitting.
+
+
 ## 8. Evidence log
 
 Append one row per recorded run. Never record key material, key prefixes, credentials, raw evidence or PHI.
@@ -453,6 +519,8 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T062 | §7c | realm (read-only probe) | RFC 8628 device authorization for `astral-watch` | **accepted** (PKCE required), 600 s window. Needs no redirect URI, and `astral-watch` is already in `KEYCLOAK_ALLOWED_AZP`, so the token passes `verify_production_token` and the 088 guidance authority unchanged | local |
 | 2026-09-17 | T062 | — | Deep | quickstart §2 checked against the product's strings | **Defect**: §2 asserted `TypeSafe rejected this key.`, which the product never emits; the real message is `TypeSafe rejected that key. Check it and try again.` Corrected (§7d) | local |
 | 2026-09-17 | T070 | FR-044 | candidate stack | owner asked; hygiene scan reused | **Owner chose to keep the credentials until qualification finishes** — the branch T070 defers to. Hygiene half already evidenced (T059, 0 hits). Closed; removal due once the five sign-in tasks are done | local |
+| 2026-09-17 | T069 | US7, SC-014 | Deep + real browser | Playwright against a real Keycloak session, never-acknowledged account | **Defect found and fixed** (§7e.1): the gate never ran on the durable path the web client uses — unchecked save persisted and reached the provider. After the fix **6/6**: refused with the documented message, nothing persisted, no provider request; checked save writes 1 config + 1 acknowledgment row | local |
+| 2026-09-17 | T021 | US1, FR-035 | Deep + real browser | TypeSafe lifecycle through the product's own controls | **Defect found and fixed** (§7e.2): the save was routed to an executor that could not perform it, so it did nothing. After the fix **11/13**: invalid key rejected, real key saved, status `Active`, `Saved key hidden`, removed, re-saved, key never rendered, 0 CSP violations. The 2 failures are harness assertions (the surface shows a removal notice rather than the status line), not product behaviour. **Web half only — the native-client half of T021 is still outstanding** | local |
 
 ### Measurement sections
 

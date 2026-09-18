@@ -138,7 +138,7 @@
 - [X] T066 [US7] Render the warning and checkbox in `D:backend/orchestrator/projection_surfaces/llm.py`, directly below all credential inputs (after the TypeSafe field when present) in `render()`, `components()` and first-run mode. Add the pre-checked "Acknowledged on {date}" state and the inline error.
 - [X] T067 [US7] Enforce acknowledgment as the first step of `chrome_llm_save` (`llm.py`), `chrome_typesafe_save` (`D:backend/llm_config/typesafe_handlers.py`) and the legacy `llm_config_set` handler (`D:backend/llm_config/ws_handlers.py::handle_llm_config_set`), before validation probes. Map the failure to each path's existing field or error response.
 - [X] T068 [US7] Style the warning block and checkbox for the web client in `P:backend/webrender/static/astral.css` using `ThemeView` warning roles and Open Sans, consistent with the a8p settings dialog styling. Wire the inline error display in `P:backend/webrender/static/client.js` if the existing form-error path does not already cover boolean fields. Web only.
-- [ ] T069 [US7] Exercise the flow locally on the web client (settings page and first-run dialog with a fresh test user) using the owner's test credentials under T003a. Record observations in verification.md (SC-014).
+- [X] T069 [US7] Exercise the flow locally on the web client (settings page and first-run dialog with a fresh test user) using the owner's test credentials under T003a. Record observations in verification.md (SC-014).
 
 **Checkpoint**: Users can manage their own key and must acknowledge data sharing before saving any credential. With no key, behavior is unchanged.
 
