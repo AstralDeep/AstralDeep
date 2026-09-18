@@ -42,18 +42,9 @@ def offered():
 # The request the composer actually sends
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("params", [
-    {"view": "selection"},
-    {"view": "selection", "selection": None},
-    {"view": "selection", "selection": selection()},
-    {"view": "selection", "selection": selection(
-        agent={"agent_id": AGENT_ID, "revision_id": REVISION_ID},
-        skills=[{"skill_id": SKILL_ID, "revision": 2}],
-        notes=[{"note_id": NOTE_ID, "revision": 1}])},
-])
-def test_the_advanced_button_request_is_accepted(params):
+def test_the_advanced_button_request_is_accepted():
     from orchestrator.projection_surfaces.guidance import _request
-    payload = {"surface": "guidance", "params": params}
+    payload = {"surface": "guidance", "params": {"view": "selection"}}
     expected = deepcopy(payload)
     frozen = _request("chrome_open", payload)
     payload.clear()  # the request must be a copy, not a view of the message
@@ -64,17 +55,12 @@ def test_the_advanced_button_request_is_accepted(params):
     {"view": "selection", "mode": "list"},          # not both at once
     {"view": "selection", "search": "anything"},
     {"view": "skills"},                             # only the one view exists here
-    {"view": "selection", "selection": {"version": 2, "agent": None,
-                                        "skills": [], "notes": []}},
-    {"view": "selection", "selection": {"agent": None, "skills": [], "notes": []}},
-    {"view": "selection", "selection": selection(agent={"agent_id": AGENT_ID})},
-    {"view": "selection", "selection": selection(skills=[{"skill_id": SKILL_ID}])},
-    {"view": "selection", "selection": selection(skills=[{"skill_id": "nope", "revision": 1}])},
-    {"view": "selection", "selection": selection(notes=[{"note_id": NOTE_ID, "revision": 0}])},
-    {"view": "selection", "selection": selection(
-        skills=[{"skill_id": SKILL_ID, "revision": 1}, {"skill_id": SKILL_ID, "revision": 1}])},
+    # 088's open contract: this request carries the view and nothing else, not
+    # even the binding the composer is holding.
+    {"view": "selection", "selection": None},
+    {"view": "selection", "selection": selection()},
 ])
-def test_a_malformed_selection_is_refused_without_echoing_it(params):
+def test_a_request_carrying_anything_but_the_view_is_refused(params):
     from orchestrator.projection_surfaces.guidance import _request
     with pytest.raises(AssignmentError, match="explicit_note_request_invalid"):
         _request("chrome_open", {"surface": "guidance", "params": params})
@@ -84,6 +70,22 @@ def test_the_notes_list_is_unaffected_by_the_new_view():
     from orchestrator.projection_surfaces.guidance import _request
     payload = {"surface": "guidance", "params": {"mode": "list", "search": "short"}}
     assert _request("chrome_open", payload) == payload
+
+
+@pytest.mark.parametrize("bad", [
+    {"version": 2, "agent": None, "skills": [], "notes": []},
+    {"agent": None, "skills": [], "notes": []},
+    selection(agent={"agent_id": AGENT_ID}),
+    selection(skills=[{"skill_id": SKILL_ID}]),
+    selection(skills=[{"skill_id": "nope", "revision": 1}]),
+    selection(notes=[{"note_id": NOTE_ID, "revision": 0}]),
+    selection(skills=[{"skill_id": SKILL_ID, "revision": 1},
+                      {"skill_id": SKILL_ID, "revision": 1}]),
+])
+def test_a_malformed_selection_command_is_refused_without_echoing_it(bad):
+    from orchestrator.projection_surfaces.guidance import _request
+    with pytest.raises(AssignmentError, match="explicit_note_request_invalid"):
+        _request("chrome_turn_selection_set", bad)
 
 
 def test_setting_a_selection_is_its_own_action():
