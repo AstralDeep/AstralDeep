@@ -1399,7 +1399,11 @@ The two that remain are **the owner's own, pre-existing rows** —
 and which are not qualification artifacts. They were deliberately left alone. The three removed
 were the ones qualification made: `test_user` (this session) and the two accounts the
 substituted realm of §7f minted. The two TypeSafe rows removed were `test_user`'s and the
-routing suite's synthetic-canary user.
+routing suite's synthetic-canary user. One footnote worth having, because it will happen to
+the next person: **running `tests/test_typesafe_*.py` writes that canary row back**, since
+`_install_key` persists through the real store. It reappeared after the final suite run and was
+removed again. It is a synthetic value (`ts_live_CANARY…`), not a credential, but a stack that
+is supposed to hold zero TypeSafe rows should hold zero.
 
 **The local stack is back as it was found.** `.env` was restored byte-for-byte from the
 pre-session copy and verified identical, so `USE_MOCK_AUTH` is `false` again, `FF_USER_SKILLS`
