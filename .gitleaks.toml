@@ -27,12 +27,31 @@ useDefault = true
 # prefixed form the generic rule scores too low to flag. The pattern was
 # derived from a real key's observed format under T003a; only the pattern lives
 # here, never a key and never a prefix sample.
+#
+# The "body contains a digit" constraint is a per-rule allowlist rather
+# than a lookahead. gitleaks matches with RE2, which has no lookaheads at
+# all, so the original form did not merely fail to match -- it made
+# gitleaks panic while loading this file, and the secret scan had not run
+# once since this rule landed. The two forms select the same strings: the
+# rule matches the shape, and the allowlist drops the ones that are
+# ordinary long snake_case identifiers with no digit anywhere in them.
+#
+# The body also excludes the underscore. A key is one dense run of
+# characters; an identifier is words joined by underscores. Allowing '_' in
+# the body made the rule match any long snake_case name on a line that
+# happened to carry one of the keywords below -- 30 of the 31 findings over
+# this repository's whole history were exactly that, and that is the kind of
+# noise that gets a scanner ignored.
 [[rules]]
 id = "typesafe-system-one-key"
 description = "TypeSafe System One API key"
-regex = '''\b[a-z]{2,10}_(?=[a-z0-9_]{0,240}[0-9])[a-z0-9_]{40,}\b|\b(?i:ts|tsk|tsai)[-_](?i:live[-_])?[A-Za-z0-9_\-]{20,}\b'''
+regex = '''\b[a-z]{2,10}_[a-z0-9]{40,}\b|\b(?i:ts|tsk|tsai)[-_](?i:live[-_])?[A-Za-z0-9_\-]{20,}\b'''
 keywords = ["ts_", "tsk_", "tsai_", "ts-", "tsk-"]
 tags = ["key", "typesafe", "feature-089"]
+
+  [[rules.allowlists]]
+  description = "A long snake_case name with no digit is a name, not a key"
+  regexes = ['''^[a-z]{2,10}_[a-z]{40,}$''']
 
 [[rules]]
 id = "typesafe-api-key-assignment"
@@ -81,6 +100,9 @@ regexes = [
   # starts with {"realm_access":..., empty signature segment). Lives in
   # backend tests today and in deleted frontend/ files in git history.
   '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJyZWFsbV9hY2Nlc3M''',
+  # The deliberately invalid key the 089 walkthrough script saves, to prove a
+  # rejected key changes nothing. It says what it is in its own value.
+  '''sk-invalid-089-walkthrough''',
   # Feature 089 synthetic TypeSafe canaries, one per shape the rule matches.
   # Both exist on purpose so the hygiene tests and the T059 scan can prove the
   # scrubbers work against the shapes a real key actually takes. Neither is a

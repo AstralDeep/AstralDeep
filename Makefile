@@ -7,10 +7,14 @@ HOST_PWD := $(shell cygpath -m "$(CURDIR)" 2>/dev/null || pwd -W 2>/dev/null || 
 
 .PHONY: help up down restart apply-config build ps logs logs-db shell psql \
         bootstrap composition-preflight sync sync-backend sync-components \
-        test test-backend check-060-selection test-060 lint lint-backend \
+        test test-backend test-web test-projection check-060-selection test-060 \
+        lint lint-backend lint-web secret-scan \
         prepare-release-evidence
 
 PYTHON ?= python
+NODE ?= node
+WEB_CI := components/AstralProjection/tooling/web-ci
+PROJECTION := components/AstralProjection
 COMPONENT_INSTALLER := $(PYTHON) scripts/install_local_components.py
 COMPOSITION_VERIFIER := $(PYTHON) scripts/verify_composition.py
 COMPONENT_BUILD_TOOLS := setuptools==83.0.0 wheel==0.45.1 hatchling==1.27.0 uv_build==0.12.3
@@ -117,7 +121,27 @@ check-060-selection: ## Collect the focused 060 setup/contract suite; empty sele
 test-060: check-060-selection ## Run the focused 060 setup/contract suite
 	$(FEATURE_060_TEST_CONTAINER) python -m pytest -p no:cacheprovider -q $(FEATURE_060_FOCUSED_TESTS)
 
-test: test-backend ## Run all tests
+# The web client's own suites. These live in the Projection component and are
+# what CI's `web` job runs; nothing in this file used to reach them, which is
+# how twelve failing browser tests sat unnoticed on a feature branch. They need
+# no stack: the browser suite drives client.js against a synthetic DOM, and the
+# Python suite runs in the product image against a read-only mount.
+# Invoked through node against the locked CLI rather than through npx: npx is
+# a .cmd on Windows and does not survive a POSIX shell's PATH.
+test-web: ## Run the web client's browser contract suite (Playwright, no stack needed)
+	cd $(WEB_CI) && $(NODE) node_modules/@playwright/test/cli.js test 	  tests/continuity-contract-060.spec.js
+
+test-projection: ## Run the AstralProjection Python suite in the product image
+	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 \
+	  -v "$(HOST_PWD)/$(PROJECTION):/proj:ro" -w /proj \
+	  astraldeep:latest python -m pytest tests/ -q -p no:cacheprovider
+
+# Known: test-projection carries four failures in this image that are about the
+# image rather than the code -- ci/test_workflows, two in test_protocol, and
+# test_resources, which needs `python -m build`. They fail on main too. Do not
+# deselect them; a suite nobody can read the result of is how twelve failing
+# browser tests went unnoticed on a feature branch for a week.
+test: test-backend test-projection test-web ## Run all tests
 
 ## ---------- Release evidence (feature 060) ----------
 
@@ -132,10 +156,36 @@ prepare-release-evidence: ## Collect, normalize, and parse local release evidenc
 lint-backend: ## Run ruff from the repo root (ruff is NOT in the image; ruff.toml lives here — matches ci.yml)
 	ruff check .
 
-lint: lint-backend ## Run all linters
+lint-web: ## Run the tracked ESLint config over the web client (matches ci.yml)
+	cd $(PROJECTION) && $(NODE) tooling/web-ci/node_modules/eslint/bin/eslint.js \
+	  --config tooling/web-ci/eslint.config.mjs --max-warnings=0 \
+	  "backend/webrender/static/**/*.js" "tooling/web-ci/**/*.mjs" "tooling/web-ci/**/*.js"
+
+lint: lint-backend lint-web ## Run all linters
+
+## ---------- Secrets ----------
+
+# The same scan ci.yml runs, at the same pinned version and checksum, over the
+# complete history. It is here because the one thing that made this job fail
+# for weeks -- a lookahead in a rule, which RE2 cannot compile, so gitleaks
+# panicked before scanning a byte -- is invisible until something runs it.
+GITLEAKS_VERSION ?= 8.30.1
+GITLEAKS_SHA256 ?= 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+secret-scan: ## Scan the complete git history for secrets (pinned gitleaks, in a container)
+	docker run --rm -v "$(HOST_PWD):/repo" alpine:3 sh -c '\
+	  set -e; \
+	  apk add --no-cache curl tar git >/dev/null; \
+	  curl -sSL -o /tmp/g.tgz \
+	    "https://github.com/gitleaks/gitleaks/releases/download/v$(GITLEAKS_VERSION)/gitleaks_$(GITLEAKS_VERSION)_linux_x64.tar.gz"; \
+	  echo "$(GITLEAKS_SHA256)  /tmp/g.tgz" | sha256sum -c -; \
+	  mkdir -p /tmp/gl && tar -xzf /tmp/g.tgz -C /tmp/gl; \
+	  git config --global --add safe.directory /repo; \
+	  /tmp/gl/gitleaks git --redact --config /repo/.gitleaks.toml \
+	    --gitleaks-ignore-path /repo/.gitleaksignore --log-opts="--all" /repo'
 
 ## ---------- Help ----------
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN{FS=":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	  | awk 'BEGIN{FS=":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
