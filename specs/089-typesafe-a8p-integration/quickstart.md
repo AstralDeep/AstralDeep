@@ -125,7 +125,7 @@ Manually confirm: the drawer at tablet and phone widths, keyboard navigation, 20
 
 ```bash
 cd /y/WORK/MCP/AstralDeep
-python scripts/check_089_scope.py                 # expect: no client-dir or workflow changes
+python scripts/verification/check_089_scope.py                 # expect: no client-dir or workflow changes
 docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q tests/test_llm_env_inert.py"
 ```
 

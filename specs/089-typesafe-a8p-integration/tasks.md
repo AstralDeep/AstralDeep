@@ -36,7 +36,7 @@
   - the owner exceptions (CI ignored, web-only, desktop-only parity);
   - the known-divergence register (native and Windows drift guards);
   - a local evidence log template.
-- [X] T002 Add `D:scripts/check_089_scope.py`. It reports changed files between the 089 base SHAs and HEAD for all five repositories, fails on any path under the client directories or `.github/workflows/`, and records its command in verification.md. Also confirm and record the local toolchains:
+- [X] T002 Add `D:scripts/verification/check_089_scope.py`. It reports changed files between the 089 base SHAs and HEAD for all five repositories, fails on any path under the client directories or `.github/workflows/`, and records its command in verification.md. Also confirm and record the local toolchains:
   - Deep: `docker compose up -d`, `docker exec astraldeep … pytest`;
   - Plane: `uv run pytest`;
   - Primitives: `pytest`;
@@ -91,7 +91,7 @@
   - labeled prompts (single-tool, multi-tool, conversational follow-up, ambiguous, cross-agent name collision, disabled agent, deselected tool, large catalog) with accepted tool labels;
   - a benign reference corpus (fixtures plus the 088 reference journey prompts);
   - an index of `D:backend/security_benchmark/` cases to use.
-- [X] T015 Add the local-only `D:scripts/typesafe_routing_bench.py`. It reads the owner's TypeSafe key from stdin under T003a (FR-044), never from env, and never writes or logs it. It measures p50/p95/p99 latency against question and option counts on the real bundled catalog and a synthetic 60×8 catalog, plus tier accuracy on T014. Run it and record the results. Then set `ATTEMPT_TIMEOUT_MS`, `MAX_ROUTING_AGENTS`, `MAX_TOOLS_PER_AGENT`, the forced-choice provider allowlist and provisional tier thresholds in code, and record the values in verification.md (research R16).
+- [X] T015 Add the local-only `D:scripts/verification/typesafe_routing_bench.py`. It reads the owner's TypeSafe key from stdin under T003a (FR-044), never from env, and never writes or logs it. It measures p50/p95/p99 latency against question and option counts on the real bundled catalog and a synthetic 60×8 catalog, plus tier accuracy on T014. Run it and record the results. Then set `ATTEMPT_TIMEOUT_MS`, `MAX_ROUTING_AGENTS`, `MAX_TOOLS_PER_AGENT`, the forced-choice provider allowlist and provisional tier thresholds in code, and record the values in verification.md (research R16).
 
 - [X] K04 kos-wiki checkpoint (Foundational + dependency-approval milestone): update `astral-primitives` (0.4.0 types, PR SHA), `astral-llm-credential-resolution` (Plane `089.001` credential table, env exclusion), `astral-typesafe-routing` (adapter design, measured constants from T015 with date/SHA), `astral-feature-flags` (new constants); `log.md` checkpoint; commit + push.
 
@@ -210,7 +210,7 @@
   - no additional TypeSafe request is issued for security.
 - [X] T034 [US4] Add `D:backend/orchestrator/typesafe_routing/security_policy.py`: verdict rules, provisional thresholds, `REFUSE_TIER_ENABLED=False` until T036, and downgrade of refuse to confirm_tools while it is disabled.
 - [X] T035 [US4] Wire the I2 refusal short-circuit (existing refusal rendering, `chat_status done`, audit) and the I4 confirm_tools consultation at the supervisor + HITL step of `_run_gate_stack` in `D:backend/orchestrator/orchestrator.py`.
-- [ ] T036 [US4] Calibrate against `D:backend/security_benchmark/` and the T014 benign corpus with the bench script to meet SC-006 false-positive bounds. Set final thresholds, enable the refuse tier only if the bounds are met, and record the calibration tables and decision in verification.md.
+- [X] T036 [US4] Calibrate against `D:backend/security_benchmark/` and the T014 benign corpus with the bench script to meet SC-006 false-positive bounds. Set final thresholds, enable the refuse tier only if the bounds are met, and record the calibration tables and decision in verification.md.
 
 - [X] K12 kos-wiki checkpoint (US4 + security-calibration milestone): update `astral-security-defense-layers` (additive TypeSafe ingress layer, verdict tiers, never-relax property), `astral-security-benchmark-harness` (089 calibration use and SC-006 results summary), `astral-typesafe-routing`, `astral-open-follow-ups` (refuse-tier status if not enabled); `log.md` checkpoint; commit + push.
 
@@ -286,9 +286,9 @@
 - [X] K17 Reference kos-wiki before qualification: `astral-dev-verification-workflow`, `astral-open-follow-ups`, `astral-feature-timeline`.
 - [X] T056 Repin Deep: update `components/AstralPrimitives`, `components/AstralPlane` and `components/AstralProjection` submodules to the 089 commits, and `D:config/astral-composition.json` (primitives `package_version` 0.4.0 + `contract_sha256`, `ui_protocol.sha256`, `data_plane.schema_revision` `089.001` + `migration_sha256`, component commits). Run the composition verification locally.
 - [X] T057 Rehearse a populated upgrade `088.008 → 089.001` on the local candidate stack with the synthetic dataset, plus a repeat start and the rollback procedure. Record receipts in verification.md.
-- [ ] T058 Run the full local suites in Deep, Plane, Primitives and Projection (server and web), with ≥90% changed-code coverage (diff-cover), Ruff and ESLint. Record the results. List the native and Windows drift-guard failures as the known divergence, and treat any other failure as blocking (SC-008).
+- [X] T058 Run the full local suites in Deep, Plane, Primitives and Projection (server and web), with ≥90% changed-code coverage (diff-cover), Ruff and ESLint. Record the results. List the native and Windows drift-guard failures as the known divergence, and treat any other failure as blocking (SC-008).
 - [X] T059 Run a canary secret scan: run all TypeSafe tests and a local end-to-end session with a synthetic canary key, then scan logs, audit rows, durable-operation records, rendered HTML/SDUI snapshots and test artifacts for the canary and its prefix. Expect zero hits (SC-007).
-- [X] T060 Run `D:scripts/check_089_scope.py` across all five repositories. Expect zero client-directory and workflow changes (SC-011). Record the output.
+- [X] T060 Run `D:scripts/verification/check_089_scope.py` across all five repositories. Expect zero client-directory and workflow changes (SC-011). Record the output.
 - [X] T061 Document user and operator behavior in `D:docs/`: the TypeSafe key in LLM settings, what routing, safety screen and layout do, the fallback and notice behavior, the circuit, env-variable refusal, and the six primitives. Include renderer target documentation for the new types (Constitution VI).
 - [ ] T062 Walk through `quickstart.md` end to end on the local candidate stack and record the results.
 - [X] T063 Prepare per-repository PR descriptions (Primitives, Plane, Projection, Deep) covering: dependency approval record, owner exceptions (CI ignored, web-only, desktop parity), known divergences, measured latency and calibration summaries, and merge order Primitives → Plane → Projection → Deep. No attribution lines.

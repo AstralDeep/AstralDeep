@@ -40,7 +40,9 @@ DEFAULT_BASELINES: dict[str, str] = {
 }
 
 # Sibling checkouts of the five repositories, resolved relative to AstralDeep.
-DEFAULT_REPO_PARENT = Path(__file__).resolve().parents[2]
+# This file lives at <AstralDeep>/scripts/verification/, so the directory that
+# holds all five checkouts is three levels up.
+DEFAULT_REPO_PARENT = Path(__file__).resolve().parents[3]
 
 # A changed path fails when any of these names one of its components. Matching
 # on components rather than a prefix catches a nested or vendored client tree.

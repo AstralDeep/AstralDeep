@@ -1010,7 +1010,7 @@ class _NoCacheStaticFiles(StaticFiles):
             pass
         # Minimal Linux images need not know WOFF2's MIME type. These exact
         # bundled fonts are public worker inputs and must match its MIME pins.
-        if path in {"fonts/inter-latin.woff2", "fonts/jetbrains-mono-latin.woff2"}:
+        if path == "fonts/open-sans-latin.woff2":
             response.headers["Content-Type"] = "font/woff2"
         # 088: only this public, static-only worker may cover root navigation.
         # Stable worker URLs must revalidate even when requested with ?v=;
@@ -23620,7 +23620,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         it is used, so a composed layout is held to exactly the same contract
         as a model-produced one.
         """
-        style = self._typesafe_turn_styles.get(chat_id) if chat_id else None
+        # Every 089 seam is inert when it cannot run. Reading the attribute
+        # defensively matters here because the caller's `except` is broad: an
+        # AttributeError raised on this line would be swallowed as "the
+        # designer crashed" and would silently disable the designer instead of
+        # this seam.
+        styles = getattr(self, "_typesafe_turn_styles", None)
+        style = styles.get(chat_id) if (styles and chat_id) else None
         if not style:
             return None
         try:

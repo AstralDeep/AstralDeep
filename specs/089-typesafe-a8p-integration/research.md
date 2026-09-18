@@ -371,7 +371,7 @@ Import is lazy inside `typesafe_routing/client.py`. An `ImportError` marks TypeS
 
 ### R16 — Measurement spike (prerequisite to enabling tiers)
 
-**Decision**: Before routing tiers are wired (T022+), run `scripts/typesafe_routing_bench.py`, a new local-only script that uses the owner's own TypeSafe key, which the owner permitted for local testing (FR-044), passed over stdin (never env, never committed, never logged) over:
+**Decision**: Before routing tiers are wired (T022+), run `scripts/verification/typesafe_routing_bench.py`, a new local-only script that uses the owner's own TypeSafe key, which the owner permitted for local testing (FR-044), passed over stdin (never env, never committed, never logged) over:
 - the routing fixture corpus (T014);
 - the real bundled agent catalog;
 - a synthetic large catalog (60 agents × 8 tools).

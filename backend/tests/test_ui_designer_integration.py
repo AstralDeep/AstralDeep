@@ -101,7 +101,7 @@ def _make_fake(history, user_id, llm_content=None, llm_exc=None, llm_delay=0.0):
     )
     for name in ("_deliver_round_components", "_send_or_replace_components",
                  "send_ui_upsert", "_push_canvas", "_canvas_components",
-                 "_run_designer"):
+                 "_run_designer", "_typesafe_style_layout"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
     fake._sent = sent
     fake._renders = renders

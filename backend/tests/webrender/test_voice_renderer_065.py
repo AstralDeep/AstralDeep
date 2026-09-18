@@ -97,7 +97,9 @@ def test_shell_hosts_accessible_voice_controls_without_replacing_typed_chat() ->
     assert terminal_notice["aria-atomic"] == "true"
     assert terminal_notice["hidden"] is None
     assert parser.tags_by_id["astral-input"] == "textarea"
-    assert parser.by_id["astral-input"]["rows"] == "2"
+    # Feature 089: the a8p composer bar is one wide field that grows from a
+    # single row; the voice controls sit beside it, not under it.
+    assert parser.by_id["astral-input"]["rows"] == "1"
     assert parser.by_id["astral-input"]["aria-label"] == "Message"
     assert "readonly" not in parser.by_id["astral-input"]
     assert "disabled" not in parser.by_id["astral-input"]

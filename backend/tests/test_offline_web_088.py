@@ -59,7 +59,7 @@ def test_offline_resources_are_public_even_with_request_identity_headers(client)
         assert "set-cookie" not in identified.headers
 
 
-@pytest.mark.parametrize("font", ["inter-latin.woff2", "jetbrains-mono-latin.woff2"])
+@pytest.mark.parametrize("font", ["open-sans-latin.woff2"])
 @pytest.mark.parametrize("method", ["get", "head"])
 def test_bundled_font_mime_is_independent_of_platform_database(client, monkeypatch, font, method):
     platform_guess = responses.guess_type
@@ -95,7 +95,8 @@ def test_every_worker_asset_matches_actual_deep_served_type_size_and_digest(clie
     match = re.search(r"const PUBLIC_ASSETS = (\[[\s\S]*?\]);", worker.text)
     assert match
     assets = json.loads(match[1])
-    assert len(assets) == 7
+    # Six since 089: the offline bundle carries one font file rather than two.
+    assert len(assets) == 6
     for asset in assets:
         response = client.get(asset["path"])
         assert response.status_code == 200, asset["path"]

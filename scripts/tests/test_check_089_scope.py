@@ -18,7 +18,7 @@ import sys
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = REPOSITORY_ROOT / "scripts" / "check_089_scope.py"
+MODULE_PATH = REPOSITORY_ROOT / "scripts" / "verification" / "check_089_scope.py"
 SPEC = importlib.util.spec_from_file_location("check_089_scope", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 scope_tool = importlib.util.module_from_spec(SPEC)

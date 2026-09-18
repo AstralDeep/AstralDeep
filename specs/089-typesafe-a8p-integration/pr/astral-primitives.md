@@ -45,7 +45,7 @@ component leaves (see the AstralProjection PR).
 
 - **E1: CI is ignored.** Every CI-equivalent check was run locally and recorded
   in `specs/089-typesafe-a8p-integration/verification.md`. No workflow file is
-  modified in any repository (enforced by `scripts/check_089_scope.py`).
+  modified in any repository (enforced by `scripts/verification/check_089_scope.py`).
 - **E5: dependency pin without an approval gate.** Not exercised here; this
   package adds no dependency.
 

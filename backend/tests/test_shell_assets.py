@@ -71,7 +71,14 @@ def test_font_files_vendored():
 
 
 def test_font_faces_declared_with_swap():
-    """astral.css self-hosts Inter and JetBrains Mono with font-display: swap."""
+    """astral.css self-hosts every font it uses, with font-display: swap.
+
+    Feature 089 replaced Inter and JetBrains Mono with one Open Sans latin
+    variable slice covering body text, headings and code. What matters is
+    unchanged: the fonts are self-hosted, so no external origin sits on the
+    critical render path, and each declares `swap` so text is readable
+    before the file arrives.
+    """
     css = _css()
     blocks = re.findall(r"@font-face\s*\{[^}]*\}", css)
     assert blocks, "no @font-face blocks in astral.css"
@@ -83,7 +90,10 @@ def test_font_faces_declared_with_swap():
         fam = re.search(r"font-family:\s*'([^']+)'", block)
         if fam:
             families.add(fam.group(1))
-    assert {"Inter", "JetBrains Mono"} <= families
+    assert families == {"Open Sans"}, (
+        "one family serves the whole interface; a second would mean a font "
+        "reference survived the 089 swap: {families}"
+    )
     for block in blocks:
         assert "%%ASTRAL_V" not in block, "css is served statically; tokens are never substituted"
 
@@ -93,7 +103,11 @@ def test_shell_preloads_primary_fonts():
     shell = _shell()
     preloads = re.findall(r"<link[^>]+rel=\"preload\"[^>]*>", shell)
     font_preloads = [p for p in preloads if 'as="font"' in p]
-    assert len(font_preloads) >= 2, "expected preloads for the primary font files"
+    # One font file since 089, so one preload. More than one would mean a
+    # second family had been reintroduced.
+    assert len(font_preloads) == 1, (
+        f"expected exactly one preloaded font file, got {font_preloads}"
+    )
     for p in font_preloads:
         assert "crossorigin" in p, f"font preload without crossorigin: {p}"
         assert "?v=%%ASTRAL_V:fonts/" in p, f"font preload without version token: {p}"

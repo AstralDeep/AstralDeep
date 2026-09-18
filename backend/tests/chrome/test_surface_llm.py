@@ -149,13 +149,17 @@ def test_handlers_cover_contract_actions():
 
 def test_render_empty_state_form_structure():
     html = render(make_orch())
+    # Feature 089: the surface's actions are in the dialog's footer rather
+    # than inside its body. Same actions, same helper, the place the a8p
+    # dialog puts them -- so the test looks where they are.
+    footer = llm_surface.footer_html()
     assert "data-ui-form" in html
     assert '<select name="provider"' in html
     assert 'type="password"' in html and 'name="api_key"' in html
     assert 'name="model"' in html and '<select name="model"' not in html
     for action in ("chrome_llm_models", "chrome_llm_test", "chrome_llm_save"):
-        assert f'data-ui-action="{action}"' in html
-        assert 'data-ui-collect="true"' in html
+        assert f'data-ui-action="{action}"' in footer
+        assert 'data-ui-collect="true"' in footer
     # No saved config -> no clear affordance, generic key placeholder.
     assert "chrome_llm_clear" not in html
     assert "sk-..." in html

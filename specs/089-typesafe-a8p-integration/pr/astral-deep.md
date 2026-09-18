@@ -108,7 +108,7 @@ the routing call was already spending. The added wait is
 It has not been measured because **no chat turn can run on the local candidate
 stack** (verification.md §7c): with real auth the realm rejects the local
 redirect URI, and with mock auth the 088 guidance authority correctly refuses
-the mock token. `scripts/typesafe_turn_timeline.py` is written and does the
+the mock token. `scripts/verification/typesafe_turn_timeline.py` is written and does the
 correlation; it is ready the moment a turn can complete.
 
 **SC-002 is recorded as outstanding, not as passed.**
@@ -160,7 +160,7 @@ exporter.
 
 - **E1: CI is ignored.** Every CI-equivalent check was run locally and
   recorded. No workflow file is modified in any of the five repositories,
-  enforced by `scripts/check_089_scope.py` and its 14 guard tests.
+  enforced by `scripts/verification/check_089_scope.py` and its 14 guard tests.
 - **E2: web-only client changes.**
 - **E3: desktop-only parity target.**
 - **E4: staging is a local candidate stack.** No deployment is authorised.
@@ -184,6 +184,8 @@ with `scripts/verify_composition.py`.
 - **T021, T069, T062** — the credential and first-run walkthroughs and the
   quickstart, all blocked by §7c.
 - **T032's SC-002 half** — same blocker.
-- **T036** — the refuse tier stays disabled pending a larger benign corpus.
+- **The refusal tier's benign corpus** — several hundred prompts from real traffic, after which
+  re-running `scripts/verification/typesafe_routing_bench.py --mode benign` decides whether
+  `REFUSE_TIER_ENABLED` flips. No code changes with it.
 - **T057** — the populated migration rehearsal.
 - **T070** — removing the owner's credentials from the candidate stack.
