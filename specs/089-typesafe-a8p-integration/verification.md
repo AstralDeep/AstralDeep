@@ -353,15 +353,35 @@ docker cp scripts/verification/complete_089_qualification.py astraldeep:/tmp/com
 docker exec -it astraldeep python /tmp/complete_089.py
 ```
 
-It prints a URL and a short code, and once approved it registers over the WebSocket the way a
-native client does, opens the LLM settings surface and drives one real turn, writing
-`/tmp/089_report.json`. The token lives in that process's memory only; the script never prints
-it and never writes it down.
+It prints a URL and a short code. After the approval it runs unattended and closes, in order:
 
-It is deliberately a **first probe rather than the whole walkthrough**. It establishes that the
-gate opens and captures the exact frame shapes the remaining assertions must be written against.
-Those shapes have never been observed on this stack, and guessing them into a longer script
-would produce confident-looking noise instead of evidence.
+| Task | What it drives |
+|---|---|
+| **T021 / US1** | status → save-refused → invalid key rejected → real key saved → `Active` with `Saved key hidden` → removed → unset → re-saved, through `chrome_typesafe_save` / `chrome_typesafe_clear` — the same handlers the web settings surface calls, over the socket a native client uses. Both postures in one run. |
+| **T069 / US7** | the acknowledgment gate: a save without the box refuses with `Check this box to confirm you understand how your data is shared.` and reaches no provider; a save with it proceeds. |
+| **T062 §2 / §2a** | the same steps the quickstart walks by hand. |
+| **T004, T032 (SC-002)** | real turns, timed send → first progress frame, bracketed by UTC stamps. |
+| **FR-035** | the key is asserted absent from every rendered surface, on save and on reopen. |
+
+The assertions are written against the product's own strings, read out of
+`projection_surfaces/llm.py` and `llm_config/data_sharing.py` rather than guessed:
+`Not set — standard routing`, `Active`, `Saved key hidden`, `data_sharing_acknowledged`, and
+the acknowledgment refusal above. Deriving them statically found a defect in this spec's own
+quickstart, recorded in §7d.
+
+The container cannot read `docker logs`, so the walkthrough prints the UTC window it drove the
+turns in and the server-side half is read on the host afterwards, by the same `_perf_windows`
+the full harness uses:
+
+```bash
+python scripts/verification/typesafe_turn_timeline.py --perf-only --since <stamp>
+```
+
+Two rules the script keeps. The **access token** lives in that process's memory only — never
+printed, never written, never on a command line. The **TypeSafe key** is read from the terminal
+with `getpass` and goes straight to the settings save handler — never an environment variable,
+never a file, never a log line, never in the report. That is the FR-044 entry path, not a way
+around it.
 
 One boundary worth recording, because it shaped the outcome: the implementer's own attempt to
 run this flow was **refused by the operator sandbox as credential exploration**, which is the
@@ -369,6 +389,20 @@ correct call on the shape of the action — a process completing a device-code f
 the resulting token looks exactly like credential harvesting, whoever is doing it. Handing the
 script to the owner is the better arrangement regardless of the refusal.
 
+
+
+### 7d. The quickstart asserted a string the product never emits (found 2026-09-17)
+
+Writing the walkthrough's assertions against the product's own strings rather than against the
+quickstart turned up a mismatch. §2 step 2 said to expect **"TypeSafe rejected this key."**
+The product emits **"TypeSafe rejected that key. Check it and try again."**
+(`llm_config/typesafe_handlers.py`). A human walking §2 would have recorded a mismatch on a
+step that works, or -- more likely -- read past it and recorded a pass on wording nobody
+checked.
+
+It is a small defect with a general cause worth naming: a walkthrough that quotes product
+strings is a **second copy** of them, and nothing was pinning the two together. Corrected in
+`quickstart.md`, with the source named beside it so the next edit has somewhere to check.
 
 
 ## 8. Evidence log
@@ -417,6 +451,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T062 | §7c | realm (read-only probe) | `GET /protocol/openid-connect/auth` with each local spelling | `127.0.0.1` → **400 `Invalid parameter: redirect_uri`**; `localhost` → **200, the sign-in form**. The dev redirect URI was registered all along; every local run used the other spelling. **§7c corrected** | local |
 | 2026-09-17 | T062 | §7c | candidate stack + realm | `GET http://localhost:8001/` followed through | 302 → `/auth/login` → realm → **the realm's login form**, on the unmodified stack. No code, config or realm change — only the hostname | local |
 | 2026-09-17 | T062 | §7c | realm (read-only probe) | RFC 8628 device authorization for `astral-watch` | **accepted** (PKCE required), 600 s window. Needs no redirect URI, and `astral-watch` is already in `KEYCLOAK_ALLOWED_AZP`, so the token passes `verify_production_token` and the 088 guidance authority unchanged | local |
+| 2026-09-17 | T062 | — | Deep | quickstart §2 checked against the product's strings | **Defect**: §2 asserted `TypeSafe rejected this key.`, which the product never emits; the real message is `TypeSafe rejected that key. Check it and try again.` Corrected (§7d) | local |
 
 ### Measurement sections
 
