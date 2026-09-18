@@ -272,7 +272,7 @@ a decision only the owner can make. Nothing below is blocked on code.
 | T028 | The TypeSafe key | Tier calibration to SC-005 (>=95% high-tier acceptance) against the T014 labels. |
 | T032 | **One human sign-in** on the local stack | SC-001, SC-003 and SC-004 are measured at the seam (§8.16) and pass. SC-002 needs the overlap window, which needs a turn, which needs an authenticated person; see §7c. |
 | T036 | The TypeSafe key | Security calibration to SC-006. **`REFUSE_TIER_ENABLED` stays `False` until this passes**, and a would-be refusal is served one step down as `confirm_tools`. |
-| T070 | The owner's instruction on whether to keep the credentials | Removes them from the candidate stack at the end of qualification. |
+| ~~T070~~ | ~~The owner's instruction~~ | **Closed 2026-09-17.** The owner was asked and chose to keep them until qualification finishes — the branch the task's own wording defers to. Hygiene confirmed by T059 (0 hits). Removal is due once the five remaining tasks are done. |
 
 
 ### 7b. The committed key pattern was wrong (T007, corrected 2026-09-17)
@@ -452,6 +452,7 @@ Append one row per recorded run. Never record key material, key prefixes, creden
 | 2026-09-17 | T062 | §7c | candidate stack + realm | `GET http://localhost:8001/` followed through | 302 → `/auth/login` → realm → **the realm's login form**, on the unmodified stack. No code, config or realm change — only the hostname | local |
 | 2026-09-17 | T062 | §7c | realm (read-only probe) | RFC 8628 device authorization for `astral-watch` | **accepted** (PKCE required), 600 s window. Needs no redirect URI, and `astral-watch` is already in `KEYCLOAK_ALLOWED_AZP`, so the token passes `verify_production_token` and the 088 guidance authority unchanged | local |
 | 2026-09-17 | T062 | — | Deep | quickstart §2 checked against the product's strings | **Defect**: §2 asserted `TypeSafe rejected this key.`, which the product never emits; the real message is `TypeSafe rejected that key. Check it and try again.` Corrected (§7d) | local |
+| 2026-09-17 | T070 | FR-044 | candidate stack | owner asked; hygiene scan reused | **Owner chose to keep the credentials until qualification finishes** — the branch T070 defers to. Hygiene half already evidenced (T059, 0 hits). Closed; removal due once the five sign-in tasks are done | local |
 
 ### Measurement sections
 
@@ -956,7 +957,22 @@ environment change, and no longer an administrator's — and every one of them n
 on this stack when it happens. Removing them now would mean the owner re-enters them to resume,
 most likely in the same sitting.
 
-So the choice is stated rather than made:
+**Decided 2026-09-17: keep them until qualification finishes.** The owner was asked and chose
+to keep, which is the branch T070's own wording defers to — "remove … **unless the owner asks
+to keep them**". Both halves of the task are therefore satisfied: the removal is waived by the
+instruction the task defers to, and the hygiene confirmation it also requires was already run
+and is evidenced (T059, §8.13: **0 hits** across 407 TypeSafe tests, captured log records, the
+credential value objects, the settings status, test artifacts and the container log). T070 is
+closed on that basis, not on an assumption.
+
+The reasoning behind the choice, recorded because a later reader will want it: every one of the
+five remaining tasks needs a credential on this stack, so removing them now would mean
+re-entering them in the same sitting. The credentials stay on the owner's own machine, in the
+owner's own database, encrypted under `CREDENTIAL_ENCRYPTION_KEY`. **They are to be removed once
+the five tasks are done** — that is the condition the decision was made under, and it is the
+one thing outstanding from T070.
+
+The options as they were put:
 
 1. **Remove now** — Settings → LLM settings → *Remove* for the TypeSafe key and *Clear
    configuration* for the provider, or an owner-scoped delete. Re-entry is a two-minute settings
