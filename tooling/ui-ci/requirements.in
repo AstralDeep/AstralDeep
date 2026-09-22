@@ -1,0 +1,14 @@
+# DB-free backend/UI-v2 contract tests only; never installed in product images.
+# Runtime imports use the same libraries declared by backend/requirements.txt.
+# Component packages are supplied by the exact checked-out composition sources.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pydantic==2.13.5
+fastapi==0.141.1
+aiohttp==3.14.3
+python-jose[cryptography]==3.5.0
+httpx==0.28.1
+websockets==17.1
+cryptography==48.0.1
+requests==2.34.2
+openai==3.14.1

@@ -483,7 +483,17 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
                 body = ('<div data-chrome-surface="guidance" data-astral-selection="'
                         + esc(json.dumps(_selection_payload(state["selected"])))
                         + '">' + body + "</div>")
-            frame = ChromeRender(html=render_modal_shell(view.title, body, "guidance"),
+            nav_html = ""
+            if not selection:
+                try:
+                    from orchestrator.auth import _extract_roles
+                    from orchestrator.chrome_events import _session_identity, _settings_nav_html
+                    roles = _extract_roles(caller.claims) if hasattr(caller, "claims") else ()
+                    nav_html = _settings_nav_html(roles, "guidance", _session_identity(orch, websocket, roles))
+                except Exception:
+                    logger.debug("chrome: settings rail unavailable for guidance", exc_info=True)
+                    nav_html = ""
+            frame = ChromeRender(html=render_modal_shell(view.title, body, "guidance", nav_html=nav_html),
                 surface_key="guidance", request_generation=request_generation).to_json()
         else:
             components = ComponentAdapter.adapt_guidance_surface(state, orch.rote.get_profile(websocket))

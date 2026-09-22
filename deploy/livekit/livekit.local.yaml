@@ -5,7 +5,9 @@ bind_addresses:
 rtc:
   tcp_port: 7881
   port_range_start: 50000
-  port_range_end: 50099
+  # Match the local Compose UDP mapping; otherwise ICE may advertise an
+  # unpublished port. Staging and production retain their larger range.
+  port_range_end: 50080
   use_external_ip: false
   advertise_internal_ip: false
   enable_loopback_candidate: true

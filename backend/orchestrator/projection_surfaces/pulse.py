@@ -31,6 +31,7 @@ logger = logging.getLogger("Orchestrator.Chrome.Pulse")
 
 TITLE = "Pulse — your digest"
 SURFACE_KEY = "pulse"
+NO_NAV = True
 
 _CARD_WRAP = "grid grid-cols-1 sm:grid-cols-2 gap-3"
 # How many durable memories / pending signals to feed the digest builder.

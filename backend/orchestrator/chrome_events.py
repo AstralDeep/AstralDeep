@@ -561,8 +561,11 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
             raise AssignmentError("human_authentication_required", 401)
         return await _handle_chrome_event(orch, websocket, action, payload, user_id,
             request_generation=request_generation, work_read=work_read, guidance_navigation=guidance_navigation)
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
-    pending = (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request")
+    import sys
+    context_var = getattr(sys.modules.get(type(orch).__module__), "_CONNECTION_OPERATION_CONTEXT", None)
+    if context_var is None:
+        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as context_var
+    pending = (context_var.get() or {}).get("human_request")
     if (pending is None or pending.websocket is not websocket or pending.boundary.orchestrator is not orch
             or pending.purpose != "metadata" or pending.method != method or pending.message.get("action") != action
             or (pending.message.get("payload") or {}) != payload):

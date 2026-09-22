@@ -11,6 +11,8 @@ by the caller. Supersedes the feature-062 rule that kept text-like components
 whole in the rail. Pure functions.
 """
 
+import pytest
+
 from orchestrator.history import _is_rail_text_only, _rail_parts
 
 
@@ -59,6 +61,40 @@ class TestIsRailTextOnly:
 
 
 class TestRailParts:
+    @pytest.mark.parametrize("identity", ["wc_source", "au_source", "doc_source"])
+    def test_canvas_source_text_is_not_duplicated_in_transcript(self, identity):
+        source = {"type": "text", "component_id": identity,
+                  "variant": "markdown", "content": "Source: [Dog grooming](https://en.wikipedia.org/wiki/Dog_grooming)"}
+        parts = [{"type": "components", "components": [source, _text("Summary.")]}]
+        assert _rail_parts(parts, canvas_component_ids=frozenset({identity})) == [
+            {"type": "text", "text": "Summary."}
+        ]
+        assert parts[0]["components"][0] == source  # source payload is retained
+
+    @pytest.mark.parametrize("identity", [None, "", "cc_narrative", "authored_answer"])
+    def test_unanchored_text_still_reaches_transcript(self, identity):
+        text = {**_text("The answer."), "component_id": identity}
+        assert _rail_parts(
+            [{"type": "components", "components": [text]}],
+            canvas_component_ids=frozenset({"wc_source"}),
+        ) == [
+            {"type": "text", "text": "The answer."}
+        ]
+
+    def test_nested_anchored_text_and_wrapper_are_not_lifted(self):
+        wrapper = {"type": "card", "content": [
+            _text("Summary."),
+            {**_text("Source."), "component_id": "wc_source"},
+            {"type": "container", "component_id": "wc_detail",
+             "children": [_text("Canvas detail.")]},
+        ]}
+        assert _rail_parts(
+            [{"type": "components", "components": [wrapper]}],
+            canvas_component_ids=frozenset({"wc_source", "wc_detail"}),
+        ) == [
+            {"type": "text", "text": "Summary."}
+        ]
+
     def test_text_part_passes_through(self):
         parts = [{"type": "text", "text": "hello"}]
         assert _rail_parts(parts) == parts

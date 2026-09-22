@@ -83,7 +83,38 @@ def _run_with_loop(fn, loop):
         t.join(timeout=2)
 
 
-def test_fetch_via_peer_extracts_page_text():
+def _peer_kwargs(runtime, scope="tools:read tool:fetch_page"):
+    from jose import jwt
+
+    # Only an optimization eligibility hint; the real hop still verifies its
+    # stored parent authority. No credential or production signing key here.
+    token = jwt.encode({"scope": scope}, "test-only-scope-hint", algorithm="HS256")
+    return {"_runtime": runtime, "_delegation_token": token}
+
+
+@pytest.mark.parametrize("scope", [None, [], "", "tools:write", "tool:fetch_page",
+                                  "tools:read tool:summarize_text"])
+def test_fetch_via_peer_skips_ineligible_scope_without_attempting_hop(scope):
+    from agents.summarizer import mcp_tools
+
+    runtime = SimpleNamespace(call_agent_tool=MagicMock())
+    assert mcp_tools._fetch_via_peer("http://x", _peer_kwargs(runtime, scope)) is None
+    runtime.call_agent_tool.assert_not_called()
+
+
+@pytest.mark.parametrize("token", [None, 123, "", "malformed-token"])
+def test_fetch_via_peer_skips_unreadable_authority_without_attempting_hop(token):
+    from agents.summarizer import mcp_tools
+
+    runtime = SimpleNamespace(call_agent_tool=MagicMock())
+    assert mcp_tools._fetch_via_peer(
+        "http://x", {"_runtime": runtime, "_delegation_token": token},
+    ) is None
+    runtime.call_agent_tool.assert_not_called()
+
+
+@pytest.mark.parametrize("scope", ["tools:read", "tools:read tool:fetch_page"])
+def test_fetch_via_peer_extracts_page_text(scope):
     from agents.summarizer import mcp_tools
     from shared.protocol import MCPResponse
 
@@ -94,7 +125,7 @@ def test_fetch_via_peer_extracts_page_text():
     resp = MCPResponse(result={"title": "X Title"}, ui_components=[card])
     rt, loop = _peer_runtime(resp)
     out = _run_with_loop(
-        lambda: mcp_tools._fetch_via_peer("http://x", {"_runtime": rt}), loop)
+        lambda: mcp_tools._fetch_via_peer("http://x", _peer_kwargs(rt, scope)), loop)
     assert out == ("X Title", "the readable page body")
 
 
@@ -110,7 +141,7 @@ def test_fetch_via_peer_refused_hop_returns_none():
 
     rt, loop = _peer_runtime(MCPResponse(error={"message": "Hop refused"}))
     out = _run_with_loop(
-        lambda: mcp_tools._fetch_via_peer("http://x", {"_runtime": rt}), loop)
+        lambda: mcp_tools._fetch_via_peer("http://x", _peer_kwargs(rt)), loop)
     assert out is None
 
 
@@ -122,7 +153,7 @@ def test_fetch_via_peer_empty_text_returns_none():
         {"type": "text", "content": "src"}, {"type": "text", "content": "   "}]}
     rt, loop = _peer_runtime(MCPResponse(result={}, ui_components=[card]))
     out = _run_with_loop(
-        lambda: mcp_tools._fetch_via_peer("http://x", {"_runtime": rt}), loop)
+        lambda: mcp_tools._fetch_via_peer("http://x", _peer_kwargs(rt)), loop)
     assert out is None
 
 

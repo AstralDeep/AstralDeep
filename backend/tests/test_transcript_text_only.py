@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
@@ -19,6 +21,20 @@ _th = Orchestrator._transcript_html
 def test_text_primitive_renders():
     html = _th([{"type": "text", "content": "hello there"}])
     assert "hello there" in html
+
+
+@pytest.mark.parametrize("component", [
+    {"type": "text", "content": "Source: [Dog grooming](https://en.wikipedia.org/wiki/Dog_grooming)"},
+    {"type": "card", "content": [{"type": "text", "content": "Canvas document"}]},
+])
+def test_workspace_component_does_not_get_a_second_transcript_rendition(component):
+    canvas_ids = frozenset({"wc_source"})
+    assert _th([{**component, "component_id": "wc_source"}],
+               canvas_component_ids=canvas_ids) == ""
+    assert "Narrative reply" in _th([
+        {**component, "component_id": "wc_source"},
+        {"type": "text", "content": "Narrative reply", "component_id": "authored_answer"},
+    ], canvas_component_ids=canvas_ids)
 
 
 def test_alert_renders():

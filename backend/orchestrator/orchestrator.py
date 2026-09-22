@@ -16,6 +16,9 @@ import time
 import os
 import random
 import sys
+if __name__ == "__main__":
+    sys.modules.setdefault("orchestrator.orchestrator", sys.modules[__name__])
+
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -11756,9 +11759,14 @@ class Orchestrator:
                         def _hydrate_loaded_chat():
                             """Render transcript HTML and re-attach chips off the event loop."""
                             try:
+                                canvas_ids = frozenset(
+                                    row["component_id"]
+                                    for row in self.workspace.live_rows(chat_id, user_id)
+                                )
                                 for m in chat.get("messages", []):
                                     if not isinstance(m.get("content"), str) and isinstance(m.get("content"), list):
-                                        _t_html = self._transcript_html(m["content"])
+                                        _t_html = self._transcript_html(
+                                            m["content"], canvas_component_ids=canvas_ids)
                                         if _t_html:
                                             m["html"] = _t_html
                             except Exception:
@@ -13039,7 +13047,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return True
 
     @classmethod
-    def _transcript_html(cls, content) -> str:
+    def _transcript_html(cls, content, *, canvas_component_ids=frozenset()) -> str:
         """Feature 045 — server-rendered HTML for a component-bearing transcript
         message, restricted to TEXT ONLY.
 
@@ -13054,7 +13062,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not isinstance(content, list):
             return ""
         text_only = [c for c in content
-                     if isinstance(c, dict) and cls._is_text_only_components([c])]
+                     if isinstance(c, dict)
+                     and c.get("component_id") not in canvas_component_ids
+                     and cls._is_text_only_components([c])]
         if not text_only:
             return ""
         try:
@@ -15989,6 +15999,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         # name is never renamed behind the person's back.
         chat_data = await asyncio.to_thread(self.history.get_chat, chat_id, user_id=user_id)
         if scheduled_history_stage is None and _chat_needs_a_name(chat_data):
+            initial_title = _title_from(msg_to_save)
+            if initial_title:
+                try:
+                    await asyncio.to_thread(
+                        self.history.update_chat_title, chat_id, initial_title, user_id=user_id
+                    )
+                    await self._broadcast_user_history(user_id=user_id)
+                except Exception:
+                    logger.debug("immediate initial title assignment failed", exc_info=True)
             asyncio.create_task(
                 self.summarize_chat_title(chat_id, msg_to_save, user_id=user_id, websocket=websocket)
             )
@@ -27044,7 +27063,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     {"role": "system", "content": "Name what this request is about in 2 to 4 words, as a title. Reply with the title alone: no quotes, no punctuation at the end, no explanation."},
                     {"role": "user", "content": message}
                 ],
-                max_tokens=24
+                max_tokens=300
             )
             usage = getattr(response, "usage", None)
             total_tokens = getattr(usage, "total_tokens", None) if usage else None
@@ -27072,7 +27091,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self.history.update_chat_title(chat_id, title, user_id=user_id)
 
             # Broadcast update (each user gets their own history)
-            await self._broadcast_user_history()
+            await self._broadcast_user_history(user_id=user_id)
 
         except Exception as e:
             error = self._safe_llm_error_metadata(e)

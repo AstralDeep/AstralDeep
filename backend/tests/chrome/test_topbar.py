@@ -104,21 +104,25 @@ def test_the_rail_marks_where_you_are():
     assert "Theme</button>" in marked[:400]
 
 
-def test_workspace_timeline_is_a_rail_entry_not_an_account_row_icon():
-    """The workspace timeline is still one click from the gear, but the click
-    lands in the dialog's rail instead of on an icon beside the gear — the
-    account row carries the gear alone now. The MODEL is unchanged, so native
-    clients still receive it as a top-bar control."""
+def test_workspace_timeline_is_not_in_settings_rail():
+    """The workspace timeline has moved out of the settings rail to the composer bar options menu.
+    The MODEL is unchanged, so native clients still receive it as a top-bar control."""
     nav = _nav(["user"])
-    assert 'data-menu-key="timeline"' in nav
-    assert "Workspace timeline" in nav
-    assert '&quot;surface&quot;: &quot;workspace_timeline&quot;' in nav
-    assert 'data-tour-target="sidebar.timeline"' in nav
-    # It is a rail entry above the Account group, not an account-row icon.
-    assert nav.index('data-menu-key="timeline"') < nav.index('data-menu-key="agents"')
+    assert 'data-menu-key="timeline"' not in nav
+    assert "Workspace timeline" not in nav
     assert 'id="astral-timeline-btn"' not in render_topbar(roles=["user"])
     # The model still carries it for every other client.
     assert any(c.key == "timeline" for c in build_menu_model(["user"]).topbar)
+
+
+def test_account_row_carries_gear_alone_and_no_action_icons():
+    """Action icons (pulse, timeline, recent work) do not render in the
+    account row — they live in the composer menu instead."""
+    for roles in (["user"], ["admin", "user"], None):
+        html = render_topbar(roles=roles)
+        assert 'id="astral-settings-btn"' in html
+        assert 'id="astral-timeline-btn"' not in html
+        assert 'id="astral-pulse-btn"' not in html
 
 
 def test_sign_out_is_plain_link_outside_js():
@@ -177,32 +181,16 @@ def test_conversation_restore_control_is_in_the_floating_panel():
         assert 'id="astral-topbar-chat-btn"' not in html
 
 
-# ── Feature 033 (C-U8) — Pulse digest top-bar icon (flag-gated) ──────────────
+# ── Feature 033 (C-U8) — Pulse digest (moved to composer menu) ──────────────
 
-def test_pulse_absent_when_host_disables_it():
-    """Host policy OFF: Pulse is absent from the rail and the row entirely."""
-    nav = _nav(["user"], pulse_enabled=False)
-    assert "Pulse digest" not in nav
-    assert '&quot;surface&quot;: &quot;pulse&quot;' not in nav
+def test_pulse_absent_from_settings_rail():
+    """Pulse digest is moved out of the settings rail to the composer bar options menu."""
+    assert "Pulse digest" not in _nav(["user"], pulse_enabled=False)
+    assert "Pulse digest" not in _nav(["user"], pulse_enabled=True)
+    assert "Pulse digest" not in _nav(None, pulse_enabled=True)
     assert '&quot;surface&quot;: &quot;pulse&quot;' not in render_topbar(
         roles=["user"], pulse_enabled=False)
-
-
-def test_pulse_present_when_host_enables_it():
-    """Host policy ON: Pulse is a rail entry firing chrome_open → 'pulse'."""
-    nav = _nav(["user"], pulse_enabled=True)
-    assert "Pulse digest" in nav
-    assert 'data-menu-key="pulse"' in nav
-    assert 'data-tour-target="sidebar.pulse"' in nav
-    assert 'data-ui-action="chrome_open"' in nav
-    assert '&quot;surface&quot;: &quot;pulse&quot;' in nav
     assert 'id="astral-pulse-btn"' not in render_topbar(roles=["user"], pulse_enabled=True)
-
-
-def test_pulse_on_for_any_role():
-    """Pulse is per-user (not admin-gated) — present for a plain user too."""
-    assert "Pulse digest" in _nav(["user"], pulse_enabled=True)
-    assert "Pulse digest" in _nav(None, pulse_enabled=True)
 
 
 def test_admin_group_present_for_admin():

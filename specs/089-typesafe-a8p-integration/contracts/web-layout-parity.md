@@ -40,14 +40,14 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 | B2 | Section header row "Agent Directory" with count badge right-aligned | 3 | [auto] |
 | B3 | Search input with leading magnifier icon, filters the agent list live | 4 | [auto] |
 | B4 | Scrollable agent list filling remaining height; each item shows name and short description flush to the card's left edge, plus a status dot — no per-agent icon | 5 | [auto] structure, [review] item styling |
-| B5 | History section placed below the agent list (088 capability), collapsible | 2 | [auto] |
+| B5 | History section placed above the agent directory (088 capability), collapsible | 2 | [auto] |
 | B6 | Account row pinned to sidebar bottom: picture, name, role, then the settings cog; the cog opens the settings dialog | 4 | [auto] |
 
 ## C. Landing / empty state (weight 18)
 
 | # | Item | Weight | Check |
 |---|---|---|---|
-| C1 | Page header row: title + subtitle left; status pill strip right (system live, agents ready, audit status, resume chat when applicable) | 4 | [auto] |
+| C1 | Page header row: title + subtitle left (status pill strip removed per owner directive) | 4 | [auto] |
 | C2 | No explanatory overview panel: the examples section follows the page header directly | 3 | [auto] |
 | C3 | Scenarios section header with title left and horizontal filter tabs (active tab highlighted) | 4 | [auto] |
 | C4 | Scenario card grid, `auto-fit` with a 350px minimum track — the same column count as the reference at each viewport (4 at 1920, 2 at 1440 and 1280) — with rounded 12px cards: agent tag + category badge header, title, description, run action; hover lift | 5 | [auto] grid, [review] card |
@@ -60,9 +60,16 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 | D1 | Chat thread as a vertical feed with 24px gap; user turns right-aligned bubbles; assistant turns full-width | 5 | [auto] |
 | D2 | Each assistant result in a response card: 14px radius, bordered, elevated shadow, full canvas width | 5 | [auto] |
 | D3 | Response card header row: left agent badge/name + routing meta chips; right actions | 4 | [auto] |
-| D4 | Hover overlay with "expand" chip that opens full-screen view | 3 | [auto] |
+| D4 | Always-visible "Open full screen" action immediately after the Turn label in the response header | 3 | [auto] |
 | D5 | Components inside cards use a8p component styling: metric/stat tiles, SVG charts, gauges, steppers, tables with sticky header | 5 | [review] |
 | D6 | Progress/thinking state shown inline in the feed at the position of the pending turn | 2 | [auto] |
+
+The D4 placement records the owner's 2026-09-21 refinement: the action is in
+the header on desktop and phone, with no hover requirement. Generated and
+grounded results omit repeated provenance footers; estimated-value warnings
+and server-stamped provenance remain available. UI v2's current implementation
+and source-checkpoint scope are documented in
+`components/AstralProjection/docs/UI_V2.md`.
 
 ## E. Composer bar (weight 10)
 
@@ -70,7 +77,7 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 |---|---|---|---|
 | E1 | Composer bar pinned to bottom of main column, top border, translucent blurred background, padding 18px 48px | 3 | [auto] |
 | E2 | Single wide text input (10px radius, 14px 18px padding) + gradient primary Send button at right | 4 | [auto] |
-| E3 | 088 composer controls (attach, background, Advanced, voice) placed inside the bar as compact icon buttons left of Send, without adding a second row at ≥1280px | 3 | [auto] |
+| E3 | Attachment and voice controls stay beside the input; More options opens Run in background, Advanced settings, Workspace timeline and Pulse digest; Send remains at the right | 3 | [auto] |
 
 ## F. Overlays (weight 12)
 
@@ -135,6 +142,13 @@ Captures are stored under `specs/089-typesafe-a8p-integration/reference/` (PNG p
 >   renders inside the pane beside the rail rather than across the whole
 >   dialog. Run full width it sat above the rail too, reading as navigation
 >   for the rail as well as for the pane.
+
+> **Owner directive, 2026-09-21 — B5 moved above agent directory; C1 header buttons removed; welcome section removed.** History and
+> the agent directory switched places in the sidebar: History sits on top
+> (below the brand), with the agent directory and search input below. The
+> status pill buttons in the dashboard page header are removed. The legacy
+> "How can I help?" welcome section and example pills on the dashboard page are
+> also removed in favor of the primary scenario card grid.
 
 > **C4 correction (2026-09-17).** The row first read “3 columns at ≥1440, 2 at 1280”. The reference at `bcdc014` uses `grid-template-columns: repeat(auto-fit, minmax(350px, 1fr))`, which yields 4 columns at 1920, 2 at 1440 and 2 at 1280. The contract’s purpose is parity with the reference, so the row now states the reference’s own rule and the scorer compares against the captured column count rather than a written constant.
 

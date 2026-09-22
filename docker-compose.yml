@@ -29,7 +29,8 @@ services:
     ports:
       - "${LIVEKIT_BIND_IP:-0.0.0.0}:7880:7880/tcp"
       - "${LIVEKIT_BIND_IP:-0.0.0.0}:7881:7881/tcp"
-      - "${LIVEKIT_BIND_IP:-0.0.0.0}:50000-50099:50000-50099/udp"
+      # Keep this in sync with deploy/livekit/livekit.local.yaml.
+      - "${LIVEKIT_BIND_IP:-0.0.0.0}:50000-50080:50000-50080/udp"
     volumes:
       - ./deploy/livekit/livekit.local.yaml:/etc/livekit.yaml:ro
     read_only: true

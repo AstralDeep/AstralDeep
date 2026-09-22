@@ -15,6 +15,7 @@ from webrender.chrome.surfaces import _sdui
 
 TITLE = "Workspace timeline"
 ADMIN_ONLY = False
+NO_NAV = True
 
 _PAGE_SIZE = 50
 

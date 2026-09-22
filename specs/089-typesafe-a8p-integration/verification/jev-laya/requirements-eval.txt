@@ -1,0 +1,10 @@
+# Standalone research environment only; never install in the product image.
+# Install the CUDA wheel separately from https://download.pytorch.org/whl/cu128.
+torch==2.8.0
+transformers==4.57.6
+typesafe-sdk==0.6.0
+httpx2==2.13.0
+huggingface-hub==0.36.2
+safetensors==0.8.0
+numpy==2.4.6
+laya @ git+https://github.com/NandhaKishorM/laya.git@573e5b62696ba441230cd6be71d593331b5d23af

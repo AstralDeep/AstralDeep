@@ -474,6 +474,27 @@ def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str
     runtime = kwargs.get("_runtime")
     if runtime is None or not hasattr(runtime, "call_agent_tool"):
         return None
+    # Peer reuse is optional: the summarizer already has its own authorized,
+    # egress-gated reader. Do not request a hop that cannot inherit read
+    # authority and flash its refusal before successfully fetching locally.
+    # These claims only let us SKIP an optimization; they never authorize a
+    # hop. The orchestrator still verifies and attenuates its stored parent.
+    from jose import jwt
+
+    token = kwargs.get("_delegation_token")
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        scope = jwt.get_unverified_claims(token).get("scope", "")
+    except (jwt.JWTError, ValueError, TypeError):
+        return None
+    if not isinstance(scope, str):
+        return None
+    scopes = set(scope.split())
+    if "tools:read" not in scopes:
+        return None
+    if any(value.startswith("tool:") for value in scopes) and "tool:fetch_page" not in scopes:
+        return None
     try:
         # Tools run in a worker thread (mcp_server dispatches via to_thread);
         # bridge to the agent's event loop the same way long-running jobs do.

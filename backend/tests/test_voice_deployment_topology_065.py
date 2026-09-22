@@ -38,8 +38,11 @@ def _service(document: str, name: str) -> str:
 
 def test_livekit_configs_are_secret_free_strict_single_node_profiles() -> None:
     expected = {
-        "livekit.local.yaml": ("use_external_ip: false", "enabled: false"),
+        "livekit.local.yaml": (
+            "use_external_ip: false", "enabled: false", "port_range_end: 50080",
+        ),
         "livekit.staging.yaml": (
+            "port_range_end: 50099",
             "use_external_ip: true",
             "enabled: true",
             "udp_port: 3478",
@@ -48,6 +51,7 @@ def test_livekit_configs_are_secret_free_strict_single_node_profiles() -> None:
             "relay_range_end: 51099",
         ),
         "livekit.production.yaml": (
+            "port_range_end: 50099",
             "use_external_ip: true",
             "enabled: true",
             "udp_port: 3478",
@@ -70,7 +74,6 @@ def test_livekit_configs_are_secret_free_strict_single_node_profiles() -> None:
             "port: 7880",
             "tcp_port: 7881",
             "port_range_start: 50000",
-            "port_range_end: 50099",
             "auto_create: false",
             "max_participants: 16",
             "level: warn",
@@ -209,7 +212,10 @@ def test_rendered_compose_blanks_env_file_speech_credentials_for_orchestrator(
     render_env = {
         name: value
         for name, value in os.environ.items()
-        if name in {"DOCKER_CONFIG", "HOME", "PATH"}
+        if name.upper() in {
+            "DOCKER_CONFIG", "HOME", "PATH", "SYSTEMROOT", "USERPROFILE",
+            "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+        }
     }
     completed = subprocess.run(
         (
@@ -229,6 +235,22 @@ def test_rendered_compose_blanks_env_file_speech_credentials_for_orchestrator(
         text=True,
     )
     services = json.loads(completed.stdout)["services"]
+    # Every candidate port advertised by the local RTC config must actually
+    # be published. Otherwise call setup can pass while media fails randomly.
+    local_config = (LIVEKIT_ROOT / "livekit.local.yaml").read_text(encoding="utf-8")
+    rtc_start = int(re.search(r"port_range_start: (\d+)", local_config).group(1))
+    rtc_end = int(re.search(r"port_range_end: (\d+)", local_config).group(1))
+    mapped_ports = set()
+    for entry in services["livekit"]["ports"]:
+        if entry["protocol"] != "udp":
+            continue
+        # Compose versions may expand ranges to individual mappings.
+        ranges = []
+        for field in ("target", "published"):
+            start, _, end = str(entry[field]).partition("-")
+            ranges.append(range(int(start), int(end or start) + 1))
+        mapped_ports.update(zip(*ranges, strict=True))
+    assert mapped_ports == {(port, port) for port in range(rtc_start, rtc_end + 1)}
     orchestrator_env = services["astraldeep"]["environment"]
     worker_env = services["voice-worker"]["environment"]
 

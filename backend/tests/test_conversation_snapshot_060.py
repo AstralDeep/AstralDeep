@@ -420,6 +420,48 @@ def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(
         _snapshot(repository, snapshot_purpose="commit")
 
 
+@pytest.mark.parametrize("purpose", ["commit", "hydration"])
+def test_source_component_stays_in_canvas_and_narrative_stays_in_transcript(
+    database: PlaneTestRuntime, purpose: str,
+) -> None:
+    _create_chat(database)
+    repository = _repository(database)
+    source = {
+        "type": "text", "component_id": "wc_source", "variant": "markdown",
+        "content": "Source: [article](https://en.wikipedia.org/wiki/Dog_grooming)",
+    }
+    document = {"type": "card", "component_id": "doc_summary", "title": "Document",
+                "content": [{"type": "text", "content": "The full summary."}]}
+    narrative = {"type": "text", "component_id": "authored_answer",
+                 "content": "Here is the summary."}
+    commit = repository.stage_commit(
+        chat_id=CHAT_ID, owner_user_id=OWNER, request_generation=uuid.uuid4(),
+    )
+    repository.publish_commit(
+        commit_id=commit["commit_id"], owner_user_id=OWNER,
+        messages=[
+            {"role": "user", "content": "Summarize the page"},
+            {"role": "assistant", "content": [document, source]},
+            {"role": "assistant", "content": [narrative]},
+        ],
+        canvas_components=[document, source],
+    )
+    snapshot = _snapshot(repository, snapshot_purpose=purpose,
+                         request_generation=commit["request_generation"])
+    assert [m["parts"] for m in snapshot["transcript"]] == [
+        [{"type": "text", "text": "Summarize the page"}],
+        [{"type": "text", "text": "Here is the summary."}],
+    ]
+    assert [c["component_id"] for c in snapshot["canvas"]["components"]] == [
+        "doc_summary", "wc_source",
+    ]
+    web = augment_conversation_snapshot_for_target(snapshot, None, target="web")
+    html = web["canvas"]["components"][1]["_presentation"]["html"]
+    assert 'href="https://en.wikipedia.org/wiki/Dog_grooming"' in html
+    assert 'target="_blank"' in html
+    assert "<em>" not in html
+
+
 def test_stale_base_and_stale_operation_fence_cannot_publish(
     database: PlaneTestRuntime,
 ) -> None:

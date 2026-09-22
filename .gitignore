@@ -40,6 +40,7 @@ dataset_soft.csv
 docker_logs_fixes_known_remaining.md
 
 .claude/
+.codex/
 .kilocode/
 .specify/integrations/.cache/
 

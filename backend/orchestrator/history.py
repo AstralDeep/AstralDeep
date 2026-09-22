@@ -336,7 +336,9 @@ def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
     return part
 
 
-def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
+def _wrapper_texts(
+    component: Mapping[str, Any], canvas_component_ids: frozenset[str],
+) -> list[tuple[str, Any]]:
     """Depth-first (text, variant) contents of one text-only wrapper."""
     texts: list[tuple[str, Any]] = []
     for key in ("content", "children"):
@@ -346,6 +348,8 @@ def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
         for child in children:
             if not isinstance(child, Mapping):
                 continue
+            if child.get("component_id") in canvas_component_ids:
+                continue
             child_type = str(child.get("type", "")).strip().lower()
             if child_type == "text":
                 text = child.get("content")
@@ -354,15 +358,17 @@ def _wrapper_texts(component: Mapping[str, Any]) -> list[tuple[str, Any]]:
                 if isinstance(text, str) and text.strip():
                     texts.append((text, child.get("variant")))
             elif child_type in _RAIL_WRAPPER_TYPES:
-                texts.extend(_wrapper_texts(child))
+                texts.extend(_wrapper_texts(child, canvas_component_ids))
     return texts
 
 
-def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rail_parts(
+    parts: list[dict[str, Any]], *, canvas_component_ids: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """Reduce a transcript message's parts to TEXT ONLY (feature 063).
 
     The chat rail is the conversation; the canvas is where UI lives. So a
-    ``components`` part is reduced to the plain text of any top-level ``text``
+    ``components`` part is reduced to the plain text of non-canvas ``text``
     primitives it carries (lifted to ``text`` parts, so no assistant words are
     lost) and every other component — tables, lists, alerts, metrics — is
     dropped from the transcript: it is canvas state, not conversation. A message
@@ -404,6 +410,10 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for comp in part.get("components", []):
             if not isinstance(comp, Mapping):
                 continue
+            # Workspace-owned text (for example a source link) belongs in
+            # the response container just like workspace-owned cards.
+            if comp.get("component_id") in canvas_component_ids:
+                continue
             comp_type = str(comp.get("type", "")).strip().lower()
             if comp_type == "text":
                 text = comp.get("content")
@@ -416,7 +426,7 @@ def _rail_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 and not _rail_wrapper_is_anchored(comp)
                 and _is_rail_text_only([comp])
             ):
-                for text, variant in _wrapper_texts(comp):
+                for text, variant in _wrapper_texts(comp, canvas_component_ids):
                     kept.append(_lifted_text_part(text, variant))
             # anything else is a UI component — canvas only
     return kept
@@ -2228,6 +2238,18 @@ class ConversationCommitRepository:
                 raise ConversationSnapshotInvalid(
                     "conversation transcript exceeds the supported bound"
                 )
+            # Resolve ownership in the same repeatable-read view as the
+            # transcript. A text component with an arbitrary author ID may
+            # still be a narrative reply; only actual canvas membership
+            # makes it part of the UI response rather than the chat rail.
+            component_records = self._workspaces.canvas.list_current(
+                transaction,
+                owner_id=owner_user_id,
+                conversation_id=chat_id,
+            )
+            canvas_component_ids = frozenset(
+                record.component_id for record in component_records
+            )
             transcript = []
             for message in message_records:
                 # Plane's typed repository has already decoded the legacy TEXT
@@ -2235,7 +2257,8 @@ class ConversationCommitRepository:
                 # newly persisted prose such as ``"[]"`` or ``"null"`` into a
                 # different JSON type at the orchestration boundary.
                 parts = _rail_parts(
-                    _content_parts(message.content, already_decoded=True)
+                    _content_parts(message.content, already_decoded=True),
+                    canvas_component_ids=canvas_component_ids,
                 )
                 if not parts:
                     continue
@@ -2253,11 +2276,6 @@ class ConversationCommitRepository:
                     }
                 )
 
-            component_records = self._workspaces.canvas.list_current(
-                transaction,
-                owner_id=owner_user_id,
-                conversation_id=chat_id,
-            )
             components = []
             for position, record in enumerate(component_records):
                 raw = _strip_reserved_presentation(record.payload)
@@ -2558,10 +2576,16 @@ class HistoryManager:
                 for_update=True,
             )
             if chat is None:
-                logger.warning(
-                    "Attempted to add message to non-existent chat %s", chat_id
+                logger.error(
+                    "Attempted to add message to non-existent or inaccessible "
+                    "chat %s for user %s — message NOT saved",
+                    chat_id,
+                    user_id,
                 )
-                return
+                raise RuntimeError(
+                    f"chat {chat_id!r} not found for user {user_id!r}; "
+                    "message was not saved"
+                )
             if chat.render_revision > 0:
                 raise RuntimeError(
                     "revisioned conversation messages require a publication stage"

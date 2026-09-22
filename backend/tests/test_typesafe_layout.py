@@ -22,7 +22,6 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from orchestrator.typesafe_routing.layout import (  # noqa: E402
-    CLASS_OF,
     MIN_COMPONENTS,
     SUPPORTED_STYLES,
     class_of,
@@ -91,19 +90,12 @@ def _node_types(node) -> list:
         ("timeline", "record"), ("pipeline_stepper", "record"),
         ("text", "prose"), ("card", "prose"), ("code", "prose"),
         ("collapsible", "prose"), ("tabs", "prose"),
+        ("action_group", "prose"),
         ("a_type_that_does_not_exist", "prose"),
     ],
 )
 def test_the_class_map_matches_the_contract(wire_type: str, expected: str) -> None:
     assert class_of({"type": wire_type}) == expected
-
-
-def test_all_six_new_types_are_classified() -> None:
-    for wire_type in ("stat_group", "gauge", "donut_chart", "radar_chart",
-                      "pipeline_stepper"):
-        assert wire_type in CLASS_OF
-    # action_group is a control strip, not a readout: prose is correct.
-    assert class_of({"type": "action_group"}) == "prose"
 
 
 # -- the deferral cases ---------------------------------------------------
