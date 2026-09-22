@@ -47,11 +47,6 @@ MODULE_NAMES = {
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
-EXPECTED_PLANE_COMMIT = "70508449046127c7a9af914bcc7da01501ab2fea"
-EXPECTED_PLANE_SCHEMA_REVISION = "089.001"
-EXPECTED_PLANE_MIGRATION_SHA256 = "35741bd0de148f836cd8b75b160531013836a61bd46b9e17e7790641412979d8"
-EXPECTED_PROJECTION_COMMIT = "c6d51f84f5d6b9753c561f5161a8aaec6e4059bb"
-EXPECTED_PROJECTION_PROTOCOL_SHA256 = "1382fcc2ddc3cad54d21b313da1d7aaf27f556df850a6281736d5567163e0c2b"
 
 
 def _write(path: Path, content: str) -> None:
@@ -355,37 +350,6 @@ def test_current_composition_has_exact_pins_canonical_urls_and_contracts() -> No
 
     assert report.ok, report.to_dict()
     assert report.diagnostics == ()
-
-
-def test_composition_pins_exact_plane_and_projection_088() -> None:
-    manifest = json.loads(
-        (REPOSITORY_ROOT / "config/astral-composition.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    assert manifest["components"]["astral-plane"]["commit"] == (
-        EXPECTED_PLANE_COMMIT
-    )
-    assert manifest["compatibility"]["data_plane"]["schema_revision"] == (
-        EXPECTED_PLANE_SCHEMA_REVISION
-    )
-    assert manifest["compatibility"]["data_plane"]["migration_sha256"] == (
-        EXPECTED_PLANE_MIGRATION_SHA256
-    )
-    assert manifest["components"]["astral-projection"]["commit"] == (
-        EXPECTED_PROJECTION_COMMIT
-    )
-    assert manifest["compatibility"]["ui_protocol"]["sha256"] == (
-        EXPECTED_PROJECTION_PROTOCOL_SHA256
-    )
-
-    assert _gitlink_commit(
-        REPOSITORY_ROOT, COMPONENT_PATHS["astral-plane"]
-    ) == EXPECTED_PLANE_COMMIT
-    assert _gitlink_commit(
-        REPOSITORY_ROOT, COMPONENT_PATHS["astral-projection"]
-    ) == EXPECTED_PROJECTION_COMMIT
 
 
 def test_synthetic_exact_pins_and_no_floating_branch_pass(checkout: Path) -> None:

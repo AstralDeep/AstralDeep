@@ -87,6 +87,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     )
     assert job_ids == {
         "lint",
+        "ui-v2-contracts",
         "sdk",
         "release-tooling-tests",
         "component-contract-tests",
@@ -115,8 +116,22 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "submodules: false" in composition
     assert 'test "${#COMPONENT_STATUS[@]}" -eq 4' in composition
     assert "--declarations-only --require-gitlinks" in composition
-    assert "submodules: recursive" not in workflow
-    assert "components/AstralProjection/" not in workflow
+    # The UI-v2 integration lane consumes pinned public component sources;
+    # its assertions remain Deep-owned and inherit read-only credentials.
+    ui_contracts = _workflow_job(workflow, "ui-v2-contracts")
+    assert "submodules: recursive" in ui_contracts
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in ui_contracts
+    assert "--require-hashes -r tooling/ui-ci/requirements.lock.txt" in ui_contracts
+    assert "PYTHON_DOTENV_DISABLED:" in ui_contracts
+    assert "permissions:" not in ui_contracts
+    assert "environment:" not in ui_contracts
+    ui_test_paths = re.findall(r"\b(?:backend|components)/[^\s\\]+\.py", ui_contracts)
+    assert ui_test_paths
+    assert all(path.startswith("backend/tests/") for path in ui_test_paths)
+    other_jobs = workflow.replace(ui_contracts, "")
+    assert "submodules: recursive" not in other_jobs
+    assert "components/AstralProjection/" not in other_jobs
+    assert re.search(r"(?m)^permissions:\n  contents: read$", workflow)
 
     gates = _workflow_job(workflow, "gates")
     assert "if: always()" in gates

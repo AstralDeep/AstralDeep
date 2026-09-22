@@ -10,8 +10,10 @@ repository protection is changed.
 
 ## Current source and scope
 
-- Projection UI source checkpoint: `3f5a4fbf99c623e685822349c2ca1bace52cfc08`,
-  annotated tag `ui-v2-2026-09-21`. See its `docs/UI_V2.md` for the interface map.
+- Projection UI source checkpoint: `b9a42384209c482c21afccd72f58ed3c7dc88549`,
+  annotated tag `ui-v2-2026-09-21.1`. See its `docs/UI_V2.md` for the interface map.
+  This includes generated offline-cache and source-provenance metadata repairs
+  after the initial `ui-v2-2026-09-21` checkpoint at `3f5a4fb`.
 - Primitives CI correction: `842ef0f4499bafb152f3a8eeaabffec7451d1017`.
 - Plane: existing merged main `37dfe02`; tree unchanged from the prior pin.
 - LETS: retain qualified `v1.0.11` composition pin `6245189`; main is `f53f3f3`.
@@ -42,12 +44,21 @@ settings-rail and Advanced-button assertions were rewritten. No Plane or LETS
 suite was obsolete because of a web-only redesign; their data/authority tests
 remain. No security, coverage, release or integrity gate was disabled.
 
+The obsolete composition snapshot test, which hardcoded older commit IDs, was
+removed. Current manifest/gitlink/HEAD/contract verification and mismatch-denial
+tests remain. The CI inventory test includes the new backend job. Generated
+offline-cache hashes/sizes and Projection's transformation provenance were
+refreshed from unchanged source assets rather than weakening integrity checks.
+
 | Local check | Result |
 | --- | --- |
 | Exact `ui-v2-contracts` pytest command from `.github/workflows/ci.yml`, fresh Python 3.11 with hash-locked dependencies | 340 passed |
 | Product environment, current source: `python -m pytest -q tests/test_056_coverage.py tests/test_history_write_failures.py` | 34 passed |
 | Projection: `python -m pytest tests/chrome tests/webrender tests/rote -q --tb=short` | 2,099 passed |
 | Projection current source in isolated Linux image: `python -m pytest tests/ci/test_workflows.py -q --tb=short` | 64 passed |
+| Projection generated-asset follow-up: targeted Python checks / offline-worker Node checks | 7 passed / 40 passed |
+| Deep composition suite, separate synthetic and clean-current-tree runs | 118 passed, then 2 passed |
+| `scripts/tests/test_component_build_surfaces_074.py::test_public_ci_contains_only_repository_owned_qualification` | 1 passed |
 | Projection Chromium `first-task-088.spec.js`, one worker | 11 passed, 1 failed |
 | Projection Chromium `selection-088.spec.js`, one worker | 16 passed, 1 failed |
 | Primitives full pytest | 69 passed |
@@ -86,7 +97,7 @@ The provider benchmark and recommendation are in [jev-laya/decision.md](jev-laya
 ## Rebuild and live smoke
 
 `docker compose build astraldeep` completed. New image:
-`sha256:ce3e95fe64a13838c7de9189679305a2074f52acde8f519bdc72194ed5c6a3b5`.
+`sha256:bf960c369edb798b2aec91440e73b8814c828208c4b41dcf92e6e5d6ebaad3e1`.
 The build verified all four digest-bound component installations and `pip check`.
 `docker compose up -d --force-recreate livekit astraldeep` completed; the app and
 existing PostgreSQL service are healthy. The existing voice-worker image was
@@ -95,8 +106,8 @@ not rebuilt because its source/dependencies are unchanged.
 Installed-wheel verification was repeated inside the new container:
 `docker exec astraldeep python /app/scripts/install_local_components.py verify
 --root /app --lock /opt/astral-component-wheels/astral-component-wheels.lock.json`.
-It passed. Live HTTP `/healthz`, `/readyz`, `/static/client.js` and
-`/static/astral.css` each returned 200.
+It passed. Live HTTP `/healthz`, `/readyz`, `/static/client.js`,
+`/static/astral.css` and `/static/service-worker.js` each returned 200.
 
 An existing signed-in browser session loaded the rebuilt console, connected
 to the backend, displayed History and all four More-options entries, restored
@@ -105,6 +116,41 @@ opened/closed the role-aware settings rail. No new chat, model call, permission,
 credential or content edit was made by this smoke check. This is local web
 verification; mobile/native live behavior and voice-media end-to-end were not
 requalified.
+
+The browser smoke used the first rebuilt image `sha256:ce3e95fe64a13838c7de9189679305a2074f52acde8f519bdc72194ed5c6a3b5`.
+The final rebuild adds only the generated Projection metadata follow-up; its
+container was recreated with `docker compose up -d --no-deps --force-recreate
+astraldeep`, became healthy, and passed the installed-wheel and HTTP checks above.
+
+## Hosted checks and remaining work
+
+- [Deep initial CI](https://github.com/AstralDeep/AstralDeep/actions/runs/35675051794)
+  passed the new 340-test backend UI job, lint, composition declarations and SDK
+  checks. Release-tooling and component tests exposed the obsolete pin assertion
+  and missing job inventory entry corrected by this follow-up.
+- Its full-history Gitleaks scan found two duplicate historical false positives:
+  verification prose at `9ac6826` and a synthetic scanner canary at `d19050b`.
+  They are byte-identical to already ignored counterparts with different commit
+  hashes. Latest-change scans found no leaks. The ignore list remains unchanged;
+  the historical scan is still red.
+- [Projection final Python/web run](https://github.com/AstralDeep/AstralProjection/actions/runs/35675310630)
+  has 2,865 Python passes, one skip and one remaining theme-color literal
+  assertion failure. Web has two failures for the same 320px/200% menu overflow
+  (about 100.1px in hosted Chromium). Windows remains in progress at recording.
+  Prior Apple checks include AstralCore drift/macOS coverage failures; Android
+  failed `:app:testCoverageUnitTest` after its ordinary build/lint/core/JVM/Kover/
+  assemble checks passed. These are not claimed qualified.
+- [Primitives qualification](https://github.com/AstralDeep/AstralPrimitives/actions/runs/35674731829)
+  passed. Its automatic [PyPI publication](https://github.com/AstralDeep/AstralPrimitives/actions/runs/35674731876)
+  failed with `invalid-publisher`; package version remains 0.4.0, with no successful
+  new publication or trusted-publisher configuration change.
+
+The sibling Projection checkout was fast-forwarded to the published main after
+saving its original overlapping working changes in stash
+`ui-v2-pre-sync-2026-09-21`. That backup is retained, not reapplied over newer
+source. The sibling Primitives checkout is also fast-forwarded. Plane and LETS
+main already contain their available code; Deep intentionally retains the
+qualified LETS release pin. No Dependabot PRs were merged.
 
 ## Additional reproduction detail
 
