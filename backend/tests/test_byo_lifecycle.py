@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import Request
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -37,6 +38,10 @@ from orchestrator.agent_lifecycle import BYO_ORIGIN  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentCard, AgentSkill, RegisterAgent  # noqa: E402
 from orchestrator.projection_surfaces import authoring  # noqa: E402
+from orchestrator.human_request_authority import (  # noqa: E402
+    authenticate_current_human_request, bind_human_caller,
+)
+from verification.drivers.fixture_identity import FixtureIdentity  # noqa: E402
 
 BUNDLE = {name: f"# {name}\n" for name in BYO_BUNDLE_FILENAMES}
 BUNDLE["mcp_tools.py"] = "TOOL_REGISTRY = {}\n"
@@ -72,8 +77,8 @@ class LifecycleIds:
 def lifecycle_ids():
     token = uuid.uuid4().hex[:12]
     return LifecycleIds(
-        owner=f"byolife-owner-{token}",
-        foreign=f"byolife-foreign-{token}",
+        owner=f"__verif__byolife-{token}_owner",
+        foreign=f"__verif__byolife-{token}_foreign",
         agent_id=f"ua-mailer-{token}",
         host_session_id=f"hs-{token}",
     )
@@ -97,9 +102,18 @@ async def _cleanup(orch, ids):
 
 
 @pytest.fixture()
-async def orch(monkeypatch, lifecycle_ids):
+async def orch(monkeypatch, lifecycle_ids, tmp_path):
     monkeypatch.setitem(flags._flags, "byo_agents", True)
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.setenv("MOCK_AUTH", "false")
     o = await asyncio.to_thread(Orchestrator)
+    identity = FixtureIdentity(lifecycle_ids.owner.rsplit("_", 1)[0])
+    o._lifecycle_fixture_identity = identity
+    # Materialization observes an existing stable root, never an absent or
+    # shared developer knowledge directory. This fixture has no legacy skills.
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    o.knowledge_index = SimpleNamespace(knowledge_dir=str(knowledge))
     # Code generation is the only LLM-dependent lifecycle call in this suite.
     # Draft creation remains real and persists through PlaneDraftStore.
     o.lifecycle_manager.generate_code = AsyncMock(
@@ -123,7 +137,33 @@ async def orch(monkeypatch, lifecycle_ids):
         try:
             await _cleanup(o, lifecycle_ids)
         finally:
-            await asyncio.wait_for(o._close_started_services(), timeout=15.0)
+            try:
+                await asyncio.wait_for(o._close_started_services(), timeout=15.0)
+            finally:
+                identity.close()
+
+
+async def _render(orch, owner, roles, params):
+    """Render through a current signed human caller, including the skills read.
+
+    The local issuer is synthetic. Normal JWT verification, owner selection,
+    Plane catalog access and final delivery checks remain active.
+    """
+    _claims, token = orch._lifecycle_fixture_identity.claims_and_token({
+        "sub": owner, "realm_access": {"roles": roles},
+    })
+    request = Request({
+        "type": "http", "method": "GET", "scheme": "https",
+        "path": "/api/authoring", "query_string": b"",
+        "headers": [(b"authorization", ("Bearer " + token).encode())],
+        "app": SimpleNamespace(state=SimpleNamespace(orchestrator=orch)),
+    })
+    caller = await authenticate_current_human_request(
+        request, boundary=orch.human_request_boundary)
+    with bind_human_caller(caller):
+        result = await authoring.render(orch, owner, roles, params)
+        await caller.verify_delivery()
+        return result
 
 
 def _reg_frame(agent_id, name="Mailer"):
@@ -161,12 +201,12 @@ def _seed_agent(orch, ids, *, owner=None, agent_id=None, name="Mailer"):
 
 async def test_list_derives_running_from_a_live_tunnel(orch, lifecycle_ids):
     await _t(_seed_agent, orch, lifecycle_ids)
-    html = await authoring.render(orch, lifecycle_ids.owner, ["user"], {})
+    html = await _render(orch, lifecycle_ids.owner, ["user"], {})
     assert "Mailer" in html and "offline" in html and "running" not in html
 
     await _connect_host(orch, lifecycle_ids)
     assert aa.agent_status(orch, lifecycle_ids.owner, lifecycle_ids.agent_id) == "running"
-    html = await authoring.render(orch, lifecycle_ids.owner, ["user"], {})
+    html = await _render(orch, lifecycle_ids.owner, ["user"], {})
     assert "running" in html
     # FR-024: the surface always says where these things actually run.
     assert "desktop host" in html
@@ -175,7 +215,7 @@ async def test_list_derives_running_from_a_live_tunnel(orch, lifecycle_ids):
 async def test_list_is_owner_only(orch, lifecycle_ids):
     await _t(_seed_agent, orch, lifecycle_ids)
     await _connect_host(orch, lifecycle_ids)
-    foreign_html = await authoring.render(orch, lifecycle_ids.foreign, ["user"], {})
+    foreign_html = await _render(orch, lifecycle_ids.foreign, ["user"], {})
     assert "Mailer" not in foreign_html and lifecycle_ids.agent_id not in foreign_html
     assert await _t(
         ua.list_user_agents,
@@ -183,7 +223,7 @@ async def test_list_is_owner_only(orch, lifecycle_ids):
         lifecycle_ids.foreign,
     ) == []
     # …and the OWNER's own view is unaffected by the other user existing.
-    assert "Mailer" in await authoring.render(
+    assert "Mailer" in await _render(
         orch,
         lifecycle_ids.owner,
         ["user"],
@@ -269,7 +309,7 @@ async def test_delete_stops_the_host_and_soft_deletes(orch, lifecycle_ids):
         lifecycle_ids.agent_id,
     )
     assert row["status"] == "disabled" and row["deleted_at"] is not None   # retained
-    assert lifecycle_ids.agent_id not in await authoring.render(
+    assert lifecycle_ids.agent_id not in await _render(
         orch,
         lifecycle_ids.owner,
         ["user"],
@@ -393,7 +433,7 @@ async def test_revalidation_required_blocks_registration_and_is_surfaced(
     await _connect_host(orch, lifecycle_ids)
     assert lifecycle_ids.agent_id not in orch.agents
 
-    html = await authoring.render(orch, lifecycle_ids.owner, ["user"], {})
+    html = await _render(orch, lifecycle_ids.owner, ["user"], {})
     assert "rules changed" in html and "Analyze" in html
 
 

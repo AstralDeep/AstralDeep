@@ -16,6 +16,7 @@ from orchestrator.auth import require_user_id
 from persistent_agents.runtime_values import digest
 from tests.test_work_service_postgres_088 import plane as plane
 from tests.test_work_service_postgres_088 import records as records
+from tests.test_work_measurements_postgres_088 import claimed
 from tests.attachments.test_purge_coordinator_074 import _coordinator
 
 
@@ -115,16 +116,20 @@ async def test_retained_work_without_action_ids_blocks_purge_and_commits_owner_f
 @pytest.mark.asyncio
 async def test_opaque_action_bytes_and_reservation_survive_repeated_retirement(records, tmp_path):
     runtime, service, identities, _ = records
+    # The retired bulk claim API intentionally cannot authorize one-shot work.
+    # Use the existing fixture's exact session incarnation and admission fence.
+    fence, binding, authority = await claimed(service, identities[0])
     def seed(tx, repo):
-        claim = next(item for item in repo.claim_operations_for_administration(tx, worker_id="fixture")
-                     if item.assignment.assignment_id == identities[0])
         request = {"kind": "model", "messages": ["private fixture input"]}
         maximum = AssignmentResourceAmount(model_calls=1)
-        action = repo.put_action(tx, fence=claim.fence, intent=AssignmentActionIntent(
+        action = repo.put_action_for_execution(
+            tx, fence=fence, binding=binding, authority=authority, intent=AssignmentActionIntent(
             action_key=str(uuid4()), request=request, request_digest=digest(request), maximum=maximum,
             permission_digest=digest("permission"), precondition_digest=digest("precondition")))
-        repo.reserve_action(tx, fence=claim.fence, action_id=action.action_id, attempt_id=str(uuid4()),
-                            expected_request_digest=action.intent.request_digest, maximum=maximum)
+        repo.reserve_action_for_execution(
+            tx, fence=fence, binding=binding, authority=authority,
+            action_id=action.action_id, attempt_id=str(uuid4()),
+            expected_request_digest=action.intent.request_digest, maximum=maximum)
         # Forward-envelope fixture. It must remain a liability even though the
         # current caller cannot decode or release its retained reservation.
         tx.execute("UPDATE persistent_assignment_action SET data=jsonb_set(data, '{future_payload}', %s::jsonb) WHERE id=%s",

@@ -5,6 +5,12 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Immutable reviewed PR base for non-production changed-code qualification
+        required: true
+        type: string
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -17,6 +23,390 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  backend-image:
+    name: Clean backend production image build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+      - name: Verify the exact composed sources before building
+        run: |
+          set -euo pipefail
+          python scripts/verify_composition.py --root .
+          python scripts/install_local_components.py validate --root . --require-gitlinks
+      - name: Build a clean production image containing the pinned browser client
+        run: |
+          set -euo pipefail
+          mkdir -p build/backend-web
+          docker build --pull --no-cache --file Dockerfile \
+            --iidfile build/backend-web/image-id.txt \
+            --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" .
+      - name: Save the one immutable candidate image for the independent gates
+        run: |
+          set -euo pipefail
+          docker save "$(cat build/backend-web/image-id.txt)" | gzip > build/backend-web/image.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-image
+          path: |
+            build/backend-web/image-id.txt
+            build/backend-web/image.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  backend-boot:
+    name: Development and fail-closed production boot smoke
+    needs: [backend-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: build/backend-web
+      - name: Load and probe the exact built artifact
+        run: |
+          set -euo pipefail
+          docker load --input build/backend-web/image.tar.gz
+          test "$(docker image inspect "$(cat build/backend-web/image-id.txt)" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$(git rev-parse HEAD)"
+          rm build/backend-web/image.tar.gz
+          bash scripts/backend_web_image_gate.sh "$(cat build/backend-web/image-id.txt)" boot
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: backend-boot-evidence
+          path: |
+            build/backend-web/boot*
+            build/backend-web/image-id.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  backend-web:
+    name: Python 3.11 complete backend and isolated PostgreSQL
+    needs: [backend-image]
+    runs-on: ubuntu-24.04
+    # Observed complete-root diagnostic: 35 minutes at 32%; catalogue
+    # verification is CPU-bound. Keep all tests and leave time for modules.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: build/backend-web
+      - name: Load and test the exact built artifact
+        run: |
+          set -euo pipefail
+          docker load --input build/backend-web/image.tar.gz
+          test "$(docker image inspect "$(cat build/backend-web/image-id.txt)" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$(git rev-parse HEAD)"
+          rm build/backend-web/image.tar.gz
+          bash scripts/backend_web_image_gate.sh "$(cat build/backend-web/image-id.txt)" tests
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: backend-web-test-evidence
+          path: build/backend-web
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  projection-backend-web:
+    name: Pinned Projection Python and browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json
+      - name: Install isolated Python tooling and the exact composed Primitives source
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes -r components/AstralProjection/tooling/python-ci/requirements.lock.txt
+          python -m pip install --no-deps components/AstralPrimitives
+      - name: Lint and test all Projection backend Python
+        working-directory: components/AstralProjection
+        run: |
+          set -euo pipefail
+          ruff check src backend tests scripts
+          python -m pytest -q -ra -p no:cacheprovider \
+            --cov=astralprojection --cov=rote --cov=webrender --cov-branch \
+            --cov-report=xml:build/backend-web/projection-python.xml \
+            --junitxml=build/backend-web/projection-tests.xml
+      - name: Enforce changed Projection Python against the baseline component
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          base_component="$(git ls-tree "$BASE_SHA" components/AstralProjection | awk '{print $3}')"
+          [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$base_component" == "$(git -C components/AstralProjection rev-parse HEAD)" ]]; then
+            echo "Projection Python changed coverage is not applicable: the exact component is unchanged."
+            exit 0
+          fi
+          git -C components/AstralProjection fetch origin "$base_component"
+          cd components/AstralProjection
+          diff-cover build/backend-web/projection-python.xml \
+            --compare-branch "$base_component" --diff-range-notation '..' --fail-under=90
+      - name: Install and lint exact browser tooling
+        working-directory: components/AstralProjection/tooling/web-ci
+        run: |
+          set -euo pipefail
+          test "$(corepack npm --version)" = "11.16.0"
+          corepack npm ci --ignore-scripts
+          corepack npm run check:package-manager
+          mkdir -p ../../build/backend-web/node-v8
+          export NODE_V8_COVERAGE="$GITHUB_WORKSPACE/components/AstralProjection/build/backend-web/node-v8"
+          corepack npm run check:product-isolation
+          corepack npm run test:product-isolation
+          corepack npm run lint
+          corepack npm run test:coverage-conversion
+          corepack npm run test:coverage-conversion:node
+          corepack npm run test:coverage-union
+          corepack npm run test:coverage-conversion:browser-cli
+      - name: Exercise the public offline worker and retain its exact coverage
+        working-directory: components/AstralProjection
+        run: |
+          set -euo pipefail
+          mkdir -p build/backend-web/offline-v8
+          NODE_V8_COVERAGE="$PWD/build/backend-web/offline-v8" \
+            node --test tooling/web-ci/tests/offline-worker-088.test.mjs
+          node tooling/web-ci/coverage-conversion-cli.mjs \
+            --node-v8-directory build/backend-web/offline-v8 --repo-root "$PWD" \
+            --output build/backend-web/offline-javascript.json
+      - name: Render server-owned browser fixtures and run all ordinary browser suites
+        working-directory: components/AstralProjection
+        run: |
+          set -euo pipefail
+          mkdir -p build/079/browser-fixtures build/backend-web
+          for mode in create revise detail expired error; do
+            python tooling/web-ci/fixtures/persistent-agents-079.py "$mode" > "build/079/browser-fixtures/$mode.json"
+          done
+          image="$(tr -d '\r\n' < tooling/web-ci/playwright-image.txt)"
+          docker run --rm --init --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --env ASTRAL_ASSIGNMENT_FIXTURE_DIR=/workspace/build/079/browser-fixtures \
+            --env ASTRAL_EXPORT_COVERAGE_OUTPUT=/workspace/build/backend-web/export-javascript.json \
+            --env ASTRAL_ALL_CLIENT_COVERAGE_DIR=/workspace/build/backend-web/client-v8 \
+            --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
+            /bin/bash -euc 'corepack npm run test:coverage-conversion:browser
+              corepack npm exec -- playwright test tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
+      - name: Verify responsive and enlarged-text interactions in all three browser engines
+        working-directory: components/AstralProjection
+        run: |
+          set -euo pipefail
+          image="$(tr -d '\r\n' < tooling/web-ci/playwright-image.txt)"
+          docker run --rm --init --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
+            node node_modules/@playwright/test/cli.js test tests/first-task-088.spec.js \
+            --browser=all --workers=1
+      - name: Union independent browser and Node observations against exact candidate sources
+        working-directory: components/AstralProjection
+        run: |
+          set -euo pipefail
+          export NODE_V8_COVERAGE="$PWD/build/backend-web/node-v8"
+          browser_inputs=()
+          for suite in continuity-contract-060 first-task-088 \
+              persistent-agents-079 selection-088 guidance-notes-088 \
+              work-reads-088 voice-conversation-065; do
+            browser_inputs+=(--input "build/backend-web/client-v8/$suite.json")
+          done
+          node tooling/web-ci/browser-v8-cli.mjs --repo-root "$PWD" "${browser_inputs[@]}" \
+            --output build/backend-web/browser-javascript.json
+          node tooling/web-ci/coverage-conversion-cli.mjs \
+            --node-v8-directory build/backend-web/node-v8 --repo-root "$PWD" \
+            --output build/backend-web/node-interim.json
+          unset NODE_V8_COVERAGE
+          node tooling/web-ci/coverage-conversion-cli.mjs \
+            --node-v8-directory build/backend-web/node-v8 --repo-root "$PWD" \
+            --output build/backend-web/node-javascript.json
+          node tooling/web-ci/coverage-union-cli.mjs \
+            --node build/backend-web/node-javascript.json \
+            --browser build/backend-web/browser-javascript.json \
+            --offline-node build/backend-web/offline-javascript.json \
+            --export-browser build/backend-web/export-javascript.json --repo-root "$PWD" \
+            --output build/backend-web/javascript.json
+      - name: Enforce strict backend and browser changed coverage without deferred native inputs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          base_component="$(git ls-tree "$BASE_SHA" components/AstralProjection | awk '{print $3}')"
+          [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
+          candidate_component="$(git -C components/AstralProjection rev-parse HEAD)"
+          if [[ "$base_component" == "$candidate_component" ]]; then
+            printf '{"status":"not-applicable","reason":"identical-component-commit","base_sha":"%s","candidate_sha":"%s"}\n' \
+              "$base_component" "$candidate_component" \
+              > components/AstralProjection/build/backend-web/changed-coverage.json
+            exit 0
+          fi
+          python scripts/check_changed_coverage.py --repo components/AstralProjection \
+            --event-name manual --base-sha "$base_component" \
+            --candidate-sha "$candidate_component" \
+            --repository-profile projection-web --coverage-mode strict \
+            --projection-python components/AstralProjection/build/backend-web/projection-python.xml \
+            --javascript components/AstralProjection/build/backend-web/javascript.json \
+            --fail-under 90 --output components/AstralProjection/build/backend-web/changed-coverage.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: projection-backend-web-test-evidence
+          path: |
+            components/AstralProjection/build/backend-web
+            components/AstralProjection/tooling/web-ci/test-results
+          if-no-files-found: error
+          retention-days: 14
+
+  plane-postgres:
+    name: Exact Plane complete PostgreSQL suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      ASTRALPLANE_TEST_POSTGRES_DSN: postgresql://astral:isolated_ci_only@127.0.0.1:5432/ad_gate_plane
+      ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4
+        env:
+          POSTGRES_USER: astral
+          POSTGRES_PASSWORD: isolated_ci_only
+          POSTGRES_DB: ad_gate_plane
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U astral -d ad_gate_plane"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - working-directory: components/AstralPlane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv sync --frozen --group ci
+          uv run --frozen --group ci ruff check .
+          uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+            --cov=astralplane --cov=scripts.import_staging_fixture \
+            --cov=scripts.migrate_qualification_database --cov-branch \
+            --cov-report=xml:build/backend-web/plane-python.xml \
+            --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
+      - name: Enforce changed Plane Python against the baseline component
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          base_component="$(git ls-tree "$BASE_SHA" components/AstralPlane | awk '{print $3}')"
+          [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
+          candidate_component="$(git -C components/AstralPlane rev-parse HEAD)"
+          if [[ "$base_component" == "$candidate_component" ]]; then
+            printf '{"status":"not-applicable","reason":"identical-component-commit","base_sha":"%s","candidate_sha":"%s"}\n' \
+              "$base_component" "$candidate_component" \
+              > components/AstralPlane/build/backend-web/changed-coverage.json
+            exit 0
+          fi
+          git -C components/AstralPlane fetch origin "$base_component"
+          cd components/AstralPlane
+          uv run --frozen --group ci diff-cover build/backend-web/plane-python.xml \
+            --compare-branch "$base_component" --diff-range-notation '..' --fail-under=90
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: plane-postgres-evidence
+          path: components/AstralPlane/build/backend-web
+          if-no-files-found: error
+          retention-days: 14
+
+  backend-changed-coverage:
+    name: Nonempty immutable changed Python coverage at least 90 percent
+    needs: [backend-web, voice-worker-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-web-test-evidence
+          path: build/backend-web
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: voice-worker-coverage
+          path: build/065/coverage
+      - name: Enforce immutable event or reviewed PR-base comparison
+        env:
+          MANUAL_BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          revision_args=()
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            revision_args=(--base-sha "$MANUAL_BASE_SHA" --candidate-sha "$GITHUB_SHA")
+          fi
+          python scripts/check_changed_coverage.py --repo . \
+            --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" \
+            "${revision_args[@]}" --repository-profile deep --coverage-mode strict \
+            --backend-python build/backend-web/backend-python.xml \
+            --tooling-python build/backend-web/tooling-python.xml \
+            --voice-worker-python build/065/coverage/voice-worker.xml \
+            --fail-under 90 --output build/backend-web/changed-coverage.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: backend-changed-coverage-decision
+          path: build/backend-web/changed-coverage.json
+          if-no-files-found: error
+
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -114,6 +504,7 @@ jobs:
           /tmp/astral-sdk-venv/bin/python -m pytest -q sdk/tests
 
   release-tooling-tests:
+    needs: [backend-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -127,8 +518,16 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
-      - name: Install hash-locked CI-only Python tooling
-        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: build/backend-web
+      - name: Load the exact backend dependency closure for release-tooling tests
+        run: |
+          set -euo pipefail
+          docker load --input build/backend-web/image.tar.gz
+          test "$(docker image inspect "$(cat build/backend-web/image-id.txt)" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$(git rev-parse HEAD)"
+          rm build/backend-web/image.tar.gz
       - name: Test and cover Deep-owned release tooling
         shell: bash
         run: |
@@ -150,6 +549,7 @@ jobs:
             backend/tests/test_extract_release_artifact_060.py
             backend/tests/test_release_evidence_bootstrap.py
             scripts/tests/test_component_build_surfaces_074.py
+            scripts/tests/test_backend_web_gate.py
             scripts/tests/test_install_local_components.py
             scripts/tests/test_retire_restored_sessions.py
             scripts/tests/test_verify_component_ownership.py
@@ -160,16 +560,25 @@ jobs:
             scripts/tests/test_csharp_native_coverage_079.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
-          python -m coverage run --source=scripts \
-            --omit=scripts/windows_release_candidate.py \
-            --omit=scripts/export_work_contract.py \
-            -m pytest "${RELEASE_TOOL_TESTS[@]}" -q \
-            --deselect=backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs \
-            --deselect=backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts \
-            --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
-            --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
-          python -m coverage report --fail-under=90
-          python -m coverage xml -o build/060/coverage/tooling-python.xml
+          docker run --rm --init --cpus=2 --memory=4g \
+            --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
+            --env PYTHONPATH=/workspace/backend:/workspace --env ASTRAL_ENV=development \
+            --env COVERAGE_FILE=/workspace/build/060/coverage/.coverage \
+            --volume "$PWD:/workspace" --workdir /workspace --entrypoint /bin/bash \
+            "$(cat build/backend-web/image-id.txt)" -euc '
+              python -m venv --system-site-packages /tmp/tooling
+              /tmp/tooling/bin/python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
+              /tmp/tooling/bin/python -m coverage run --source=scripts \
+                --omit=scripts/windows_release_candidate.py,scripts/export_work_contract.py \
+                -m pytest "$@" -q \
+                --deselect=backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs \
+                --deselect=backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts \
+                --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
+                --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
+              /tmp/tooling/bin/python -m coverage report --fail-under=90
+              /tmp/tooling/bin/python -m coverage xml -o build/060/coverage/tooling-python.xml
+            ' release-tooling "${RELEASE_TOOL_TESTS[@]}"
       - name: Check documentation links
         run: python scripts/check_doc_links.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -252,30 +661,32 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Report the unauthorized no-op honestly
-        if: vars.VOICE_WORKER_CLOSURE_APPROVED != 'true'
-        run: echo "VOICE_WORKER_CLOSURE_APPROVED is not 'true' — worker rebuild not authorized; succeeding as a no-op so downstream success() gating stays truthful."
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the voice-worker runtime and test images
-        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         run: |
           set -euo pipefail
           test -f Dockerfile.voice.dockerignore
-          docker build \
+          mkdir -p build/065/coverage
+          candidate="$(git rev-parse HEAD)"
+          docker build --pull --no-cache \
             --file Dockerfile.voice \
             --target runtime \
-            --tag astraldeep-voice-worker:ci \
+            --label "org.opencontainers.image.revision=$candidate" \
+            --iidfile build/065/coverage/voice-runtime-image-id.txt \
             .
           docker build \
             --file Dockerfile.voice \
             --target test \
-            --tag astraldeep-voice-worker:test \
+            --label "org.opencontainers.image.revision=$candidate" \
+            --iidfile build/065/coverage/voice-test-image-id.txt \
             .
+          docker image inspect "$(cat build/065/coverage/voice-runtime-image-id.txt)" \
+            > build/065/coverage/voice-runtime-image.json
+          docker image inspect "$(cat build/065/coverage/voice-test-image-id.txt)" \
+            > build/065/coverage/voice-test-image.json
       - name: Run the isolated voice-worker suite with Cobertura coverage
-        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         run: |
           set -euo pipefail
           mkdir -p build/065/coverage
@@ -285,25 +696,25 @@ jobs:
             -e PYTHONDONTWRITEBYTECODE=1 \
             -v "$PWD/build/065/coverage:/coverage" \
             --entrypoint /bin/sh \
-            astraldeep-voice-worker:test \
+            "$(cat build/065/coverage/voice-test-image-id.txt)" \
             -ec '
               /opt/voice-test-venv/bin/python -m coverage run \
                 --source=voice_agent \
                 --omit="*/voice_agent/tests/*" \
-                -m pytest voice_agent/tests -q -p no:cacheprovider
+                -m pytest voice_agent/tests -q -p no:cacheprovider \
+                --junitxml=/coverage/voice-worker-tests.xml
               /opt/voice-test-venv/bin/python -m coverage xml \
                 -o /coverage/voice-worker.xml
               /opt/voice-test-venv/bin/python -m coverage report \
                 --fail-under=90
               /opt/voice-test-venv/bin/python -c \
-                "from xml.etree import ElementTree; root = ElementTree.parse(\"/coverage/voice-worker.xml\").getroot(); assert root.tag == \"coverage\"; statements = int(root.attrib[\"lines-valid\"]); rate = float(root.attrib[\"line-rate\"]); assert statements == 0 or rate >= 0.90"
+                "from xml.etree import ElementTree; root = ElementTree.parse(\"/coverage/voice-worker.xml\").getroot(); assert root.tag == \"coverage\"; statements = int(root.attrib[\"lines-valid\"]); rate = float(root.attrib[\"line-rate\"]); assert statements > 0 and rate >= 0.90"
             '
           test -s build/065/coverage/voice-worker.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'
         with:
           name: voice-worker-coverage
-          path: build/065/coverage/voice-worker.xml
+          path: build/065/coverage/
           if-no-files-found: error
           retention-days: 14
 
@@ -340,6 +751,12 @@ jobs:
     name: Deep owner CI aggregate
     if: always()
     needs:
+      - backend-image
+      - backend-boot
+      - backend-web
+      - projection-backend-web
+      - plane-postgres
+      - backend-changed-coverage
       - lint
       - ui-v2-contracts
       - sdk
@@ -352,6 +769,12 @@ jobs:
     steps:
       - name: Enforce every hosted owner gate
         run: |
+          [[ '${{ needs.backend-image.result }}' == 'success' ]]
+          [[ '${{ needs.backend-boot.result }}' == 'success' ]]
+          [[ '${{ needs.backend-web.result }}' == 'success' ]]
+          [[ '${{ needs.projection-backend-web.result }}' == 'success' ]]
+          [[ '${{ needs.plane-postgres.result }}' == 'success' ]]
+          [[ '${{ needs.backend-changed-coverage.result }}' == 'success' ]]
           [[ '${{ needs.lint.result }}' == 'success' ]]
           [[ '${{ needs.ui-v2-contracts.result }}' == 'success' ]]
           [[ '${{ needs.sdk.result }}' == 'success' ]]
@@ -360,4 +783,4 @@ jobs:
           [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
           [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
-          echo "Full private composition remains a required local Feature 074 qualification."
+          echo "Backend/web CI passed. Native qualification is deferred; protected real-authentication, LETS-enforce, migration and recovery staging remain required before release."

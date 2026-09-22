@@ -116,11 +116,18 @@ class InProcessDriver:
         self._execution_nonce = uuid.uuid4().hex[:16]
         self._execution_principals: dict[str, Principal] = {}
         self._teardown_task: asyncio.Task[None] | None = None
+        self._fixture_identity = None
 
     # ------------------------------------------------------------------ setup
     async def setup(self) -> None:
         # Determinism: the adaptive UI designer must not rewrite tool output.
         os.environ["FF_UI_DESIGNER"] = "false"
+
+        from verification.drivers.fixture_identity import FixtureIdentity
+
+        if self.config.mode != "in_process":
+            raise ValueError("in-process driver requires the in_process configuration")
+        self._fixture_identity = FixtureIdentity(self.config.run_id)
 
         from orchestrator.orchestrator import Orchestrator
 
@@ -134,11 +141,18 @@ class InProcessDriver:
         )
         error, cancellation = await _observe_task_through_cancellation(construction)
         if error is not None:
+            self._fixture_identity.close()
             raise error
         self.orch = construction.result()
         try:
             if cancellation is not None:
                 raise cancellation
+            from pathlib import Path
+            from orchestrator.knowledge_synthesis import KnowledgeIndex
+
+            knowledge = Path(self._tmp) / "knowledge"
+            await asyncio.to_thread(knowledge.mkdir, parents=True, exist_ok=True)
+            self.orch.knowledge_index = await asyncio.to_thread(KnowledgeIndex, str(knowledge))
             self._register_general_agent()
             self.orch.runtime_composition.start()
         except BaseException:
@@ -148,6 +162,8 @@ class InProcessDriver:
                 await _close_owned_orchestrator_graph(orch)
             except BaseException:
                 logger.exception("verification setup rollback failed")
+            finally:
+                self._fixture_identity.close()
             raise
 
     def _plane_dependencies(self, orchestrator: Any | None = None) -> tuple[Any, Any, Any]:
@@ -315,7 +331,12 @@ class InProcessDriver:
         principal = self._execution_principal(principal)
         await self._seed_llm_config(principal.user_id)  # 054: pass the first-run gate
         ws = CaptureSocket(label=principal.user_id)
-        self.orch.ui_sessions[ws] = principal.claims()
+        claims, token = self._fixture_identity.claims_and_token(principal.claims())
+        self.orch.ui_sessions[ws] = claims | {"_raw_token": token}
+        ws.scope = {"type": "websocket", "headers": [], "query_string": b""}
+        context = self.orch._new_connection_context(ws)
+        context.registered = True
+        context.connection_generation = uuid.uuid4()
         self.orch.ui_clients.append(ws)
         if chat_id is not None:
             self.orch._ws_active_chat[id(ws)] = chat_id
@@ -328,6 +349,32 @@ class InProcessDriver:
             pass
         self.orch.ui_sessions.pop(ws, None)
         self.orch._ws_active_chat.pop(id(ws), None)
+        context = self.orch._connection_contexts.pop(id(ws), None)
+        if context is not None:
+            context.closing = True
+
+    async def _send_registered_turn(self, ws, message, chat_id, *, user_id, attachments):
+        """Supply the original registered caller handoff expected by chat ingress."""
+        from orchestrator.human_request_authority import capture_human_socket_request
+        from verification.drivers.fixture_admission import admitted_registered_turn
+
+        context = self.orch._connection_contexts[id(ws)]
+        frame = {"type": "ui_event", "action": "chat_message",
+                 "submission_id": str(uuid.uuid4()), "request_generation": str(uuid.uuid4()),
+                 "connection_generation": str(context.connection_generation),
+                 "message": message, "chat_id": chat_id}
+        pending = capture_human_socket_request(
+            self.orch.human_request_boundary, websocket=ws, context=context,
+            message=frame, purpose="skill_lookup",
+        )
+        try:
+            async with admitted_registered_turn(self.orch, ws, frame=frame, human_request=pending) as context:
+                return await self.orch.handle_chat_message(
+                    ws, message, chat_id, user_id=user_id, attachments=attachments,
+                    operation_context=context,
+                )
+        finally:
+            pending.close()
 
     async def grant_default_scopes(self, principal: Principal) -> None:
         principal = self._execution_principal(principal)
@@ -360,7 +407,7 @@ class InProcessDriver:
             }
         ]
         try:
-            await self.orch.handle_chat_message(
+            await self._send_registered_turn(
                 ws, persona.query, chat_id, user_id=p.user_id, attachments=attachments
             )
             messages = list(ws.outputs)
@@ -410,7 +457,7 @@ class InProcessDriver:
         attachments = [{"attachment_id": attachment_id, "filename": filename,
                         "category": "spreadsheet"}]
         try:
-            await self.orch.handle_chat_message(
+            await self._send_registered_turn(
                 ws, "Use the attached file.", chat_id,
                 user_id=principal.user_id, attachments=attachments,
             )
@@ -475,7 +522,7 @@ class InProcessDriver:
         ws = await self._register_session(c, chat_id)
         self.orch._call_llm = scripted_llm_for(persona, att["attachment_id"], att["path"])
         try:
-            await self.orch.handle_chat_message(
+            await self._send_registered_turn(
                 ws, persona.query, chat_id, user_id=c.user_id,
                 attachments=[{"attachment_id": att["attachment_id"],
                               "filename": att["filename"], "category": att["category"]}],
@@ -655,6 +702,8 @@ class InProcessDriver:
             )
             self._teardown_task = task
         error, cancellation = await _observe_task_through_cancellation(task)
+        if getattr(self, "_fixture_identity", None) is not None:
+            self._fixture_identity.close()
         if error is not None:
             raise error
         if cancellation is not None:

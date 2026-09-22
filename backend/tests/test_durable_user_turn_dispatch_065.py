@@ -1588,7 +1588,10 @@ async def test_post_acceptance_delivery_error_still_finalizes_voice_turn() -> No
         *,
         websocket: Any,
     ) -> None:
-        await Orchestrator.handle_chat_message(
+        # This fixture starts at an already-admitted voice publication and
+        # deliberately has no Plane/IAM graph. Exercise the publication wrapper;
+        # real voice guidance ingress is covered by its separate Plane suite.
+        await Orchestrator._handle_chat_message_with_guidance(
             runtime,
             websocket,
             "accepted voice request",
@@ -2069,6 +2072,16 @@ async def test_lease_renewal_cannot_cancel_terminal_voice_recap(
 async def test_llm_none_terminalizes_voice_when_task_state_machine_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from unittest.mock import AsyncMock
+    from orchestrator import turn_guidance_authority, user_skills
+
+    # This dispatch/terminalization unit uses an in-memory operation authority.
+    # Supply an empty authorized catalog read at its unrelated guidance seam.
+    reader = SimpleNamespace(owner_id=USER_ID, close=lambda: None)
+    monkeypatch.setattr(turn_guidance_authority, "acquire_turn_guidance_reader",
+                        AsyncMock(return_value=reader))
+    monkeypatch.setattr(user_skills, "store_for",
+                        lambda _: SimpleNamespace(list=AsyncMock(return_value=())))
     origin = _Origin()
     coordinator = _voice_outcome_coordinator()
     chat_id = str(uuid.uuid4())

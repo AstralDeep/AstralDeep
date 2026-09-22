@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,7 +30,7 @@ def chaining_on(monkeypatch):
 
 
 @pytest.fixture
-def orch():
+def orch(monkeypatch):
     o = MagicMock()
     o.history.create_chat = MagicMock(side_effect=lambda user_id=None, **k: "sub-chat")
     o.ui_sessions = {}
@@ -41,6 +42,15 @@ def orch():
         await vws.send_json({"type": "chat_message", "payload": {"text": "ok"}})
 
     o.handle_chat_message = _turn
+    # These unit tests isolate budget accounting from guidance materialization.
+    # Supply the already-authorized parent contract; production handoff denial
+    # and inheritance are covered over real Plane by test_skill_turn_handoffs_088.
+    from orchestrator import turn_guidance_authority as guidance
+
+    parent = types.SimpleNamespace(origin=types.SimpleNamespace(owner_id="u1"))
+    monkeypatch.setattr(guidance, "current_turn_guidance", lambda **kwargs: parent)
+    monkeypatch.setattr(guidance, "inherit_turn_guidance", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(guidance, "use_turn_guidance", lambda *args, **kwargs: nullcontext())
     return o
 
 
@@ -147,8 +157,10 @@ def test_turn_start_resets_budget_in_the_real_orchestrator():
     import inspect
 
     wrapper = inspect.getsource(Orchestrator.handle_chat_message)
+    publication = inspect.getsource(Orchestrator._handle_chat_message_with_guidance)
     implementation = inspect.getsource(Orchestrator._handle_chat_message_impl)
-    assert "self._handle_chat_message_impl(" in wrapper
+    assert "self._handle_chat_message_with_guidance(" in wrapper
+    assert "self._handle_chat_message_impl(" in publication
     assert "_existing_budget = self._chain_budgets.get(chat_id)" in implementation
     assert "_existing_budget.parent is None" in implementation
     assert "self._chain_budgets.pop(chat_id, None)" in implementation

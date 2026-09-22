@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.helpers.registered_human import registered_chat
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from shared.feature_flags import flags  # noqa: E402
@@ -233,7 +235,7 @@ async def _drive_both(orch, sockets, chats, user_id):
     """The identical turn, once per origin, each on its own fresh chat."""
     for device in ("browser", "android"):
         _install_llm(orch)
-        await orch.handle_chat_message(
+        await registered_chat(orch,
             sockets[device], "make a dashboard", chats[device], user_id=user_id)
 
 

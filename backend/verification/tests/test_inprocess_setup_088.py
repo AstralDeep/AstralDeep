@@ -13,8 +13,18 @@ from verification.drivers.in_process import InProcessDriver, _run_sync
 
 def _driver(tmp_path):
     return InProcessDriver(
-        SimpleNamespace(run_dir=str(tmp_path), run_id="__verif__setup")
+        SimpleNamespace(run_dir=str(tmp_path), run_id="__verif__setup", mode="in_process")
     )
+
+
+@pytest.fixture(autouse=True)
+def fixture_identity_lifetime(monkeypatch):
+    from verification.drivers.fixture_identity import FixtureIdentity
+
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    yield
+    if FixtureIdentity._active is not None:
+        FixtureIdentity._active.close()
 
 
 def test_setup_constructs_off_loop_but_starts_on_callers_loop(tmp_path, monkeypatch):

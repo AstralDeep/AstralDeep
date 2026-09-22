@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.helpers.registered_human import registered_chat
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
@@ -234,7 +236,7 @@ class TestHandleChatMessageTextOnly:
         from orchestrator.orchestrator import TEXT_ONLY_SYSTEM_PROMPT_ADDENDUM
 
         ws = _fake_websocket(orchestrator)
-        chat_id = f"text-only-{uuid.uuid4().hex[:8]}"
+        chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
             orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
         captured_call = {}
@@ -248,7 +250,7 @@ class TestHandleChatMessageTextOnly:
 
         orchestrator._call_llm = fake_call_llm
 
-        await orchestrator.handle_chat_message(
+        await registered_chat(orchestrator,
             ws, "What is the capital of France?", chat_id,
             user_id="text-only-test-user",
         )
@@ -288,7 +290,7 @@ class TestHandleChatMessageTextOnly:
         propagate ``feature='chat_dispatch_text_only'`` into _call_llm so
         the audit recorder emits a distinguishable event."""
         ws = _fake_websocket(orchestrator)
-        chat_id = f"text-only-audit-{uuid.uuid4().hex[:8]}"
+        chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
             orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
         captured_features = []
@@ -300,7 +302,7 @@ class TestHandleChatMessageTextOnly:
 
         orchestrator._call_llm = fake_call_llm
 
-        await orchestrator.handle_chat_message(
+        await registered_chat(orchestrator,
             ws, "hello", chat_id, user_id="text-only-test-user"
         )
 
@@ -318,7 +320,7 @@ class TestHandleChatMessageTextOnly:
         existing draft-diagnostic warning rather than silently falling
         through to text-only mode."""
         ws = _fake_websocket(orchestrator)
-        chat_id = f"text-only-draft-{uuid.uuid4().hex[:8]}"
+        chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
             orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
         called = {"count": 0}
@@ -330,7 +332,7 @@ class TestHandleChatMessageTextOnly:
 
         orchestrator._call_llm = fake_call_llm
 
-        await orchestrator.handle_chat_message(
+        await registered_chat(orchestrator,
             ws, "test draft", chat_id,
             user_id="text-only-test-user",
             draft_agent_id="a-not-registered",
@@ -372,7 +374,7 @@ class TestHandleChatMessageTextOnly:
         orchestrator.tool_permissions.is_tool_allowed.return_value = True
 
         ws = _fake_websocket(orchestrator)
-        chat_id = f"tool-aug-{uuid.uuid4().hex[:8]}"
+        chat_id = str(uuid.uuid4())
         await asyncio.to_thread(
             orchestrator.history.create_chat, chat_id, user_id="text-only-test-user")
         captured = {}
@@ -386,7 +388,7 @@ class TestHandleChatMessageTextOnly:
 
         orchestrator._call_llm = fake_call_llm
 
-        await orchestrator.handle_chat_message(
+        await registered_chat(orchestrator,
             ws, "search something", chat_id, user_id="text-only-test-user"
         )
 

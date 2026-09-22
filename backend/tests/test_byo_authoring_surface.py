@@ -47,6 +47,9 @@ async def _t(fn, *args, **kwargs):
 @pytest.fixture(autouse=True)
 def _byo_on(monkeypatch):
     monkeypatch.setitem(flags._flags, "byo_agents", True)
+    # The fake models agent authoring, not the independently tested skill
+    # catalog. Do not send a MagicMock through the real Plane/IAM boundary.
+    monkeypatch.setattr(authoring, "_skills", AsyncMock(return_value=[]))
 
 
 @pytest.fixture()

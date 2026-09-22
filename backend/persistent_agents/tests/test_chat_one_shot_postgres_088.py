@@ -230,23 +230,6 @@ async def test_unusable_or_refused_answer_is_charged_and_never_retained(
     assert result.status_code == 200 and result.json()["result"]["content"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Pre-existing, cross-cutting defect in shared orchestrator/work_result.py::_amount "
-        "(imported unchanged by orchestrator/work_chat_result.py -- not a D3/chat-specific bug and "
-        "not fixable within this workstream's allowed files): AssignmentResourceAmount gained an "
-        "additive `basis` field (components/AstralPlane assignment_models.py, FR-022/schema >=088.008), "
-        "but `_amount`'s `_require(set(value) == counters | {\"spend_micro_units\", \"currency\"})` was "
-        "never updated to admit it, so `thaw()`-ing ANY action's `intent.maximum` now raises "
-        "ValueError('work_result_unavailable') inside `_action` -> `project_chat_result` returns the "
-        "honest-but-wrong 'unavailable' envelope instead of the answer. Confirmed NOT chat-specific: "
-        "backend/tests/test_work_result_postgres_088.py (project_research_result, D2's file, untouched "
-        "by D3) shows the identical failure pattern on this same checkout (5+ failures of the first 11 "
-        "tests run in isolation). Needs a fix in work_result.py::_amount, outside D3-deep-retry-and-"
-        "chat-oneshot's allowed files; remove this marker once that lands."
-    ),
-)
 async def test_chat_result_projection_is_honest_and_cites_nothing(integrated, chat_transport):
     op, runner, client = integrated
     accepted = await client.post("/api/work/v1/operations", json=chat_command())
@@ -401,33 +384,6 @@ async def test_chat_private_input_and_executor_entries_refuse_the_other_profile(
     assert len(op.model_calls) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Cross-workstream defect outside D3's allowed files, not a chat-specific gap: "
-        "a due-but-never-claimed one-shot record whose deadline has already lapsed makes "
-        "runner._tick_operations -> _operation_authority -> "
-        "session_authority.refresh_operation_execution_authority -> "
-        "_refresh_operation_session raise SessionAuthorityUnavailable from its own "
-        "`min(expiry, deadline) <= reference.state.observed_at` check "
-        "(backend/orchestrator/session_authority.py, inside the `try` whose blanket "
-        "`except Exception: raise SessionAuthorityUnavailable(...) from None` erases the "
-        "deadline detail) before the claim transaction -- and Plane's deadline-conflict "
-        "handling -- is ever reached. runner.py::_tick_operations's bare "
-        "`except Exception: logger.warning('one_shot_claim_unavailable')` then drops that "
-        "refusal every tick without writing any terminal state, and no other sweep "
-        "revisits a record whose lease_expires_at was never set (recover_expired_operations_"
-        "for_administration only reaps rows that WERE claimed and then lease-expired). "
-        "Reproduced live (isolated DB, 27 passed / 1 failed in the rest of this file) with "
-        "18x 'one_shot_claim_unavailable' warnings and a confirmed "
-        "orchestrator.session_authority.SessionAuthorityUnavailable traceback. Shared with "
-        "the research profile -- no prior test exercised 'deadline lapses while the single "
-        "worker slot is occupied and the record is never claimed' for research either. "
-        "Needs a fix in session_authority.py and/or runner.py::_tick_operations, both "
-        "outside D3-deep-retry-and-chat-oneshot's allowed files; remove this marker once "
-        "that lands."
-    ),
-)
 async def test_chat_deadline_expiry_fence_is_the_shared_one(integrated, chat_transport):
     """A chat turn past its deadline is retired by the shared claim-time fence.
 

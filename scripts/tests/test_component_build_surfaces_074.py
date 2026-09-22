@@ -86,6 +86,8 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         )
     )
     assert job_ids == {
+        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "projection-backend-web", "plane-postgres",
         "lint",
         "ui-v2-contracts",
         "sdk",
@@ -128,9 +130,12 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     ui_test_paths = re.findall(r"\b(?:backend|components)/[^\s\\]+\.py", ui_contracts)
     assert ui_test_paths
     assert all(path.startswith("backend/tests/") for path in ui_test_paths)
-    other_jobs = workflow.replace(ui_contracts, "")
-    assert "submodules: recursive" not in other_jobs
-    assert "components/AstralProjection/" not in other_jobs
+    for scoped_job in ("backend-image", "backend-web", "projection-backend-web", "plane-postgres"):
+        job = _workflow_job(workflow, scoped_job)
+        assert "submodules: recursive" in job
+        assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in job
+        assert "permissions:" not in job
+        assert "environment:" not in job
     assert re.search(r"(?m)^permissions:\n  contents: read$", workflow)
 
     gates = _workflow_job(workflow, "gates")
@@ -138,22 +143,26 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     for owner_job in job_ids - {"gates"}:
         assert f"- {owner_job}" in gates
         assert f"needs.{owner_job}.result }}}}' == 'success'" in gates
-    assert (
-        "Full private composition remains a required local Feature 074 "
-        "qualification."
-    ) in gates
+    assert "Native qualification is deferred" in gates
+    assert "protected real-authentication, LETS-enforce, migration and recovery staging remain required" in gates
     assert "Composed qualification unavailable" not in gates
     assert "exit 1" not in gates
 
     assert "packages: write" not in workflow
     assert "id-token: write" not in workflow
     assert "secrets." not in workflow
-    assert "actions/download-artifact" not in workflow
-    assert "docker save" not in workflow
+    assert "actions/download-artifact" in _workflow_job(workflow, "backend-boot")
+    assert "docker save" in _workflow_job(workflow, "backend-image")
+    assert "org.opencontainers.image.revision" in _workflow_job(workflow, "backend-web")
     assert "docker push" not in workflow
     assert "docker/login-action" not in workflow
     assert "name: image" not in workflow
     assert "name: voice-worker-image" not in workflow
+    for job_id in ("projection-backend-web", "plane-postgres"):
+        component_job = _workflow_job(workflow, job_id)
+        assert '[[ "$base_component" == "$candidate_component" ]]' in component_job
+        assert '"status":"not-applicable","reason":"identical-component-commit"' in component_job
+        assert "--fail-under" in component_job and "90" in component_job
 
 
     external_actions = {
@@ -165,6 +174,9 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+        "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9",
     }
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", value) for value in external_actions)
 

@@ -102,7 +102,9 @@ def test_agent_identity_is_the_single_grantable_remote_compute_agent():
     assert agent.agent_id == "remote-compute-1"
     assert agent.service_name == "Remote Compute"
     assert "ssh" in agent.skill_tags and "control" in agent.skill_tags
-    assert "confirm" in agent.description
+    # UI v2 promises the same confirmation boundary in user-facing language.
+    # Destructive-call enforcement is covered by the dispatch tests below.
+    assert "Anything destructive asks you first." in agent.description
 
 
 def test_construction_wires_one_plane_binding_into_both_verb_libraries():

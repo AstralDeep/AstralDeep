@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.helpers.registered_human import registered_chat
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from shared.feature_flags import flags  # noqa: E402
@@ -150,7 +152,7 @@ async def test_denied_break_sends_done(orch, monkeypatch):
                             lambda draft_agent_id: False)
     _register(orch)
     ws = _ws(orch)
-    chat_id = f"ft-{uuid.uuid4().hex[:8]}"
+    chat_id = str(uuid.uuid4())
     await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=USER)
     orch.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
         result=None, error={"message": "This tool is restricted by your permissions."},
@@ -162,7 +164,7 @@ async def test_denied_break_sends_done(orch, monkeypatch):
 
     orch._call_llm = fake_llm
     try:
-        await orch.handle_chat_message(ws, "keep trying", chat_id, user_id=USER)
+        await registered_chat(orch, ws, "keep trying", chat_id, user_id=USER)
         assert _done_statuses(orch), (
             "the all-tools-denied exit must send a terminal chat_status done "
             "(clients key their loading-state teardown on it)")

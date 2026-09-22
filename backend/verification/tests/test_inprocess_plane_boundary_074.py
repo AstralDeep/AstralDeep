@@ -166,6 +166,7 @@ def test_run_scenario_uses_one_execution_identity_at_every_boundary(
         ui_sessions={},
         ui_clients=[],
         _ws_active_chat={},
+        _connection_contexts={},
         _llm_store=None,
         handle_chat_message=handle_chat_message,
     )
@@ -180,6 +181,19 @@ def test_run_scenario_uses_one_execution_identity_at_every_boundary(
         }
 
     driver.upload_as = upload_as  # type: ignore[method-assign]
+
+    # This unit checks one execution owner at each driver boundary. The persona
+    # integration tests exercise the actual signed registered socket handoff.
+    async def register_session(principal, chat_id):
+        from verification.drivers.in_process import CaptureSocket
+
+        ws = CaptureSocket(label=principal.user_id)
+        driver.orch.ui_sessions[ws] = principal.claims()
+        driver.orch.ui_clients.append(ws)
+        return ws
+
+    driver._register_session = register_session
+    driver._send_registered_turn = handle_chat_message
     driver._read_audit = lambda owner_id: (observed.append(owner_id) or [], True)
     monkeypatch.setattr(in_process_module, "scripted_llm_for", lambda *_args: object())
     scenario = Scenario(

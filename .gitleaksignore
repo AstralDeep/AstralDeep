@@ -28,3 +28,9 @@ fdb27520616773aaa35e169977882426536e10d2:scripts/typesafe_canary_scan.py:typesaf
 # A verification row quoting an audit record's fields -- threat_category,
 # jailbreak_probability and the rest. Prose about a refusal, not a secret.
 d38a02f1f56c9778d9ba6ae4fa8b25de1123ebee:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315
+# Duplicate historical synthetic scanner canary: line 40 is byte-identical to
+# the reviewed fdb2752 entry above. No value/prefix/path-wide exclusion is added.
+d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesafe-system-one-key:40
+# Duplicate historical verification prose: line 1315 is byte-identical to the
+# reviewed d38a02f entry above, describing audit fields rather than a credential.
+9ac6826aaea3484cff265e8a054cc1d81dbfe60c:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315

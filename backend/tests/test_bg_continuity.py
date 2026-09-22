@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.helpers.registered_human import registered_chat
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -58,6 +60,20 @@ async def orch(bg_flag, monkeypatch):
         yield o
     finally:
         await asyncio.wait_for(o._close_started_services(), timeout=15.0)
+
+
+@pytest.fixture
+def signed_background(orch):
+    """Keep synthetic IAM alive until the detached task's actual completion."""
+    from verification.drivers.fixture_identity import FixtureIdentity
+
+    identity = FixtureIdentity("__verif__background_fixture")
+    orch._fixture_identity = identity
+    try:
+        yield
+    finally:
+        del orch._fixture_identity
+        identity.close()
 
 
 class _CaptureSocket:
@@ -254,7 +270,7 @@ async def _cleanup(orch, user_id, chat_ids=()):
 # Items 1+2 — task frames fan to all the user's sockets
 # ---------------------------------------------------------------------------
 
-async def test_task_started_fans_to_second_socket(orch):
+async def test_task_started_fans_to_second_socket(orch, signed_background):
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
     ws1, ws2 = _capture_socket(orch, user_id), _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
@@ -264,7 +280,7 @@ async def test_task_started_fans_to_second_socket(orch):
 
     orch.handle_chat_message = fake_handle
     message = "analyze the quarterly report thoroughly"
-    await orch._dispatch_async_chat(ws1, message, chat_id, user_id=user_id)
+    await registered_chat(orch, ws1, message, chat_id, user_id=user_id, dispatch=orch._dispatch_async_chat)
 
     for ws in (ws1, ws2):
         started = _frames(ws, "task_started")
@@ -280,7 +296,7 @@ async def test_task_started_fans_to_second_socket(orch):
     await _cleanup(orch, user_id, [chat_id])
 
 
-async def test_completion_fan_reaches_socket_joined_after_start(orch):
+async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_background):
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
     ws1 = _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
@@ -295,7 +311,7 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch):
         }))
 
     orch.handle_chat_message = fake_handle
-    await orch._dispatch_async_chat(ws1, "run the report", chat_id, user_id=user_id)
+    await registered_chat(orch, ws1, "run the report", chat_id, user_id=user_id, dispatch=orch._dispatch_async_chat)
 
     # The originator disconnects; a NEW device connects after start.
     del orch.ui_sessions[ws1]
@@ -470,7 +486,7 @@ async def test_completed_unnotified_replay_marks_notified(orch):
 # Kill switch — flag off restores originator-only frames byte-identically
 # ---------------------------------------------------------------------------
 
-async def test_flag_off_all_new_sends_absent(orch):
+async def test_flag_off_all_new_sends_absent(orch, signed_background):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     flags._flags["bg_continuity"] = False  # bg_flag fixture restores it
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
@@ -482,7 +498,7 @@ async def test_flag_off_all_new_sends_absent(orch):
         pass
 
     orch.handle_chat_message = fake_handle
-    await orch._dispatch_async_chat(ws1, "legacy behavior", chat_id, user_id=user_id)
+    await registered_chat(orch, ws1, "legacy behavior", chat_id, user_id=user_id, dispatch=orch._dispatch_async_chat)
     await _await_manager_tasks(orch)
 
     # Originator frames: pre-055 shapes exactly (no title, no summary).

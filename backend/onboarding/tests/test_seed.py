@@ -141,14 +141,19 @@ def test_user_flow_is_strictly_ordered(fresh_seed):
 
 def test_every_static_target_resolves_to_a_real_anchor(fresh_seed):
     """Cross-layer guard: each canonical static step must point at an element
-    that actually carries data-tour-target in the rendered chrome (topbar with
-    admin roles) or the shell template. This is the regression that broke the
-    old tour: 'give-feedback' targeted feedback.control, which feature 026
+    that actually carries data-tour-target in the rendered chrome (topbar and
+    settings rail with admin roles) or the shell template. This is the
+    regression that broke the old tour: 'give-feedback' targeted feedback.control, which feature 026
     removed, leaving a permanent "(target isn't available yet)" step."""
     from astralprojection.resources import template_path
+    from webrender.chrome import render_settings_nav
+    from webrender.chrome.menu_model import build_menu_model
     from webrender.chrome.topbar import render_topbar
 
     dom = render_topbar(roles=["admin", "user"])
+    # UI v2 builds these anchors when the tour opens the settings dialog.
+    # They intentionally no longer live in the always-present topbar.
+    dom += render_settings_nav(build_menu_model(roles=["admin", "user"]), "agents")
     dom += template_path("shell.html").read_text(encoding="utf-8")
     anchors = set(re.findall(r'data-tour-target="([^"]+)"', dom))
     for slug, (_, kind, key) in {**USER_FLOW, **ADMIN_FLOW}.items():

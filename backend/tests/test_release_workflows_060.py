@@ -1687,6 +1687,7 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
         "backend/tests/test_extract_release_artifact_060.py",
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
+        "scripts/tests/test_backend_web_gate.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
@@ -1694,6 +1695,11 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
         "scripts/tests/test_verify_primitive_coverage.py",
     ):
         assert test_path in job, f"RELEASE_TOOL_TESTS must include {test_path}"
+    assert "needs: [backend-image]" in job
+    assert "tooling/backend-ci/requirements.lock.txt" in job
+    assert "org.opencontainers.image.revision" in job
+    assert "coverage report --fail-under=90" in job
+    assert "secrets." not in job and "docker.sock" not in job
 
 
 def test_default_branch_workflow_run_is_the_only_readiness_caller() -> None:
@@ -1721,15 +1727,15 @@ def test_default_branch_workflow_run_is_the_only_readiness_caller() -> None:
     assert "secrets: inherit" not in job
 
 
-def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
+def test_ci_voice_worker_always_qualifies_without_publishing() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "voice-worker-test")
 
     job_header = job.split("    steps:", 1)[0]
     assert "if:" not in job_header
-    assert "if: vars.VOICE_WORKER_CLOSURE_APPROVED != 'true'" in job
-    assert "if: vars.VOICE_WORKER_CLOSURE_APPROVED == 'true'" in job
-    assert "succeeding as a no-op" in job
+    assert "VOICE_WORKER_CLOSURE_APPROVED" not in job
+    assert "succeeding as a no-op" not in job
+    assert "if:" not in job
     assert "Dockerfile.voice" in job
     assert "--target runtime" in job
     assert "--target test" in job
@@ -1746,7 +1752,10 @@ def test_ci_voice_worker_is_distribution_disabled_but_keeps_test_lane() -> None:
     assert re.search(r"coverage report\s+\\?\s*--fail-under=90", job)
     assert "ElementTree.parse" in job
     assert 'root.tag == \\"coverage\\"' in job
-    assert "statements == 0 or rate >= 0.90" in job
+    assert "statements > 0 and rate >= 0.90" in job
+    assert "--iidfile build/065/coverage/voice-runtime-image-id.txt" in job
+    assert "--iidfile build/065/coverage/voice-test-image-id.txt" in job
+    assert "--junitxml=/coverage/voice-worker-tests.xml" in job
     assert "name: voice-worker-image" not in job
     assert "name: voice-worker-coverage" in job
     assert "continue-on-error" not in job
@@ -1770,6 +1779,8 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
 
     job_ids = set(_job_ids(workflow))
     assert job_ids == {
+        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "projection-backend-web", "plane-postgres", "ui-v2-contracts",
         "lint",
         "sdk",
         "release-tooling-tests",
@@ -1794,8 +1805,9 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
     assert "packages: write" not in workflow
     assert "id-token: write" not in workflow
     assert "secrets." not in workflow
-    assert "actions/download-artifact" not in workflow
-    assert "docker save" not in workflow
+    assert "actions/download-artifact" in _workflow_job(workflow, "backend-boot")
+    assert "docker save" in _workflow_job(workflow, "backend-image")
+    assert "docker push" not in workflow
     assert "name: voice-worker-image" not in workflow
 
 

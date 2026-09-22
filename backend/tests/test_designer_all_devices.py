@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.helpers.registered_human import registered_chat
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from shared.feature_flags import flags  # noqa: E402
@@ -186,7 +188,7 @@ async def test_native_turn_persists_layout_and_renders_after_done(env, monkeypat
     features = _install_llm(orch)
     design_calls = _install_designer(monkeypatch)
 
-    await orch.handle_chat_message(ws, "make a dashboard", chat_id, user_id=user_id)
+    await registered_chat(orch, ws, "make a dashboard", chat_id, user_id=user_id)
 
     assert design_calls, "the coalesced post-done pass must run for native origin"
     layouts = await asyncio.to_thread(orch.workspace.live_layouts, chat_id, user_id)
@@ -240,7 +242,7 @@ async def test_async_mode_render_sequences_before_task_completed(env, monkeypatc
         orch._ws_active_chat[id(vws)] = chat_id
         started.set()
         await release.wait()
-        await orch.handle_chat_message(vws, "make a dashboard", chat_id, user_id=user_id)
+        await registered_chat(orch, vws, "make a dashboard", chat_id, user_id=user_id)
 
     task = await orch.async_task_manager.submit(chat_id, user_id, _coro)
     await asyncio.wait_for(started.wait(), timeout=5)
@@ -322,7 +324,7 @@ async def test_flag_off_restores_native_skip(env, monkeypatch):
     features = _install_llm(orch)
     design_calls = _install_designer(monkeypatch)
 
-    await orch.handle_chat_message(ws, "make a dashboard", chat_id, user_id=user_id)
+    await registered_chat(orch, ws, "make a dashboard", chat_id, user_id=user_id)
 
     assert not design_calls, "designer never invoked for native origin when off"
     assert "ui_designer" not in features
@@ -341,7 +343,7 @@ async def test_watch_designed_render_carries_no_speech(env, monkeypatch):
     _install_llm(orch)
     _install_designer(monkeypatch)
 
-    await orch.handle_chat_message(ws, "make a dashboard", chat_id, user_id=user_id)
+    await registered_chat(orch, ws, "make a dashboard", chat_id, user_id=user_id)
 
     renders = _canvas_renders(ws)
     assert renders, "watch still receives the designed canvas"
@@ -359,7 +361,7 @@ async def test_doc_cards_excluded_from_native_canvas(env, monkeypatch):
     _install_llm(orch, final_text=long_text)
     design_calls = _install_designer(monkeypatch)
 
-    await orch.handle_chat_message(ws, "make a dashboard", chat_id, user_id=user_id)
+    await registered_chat(orch, ws, "make a dashboard", chat_id, user_id=user_id)
 
     assert design_calls
     designed_ids = {c.get("component_id")

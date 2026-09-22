@@ -114,6 +114,7 @@ class CoverageRepositoryProfile:
 
     producer_keys: tuple[str, ...]
     source_prefix: str = ""
+    deferred_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -346,6 +347,13 @@ PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
 REPOSITORY_PROFILES = {
     "monorepo": CoverageRepositoryProfile(tuple(PRODUCER_BY_KEY)),
     "deep": CoverageRepositoryProfile(("backend", "voice_worker", "tooling")),
+    # The authorized backend/browser release keeps every server and browser
+    # producer strict while reporting the explicitly paused native scope.
+    "projection-web": CoverageRepositoryProfile(
+        ("projection_python", "javascript"),
+        "components/AstralProjection",
+        ("windows_python", "windows_csharp", "android_app", "android_core", "apple"),
+    ),
     "projection": CoverageRepositoryProfile(
         (
             "projection_python",
@@ -2676,10 +2684,15 @@ def evaluate_changed_coverage(
     )
     _validate_native_source_bindings(repo, selection.candidate_sha, report_inputs, source_prefix=source_prefix)
     maintained: dict[str, CoverageTarget] = {}
+    deferred_paths: list[str] = []
+    deferred_targets = REPOSITORY_PROFILES[repository_profile].deferred_targets
     for path in sorted(changed):
         target = classify_path(path)
         if target is not None:
-            maintained[path] = target
+            if target.key in deferred_targets:
+                deferred_paths.append(path)
+            else:
+                maintained[path] = target
     if not maintained:
         raise CoveragePolicyError(
             "unexpected_empty_executable_diff",
@@ -2838,6 +2851,7 @@ def evaluate_changed_coverage(
         "diff": {
             "changed_paths": sorted(changed),
             "maintained_paths": sorted(maintained),
+            "deferred_maintained_paths": deferred_paths,
             "changed_maintained_lines": sum(len(changed[path]) for path in maintained),
             "executable_lines": len(line_records),
         },
@@ -2917,7 +2931,7 @@ def _parser() -> argparse.ArgumentParser:
         "--coverage-mode",
         choices=("strict", "partial"),
         default="strict",
-        help="strict requires useful native reports in every profile-owned slot",
+        help="strict requires useful reports in every profile-owned producer slot",
     )
     parser.add_argument(
         "--repository-profile",

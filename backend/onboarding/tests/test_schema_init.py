@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from astralplane.database.baseline import BASELINE_REQUIRED_TABLES
@@ -49,8 +52,13 @@ def _index_exists(database, name: str) -> bool:
 
 
 def test_plane_contract_owns_onboarding_tables() -> None:
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "088.003"
+    composition = json.loads(
+        (Path(__file__).resolve().parents[3] / "config/astral-composition.json")
+        .read_text(encoding="utf-8")
+    )["compatibility"]["data_plane"]
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == composition["schema_revision"]
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
+    assert CURRENT_DATA_PLANE_REVISION.migration_digest == composition["migration_sha256"]
     assert {
         "onboarding_state",
         "tutorial_step",

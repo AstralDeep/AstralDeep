@@ -101,6 +101,12 @@ not authorize production import or ad-hoc SQL.
 A rollback is complete only when the deployed Deep SHA and every Gitlink are
 reachable from their normal repository histories; the composition manifest
 matches those exact commits; Plane reports a compatible ready schema; the
-authenticated off-mode golden flow passes; and the curated kos-wiki checkpoint
+authenticated golden flow passes in the deployment's required LETS posture
+(including enforce-mode success, denial and recovery when enforce is configured);
+and the curated kos-wiki checkpoint
 records exact SHAs, checks, residual risks, and the no-release/no-deployment
 posture where applicable.
+
+Native client qualification and store publication are paused for the current
+backend/browser scope. This does not waive server security, data recovery or
+LETS enforcement.

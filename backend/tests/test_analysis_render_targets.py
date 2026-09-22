@@ -22,6 +22,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from tests.helpers.registered_human import registered_chat
 from astralplane import GENERATED_AGENT_BUNDLE_CONTRACT, ImmutableBundleStore
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -193,7 +195,7 @@ def _usage():
 
 
 async def _chat(o):
-    chat_id = f"target-{uuid.uuid4().hex[:8]}"
+    chat_id = str(uuid.uuid4())
     await asyncio.to_thread(o.history.create_chat, chat_id, user_id=USER)
     return chat_id
 
@@ -242,7 +244,7 @@ async def test_reasoning_goes_to_chat_and_never_replaces_canvas(orch):
                     reasoning="All three charts rendered successfully."), _usage()
 
     orch._call_llm = fake_llm
-    await orch.handle_chat_message(ws, "weather with charts", chat_id, user_id=USER)
+    await registered_chat(orch, ws, "weather with charts", chat_id, user_id=USER)
 
     renders = orch.send_ui_render.await_args_list
     reasoning_calls = [c for c in renders if '"Reasoning"' in _components_json(c)]
@@ -267,7 +269,7 @@ async def test_cancellation_alert_goes_to_chat(orch):
     orch.cancelled_sessions[id(ws)] = True
     orch._call_llm = AsyncMock(return_value=(_msg(content="unused"), _usage()))
 
-    await orch.handle_chat_message(ws, "anything", chat_id, user_id=USER)
+    await registered_chat(orch, ws, "anything", chat_id, user_id=USER)
 
     cancel_calls = [c for c in orch.send_ui_render.await_args_list
                     if "cancelled" in _components_json(c)]
@@ -297,7 +299,7 @@ async def test_denial_loop_warning_goes_to_chat(orch, monkeypatch):
         return _msg(tool_calls=[_tc()]), _usage()
 
     orch._call_llm = fake_llm
-    await orch.handle_chat_message(ws, "keep trying", chat_id, user_id=USER)
+    await registered_chat(orch, ws, "keep trying", chat_id, user_id=USER)
 
     warn_calls = [c for c in orch.send_ui_render.await_args_list
                   if "restricted by your permission settings" in _components_json(c)]
@@ -322,7 +324,7 @@ async def test_max_turns_summary_goes_to_chat(orch):
         return _msg(tool_calls=[_tc()]), _usage()  # never a final answer
 
     orch._call_llm = fake_llm
-    await orch.handle_chat_message(ws, "loop forever", chat_id, user_id=USER)
+    await registered_chat(orch, ws, "loop forever", chat_id, user_id=USER)
 
     summary_calls = [c for c in orch.send_ui_render.await_args_list
                      if "Round results" in _components_json(c)]
@@ -345,7 +347,7 @@ async def test_max_turns_fallback_card_goes_to_chat(orch):
         return _msg(tool_calls=[_tc()]), _usage()
 
     orch._call_llm = fake_llm
-    await orch.handle_chat_message(ws, "loop forever", chat_id, user_id=USER)
+    await registered_chat(orch, ws, "loop forever", chat_id, user_id=USER)
 
     fallback_calls = [c for c in orch.send_ui_render.await_args_list
                       if "Multiple tool operations were completed" in _components_json(c)]

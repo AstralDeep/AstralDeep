@@ -41,9 +41,16 @@ def code_security_analyzer():
 
 @pytest.fixture
 def perm_manager(tmp_data_dir):
-    """ToolPermissionManager backed by a temp database."""
+    """Use the current Plane boundary with a fresh real PostgreSQL database."""
     from orchestrator.tool_permissions import ToolPermissionManager
-    return ToolPermissionManager(data_dir=tmp_data_dir)
+    from tests.helpers.voice_plane_runtime import isolated_voice_plane_runtime
+
+    with isolated_voice_plane_runtime("qual_permissions") as runtime:
+        yield ToolPermissionManager(
+            data_dir=tmp_data_dir,
+            plane_runtime=runtime,
+            plane_repositories=runtime.repositories,
+        )
 
 
 @pytest.fixture

@@ -122,7 +122,9 @@ def _no_ambient_actions_event(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        # Coverage binds exact committed bytes, independent of host checkout
+        # conversion settings. This flag affects only these fixture commands.
+        ["git", "-C", str(repo), "-c", "core.autocrlf=false", *args],
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -413,6 +415,59 @@ def test_repository_profiles_partition_owned_producers() -> None:
         collector.PRODUCER_BY_KEY
     )
     assert collector.REPORT_FLAGS["projection_python"] == "projection-python"
+    assert collector.REPOSITORY_PROFILES["projection-web"].producer_keys == (
+        "projection_python", "javascript",
+    )
+
+
+@pytest.mark.parametrize("condition", ["pass", "missing-python", "missing-javascript", "uncovered"])
+def test_projection_web_profile_retains_strict_server_browser_gates(
+    tmp_path: Path, condition: str,
+) -> None:
+    repo, original, reports, slots = _projection_strict_case(tmp_path)
+    (repo / "backend/webrender/static/client.js").write_text("const value = 1;\n", encoding="utf-8")
+    (repo / "windows-client/runtime.py").write_text("value = 1\n", encoding="utf-8")
+    selection = _selection(repo, original.base_sha, _commit(repo, "browser and paused native change"))
+    profile = collector.REPOSITORY_PROFILES["projection-web"]
+    reports = {key: value for key, value in reports.items() if key in profile.producer_keys}
+    slots = {key: value for key, value in slots.items() if key in profile.producer_keys}
+    if condition.startswith("missing-"):
+        key = "projection_python" if condition == "missing-python" else "javascript"
+        reports.pop(key)
+        slots.pop(key)
+    if condition == "uncovered":
+        document = json.loads(slots["javascript"].read_text(encoding="utf-8"))
+        document["coverage"]["backend/webrender/static/client.js"]["s"]["0"] = 0
+        slots["javascript"].write_text(json.dumps(document), encoding="utf-8")
+    arguments = dict(producer_slots=slots, strict_producers=True,
+                     repository_profile="projection-web", required_producer_keys=profile.producer_keys,
+                     source_prefix=profile.source_prefix)
+    if condition.startswith("missing-"):
+        with pytest.raises(collector.CoveragePolicyError, match="producer"):
+            collector.evaluate_changed_coverage(repo, selection, reports, **arguments)
+        return
+    decision = collector.evaluate_changed_coverage(repo, selection, reports, **arguments)
+    assert decision["status"] == ("fail" if condition == "uncovered" else "pass")
+    assert decision["diff"]["deferred_maintained_paths"] == [
+        "components/AstralProjection/windows-client/runtime.py",
+    ]
+    assert set(decision["producer_slots"]) == {"projection_python", "javascript"}
+    assert decision["languages"]["javascript"]["percent"] == (0 if condition == "uncovered" else 100)
+
+
+def test_projection_web_profile_does_not_turn_native_only_diff_into_pass(tmp_path: Path) -> None:
+    repo, original, reports, slots = _projection_strict_case(tmp_path)
+    (repo / "windows-client/runtime.py").write_text("value = 1\n", encoding="utf-8")
+    selection = _selection(repo, original.candidate_sha, _commit(repo, "paused native only"))
+    profile = collector.REPOSITORY_PROFILES["projection-web"]
+    with pytest.raises(collector.CoveragePolicyError) as failure:
+        collector.evaluate_changed_coverage(
+            repo, selection, {key: value for key, value in reports.items() if key in profile.producer_keys},
+            producer_slots={key: value for key, value in slots.items() if key in profile.producer_keys},
+            strict_producers=True, repository_profile="projection-web",
+            required_producer_keys=profile.producer_keys, source_prefix=profile.source_prefix,
+        )
+    assert failure.value.code == "unexpected_empty_executable_diff"
 
 
 def test_projection_profile_maps_child_git_paths_to_composed_paths(
@@ -1139,7 +1194,7 @@ def test_required_python_witness_rejects_nul_candidate_blob(tmp_path: Path) -> N
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "coverage@example.invalid")
     _git(repo, "config", "user.name", "Coverage Fixture")
-    path = "backend/nul.py"
+    path = "backend/null_byte_source.py"
     source = repo / path
     source.parent.mkdir(parents=True)
     source.write_bytes(b"first = 1\n\0second = 2\n")
@@ -3261,6 +3316,7 @@ def test_javascript_union_requires_current_four_lane_producer(tmp_path: Path, ve
     "backend/webrender/static/canvas-export-host.js",
     "tooling/web-ci/coverage-conversion.mjs",
     "tooling/web-ci/coverage-conversion-cli.mjs",
+    "tooling/web-ci/browser-v8-cli.mjs",
     "tooling/web-ci/coverage-union.mjs",
     "tooling/web-ci/coverage-union-cli.mjs",
     "tooling/web-ci/eslint.config.mjs",

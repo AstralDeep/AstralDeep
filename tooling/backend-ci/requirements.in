@@ -1,0 +1,6 @@
+# Complete composed backend tests; test tools stay outside shipping images.
+-r ../python-ci/requirements.in
+-c ../python-ci/requirements.lock.txt
+jsonschema==4.25.1
+PyYAML==6.0.3
+openapi-spec-validator==0.7.2

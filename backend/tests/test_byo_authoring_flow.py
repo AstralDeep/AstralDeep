@@ -55,6 +55,10 @@ async def _t(fn, *args, **kwargs):
 @pytest.fixture(autouse=True)
 def _byo_on(monkeypatch):
     monkeypatch.setitem(flags._flags, "byo_agents", True)
+    # This phase-machine unit fixture has no durable skill catalog. Keep the
+    # separately governed skills subview empty while preserving its flag and
+    # UI affordances; real caller/skill checks are in test_authoring_ux_077.
+    monkeypatch.setattr(authoring, "_skills", AsyncMock(return_value=[]))
 
 
 @pytest.fixture()

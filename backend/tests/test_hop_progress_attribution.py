@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import types
+from contextlib import nullcontext
 from unittest.mock import MagicMock
 
 import pytest
@@ -38,7 +39,15 @@ def chaining_on(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_subtask_progress_uses_existing_chat_status_frame():
+async def test_subtask_progress_uses_existing_chat_status_frame(monkeypatch):
+    # Isolate frame attribution under an already-admitted parent; the real
+    # guidance boundary is verified by test_skill_turn_handoffs_088.
+    from orchestrator import turn_guidance_authority as guidance
+
+    parent = types.SimpleNamespace(origin=types.SimpleNamespace(owner_id="u1"))
+    monkeypatch.setattr(guidance, "current_turn_guidance", lambda **kwargs: parent)
+    monkeypatch.setattr(guidance, "inherit_turn_guidance", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(guidance, "use_turn_guidance", lambda *args, **kwargs: nullcontext())
     sent = []
 
     async def _safe_send(ws, data):

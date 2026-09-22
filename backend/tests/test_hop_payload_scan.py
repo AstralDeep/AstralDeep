@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import types
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -164,7 +165,15 @@ async def test_scanner_failure_fails_open(orch, captured, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_poisoned_subtask_digest_is_quarantined(captured):
+async def test_poisoned_subtask_digest_is_quarantined(captured, monkeypatch):
+    # This scanner unit supplies the admitted parent's guidance contract.
+    # Real inheritance/denials are exercised by test_skill_turn_handoffs_088.
+    from orchestrator import turn_guidance_authority as guidance
+
+    parent = SimpleNamespace(origin=SimpleNamespace(owner_id="u1"))
+    monkeypatch.setattr(guidance, "current_turn_guidance", lambda **kwargs: parent)
+    monkeypatch.setattr(guidance, "inherit_turn_guidance", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(guidance, "use_turn_guidance", lambda *args, **kwargs: nullcontext())
     o = MagicMock()
     o.history.create_chat = MagicMock(side_effect=lambda user_id=None, **k: "sub-chat")
     o.ui_sessions = {}
