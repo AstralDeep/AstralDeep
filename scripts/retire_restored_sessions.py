@@ -1,9 +1,6 @@
-"""Explicit offline recovery step; never starts services or reopens admission.
-
-The operator must independently stop all writers, verify the joint database/blob
-restore, and discard every application process/cache before reopening admission.
-The recovery-record hash binds that external record; this tool does not certify
-its contents. Run only with the exact qualified component wheels installed.
+"""Explicit offline recovery step that retires a restored session's product state after
+an operator-verified external backup restore; never starts services or reopens
+admission itself, and requires the exact qualified component wheels.
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ from scripts import install_local_components as components
 
 
 class RetirementUnavailable(Exception):
-    """Data-free refusal; a pending receipt never means the database was unchanged."""
+    pass
 
 
 def _reject() -> None:
@@ -32,8 +29,6 @@ def _reject() -> None:
 
 
 def _regular_bytes(path: Path, *, maximum: int, private: bool = False) -> bytes:
-    # Open the selected file itself without following a link. Parent directories
-    # are operator-controlled; their spelling never selects a database implicitly.
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         value = os.fstat(descriptor)
@@ -93,8 +88,6 @@ def _qualified_composition(root: Path, lock: Path) -> tuple[dict, str, str]:
 
 
 def _retire(database_url: str, database: str, schema: str, contract: dict) -> int:
-    # Import only after installed-package verification. No runtime initializer,
-    # SQL, connection pool, migration or product hook belongs in this host tool.
     from astralplane import RestoredSessionRetirement, retire_restored_sessions
 
     result = retire_restored_sessions(
@@ -114,8 +107,6 @@ def _write_receipt(descriptor: int, record: dict[str, Any]) -> None:
         json.dumps(record, sort_keys=True, allow_nan=False, indent=2) + "\n"
     ).encode()
     os.lseek(descriptor, 0, os.SEEK_SET)
-    # The pending receipt remains until a postcommit result is available. A
-    # torn final write is unconfirmed, never an instruction to reopen traffic.
     offset = 0
     while offset < len(data):
         written = os.write(descriptor, data[offset:])
@@ -161,7 +152,6 @@ def retire(args: argparse.Namespace) -> dict:
     ):
         _reject()
     output = Path(args.output).absolute()
-    # Never overwrite a preceding attempt, including an uncertain one.
     descriptor = os.open(
         output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
     )

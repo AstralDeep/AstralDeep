@@ -1,4 +1,8 @@
-"""Mixed-profile account retirement preserves every unresolved durable liability."""
+"""Tests for mixed-profile account retirement: unresolved durable liabilities (including
+action-id-less holds) block purge and commit an owner fence, and schedule failures
+roll back without claiming acceptance.
+"""
+
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -49,7 +53,6 @@ async def test_mixed_profile_retirement_schedules_only_after_safe_removal_and_co
     runtime, service, identities, legacy = records
     blob_root = tmp_path / "blobs"
     blobs = create_streaming_blob_store(root=blob_root)
-    # Isolated pre-cutover orphan fixture; product deletion remains Plane-owned.
     for owner in ("owner", "other"):
         path = blob_root / owner / "orphan" / "private.bin"
         path.parent.mkdir(parents=True)
@@ -81,8 +84,6 @@ async def test_retained_work_without_action_ids_blocks_purge_and_commits_owner_f
     runtime, service, identities, _ = records
     identity = identities[0]
     def hold_fixture(tx, repo):
-        # Synthetic durable liability with no action row: simulate existing data
-        # whose authoritative settlement/recovery still needs reconciliation.
         if hold == "outstanding_usage":
             tx.execute("UPDATE persistent_assignment SET data=jsonb_set(data, '{usage,outstanding,tokens}', '1') WHERE id=%s", (identity,))
         else:
@@ -116,8 +117,6 @@ async def test_retained_work_without_action_ids_blocks_purge_and_commits_owner_f
 @pytest.mark.asyncio
 async def test_opaque_action_bytes_and_reservation_survive_repeated_retirement(records, tmp_path):
     runtime, service, identities, _ = records
-    # The retired bulk claim API intentionally cannot authorize one-shot work.
-    # Use the existing fixture's exact session incarnation and admission fence.
     fence, binding, authority = await claimed(service, identities[0])
     def seed(tx, repo):
         request = {"kind": "model", "messages": ["private fixture input"]}
@@ -130,8 +129,6 @@ async def test_opaque_action_bytes_and_reservation_survive_repeated_retirement(r
             tx, fence=fence, binding=binding, authority=authority,
             action_id=action.action_id, attempt_id=str(uuid4()),
             expected_request_digest=action.intent.request_digest, maximum=maximum)
-        # Forward-envelope fixture. It must remain a liability even though the
-        # current caller cannot decode or release its retained reservation.
         tx.execute("UPDATE persistent_assignment_action SET data=jsonb_set(data, '{future_payload}', %s::jsonb) WHERE id=%s",
                    ('{"version":2,"private":"opaque metadata"}', action.action_id))
         return action.action_id, tx.fetch_one("SELECT data FROM persistent_assignment_action WHERE id=%s", (action.action_id,))["data"]

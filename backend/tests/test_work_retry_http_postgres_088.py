@@ -1,8 +1,6 @@
-"""Real HTTP/supervisor/PG retry accounting with synthetic final transports.
-
-A successful provider envelope with unusable selection has known consumption;
-HTTP 503 does not. These cases must not share an invented zero-charge retry path.
-No provider receives data, and no clock, claim, receipt or due time is rewritten.
+"""Tests for work retry accounting (backend/llm_config/research_profile.py,
+backend/shared/isolated_http.py): known-usage failures retry with fresh sources;
+ambiguous or HTTP 503 loss keeps its charge and never retries.
 """
 
 import asyncio
@@ -37,7 +35,6 @@ pytestmark = [
 
 @pytest.fixture(autouse=True)
 def bounded_supervisor(monkeypatch):
-    # Existing operator-supported bounds, preserving the actual 5-second retry.
     monkeypatch.setenv("PERSISTENT_AGENTS_TICK_SECONDS", "1")
     monkeypatch.setenv("PERSISTENT_AGENTS_LEASE_SECONDS", "15")
 
@@ -89,7 +86,6 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     async def transport(method, url, **kwargs):
         sends.append(time.monotonic())
         op.model_calls.append((method, url, kwargs))
-        # One unusable but authentic, billed completion; the next reply is valid.
         response = reply(selection=["unavailable-passage"] if len(sends) == 1 else None)
         return SimpleNamespace(body=json.dumps(response).encode(), status_code=200)
 
@@ -151,8 +147,6 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
         sends.append(time.monotonic())
         op.model_calls.append((method, url, kwargs))
         if len(sends) == 1:
-            # Egress validation (URL policy / DNS) refuses before any socket
-            # exists: the isolated transport proves no request bytes left.
             raise IsolatedHttpError("egress_blocked")
         return SimpleNamespace(body=json.dumps(reply()).encode(), status_code=200)
 
@@ -170,7 +164,6 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     assert scheduled["lifecycle"] == "active" and scheduled["phase"] == "failed"
     assert scheduled["safe_error_code"] != "assignment_action_uncertain"
     assert len(first_actions) == 2 and len(sends) == 1
-    # The charged read stands; the unsent model attempt cost nothing and holds nothing.
     assert scheduled["usage"]["spent"].get("tokens", 0) == 0
     assert scheduled["usage"]["spent"]["tool_calls"] == 1
     assert scheduled["usage"]["spent"].get("model_calls", 0) == 0
@@ -186,7 +179,6 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     assert final["operation"]["terminal_outcome"] == "completed"
     assert final["consecutive_failures"] == 1
     assert len(sends) == 2 and sends[1] - sends[0] >= 5
-    # A discarded source is never reconstructed: the retry paid for a new read.
     assert len(op.physical) == prior_reads + 2
     reads = [a for a in actions if a["intent"]["request"]["kind"] == "tool"]
     models = [a for a in actions if a["intent"]["request"]["kind"] == "model"]
@@ -216,7 +208,6 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
 
 @pytest.mark.parametrize("code", ["unreachable", "deadline", "cleanup_uncertain", "child_failure"])
 async def test_ambiguous_transport_loss_after_permit_stays_uncertain(integrated, monkeypatch, code):
-    """Only provably pre-send codes retry; every other loss keeps its unknown charge."""
     op, runner, client = integrated
     prior_reads = len(op.physical)
 

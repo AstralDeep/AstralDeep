@@ -1,16 +1,8 @@
-"""Dependency-isolation guard (spec 047 FR-009, SC-004).
-
-Asserts the product runtime gains ZERO coupling to the eval harness or to any
-external benchmark package. Fails if any module under ``backend/orchestrator``,
-``backend/agents``, or ``backend/shared`` imports:
-
-  - this harness package (``security_benchmark``), or
-  - any external benchmark package (agentdojo / agent_security_bench / injecagent).
-
-Runs as a unit test AND as a standalone check (``python -m
-security_benchmark.isolation_check``) so CI can gate on it. Uses AST parsing (not
-import execution) so it is safe and dependency-free.
+"""AST-based (no import execution) guard asserting product runtime never imports
+security_benchmark or an external benchmark package; runs as a unit test and as
+`python -m security_benchmark.isolation_check` for CI.
 """
+
 from __future__ import annotations
 
 import ast
@@ -18,10 +10,8 @@ import os
 import sys
 from typing import List, Tuple
 
-# Product runtime roots that must never import the harness or a benchmark corpus.
 PRODUCT_ROOTS = ("orchestrator", "agents", "shared")
 
-# Forbidden top-level import names.
 FORBIDDEN_PREFIXES = (
     "security_benchmark",
     "agentdojo",
@@ -31,7 +21,6 @@ FORBIDDEN_PREFIXES = (
 
 
 def _backend_dir() -> str:
-    # this file lives at backend/security_benchmark/isolation_check.py
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -61,7 +50,6 @@ def _imported_names(path: str) -> List[str]:
 
 
 def find_violations() -> List[Tuple[str, str]]:
-    """Return (file, forbidden_import) pairs; empty list means isolation holds."""
     backend = _backend_dir()
     violations: List[Tuple[str, str]] = []
     for product_root in PRODUCT_ROOTS:

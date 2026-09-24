@@ -1,4 +1,6 @@
-"""``read_wsi`` tool: whole-slide pathology images (.svs, .ndpi) via OpenSlide."""
+"""read_wsi tool: reads whole-slide pathology images (.svs/.ndpi) via OpenSlide,
+returning level layout, MPP metadata, and an embedded thumbnail.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +31,6 @@ def read_wsi(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return WSI level layout, MPP metadata, and the embedded thumbnail."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err

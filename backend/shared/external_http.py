@@ -1,19 +1,8 @@
-"""External HTTP egress helper for user-supplied URLs.
-
-Used by the three external-service agents (CLASSify, Forecaster, LLM-Factory)
-to talk to user-configured endpoints safely. Provides:
-
-- ``normalize_url`` — adds ``https://`` if missing, strips trailing slash, lowercases scheme/host.
-- ``validate_egress_url`` — rejects loopback / RFC1918 / link-local / non-http
-  schemes (DNS rebinding is mitigated by resolving all A/AAAA records and
-  rejecting if any resolve into a private range).
-- ``request`` — wrapper over ``requests`` with optional Bearer auth (only when
-  a non-blank key is supplied), bounded timeout, redirect-disable by default,
-  and a response-size cap.
-
-All upstream error classes are mapped to typed exceptions defined here, so
-agent tools can render targeted user-facing messages (FR-021, FR-022).
+"""SSRF-guarded HTTP helper for user-supplied endpoints (CLASSify, Forecaster,
+LLM-Factory agents): rejects loopback/private/link-local targets on every A/AAAA
+record, and maps upstream errors to typed exceptions.
 """
+
 import ipaddress
 import logging
 import os
@@ -23,11 +12,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
-# One decoder for IPv4-in-IPv6 encodings across both egress guards (HTTP here,
-# SSH in net_guard) so they can never disagree about what an address *is*.
-# ``net_guard`` is pure-stdlib and imports nothing from this module, so the
-# dependency is one-way. Private name imported deliberately: promoting it to a
-# public alias belongs in net_guard, which this change does not own.
+# Private import on purpose: keeps both SSRF guards in sync
 from shared.net_guard import _effective_ip as _decode_embedded_ipv4
 
 logger = logging.getLogger("external_http")
@@ -37,46 +22,38 @@ DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 
 
 class ExternalHttpError(Exception):
-    """Base class for all external-egress errors."""
+    pass
 
 
 class EgressBlockedError(ExternalHttpError):
-    """URL fails SSRF policy (private host, bad scheme, etc.)."""
+    pass
 
 
 class AuthFailedError(ExternalHttpError):
-    """Upstream returned 401 or 403."""
+    pass
 
 
 class ServiceUnreachableError(ExternalHttpError):
-    """DNS / connection failure or timeout — retryable."""
+    pass
 
 
 class RateLimitedError(ExternalHttpError):
-    """Upstream returned 429 or 5xx — retryable."""
+    pass
 
 
 class BadRequestError(ExternalHttpError):
-    """Upstream returned a non-auth 4xx."""
+    pass
 
 
 class ResponseTooLargeError(ExternalHttpError):
-    """Upstream response exceeded the configured size cap."""
+    pass
 
 
 class ContentEncodingError(ExternalHttpError):
-    """Upstream ignored a required identity content encoding."""
+    pass
 
 
 def normalize_url(raw: str, *, preserve_trailing_slash: bool = False) -> str:
-    """Normalize a user-supplied URL into a canonical form.
-
-    - Adds ``https://`` when no scheme is present.
-    - Lowercases the scheme and host.
-    - Strips a trailing slash from the path by default for service endpoints.
-      Page readers can preserve the exact resource path with
-      ``preserve_trailing_slash=True``.
-    """
     if raw is None or not str(raw).strip():
         raise EgressBlockedError("URL is empty")
     s = str(raw).strip()
@@ -86,14 +63,12 @@ def normalize_url(raw: str, *, preserve_trailing_slash: bool = False) -> str:
     scheme = parsed.scheme.lower()
     netloc = parsed.netloc.lower()
     path = parsed.path or ""
-    # Strip trailing slash from any path (including the root "/").
     if not preserve_trailing_slash and path.endswith("/"):
         path = path[:-1]
     return urlunparse((scheme, netloc, path, parsed.params, parsed.query, parsed.fragment))
 
 
 def _resolve_host_addresses(host: str) -> Iterable[str]:
-    """Yield every address (IPv4 + IPv6) that ``host`` resolves to."""
     try:
         info = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
@@ -107,8 +82,6 @@ def _resolve_host_addresses(host: str) -> Iterable[str]:
 
 
 def _classify_blocked(ip) -> bool:
-    """True when a parsed address object is loopback / private / link-local /
-    multicast / unspecified / reserved."""
     return bool(
         ip.is_loopback
         or ip.is_private
@@ -120,16 +93,6 @@ def _classify_blocked(ip) -> bool:
 
 
 def _is_private_address(addr: str) -> bool:
-    """Return True if the IP literal is loopback / private / link-local / multicast / unspecified / reserved.
-
-    The literal is classified AND, when it carries an IPv4-in-IPv6 encoding
-    (``::ffff:a.b.c.d``, 6to4 ``2002:…``, NAT64 ``64:ff9b::…``), so is the
-    embedded IPv4 — either verdict blocks. CPython >= 3.11.10 (post
-    CVE-2024-4032) already classifies those wrappers correctly on its own, so
-    the decode is defense in depth against an interpreter that does not; ORing
-    the two verdicts means it can only ever tighten the result, never widen it.
-    An unparseable literal is blocked (fail-closed).
-    """
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
@@ -146,7 +109,6 @@ def validate_egress_url(
     url: str,
     allowed_private_hosts: Optional[Iterable[str]] = None,
 ) -> None:
-    """Raise :class:`EgressBlockedError` if the URL is not a safe egress target."""
     parsed = urlparse(url)
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
@@ -160,7 +122,6 @@ def validate_egress_url(
     try:
         addresses = list(_resolve_host_addresses(host))
     except ServiceUnreachableError:
-        # Surface the DNS failure as an egress block (clearer to the user).
         raise EgressBlockedError(f"Host '{host}' could not be resolved")
     for addr in addresses:
         if _is_private_address(addr):
@@ -187,24 +148,6 @@ def request(
     require_identity_encoding: bool = False,
     trust_environment: bool = True,
 ) -> requests.Response:
-    """Make an HTTP request to a user-supplied external service.
-
-    Enforces the SSRF guard, sets ``Authorization: Bearer <api_key>`` when
-    ``api_key`` is non-blank (keyless callers pass ``""`` and get NO
-    ``Authorization`` header — a bare ``Bearer `` is malformed and some
-    origins, e.g. Wikipedia, answer it with 400), caps the response body at
-    ``max_response_bytes``, and maps upstream error classes to typed
-    exceptions:
-
-    - 401 / 403 → :class:`AuthFailedError`
-    - 429 / 5xx → :class:`RateLimitedError`
-    - other 4xx → :class:`BadRequestError`
-    - DNS / timeout / connection refused → :class:`ServiceUnreachableError`
-    - oversize body → :class:`ResponseTooLargeError`
-
-    Returns the ``requests.Response`` on 2xx (3xx is treated as 2xx when
-    ``allow_redirects=True``). The caller is responsible for parsing JSON.
-    """
     validate_egress_url(url, allowed_private_hosts=allowed_private_hosts)
     headers: Dict[str, str] = {}
     if isinstance(api_key, str) and api_key.strip():
@@ -233,9 +176,6 @@ def request(
         if trust_environment:
             resp = requests.request(method.upper(), url, **options)
         else:
-            # No proxy/CA overrides or implicit ~/.netrc credentials. An empty
-            # child environment alone is insufficient: expanduser can resolve
-            # the user's home through passwd and overwrite an explicit Bearer.
             with requests.Session() as session:
                 session.trust_env = False
                 resp = session.request(method.upper(), url, **options)
@@ -273,10 +213,6 @@ def request(
         snippet = (resp.text or "")[:500]
         raise RateLimitedError(f"Rate-limited by upstream ({status}): {snippet}")
     if 500 <= status < 600:
-        # 5xx is mapped to RateLimitedError for retry purposes (the orchestrator's
-        # retry policy treats it as transient), but the message must NOT claim
-        # rate-limiting — surface the upstream's body so the LLM and user can
-        # see what actually went wrong (e.g. "model doesn't support embeddings").
         snippet = (resp.text or "")[:500]
         raise RateLimitedError(f"Upstream server error ({status}): {snippet}")
     if 400 <= status < 500:

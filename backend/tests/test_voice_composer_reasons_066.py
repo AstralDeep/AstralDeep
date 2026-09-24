@@ -1,10 +1,6 @@
-"""Feature-066 T032/FR-033 composer refusal-reason rendering pins.
-
-The server was already honest on the wire; these pins hold the WEB client to
-that honesty: every refusal reason in the server-owned ``VOICE_REASONS``
-vocabulary renders as its own line (never the generic error fallback), and an
-activation timeout while the browser permission prompt is pending reports a
-permission-shaped reason instead of ``network_interrupted``.
+"""Tests that AstralProjection's client.js composer renders every VOICE_REASONS refusal
+(composer_model.py) as dedicated copy, reports a permission-shaped timeout reason,
+and shows the Firefox disclaimer only while starting or failing.
 """
 
 from __future__ import annotations
@@ -18,8 +14,6 @@ from webrender.chrome.composer_model import VOICE_REASONS
 
 CLIENT_JS = static_path("client.js").read_text(encoding="utf-8")
 
-# ``ready`` is not a refusal; ``internal_error`` deliberately falls through to
-# the generic error line because it has no more-specific honest wording.
 _NO_DEDICATED_LINE = {"ready", "internal_error"}
 
 
@@ -55,9 +49,6 @@ def test_reason_text_keys_stay_inside_the_server_vocabulary() -> None:
 
 
 def test_activation_timeout_reports_permission_shaped_reason() -> None:
-    # The 30s activation timeout must branch on the pending permission prompt
-    # (T032 defect b): permission_not_determined while the prompt is open,
-    # network_interrupted otherwise.
     match = re.search(
         r"pending\.timeout = setTimeout\(function \(\) \{(.*?)\}, 30000\);",
         CLIENT_JS,
@@ -83,10 +74,6 @@ def test_permission_wait_flag_brackets_microphone_acquisition() -> None:
 
 
 class TestFirefoxDisclaimer:
-    """Voice may not work in Firefox (WS refusal by extensions/proxies);
-    the composer must say so — but only there, and only while voice is
-    starting or failing, so the at-rest composer stays quiet (P11)."""
-
     def test_hint_exists_and_names_firefox(self) -> None:
         match = re.search(
             r'var VOICE_FIREFOX_HINT = ("[^"]*"\s*(?:\+\s*"[^"]*")*)', CLIENT_JS
@@ -109,7 +96,6 @@ class TestFirefoxDisclaimer:
         assert match, "client.js lost the Firefox hint state gate"
         states = set(re.findall(r"([a-z_]+):", match.group(1)))
         assert states == {"connecting", "reconnecting", "error", "unavailable"}
-        # Never on a healthy or at-rest composer.
         assert "off" not in states and "listening" not in states
 
     def test_voice_message_appends_the_hint_once(self) -> None:

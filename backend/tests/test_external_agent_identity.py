@@ -1,4 +1,8 @@
-"""Authorization and transport coverage for identity-bound external agents."""
+"""Tests for identity-bound external agents (orchestrator/agent_identity.py,
+mcp_projection.py, tool_visibility.py): ORCID validation, verified-claim projection,
+and restricted-tool visibility gated on a verified identity.
+"""
+
 from __future__ import annotations
 
 import asyncio

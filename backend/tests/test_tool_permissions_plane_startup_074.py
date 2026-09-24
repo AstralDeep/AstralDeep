@@ -1,4 +1,7 @@
-"""Startup boundary tests for preserved pre-Plane tool-permission state."""
+"""Tests for orchestrator/tool_permissions.py startup: a non-empty legacy permission
+file is preserved and rejected, while an absent or empty legacy file creates or
+renames nothing.
+"""
 
 from __future__ import annotations
 

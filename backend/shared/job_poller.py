@@ -1,15 +1,8 @@
-"""Generic background poller for upstream long-running jobs.
-
-Used by agents whose tools kick off asynchronous upstream work (CLASSify
-training, Forecaster training/forecasting). Each :class:`JobPoller`
-instance polls a single upstream job, emits ``ToolProgress`` messages back
-to the orchestrator, and terminates when the job reaches a final state
-(succeeded / failed) or after a configured number of consecutive transport
-failures (``status_unknown`` per FR-017).
-
-The poller runs as an asyncio task on the agent's event loop and is
-scheduled by :class:`shared.agent_runtime.AgentRuntime`.
+"""Generic background poller for upstream async jobs (CLASSify/Forecaster training):
+polls a single job, emits ToolProgress via shared/agent_runtime.py's AgentRuntime,
+and stops at a terminal state or repeated transport failures.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +38,6 @@ class JobPoller:
     failure_threshold: int = 5
 
     async def run(self) -> None:
-        """Poll loop. Returns when a terminal state is reached or all retries exhausted."""
         failure_streak = 0
         last_percentage: Optional[int] = None
         last_status: str = "started"
@@ -99,7 +91,6 @@ class JobPoller:
                 await self._emit(phase, message, percentage)
             except Exception as e:
                 logger.warning("JobPoller emit failed (req=%s): %s", self.request_id, e)
-                # Treat send failures the same as transport failures so we eventually give up.
                 failure_streak += 1
                 if failure_streak >= self.failure_threshold:
                     return

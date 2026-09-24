@@ -1,4 +1,7 @@
-"""Focused Plane-boundary tests for durable web sessions and revocations."""
+"""Tests for backend/orchestrator/session_store.py's Plane-backed web sessions
+(AstralPlane repositories/history.py, revocations.py): lifecycle, owner/expiry
+scoping, revocation fencing, and the async facade keeping DB work off the event loop.
+"""
 
 from __future__ import annotations
 
@@ -197,7 +200,7 @@ def test_session_lifecycle_uses_typed_plane_contracts(monkeypatch) -> None:
     assert refreshed["last_refresh_at"] > created["last_refresh_at"]
 
     store.mark_resumed("sid-a")
-    store.mark_resumed("sid-a")  # exact replay is harmless
+    store.mark_resumed("sid-a")
     assert store.get("sid-a")["resumed"] is True
     assert store.delete("sid-a")["refresh_token"] == "refresh-b"
     assert store.delete("sid-a") is None

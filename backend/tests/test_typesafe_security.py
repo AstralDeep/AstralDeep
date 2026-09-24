@@ -1,13 +1,6 @@
-"""Feature 089 (T033): the security screen is additive and can only tighten.
-
-The property that matters most in this file is the one that is easiest to break
-by accident: **a TypeSafe verdict can never make a denied or approval-required
-call allowed.** A screen that could relax a gate would be worse than no screen,
-because it would add a new way to get past the gate stack while looking like a
-safety feature.
-
-The verdict rules themselves are tested exhaustively at the policy level, and
-the wiring is tested through the real turn loop.
+"""Tests for orchestrator/typesafe_routing/security_policy.py: a TypeSafe verdict can
+only tighten, never relax, an existing gate decision, and the security-only screen
+used by HTTP submissions asks nothing beyond its three questions.
 """
 
 from __future__ import annotations
@@ -43,16 +36,7 @@ from orchestrator.typesafe_routing.security_policy import (  # noqa: E402
 BENIGN = SecurityJudgment(0.02, 0.0, "none")
 
 
-# -- the never-relax property --------------------------------------------
-
-
 def test_no_judgment_can_produce_anything_weaker_than_pass() -> None:
-    """The exhaustive version of the invariant, over the whole input space.
-
-    Verdicts are ordered pass < confirm_tools < refuse, and there is no fourth
-    value. So proving the function's range is a subset of those three, and that
-    the benign case is exactly ``pass``, is proving it can only ever tighten.
-    """
     jailbreaks = [0.0, 0.1, 0.24, 0.25, 0.39, 0.4, 0.5, 0.69, 0.7, 0.9, 1.0]
     harms = [0.0, 0.5, 1.0, 1.79, 1.8, 2.0, 2.49, 2.5, 3.0]
     threats = [
@@ -85,16 +69,12 @@ def test_tighten_never_returns_something_weaker() -> None:
 
 
 def test_a_missing_decision_is_pass() -> None:
-    """No key, no call, no judgment: the turn is exactly what it was before."""
     assert security_verdict(None) is Verdict.PASS
     assert verdict_for(None) is Verdict.PASS
 
 
 def test_a_decision_with_no_security_answers_is_pass() -> None:
     assert security_verdict(RoutingDecision()) is Verdict.PASS
-
-
-# -- the verdict rules ----------------------------------------------------
 
 
 def test_a_benign_judgment_passes() -> None:
@@ -115,12 +95,6 @@ def test_a_high_harm_score_confirms() -> None:
 
 @pytest.mark.parametrize("threat", sorted(CONFIRM_THREATS))
 def test_a_threat_category_alone_does_not_confirm(threat: str) -> None:
-    """The regression the 2026-09-17 calibration was for.
-
-    Category on its own is a topic label: "about deletion" describes an attack
-    and a user tidying up equally well. Confirming on it cost a 15%
-    false-positive rate against SC-006's 3% bound.
-    """
     below = SecurityJudgment(CONFIRM_TARGETED_JAILBREAK - 0.01, 0.5, threat)
     assert verdict_for(below) is Verdict.PASS
 
@@ -132,7 +106,6 @@ def test_a_threat_category_with_a_jailbreak_signal_confirms(threat: str) -> None
 
 
 def test_the_measured_benign_cases_still_pass() -> None:
-    """The three prompts that broke the original rule, with their real scores."""
     measured = [
         ("delete my own chat", SecurityJudgment(0.07, 0.52, "destructive")),
         ("drop a table column", SecurityJudgment(0.04, 1.60, "destructive")),
@@ -143,7 +116,6 @@ def test_the_measured_benign_cases_still_pass() -> None:
 
 
 def test_the_measured_attack_cases_are_flagged() -> None:
-    """Real scores from the benchmark corpus, at the calibrated thresholds."""
     measured = [
         ("data stealing", SecurityJudgment(0.90, 2.06, "data_egress")),
         ("direct harm", SecurityJudgment(0.12, 2.04, "none")),
@@ -158,16 +130,7 @@ def test_the_measured_attack_cases_are_flagged() -> None:
         assert verdict_for(judgment) is not Verdict.PASS, label
 
 
-# -- the refuse tier ------------------------------------------------------
-
-
 def test_the_refuse_tier_is_disabled() -> None:
-    """Deliberate, and the reason is recorded in the module docstring.
-
-    It is not disabled because it misbehaved: it produced zero false refusals
-    on the benign corpus. It is disabled because 20 prompts cannot demonstrate
-    a 0.5% false-positive rate.
-    """
     assert REFUSE_TIER_ENABLED is False
 
 
@@ -185,7 +148,6 @@ def test_the_targeted_refuse_rule(threat: str) -> None:
 
 
 def test_disabling_the_refuse_tier_never_weakens_a_verdict() -> None:
-    """Serving a refusal one step down must still be at least confirm_tools."""
     order = [Verdict.PASS, Verdict.CONFIRM_TOOLS, Verdict.REFUSE]
     for jailbreak in (0.0, 0.3, 0.55, 0.75, 1.0):
         for harm in (0.0, 1.0, 2.0, 3.0):
@@ -193,7 +155,6 @@ def test_disabling_the_refuse_tier_never_weakens_a_verdict() -> None:
                 judgment = SecurityJudgment(jailbreak, harm, threat)
                 enabled = verdict_for(judgment, refuse_enabled=True)
                 disabled = verdict_for(judgment, refuse_enabled=False)
-                # Disabling refuse may lower refuse->confirm, and nothing else.
                 if enabled is Verdict.REFUSE:
                     assert disabled is Verdict.CONFIRM_TOOLS
                 else:
@@ -201,11 +162,7 @@ def test_disabling_the_refuse_tier_never_weakens_a_verdict() -> None:
                 assert order.index(disabled) >= order.index(Verdict.PASS)
 
 
-# -- thresholds are ordered ----------------------------------------------
-
-
 def test_the_refuse_thresholds_are_stricter_than_the_confirm_thresholds() -> None:
-    """A rule set where refuse were easier than confirm would be incoherent."""
     assert REFUSE_JAILBREAK > CONFIRM_JAILBREAK
     assert REFUSE_HARM > CONFIRM_HARM
     assert REFUSE_TARGETED_JAILBREAK > CONFIRM_TARGETED_JAILBREAK
@@ -220,13 +177,9 @@ def test_the_verdict_carries_no_request_text() -> None:
     assert rendered in ("<Verdict.CONFIRM_TOOLS: 'confirm_tools'>", "<Verdict.REFUSE: 'refuse'>")
 
 
-# -- the security-only screen (seam I7) ----------------------------------
-
-
 @pytest.mark.asyncio
 async def test_the_security_only_screen_asks_three_questions_and_no_more() -> None:
-    """An HTTP submission has no round one to narrow and no canvas to arrange."""
-    import asyncio  # noqa: F401 - pytest-asyncio needs the marker, not the import
+    import asyncio  # noqa: F401
 
     from orchestrator.typesafe_routing.questions import SECURITY_QUESTION_IDS
     from orchestrator.typesafe_routing.runner import screen_instruction
@@ -279,7 +232,6 @@ async def test_no_key_means_no_screen_and_no_call() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unreachable_screen_passes_rather_than_blocking_work() -> None:
-    """A screen that cannot reach its service must not become a way to block work."""
     from orchestrator.typesafe_routing.runner import screen_instruction
     from tests.fakes.typesafe_fake import (
         AnswerSet,

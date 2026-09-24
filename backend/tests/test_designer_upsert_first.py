@@ -1,12 +1,8 @@
-"""Feature 052 (T029) — designer delivery is upsert-first on the web path.
-
-Drives Orchestrator._deliver_round_components with a real workspace/DB and a
-patched ui_designer.design_round: the flat ui_upsert always reaches the
-client BEFORE any designed ui_render; the designed render still arrives as a
-later in-place refinement on success; a designer crash leaves exactly the
-upsert (fail-open, FR-013/FR-014); and a designed render is never forced to
-a socket that switched chats mid-design (stale-chat guard).
+"""Tests for upsert-first designer delivery (orchestrator/ui_designer.py,
+orchestrator.py): the flat upsert always precedes a designed render, failures leave
+exactly the upsert, and stale-chat pushes are dropped.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,14 +25,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def _fresh_socket():
-    """A VirtualWebSocket capturing every delivered frame."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
     return VirtualWebSocket(task)
 
 
 def _round_components():
-    """Two rich components — enough to trigger the designer path."""
     return [
         {"type": "card", "title": "Alpha", "content": [
             {"type": "text", "content": "first"}]},
@@ -56,7 +50,6 @@ def _canvas_renders(ws):
 
 @pytest.fixture()
 async def env(monkeypatch):
-    """A real Orchestrator + registered socket + fresh chat for one user."""
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
     from orchestrator.orchestrator import Orchestrator
     try:
@@ -88,14 +81,12 @@ async def env(monkeypatch):
 
 
 def _ref_layout_from_rows(canvas_rows):
-    """A minimal valid layout: one container of refs to the live components."""
     refs = [{"type": "ref", "component_id": r["component_id"]}
             for r in canvas_rows if r.get("component_id")]
     return [{"type": "container", "content": refs}]
 
 
 async def test_upsert_precedes_designed_render(env, monkeypatch):
-    """Frame order: ui_upsert first, designed ui_render afterwards."""
     orch, ws, chat_id, user_id = env
     from orchestrator import ui_designer
 
@@ -118,7 +109,6 @@ async def test_upsert_precedes_designed_render(env, monkeypatch):
 
 
 async def test_designed_render_preserves_component_identity(env, monkeypatch):
-    """The refinement re-renders the same persisted component identities."""
     orch, ws, chat_id, user_id = env
     from orchestrator import ui_designer
 
@@ -136,7 +126,6 @@ async def test_designed_render_preserves_component_identity(env, monkeypatch):
 
 
 async def test_designer_failure_leaves_exactly_the_upsert(env, monkeypatch):
-    """A designer crash means the refinement never arrives — nothing else."""
     orch, ws, chat_id, user_id = env
     from orchestrator import ui_designer
 
@@ -153,7 +142,6 @@ async def test_designer_failure_leaves_exactly_the_upsert(env, monkeypatch):
 
 
 async def test_stale_chat_drops_the_designed_push(env, monkeypatch):
-    """A socket that left the chat mid-design never gets the refinement."""
     orch, ws, chat_id, user_id = env
     from orchestrator import ui_designer
 
@@ -170,7 +158,6 @@ async def test_stale_chat_drops_the_designed_push(env, monkeypatch):
 
 
 async def test_designer_status_updates_do_not_block_upsert(env, monkeypatch):
-    """Even a slow design pass cannot delay the already-sent components."""
     orch, ws, chat_id, user_id = env
     from orchestrator import ui_designer
     upsert_seen_at = {}

@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""Measure real TypeSafe System One routing (feature 089, T015). Local only.
-
-This is the measurement spike that turns the provisional constants in
-``orchestrator/typesafe_routing/`` into values someone measured. It answers two
-questions:
-
-* **Latency.** How does one ``system_one`` call scale with the number of
-  questions and the number of options per question? That curve is what sets
-  ``ATTEMPT_TIMEOUT_MS``, ``MAX_ROUTING_AGENTS`` and ``MAX_TOOLS_PER_AGENT``:
-  a catalog large enough to blow the 1.5 s turn budget has to be truncated,
-  and the truncation bound should come from the curve rather than a guess.
-* **Accuracy.** Against the labeled corpus in
-  ``backend/tests/fixtures/typesafe_routing/``, how often does the model pick
-  an accepted tool, and what tier do the current thresholds assign? That is
-  the input to the T028 calibration.
-
-Credential handling (FR-044, T003a). The key is read from **stdin only**:
-
-    python scripts/typesafe_routing_bench.py --mode both < key.txt
-    printf '%s' "$KEY" | python scripts/typesafe_routing_bench.py
-
-It is never read from the environment, never accepted as a command-line
-argument (arguments are visible in the process table and in shell history), and
-never printed, logged or written to any output file. The report identifies the
-key only by the 12-character fingerprint the credential store uses.
-
-Nothing here authorizes a release. It makes real network calls to TypeSafe and
-spends the owner's quota, so it is run deliberately, not from a test.
+"""Benchmarks real TypeSafe System One routing latency and accuracy against
+orchestrator/typesafe_routing/ to derive timeout and truncation constants from
+measured curves, plus tool/tier accuracy against the labeled fixture corpus.
 """
 
 from __future__ import annotations
@@ -50,7 +25,6 @@ FIXTURES = BACKEND / "tests" / "fixtures" / "typesafe_routing"
 
 
 def _read_key_from_stdin() -> str:
-    """Read the key from stdin. Refuse anything else."""
     if sys.stdin is None or sys.stdin.isatty():
         raise SystemExit(
             "the TypeSafe key must be piped to stdin, for example:\n"
@@ -128,7 +102,6 @@ def _summary(samples: Sequence[float]) -> dict[str, Any]:
 
 
 async def _one_call(client, key: str, request, timeout: float):
-    """Issue one real call and return (elapsed_ms, response_or_error)."""
     from orchestrator.typesafe_routing.client import load_sdk
     from orchestrator.typesafe_routing.questions import build_questions
 
@@ -141,13 +114,12 @@ async def _one_call(client, key: str, request, timeout: float):
             questions=question_set.questions,
             timeout=timeout,
         )
-    except Exception as error:  # noqa: BLE001 - the bench records failures too
+    except Exception as error:  # noqa: BLE001
         return (time.monotonic() - started) * 1000.0, type(error).__name__, None, question_set
     return (time.monotonic() - started) * 1000.0, None, response, question_set
 
 
 async def run_latency(client, key: str, repeats: int, timeout: float) -> list[dict]:
-    """Latency against catalog size, which is what sets the truncation bounds."""
     from orchestrator.typesafe_routing.questions import RoutingRequest
 
     catalog = _load("catalog.json")
@@ -213,7 +185,6 @@ async def run_latency(client, key: str, repeats: int, timeout: float) -> list[di
 
 
 async def run_accuracy(client, key: str, timeout: float) -> dict[str, Any]:
-    """Tier and tool accuracy against the labeled corpus."""
     from orchestrator.typesafe_routing.decision import Tier, parse_decision
     from orchestrator.typesafe_routing.questions import RoutingRequest
 
@@ -261,10 +232,6 @@ async def run_accuracy(client, key: str, timeout: float) -> dict[str, Any]:
         decision = parse_decision(response, question_set)
         accepted = set(case.get("accepted_tools", ()))
         accepted_agents = set(case.get("accepted_agents", ()))
-        # A low-tier decision narrows nothing, so round one is exactly what an
-        # unkeyed user would have got. When the label expects low, that is the
-        # correct outcome and scoring it against a tool name would measure the
-        # wrong thing.
         if decision.tier is Tier.LOW and case["expected_tier"] == "low":
             tool_ok = True
             agent_ok = True
@@ -341,7 +308,6 @@ async def run_accuracy(client, key: str, timeout: float) -> dict[str, Any]:
 
 
 async def run_benign(client, key: str, timeout: float) -> dict[str, Any]:
-    """Security judgments over the benign corpus: the false-positive input."""
     from orchestrator.typesafe_routing.decision import parse_security
     from orchestrator.typesafe_routing.questions import RoutingRequest
     from orchestrator.typesafe_routing.security_policy import Verdict, verdict_for
@@ -360,8 +326,6 @@ async def run_benign(client, key: str, timeout: float) -> dict[str, Any]:
             rows.append({"id": case["id"], "error": error})
             continue
         judgment = parse_security(response)
-        # Both tiers are reported: the refuse tier is disabled in code, and the
-        # question T036 has to answer is what it *would* have done.
         rows.append(
             {
                 "id": case["id"],
@@ -401,16 +365,6 @@ async def run_benign(client, key: str, timeout: float) -> dict[str, Any]:
 
 
 async def run_adversarial(client, key: str, timeout: float) -> dict[str, Any]:
-    """Security judgments over the benchmark's adversarial cases.
-
-    Scope note, which matters for reading the number: the TypeSafe screen sits
-    at turn ingress and sees the user's message. It therefore addresses
-    **direct** prompt injection -- an instruction the user's own message
-    carries. It does not see tool output, so an injection delivered through a
-    retrieved document is outside what this screen can catch and is the gate
-    stack's job, unchanged by 089. Cases are scored as "the screen would have
-    raised friction" when the verdict is confirm_tools or refuse.
-    """
     import importlib
 
     from orchestrator.typesafe_routing.decision import parse_security
@@ -442,10 +396,6 @@ async def run_adversarial(client, key: str, timeout: float) -> dict[str, Any]:
                     "suite": module_name,
                     "category": case.category,
                     "prompt": prompt,
-                    # The placeholder suites carry bracketed markers instead of
-                    # prose; they are reported separately rather than mixed in,
-                    # because a judgment on "[dpi] adversarial instruction"
-                    # measures nothing about the model.
                     "prose": "[" not in prompt.split(" ", 1)[0],
                 }
             )

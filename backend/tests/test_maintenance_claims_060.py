@@ -1,4 +1,7 @@
-"""Feature-060 durable maintenance claims and atomic output recovery."""
+"""Tests for orchestrator/knowledge_synthesis.py and work_admission.py: durable
+maintenance claims survive partial failure and crash-after-replace without
+republishing, and the atomic publisher never exposes a partial file.
+"""
 
 from __future__ import annotations
 
@@ -188,8 +191,6 @@ def test_crash_after_replace_reconciles_same_output_without_republishing(
     target = tmp_path / relative_path
     expected_digest = hashlib.sha256(target.read_bytes()).hexdigest()
 
-    # Simulate database-time lease expiry for both the domain unit and its
-    # operation slot; claim_next performs the normal recovery sweep.
     db.execute(
         "UPDATE maintenance_unit SET lease_expires_at = clock_timestamp() "
         "- interval '1 second' WHERE unit_id = ?",

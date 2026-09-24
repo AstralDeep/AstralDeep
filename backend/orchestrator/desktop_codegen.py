@@ -1,37 +1,8 @@
-"""Feature 039 — the ``offer_desktop_codegen`` orchestrator meta-tool.
-
-When a user asks Astral to *generate code that should run on their machine*
-(e.g. "write me a Python script that sorts my downloads folder"), the chat LLM
-calls this meta-tool. It returns the generated code (a ``code`` primitive)
-**and** a ``download_card`` primitive linking to the latest GitHub-released
-``AstralDeep.exe`` — downloaded directly from GitHub, integrity-checked
-(SHA256 + sigstore) before the app runs.
-
-Link-only mode (057): the user can also just ask for the desktop app / the
-Windows download link ("where do I download the Windows app?", ``/download``).
-The LLM calls the same meta-tool WITHOUT ``code`` and the response is the
-verified download card alone — same release resolution, same fail-open
-last-known-good cache, never a fabricated URL.
-
-Design (deterministic meta-tool, not intent detection — matches the project's
-preference for deterministic pre-LLM/meta-tool paths, e.g. ``onboarding_submit``):
-
-* The LLM decides *when* the user wants on-machine codegen and calls the tool;
-  the tool deterministically builds the verified card.
-* Release metadata (asset URL, SHA256, sigstore bundle URL, version) is fetched
-  from the GitHub Releases API at request time via the egress-gated
-  ``shared.external_http`` validator, cached for a bounded TTL
-  (``DESKTOP_RELEASE_TTL_SECONDS``, default 300 s). **Fail-open with last-known-
-  good**: if GitHub is unreachable, the card uses the last cached values; if
-  none cached, the tool returns an honest "download temporarily unavailable"
-  alert — **never a fabricated or unsigned link**.
-* The ``download_card`` primitive is rendered by ``webrender.renderer`` and
-  ROTE-adapted; its ``download_url`` is validated to be a GitHub Release URL
-  before rendering (defense-in-depth).
-
-No new tables, no schema change, no new runtime deps. Stateless except the
-bounded in-memory release cache.
+"""Implements the offer_desktop_codegen meta-tool: generates a downloadable code
+artifact plus a GitHub-release-backed, integrity-checked desktop-app download card;
+invoked from orchestrator.py's chat tool loop.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,13 +15,12 @@ from shared.protocol import MCPResponse
 logger = logging.getLogger("Orchestrator.DesktopCodegen")
 
 META_AGENT_ID = "__desktop_codegen__"
-_DESKTOP_REPO = "AstralDeep/AstralDeep"  # overridable via DESKTOP_RELEASE_REPO
+_DESKTOP_REPO = "AstralDeep/AstralDeep"
 _EXE_NAME = "AstralDeep.exe"
 _SHA_NAME = "SHA256SUMS"
 _BUNDLE_NAME = "cosign.bundle"
-_TTL = 300  # seconds; overridable via DESKTOP_RELEASE_TTL_SECONDS
+_TTL = 300
 
-# In-process release cache: {repo: (fetched_at, info_dict_or_None)}
 _CACHE: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
 
 SYSTEM_PROMPT_ADDENDUM = (
@@ -70,12 +40,7 @@ SYSTEM_PROMPT_ADDENDUM = (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Tool definition / injection gate
-# --------------------------------------------------------------------------- #
-
 def meta_tool_definitions() -> List[Dict[str, Any]]:
-    """OpenAI-style tool definition for ``offer_desktop_codegen``."""
     return [
         {
             "type": "function",
@@ -105,13 +70,8 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
 
 
 def should_inject(draft_agent_id: Optional[str]) -> bool:
-    """Offered on normal chat turns when the flag is on (mirrors the 027 gate)."""
     return flags.is_enabled("desktop_codegen") and not draft_agent_id
 
-
-# --------------------------------------------------------------------------- #
-# Release metadata fetch (egress-gated, bounded cache, fail-open last-good)
-# --------------------------------------------------------------------------- #
 
 def _repo() -> str:
     import os
@@ -127,13 +87,6 @@ def _ttl() -> int:
 
 
 def _fetch_release_info() -> Optional[Dict[str, Any]]:
-    """Fetch the latest release metadata from the GitHub Releases API.
-
-    Returns ``{version, exe_url, sha256, bundle_url, html_url}`` or ``None`` on
-    any failure. Egress-gated via ``shared.external_http.validate_egress_url``.
-    Uses an optional ``GITHUB_TOKEN`` for higher rate limits; unauthenticated
-    otherwise. Never raises — callers rely on the fail-open cache.
-    """
     import os
     import json
     from shared import external_http
@@ -143,7 +96,7 @@ def _fetch_release_info() -> Optional[Dict[str, Any]]:
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     try:
         external_http.validate_egress_url(url)
-    except Exception as exc:  # noqa: BLE001 — egress blocked
+    except Exception as exc:  # noqa: BLE001
         logger.info("desktop release lookup egress blocked: %s", exc)
         return None
 
@@ -191,7 +144,6 @@ def _fetch_release_info() -> Optional[Dict[str, Any]]:
 
 
 def _fetch_sha256(sha_url: str) -> Optional[str]:
-    """Fetch the SHA256SUMS file and extract the hash for the exe. None on failure."""
     from shared import external_http
     import requests
     try:
@@ -215,7 +167,6 @@ def _fetch_sha256(sha_url: str) -> Optional[str]:
             h = parts[0].lower()
             if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
                 return h
-    # Fallback: a single 64-hex-char line.
     for line in text_s.splitlines():
         h = line.strip().lower()
         if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
@@ -224,12 +175,6 @@ def _fetch_sha256(sha_url: str) -> Optional[str]:
 
 
 def get_release_info(*, allow_refresh: bool = True) -> Optional[Dict[str, Any]]:
-    """Return the cached/refreshed release info, fail-open with last-good.
-
-    On refresh, also fetches the SHA256 (a second request) so the card carries
-    the real hash. If the SHA fetch fails, the card carries ``sha256=""`` and the
-    client's verifier will refuse to run an unverified binary (fail-closed there).
-    """
     repo = _repo()
     now = time.time()
     fetched_at, cached = _CACHE.get(repo, (0.0, None))
@@ -241,20 +186,10 @@ def get_release_info(*, allow_refresh: bool = True) -> Optional[Dict[str, Any]]:
                                or "")
             _CACHE[repo] = (now, fresh)
             cached = fresh
-        # else: keep the last-good cache (fail-open); if none, cached stays None.
     return cached
 
 
-# --------------------------------------------------------------------------- #
-# The download_card primitive builder
-# --------------------------------------------------------------------------- #
-
 def build_download_card(info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build a ``download_card`` primitive dict from release info.
-
-    When ``info`` is None (no cached release), returns an "unavailable" card
-    variant — never a fabricated URL/hash.
-    """
     if not info or not info.get("exe_url"):
         return {
             "type": "download_card",
@@ -290,14 +225,9 @@ def build_download_card(info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-# --------------------------------------------------------------------------- #
-# Meta-tool entry point
-# --------------------------------------------------------------------------- #
-
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: str, chat_id: Optional[str] = None,
                            websocket=None) -> MCPResponse:
-    """Entry point for ``__desktop_codegen__`` pseudo-agent tool calls."""
     try:
         if tool_name == "offer_desktop_codegen":
             return await _offer(orch, args, user_id=user_id, chat_id=chat_id,
@@ -324,8 +254,6 @@ async def _offer(orch, args: Dict[str, Any], *, user_id: str,
     info = get_release_info()
     card = build_download_card(info)
     if not code and card.get("variant") == "available":
-        # Link-only ask (057): no generated code to frame — retitle the card
-        # for a plain install instead of the coding-agent pitch.
         card["title"] = "Astral desktop app for Windows"
         card["description"] = (
             "Download and install the Astral desktop app, then sign in with "

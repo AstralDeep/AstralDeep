@@ -1,7 +1,6 @@
-"""Compose the qualified research handler into the existing assignment runner.
-
-The persistent-agent feature flag remains owned by orchestrator startup. This
-helper adds no worker, authority store, provider client or independent scheduler.
+"""Composes the qualified research handler, chat handler and remote-approval bridge into
+one AssignmentRunner/AssignmentService pair; called once by orchestrator.py after
+Plane startup, adding no independent scheduler.
 """
 
 from persistent_agents.approvals import AssignmentApprovalBridge
@@ -12,7 +11,6 @@ from persistent_agents.service import AssignmentService
 
 
 def start_assignment_runtime(orchestrator):
-    """Publish one coherent service/runner pair after successful construction."""
     if (getattr(orchestrator, "persistent_assignments", None) is not None
             or getattr(orchestrator, "persistent_assignment_runner", None) is not None):
         raise RuntimeError("assignment runtime already initialized")
@@ -28,8 +26,7 @@ def start_assignment_runtime(orchestrator):
     except BaseException:
         service.store.close()
         raise
-    # start() schedules, but cannot run a task before this synchronous function
-    # returns. A request cannot observe half of the constructed pair.
+    # Service is fully built before this is visible to requests
     orchestrator.persistent_assignments = service
     orchestrator.persistent_assignment_runner = runner
     return runner

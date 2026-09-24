@@ -1,9 +1,8 @@
-"""Owner-only pause, cancellation and terminal deletion for Work v1.
-
-These commands never admit work or grant authority. Resume requires a separate
-qualified current-authority adapter. Cancellation cannot recall an issued effect;
-Plane retains its liability and refuses deletion until settlement is understood.
+"""Owner-only pause, cancel, delete, and approve/reject commands for Work v1, audited
+through work_control_audit.py under work_control_authority.py's caller fence. Never
+admits work or grants execution. Used by work_api.py.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -21,14 +20,10 @@ from persistent_agents.runtime_values import digest
 
 
 class WorkDeleteRequest(StrictModel):
-    """The observed Work revision, never a worker execution fence."""
-
     expected_revision: int = Field(ge=1, le=2**63 - 1)
 
 
 class WorkControlRequest(WorkDeleteRequest):
-    """A bounded duplicate-safe owner command within this versioned API."""
-
     submission_id: str = Field(min_length=36, max_length=36)
 
     @field_validator("submission_id")
@@ -38,14 +33,6 @@ class WorkControlRequest(WorkDeleteRequest):
 
 
 class WorkDecideRequest(WorkControlRequest):
-    """An owner's approve/reject decision about one proposed action.
-
-    ``proposal_digest`` must equal the stored intent's request digest, so a
-    decision never applies to a proposal the owner did not review. Approval
-    only records the decision: execution still requires the runner's current
-    authority checks at claim time, exactly as for any other approved action.
-    """
-
     proposal_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     decision: Literal["approve", "reject"]
 
@@ -66,14 +53,11 @@ def _owned_operation(transaction, repository, owner_id, identity):
         transaction, owner_id=owner_id, assignment_id=identity)
     if read is None:
         raise AssignmentError("work_not_found", 404)
-    # Reuse the exact public read/profile/owner validation before any mutation.
     _public(read, owner_id)
     return read
 
 
 class WorkControlService:
-    """Compose current-state Plane commands through the existing async store."""
-
     def __init__(self, assignments):
         self.assignments = assignments
         self.store = assignments.store
@@ -86,7 +70,6 @@ class WorkControlService:
         caller._assert_local(self.assignments)
 
     async def control(self, owner_id, claims, identity, command, body: WorkControlRequest, *, caller=None):
-        """Pause or cancel once; exact replay acknowledges current safe state."""
         self._caller(caller, owner_id, claims)
         self.assignments._owner(owner_id, claims)
         identity = _identity(identity)
@@ -124,11 +107,6 @@ class WorkControlService:
         return result
 
     async def delete(self, owner_id, claims, identity, body: WorkDeleteRequest, *, caller=None):
-        """Delete settled terminal work; absent/foreign/repeated IDs remain 404.
-
-        Plane retains the original submission identity against effect replay but
-        has no delete-command receipt. This method does not invent such a receipt.
-        """
         self._caller(caller, owner_id, claims)
         self.assignments._owner(owner_id, claims)
         identity = _identity(identity)
@@ -149,15 +127,6 @@ class WorkControlService:
         return {"id": identity, "deleted": True}
 
     async def decide(self, identity, action_id, body: WorkDecideRequest, *, caller=None):
-        """Approve or reject one proposed action once; exact replay is a receipt read.
-
-        Like ``reconcile``, ``expected_revision`` is a transient CAS observation
-        excluded from the immutable decision digest, so a lost acknowledgement can
-        be replayed after a later control changed the revision. A replay with
-        different content is refused (``assignment_approval_invalid``), a stale
-        revision on first application is a revision conflict, and the decision
-        audit row commits in the same transaction as the Plane decision.
-        """
         if type(caller) is not WorkCallerAuthority:
             raise AssignmentError("work_authentication_required", 401)
         owner_id, claims = caller.context.owner_id, caller.context.claims
@@ -187,8 +156,6 @@ class WorkControlService:
                 body.proposal_digest, _PLANE_DECISION[body.decision], body.submission_id, signature,
                 action.intent.permission_digest, action.intent.precondition_digest)
             current = read.assignment
-            # Plane replays an identical stored decision and refuses a different
-            # one (or a stale/expired proposal) as assignment_approval_invalid.
             decided = _method(repository, "decide_action")(
                 tx, owner_id=owner_id, assignment_id=identity, action_id=action_id,
                 expected_instruction_revision=current.instruction_revision,
@@ -211,11 +178,6 @@ class WorkControlService:
         return result
 
     def _append_decision(self, tx, *, owner_id, record, submission_id, action_id, decision):
-        """Append the ``work.action.decide`` row through the bound audit adapter.
-
-        Metadata is identifiers plus the wire decision only; the proposal
-        content, digests and any private intent never enter the audit row.
-        """
         self.audit.assert_current()
         if (type(record) is not AssignmentRecord or record.owner_id != owner_id
                 or decision not in _PLANE_DECISION):
@@ -246,5 +208,4 @@ class WorkControlService:
                 raise AssignmentError("work_not_found", 404) from exc
             raise
         except (ValueError, TypeError, AttributeError, KeyError) as exc:
-            # A malformed/future repository contract is not an empty success.
             raise AssignmentError("work_control_unavailable", 503) from exc

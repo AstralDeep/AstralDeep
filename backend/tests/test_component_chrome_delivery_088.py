@@ -1,4 +1,8 @@
-"""Real outbound component actions use host flags and pre-adaptation facts."""
+"""Tests for outbound component-action delivery (backend/orchestrator/orchestrator.py,
+AstralProjection's rote.py): host flags and pre-adaptation facts carried through
+canvas, snapshot, readaptation, and per-device upsert.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -137,7 +141,6 @@ async def test_unknown_identity_and_host_flag_off_cannot_be_overridden(monkeypat
     payload = json.loads(host._safe_send.await_args.args[1])
     assert actions(payload["components"][0]) == []
     assert "astral-component-chrome" not in payload["html"]
-    # An ambiguous/id-only component cannot inherit a neighbour's action set.
     for feature in ("component_refine", "artifact_export", "artifact_sharing"):
         monkeypatch.setitem(flags._flags, feature, True)
     originals = [table(), table()]
@@ -213,7 +216,7 @@ async def test_real_update_device_legacy_fallback_rebuilds_metadata_from_raw_cac
             "device_type": "android", "viewport_width": 320, "supported_types": ["text"],
         }},
     }))
-    await asyncio.sleep(0)  # Join the actual non-blocking audit coroutine.
+    await asyncio.sleep(0)
     frames = [json.loads(call.args[1]) for call in host._safe_send.await_args_list]
     assert [frame["type"] for frame in frames] == ["rote_config", "ui_update"]
     received = frames[-1]["components"][0]

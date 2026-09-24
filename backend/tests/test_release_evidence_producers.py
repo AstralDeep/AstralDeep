@@ -1,13 +1,7 @@
-"""Same-candidate client producer-report contract tests for feature 060 (T105).
-
-These tests pin the artifact-report contract that the packaged Windows,
-connected Android, macOS, iOS, and watchOS release-evidence producers
-(T109/T110) must emit.  Documents are built from the schema-valid
-``_platform_evidence`` shapes in ``test_release_contract_schemas.py`` and
-mutated; every rejection asserts the production validator's real exception
-classes and messages through the diagnostic evaluate path in
-``scripts/validate_release_evidence.py`` — never a test-side
-re-implementation of policy.
+"""Contract tests pinning the artifact-report shape that Windows, Android, macOS, iOS
+and watchOS release-evidence producers must emit, validated through
+scripts/validate_release_evidence.py's real rejection paths, not reimplemented
+policy.
 """
 
 from __future__ import annotations
@@ -29,7 +23,7 @@ CONTRACT_ROOT = REPO_ROOT / "specs" / "060-runtime-reliability-hardening" / "con
 
 if not (
     (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "specs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -115,8 +109,6 @@ def _measurement(
 
 
 def _raw_reference(name: str) -> dict[str, Any]:
-    """One immutable producer raw-evidence reference (bundled JSON metrics)."""
-
     return {
         "name": f"{name}.json",
         "kind": "json_metrics",
@@ -126,8 +118,6 @@ def _raw_reference(name: str) -> dict[str, Any]:
 
 
 def _apply_producer_shape(report: dict[str, Any]) -> None:
-    """Attach the canonical metric floors and per-check raw references."""
-
     by_id = {check["id"]: check for check in report["checks"]}
     if check := by_id.get("runtime_admission_stress"):
         check["measurements"] = [
@@ -171,8 +161,6 @@ def _apply_producer_shape(report: dict[str, Any]) -> None:
 
 
 def _producer_matrix(contract_examples: Any) -> dict[str, Any]:
-    """One full same-candidate evidence set shaped like real producer output."""
-
     targets = ["backend", "web", "windows", "android", "macos", "ios", "watchos", "docs"]
     evidence = []
     for index, target in enumerate(targets, 1):
@@ -205,8 +193,6 @@ def _check_row(report: dict[str, Any], check_id: str) -> dict[str, Any]:
 
 
 def _set_capability(evidence_set: dict[str, Any], capability: Any) -> None:
-    """Stamp one macOS-hosting capability onto every non-docs staging block."""
-
     for report in evidence_set["evidence"]:
         if report["platform"] == "docs":
             continue
@@ -218,8 +204,6 @@ def _set_capability(evidence_set: dict[str, Any], capability: Any) -> None:
 
 
 def _mark_supported_host(evidence_set: dict[str, Any]) -> dict[str, Any]:
-    """Flip the matrix into the feature-059 supported branch with a real pass."""
-
     _set_capability(evidence_set, SUPPORTED_HOST_CAPABILITY)
     host_check = _check_row(_report(evidence_set, "macos"), "macos_personal_agent_host")
     host_check.update(outcome="passed", applicability_reason=None)

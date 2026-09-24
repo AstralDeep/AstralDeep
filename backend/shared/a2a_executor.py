@@ -1,10 +1,8 @@
+"""Adapts any agent's MCPServer to the a2a-sdk AgentExecutor interface: converts A2A
+JSON-RPC requests to MCPRequests via shared/a2a_bridge.py, dispatches through the
+tool registry, and publishes results as A2A events.
 """
-A2A Executor — Bridges the a2a-sdk AgentExecutor interface to MCP tool dispatch.
 
-Wraps any agent's MCPServer so that incoming A2A JSON-RPC requests are
-converted to MCPRequests, dispatched through the existing tool registry,
-and results are published back as A2A events.
-"""
 import asyncio
 import logging
 import os
@@ -35,15 +33,6 @@ logger = logging.getLogger("MCPAgentExecutor")
 
 
 class MCPAgentExecutor(AgentExecutor):
-    """Bridges A2A AgentExecutor to existing MCP tool dispatch.
-
-    For each incoming A2A message:
-    1. Optionally validates the Bearer token (if security_validator provided)
-    2. Extracts tool name + arguments from a data Part
-    3. Dispatches via the agent's MCPServer.process_request()
-    4. Converts the MCPResponse to A2A events and publishes them
-    """
-
     def __init__(
         self,
         mcp_server,
@@ -51,19 +40,12 @@ class MCPAgentExecutor(AgentExecutor):
         private_key=None,
         protected_request_verifier=None,
     ):
-        """
-        Args:
-            mcp_server: The agent's MCPServer instance (has .process_request() and .tools).
-            security_validator: Optional A2ASecurityValidator for token validation.
-            private_key: Optional EC private key for E2E credential decryption.
-        """
         self.mcp_server = mcp_server
         self.security_validator = security_validator or A2ASecurityValidator()
         self._private_key = private_key
         self._protected_request_verifier = protected_request_verifier
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """Execute an incoming A2A request by dispatching to MCP tools."""
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
 
         try:
@@ -77,7 +59,6 @@ class MCPAgentExecutor(AgentExecutor):
                 )
                 return
 
-            # Try to extract a tool call from the message
             mcp_request = a2a_message_to_mcp_request(message)
 
             if mcp_request:
@@ -87,12 +68,7 @@ class MCPAgentExecutor(AgentExecutor):
                 protected_wire_arguments = dict(
                     (mcp_request.params.get("arguments", {}) or {})
                 )
-                # Preserve the exact host-authorized wire mapping across
-                # trusted executor-local credential decryption and signature
-                # filtering. Generated MCP servers claim at their final
-                # actuator seam and read this process-local snapshot there.
                 mcp_request._protected_wire_arguments = protected_wire_arguments
-                # Decrypt E2E credentials if present
                 self._decrypt_credentials_if_needed(mcp_request)
                 caller_capabilities = mcp_request.caller_capabilities
                 protected_metadata_present = bool(
@@ -111,10 +87,8 @@ class MCPAgentExecutor(AgentExecutor):
                         mcp_request,
                         final_wire_arguments=protected_wire_arguments,
                     )
-                # Tool call: dispatch via MCP server
                 await self._execute_tool_call(mcp_request, updater, context)
             else:
-                # Natural language or tools/list: return capabilities
                 text = extract_text_from_a2a_message(message)
                 if text.strip().lower() in ("list tools", "list_tools", "help", "capabilities"):
                     await self._list_tools(updater, context)
@@ -128,13 +102,10 @@ class MCPAgentExecutor(AgentExecutor):
             )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """Cancel an ongoing task."""
         updater = TaskUpdater(event_queue, context.task_id, context.context_id)
         await updater.cancel()
 
     async def _validated_bearer_claims(self, context: RequestContext):
-        """Validate the HTTP bearer exposed by the A2A SDK call context."""
-
         call_context = getattr(context, "call_context", None)
         state = getattr(call_context, "state", {}) or {}
         headers = state.get("headers", {}) if isinstance(state, dict) else {}
@@ -157,12 +128,9 @@ class MCPAgentExecutor(AgentExecutor):
         return claims
 
     async def _execute_tool_call(self, mcp_request, updater: TaskUpdater, context: RequestContext):
-        """Dispatch an MCP tool call and publish results."""
-
         tool_name = mcp_request.params.get("name", "unknown")
         logger.info(f"A2A dispatching tool call: {tool_name}")
 
-        # Run synchronous tool call in thread pool
         response = await asyncio.to_thread(self.mcp_server.process_request, mcp_request)
 
         if response.error:
@@ -181,12 +149,10 @@ class MCPAgentExecutor(AgentExecutor):
             )
             await updater.failed(message=msg)
         else:
-            # Build result message
             result_msg = mcp_response_to_a2a_message(response, context.task_id)
             await updater.complete(message=result_msg)
 
     async def _list_tools(self, updater: TaskUpdater, context: RequestContext):
-        """Return the list of available tools as an A2A message."""
         tool_list = self.mcp_server.get_tool_list()
         parts = [
             make_data_part(
@@ -203,7 +169,6 @@ class MCPAgentExecutor(AgentExecutor):
         await updater.complete(message=msg)
 
     def _decrypt_credentials_if_needed(self, mcp_request):
-        """Decrypt E2E-encrypted credentials in-place before tool dispatch."""
         if not self._private_key:
             return
         args = mcp_request.params.get("arguments") if mcp_request.params else None
@@ -227,7 +192,6 @@ class MCPAgentExecutor(AgentExecutor):
 
     @staticmethod
     def _error_message(error_text: str, task_id: str) -> A2AMessage:
-        """Create a simple error A2A Message."""
         return A2AMessage(
             message_id=str(uuid.uuid4()),
             role=Role.ROLE_AGENT,

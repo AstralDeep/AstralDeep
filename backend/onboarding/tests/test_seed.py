@@ -1,9 +1,8 @@
-"""Tests for the canonical tutorial-step seed (rewritten by feature 030).
-
-These run the real ``seed_tutorial_steps`` loader against an isolated Plane
-``tutorial_step`` table. Missing defaults are inserted without overwriting
-admin edits; fresh Plane baselines contain no retired pre-030 product content.
+"""Tests for onboarding/seed.py's canonical tutorial seed: the user and admin flow steps
+exist, are strictly ordered, every static target resolves to a real chrome anchor,
+and legacy steps are archived or absent.
 """
+
 from __future__ import annotations
 
 import re
@@ -15,7 +14,6 @@ from onboarding.seed import seed_tutorial_steps
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
-# slug -> (display_order, target_kind, target_key) for the canonical user flow.
 USER_FLOW = {
     "welcome-tour": (10, "none", None),
     "meet-the-canvas": (20, "static", "canvas.workspace"),
@@ -56,7 +54,6 @@ LEGACY_TUTORIAL_SLUGS = (
 
 @pytest.fixture
 def fresh_seed(database):
-    """Apply (or re-apply, idempotently) the canonical seed before assertions."""
     seed_tutorial_steps(
         plane_runtime=database,
         plane_repositories=database.repositories,
@@ -77,7 +74,6 @@ def _fetch_step(database, slug: str) -> dict | None:
 
 
 def test_seed_creates_the_canonical_user_flow(fresh_seed):
-    """Every 030 user step exists, active, with its designed order and target."""
     for slug, (order, kind, key) in USER_FLOW.items():
         row = _fetch_step(fresh_seed, slug)
         assert row is not None, f"seed must create the {slug!r} step"
@@ -89,7 +85,6 @@ def test_seed_creates_the_canonical_user_flow(fresh_seed):
 
 
 def test_seed_creates_the_canonical_admin_flow(fresh_seed):
-    """Admin steps exist, audience-gated, and ordered after the user flow."""
     max_user_order = max(order for order, _, _ in USER_FLOW.values())
     for slug, (order, kind, key) in ADMIN_FLOW.items():
         row = _fetch_step(fresh_seed, slug)
@@ -99,17 +94,10 @@ def test_seed_creates_the_canonical_admin_flow(fresh_seed):
         assert row["target_kind"] == kind, slug
         assert row["target_key"] == key, slug
         assert row["display_order"] > max_user_order, slug
-        # The old admin flow advertised a Quarantine tab that the Admin tools
-        # surface no longer renders — the rewritten copy must not resurrect it.
         assert "quarantine" not in row["body"].lower(), slug
 
 
 def test_turn_on_agents_step_explains_enablement(fresh_seed):
-    """The tour must still tell users how to turn agents on (the feature-008
-    requirement, restated for the 030 consent-enable flow), and must be honest
-    about what the one-click grant covers: every read-flavored scope the
-    public agents' tools need (search, data, file and system reads — see
-    ``scopes_required_by_tools``), with ``tools:write`` never included."""
     row = _fetch_step(fresh_seed, "turn-on-agents")
     assert row is not None
     body_lower = row["body"].lower()
@@ -126,9 +114,6 @@ def test_turn_on_agents_step_explains_enablement(fresh_seed):
 
 
 def test_user_flow_is_strictly_ordered(fresh_seed):
-    """The walk is logical: orient -> enable -> ask -> settings tour -> done.
-    Strict ordering also guarantees no display_order collisions (equal orders
-    tie-break on row id, which interleaves unpredictably)."""
     sequence = [
         "welcome-tour", "meet-the-canvas", "turn-on-agents",
         "ask-in-plain-language", "open-settings-menu", "agents-and-permissions",
@@ -140,19 +125,12 @@ def test_user_flow_is_strictly_ordered(fresh_seed):
 
 
 def test_every_static_target_resolves_to_a_real_anchor(fresh_seed):
-    """Cross-layer guard: each canonical static step must point at an element
-    that actually carries data-tour-target in the rendered chrome (topbar and
-    settings rail with admin roles) or the shell template. This is the
-    regression that broke the old tour: 'give-feedback' targeted feedback.control, which feature 026
-    removed, leaving a permanent "(target isn't available yet)" step."""
     from astralprojection.resources import template_path
     from webrender.chrome import render_settings_nav
     from webrender.chrome.menu_model import build_menu_model
     from webrender.chrome.topbar import render_topbar
 
     dom = render_topbar(roles=["admin", "user"])
-    # UI v2 builds these anchors when the tour opens the settings dialog.
-    # They intentionally no longer live in the always-present topbar.
     dom += render_settings_nav(build_menu_model(roles=["admin", "user"]), "agents")
     dom += template_path("shell.html").read_text(encoding="utf-8")
     anchors = set(re.findall(r'data-tour-target="([^"]+)"', dom))
@@ -166,9 +144,6 @@ def test_every_static_target_resolves_to_a_real_anchor(fresh_seed):
 
 
 def test_legacy_steps_are_no_longer_active(fresh_seed):
-    """The pre-030 steps must not appear in the tour: on an upgraded database
-    ``_migrate_tutorial_steps_030`` archives them (restorable from Tutorial
-    admin); on a fresh database they are never seeded at all."""
     for slug in LEGACY_TUTORIAL_SLUGS:
         row = _fetch_step(fresh_seed, slug)
         assert row is None or row["archived_at"] is not None, (

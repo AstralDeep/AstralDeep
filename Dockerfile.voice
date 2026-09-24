@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1.7
+# Multi-stage voice-worker image: a hash-pinned venv, a Silero VAD verification and inference check,
+# then a pruned runtime; the test stage adds pytest for backend/voice_agent/tests.
 
-# The public Python 3.11 base remains the local-development fallback while the
-# preferred zero-high/critical Docker Hardened Image requires registry login.
-# It is immutable and multi-architecture; distribution remains fail-closed.
 ARG PYTHON_SLIM_IMAGE=python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
 
 FROM ${PYTHON_SLIM_IMAGE} AS python-base
@@ -35,9 +34,6 @@ RUN /opt/voice-venv/bin/python -m pip install \
     && /opt/voice-venv/bin/python -m pip check \
     && rm /tmp/voice-requirements.lock.txt
 
-# Verify the independently vendored Silero bytes and execute real inference
-# before they can cross into either runtime target. The model is never fetched
-# during an image build or at worker runtime.
 RUN /opt/voice-venv/bin/python - <<'PY'
 import hashlib
 import json
@@ -101,8 +97,6 @@ for artifact in (*assets.rglob("*"), *notices.rglob("*")):
         artifact.chmod(0o444)
 PY
 
-# Remove the official base's package installation tooling from the runtime
-# filesystem. Runtime dependencies live in the separate copied venv.
 FROM python-base AS runtime-pruned-system
 RUN /usr/local/bin/python -m pip uninstall --yes setuptools wheel packaging pip \
     && /usr/local/bin/python - <<'PY'
@@ -126,7 +120,6 @@ for pattern in ("easy_install*", "pip*", "wheel*"):
         raise SystemExit(f"system installation executable leaked: {leaked}")
 PY
 
-# Remove installers before the worker venv crosses into a runtime layer.
 FROM runtime-dependencies AS runtime-pruned-dependencies
 RUN /opt/voice-venv/bin/python -m pip uninstall --yes pip setuptools wheel \
     && /opt/voice-venv/bin/python - <<'PY'
@@ -145,7 +138,6 @@ for module in ("pip", "setuptools", "wheel"):
         raise SystemExit(f"runtime module leaked: {module}")
 PY
 
-# Build a complete hash-only test venv independently. It never enters runtime.
 FROM python-base AS test-dependencies
 RUN python -m venv /opt/voice-test-venv
 COPY backend/voice_agent/requirements.lock.txt /tmp/voice-requirements.lock.txt
@@ -167,9 +159,7 @@ RUN /opt/voice-test-venv/bin/python -m pip install \
         /tmp/voice-test-requirements.lock.txt \
     && /opt/voice-test-venv/bin/python -m pip uninstall --yes pip setuptools wheel
 
-# Only top-level worker modules plus the single audited fixed-origin transport
-# source are eligible for production. The latter is renamed into the isolated
-# package, so the worker receives no import path into the product backend.
+# Flattened & renamed so the worker has no import path to backend/
 FROM scratch AS voice-source
 COPY backend/voice_agent/*.py /voice-source/
 COPY backend/shared/streaming_egress.py /voice-source/streaming_egress.py

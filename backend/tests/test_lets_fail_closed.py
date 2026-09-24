@@ -1,4 +1,7 @@
-"""Feature 074 T175: LETS infrastructure faults deny every governed effect."""
+"""Tests for orchestrator/governed_dispatch.py, lets_client.py and lets_gateway.py:
+warden faults, stale receipts, rotated trust keys, clock rollback, replay-store loss,
+and authority-anchor failure all deny the effect before it runs.
+"""
 
 from __future__ import annotations
 

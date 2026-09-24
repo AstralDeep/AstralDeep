@@ -1,4 +1,7 @@
-"""Driver registry (spec 047 FR-001)."""
+"""Driver registry mapping a driver name (synthetic, in_process, chained) to its Driver
+implementation (drivers/base.py); runner.py resolves drivers through get_driver().
+"""
+
 from __future__ import annotations
 
 from security_benchmark.drivers.base import Driver
@@ -13,8 +16,6 @@ def get_driver(mode: str, run_id: str = "__bench__local", seed: int = 0,
         from security_benchmark.drivers.inprocess import InProcessDriver
         return InProcessDriver(run_id=run_id, seed=seed, model=model)
     if mode == "chained_real":
-        # 056 US5 (T039): real recursive-delegation gates for the chained
-        # scenarios. DB-free (048 functions are pure + orchestrator stubs).
         from security_benchmark.drivers.chained import ChainedDriver
         return ChainedDriver()
     raise ValueError(f"unknown driver mode: {mode!r}")

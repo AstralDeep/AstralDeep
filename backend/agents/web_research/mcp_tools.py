@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""
-MCP Tools for the Web Research agent — tool functions that return UI Primitives.
-
-Includes:
-- web_search: keyless DuckDuckGo HTML search (stops on a bot challenge), or an operator/user-configured
-  Tavily-compatible JSON search provider (SEARCH_API_URL + SEARCH_API_KEY)
-- fetch_page: egress-gated page fetch (1 MB / 15 s) with readable-text extraction
-- research_brief: search -> fetch top sources -> one LLM synthesis call that
-  cites only the URLs it actually fetched (sources are never fabricated)
-
-All outbound HTTP goes through ``shared.external_http`` (SSRF/private-host
-gating, bounded timeouts, response-size caps). Pure stdlib parsing
-(``html.parser``, ``urllib.parse``) — no new third-party dependencies.
+"""Web search (DuckDuckGo or a configured provider), egress-gated page fetches, and
+research_brief's cite-only-fetched-sources synthesis, all HTTP routed through
+shared/external_http.py.
 """
 import logging
 import os
@@ -49,32 +39,21 @@ from shared.web_readability import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Bounds and constants (FR-013: bounded fetch sizes and timeouts)
-# ---------------------------------------------------------------------------
-
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
-# Retained for parsing existing Lite result fixtures; challenges never trigger
-# an alternate-endpoint request.
 DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-FETCH_MAX_BYTES = 1024 * 1024   # 1 MB hard cap per fetch
-FETCH_TIMEOUT_S = 15            # per-hop transport timeout
-FETCH_TOTAL_TIMEOUT_S = 30      # shared redirect-chain budget
+FETCH_MAX_BYTES = 1024 * 1024
+FETCH_TIMEOUT_S = 15
+FETCH_TOTAL_TIMEOUT_S = 30
 SEARCH_TIMEOUT_S = 15
 DEFAULT_MAX_RESULTS = 8
 MAX_RESULTS_CAP = 20
-PAGE_TEXT_CAP = 20_000          # chars of extracted text rendered by fetch_page
-BRIEF_SOURCE_CAP = 4_000        # chars of extract per source in the LLM prompt
-BRIEF_FETCHES = {"shallow": 2, "standard": 5}  # <= 5 fetches per brief
-# 030: overall wall-clock budget for one research_brief run. Worst-case
-# search (15 s) + 5 fetches (15 s each) exceeded the orchestrator dispatch
-# ceiling and surfaced as "Tool call timed out" with no partial value; the
-# brief now stops fetching when the budget is spent and builds from what it
-# has (the dispatch ceiling for research_brief is 150 s — keep headroom).
+PAGE_TEXT_CAP = 20_000
+BRIEF_SOURCE_CAP = 4_000
+BRIEF_FETCHES = {"shallow": 2, "standard": 5}
 BRIEF_TIME_BUDGET_S = 110
 MAX_REDIRECT_HOPS = 3
 
@@ -86,15 +65,7 @@ _CREDENTIAL_REMEDY = (
     "Add a search provider API key in agent settings for reliable/higher-limit search."
 )
 
-# DuckDuckGo intermittently answers non-browser traffic from datacenter
-# addresses with HTTP 202 and a ~14 KB "bots use DuckDuckGo too" puzzle page
-# that carries no result anchors at all. Parsing it as an ordinary page yields
-# an EMPTY result list — which research_brief then reported as "returned no
-# results" — so the challenge is recognised explicitly. The markers are the
-# specific class names / phrase seen on the live challenge page rather than
-# the bare words "anomaly"/"challenge"/"bots": a genuine (well-formed, empty)
-# results page echoes the user's query, and a query such as "anomaly
-# detection challenge" must still be reported honestly as no results.
+# DDG's 202 challenge page has no anchors — reads as empty, not blocked
 _DDG_CHALLENGE_MARKERS = (
     "anomaly-modal",
     "js-anomaly",
@@ -104,21 +75,10 @@ _DDG_CHALLENGE_MARKERS = (
 
 
 class DDGChallengeError(ServiceUnreachableError):
-    """DuckDuckGo refused keyless search; stop without attempting its challenge."""
-
-
-# ---------------------------------------------------------------------------
-# DuckDuckGo HTML result parsing (stdlib html.parser; tolerant by design)
-# ---------------------------------------------------------------------------
+    pass
 
 
 def _decode_ddg_href(href: str) -> str:
-    """Decode a DuckDuckGo result href into the target URL.
-
-    DDG wraps result links in ``/l/?uddg=<urlencoded-target>&rut=…`` redirects
-    (often protocol-relative, ``//duckduckgo.com/l/?uddg=…``). Direct hrefs are
-    returned unchanged.
-    """
     if not href:
         return ""
     candidate = href.strip()
@@ -128,34 +88,22 @@ def _decode_ddg_href(href: str) -> str:
     if parsed.path == "/l" or parsed.path.startswith("/l/"):
         target = parse_qs(parsed.query).get("uddg", [""])[0]
         if target:
-            return target  # parse_qs already URL-decodes the value
+            return target
     return href.strip()
 
 
 class DDGResultParser(HTMLParser):
-    """Tolerant parser for ``html.duckduckgo.com/html`` result pages.
-
-    Result links are ``<a class="result__a" href=…>`` with the snippet in a
-    sibling element carrying class ``result__snippet``. The parser extracts
-    ``(title, url, snippet)`` triples and survives nested inline markup
-    (``<b>``, ``<span>``, …) inside either element.
-
-    The class names are attributes so the Lite-endpoint parser below can
-    reuse the capture machinery against its own markup.
-    """
-
     LINK_CLASS = "result__a"
     SNIPPET_CLASS = "result__snippet"
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: List[Dict[str, str]] = []
-        self._capture: Optional[str] = None      # "title" | "snippet"
-        self._capture_tag: Optional[str] = None  # tag that opened the capture
+        self._capture: Optional[str] = None
+        self._capture_tag: Optional[str] = None
         self._depth = 0
 
     def _skip_element(self, tag: str, classes: List[str]) -> bool:
-        """Hook: return True to ignore this start tag (no capture begins)."""
         return False
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
@@ -190,16 +138,6 @@ class DDGResultParser(HTMLParser):
 
 
 class DDGLiteResultParser(DDGResultParser):
-    """Tolerant parser for ``lite.duckduckgo.com/lite`` result pages.
-
-    Results are table rows: ``<a class="result-link" href=…>`` carries the
-    title (``uddg``-wrapped href like the HTML endpoint) and a following
-    ``<td class="result-snippet">`` carries the snippet. Rows marked
-    ``result-sponsored`` are ads whose "more info" anchor is also a
-    ``result-link`` (pointing at a DuckDuckGo help page), so whole sponsored
-    rows are skipped rather than surfacing "more info" as a result.
-    """
-
     LINK_CLASS = "result-link"
     SNIPPET_CLASS = "result-snippet"
 
@@ -216,7 +154,6 @@ class DDGLiteResultParser(DDGResultParser):
 
 def _parse_ddg_html(html_text: str, max_results: int,
                     parser_cls: type = DDGResultParser) -> List[Dict[str, str]]:
-    """Parse a DDG HTML page into cleaned, de-duplicated result dicts."""
     parser = parser_cls()
     parser.feed(html_text)
     parser.close()
@@ -238,20 +175,13 @@ def _parse_ddg_html(html_text: str, max_results: int,
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Search backends (all egress through shared.external_http)
-# ---------------------------------------------------------------------------
-
-
 def _search_credentials(kwargs: Dict[str, Any]) -> Tuple[str, str]:
-    """Return the optional (SEARCH_API_URL, SEARCH_API_KEY) bundle, if saved."""
     creds = kwargs.get("_credentials") or {}
     return (str(creds.get("SEARCH_API_URL") or ""), str(creds.get("SEARCH_API_KEY") or ""))
 
 
 def _search_via_provider(query: str, max_results: int,
                          api_url: str, api_key: str) -> List[Dict[str, str]]:
-    """POST a Tavily-compatible JSON search request to the configured provider."""
     url = external_http.normalize_url(api_url)
     resp = external_http.request(
         "POST", url,
@@ -282,7 +212,6 @@ def _search_via_provider(query: str, max_results: int,
 
 
 def _ddg_get(url: str, query: str):
-    """Egress-gated GET of one keyless DuckDuckGo endpoint (no redirects)."""
     return external_http.request(
         "GET", url,
         api_key="",
@@ -294,13 +223,6 @@ def _ddg_get(url: str, query: str):
 
 
 def _is_ddg_challenge(status: int, html_text: str, results: List[Dict[str, str]]) -> bool:
-    """True when a DDG response is the bot-challenge page, not a results page.
-
-    HTTP 202 is the challenge (the HTML and Lite endpoints answer 200 for a
-    real results page, empty or not). A 200 with zero result anchors is a
-    challenge only when the body also carries the challenge markers — a
-    well-formed empty page stays an honest "no results".
-    """
     if status == 202:
         return True
     if results:
@@ -310,7 +232,6 @@ def _is_ddg_challenge(status: int, html_text: str, results: List[Dict[str, str]]
 
 
 def _search_via_duckduckgo(query: str, max_results: int) -> Tuple[List[Dict[str, str]], str]:
-    """Run one keyless search; a challenge stops without trying other endpoints."""
     resp = _ddg_get(DDG_HTML_URL, query)
     results = _parse_ddg_html(resp.text, max_results)
     if not _is_ddg_challenge(resp.status_code, resp.text, results):
@@ -323,7 +244,6 @@ def _search_via_duckduckgo(query: str, max_results: int) -> Tuple[List[Dict[str,
 
 def _perform_search(query: str, max_results: int,
                     kwargs: Dict[str, Any]) -> Tuple[List[Dict[str, str]], str]:
-    """Run the search on the preferred backend; returns (results, backend name)."""
     api_url, api_key = _search_credentials(kwargs)
     if api_url:
         return _search_via_provider(query, max_results, api_url, api_key), PROVIDER_BACKEND
@@ -336,7 +256,6 @@ def _search_backend_name(kwargs: Dict[str, Any]) -> str:
 
 
 def _search_failure_alert(backend: str, exc: Exception) -> Alert:
-    """Return fixed actionable text; provider bodies and secrets stay private."""
     logger.warning("search_failed backend=%s error_type=%s status=%s",
                    backend, type(exc).__name__, _http_status(exc))
     if isinstance(exc, DDGChallengeError):
@@ -355,7 +274,6 @@ def _search_failure_alert(backend: str, exc: Exception) -> Alert:
 
 
 def _http_status(exc: Exception) -> Optional[int]:
-    """Read only the fixed status prefix emitted by the approved HTTP layer."""
     match = re.match(
         r"^(?:Authentication failed \(|Rate-limited by upstream \(|"
         r"Upstream server error \(|Upstream returned )(\d{3})(?:\)|:)", str(exc),
@@ -364,7 +282,6 @@ def _http_status(exc: Exception) -> Optional[int]:
 
 
 def _tool_failure(alert: Alert, code: str) -> Dict[str, Any]:
-    """Carry a terminal public error through the agent's MCP response adapter."""
     return {
         **create_ui_response([alert]),
         "_error": {"code": code, "message": alert.message, "retryable": False},
@@ -385,7 +302,6 @@ def _search_failure(backend: str, exc: Exception) -> Dict[str, Any]:
 
 
 def _fetch_failure_message(exc: Exception) -> str:
-    """Classify a fetch failure without exposing URL tokens or upstream HTML."""
     if isinstance(exc, EgressBlockedError):
         return "This page is blocked by network policy. Choose another source."
     if isinstance(exc, AuthFailedError):
@@ -395,20 +311,8 @@ def _fetch_failure_message(exc: Exception) -> str:
     return "This page could not be retrieved. Try later or choose another source."
 
 
-# ---------------------------------------------------------------------------
-# Page fetching + readable-text extraction
-# ---------------------------------------------------------------------------
-
-
+# Redirects are followed manually so each hop hits the SSRF gate
 def _fetch_url(url: str):
-    """Egress-gated GET with bounded size/timeout and manual redirect follow.
-
-    ``shared.external_http`` keeps ``allow_redirects=False`` so every hop is
-    re-validated against the SSRF policy (a redirect into a private network is
-    blocked just like a direct request). Hops share a monotonic budget; no
-    expired response is accepted or further hop issued. The underlying
-    synchronous transport retains its connect/read timeout semantics.
-    """
     current = external_http.normalize_url(url, preserve_trailing_slash=True)
     deadline = time.monotonic() + FETCH_TOTAL_TIMEOUT_S
     for _hop in range(MAX_REDIRECT_HOPS + 1):
@@ -450,14 +354,6 @@ _BLOCK_TAGS = frozenset({
 
 
 class PageTextExtractor(HTMLParser):
-    """Extract readable text from HTML.
-
-    - Skips script/style/nav/header/footer/aside and other chrome.
-    - Keeps headings as markdown (``#``…``######``); list items as ``-``.
-    - Collapses intra-block whitespace; blocks are joined by blank lines.
-    - Captures the document ``<title>`` separately.
-    """
-
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title = ""
@@ -484,8 +380,6 @@ class PageTextExtractor(HTMLParser):
         if tag == "title" and not self.title:
             self._in_title = True
             return
-        # Inside a subtree skipped by class/id/role: count depth on non-void
-        # tags only (void tags have no end tag, so counting them never unwinds).
         if self._attr_skip > 0:
             if tag not in VOID_TAGS:
                 self._attr_skip += 1
@@ -537,7 +431,6 @@ class PageTextExtractor(HTMLParser):
 
 
 def _extract_readable(html_text: str) -> Tuple[str, str]:
-    """Return (page title, readable markdown-ish text) for an HTML document."""
     parser = PageTextExtractor()
     parser.feed(html_text)
     parser.close()
@@ -552,20 +445,7 @@ def _looks_like_html(resp) -> bool:
     return "<html" in head or "<!doctype html" in head or "<body" in head
 
 
-# ---------------------------------------------------------------------------
-# Per-session LLM client resolution (mirrors agents/general/mcp_tools.py)
-# ---------------------------------------------------------------------------
-
-
 def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
-    """Resolve the OpenAI-compatible client exactly like the general agent.
-
-    Feature 054: the per-turn credentials the orchestrator injects
-    (``_session_llm_credentials`` — the caller's persisted record, or the
-    admin system record on system-context turns) are preferred, then the
-    agent's own credential bundle. There is NO env fallback — the
-    operator-default path was removed.
-    """
     session_llm = kwargs.get("_session_llm_credentials") or {}
     creds = kwargs.get("_credentials", {}) or {}
     api_key = (
@@ -585,13 +465,7 @@ def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
     return OpenAI(api_key=api_key, base_url=base_url), model
 
 
-# ---------------------------------------------------------------------------
-# Brief helpers
-# ---------------------------------------------------------------------------
-
-
 def _strip_out_of_range_citations(text: str, n_sources: int) -> str:
-    """Remove ``[k]`` citation markers where k is outside 1..n (no fabrication)."""
     def _repl(match: "re.Match[str]") -> str:
         k = int(match.group(1))
         return match.group(0) if 1 <= k <= n_sources else ""
@@ -599,7 +473,6 @@ def _strip_out_of_range_citations(text: str, n_sources: int) -> str:
 
 
 def _split_sections(markdown_text: str) -> List[Tuple[str, str]]:
-    """Split a markdown brief into (heading, body) pairs on ``## `` headings."""
     sections: List[Tuple[str, str]] = []
     heading: Optional[str] = None
     lines: List[str] = []
@@ -617,13 +490,7 @@ def _split_sections(markdown_text: str) -> List[Tuple[str, str]]:
     return sections
 
 
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
-
-
 def _credentials_check(**kwargs) -> Dict[str, Any]:
-    """Probe the optional search-provider bundle (invoked at credential save)."""
     api_url, api_key = _search_credentials(kwargs)
     if not api_url:
         return {
@@ -643,7 +510,6 @@ def _credentials_check(**kwargs) -> Dict[str, Any]:
 
 
 def web_search(query: str = "", max_results: int = DEFAULT_MAX_RESULTS, **kwargs) -> Dict[str, Any]:
-    """Search the web; prefer the configured provider, else keyless DuckDuckGo."""
     query = str(query or "").strip()
     if not query:
         return create_ui_response([
@@ -661,7 +527,7 @@ def web_search(query: str = "", max_results: int = DEFAULT_MAX_RESULTS, **kwargs
         results, backend = _perform_search(query, n, kwargs)
     except ExternalHttpError as e:
         return _search_failure(backend, e)
-    except Exception as e:  # defensive: parser or payload surprises
+    except Exception as e:
         return _search_failure(backend, e)
 
     if not results:
@@ -689,7 +555,6 @@ def web_search(query: str = "", max_results: int = DEFAULT_MAX_RESULTS, **kwargs
 
 
 def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
-    """Fetch a page (egress-gated, 1 MB / 15 s) and extract readable text."""
     url = str(url or "").strip()
     if not url:
         return create_ui_response([
@@ -752,9 +617,6 @@ def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
             "title": title,
             "truncated": truncated,
             "characters": len(text),
-            # Facts about this completed response and the named text extractor;
-            # never a claim that the entire visual page was represented. Missing
-            # transport metadata stays missing and the strict consumer refuses it.
             "page_observation": {
                 "version": 1,
                 "requested_url": url,
@@ -776,7 +638,6 @@ def fetch_page(url: str = "", **kwargs) -> Dict[str, Any]:
 
 
 def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[str, Any]:
-    """Search, fetch the top sources, and synthesize one cited markdown brief."""
     topic = str(topic or "").strip()
     if not topic:
         return create_ui_response([
@@ -801,10 +662,6 @@ def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[s
                            f"{_CREDENTIAL_REMEDY}")),
         ])
 
-    # Fetch up to `fetch_target` pages, skipping failures (each fetch
-    # bounded) — and stop when the overall time budget is spent (030) so a
-    # slow network yields a brief from fewer sources instead of a dispatch
-    # timeout with nothing.
     deadline = time.monotonic() + BRIEF_TIME_BUDGET_S
     sources: List[Dict[str, str]] = []
     for result in results:
@@ -908,11 +765,6 @@ def research_brief(topic: str = "", depth: str = "standard", **kwargs) -> Dict[s
                         for s in sources],
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Tool registry
-# ---------------------------------------------------------------------------
 
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {

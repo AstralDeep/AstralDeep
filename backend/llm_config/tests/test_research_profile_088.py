@@ -1,4 +1,7 @@
-"""Fixed offline request/parser contracts; no provider calls or model execution."""
+"""Tests for llm_config/research_profile.py's build_request/parse_response: the fixed
+request body never substitutes or truncates, and usage parsing never invents billing
+from an error body or treats missing usage as zero.
+"""
 
 import ast
 import json
@@ -41,7 +44,6 @@ def retained(text="Version 088 adds bounded background research. " * 30):
 
 
 def reply(selection=None, **changes):
-    # Synthetic profile response following the documented non-streaming shape.
     return {
         "id": "chatcmpl-synthetic",
         "object": "chat.completion",
@@ -142,7 +144,6 @@ def test_instruction_refuses_instead_of_truncating(instruction):
 
 def test_entire_encoded_body_limit_counts_escaped_bytes_not_characters():
     source = retained()
-    # Control-character expansion in both nested and outer JSON is counted.
     with pytest.raises(profile.ResearchProfileUnavailable):
         profile.build_request("\x01" * 20000, source)
     result = profile.build_request("界" * 10000, source)

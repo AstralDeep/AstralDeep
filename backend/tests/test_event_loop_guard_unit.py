@@ -1,9 +1,8 @@
-"""Unit tests for the event-loop blocking detector (feature 052, FR-017).
-
-Covers the enforce-raise path, the allowlist short-circuit and its parsing,
-report-mode dedup, the exhausted-stack caller-site fallback, and install()
-idempotence — all by direct calls, independent of any real DB traffic.
+"""Tests for the event-loop blocking detector (tests/plugins/event_loop_guard.py): the
+enforce-raise path, allowlist parsing and short-circuit, report-mode dedup,
+caller-site fallback, and install() idempotence.
 """
+
 from __future__ import annotations
 
 import sys

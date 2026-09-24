@@ -1,8 +1,9 @@
-"""Registered Work presentation: actual Plane/JWT, controlled socket delivery.
-
-Only external institutional replies and socket I/O are synthetic. The shared
-Projection builder renders actual public Work rows; no provider is dispatched.
+"""Tests for registered Work presentation
+(backend/orchestrator/work_surface_authority.py, work_service.py,
+projection_surfaces/work.py): public-row rendering, WS propose/save parity, and
+refusal of stale or foreign requests.
 """
+
 import asyncio
 from dataclasses import replace
 import json
@@ -316,13 +317,8 @@ def test_work_correlation_is_mandatory_and_scoped(frame):
         frame.to_json()
 
 
-# ---------------------------------------------------------------------------
-# Feature 088 T043 — chrome_work_result_save (WS-driven propose/save).
-# ---------------------------------------------------------------------------
-
 @pytest.fixture
 async def save_surface(saved, monkeypatch):
-    """A real WS socket over the SAME completed-operation/chat as the HTTP save tests."""
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
     orch = saved.op.executor.orch
     orch.web_sessions = saved.op.sessions
@@ -340,9 +336,6 @@ async def save_surface(saved, monkeypatch):
     ]}, unused, unused)
     socket.client_state = WebSocketState.CONNECTED
     socket.application_state = WebSocketState.CONNECTED
-    # Add this test's socket without disturbing gate_orchestrator's own
-    # "untouched" registration, which its teardown asserts stays exactly as
-    # it was.
     orch.ui_sessions[socket] = claims
     orch._ws_active_chat[id(socket)] = saved.chat_id
 
@@ -385,7 +378,6 @@ async def test_ws_propose_then_save_matches_the_http_route(save_surface):
     assert "Reviewed result destination" in review_frame["html"]
     assert command["submission_id"] in review_frame["html"]
 
-    # The review is identical to the HTTP route's own review of the same body.
     http_review = await save_post(saved_value, save_operation_path(saved_value), command)
     assert http_review.status_code == 200, http_review.text
     review = http_review.json()
@@ -397,12 +389,8 @@ async def test_ws_propose_then_save_matches_the_http_route(save_surface):
     assert len(orch.sent) == 2
     saved_frame = orch.sent[-1]
     assert "Result saved" in saved_frame["html"]
-    # The save re-renders the Work surface through the shared chrome modal path
-    # (region "modal", type "chrome_render") exactly as every other WS mutation
-    # handler does; the correlated surface_key rides only the read-delivery frame.
     assert saved_frame["type"] == "chrome_render" and saved_frame["region"] == "modal"
 
-    # The canvas actually carries the exact committed publication (real DB row).
     with saved_value.op.runtime.transaction() as tx:
         chat = saved_value.op.runtime.repositories.history.conversations.get(
             tx, owner_id=saved_value.op.owner, conversation_id=saved_value.chat_id)
@@ -416,14 +404,11 @@ async def test_ws_save_never_authenticates_a_foreign_or_forged_caller(save_surfa
     command = proposal_body(saved_value)
     payload = _propose_payload(saved_value, command)
 
-    # A different registered owner id is refused before any Plane write.
     handled = await chrome_events.handle_chrome_event(
         orch, socket, "chrome_work_result_save", payload, "someone-else")
     assert handled is True
     assert "Save request refused" in orch.sent[-1]["html"] or "went wrong" in orch.sent[-1]["html"]
 
-    # No cross-origin WebSocket frame can drive a Work write either — a browser
-    # does not itself enforce same-origin on an outgoing WS frame.
     socket.scope["headers"] = [(b"cookie", ("astral_session=" + web_auth._sign(saved_value.op.sid)).encode()),
                                (b"origin", b"https://evil.invalid")]
     handled = await chrome_events.handle_chrome_event(

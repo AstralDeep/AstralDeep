@@ -1,4 +1,8 @@
-"""An original-session refresh may advance only the caller's exact old fence."""
+"""Tests that an original-session refresh (work_continuation_authority.py,
+work_submit_authority.py) can only advance the caller's own exact prior fence, never
+adopting a same-issuance rotation from outside the causal exchange.
+"""
+
 import asyncio
 from dataclasses import asdict, replace
 

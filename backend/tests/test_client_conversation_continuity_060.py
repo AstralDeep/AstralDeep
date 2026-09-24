@@ -1,11 +1,6 @@
-"""Source-contract guard for the feature-060 web continuity reducer.
-
-The deterministic executable behavior is covered in
-``components/AstralProjection/tooling/web-ci/tests/continuity-contract-060.spec.js`` with a real Chromium
-DOM and a synthetic transport. The separate release harness uses real
-Keycloak and WebSocket transport. These assertions keep the shipped classic
-script's security- and ordering-critical seams discoverable from the normal
-backend suite, including when the browser producer is unavailable locally.
+"""Tests for the web continuity reducer's source contract
+(AstralProjection/src/astralprojection/resources.py): account-scoped locator binding,
+atomic snapshot/transient reduction, and server-originated commit fencing.
 """
 
 from __future__ import annotations
@@ -207,7 +202,7 @@ def test_semantic_decoder_keeps_every_canonical_part_visible(
 
 
 @pytest.mark.skipif(
-    not BROWSER_SPEC.is_file(),  # web tooling is not mounted in the product-image lane
+    not BROWSER_SPEC.is_file(),
     reason="the browser contract is not present in this isolated test lane",
 )
 def test_playwright_contract_exercises_runtime_not_only_source_text() -> None:

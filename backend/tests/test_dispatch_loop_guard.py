@@ -1,13 +1,8 @@
-"""The dispatch paths' draft-agent auto-fix lookup must not block the event loop.
-
-`execute_parallel_tools` (and the single-tool path) consult
-`lifecycle_manager._get_draft_by_agent_id` when a tool result errors — a
-Database read. Feature 052's rule: no synchronous DB call on the loop thread
-(`tests/plugins/event_loop_guard.py`, empty allowlist). This test drives the
-error branch (via the malformed-arguments hard gate, which needs no dispatch
-machinery) with a lifecycle db double that records which thread served the
-read — pinning the `asyncio.to_thread` routing.
+"""Tests that the dispatch paths' draft-agent auto-fix lookup never runs a synchronous
+DB read on the event loop thread, using a lifecycle DB double that records which
+thread served each read.
 """
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -23,8 +18,6 @@ def _loop_running_here() -> bool:
 
 
 class _LoopRecordingDraftDB:
-    """Draft-lookup double recording whether each read ran on the loop thread."""
-
     def __init__(self):
         self.on_loop = []
 
@@ -57,9 +50,6 @@ def orch(monkeypatch, orchestrator_factory):
 
 async def test_parallel_dispatch_draft_lookup_runs_off_the_loop(orch):
     o, db = orch
-    # Malformed JSON arguments hit the hard gate: an error result with no
-    # dispatch/authorization machinery, which is exactly what reaches the
-    # auto-fix draft lookup afterwards.
     bad_call = SimpleNamespace(
         id="tc-1",
         function=SimpleNamespace(name="roll_dice", arguments="{not json"))

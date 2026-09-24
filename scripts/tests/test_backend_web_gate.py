@@ -1,4 +1,6 @@
-"""Fail-closed producer tests; no real database or Docker daemon needed."""
+"""Tests for scripts/run_backend_web_tests.py and backend_web_test_reporter.py: suite
+inventory, database preflight, JUnit reporting, and source-identity requirements.
+"""
 
 from __future__ import annotations
 
@@ -181,7 +183,7 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
     assert result == (0 if scenario == "pass" else 1)
     evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
     assert evidence["production_qualified"] is False
-    assert len(evidence["suites"]) == 8  # No earlier failure hides later suites.
+    assert len(evidence["suites"]) == 8
     assert seen[0][-1] == "erase"
     assert "xml" in seen[-1]
     assert evidence["source_commit"] == "a" * 40

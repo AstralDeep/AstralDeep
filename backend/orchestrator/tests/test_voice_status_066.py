@@ -1,9 +1,7 @@
-"""Feature-066 T030/FR-034 voice status surface tests.
-
-Pins the credential-free projection contract: WorkerPool registry facts,
-bounded admission-refusal retention recorded ONLY at the three genuine
-refusal exits (never on the healthy challenge-issue leg, never after a
-worker was admitted), and the authenticated GET /api/voice/status route.
+"""Tests for the voice status surface (voice_bootstrap.py, voice_coordinator.py,
+voice_worker_endpoint.py): credential-free WorkerPool projection, bounded
+admission-refusal logging only at genuine refusal exits, and the authenticated status
+route.
 """
 
 from __future__ import annotations
@@ -194,11 +192,6 @@ def _signed_headers(
     )
 
 
-# ---------------------------------------------------------------------------
-# WorkerPool.worker_status projection
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_worker_status_projects_registry_facts_and_session_load() -> None:
     clock = Clock()
@@ -224,7 +217,6 @@ async def test_worker_status_projects_registry_facts_and_session_load() -> None:
     await pool.reserve_session(_bind_request(1))
     assert pool.worker_status()[0].active_sessions == 1
 
-    # The projection always explains the aggregate readiness() counters.
     readiness = pool.readiness()
     assert readiness.worker_count == len(pool.worker_status())
     assert readiness.capacity_available == sum(
@@ -245,13 +237,8 @@ async def test_worker_status_drops_lease_expired_connections() -> None:
         authenticated_identity="voice-worker-a",
     )
     assert len(pool.worker_status()) == 1
-    clock.advance(7)  # beyond connection_lease_seconds=6
+    clock.advance(7)
     assert pool.worker_status() == ()
-
-
-# ---------------------------------------------------------------------------
-# AdmissionRefusalLog retention semantics
-# ---------------------------------------------------------------------------
 
 
 def test_refusal_log_is_bounded_newest_first_and_sanitizes() -> None:
@@ -282,9 +269,6 @@ def test_refusal_log_rejects_invalid_capacity() -> None:
 
 
 def test_auth_spam_cannot_evict_registration_refusals() -> None:
-    # The pre-accept authentication path is reachable unauthenticated, so
-    # its churn must never rotate a genuine (signed-challenge) registration
-    # refusal out of the operator view.
     stamps = iter(NOW + timedelta(seconds=index) for index in range(40))
     log = AdmissionRefusalLog(capacity=3, utcnow=lambda: next(stamps))
     log.record("registration", "closure_mismatch")
@@ -293,14 +277,9 @@ def test_auth_spam_cannot_evict_registration_refusals() -> None:
     entries = log.snapshot()
     registration = [item for item in entries if item.stage == "registration"]
     assert [item.reason for item in registration] == ["closure_mismatch"]
-    assert len(entries) == 4  # 3 bounded auth entries + the registration one
-    assert entries[0].stage == "authentication"  # newest first across stages
+    assert len(entries) == 4
+    assert entries[0].stage == "authentication"
     assert entries[-1].reason == "closure_mismatch"
-
-
-# ---------------------------------------------------------------------------
-# Endpoint records ONLY at the three genuine refusal exits
-# ---------------------------------------------------------------------------
 
 
 def test_healthy_challenge_issue_leg_records_no_refusal() -> None:
@@ -380,14 +359,7 @@ def test_admitted_worker_protocol_violation_records_no_refusal() -> None:
     assert endpoint.admission_refusals() == ()
 
 
-# ---------------------------------------------------------------------------
-# VoiceServices.voice_status projection shape
-# ---------------------------------------------------------------------------
-
-
 class _StatusSelf:
-    """Duck-typed self for the pure VoiceServices.voice_status projection."""
-
     def __init__(self, pool: WorkerPool, endpoint) -> None:
         self.worker_pool = pool
         self.worker_endpoint = endpoint
@@ -422,7 +394,6 @@ def test_voice_status_projection_shape_and_stamps() -> None:
         assert value["recent_refusals"][0]["stage"] == "authentication"
         assert value["recent_refusals"][0]["reason"] == "invalid_authentication"
         assert value["recent_refusals"][0]["occurred_at"].endswith("Z")
-        # Credential-free by construction: no token/secret-bearing keys.
         encoded = json.dumps(value)
         for forbidden in ("join_token", "api_key", "api_secret", "credential"):
             assert forbidden not in encoded
@@ -438,11 +409,6 @@ def test_voice_status_without_endpoint_has_empty_refusals() -> None:
     assert value["reason"] == "worker_unavailable"
     assert value["workers"] == []
     assert value["recent_refusals"] == []
-
-
-# ---------------------------------------------------------------------------
-# GET /api/voice/status route
-# ---------------------------------------------------------------------------
 
 
 class _FakeServices:
@@ -521,8 +487,5 @@ def test_status_rate_limit_bucket_is_independent_of_capability() -> None:
     limited = client.get("/api/voice/status")
     assert limited.status_code == 429
     assert limited.json()["code"] == "voice_rate_limited"
-    # The capability limiter runs BEFORE its runtime lookup, so with a shared
-    # bucket this would 429; the fake lacks get_capability, so passing the
-    # limiter surfaces as the 503 runtime refusal instead.
     capability = client.get("/api/voice/capability")
     assert capability.status_code == 503

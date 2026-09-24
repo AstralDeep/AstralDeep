@@ -1,16 +1,6 @@
-"""Durable admission, operation lifecycle, and execution fencing.
-
-``WorkAdmissionCoordinator`` is the sole product operation-state authority.
-Production construction injects ``PlaneWorkAdmissionRepository`` bound to the
-one application-scoped Plane runtime and repository catalog; the coordinator
-never constructs storage or silently falls back to process memory.
-``InMemoryWorkAdmissionRepository`` exists only as an explicitly named
-deterministic test dependency.
-
-The public projections in this module deliberately exclude authenticated owner
-identifiers, idempotency material, and execution fences.  Internal operation
-records remain available only to trusted workers through fenced or explicitly
-administrative repository surfaces.
+"""Durable admission, operation lifecycle, and execution fencing for product operations.
+WorkAdmissionCoordinator is the sole state authority, backed by AstralPlane's
+work_admission repository; public projections exclude owner identity.
 """
 
 from __future__ import annotations
@@ -79,19 +69,19 @@ _TERMINAL_STATES = frozenset(
 
 
 class OperationNotFoundError(LookupError):
-    """Raised identically for absent and non-owner-visible records."""
+    pass
 
 
 class StaleExecutionFenceError(RuntimeError):
-    """Raised when a worker no longer owns the selected execution."""
+    pass
 
 
 class AdmissionConfigurationError(ValueError):
-    """Raised for an invalid admission-class graph or limit."""
+    pass
 
 
 class WorkAdmissionConflictError(RuntimeError):
-    """Raised when an immutable work-admission binding conflicts."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -336,8 +326,6 @@ class SlotLeaseRenewal:
 
 
 class WorkAdmissionRepository(Protocol):
-    """Transactional persistence contract used by the coordinator."""
-
     def configure(self, admission_classes: Sequence[AdmissionClassConfig]) -> None: ...
 
     def submit(
@@ -496,8 +484,6 @@ class WorkAdmissionRepository(Protocol):
 
 
 class WorkAdmissionCoordinator:
-    """Validated public façade over one explicitly injected repository."""
-
     def __init__(
         self,
         *,
@@ -542,8 +528,6 @@ class WorkAdmissionCoordinator:
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
     ) -> WorkAdmissionCoordinator:
-        """Bind the effective Plane-owned graph without rewriting its rows."""
-
         repository = PlaneWorkAdmissionRepository(
             plane_runtime=plane_runtime,
             plane_repositories=plane_repositories,
@@ -564,8 +548,6 @@ class WorkAdmissionCoordinator:
         return _normalize_datetime(self._clock())
 
     def current_time(self) -> datetime:
-        """Return the coordinator's normalized clock for product telemetry."""
-
         current = self._now()
         return datetime.now(UTC) if current is None else current
 
@@ -590,14 +572,6 @@ class WorkAdmissionCoordinator:
         class_name: AdmissionClass,
         operation_id: uuid.UUID,
     ) -> OperationClaim | None:
-        """Claim exactly ``operation_id`` without consuming another handoff.
-
-        A queued operation is claimable only when it is the class's FIFO head.
-        A running operation is returned only while its one-time preselection
-        marker is intact.  This is the origin-local handoff used immediately
-        after ``submit``; normal workers should continue to use ``claim_next``.
-        """
-
         return self._repository.claim_operation(
             class_name,
             _require_uuid(operation_id, "operation_id"),
@@ -608,25 +582,14 @@ class WorkAdmissionCoordinator:
 
     @property
     def operation_retention(self) -> timedelta:
-        """Configured terminal retention, exposed for compatibility cleanup."""
-
         return self._operation_retention
 
     @property
     def repository(self) -> WorkAdmissionRepository:
-        """The injected durable repository shared by trusted state machines.
-
-        Runtime subsystems use this narrow exposure so one operation can be
-        fenced and terminalized in the same caller-owned Plane transaction as its
-        domain effect. Callers must not replace or reconfigure the repository.
-        """
-
         return self._repository
 
     @property
     def slot_lease(self) -> timedelta:
-        """Configured execution-slot lease used to bound worker renewals."""
-
         return self._slot_lease
 
     def inspect_admission_class(
@@ -657,14 +620,6 @@ class WorkAdmissionCoordinator:
         request_running: bool = True,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        """Cancel queued/preselected work, or request cancellation after handoff.
-
-        Trusted subsystems that must decide a second durable guard while the
-        operation lock is held may pass their Plane transaction and set
-        ``request_running=False``.  Existing callers retain the normal
-        cooperative-cancellation behavior by default.
-        """
-
         _validate_safe_code(terminal_code, "terminal_code")
         return self._repository.cancel(
             owner,
@@ -684,14 +639,6 @@ class WorkAdmissionCoordinator:
         safe_summary: str | None,
         retry_after_ms: int | None,
     ) -> OperationRecord | None:
-        """Settle exact accepted work only before its worker handoff.
-
-        Queued work and a running operation whose one-time preselection marker
-        is still intact transition to ``RETRYABLE``. Missing operations and
-        executions already handed to or reselected by a worker are left
-        untouched. Replays return the first terminal record unchanged.
-        """
-
         operation_id = _require_uuid(operation_id, "operation_id")
         _validate_safe_code(terminal_code, "terminal_code")
         _validate_safe_summary(safe_summary)
@@ -747,11 +694,6 @@ class WorkAdmissionCoordinator:
     def assert_current_execution_lease(
         self, fence: ExecutionFence, *, transaction: Any
     ) -> OperationRecord:
-        """Observe a durable running execution and every live admission slot.
-
-        The caller owns the existing bounded transaction and its preceding
-        owner/session locks. This neither renews nor reselects an execution.
-        """
         return self._repository.assert_current_execution_lease(fence, transaction=transaction)
 
     def reselect_execution(self, fence: ExecutionFence) -> ExecutionFence:
@@ -764,21 +706,11 @@ class WorkAdmissionCoordinator:
         return self._repository.update_phase(fence, phase_code, now=self._now())
 
     def bind_chat(self, fence: ExecutionFence, chat_id: str) -> OperationRecord:
-        """Bind the conversation a fenced turn just created onto its operation.
-
-        Only the ``None -> chat`` transition is legal: an operation admitted
-        before its conversation existed (the first message of a new chat has
-        no chat_id at ingress) adopts the chat its turn created, durably, so
-        every downstream publication fence keeps strict identity semantics.
-        Re-binding the same chat is an idempotent no-op; a different existing
-        binding is a cross-conversation conflict and refuses.
-        """
         return self._repository.bind_chat(fence, chat_id, now=self._now())
 
     def renew_execution_lease(
         self, fence: ExecutionFence, *, transaction: Any | None = None,
     ) -> SlotLeaseRenewal:
-        """Renew configured capacity within an optional caller-owned transaction."""
         return self._repository.renew_execution_lease(
             fence, now=self._now(), slot_lease=self._slot_lease, transaction=transaction,
         )
@@ -791,8 +723,6 @@ class WorkAdmissionCoordinator:
     def oldest_purge_eligible_due_at(
         self, *, transaction: Any | None = None
     ) -> datetime | None:
-        """Return the oldest operation/submission row currently purgeable."""
-
         return self._repository.oldest_purge_eligible_due_at(
             now=self._now(), transaction=transaction
         )
@@ -807,13 +737,6 @@ class WorkAdmissionCoordinator:
         )
 
     def fenced_transaction(self, fence: ExecutionFence) -> ContextManager[Any]:
-        """Return a transaction that locks and validates ``fence``.
-
-        Plane-owned effects executed with the yielded transaction are
-        committed atomically with the fence check.  The explicitly injected
-        in-memory test repository yields a sentinel while holding its lock.
-        """
-
         return self._repository.fenced_transaction(fence)
 
 
@@ -853,8 +776,6 @@ def _validate_admission_graph(configs: Sequence[AdmissionClassConfig]) -> None:
 def load_admission_class_configs(
     *, plane_runtime: Any, plane_repositories: Any | None = None
 ) -> tuple[AdmissionClassConfig, ...]:
-    """Read the complete effective graph through Plane's typed repository."""
-
     return PlaneWorkAdmissionRepository(
         plane_runtime=plane_runtime,
         plane_repositories=plane_repositories,
@@ -948,13 +869,6 @@ class _SlotRecord:
 
 
 class InMemoryWorkAdmissionRepository:
-    """Explicit deterministic test repository.
-
-    This class is intentionally never selected by ``WorkAdmissionCoordinator``.
-    Tests must name and inject it, making accidental production use visible in
-    construction and code review.
-    """
-
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._configs: dict[AdmissionClass, AdmissionClassConfig] = {}
@@ -1134,7 +1048,7 @@ class InMemoryWorkAdmissionRepository:
                         lease_expires_at=lease_expires_at,
                     )
                     break
-            else:  # pragma: no cover - guarded by one process-wide lock
+            else:  # pragma: no cover
                 raise RuntimeError("admission slot claim lost atomicity")
         return True
 
@@ -1291,7 +1205,7 @@ class InMemoryWorkAdmissionRepository:
             )
             self._operations[operation_id] = record
             if has_active_headroom:
-                if execution_token is None:  # pragma: no cover - branch invariant
+                if execution_token is None:  # pragma: no cover
                     raise RuntimeError("preselected execution is missing its token")
                 if not self._claim_free_slots_locked(
                     request.admission_class,
@@ -1395,7 +1309,7 @@ class InMemoryWorkAdmissionRepository:
                 record.operation_id,
                 lease_token=None,
                 lease_expires_at=slot_expiry,
-            ):  # pragma: no cover - checked immediately above under the lock
+            ):  # pragma: no cover
                 raise RuntimeError("admission slot claim lost atomicity")
             execution_token = uuid.uuid4()
             running = replace(
@@ -1424,8 +1338,6 @@ class InMemoryWorkAdmissionRepository:
         slot_lease: timedelta,
         retention: timedelta,
     ) -> OperationClaim | None:
-        """Consume only the named operation's origin-local handoff marker."""
-
         current_time = self._now(now)
         with self._lock:
             self._chain(class_name)
@@ -1455,7 +1367,7 @@ class InMemoryWorkAdmissionRepository:
                 if rotated != len(self._chain(record.admission_class)):
                     raise RuntimeError("preselected handoff marker is incomplete")
                 marker_token = record.execution_lease_token
-                if marker_token is None:  # pragma: no cover - guarded above
+                if marker_token is None:  # pragma: no cover
                     raise RuntimeError("preselected execution is missing its token")
                 return OperationClaim(
                     operation=record,
@@ -1489,7 +1401,7 @@ class InMemoryWorkAdmissionRepository:
                 operation_id,
                 lease_token=None,
                 lease_expires_at=lease_expires_at,
-            ):  # pragma: no cover - checked immediately above under the lock
+            ):  # pragma: no cover
                 raise RuntimeError("admission slot claim lost atomicity")
             execution_token = uuid.uuid4()
             running = replace(
@@ -1651,7 +1563,7 @@ class InMemoryWorkAdmissionRepository:
         request_running: bool = True,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        del transaction  # External transactions are not meaningful to this test double.
+        del transaction
         current_time = self._now(now)
         with self._lock:
             record = self._operations.get(operation_id)
@@ -1749,7 +1661,7 @@ class InMemoryWorkAdmissionRepository:
         retention: timedelta,
         transaction: Any | None = None,
     ) -> OperationRecord:
-        del transaction  # External transactions are not meaningful to this test double.
+        del transaction
         current_time = self._now(now)
         with self._lock:
             record = self._operations.get(fence.operation_id)
@@ -1795,7 +1707,6 @@ class InMemoryWorkAdmissionRepository:
     def assert_current_execution_lease(
         self, fence: ExecutionFence, *, transaction: Any
     ) -> OperationRecord:
-        """An in-memory store cannot attest a durable transaction's leases."""
         raise StaleExecutionFenceError("durable execution lease observation unavailable")
 
     def reselect_execution(
@@ -2252,14 +2163,10 @@ def _translate_plane_errors() -> Iterator[None]:
     except PlaneRepositoryConflictError as exc:
         raise WorkAdmissionConflictError(str(exc)) from exc
     except ValueError as exc:
-        # Plane validation errors intentionally remain ordinary domain
-        # ``ValueError`` instances at Deep's established public boundary.
         raise ValueError(str(exc)) from exc
 
 
 class PlaneWorkAdmissionRepository:
-    """Deep domain adapter over Plane's caller-owned transaction repository."""
-
     def __init__(
         self,
         *,

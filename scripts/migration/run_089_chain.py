@@ -1,8 +1,6 @@
-"""Feature 089 (T057): run the guarded migration chain against one database.
-
-Uses the same runner the product boots with -- `MigrationRunner` over
-`MIGRATION_REGISTRY` at `CURRENT_DATA_PLANE_REVISION` -- so the rehearsal
-exercises the real path rather than a reimplementation of it.
+"""Runs AstralPlane's real MigrationRunner over MIGRATION_REGISTRY against one target
+database, so a rehearsal exercises the actual boot path rather than a
+reimplementation of it.
 """
 
 import asyncio

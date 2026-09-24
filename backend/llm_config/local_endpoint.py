@@ -1,16 +1,8 @@
-"""Literal classification of an OpenAI-compatible base URL as local inference.
-
-Feature 088 T016 (FR-019): the fixed research profile may only admit a
-local-inference endpoint when the USER configuration's ``base_url`` names a
-loopback or RFC1918 host literally, or is an exact operator/caller-allowlisted
-origin. Classification is purely lexical — no DNS resolution, no connection —
-so a hostname that merely *resolves* to a private address is never treated as
-local (DNS rebinding cannot promote a remote endpoint), and a classification
-never becomes a fallback to a different provider or credential.
-
-Only stdlib is used; this module is shared by ``research_profile`` (which may
-not import the SDK/HTTP layers) and ``client_factory``.
+"""Purely lexical loopback/RFC1918/allowlist classification of a base URL, with no DNS
+resolution. Shared by research_profile.py and client_factory.py to tag local
+inference without exposing a hostname in audit records.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -19,8 +11,6 @@ from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import urlsplit
 
-# Exact origins (scheme://host[:port]) an operator may declare as local
-# inference in addition to literal loopback/RFC1918 hosts.
 LOCAL_ENDPOINT_ALLOWLIST_ENV = "RESEARCH_LOCAL_ENDPOINT_ALLOWLIST"
 
 ENDPOINT_LOOPBACK = "loopback"
@@ -30,8 +20,7 @@ ENDPOINT_REMOTE = "remote"
 
 _LOCAL_CLASSES = frozenset({ENDPOINT_LOOPBACK, ENDPOINT_PRIVATE, ENDPOINT_ALLOWLISTED})
 _LITERAL_LOOPBACK_HOSTS = frozenset({"localhost", "localhost."})
-# Exactly RFC1918; link-local, CGNAT, TEST-NET and other "not global" ranges
-# are NOT local inference and stay remote (fail-closed).
+# Only RFC1918 — link-local/CGNAT intentionally stay remote
 _RFC1918_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -41,8 +30,6 @@ _RFC1918_NETWORKS = (
 
 @dataclass(frozen=True, slots=True)
 class EndpointClass:
-    """Lexical verdict for one base URL; carries no credential material."""
-
     endpoint_class: str
     scheme: str
 
@@ -52,7 +39,6 @@ class EndpointClass:
 
     @property
     def redacted_base_url(self) -> str:
-        """Audit-safe rendering: a local endpoint reveals class only, never host."""
         if self.local:
             return f"{self.scheme}://<{self.endpoint_class}>"
         return ""
@@ -97,12 +83,6 @@ def _allowlisted_origins(explicit: Iterable[str]) -> frozenset:
 
 
 def classify_endpoint(base_url, *, allowlist: Iterable[str] = ()) -> EndpointClass:
-    """Classify ``base_url`` without resolving or contacting anything.
-
-    ``allowlist`` (and the ``RESEARCH_LOCAL_ENDPOINT_ALLOWLIST`` environment
-    variable) name exact origins — scheme, host and port — that count as local.
-    Anything unparseable or non-http(s) is ``remote`` (fail-closed).
-    """
     split = _split_origin(base_url)
     if split is None:
         return EndpointClass(ENDPOINT_REMOTE, "")

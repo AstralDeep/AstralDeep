@@ -1,8 +1,7 @@
-"""Feature 060 atomic conversation commit and snapshot contract tests.
-
-The integration cases use a throwaway PostgreSQL database. They prove that
-staged/incomplete work is invisible, publication is one transaction, and a
-snapshot is built from one owner-scoped repeatable view.
+"""Tests for atomic conversation commit and snapshot building
+(orchestrator/conversation_publication.py, history.py) over Postgres: staged work
+stays invisible, publication is one transaction, and snapshots read one owner-scoped
+view.
 """
 
 from __future__ import annotations
@@ -135,8 +134,6 @@ def _coordinator(database: PlaneTestRuntime) -> WorkAdmissionCoordinator:
 
 
 def _workspace_manager(history, database: PlaneTestRuntime) -> WorkspaceManager:
-    """Bind workspace tests to one typed Plane catalog over the isolated DB."""
-
     return WorkspaceManager(
         history,
         plane_runtime=database,
@@ -392,8 +389,6 @@ def test_atomic_publish_advances_once_and_explicit_empty_canvas_clears(
     )
     assert snapshot["render_revision"] == 1
     assert len(snapshot["transcript"]) == 2
-    # feature 063: a text primitive is lifted to a chat text part (words preserved);
-    # UI components live only on the canvas, never in the transcript.
     assert snapshot["transcript"][1]["parts"][0]["type"] == "text"
     assert snapshot["transcript"][1]["parts"][0]["text"] == "Answer"
     assert snapshot["canvas"]["components"][0]["content"] == "Canvas"
@@ -460,6 +455,35 @@ def test_source_component_stays_in_canvas_and_narrative_stays_in_transcript(
     assert 'href="https://en.wikipedia.org/wiki/Dog_grooming"' in html
     assert 'target="_blank"' in html
     assert "<em>" not in html
+
+
+@pytest.mark.parametrize("purpose", ["commit", "hydration"])
+@pytest.mark.parametrize("legacy_card", [False, True])
+def test_research_sources_remain_closed_on_commit_and_restore(database, purpose, legacy_card):
+    _create_chat(database)
+    repository = _repository(database)
+    sources = [
+        {"type": "card" if legacy_card else "collapsible", "title": title, "default_open": False,
+         "_source_agent": "web-research-1", "_source_tool": "fetch_page", "component_id": identity,
+         "content": [{"type": "text", "content": f"Source: {url}"}, {"type": "text", "content": text}]}
+        for title, identity, url, text in (
+            ("Source A", "source-a", "https://example.org/a", "Complete article A " * 100),
+            ("Source B", "source-b", "https://example.org/b", "Complete article B " * 100),
+        )
+    ]
+    brief = {"type": "card", "title": "Research brief", "content": [{"type": "text", "content": "Concise cited result [A](https://example.org/a)."}]}
+    commit = repository.stage_commit(chat_id=CHAT_ID, owner_user_id=OWNER, request_generation=uuid.uuid4())
+    repository.publish_commit(commit_id=commit["commit_id"], owner_user_id=OWNER,
+                              messages=[{"role": "assistant", "content": sources}, {"role": "assistant", "content": [brief]}],
+                              canvas_components=[])
+    snapshot = _snapshot(repository, snapshot_purpose=purpose, request_generation=commit["request_generation"])
+    source_parts = snapshot["transcript"][0]["parts"]
+    assert [part["components"][0]["title"] for part in source_parts] == ["Source A", "Source B"]
+    assert all(part["components"][0]["type"] == "collapsible" and part["components"][0]["default_open"] is False for part in source_parts)
+    assert snapshot["transcript"][1]["parts"] == [{"type": "text", "text": brief["content"][0]["content"]}]
+    web = augment_conversation_snapshot_for_target(snapshot, None, target="web")
+    for index, part in enumerate(web["transcript"][0]["parts"]):
+        assert sources[index]["content"][1]["content"] in part["components"][0]["_presentation"]["html"]
 
 
 def test_stale_base_and_stale_operation_fence_cannot_publish(
@@ -610,8 +634,6 @@ def test_web_presentation_is_exact_post_adaptation_and_never_semantic(
     )
 
     assert semantic == original
-    # feature 063: the transcript is text-only — the rail text primitive is lifted to a
-    # text part (no _presentation), and only canvas components carry web _presentation.
     assert web["transcript"][0]["parts"][0]["type"] == "text"
     assert web["transcript"][0]["parts"][0]["text"] == "Rail <safe>"
     for component in web["canvas"]["components"]:
@@ -875,7 +897,6 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
             [{"type": "ref", "component_id": "canvas"}],
         )
 
-        # Every other reader remains on the prior complete revision.
         prior_snapshot = await asyncio.to_thread(
             _snapshot, _repository(database)
         )
@@ -962,8 +983,6 @@ async def test_commit_history_refresh_is_fail_soft() -> None:
 def test_revisioned_chats_reject_every_legacy_message_and_canvas_write(
     database: PlaneTestRuntime,
 ) -> None:
-    """Once revision 1 exists, no unversioned row can escape beside it."""
-
     _create_chat(database)
     repository = _repository(database)
     staged = repository.stage_commit(

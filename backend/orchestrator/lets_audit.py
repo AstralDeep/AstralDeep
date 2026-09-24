@@ -1,4 +1,7 @@
-"""Redacted correlation of Astral, Plane, LETS, claim, and effect evidence."""
+"""Redacted, hash-chained audit observer correlating Astral, Plane, LETS, claim, and
+effect evidence into one gateway event, writing through audit/recorder.py and
+audit/schemas.py. Used by agent_lifecycle.py and governed_dispatch.py.
+"""
 
 from __future__ import annotations
 
@@ -60,8 +63,6 @@ def _redacted_metadata(value: Mapping[str, object]) -> dict[str, object]:
 
 @dataclass(frozen=True, slots=True)
 class LetsAuditObserver:
-    """Gateway observer that appends one value-free hash-chained event."""
-
     actor_user_id: str
     auth_principal: str
     agent_id: str

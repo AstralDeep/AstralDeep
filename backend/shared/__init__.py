@@ -1,18 +1,11 @@
-# Shared modules for the orchestrator-agent system
+"""Package marker for backend/shared, re-exporting shared.progress's event types; also
+copies legacy VITE_-prefixed env values onto their unprefixed names at import time so
+an old .env file doesn't silently stop working.
+"""
 
 import os as _os
 
-# ---------------------------------------------------------------------------
-# Legacy env-name shim (054 cleanup): every backend call site now reads the
-# unprefixed names — the React-era VITE_ aliases are retired. A deployment
-# whose .env still sets a VITE_-prefixed value gets it copied to the real
-# name (unprefixed wins when both are set) with a deprecation warning, so
-# old host configs don't silently break. Remove the shim once no deployed
-# .env carries the old names.
-#   VITE_USE_MOCK_AUTH        -> USE_MOCK_AUTH
-#   VITE_KEYCLOAK_AUTHORITY   -> KEYCLOAK_AUTHORITY
-#   VITE_KEYCLOAK_CLIENT_ID   -> KEYCLOAK_CLIENT_ID
-# ---------------------------------------------------------------------------
+# Unprefixed wins when both are set (keeps old .env working)
 for _new, _old in (
     ("USE_MOCK_AUTH", "VITE_USE_MOCK_AUTH"),
     ("KEYCLOAK_AUTHORITY", "VITE_KEYCLOAK_AUTHORITY"),

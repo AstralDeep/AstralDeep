@@ -1,4 +1,8 @@
-"""Owner-only operation reads; no admission, control or opaque payload surface."""
+"""Tests for orchestrator/work_api.py's owner-only operation reads over work_service.py:
+an exact public field allowlist, owner-policy checks before any repository read,
+cursor-based paging, and SSE polling with re-authentication on every request.
+"""
+
 from datetime import UTC, datetime
 import time
 from types import SimpleNamespace
@@ -22,7 +26,6 @@ def read_claims(roles=("user",)):
 
 
 def override_read_auth(app, monkeypatch, roles=("user",)):
-    """A normal-auth boundary double includes its private token handoff."""
     claims = read_claims(roles)
     async def authenticate(request: Request):
         request.state.delegation_subject_token = "fixture.access.token"
@@ -224,7 +227,6 @@ async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatc
     from jose import JWTError
     from orchestrator import auth, web_auth
     orch, read, repo = host
-    # Broad suite collection may enable the development mock in other modules.
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
@@ -271,7 +273,6 @@ async def test_signed_out_cookie_invalid_and_missing_service_are_safe(host, monk
         del app.state.orchestrator
         response = await client.get("/api/work/v1/operations")
         assert response.status_code == 503 and response.json() == {"error": "work_read_unavailable"}
-        # Mounted apps resolve the existing root orchestrator exactly as other APIs.
         app._root_app = SimpleNamespace(state=SimpleNamespace(orchestrator=orch))
         assert (await client.get("/api/work/v1/operations")).status_code == 200
         repo.list_operations.side_effect = AssignmentError("private upstream message", 503)
@@ -364,7 +365,6 @@ async def test_list_reports_resync_when_the_cursor_no_longer_exists_for_the_owne
     service = WorkService(orch.persistent_assignments)
     cursor = read.assignment.assignment_id
     valid = await service.list("owner", {"sub": "owner"}, limit=1, after_id=cursor)
-    # A live cursor keeps the existing exact page shape: no resync key at all.
     assert set(valid) == {"operations", "next_cursor", "page_full"}
     assert valid["next_cursor"] == cursor and valid["page_full"] is True
     repo.list_operations.reset_mock()
@@ -435,24 +435,18 @@ async def test_sse_loop_is_closed_over_failures_and_the_original_cap(monkeypatch
     def same():
         return {"revision": 3, "changed": False, "resync_required": False, "operation": None}
 
-    # A verify that shortens the credential cap into the past ends delivery at once.
     assert await collect([changed], [999.0], 5000.0) == [
         'event: error\ndata: {"error": "work_authentication_required"}\n\n']
-    # A revision frame carries its id; the credential cap (<= bound) then ends with an error.
     frames = await collect([changed, same], [1000.04, 1000.08], 5000.0)
     assert frames[0].startswith("id: 3\nevent: revision\n") and '"changed": true' in frames[0]
     assert frames[1:] == ['id: 3\nevent: error\ndata: {"error": "work_authentication_required"}\n\n']
-    # The time bound (< credential cap) ends with a resumable end frame instead.
     frames = await collect([same, same], [2000.0, 2000.0], 1000.07)
     assert frames == [": tick\n\n", ": tick\n\n",
                       'event: end\ndata: {"reason": "work_stream_bounded", "revision": null}\n\n']
-    # Poll/verify refusals and malformed replies are closed final frames, never raised.
     assert await collect([raising(AssignmentError("private", 503))], [], 5000.0) == [
         'event: error\ndata: {"error": "work_read_unavailable"}\n\n']
     assert await collect([lambda: {"changed": "no revision key"}], [2000.0], 5000.0) == [
         'event: error\ndata: {"error": "work_read_unavailable"}\n\n']
-    # An unbounded poll transaction re-raises raw driver failures (not PlaneError);
-    # mid-stream they still end as the closed frame, never a truncated response.
     assert await collect([raising(RuntimeError("private driver detail"))], [], 5000.0) == [
         'event: error\ndata: {"error": "work_read_unavailable"}\n\n']
     frames = await collect([changed, raising(OSError("private socket detail"))], [2000.0], 5000.0)

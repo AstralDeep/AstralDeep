@@ -1,4 +1,7 @@
-"""Authenticated owner API for persistent assignment policy and controls."""
+"""Authenticated owner-only HTTP routes for persistent assignment policy, control and
+activity, backed by AssignmentService and registered by orchestrator/orchestrator.py.
+"""
+
 from __future__ import annotations
 
 from functools import wraps
@@ -29,8 +32,6 @@ def _json(content, status=200):
 
 
 class OwnerRoute(APIRoute):
-    """Do not reflect source arguments, token-shaped input, or internal errors."""
-
     def get_route_handler(self):
         handler = super().get_route_handler()
 
@@ -52,7 +53,6 @@ class OwnerRoute(APIRoute):
 
 
 assignment_router = APIRouter(prefix="/api/persistent-agents", tags=["Persistent agents"], route_class=OwnerRoute)
-# Descriptive alias for composition callers.
 persistent_agents_router = assignment_router
 
 
@@ -158,8 +158,7 @@ async def assignment_events(assignment_id: str, request: Request,
 async def decide_assignment_action(assignment_id: str, action_id: str, body: ApprovalDecisionRequest,
                                    request: Request, owner_id: str = _OWNER,
                                    claims: dict = _CLAIMS):
-    # This capability may only be attached by trusted server integration. A
-    # bearer token or a caller-provided websocket identifier is not attendance.
+    # Only trusted server code sets this; never client-supplied
     interaction = getattr(request.state, "persistent_assignment_interaction", None)
     result = await _service(request).decide(owner_id, claims, assignment_id, action_id, body,
                                            interaction=interaction)

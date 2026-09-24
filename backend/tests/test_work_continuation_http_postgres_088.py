@@ -1,4 +1,8 @@
-"""Mounted owner wait/reconciliation never grant new execution authority."""
+"""Tests that the mounted owner wait/reconciliation HTTP routes (work_api.py) change
+state at most once, retain the manual namespace, and reject payloads carrying
+authority fields the owner should not control.
+"""
+
 import httpx
 import pytest
 

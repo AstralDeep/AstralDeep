@@ -1,4 +1,8 @@
-"""User-side API contract tests for the onboarding subsystem (feature 005)."""
+"""Tests for onboarding/api.py's user router: default state, rejection of user-id
+override query params, state transitions and their audit rows, replay without
+mutation, and the user-view step list hiding admin-only fields.
+"""
+
 from __future__ import annotations
 
 
@@ -32,7 +36,6 @@ def _audit_repository(database):
 
 
 def _build_app(database, *, user_id: str, roles=("user",)):
-    """Build a FastAPI app wired to the user router with overridden auth."""
     app = FastAPI()
 
     class _Orch:
@@ -62,16 +65,11 @@ def _build_app(database, *, user_id: str, roles=("user",)):
 
 @pytest.fixture
 def wire_audit(database):
-    """Wire the audit recorder so endpoint calls don't silently drop events."""
     rec = Recorder(_audit_repository(database))
     set_recorder(rec)
     yield rec
     set_recorder(None)
 
-
-# ---------------------------------------------------------------------------
-# GET /api/onboarding/state
-# ---------------------------------------------------------------------------
 
 def test_get_state_default_not_started(database, unique_user, wire_audit):
     app, _ = _build_app(database, user_id=unique_user)
@@ -91,10 +89,6 @@ def test_get_state_rejects_user_id_query_param(database, unique_user, wire_audit
     assert r.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# PUT /api/onboarding/state
-# ---------------------------------------------------------------------------
-
 def test_put_state_in_progress_records_started(database, unique_user, wire_audit):
     app, _ = _build_app(database, user_id=unique_user)
     client = TestClient(app)
@@ -105,7 +99,6 @@ def test_put_state_in_progress_records_started(database, unique_user, wire_audit
     assert r.status_code == 200
     assert r.json()["status"] == "in_progress"
 
-    # Verify audit row
     with database.transaction() as transaction:
         row = transaction.fetch_one(
             "SELECT count(*) AS count FROM audit_events "
@@ -160,7 +153,7 @@ def test_put_state_rejects_not_started(database, unique_user, wire_audit):
     app, _ = _build_app(database, user_id=unique_user)
     client = TestClient(app)
     r = client.put("/api/onboarding/state", json={"status": "not_started"})
-    assert r.status_code == 422  # pydantic validation
+    assert r.status_code == 422
 
 
 def test_put_state_rejects_admin_step_for_non_admin(database, unique_user, wire_audit):
@@ -194,10 +187,6 @@ def test_put_state_rejects_unknown_step_id(database, unique_user, wire_audit):
     assert r.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# POST /api/onboarding/replay
-# ---------------------------------------------------------------------------
-
 def test_replay_records_event_without_mutating_state(database, unique_user, wire_audit):
     app, _ = _build_app(database, user_id=unique_user)
     client = TestClient(app)
@@ -209,11 +198,9 @@ def test_replay_records_event_without_mutating_state(database, unique_user, wire
     assert r.status_code == 204
 
     post = client.get("/api/onboarding/state").json()
-    # Replay does NOT mutate the persisted state
     assert post["status"] == pre["status"] == "completed"
     assert post["completed_at"] == pre["completed_at"]
 
-    # Verify audit row was written with prior_status='completed'
     with database.transaction() as transaction:
         row = transaction.fetch_one(
             "SELECT inputs_meta FROM audit_events "
@@ -232,10 +219,6 @@ def test_replay_works_for_user_with_no_row(database, unique_user, wire_audit):
     r = client.post("/api/onboarding/replay")
     assert r.status_code == 204
 
-
-# ---------------------------------------------------------------------------
-# GET /api/tutorial/steps
-# ---------------------------------------------------------------------------
 
 def test_steps_user_excludes_admin(database, unique_user, wire_audit):
     repo = _onboarding_repository(database)
@@ -290,6 +273,5 @@ def test_steps_user_view_omits_admin_only_fields(database, unique_user, wire_aud
     r = client.get("/api/tutorial/steps")
     items = r.json()["steps"]
     for item in items:
-        # archived_at and updated_at must be hidden from the user view
         assert "archived_at" not in item
         assert "updated_at" not in item

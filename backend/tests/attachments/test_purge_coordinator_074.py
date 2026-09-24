@@ -1,4 +1,7 @@
-"""Deep policy tests for Plane-owned durable streaming-blob purges."""
+"""Policy tests for orchestrator/attachments/purge.py's durable streaming-blob purge
+coordinator: intent-before-delete ordering, startup recovery/reconciliation,
+owner-namespace cleanup, and close/abort idempotency under concurrent load.
+"""
 
 from __future__ import annotations
 
@@ -50,8 +53,6 @@ class _Runtime:
         self.events = events
         self.depth = 0
         self.commit_response_error: BaseException | None = None
-        # This fixture has no durable assignments; explicitly provide today's
-        # retirement contract so a missing real repository can fail closed.
         self.repositories = SimpleNamespace(assignments=SimpleNamespace(
             retire_operations_for_owner=lambda _transaction, **_values: SimpleNamespace(
                 unresolved_action_ids=(), retained_assignment_ids=())))
@@ -70,8 +71,6 @@ class _Runtime:
 
 
 class _SingleConnectionRuntime(_Runtime):
-    """Tiny Plane-pool model that fails instead of hanging on lock inversion."""
-
     def __init__(self, events: list[str]) -> None:
         super().__init__(events)
         self.connection_acquired = threading.Event()
@@ -212,8 +211,6 @@ class _Executor:
 
 
 class _DrainingExecutor(_Executor):
-    """Return a bounded prefix of durable ready work on each pass."""
-
     def __init__(self, runtime, repository, events, *, count: int) -> None:
         super().__init__(runtime, repository, events)
         self.remaining = [f"legacy-{index}" for index in range(count)]
@@ -844,8 +841,6 @@ async def test_periodic_reconciliation_uses_dedicated_lane_and_is_cancellable() 
 
 @pytest.mark.asyncio
 async def test_many_delete_acceptances_cannot_starve_active_stage_default_worker() -> None:
-    """Purge lock waiters never consume the executor needed by staged writes."""
-
     coordinator, _runtime, repository, executor, _events = _coordinator()
     reconcile_waiting_on_stage = threading.Event()
     release_stage = threading.Event()
@@ -863,10 +858,6 @@ async def test_many_delete_acceptances_cannot_starve_active_stage_default_worker
         await asyncio.sleep(0.005)
     assert reconcile_waiting_on_stage.is_set()
 
-    # Model the deliberately tiny default executor used by Plane's staged
-    # writer.  The 32 delete schedules use the coordinator's dedicated lane,
-    # so this worker remains available even while physical purge is blocked on
-    # the active stage's owner lock.
     loop = asyncio.get_running_loop()
     upload_progress = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as default_pool:
@@ -1128,7 +1119,7 @@ def test_live_probe_detects_tombstone_committed_by_another_coordinator() -> None
         attachment_id="attachment-1",
     )
     assert outcome.completed is False
-    first.assert_ready()  # Process-local cache alone is deliberately stale.
+    first.assert_ready()
 
     with runtime.transaction() as transaction:
         with pytest.raises(

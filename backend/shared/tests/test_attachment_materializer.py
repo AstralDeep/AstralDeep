@@ -1,4 +1,7 @@
-"""Inline attachment policy over the application materialization service."""
+"""Tests for shared/attachment_materializer.py: code-fence stripping, CSV-validation
+ordering, fail-closed service binding, idempotent registration, and durable
+CSV/non-CSV publication through the central materialization service.
+"""
 
 from __future__ import annotations
 

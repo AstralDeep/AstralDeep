@@ -1,8 +1,8 @@
-"""Private declarative metadata over real IAM, Plane transactions and audit.
-
-The production supervisor is running with a controlled no-dispatch tick. No
-definition is wired into Work, and no provider, executable or UI is started.
+"""Tests for the declarative agent lifecycle (orchestrator/agent_authoring.py,
+projection_surfaces/authoring.py) over real IAM, Plane transactions, and audit:
+activate/revise/clone/archive/delete, owner scoping, and exact-replay idempotence.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -585,9 +585,6 @@ async def test_cancelled_worker_commit_remains_exactly_replayable(declarations, 
         with pytest.raises(asyncio.CancelledError):
             await task
         assert await asyncio.to_thread(finished.wait, 3)
-    # The authentic worker may have committed despite lost acknowledgement.
-    # Exact replay takes the same owner lock, settles that race, and never emits
-    # two receipts/audits or performs a second semantic transition.
     await apply(state, intent)
     assert counts(state) == (1, 1, 1, 1)
 

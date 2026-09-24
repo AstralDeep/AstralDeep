@@ -1,4 +1,7 @@
-"""Plane-backed attachment availability checks for audit artifact pointers."""
+"""Tests for audit/api.py: artifact-pointer availability checks stay scoped to the
+owning user's AstralPlane app source and fail closed and opaque on lookup errors, on
+and off the event loop.
+"""
 
 from __future__ import annotations
 

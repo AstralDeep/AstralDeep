@@ -1,4 +1,7 @@
-"""Real Microsoft.CodeCoverage 18.9.0 producer and strict malformed denials."""
+"""Tests for the Microsoft.CodeCoverage native producer path in
+check_changed_coverage.py: hash/line-witness retention and denial of inconsistent,
+duplicate, or cross-class coverage claims.
+"""
 
 from __future__ import annotations
 

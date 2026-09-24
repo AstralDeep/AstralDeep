@@ -1,11 +1,8 @@
-"""DB round-trip budgets for the agents chrome surface (feature 052, T016/T017).
-
-Renders the agents list and detail views through the surface's real
-``render()`` against the live test Postgres (same posture as
-test_query_budgets.py) with a minimal orchestrator stub, and proves with the
-count_queries helper that the list view stays within 2 round trips and the
-detail view within 3 — while still containing the expected agent content.
+"""Tests for the agents chrome surface in orchestrator/projection_surfaces/agents.py:
+the list view renders within 2 DB round trips and the detail view within 3, against a
+live Postgres-backed Plane runtime.
 """
+
 import asyncio
 import os
 import sys
@@ -27,8 +24,6 @@ OWNER_EMAIL = "owner@example.com"
 
 
 class StubSkill:
-    """Card skill shape the surface reads (id/name/description/scope)."""
-
     def __init__(self, sid, description, scope):
         self.id = sid
         self.name = sid
@@ -37,8 +32,6 @@ class StubSkill:
 
 
 class StubCard:
-    """Agent-card shape the surface reads (name/description/skills/metadata)."""
-
     def __init__(self, agent_id, name, description, skills=None, metadata=None):
         self.agent_id = agent_id
         self.name = name
@@ -48,8 +41,6 @@ class StubCard:
 
 
 class StubOrch:
-    """Minimal orchestrator bound to the application Plane source."""
-
     def __init__(self, plane_runtime, perms, cards):
         self.plane_repository_source = ApplicationPlaneSource(
             plane_runtime=plane_runtime,
@@ -64,14 +55,12 @@ class StubOrch:
 
 @pytest.fixture(scope="module")
 def plane_runtime():
-    """One managed application Plane runtime for this integration module."""
     with isolated_plane_runtime("surface_query_budgets") as runtime:
         yield runtime
 
 
 @contextmanager
 def _count_plane_queries(plane_runtime):
-    """Count real Plane transaction statements without a legacy DB facade."""
     counter = QueryCounter()
     original_transaction = plane_runtime.transaction
 
@@ -94,7 +83,6 @@ def _count_plane_queries(plane_runtime):
 
 @pytest.fixture
 def env(plane_runtime):
-    """A seeded user + two agents (owned/private and foreign/public)."""
     repositories = plane_runtime.repositories
     uid = f"sbudget-{uuid.uuid4().hex[:12]}"
     agent_a = f"sbudget-alpha-{uuid.uuid4().hex[:8]}"
@@ -129,8 +117,6 @@ def env(plane_runtime):
             disabled=True,
             updated_at=now,
         )
-        # A different principal's grant for the same agent must never enter the
-        # owner-scoped detail snapshot or influence the permission picker.
         repositories.tool_policy_state.set_tool_override(
             transaction,
             owner_id=f"{uid}-foreign",
@@ -194,7 +180,6 @@ def env(plane_runtime):
 
 
 def test_agents_list_max_2(env, plane_runtime):
-    """The list view renders each tab in at most 2 DB round trips."""
     orch, uid, agent_a, agent_b = env
 
     with _count_plane_queries(plane_runtime) as counter:
@@ -212,7 +197,6 @@ def test_agents_list_max_2(env, plane_runtime):
 
 
 def test_agent_detail_max_3(env, plane_runtime):
-    """The detail view renders in at most 3 DB round trips with full content."""
     orch, uid, agent_a, agent_b = env
 
     with _count_plane_queries(plane_runtime) as counter:
@@ -231,7 +215,6 @@ def test_agent_detail_max_3(env, plane_runtime):
 
 
 def test_agent_detail_non_owner_hides_owner_sections(env, plane_runtime):
-    """A foreign public agent renders without owner controls, same budget."""
     orch, uid, agent_a, agent_b = env
 
     with _count_plane_queries(plane_runtime) as counter:

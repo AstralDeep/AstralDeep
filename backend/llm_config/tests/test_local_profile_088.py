@@ -1,9 +1,6 @@
-"""Opt-in local-inference research profile: closed catalog, literal-local
-selection, declared accounting bound, byte-identical OpenAI default.
-
-No HTTP, SDK or provider traffic. Feature 088 T016 / FR-019 (spec edge case:
-"a custom model provider lacks a qualified accounting bound" -- the bound is
-declared here, never derived from a preset).
+"""Tests for llm_config/local_endpoint.py and research_profile.py's LOCAL_PROFILE:
+endpoint classification stays literal, a local row binds to a declared accounting
+bound, and the OpenAI profile's default behavior stays byte-identical throughout.
 """
 
 import json
@@ -58,11 +55,6 @@ def select(store, binding, capture, **kwargs):
     return select_config(capture, store=store, binding_key=binding, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Endpoint classification is literal and fail-closed
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "base_url,expected",
     [
@@ -90,8 +82,8 @@ def select(store, binding, capture, **kwargs):
         ("127.0.0.1:11434/v1", "remote"),
         ("http:///v1", "remote"),
         ("http://127.0.0.1:99999/v1", "remote"),
-        ("http://[::1/v1", "remote"),  # urlsplit ValueError
-        ("http://:8000/v1", "remote"),  # empty host
+        ("http://[::1/v1", "remote"),
+        ("http://:8000/v1", "remote"),
         ("", "remote"),
         (None, "remote"),
         (b"http://127.0.0.1/v1", "remote"),
@@ -127,13 +119,7 @@ def test_allowlist_matches_exact_origin_only(monkeypatch):
     monkeypatch.setenv(LOCAL_ENDPOINT_ALLOWLIST_ENV, "garbage, ,http://ollama.lan:11434")
     assert classify_endpoint("http://ollama.lan:11434/v1").endpoint_class == "allowlisted"
     assert classify_endpoint("http://ollama.lan:11435/v1").endpoint_class == "remote"
-    # An allowlisted origin never promotes a hosted vendor row into "local".
     assert classify_endpoint("https://api.openai.com/v1").endpoint_class == "remote"
-
-
-# ---------------------------------------------------------------------------
-# Catalog + OpenAI default are unchanged
-# ---------------------------------------------------------------------------
 
 
 def test_openai_profile_is_the_default_and_matches_the_legacy_constants():
@@ -180,14 +166,8 @@ def test_default_selection_and_parsing_are_byte_identical_to_the_openai_profile(
                                             passage_ids=request.passage_ids, profile=OPENAI_PROFILE)
     assert parsed.usage == profile.ResearchUsage(100, 20, 120)
     assert parsed.usage.context_tokens == profile.CONTEXT_TOKENS
-    # A local row is NOT admitted by the default profile (no fallback).
     with pytest.raises(ResearchProfileUnavailable):
         select(store, binding, seed(store))
-
-
-# ---------------------------------------------------------------------------
-# Local selection: exact row, literal-local endpoint, declared bound
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("provider", ["ollama", "lmstudio", "custom"])
@@ -204,7 +184,6 @@ def test_local_selection_binds_the_exact_row_and_signs_its_profile(store, bindin
     assert selection._api_key == ""
     assert len(selection.revision) == 64
     assert selection == select(store, binding, capture, profile=LOCAL_PROFILE)
-    # A pre-bound copy of THIS row is accepted; one naming another row is not.
     assert select(store, binding, capture, profile=selection.profile) == selection
     with pytest.raises(ResearchProfileUnavailable):
         select(store, binding, capture,
@@ -252,7 +231,6 @@ def test_local_unusable_secret_refuses(store, binding, fake_db, key):
 def test_local_profile_refuses_any_non_local_or_malformed_row(store, binding, fake_db, field, value):
     seed(store)
     if field == "scope" or value is None:
-        # The store never yields such a row; bind refuses it defensively.
         capture = store.capture_user_sync("alice")
         capture = type(capture)(replace(capture._record, **{field: value}))
     else:
@@ -312,9 +290,8 @@ def test_local_parse_uses_the_local_bound_and_never_a_synthetic_zero(store, bind
     evidence = parse(reply(model=LOCAL_MODEL))
     assert evidence.disposition == "evidence" and evidence.passage_ids == ids
     assert evidence.usage == profile.ResearchUsage(100, 20, 120, 32768, 1024)
-    assert evidence.usage != profile.ResearchUsage(100, 20, 120)  # OpenAI-bound counters differ
+    assert evidence.usage != profile.ResearchUsage(100, 20, 120)
     assert not evidence.usage.exceeds_profile
-    # Prompt within OpenAI's 128k but beyond the local 32k bound is an overrun.
     over = parse(reply(model=LOCAL_MODEL, usage={"prompt_tokens": 32769, "completion_tokens": 1,
                                                 "total_tokens": 32770}))
     assert over.disposition == "profile_exceeded" and over.usage.total_tokens == 32770
@@ -324,30 +301,22 @@ def test_local_parse_uses_the_local_bound_and_never_a_synthetic_zero(store, bind
     output = parse(reply(model=LOCAL_MODEL, usage={"prompt_tokens": 1, "completion_tokens": 1025,
                                                   "total_tokens": 1026}))
     assert output.disposition == "profile_exceeded"
-    # Wrong model on the local profile is an invalid answer with factual usage.
     wrong = parse(reply(model=profile.MODEL))
     assert wrong == profile.ResearchResponse(profile.ResearchUsage(100, 20, 120, 32768, 1024),
                                              None, "answer_invalid")
-    # Missing/null usage is unknown, not zero.
     unknown = parse(reply(model=LOCAL_MODEL, usage=None))
     assert unknown == profile.ResearchResponse(None, None, "usage_unknown")
     zero = parse(reply(model=LOCAL_MODEL, usage={"prompt_tokens": 0, "completion_tokens": 0,
                                                 "total_tokens": 0}))
     assert zero.usage == profile.ResearchUsage(0, 0, 0, 32768, 1024)
-    assert zero.disposition == "evidence"  # a provider's literal zero is factual, not synthetic
+    assert zero.disposition == "evidence"
     negative = parse(reply(model=LOCAL_MODEL, usage={"prompt_tokens": -1, "completion_tokens": 1,
                                                     "total_tokens": 0}))
     assert negative.usage is None and negative.disposition == "usage_unknown"
-    # Envelope denial stays independent of the profile.
     assert profile.parse_response(b"{}", status_code=200, passage_ids=ids,
                                   profile=selection.profile).disposition == "response_invalid"
     assert profile.parse_response(json.dumps(reply(model=LOCAL_MODEL)).encode(), status_code=503,
                                   passage_ids=ids, profile=selection.profile).usage is None
-
-
-# ---------------------------------------------------------------------------
-# client_factory local frame: additive, remote providers byte-identical
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("base_url,api_key,expected", [

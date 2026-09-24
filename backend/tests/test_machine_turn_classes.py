@@ -1,12 +1,8 @@
-"""T025/T026 (056-delegated-agent-chaining): all machine-turn classes inherit
-the ONE shared authority seam (FR-012).
-
-Parser replay (``attachment_autoparse.auto_continue_after_go_live``) and draft
-self-tests (``agentic_creation._self_test_draft``) derive their root through
-``orch.derive_machine_authority`` — the same call the scheduler makes — and bind
-it to their virtual socket, so a real-agent tool inside those turns dispatches
-delegated in production instead of being refused for having no session token.
+"""Tests for orchestrator/attachment_autoparse.py and agentic_creation.py: parser replay
+and draft self-tests derive machine authority through the same seam the scheduler
+uses, so their real-agent tools dispatch delegated rather than being refused.
 """
+
 from __future__ import annotations
 
 import os
@@ -30,8 +26,6 @@ def _authority(turn_class):
 
 
 class _Orch:
-    """Records the seam calls the machine-turn classes make."""
-
     def __init__(self, authority=None):
         self._authority = authority
         self.derived = []
@@ -54,10 +48,6 @@ class _Orch:
     async def handle_chat_message(self, vws, message, chat_id, **kw):
         self.turns.append({"message": message, "chat_id": chat_id, **kw})
 
-
-# --------------------------------------------------------------------------- #
-# Parser replay (T025)
-# --------------------------------------------------------------------------- #
 
 def _autoparse_orch(authority=None):
     from orchestrator import attachment_autoparse  # noqa: F401
@@ -112,17 +102,15 @@ async def test_parser_replay_authority(monkeypatch):
                              "turn_class": "parser_replay"}]
     assert len(orch.bound) == 1
     assert orch.bound[0][1].principal == "machine:parser_replay"
-    assert len(orch.unbound) == 1  # always released
+    assert len(orch.unbound) == 1
     assert orch.turns[0]["message"] == "read my file please"
 
 
 @pytest.mark.asyncio
 async def test_parser_replay_without_consent_still_runs(monkeypatch):
-    """An AuthoritySkip is not fatal for the replay — it simply runs unbound,
-    and production then refuses its real-agent dispatches as it does today."""
     from orchestrator import attachment_autoparse
 
-    orch = _autoparse_orch(None)  # derive → AuthoritySkip
+    orch = _autoparse_orch(None)
     repo = MagicMock()
     repo.get_by_id = MagicMock(
         return_value=MagicMock(filename="data.xyz", category="data"))
@@ -135,13 +123,9 @@ async def test_parser_replay_without_consent_still_runs(monkeypatch):
         source_attachment_id="att-123456", extension="xyz", category="data")
 
     assert ok is True
-    assert not orch.bound          # nothing bound without consent
-    assert orch.turns              # but the replay still happened
+    assert not orch.bound
+    assert orch.turns
 
-
-# --------------------------------------------------------------------------- #
-# Draft self-test (T026)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_self_test_authority():
@@ -176,17 +160,10 @@ async def test_self_test_unbinds_even_on_crash():
     verdict = await agentic_creation._self_test_draft(
         orch, {"id": "draft-abc123"}, "do the thing", "u1")
     assert verdict["status"] == "failed"
-    assert len(orch.unbound) == 1  # released despite the crash
+    assert len(orch.unbound) == 1
 
-
-# --------------------------------------------------------------------------- #
-# One seam (FR-012)
-# --------------------------------------------------------------------------- #
 
 def test_all_three_classes_use_the_same_derivation():
-    """The three machine-turn classes must not drift apart: each names its
-    class to the SAME orchestrator seam, which is the only place authority is
-    derived."""
     import inspect
 
     from orchestrator import agentic_creation, attachment_autoparse
@@ -199,7 +176,6 @@ def test_all_three_classes_use_the_same_derivation():
     assert 'turn_class="parser_replay"' in autoparse_src
     assert 'turn_class="draft_self_test"' in creation_src
     assert 'turn_class="scheduled_job"' in runner_src
-    # None of them mints or intersects on its own.
     for src in (autoparse_src, creation_src):
         assert "mint_access_token" not in src
         assert "_intersect_scopes" not in src

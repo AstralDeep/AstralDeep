@@ -1,4 +1,6 @@
-"""Exact live model/audio startup preflight tests for Feature 065."""
+"""Tests for speech_adapters.py's SpeechPreflight: exact inventory, live batch-ASR and
+WAV probes, and the bounded terminal-phrase deadline.
+"""
 
 from __future__ import annotations
 

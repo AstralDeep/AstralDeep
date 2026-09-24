@@ -1,4 +1,7 @@
-"""Account-retirement boundary stays durable and distinct from logout."""
+"""Tests for orchestrator/attachments/account_lifecycle.py: retirement delegates to the
+durable owner namespace, reports incomplete purges honestly, uses verified owner
+identity, and stays distinct from logout.
+"""
 
 from __future__ import annotations
 

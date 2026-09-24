@@ -1,4 +1,7 @@
-"""Real component composition and supervisor lifetime, without provider calls."""
+"""Tests for persistent_agents/runtime.py: one supervisor runs real discovery and stops,
+a second initialization preserves the existing pair, failed initialization closes
+only its own store, and startup respects the feature flag.
+"""
 
 import asyncio
 from types import SimpleNamespace
@@ -98,7 +101,6 @@ async def test_failed_initialization_closes_only_its_store_and_exposes_no_pair(h
     assert len(closed) == 1
     assert host.persistent_assignments is None
     assert host.persistent_assignment_runner is None
-    # The application-owned Plane remains usable after the private worker closes.
     with host.runtime_composition.plane.runtime.transaction() as tx:
         assert tx.fetch_one("SELECT 1 AS value")["value"] == 1
 
@@ -106,11 +108,6 @@ async def test_failed_initialization_closes_only_its_store_and_exposes_no_pair(h
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pair(host, monkeypatch, enabled):
-    """Run the production startup sequence to the pre-HTTP boundary.
-
-    Unrelated discovery/revocation tasks are closed without execution, and no
-    listening server is started. The assignment factory and real Plane run.
-    """
     from shared.feature_flags import flags
 
     class BeforeHTTP(Exception):

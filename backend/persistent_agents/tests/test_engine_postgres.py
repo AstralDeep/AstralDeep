@@ -1,9 +1,9 @@
-"""Real Plane/PostgreSQL engine recovery with deterministic external boundaries.
-
-The runtime, guarded migrations, action ledger and work admission are production
-implementations. Only IAM/model/tool responses are controlled by the fixture.
-Each test owns an isolated PostgreSQL schema; no application data is touched.
+"""Tests for persistent_agents/runner.py, execution.py and service.py through a real
+Plane/Postgres engine: source-change detection, stop/pause/resume across restarts,
+completion allowance bounds, and monitoring's initial/unchanged/changed
+classification.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,8 +50,6 @@ def plane():
     import psycopg2
     from psycopg2.extensions import make_dsn
     from psycopg2.sql import SQL, Identifier
-    # Schema creation/removal is fixture isolation only; all product tables and
-    # changes are exclusively initialized by the public guarded Plane runtime.
     admin = psycopg2.connect(dsn)
     admin.autocommit = True
     schema = "engine_079_" + uuid4().hex
@@ -75,8 +73,6 @@ def plane():
 
 
 class _Host:
-    """Instrumented boundary exercising each real persistent dispatch permit."""
-
     def __init__(self, runtime):
         self.work_admission = WorkAdmissionCoordinator.from_plane(
             plane_runtime=runtime, slot_lease=timedelta(seconds=2))
@@ -142,9 +138,6 @@ class _Host:
 
 
 SOURCE_URL = "https://example.org/releases"
-# A prior complete observation seeded through the public lifecycle API. Its
-# digests name content the fixture host never serves, so the first governed
-# read of a seeded assignment is a meaningful change assessed by the model.
 PRIOR_REVISION = digest("fixture-prior-revision")
 PRIOR_RESULT = digest("fixture-prior-result")
 
@@ -196,13 +189,11 @@ def _engine(plane, monkeypatch, *, seed_prior):
 
 @pytest.fixture
 def engine(plane, monkeypatch):
-    """An assignment with one seeded prior observation: its first read is a change."""
     yield from _engine(plane, monkeypatch, seed_prior=True)
 
 
 @pytest.fixture
 def fresh_engine(plane, monkeypatch):
-    """An assignment that has never observed its source."""
     yield from _engine(plane, monkeypatch, seed_prior=False)
 
 
@@ -355,8 +346,6 @@ def test_restart_reuses_completed_children_and_source_actions(engine):
         await store.call("recover_expired_for_administration", limit=10)
         recovered = await current(store, identity)
         assert recovered.phase == "failed"
-        # Respect the production retry backoff instead of changing database
-        # clocks or writing scheduler state outside the public repository.
         delay = (recovered.next_wake_at - datetime.now(UTC)).total_seconds()
         assert 0 < delay <= 60
         await asyncio.sleep(delay + 0.1)
@@ -634,8 +623,6 @@ def test_twenty_five_idle_assignments_use_no_model_and_controls_stay_responsive(
         for index in range(24):
             await store.call("create_assignment", owner_id="owner", assignment_id=str(uuid4()),
                 submission_id=str(uuid4()), submission_digest=digest(["idle", index]), definition=first.definition)
-        # Seed valid idle checkpoints through the public lifecycle API. No
-        # direct task/lease/clock SQL and no runner or admission mock is used.
         claims = await store.call("claim_due_for_administration", worker_id="idle-fixture", limit=25, lease_seconds=5)
         assert len(claims) == 25
         for claim in claims:
@@ -700,8 +687,6 @@ def test_replacement_runner_delivers_committed_memory_to_every_model(engine, pla
         await control(store, identity, "pause")
         await control(store, identity, "resume")
 
-        # A new host/service/runner has no memory of prior provider calls. Its
-        # actual dispatched prompts must reconstruct evidence from PostgreSQL.
         replacement_host = await asyncio.to_thread(_Host, plane)
         replacement_host.source_text = "Release version 2 published. Minor navigation spelling correction."
         replacement_host.join_text = "UNCHANGED"
@@ -727,11 +712,7 @@ def test_replacement_runner_delivers_committed_memory_to_every_model(engine, pla
     asyncio.run(scenario())
 
 
-# --- feature 088 T042: typed monitoring outcomes (FR-013, FR-014) -----------
-
-
 async def current_thawed(store, identity):
-    """The current record with its checkpoint as plain JSON values."""
     return SimpleNamespace(**thaw(await current(store, identity)))
 
 
@@ -741,7 +722,6 @@ async def _findings(store, identity):
 
 
 async def _rewrite_checkpoint(store, identity, checkpoint):
-    """Replace the retained checkpoint through the public lifecycle API only."""
     await control(store, identity, "pause")
     await control(store, identity, "resume")
     [claim] = await store.call("claim_due_for_administration", worker_id="checkpoint-fixture",
@@ -866,7 +846,6 @@ def test_missing_prior_result_binding_is_insufficient_evidence_without_plan(fres
         await claim_and_run(runner, store)
         initial = await current_thawed(store, identity)
         assert initial.checkpoint["observation"]["kind"] == "initial"
-        # A legacy checkpoint whose cursor survived but whose retained bytes did not.
         legacy = {"schema_version": 1, "cursor": initial.checkpoint["cursor"],
                   "last_batch_key": initial.checkpoint["last_batch_key"],
                   "source_configuration_digest": initial.checkpoint["source_configuration_digest"],
@@ -888,8 +867,6 @@ def test_missing_prior_result_binding_is_insufficient_evidence_without_plan(fres
         assert record.checkpoint["cursor"] == initial.checkpoint["cursor"]
         assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
         assert len(await _findings(store, identity)) == 1
-        # Honest recovery: with no comparable prior the next read starts over
-        # as an initial extractive observation, never an invented comparison.
         host.source_text = "Release version 4 published."
         await _pause_resume(store, identity)
         await claim_and_run(runner, store)
@@ -962,7 +939,6 @@ def test_checkpoint_never_retains_discarded_source_text(engine):
 
 
 def test_pre_upgrade_planner_intent_keeps_its_receipt(engine):
-    """A planner intent reserved without the prior-result binding still matches."""
     host, runner, store, identity = engine
     from persistent_agents import runner as runner_module
     original_model = runner_module.AssignmentRunner._model

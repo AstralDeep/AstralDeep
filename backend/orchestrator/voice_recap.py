@@ -1,9 +1,6 @@
-"""Deterministic, committed-visible completion recaps for Feature 065.
-
-This module never calls a model and never scrapes a client DOM.  Its fallback
-accepts only the sanitized semantic component payload already committed for the
-result, extracts an allowlisted visible subset, and keeps the spoken candidate
-bounded.  Confidentiality remains fail-closed before synthesis.
+"""Builds deterministic spoken recaps from committed, sanitized UI text and gates
+sensitive results behind fresh consent; never calls a model. Also resolves spoken
+voice controls. Used by orchestrator.py and voice_bootstrap.py.
 """
 
 from __future__ import annotations
@@ -126,8 +123,6 @@ Sensitivity = Literal["sensitive", "non_sensitive"]
 
 
 class VoiceRecapError(RuntimeError):
-    """A content-free recap/consent refusal."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -149,8 +144,6 @@ class SpokenRecap:
 
 
 class CommittedVisibleTextExtractor:
-    """Extract only allowlisted text from committed semantic UI payloads."""
-
     def extract(self, components: Sequence[Mapping[str, Any]] | None) -> str:
         if components is None:
             return ""
@@ -258,8 +251,6 @@ def build_spoken_recap(
     detected_language: str,
     extractor: CommittedVisibleTextExtractor | None = None,
 ) -> SpokenRecap:
-    """Apply source precedence and the launch English-output posture."""
-
     language = detected_language.strip().lower() if isinstance(detected_language, str) else ""
     if language != "en" and not language.startswith("en-"):
         return SpokenRecap(
@@ -301,8 +292,6 @@ def apply_sensitivity_policy(
     contains_phi: Callable[[str], bool],
     consent_granted: bool = False,
 ) -> SpokenRecap:
-    """Fail closed on unknown/error and gate details behind fresh consent."""
-
     sensitive = confidentiality != "non_sensitive"
     if not sensitive:
         try:
@@ -393,8 +382,6 @@ class _PendingSensitiveRecap:
 
 
 class SensitiveRecapRegistry:
-    """Bounded, one-use, memory-only sensitive recap staging."""
-
     def __init__(self, *, capacity: int = 128) -> None:
         if not 1 <= capacity <= 1_024:
             raise ValueError("invalid_sensitive_recap_capacity")
@@ -527,8 +514,6 @@ def resolve_spoken_control(
     transcript: str,
     context: SpokenControlContext,
 ) -> ResolvedSpokenControl | None:
-    """Resolve only exact state-bound English controls; ambiguity dispatches normally."""
-
     phrase = _normalize_control(transcript)
     if phrase in _READ_PHRASES and context.pending_sensitive_result_id is not None:
         return ResolvedSpokenControl(
@@ -620,9 +605,7 @@ def _dedupe(values: list[str]) -> list[str]:
 def _normalize_control(value: str) -> str:
     if not isinstance(value, str):
         return ""
-    # Spoken controls are deliberately narrower than ordinary transcript text.
-    # Reject non-ASCII input before compatibility normalization so confusable
-    # full-width characters cannot become an exact privileged command.
+    # Reject before normalizing, or confusable chars slip through
     if not value.isascii():
         return ""
     normalized = unicodedata.normalize("NFKC", value).strip().lower()
@@ -650,8 +633,6 @@ def _result_id(value: str) -> str:
     try:
         parsed = UUID(value)
     except ValueError:
-        # Existing committed result identifiers are allowed to be bounded
-        # opaque text; reject only whitespace/control-bearing values.
         if any(character.isspace() or ord(character) < 33 for character in value):
             raise VoiceRecapError("invalid_result") from None
         return value

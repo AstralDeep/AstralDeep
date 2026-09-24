@@ -1,18 +1,6 @@
-"""Bug-B (2026-08-03) regression tests: voice chat-switch and restart wedge.
-
-Live repro on main: switching to a new chat during an active voice session
-left every client on "Waiting for the voice chat context" because the server
-never emitted the ``voice_session_state`` frame all four clients shipped
-reducers for in feature 065; a stalled client's session was then lease-reaped
-silently, and the owner's follow-up DELETE returned 503 via unmapped
-repository conflict codes.
-
-Covers:
-- REST problem-status mapping for previously unmapped conflict codes.
-- The ``voice_session_state`` frame builder (manifest-exact fields, composer-
-  consistent state/reason derivation, reaper reason honesty).
-- Runtime emission on session PATCH and user end.
-- Maintenance-sweep emission for lease/idle-reaped sessions.
+"""Tests for voice chat-switch and session-state framing (voice_api.py,
+voice_runtime.py, voice_sessions.py): REST conflict-code mapping, session_state
+field/reason correctness, and emission on PATCH, user end, and maintenance sweep.
 """
 
 from __future__ import annotations
@@ -251,11 +239,6 @@ def _runtime() -> tuple[VoiceSessionRuntime, _Repository, _Media]:
     return runtime, repository, media
 
 
-# ---------------------------------------------------------------------------
-# REST problem-status mapping (observed live: DELETE of a reaped session 503)
-# ---------------------------------------------------------------------------
-
-
 def test_repository_conflict_codes_map_to_409_not_503() -> None:
     for code in (
         "chat_context_sync_pending",
@@ -270,11 +253,6 @@ def test_raised_repository_conflicts_produce_409_problem_responses() -> None:
     assert pending.status_code == 409
     ended = _error_response(StaleSessionFence("session_already_ended"))
     assert ended.status_code == 409
-
-
-# ---------------------------------------------------------------------------
-# voice_session_state frame builder
-# ---------------------------------------------------------------------------
 
 
 def test_session_state_frame_field_set_matches_manifest_exactly() -> None:
@@ -335,16 +313,11 @@ def test_session_state_frame_never_pairs_background_with_live_microphone() -> No
         state="suspended",
         foreground_active=False,
         foreground_reason="backgrounded",
-        microphone_enabled=True,  # defensive: durable writes force this False
+        microphone_enabled=True,
     )
     frame = session_state_frame(backgrounded, now=NOW)
     assert frame["state"] == "suspended"
     assert frame["microphone_enabled"] is False
-
-
-# ---------------------------------------------------------------------------
-# Runtime emission
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -426,11 +399,6 @@ async def test_user_end_publishes_ended_session_state() -> None:
     frame = session_state_frame(published[0], now=NOW)
     assert frame["state"] == "ended"
     assert frame["reason"] == "ended_by_user"
-
-
-# ---------------------------------------------------------------------------
-# Maintenance sweep (silent reaper end must reach the owner device)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,8 @@
-"""Current/legacy result selection over genuine privately qualified PG receipts."""
+"""Tests for persistent_agents/research_episode.py's current/legacy result selection
+over real qualified receipts: a legacy result uses its exact original proof, and
+current evidence always wins over a legacy fallback.
+"""
+
 from dataclasses import replace
 
 import pytest
@@ -19,8 +23,6 @@ pytestmark = [pytest.mark.asyncio,
 
 @pytest.fixture
 async def legacy(research, monkeypatch):
-    # Execute the genuine old writer's key choice, including ordinary dispatch,
-    # settlement and keyed proof; do not manufacture signed result receipts.
     with monkeypatch.context() as old_writer:
         old_writer.setattr(research_episode, "research_action_keys",
                            lambda _: (research_episode.SOURCE_KEY, research_episode.MODEL_KEY))
@@ -68,8 +70,6 @@ async def test_current_evidence_refusal_never_selects_valid_legacy_alternate(leg
     lookups = []
     def read(tx, **kwargs):
         lookups.append(kwargs["action_key"])
-        # Controlled repository response boundary; actual valid legacy receipt
-        # remains stored and independently proved readable before interception.
         return candidate if kwargs["action_key"] == current_key else original(tx, **kwargs)
     assert (await project(op))["available"] is True
     monkeypatch.setattr(repository, "get_action_by_key", read)

@@ -1,4 +1,6 @@
-"""Finite operator bounds for the persistent-assignment supervisor."""
+"""Finite, operator-configured concurrency/timing bounds for AssignmentRunner, read from
+environment via _bounded(); consumed by persistent_agents/runner.py.
+"""
 
 from __future__ import annotations
 

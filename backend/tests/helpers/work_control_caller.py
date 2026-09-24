@@ -1,4 +1,7 @@
-"""Actual signed caller and exact Plane composition for safe-control PG tests."""
+"""Captures a real signed cookie/Bearer caller for safe-control PostgreSQL tests, over
+orchestrator/work_control_authority.py and the shared session Plane runtime.
+"""
+
 from contextlib import asynccontextmanager
 import time
 from types import SimpleNamespace
@@ -15,11 +18,6 @@ from tests.test_request_session_authority_088 import request
 
 @asynccontextmanager
 async def current_control_caller(assignments, monkeypatch, signing_key):
-    """Capture real cookie/Bearer IAM once before each test's adverse mutation.
-
-    Only the JWKS reply is synthetic. No refresh, endpoint or provider runs; the
-    cookie row, observation, transaction checks and delivery verification are real.
-    """
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-control-cookie-key")
     monkeypatch.setenv("USE_MOCK_AUTH", "false")

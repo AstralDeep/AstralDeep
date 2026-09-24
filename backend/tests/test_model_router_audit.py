@@ -1,7 +1,8 @@
-"""FF_MODEL_ROUTER audit fidelity — the ``llm_call`` audit row and the
-capability-probe cache both name the model that was ACTUALLY requested when
-the router re-tiers a SYSTEM call, and the routed selection is logged
-(low cardinality: tier + model only). Pure Python, no DB, no LLM."""
+"""Tests for llm_config/audit_events.py and orchestrator.py: the llm_call audit row and
+capability-probe cache both key on the model the router actually requested after
+re-tiering a SYSTEM call, not the default model.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -40,7 +41,6 @@ def _orch(completions, *, source=CredentialSource.SYSTEM):
         return (_FakeClient(completions), source, resolved)
 
     orch._resolve_llm_client_for = _resolve
-    # The REAL audit writer — the assertion is on the persisted row.
     orch._record_llm_call = audit_events.record_llm_call
 
     async def _noop(*a, **k):
@@ -67,7 +67,7 @@ async def test_audit_row_names_routed_model_for_system_call(monkeypatch, caplog)
                                       feature="tool_dispatch")
     assert msg is not None
     requested = comp.calls[0]["model"]
-    assert requested != "default-model"  # the router re-tiered this call
+    assert requested != "default-model"
     ev = orch.audit_recorder.record.await_args.args[0]
     assert ev.event_class == "llm_call"
     assert ev.inputs_meta["model"] == requested
@@ -102,8 +102,6 @@ async def test_user_credential_is_never_re_tiered(monkeypatch):
 
 
 async def test_probe_cache_keyed_on_routed_model(monkeypatch):
-    """A routed tier's param rejection is remembered under the ROUTED model,
-    not the default one."""
     _router_on(monkeypatch)
 
     def fail_on(kw):
@@ -136,13 +134,7 @@ async def test_failure_row_names_routed_model(monkeypatch):
 
 
 async def test_probe_cache_follows_the_escalated_model(monkeypatch):
-    """The one-shot low-confidence escalation re-issues the call on a higher
-    tier; a param rejection on THAT model must be remembered under the
-    escalated model's key, and the escalated call must not inherit the
-    lower tier's stripped params."""
     _router_on(monkeypatch)
-    # chat_title routes to the small tier (see model_router.route); the
-    # hedged first answer triggers the escalation to mid-70b.
     from tests.test_call_llm_wave0 import _Resp as _Resp_
 
     class _Comp(_FakeCompletions):
@@ -161,9 +153,6 @@ async def test_probe_cache_follows_the_escalated_model(monkeypatch):
     assert msg is not None and msg.content == _CONFIDENT
     models = [c["model"] for c in comp.calls]
     assert models[0] == "tiny-8b" and models[-1] == "mid-70b", models
-    # The escalated call carried reasoning_effort (not stripped by the
-    # lower tier's state), was rejected, and the rejection is keyed on the
-    # ESCALATED model — never on tiny-8b or the default.
     assert ("https://ep/v1", "mid-70b") in orch._llm_unsupported_params
     assert ("https://ep/v1", "tiny-8b") not in orch._llm_unsupported_params
     assert ("https://ep/v1", "default-model") not in orch._llm_unsupported_params

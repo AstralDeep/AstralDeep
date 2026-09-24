@@ -1,10 +1,6 @@
-"""Bounded, payload-free runtime reliability telemetry.
-
-Feature 060 deliberately keeps this collector independent of a monitoring
-vendor.  Runtime paths record only low-cardinality, reviewed labels; callers
-may expose :meth:`RuntimeObservability.snapshot` through the deployment's
-chosen metrics bridge without ever placing user, chat, prompt, credential, or
-target identities in labels.
+"""Bounded, payload-free runtime reliability telemetry: counters and gauges keyed to a
+reviewed low-cardinality label allow-list, covering admission, background-operation
+latency, retention, disconnect drain, and voice lifecycle events.
 """
 
 from __future__ import annotations
@@ -38,9 +34,6 @@ _ALLOWED_LABELS = frozenset(
     }
 )
 
-# Feature 080: fixed cumulative upper bounds (seconds) for background operation
-# latency.  The tokens are a closed vocabulary shared with contracts/metrics.md;
-# a future Prometheus adapter maps them to numeric ``le`` bounds.
 _BACKGROUND_LATENCY_BUCKETS: tuple[tuple[str, float], ...] = (
     ("le_0_05", 0.05),
     ("le_0_1", 0.1),
@@ -59,8 +52,6 @@ _BACKGROUND_LATENCY_BUCKETS: tuple[tuple[str, float], ...] = (
 )
 _BACKGROUND_LATENCY_TOKENS = frozenset(token for token, _ in _BACKGROUND_LATENCY_BUCKETS)
 
-# Coarse, content-free outcome for each terminal operation state.  Non-terminal
-# or unrecognized (including unhashable) states omit the whole observation.
 _BACKGROUND_OUTCOMES: dict[OperationState, str] = {
     OperationState.COMPLETED: "completed",
     OperationState.FAILED: "failed",
@@ -205,26 +196,12 @@ _VOICE_COUNTS = frozenset(
 
 @dataclass(frozen=True)
 class RuntimeMetricSample:
-    """One immutable-by-convention metric projection.
-
-    ``labels`` is copied both when recorded and when projected, so callers
-    cannot mutate the collector's internal key space.
-    """
-
     name: str
     value: int | float
     labels: Mapping[str, str]
 
 
 class RuntimeObservability:
-    """Thread-safe low-cardinality gauges and counters for runtime work.
-
-    The class accepts no arbitrary high-cardinality dimensions.  Label names
-    are an explicit allow-list and values are bounded snake-case tokens; this
-    rejects identifiers, prose, URLs, bearer material, serialized payloads,
-    and other accidental sensitive content before it reaches an exporter.
-    """
-
     def __init__(
         self,
         *,
@@ -308,8 +285,6 @@ class RuntimeObservability:
         value: int | float = 1,
         labels: Mapping[str, str] | None = None,
     ) -> None:
-        """Increment one counter after enforcing the telemetry boundary."""
-
         checked = self._validate_value(value)
         key = self._key(name, labels or {})
         with self._lock:
@@ -321,8 +296,6 @@ class RuntimeObservability:
         *,
         operation_kind: str,
     ) -> None:
-        """Publish effective limits/counts and queue/running ages."""
-
         now = self._clock()
         if now.tzinfo is None:
             raise ValueError("observability clock must return an aware datetime")
@@ -380,8 +353,6 @@ class RuntimeObservability:
         phase: str,
         result_code: str,
     ) -> None:
-        """Record the latest bounded operation duration without identity labels."""
-
         labels = self._base_labels()
         labels.update(
             operation_kind=operation_kind,
@@ -423,15 +394,6 @@ class RuntimeObservability:
         result_code: str,
         phase: str | None = None,
     ) -> None:
-        """Feature 089: one counter per TypeSafe routing outcome.
-
-        Every label value is a closed vocabulary token from the adapter's
-        ``Outcome``, ``Tier`` or ``Verdict`` enums. No user id, chat id, key
-        fingerprint, tool name or request text can reach a metric label: the
-        base class refuses anything outside the reviewed label allow-list and
-        anything that is not a bounded snake_case token, so a leak here is a
-        validation error rather than an exported string.
-        """
         labels = self._base_labels()
         labels["result_code"] = result_code
         if phase is not None:
@@ -444,12 +406,6 @@ class RuntimeObservability:
         purged_count: int,
         lag_seconds: float,
     ) -> None:
-        """Record bounded retention throughput and current cleanup lag.
-
-        The purge count is cumulative while lag is a last-observed gauge.  No
-        operation or submission identity crosses this telemetry boundary.
-        """
-
         labels = self._base_labels()
         self.record(
             "operation_retention_purged_total",
@@ -468,8 +424,6 @@ class RuntimeObservability:
         duration_seconds: float,
         remainder: int,
     ) -> None:
-        """Publish the duration and unfinished remainder of the latest drain."""
-
         labels = self._base_labels()
         self._set(
             "operation_disconnect_drain_duration_seconds",
@@ -515,8 +469,6 @@ class RuntimeObservability:
         client_kind: str,
         transport: str,
     ) -> None:
-        """Count a content-free voice lifecycle transition."""
-
         labels = self._voice_labels(
             client_kind=client_kind,
             transport=transport,
@@ -538,14 +490,6 @@ class RuntimeObservability:
         client_kind: str | None = None,
         transport: str | None = None,
     ) -> None:
-        """Count one reviewed voice event with no identity or content labels.
-
-        Readiness is deployment-scoped and therefore omits client dimensions.
-        Session, turn, media, and speech events supply both dimensions or
-        neither; accepting only the paired form prevents misleading partial
-        cardinality and keeps the export vocabulary finite.
-        """
-
         checked_event = self._voice_value(event, _VOICE_EVENTS, "voice_event")
         checked_outcome = self._voice_value(
             outcome,
@@ -579,8 +523,6 @@ class RuntimeObservability:
         client_kind: str,
         transport: str,
     ) -> None:
-        """Record the latest reviewed voice timing without content or IDs."""
-
         checked_timing = self._voice_value(timing, _VOICE_TIMINGS, "voice_timing")
         self._set(
             f"voice_{checked_timing}_seconds",
@@ -596,8 +538,6 @@ class RuntimeObservability:
         client_kind: str,
         transport: str,
     ) -> None:
-        """Record one bounded voice population or event count."""
-
         checked_count = self._voice_value(count, _VOICE_COUNTS, "voice_count")
         self._set(
             f"voice_{checked_count}",
@@ -612,8 +552,6 @@ class RuntimeObservability:
         client_kind: str,
         transport: str,
     ) -> None:
-        """Count cleanup outcomes without exposing session identity."""
-
         labels = self._voice_labels(client_kind=client_kind, transport=transport)
         labels["cleanup_outcome"] = self._voice_value(
             outcome,
@@ -627,16 +565,13 @@ class RuntimeObservability:
         try:
             return _BACKGROUND_OUTCOMES.get(state)  # type: ignore[arg-type]
         except TypeError:
-            # An unhashable state (e.g. a list) is an invalid observation, not
-            # an accidental exception; treat it as an omitted invalid state.
             return None
 
     @staticmethod
     def _as_utc_datetime(value: object) -> datetime:
         if not isinstance(value, datetime) or value.utcoffset() is None:
             raise ValueError("background latency requires aware timestamps")
-        # Same-zone datetime subtraction otherwise measures wall time across
-        # daylight-saving transitions rather than realized elapsed time.
+        # Normalize to UTC first, or DST skews the elapsed time
         return value.astimezone(UTC)
 
     @staticmethod
@@ -659,18 +594,6 @@ class RuntimeObservability:
             self._values[key] = self._validate_value(self._values.get(key, 0) + 1)
 
     def observe_background_operation(self, operation: object) -> None:
-        """Aggregate one terminal background operation's realized latency.
-
-        Reads only the safe projection's coarse ``state`` and the
-        ``accepted_at``/``started_at``/``terminal_at`` timestamps — never an
-        identifier, task kind, raw terminal code, prompt, credential or
-        payload dimension.  Missing or invalid inputs record a single bounded
-        omission reason instead of inventing latency; a full observation
-        updates every affected phase atomically under the collector lock so no
-        snapshot can see a partial observation, and an overflowing cumulative
-        sum is rejected without partly mutating any counter.
-        """
-
         state = getattr(operation, "state", None)
         accepted_at = getattr(operation, "accepted_at", None)
         started_at = getattr(operation, "started_at", None)
@@ -702,7 +625,6 @@ class RuntimeObservability:
                         ("end_to_end", terminal_at - accepted_at),
                     )
                 else:
-                    # Never-started work has no execution sample.
                     spans = (
                         ("queue_wait", terminal_at - accepted_at),
                         ("end_to_end", terminal_at - accepted_at),
@@ -711,8 +633,6 @@ class RuntimeObservability:
                     (phase, self._finite_duration(span)) for phase, span in spans
                 )
         except Exception:
-            # Malformed timezone/conversion/arithmetic objects are timing
-            # omissions. Never retain or log their values or exception text.
             self._record_background_skip("invalid_timestamp")
             return
         if not valid_order:
@@ -730,8 +650,6 @@ class RuntimeObservability:
                 sum_key = self._key(
                     "background_operation_latency_seconds_sum", labels
                 )
-                # Validate every increment before any mutation; a would-be
-                # overflow raises here, before staging is applied.
                 staging[sum_key] = self._validate_value(
                     self._values.get(sum_key, 0.0) + duration
                 )
@@ -749,16 +667,12 @@ class RuntimeObservability:
                         bucket_labels,
                     )
                     current = self._values.get(bucket_key, 0)
-                    # Publish every bucket, including unchanged zero counts, so
-                    # each observed phase/outcome snapshot is interpretable.
                     staging[bucket_key] = self._validate_value(
                         current + (1 if duration <= bound else 0)
                     )
             self._values.update(staging)
 
     def snapshot(self) -> tuple[RuntimeMetricSample, ...]:
-        """Return a deterministic copy suitable for an exporter or status API."""
-
         with self._lock:
             items = tuple(sorted(self._values.items(), key=lambda item: item[0]))
         return tuple(

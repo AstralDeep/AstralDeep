@@ -1,4 +1,7 @@
-"""Live-PostgreSQL proof for Deep's durable streaming-purge composition."""
+"""Live-PostgreSQL tests for orchestrator/attachments/purge.py and repository.py:
+restart-recoverable failed deletes, transaction-rollback safety, orphan-bytes
+cleanup, and cross-coordinator tombstone detection.
+"""
 
 from __future__ import annotations
 
@@ -54,8 +57,6 @@ def _register_attachment(
 
 
 class _FailingExecutor:
-    """Leave the real tombstone pending without bypassing Plane destruction."""
-
     def execute(self, **values):
         return PurgeAttemptResult(
             state=PurgeAttemptState.FAILED,
@@ -162,8 +163,6 @@ def test_owner_namespace_purges_orphan_bytes_without_metadata(
 ) -> None:
     blob_root = tmp_path / "blobs"
     blobs = create_streaming_blob_store(root=blob_root)
-    # Model a pre-cutover crash orphan directly inside this isolated fixture
-    # root.  Production callers have no unfenced Plane write/delete surface.
     orphan = blob_root / "owner-orphan" / "orphan" / "file.bin"
     orphan.parent.mkdir(parents=True)
     orphan.write_bytes(b"orphan")

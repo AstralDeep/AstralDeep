@@ -1,4 +1,7 @@
-"""Executable Feature-075 client-local speech planning contracts."""
+"""Executable contract tests validating the client-local voice JSON Schema and REST-v2
+OpenAPI spec against a locked validator toolchain: golden frame vectors, strict
+rejection of extra keys, and separation from the remote v1 contract.
+"""
 
 from __future__ import annotations
 
@@ -51,8 +54,6 @@ validator = _load_contract_validator()
 
 
 def _enforce_locked_validator_environment(repo_root: Path = REPO_ROOT) -> None:
-    """Fail unless the required standards tools match the reviewed hash lock."""
-
     for required_module in (jsonschema, openapi_spec_validator, yaml):
         if required_module is None:
             raise AssertionError("required standards validator import is unavailable")

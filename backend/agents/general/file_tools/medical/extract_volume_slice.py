@@ -1,7 +1,6 @@
-"""``extract_volume_slice`` tool: render a single plane from a volumetric file.
-
-Works for DICOM (multi-frame or single), NIfTI, NRRD / MHA / MHD, and volumetric
-OME-TIFF. Returns a base64 PNG plus the index that was actually used.
+"""extract_volume_slice tool: renders a single plane from a DICOM, NIfTI, NRRD/MHA/MHD,
+or volumetric OME-TIFF attachment as a base64 PNG; used directly by
+compute_volume_statistics.py.
 """
 
 from __future__ import annotations
@@ -27,11 +26,10 @@ def _parse_axis(axis: Any) -> int:
         key = axis.lower()
         if key in _AXIS_MAP:
             return _AXIS_MAP[key]
-    return 2  # default: z
+    return 2
 
 
 def _load_volume(path_str: str, extension: str):
-    """Return a numpy volume + source type string, or raise."""
     ext = extension.lower()
 
     if ext in ("dcm", "dicom"):
@@ -62,14 +60,6 @@ def extract_volume_slice(
     index: Optional[int] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Render one slice of a 3-D volume as a PNG.
-
-    Args:
-        attachment_id: UUID of the uploaded file.
-        user_id: Injected by the orchestrator.
-        axis: "x" / "y" / "z" or 0 / 1 / 2. Defaults to "z".
-        index: 0-based slice index along *axis*. Defaults to the middle.
-    """
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -88,7 +78,6 @@ def extract_volume_slice(
         vol = vol[0]
 
     if vol.ndim < 3:
-        # Degenerate 2-D file — just render it.
         try:
             result = {
                 "filename": att.filename,

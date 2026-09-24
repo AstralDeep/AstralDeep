@@ -1,4 +1,7 @@
-"""Required Work control audit is committed with its real Plane mutation."""
+"""Tests that orchestrator/work_controls.py commits its control audit atomically with
+the Plane mutation: pause/replay share one record, a failing audit rolls back the
+control, and concurrent duplicate commits produce exactly one.
+"""
 
 import asyncio
 from datetime import UTC, datetime
@@ -30,7 +33,6 @@ async def audited(records, monkeypatch, signing_key):
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-work-control-audit-key")
     audit = AuditRepository(plane_runtime=runtime)
     reads.assignments.orch.audit_repo = audit
-    # A secondary asynchronous audit sink must not be required or duplicated.
     legacy = AsyncMock()
     monkeypatch.setattr(reads.assignments, "_audit", legacy)
     async with current_control_caller(reads.assignments, monkeypatch, signing_key) as caller:
@@ -138,7 +140,6 @@ async def test_required_audit_failure_preserves_state_receipt_and_chain(audited,
     assert all(coroutine.cr_frame is None for coroutine in coroutines)
     monkeypatch.setattr(value.audit, "insert_in_transaction", original)
     if command != "delete":
-        # A rolled-back command did not leave a success receipt behind.
         assert (await value.service.control("owner", value.caller.context.claims, value.identity,
                                             command, body, caller=value.caller))["applied"] is True
     assert await asyncio.to_thread(value.audit.verify_chain, "owner") is None

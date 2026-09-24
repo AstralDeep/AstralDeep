@@ -1,4 +1,7 @@
-"""Feature-065 short-lived UI control-binding tests."""
+"""Tests for orchestrator/voice_control_binding.py: short-lived UI control-binding
+tokens bound to subject/device/connection/credential, a ten-minute lifetime cap,
+scope-transplant refusal, and tamper/expiry rejection.
+"""
 
 from __future__ import annotations
 
@@ -159,8 +162,6 @@ def test_duplicate_or_extra_claims_cannot_survive_even_with_valid_signature() ->
         base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     )
     payload["admin"] = True
-    # The public verifier must reject the shape. A mismatched signature is an
-    # equally safe rejection and proves untrusted claims cannot be injected.
     replacement = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":")).encode()
     ).rstrip(b"=").decode()

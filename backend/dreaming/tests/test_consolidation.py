@@ -1,4 +1,8 @@
-"""Tests for consolidation scoring + sweep (feature 025, T051/T052)."""
+"""Tests for dreaming/consolidation.py: scoring rewards frequency and recency, one-off
+signals are excluded from promotion, PHI is blocked at the sweep, and sleeptime
+precompute runs only when idle and enabled.
+"""
+
 from __future__ import annotations
 
 from dreaming.consolidation import run_sweep, score_signal, select_promotions
@@ -49,7 +53,7 @@ def test_select_excludes_one_offs():
         {"id": "b", "category": "preference", "value": "y", "recall_count": 3, "last_seen_at": NOW},
     ]
     chosen = select_promotions(signals, NOW, min_recalls=2)
-    assert [c["id"] for c in chosen] == ["b"]  # one-off "a" excluded
+    assert [c["id"] for c in chosen] == ["b"]
 
 
 def test_run_sweep_promotes_recurring_excludes_phi():
@@ -61,23 +65,15 @@ def test_run_sweep_promotes_recurring_excludes_phi():
     repo = _FakeRepo(signals)
     sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW, min_recalls=2)
 
-    # Only the recurring, non-PHI signal "a" is promoted.
     assert sweep["promoted_count"] == 1
     assert repo.memory[0]["value"] == "prefers bullet points"
     assert repo.memory[0]["source"] == "promoted"
-    # The PHI signal "c" was eligible by recall count but blocked + removed.
     assert all(m["value"] != "SSN 123-45-6789" for m in repo.memory)
     assert "c" not in repo._signals
     assert repo.sweeps and repo.sweeps[0]["trigger"] == "scheduled"
 
 
-# ---------------------------------------------------------------------------
-# 033 C-N11 — sleeptime anticipatory precompute wired into run_sweep
-# ---------------------------------------------------------------------------
-
 class _ProfileRepo(_FakeRepo):
-    """Repo with the profile/memory seams sleeptime persistence needs."""
-
     def __init__(self, signals, memories=None):
         super().__init__(signals)
         self._profile = {"user_id": "u1", "personality": {"tone": "warm"}}
@@ -96,9 +92,6 @@ class _ProfileRepo(_FakeRepo):
 
 
 def _idle_signals():
-    # Mix: one recurring signal that WILL be promoted+consumed (recall 3), and
-    # one one-off signal (recall 1) that survives the sweep and is still
-    # available for sleeptime to mine for a topic ("Kubernetes").
     return [
         {"id": "a", "category": "preference", "value": "prefers bullet points",
          "recall_count": 3, "last_seen_at": NOW},
@@ -108,77 +101,58 @@ def _idle_signals():
 
 
 def _goal_memory():
-    # A durable goal memory survives the sweep and is a stable anticipation
-    # source (mirrors the real per-user dreaming scenario).
     return [{"category": "goal", "value": "ship the v2 release", "salience": 3.0}]
 
 
 def test_sleeptime_off_by_default_no_precompute(monkeypatch):
-    """Flag OFF (default): the sweep persists no precompute plan and the
-    returned record's precompute block is empty — behavior unchanged."""
     monkeypatch.delenv("FF_SLEEPTIME_COMPUTE", raising=False)
     repo = _ProfileRepo(_idle_signals(), memories=_goal_memory())
     sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW,
                       last_activity_ms=NOW - 10 * 60_000)
     assert sweep["precompute"] == []
-    # The personality jsonb is untouched (no _sleeptime_precompute key).
     assert "_sleeptime_precompute" not in repo._profile["personality"]
     assert repo._profile["personality"] == {"tone": "warm"}
 
 
 def test_sleeptime_on_idle_produces_and_persists_plan(monkeypatch):
-    """Flag ON + idle user: the sweep anticipates next questions and persists a
-    plan into the EXISTING personality jsonb (no new table), preserving the
-    user-facing traits."""
     monkeypatch.setenv("FF_SLEEPTIME_COMPUTE", "on")
     repo = _ProfileRepo(_idle_signals(), memories=_goal_memory())
-    # last_activity well in the past -> idle.
     sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW,
                       last_activity_ms=NOW - 10 * 60_000)
 
-    # The returned record exposes the anticipated questions, sourced from the
-    # surviving signal topic and/or the durable goal memory.
     assert sweep["precompute"], "expected anticipated questions when idle + enabled"
     qs = [q["question"] for q in sweep["precompute"]]
     assert any("Kubernetes" in q for q in qs) or any("v2 release" in q for q in qs)
     assert all({"question", "rationale", "priority"} <= set(q) for q in sweep["precompute"])
 
-    # ...and it was persisted into the personality jsonb without clobbering
-    # the existing trait.
     plan = repo._profile["personality"].get("_sleeptime_precompute")
     assert plan is not None
     assert plan["trigger"] == "idle"
     assert plan["questions"] == sweep["precompute"]
-    assert repo._profile["personality"]["tone"] == "warm"  # preserved
+    assert repo._profile["personality"]["tone"] == "warm"
 
 
 def test_sleeptime_on_but_active_user_skips(monkeypatch):
-    """Flag ON but the user is still active (recent last_activity): no
-    precompute runs."""
     monkeypatch.setenv("FF_SLEEPTIME_COMPUTE", "on")
     repo = _ProfileRepo(_idle_signals(), memories=_goal_memory())
     sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW,
-                      last_activity_ms=NOW)  # active right now
+                      last_activity_ms=NOW)
     assert sweep["precompute"] == []
     assert "_sleeptime_precompute" not in repo._profile["personality"]
 
 
 def test_sleeptime_on_no_last_activity_treats_sweep_as_idle(monkeypatch):
-    """Flag ON with no last_activity supplied: a scheduled sweep is itself
-    idle-time, so precompute still runs."""
     monkeypatch.setenv("FF_SLEEPTIME_COMPUTE", "on")
     repo = _ProfileRepo(_idle_signals(), memories=_goal_memory())
-    sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW)  # no last_activity_ms
+    sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW)
     assert sweep["precompute"]
     assert "_sleeptime_precompute" in repo._profile["personality"]
 
 
 def test_sleeptime_promotion_path_unaffected(monkeypatch):
-    """Enabling sleeptime does not change the promotion result for the sweep."""
     monkeypatch.setenv("FF_SLEEPTIME_COMPUTE", "on")
     repo = _ProfileRepo(_idle_signals(), memories=_goal_memory())
     sweep = run_sweep(repo, _clean_gate(), "u1", now_ms=NOW,
                       last_activity_ms=NOW - 10 * 60_000, min_recalls=2)
-    # The recurring signal "a" is still promoted exactly as before.
     assert sweep["promoted_count"] == 1
     assert any(m["value"] == "prefers bullet points" for m in repo.memory)

@@ -1,4 +1,7 @@
-"""Unsupported identities never reach the fixed profile's authority/effect paths."""
+"""Tests for persistent_agents/execution.py and research_episode.py: unsupported
+identities are refused before reader-config capture, requested tool/scope must match
+the fixed reader profile, and locked checks run before any policy callback.
+"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -35,8 +38,6 @@ def executor(current):
     value.interactive = False
     value.remote_marker = value.approved_action_id = None
     value.orch = SimpleNamespace(tool_permissions=SimpleNamespace(get_tool_scope=lambda *a: "tools:read"))
-    # Captured episode guidance is executor state the real constructor and the
-    # capture step install; the reader-policy transaction fences it locally.
     value._research_guidance = SimpleNamespace(assert_local=lambda: None)
     return value
 
@@ -135,7 +136,7 @@ def test_other_scope_cannot_enter_the_fixed_reader_profile(scope):
                                     "boundary", "sensitivity", "interactive", "transient", "current_tools"])
 async def test_locked_action_and_current_record_are_checked_before_policy_or_callback(change):
     current = record()
-    worker = executor(record())  # An earlier valid snapshot cannot override current record facts.
+    worker = executor(record())
     request = {**REQUEST}
     intent = SimpleNamespace(request=request, boundary="read_only", sensitivity="ordinary",
                              interactive_only=False, transient_input=None)

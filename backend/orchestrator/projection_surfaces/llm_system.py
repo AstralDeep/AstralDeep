@@ -1,22 +1,9 @@
-"""Deep-owned host adapter for the system-LLM Projection surface.
-
-Manages the single deployment-wide credential that powers system-context
-LLM work: scheduled-job turns, agent codegen (incl. attachment auto-parsers),
-knowledge synthesis, conversation compaction, workspace combine/condense,
-and job narration. It NEVER serves user chat (FR-019); user records never
-serve system work.
-
-Delivery posture: a **declared web-only admin carve-out** (Constitution XII,
-spec FR-018) — the menu item lives in the admin group the server already
-omits from every native menu channel, exactly like Tool quality / Tutorial
-admin. Every handler re-checks the admin role server-side regardless of what
-any client rendered (the ``ADMIN_ONLY`` marker drives both the surface gate
-and the per-action re-check in ``chrome_events``).
-
-Hygiene identical to the user surface: the key is write-only (never echoed),
-Fernet-encrypted at rest, probe-gated on save, audited as
-``llm_config_change{scope:"system"}``.
+"""Renders the admin-only system-wide LLM credential surface that powers scheduled jobs,
+codegen, and other non-chat background work; it never serves user chat. Mirrors
+projection_surfaces/llm.py's probe/save/clear handlers, admin-gated in
+chrome_events.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -81,7 +68,6 @@ async def _system_config(orch: Any):
 
 
 async def _resolve_api_key_sys(orch: Any, fields: Dict[str, str]):
-    """Submitted key, else a saved system key bound to the same endpoint."""
     submitted = fields.get("api_key", "")
     if submitted:
         return submitted, False
@@ -92,13 +78,7 @@ async def _resolve_api_key_sys(orch: Any, fields: Dict[str, str]):
     return "", False
 
 
-# ---------------------------------------------------------------------------
-# Render (web only — declared carve-out; no components() by design)
-# ---------------------------------------------------------------------------
-
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
-    """Render the System LLM form body (admin gate enforced by the caller
-    AND re-checked per action handler)."""
     _ = roles
     params = params if isinstance(params, dict) else {}
     saved = await _system_config(orch)
@@ -151,10 +131,6 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Handlers (each re-checked admin-only via ADMIN_ONLY in chrome_events)
-# ---------------------------------------------------------------------------
-
 def _keep(fields: Dict[str, str], provider: str) -> Dict[str, Any]:
     return {"provider": provider,
             "base_url": fields.get("base_url", ""),
@@ -162,7 +138,6 @@ def _keep(fields: Dict[str, str], provider: str) -> Dict[str, Any]:
 
 
 async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
-    """``chrome_llm_sys_models {fields}`` — list the endpoint's models."""
     _ = roles
     from llm_config.api import ListModelsRequest, list_models
     from llm_config.providers import resolve_base_url
@@ -200,7 +175,6 @@ async def _handle_models(orch: Any, websocket: Any, user_id: str, roles: Any, pa
 
 
 async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
-    """``chrome_llm_sys_test {fields}`` — probe the prospective credential."""
     _ = roles
     from llm_config.api import TestConnectionRequest, test_connection
     from llm_config.providers import resolve_base_url
@@ -237,8 +211,6 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
 
 
 async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
-    """``chrome_llm_sys_save {fields}`` — probe-gated persist of the system
-    credential (Fernet at rest; audited ``scope:"system"``)."""
     _ = roles
     fields = _fields(payload)
     provider = _provider_key(fields)
@@ -270,7 +242,7 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             base_url=norm["base_url"], model=norm["model"], transport="ws",
             result="success" if ok else "failure",
             error_class=error_class if not ok else None, scope="system")
-    except Exception:  # pragma: no cover — audit is best-effort
+    except Exception:  # pragma: no cover
         logger.warning("system llm tested audit failed", exc_info=True)
     if not ok:
         return (SURFACE_KEY, keep, _failure_notice(
@@ -296,8 +268,6 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
 
 
 async def _handle_clear(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
-    """``chrome_llm_sys_clear`` — delete the system credential. Background
-    features degrade honestly (log + skip + failed runs) until reconfigured."""
     _ = roles
     _ = payload
     store = _store(orch)
@@ -328,5 +298,4 @@ HANDLERS = {
 }
 
 
-# Expose the catalog for tests asserting the two surfaces share one source.
 PROVIDER_KEYS = tuple(p.key for p in all_presets())

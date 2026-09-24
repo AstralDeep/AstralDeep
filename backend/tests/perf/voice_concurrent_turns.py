@@ -1,8 +1,6 @@
-"""Deterministic overlapping-turn timing gates for Feature 065.
-
-These are scheduler-contract tests, not host-speed benchmarks.  A monotonic
-fake clock makes every boundary reproducible and keeps waveform material out
-of test artifacts.
+"""Deterministic overlapping-turn scheduling tests for voice_coordinator.py using a fake
+monotonic clock: quantum reservation, handoff timing, and acoustic-probe content-free
+boundaries.
 """
 
 from __future__ import annotations
@@ -83,8 +81,6 @@ def _completion(decision, fake: _FakeClock) -> PlayoutCompletion:
 
 @dataclass(slots=True)
 class _EphemeralAcousticProbe:
-    """Keep only content-free timing/count observations and zero input bytes."""
-
     observations: list[tuple[float, float, int]] = field(default_factory=list)
 
     def observe(self, samples: bytearray, *, started: float, finished: float) -> None:
@@ -94,8 +90,6 @@ class _EphemeralAcousticProbe:
 
 @dataclass(frozen=True, slots=True)
 class _ImmutableExecutionBase:
-    """Serialized acceptance snapshot held by one running tool execution."""
-
     render_revision: int
     components_json: str
     layouts_json: str
@@ -131,8 +125,6 @@ class _ImmutableExecutionBase:
 
 
 class _BlockedTool:
-    """One deterministic side effect per operation, held until the test releases it."""
-
     def __init__(self) -> None:
         self.started = {"first": threading.Event(), "second": threading.Event()}
         self.release = {"first": threading.Event(), "second": threading.Event()}
@@ -294,8 +286,6 @@ def _run_single_turn(task_duration_seconds: float) -> list[tuple[str, float]]:
 
 
 def test_two_same_chat_tools_overlap_and_reverse_complete_without_rerun() -> None:
-    """Exercise the complete overlapping-turn contract with deterministic gates."""
-
     chat_id = "30000000-0000-4000-8000-000000000001"
     owner = OperationOwner(OwnerScope.USER, "voice-perf-owner", None)
     coordinator = _concurrent_voice_coordinator()
@@ -339,8 +329,6 @@ def test_two_same_chat_tools_overlap_and_reverse_complete_without_rerun() -> Non
     assert execution_bases["first"].render_revision == 1
     assert execution_bases["second"].render_revision == 2
 
-    # Acceptance of the second turn backgrounds the first without changing
-    # either running operation or either immutable execution base.
     foreground = {"first": False, "second": True}
     assert foreground == {"first": False, "second": True}
     assert {
@@ -470,8 +458,6 @@ def test_two_due_turns_reserve_four_second_quantum_and_positive_handoff() -> Non
             next_due_at=due,
         )
 
-    # Exercise the latest permitted first-start target, not an optimistic zero
-    # latency path.  The second turn still has its full four-second reservation.
     fake.advance(15.5)
     first = scheduler.next_decision()
     assert first is not None and first.kind == "progress"
@@ -481,8 +467,6 @@ def test_two_due_turns_reserve_four_second_quantum_and_positive_handoff() -> Non
     fake.advance(SINGLE_SAMPLES / SAMPLE_RATE_HZ)
     scheduler.finish(first, _completion(first, fake))
 
-    # Inject the full allowed handoff latency. Production asks for the next
-    # decision immediately instead of deliberately sleeping to this boundary.
     fake.advance(HANDOFF_BUDGET_SECONDS)
     second = scheduler.next_decision()
     assert second is not None and second.turn_id != first.turn_id

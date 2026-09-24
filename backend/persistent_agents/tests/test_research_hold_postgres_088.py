@@ -1,4 +1,7 @@
-"""Unknown retained model consumption cannot be bypassed by owner controls."""
+"""Tests for persistent_agents/execution.py and runner.py: unknown retained model
+consumption cannot be bypassed by pause and resume, or by claiming under a distinct
+read key.
+"""
 
 import asyncio
 
@@ -48,8 +51,6 @@ async def test_stale_unknown_model_cannot_issue_new_effect_after_pause_resume(re
     assert unknown.state == "uncertain" and before.usage["outstanding"]["model_calls"] == 1
     calls = (len(op.physical), len(op.model_calls))
     await control(op, "pause")
-    # Release only the fixture's original capacity; this does not settle its
-    # action ledger or invent a provider consumption receipt.
     await asyncio.to_thread(op.executor.orch.work_admission.terminalize,
         op.executor.operation_fence, state=OperationState.CANCELLED,
         terminal_code="synthetic_owner_pause", safe_summary=None, retry_after_ms=None)
@@ -62,8 +63,6 @@ async def test_stale_unknown_model_cannot_issue_new_effect_after_pause_resume(re
         await run_research_episode(executor)
     except (AssignmentError, DispatchDenied, SessionAuthorityUnavailable):
         refused = True
-    # This detects physical redispatch even when final completion later refuses
-    # the still-outstanding original action.
     assert (len(op.physical), len(op.model_calls)) == calls
     assert refused
     after = await current(op)

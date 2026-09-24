@@ -1,4 +1,7 @@
-"""Authenticated durable user-turn dispatcher proofs for Feature 065."""
+"""Tests for the authenticated durable user-turn dispatcher
+(orchestrator/async_tasks.py, conversation_publication.py): voice-turn notices,
+terminal reconciliation, dispatch scrubbing, and lease finalization.
+"""
 
 from __future__ import annotations
 
@@ -646,8 +649,6 @@ async def test_voice_preacceptance_rejection_never_completes_operation() -> None
 
 @pytest.mark.asyncio
 async def test_llm_credential_operation_keeps_its_typed_context_separate() -> None:
-    """Voice rejection bookkeeping must not shadow credential-save state."""
-
     from llm_config import ws_handlers
 
     origin = _Origin()
@@ -1588,9 +1589,6 @@ async def test_post_acceptance_delivery_error_still_finalizes_voice_turn() -> No
         *,
         websocket: Any,
     ) -> None:
-        # This fixture starts at an already-admitted voice publication and
-        # deliberately has no Plane/IAM graph. Exercise the publication wrapper;
-        # real voice guidance ingress is covered by its separate Plane suite.
         await Orchestrator._handle_chat_message_with_guidance(
             runtime,
             websocket,
@@ -2075,8 +2073,6 @@ async def test_llm_none_terminalizes_voice_when_task_state_machine_is_disabled(
     from unittest.mock import AsyncMock
     from orchestrator import turn_guidance_authority, user_skills
 
-    # This dispatch/terminalization unit uses an in-memory operation authority.
-    # Supply an empty authorized catalog read at its unrelated guidance seam.
     reader = SimpleNamespace(owner_id=USER_ID, close=lambda: None)
     monkeypatch.setattr(turn_guidance_authority, "acquire_turn_guidance_reader",
                         AsyncMock(return_value=reader))

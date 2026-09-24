@@ -1,4 +1,7 @@
-"""Least-privilege grant and worker-assignment fencing proofs for Feature 065."""
+"""Tests for least-privilege LiveKit grant issuance and worker-assignment fencing
+(livekit_service.py, voice_control_binding.py, voice_worker_endpoint.py): separate
+short-lived client/worker/watch grants and generation-fenced room assignment.
+"""
 
 from __future__ import annotations
 

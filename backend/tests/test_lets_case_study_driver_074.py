@@ -1,4 +1,7 @@
-"""Focused protocol and real-boundary tests for the Feature 074 driver."""
+"""Tests for tests/lets_case_study_driver.py and orchestrator/protected_dispatch.py: the
+full scenario matrix per mode, strict input parsing, fail-closed entrypoint behavior,
+and lifecycle renew/resume/revocation sequencing.
+"""
 
 from __future__ import annotations
 

@@ -1,9 +1,6 @@
-"""Opt-in native custody of a fresh Keycloak grant, never a token-import API.
-
-Attempt bookkeeping is bounded and process-local. A lost device attempt cannot
-be reconstructed from its handle; uncertain exchanges are terminal. The IdP's
-one-use authorization code remains the cross-process replay fence. This module
-does not promise distributed OAuth-result recovery.
+"""Opt-in native custody of a fresh Keycloak grant, bound to the caller's real
+transport, never imported from a token. Bookkeeping is bounded and process-local; an
+uncertain exchange is terminal, never retried as new. Used by auth.py.
 """
 
 from __future__ import annotations
@@ -172,8 +169,6 @@ async def _capture(request, client=None, *, device=False, authenticate=True):
                        web_auth._secret(), session_store._enc_key(), store._fernet,
                        time.time() + ATTEMPT_SECONDS, request, tuple(request.scope["headers"]),
                        web_auth.HARD_MAX_SECONDS)
-    # Freeze real transport values before IAM; no owner, SID or cookie comes
-    # from a caller body or a registration's conversation session_id.
     headers = tuple(request.scope["headers"])
     raw_cookie = request.cookies.get(web_auth.COOKIE_NAME)
     if raw_cookie is not None:
@@ -239,15 +234,14 @@ async def _issue(request, binding, payload, *, device=False):
     def finished(task):
         _ISSUANCE_TASKS.discard(task)
         if not task.cancelled():
-            task.exception()  # Observe an uncertain caller's bounded worker failure.
+            task.exception()
     worker.add_done_callback(finished)
     try:
         row = await asyncio.shield(worker)
     except asyncio.CancelledError:
         raise
     except Exception:
-        # Outcome may be unknown. Never issue again, synthesize a row/cookie,
-        # or revoke a credential based on an invented transaction outcome.
+        # Outcome unknown here: deny, never invent a result
         _deny(503)
     await web_auth._audit("login_interactive", owner, "Native grant entered server custody")
     await binding.current()
@@ -375,7 +369,6 @@ async def device_poll(request):
                 _deny(401)
             if caller.issuer != binding.issuer:
                 _deny(503)
-            # Claim before the first awaited authority/discovery/provider work.
             state["in_flight"] = True
             terminal = True
             try:
@@ -409,8 +402,6 @@ async def device_poll(request):
 
 
 async def capture_logout(request):
-    # FastAPI runs this before the unchanged normal Bearer dependency. Capture
-    # the selected incarnation first; do not authenticate a synthetic request.
     binding = await _capture(request, authenticate=False)
     if binding.row is None:
         _deny(401)

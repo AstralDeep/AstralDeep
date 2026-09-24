@@ -1,11 +1,8 @@
-"""Feature 060 release-contract schema guardrails (T002).
-
-The production validator is intentionally deferred to T106.  These tests use a
-small test-only Draft 2020-12 oracle for the exact assertion vocabulary used by
-the three tracked schemas.  That keeps the contract executable without adding
-``jsonschema`` (or any other product/test dependency) and prevents the schema
-documents from silently growing beyond the future standard-library validator.
+"""Tests defining a small Draft 2020-12 schema oracle for the release-evidence, staging
+and trust JSON schemas: supported keywords/types, duplicate-key and nonfinite
+rejection, and validation against representative profiles and artifacts.
 """
+
 from __future__ import annotations
 
 import copy
@@ -32,7 +29,7 @@ SCHEMA_PATHS = (
 )
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
-if not (REPO_ROOT / "specs").is_dir():  # repo root absent inside the product image
+if not (REPO_ROOT / "specs").is_dir():
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -98,7 +95,7 @@ SUPPORTED_TYPES = {
 
 
 class DuplicateKeyError(ValueError):
-    """Raised when JSON text repeats an object key."""
+    pass
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -245,7 +242,6 @@ def _validate(
     root: dict[str, Any] | None = None,
     location: str = "$",
 ) -> list[str]:
-    """Return deterministic validation errors for the schemas' exact subset."""
     root = schema if root is None else root
     errors: list[str] = []
 

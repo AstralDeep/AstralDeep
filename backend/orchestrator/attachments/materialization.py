@@ -1,10 +1,6 @@
-"""Deep policy for durable Plane attachment materialization.
-
-Plane owns the pending row, filesystem reservation, hidden staging bytes, atomic
-publication, and exact replay fences.  This module owns product policy around
-content sniffing, lease heartbeats, cancellation, and lifecycle admission.  All
-publishers use this one application-scoped service; none may publish a blob and
-then register metadata as a separate operation.
+"""Deep-owned policy — content sniffing, lease heartbeats, cancellation, admission —
+over Plane-owned durable attachment materialization (pending to staged to ready); the
+sole publisher every upload path in attachments/router.py must use.
 """
 
 from __future__ import annotations
@@ -40,8 +36,6 @@ _STREAM_POLL_SECONDS = 0.05
 
 
 class AttachmentContentTypeMismatchError(ValueError):
-    """The bounded staged prefix does not match the declared extension."""
-
     def __init__(self, detected_content_type: str) -> None:
         self.detected_content_type = detected_content_type
         super().__init__(detected_content_type)
@@ -59,8 +53,6 @@ class _SourceTerminal:
 
 
 class AttachmentMaterializationService:
-    """One lifecycle-bound pending -> staged -> ready attachment publisher."""
-
     def __init__(
         self,
         *,
@@ -121,8 +113,6 @@ class AttachmentMaterializationService:
         resolve_content_type: Callable[[bytes], str],
         created_at: int | None = None,
     ) -> AttachmentRecord:
-        """Publish one async stream with bounded sniffing and durable cleanup."""
-
         shutdown = asyncio.Event()
         self._begin_operation(shutdown)
         try:
@@ -374,8 +364,6 @@ class AttachmentMaterializationService:
         resolve_content_type: Callable[[bytes], str],
         created_at: int | None = None,
     ) -> AttachmentRecord:
-        """Synchronous small-payload twin used by already-threaded tool calls."""
-
         self._begin_operation(None)
         begun = None
         session = None
@@ -713,8 +701,6 @@ class AttachmentMaterializationService:
         staged: Any,
         source_task: asyncio.Task[Any],
     ) -> BaseException | None:
-        """Release owner exclusion, then always join arbitrary source cleanup."""
-
         cleanup_error: BaseException | None = None
         try:
             await self._abort_staged(staged)
@@ -731,8 +717,6 @@ class AttachmentMaterializationService:
         stage_task: asyncio.Task[Any],
         source_task: asyncio.Task[Any],
     ) -> None:
-        """Release Plane owner exclusion before joining arbitrary source cleanup."""
-
         stage_error: BaseException | None = None
         try:
             completed, _cancellation = await _cancel_and_join_task(stage_task)
@@ -762,8 +746,6 @@ class AttachmentMaterializationService:
         queue: asyncio.Queue[bytes | _SourceTerminal],
         attachment_id: str,
     ) -> None:
-        """Own source iteration/close independently from Plane's stage capability."""
-
         iterator: Any = None
         next_task: asyncio.Future[bytes] | None = None
         try:
@@ -811,8 +793,6 @@ class AttachmentMaterializationService:
         shutdown: asyncio.Event,
         attachment_id: str,
     ) -> AsyncIterable[bytes]:
-        """Feed Plane without making its owner lock depend on source cleanup."""
-
         while True:
             failure = _stream_interrupt(heartbeat, lease, shutdown)
             if failure is not None:
@@ -987,8 +967,6 @@ class AttachmentMaterializationService:
         )
 
     async def close(self) -> None:
-        """Reject new uploads, interrupt active streams, and join policy workers."""
-
         loop = asyncio.get_running_loop()
         with self._lifecycle:
             task = self._close_task
@@ -1023,8 +1001,6 @@ class AttachmentMaterializationService:
                 self._lifecycle.notify_all()
 
     def abort(self) -> None:
-        """Close an unbound service during synchronous composition rollback."""
-
         with self._lifecycle:
             if self._lifecycle_state == "closed":
                 return
@@ -1192,8 +1168,6 @@ async def _join_task_through_cancellation(
 def materialization_service_from_orchestrator(
     orchestrator: Any,
 ) -> AttachmentMaterializationService:
-    """Resolve the single application service with explicit test injection."""
-
     injected = getattr(orchestrator, "attachment_materialization_service", None)
     if injected is not None:
         return injected

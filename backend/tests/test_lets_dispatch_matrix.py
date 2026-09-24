@@ -1,4 +1,6 @@
-"""Feature 074 T177: every physical path reaches the governed final seam."""
+"""Tests for orchestrator/governed_dispatch.py: every physical dispatch path reaches the
+governed final seam, exercised as one matrix over lets_conformance_support fixtures.
+"""
 
 from __future__ import annotations
 

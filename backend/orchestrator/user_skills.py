@@ -1,25 +1,6 @@
-"""Feature 077 — user-authored skills (US3).
-
-A skill is current owner guidance in the Plane revision catalog. Legacy Markdown
-is retained for controlled first-use materialization and recovery. Its format is: a name, when it
-applies (every chat, or named agents), an optional ``/command`` alias, and the
-instructions. It lives in the SAME format as an authored skill pack
-(``knowledge_packs/README.md``) under the runtime knowledge directory —
-``<knowledge>/user_skills/<owner-hash>/<slug>.md`` — which Compose bind-mounts,
-so no schema change (D2). Path components are derived from a hash of the owner
-and a slug of the name, never from user text verbatim.
-
-What the rest of the product does with them:
-
-* :func:`skill_packs.build_skill_digest` puts enabled *always* skills first in
-  the per-turn guidance and agent-scoped skills alongside that agent's pack.
-* :func:`slash_commands.expand_message` expands ``/<command> text`` into the
-  skill's instructions plus the user's text; ``/help`` lists them.
-* The *My agents & skills* surface lists, creates, edits, toggles and deletes.
-
-Bounded: ``MAX_SKILLS`` per owner, ``MAX_INSTRUCTIONS_CHARS`` per skill; reads
-are cached by directory mtime. ``FF_USER_SKILLS`` (default on) gates every entry
-point; off ⇒ no digest lines, no expansion, no surface section.
+"""Legacy Markdown format (parse/render) for user-authored skills, retained for recovery
+and fixtures only; user_skill_catalog.py is the sole current read/write path, feeding
+skill_packs.py and slash_commands.py.
 """
 
 from __future__ import annotations
@@ -51,7 +32,7 @@ def enabled() -> bool:
     try:
         from shared.feature_flags import flags
         return bool(flags.is_enabled("user_skills"))
-    except Exception:  # noqa: BLE001 — a test double without the registry
+    except Exception:  # noqa: BLE001
         return True
 
 
@@ -60,7 +41,7 @@ class Skill:
     slug: str
     name: str
     instructions: str
-    applies_to: Tuple[str, ...]   # (ALWAYS,) or agent ids
+    applies_to: Tuple[str, ...]
     command: str = ""
     enabled: bool = True
     updated_at: int = 0
@@ -83,10 +64,6 @@ class Skill:
 class SkillValidationError(ValueError):
     pass
 
-
-# ---------------------------------------------------------------------------
-# Paths + format
-# ---------------------------------------------------------------------------
 
 def owner_dir(knowledge_dir: str, owner: str) -> str:
     digest = hashlib.sha256(str(owner).encode("utf-8")).hexdigest()[:24]
@@ -158,17 +135,7 @@ def parse_markdown(text: str) -> Optional[Skill]:
     )
 
 
-# ---------------------------------------------------------------------------
-# Store
-# ---------------------------------------------------------------------------
-
 class UserSkillStore:
-    """Legacy format utility retained for recovery/fixtures, never product wiring.
-
-    All current product readers and writers use :func:`store_for`. Existing files
-    cease being live authority once their owner catalog is materialized.
-    """
-
     def __init__(self, knowledge_dir: str) -> None:
         self.knowledge_dir = knowledge_dir
         self._cache: Dict[str, Tuple[float, List[Skill]]] = {}
@@ -219,8 +186,6 @@ class UserSkillStore:
     def save(self, owner: str, *, name: str, instructions: str, applies_to: Any,
              command: str = "", enabled: bool = True, slug: str = "",
              reserved_commands: Any = ()) -> Skill:
-        """Create (``slug`` empty) or replace one skill. Raises
-        :class:`SkillValidationError` with a user-facing message."""
         name = (name or "").strip()
         if len(name) < 2 or len(name) > MAX_NAME_CHARS:
             raise SkillValidationError(f"Give the skill a name (2–{MAX_NAME_CHARS} characters).")
@@ -301,12 +266,7 @@ def _normalise_applies(value: Any) -> Tuple[str, ...]:
     return tuple(out[:MAX_APPLIES_TO])
 
 
-# ---------------------------------------------------------------------------
-# Wiring helpers
-# ---------------------------------------------------------------------------
-
 def store_for(orch):
-    """Return only the current revision facade; never fall back to file authority."""
     if not enabled():
         return None
     from orchestrator.user_skill_catalog import UserSkillFacade
@@ -323,7 +283,6 @@ def store_for(orch):
 
 
 def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
-    """Format an already authenticated snapshot; this pure helper performs no reads."""
     skills = [skill for skill in skills if skill.enabled]
     in_play = set(agent_ids or ())
     picked = [s for s in skills if s.always] + [

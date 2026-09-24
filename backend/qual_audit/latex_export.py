@@ -1,4 +1,7 @@
-"""LaTeX file generation from verified test results using Jinja2 templates."""
+"""Generates the qualification report's LaTeX tables and appendices (per-category,
+frontend, summary, CLEAR-framework, audit log, and benchmark charts) from verified
+qual_audit/database.py results, driven by qual_audit/cli.py's export command.
+"""
 
 import json
 import os
@@ -11,7 +14,6 @@ from qual_audit.models import LatexArtifact, TestCaseResult, VerificationStatus
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
-# Default output: Qualifying_Exam/sources/tables/
 _DEFAULT_OUTPUT = os.path.normpath(
     os.path.join(
         os.path.dirname(__file__), "..", "..",
@@ -21,7 +23,6 @@ _DEFAULT_OUTPUT = os.path.normpath(
 
 
 def _latex_escape(text: str) -> str:
-    """Escape special LaTeX characters."""
     replacements = {
         "&": r"\&",
         "%": r"\%",
@@ -52,7 +53,6 @@ def _get_jinja_env() -> Environment:
     return env
 
 
-# Human-readable category names
 _CATEGORY_LABELS = {
     "tool_poisoning": "Tool Poisoning",
     "prompt_injection": "Prompt Injection",
@@ -64,13 +64,10 @@ _CATEGORY_LABELS = {
     "parallel_dispatch": "Parallel Multi-Agent Dispatch",
 }
 
-# Custom ID prefix overrides (category → prefix string)
-# Default is category[:2].upper()
 _CATEGORY_PREFIX = {
     "parallel_dispatch": "PD-B",
 }
 
-# CLEAR Framework dimension mapping (suite → CLEAR dimension)
 _CLEAR_MAPPING = {
     "cost_overhead": "Cost",
     "transport_comparison": "Latency / Reliability",
@@ -82,7 +79,6 @@ _CLEAR_MAPPING = {
     "parallel_dispatch": "Latency / Reliability",
 }
 
-# CLEAR dimension descriptions
 _CLEAR_DESCRIPTIONS = {
     "Cost": "Security processing overhead and computational expenditure",
     "Latency / Reliability": "Transport response time, throughput, ordering, and parallel dispatch performance",
@@ -90,10 +86,7 @@ _CLEAR_DESCRIPTIONS = {
     "Assurance": "Authorization enforcement, threat detection, and injection resistance",
 }
 
-# Short descriptions for backend test functions.
-# Keys are the bare function name (after :: split).
 _TEST_DESCRIPTIONS: Dict[str, str] = {
-    # Tool Poisoning
     "test_ast_catches_eval_exec_subprocess": "AST catches eval, exec, subprocess calls",
     "test_obfuscation_detection_base64": "Detects base64-obfuscated execution",
     "test_benign_tools_pass_clean": "Benign tools produce no false positives",
@@ -102,13 +95,11 @@ _TEST_DESCRIPTIONS: Dict[str, str] = {
     "test_data_egress_detection": "Flags data exfiltration tools",
     "test_destructive_ops_detection": "Flags destructive operation tools",
     "test_privilege_escalation_detection": "Flags privilege escalation tools",
-    # Prompt Injection
     "test_class_hierarchy_traversal_blocked": "Blocks Python class hierarchy sandbox escape",
     "test_encoded_injection_detection": "Detects base64-encoded injection payload",
     "test_pickle_deserialization_blocked": "Blocks unsafe pickle deserialization",
     "test_system_prompt_override_in_code": "Flags eval-based prompt override in code",
     "test_tool_response_injection_blocked": "Blocks exec injection via tool responses",
-    # ROTE Device Adaptation
     "test_browser_passthrough": "Browser passes all components unchanged",
     "test_button_tv_removed": "TV profile removes interactive buttons",
     "test_chart_watch_degradation": "Watch degrades bar chart to metric card",
@@ -117,40 +108,33 @@ _TEST_DESCRIPTIONS: Dict[str, str] = {
     "test_table_mobile_truncation": "Mobile truncates table to 4 cols, 20 rows",
     "test_table_tablet_column_limit": "Tablet limits table to 6 columns",
     "test_voice_text_extraction": "Voice extracts text-only, max 300 chars",
-    # Permission & Delegation
     "test_cross_user_isolation": "Different users have independent permissions",
     "test_per_tool_override": "Per-tool override disables specific tool",
     "test_permission_change_immediate_effect": "Scope toggle takes effect immediately",
     "test_scope_enforcement_blocks_unauthorized": "Read-only scope blocks write tool access",
     "test_token_act_claim_structure": "Token act claim follows RFC 8693 format",
     "test_token_attenuation_scopes": "Delegation token contains only granted scopes",
-    # Transport Comparison — SSE
     "test_sse_echo_latency": "SSE round-trip echo latency (N=100)",
     "test_sse_throughput": "SSE echo throughput in messages/sec",
     "test_sse_message_ordering": "SSE messages arrive in send order",
     "test_sse_reconnection_id": "SSE connection identity for reconnection",
     "test_sse_concurrent_connections": "SSE 10 concurrent connections fairness",
-    # Transport Comparison — WebSocket
     "test_ws_echo_latency": "WS round-trip echo latency (N=100)",
     "test_ws_throughput": "WS echo throughput in messages/sec",
     "test_ws_message_ordering": "WS messages arrive in send order",
     "test_ws_reconnection": "WS reconnection with session continuity",
     "test_ws_concurrent_connections": "WS 10 concurrent connections fairness",
-    # Cost Overhead
     "test_tool_analyzer_timing": "ToolSecurityAnalyzer mean/p95 latency (10-tool corpus)",
     "test_code_analyzer_timing": "CodeSecurityAnalyzer timing across code complexities",
     "test_combined_registration_overhead": "Combined security screening overhead per registration",
     "test_memory_overhead": "Memory delta during 50-tool batch analysis",
-    # Adversarial evasion (tool poisoning)
     "test_innocuous_name_dangerous_schema": "Innocuous name with subtly dangerous schema field",
     "test_synonym_evasion": "Synonym/paraphrasing evasion of regex patterns (xfail)",
-    # Parallel Multi-Agent Dispatch
     "test_sequential_vs_parallel_latency": "Sequential vs parallel latency (3 real agents)",
     "test_parallel_dispatch_correctness": "All parallel results returned without errors",
     "test_parallel_speedup_factor": "Parallel speedup factor over multiple trials",
 }
 
-# Frontend test groups — maps the Vitest "describe" prefix to a short label.
 _FRONTEND_GROUPS = {
     "Component Graceful Degradation": "Graceful Degradation",
     "SDUI Component Rendering via DynamicRenderer": "SDUI Component Rendering via DynamicRenderer",
@@ -158,18 +142,14 @@ _FRONTEND_GROUPS = {
 
 
 def _short_name(test_name: str) -> str:
-    """Extract short test name from pytest node ID."""
     parts = test_name.split("::")
     return parts[-1] if parts else test_name
 
 
 def _abbreviated_name(func_name: str) -> str:
-    """Create a compact abbreviated identifier from a function name."""
-    # Strip test_ prefix, truncate to keep it brief
     name = func_name
     if name.startswith("test_"):
         name = name[5:]
-    # Collapse to first 2-3 meaningful segments
     parts = name.split("_")
     if len(parts) > 3:
         name = "_".join(parts[:3])
@@ -177,21 +157,16 @@ def _abbreviated_name(func_name: str) -> str:
 
 
 def _get_description(test_name: str) -> str:
-    """Look up or derive a short description for a test."""
     func = _short_name(test_name)
     if func in _TEST_DESCRIPTIONS:
         return _TEST_DESCRIPTIONS[func]
-    # For frontend tests: the test_name is the descriptive string already
-    # e.g. "Component Graceful Degradation > DG-001: table with empty rows..."
     if ">" in test_name and ":" in test_name:
-        # Extract after the colon
         after_colon = test_name.split(":", 1)[-1].strip()
         return after_colon[0].upper() + after_colon[1:] if after_colon else test_name
     return func
 
 
 def _parse_frontend_short_name(test_name: str) -> str:
-    """Extract the sub-ID (e.g. DG-001, FR-001) from a frontend test name."""
     if ">" in test_name and ":" in test_name:
         after_gt = test_name.split(">", 1)[-1].strip()
         sub_id = after_gt.split(":", 1)[0].strip()
@@ -200,7 +175,6 @@ def _parse_frontend_short_name(test_name: str) -> str:
 
 
 def _parse_frontend_group(test_name: str) -> str:
-    """Extract the group/describe prefix from a frontend test name."""
     if ">" in test_name:
         return test_name.split(">", 1)[0].strip()
     return "Other"
@@ -209,7 +183,6 @@ def _parse_frontend_group(test_name: str) -> str:
 def generate_category_table(
     cases: List[TestCaseResult], category: str, output_dir: str
 ) -> str:
-    """Generate a per-category results table .tex file."""
     env = _get_jinja_env()
     template = env.get_template("category_section.tex.j2")
 
@@ -217,7 +190,6 @@ def generate_category_table(
     for i, case in enumerate(cases, 1):
         prefix = _CATEGORY_PREFIX.get(category, category[:2].upper())
         func = _short_name(case.test_name)
-        # Use zero-padded 2-digit IDs for custom prefixes, 3-digit for default
         id_num = f"{i:02d}" if category in _CATEGORY_PREFIX else f"{i:03d}"
         rows.append({
             "id": f"{prefix}{id_num}" if category in _CATEGORY_PREFIX else f"{prefix}-{id_num}",
@@ -245,11 +217,9 @@ def generate_category_table(
 def generate_frontend_table(
     cases: List[TestCaseResult], output_dir: str
 ) -> str:
-    """Generate the frontend rendering longtable with category sub-groups."""
     env = _get_jinja_env()
     template = env.get_template("frontend_section.tex.j2")
 
-    # Group cases by their describe block
     grouped: Dict[str, List] = {}
     for case in cases:
         group_key = _parse_frontend_group(case.test_name)
@@ -284,11 +254,9 @@ def generate_frontend_table(
 def generate_summary_table(
     all_cases: List[TestCaseResult], output_dir: str
 ) -> str:
-    """Generate the aggregate summary table."""
     env = _get_jinja_env()
     template = env.get_template("summary_table.tex.j2")
 
-    # Group by suite
     suites: Dict[str, List[TestCaseResult]] = {}
     for c in all_cases:
         suites.setdefault(c.suite, []).append(c)
@@ -315,17 +283,14 @@ def generate_summary_table(
 def generate_clear_summary_table(
     all_cases: List[TestCaseResult], output_dir: str
 ) -> str:
-    """Generate the CLEAR Framework coverage summary table."""
     env = _get_jinja_env()
     template = env.get_template("clear_summary.tex.j2")
 
-    # Group cases by CLEAR dimension
     dimensions: Dict[str, List[TestCaseResult]] = {}
     for c in all_cases:
         dim = _CLEAR_MAPPING.get(c.suite, "Other")
         dimensions.setdefault(dim, []).append(c)
 
-    # Build rows in a stable order
     dim_order = ["Cost", "Latency / Reliability", "Efficacy", "Assurance"]
     rows = []
     for dim in dim_order:
@@ -356,13 +321,11 @@ def generate_clear_summary_table(
 
 
 def generate_audit_appendix(db: AuditDatabase, run_id: str, output_dir: str) -> str:
-    """Generate the test execution log table (no reviewer/verification columns)."""
     env = _get_jinja_env()
     template = env.get_template("audit_appendix.tex.j2")
 
     cases = db.get_cases_for_run(run_id)
 
-    # Sort by suite then test name for consistent ordering
     cases.sort(key=lambda c: (c.suite, c.test_name))
 
     rows = []
@@ -387,15 +350,12 @@ def generate_audit_appendix(db: AuditDatabase, run_id: str, output_dir: str) -> 
 
 
 def _split_transport_metrics(cases: List[TestCaseResult]) -> Dict[str, float]:
-    """Extract SSE and WebSocket metrics from transport test cases."""
     metrics: Dict[str, float] = {}
 
-    # First check for explicit metrics stored in the test results
     for c in cases:
         if c.metrics:
             metrics.update(c.metrics)
 
-    # If no explicit metrics, derive from execution times by transport type
     if not metrics:
         import statistics
 
@@ -419,7 +379,6 @@ def _split_transport_metrics(cases: List[TestCaseResult]) -> Dict[str, float]:
 def generate_benchmark_chart(
     cases: List[TestCaseResult], output_dir: str
 ) -> str:
-    """Generate the transport latency comparison chart (SSE vs WebSocket)."""
     env = _get_jinja_env()
     template = env.get_template("benchmark_chart.tex.j2")
 
@@ -432,19 +391,11 @@ def generate_benchmark_chart(
 
 
 def print_transport_summary(cases: List[TestCaseResult]) -> None:
-    """Print transport throughput and latency values to the console.
-
-    Previously this generated a transport_summary_table.tex file.
-    The throughput values are now embedded directly in the paper's prose,
-    so we print them for manual reference instead.
-    """
     metrics = _split_transport_metrics(cases)
 
-    # Estimate throughput from the throughput test durations
     sse_tp_cases = [c for c in cases if "throughput" in _short_name(c.test_name) and "sse" in _short_name(c.test_name)]
     ws_tp_cases = [c for c in cases if "throughput" in _short_name(c.test_name) and "ws" in _short_name(c.test_name)]
 
-    # Throughput = 200 messages / duration_seconds
     sse_throughput = "---"
     ws_throughput = "---"
     if sse_tp_cases and sse_tp_cases[0].duration_ms > 0:
@@ -469,7 +420,6 @@ def print_transport_summary(cases: List[TestCaseResult]) -> None:
 
 
 def print_parallel_dispatch_summary():
-    """Print parallel dispatch benchmark results from the sidecar JSON file."""
     import tempfile
     bench_file = os.path.join(tempfile.gettempdir(), "astral_parallel_dispatch_bench.json")
     if not os.path.exists(bench_file):
@@ -500,26 +450,21 @@ def print_parallel_dispatch_summary():
             print(f"|  Individual trials: {trial_str}")
     print("+----------------------------------------------------------------------+\n")
 
-    # Clean up sidecar file
     os.unlink(bench_file)
 
 
 def generate_all_artifacts(
     db: AuditDatabase, run_id: str, output_dir: str
 ) -> List[LatexArtifact]:
-    """Generate all LaTeX artifacts for a completed, verified run."""
     cases = db.get_cases_for_run(run_id)
     artifacts: List[LatexArtifact] = []
 
-    # Group by suite
     suites: Dict[str, List[TestCaseResult]] = {}
     for c in cases:
         suites.setdefault(c.suite, []).append(c)
 
-    # Per-category tables
     for suite, suite_cases in sorted(suites.items()):
         if suite == "frontend_rendering":
-            # Use longtable template with category groupings
             filename = generate_frontend_table(suite_cases, output_dir)
         else:
             filename = generate_category_table(suite_cases, suite, output_dir)
@@ -534,7 +479,6 @@ def generate_all_artifacts(
         db.insert_artifact(art)
         artifacts.append(art)
 
-    # Transport benchmark chart (if transport tests exist)
     if "transport_comparison" in suites:
         tc_cases = suites["transport_comparison"]
         filename = generate_benchmark_chart(tc_cases, output_dir)
@@ -547,14 +491,11 @@ def generate_all_artifacts(
         db.insert_artifact(art)
         artifacts.append(art)
 
-        # Print throughput values to console (previously generated transport_summary_table.tex)
         print_transport_summary(tc_cases)
 
-    # Print parallel dispatch benchmark data (if available from sidecar file)
     if "parallel_dispatch" in suites:
         print_parallel_dispatch_summary()
 
-    # CLEAR Framework summary table
     filename = generate_clear_summary_table(cases, output_dir)
     art = LatexArtifact(
         run_id=run_id,
@@ -565,7 +506,6 @@ def generate_all_artifacts(
     db.insert_artifact(art)
     artifacts.append(art)
 
-    # Summary table
     filename = generate_summary_table(cases, output_dir)
     art = LatexArtifact(
         run_id=run_id,
@@ -576,7 +516,6 @@ def generate_all_artifacts(
     db.insert_artifact(art)
     artifacts.append(art)
 
-    # Audit / execution log appendix
     filename = generate_audit_appendix(db, run_id, output_dir)
     art = LatexArtifact(
         run_id=run_id,

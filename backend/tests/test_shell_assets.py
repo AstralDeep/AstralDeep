@@ -1,12 +1,8 @@
-"""Template-level asset-pipeline checks for the web shell.
-
-Pure file reads against ``webrender/templates/shell.html``,
-``webrender/static/astral.css``, and ``webrender/static/fonts/`` — no server.
-Asserts the render path never touches an external origin, every ``/static/``
-URL in the shell carries a per-file ``%%ASTRAL_V:<path>%%`` version token,
-plotly is no longer loaded from the shell ``<head>``, and the self-hosted
-fonts are real woff2 binaries declared with ``font-display: swap``.
+"""Tests for the web shell's asset pipeline (astralprojection/resources.py,
+webrender/templates/shell.html, static/astral.css): no external origins, versioned
+static URLs, and vendored, swap-declared fonts.
 """
+
 import re
 from pathlib import Path
 
@@ -18,17 +14,14 @@ FONTS_DIR = Path(str(static_root())) / "fonts"
 
 
 def _shell() -> str:
-    """Return the shell template text."""
     return SHELL_PATH.read_text(encoding="utf-8")
 
 
 def _css() -> str:
-    """Return the main stylesheet text."""
     return CSS_PATH.read_text(encoding="utf-8")
 
 
 def test_no_external_origins_in_render_path():
-    """Neither the shell nor the stylesheet may reference an external origin."""
     shell = _shell()
     css = _css()
     for banned in ("googleapis", "gstatic"):
@@ -40,17 +33,14 @@ def test_no_external_origins_in_render_path():
 
 
 def test_no_plotly_script_tag_in_shell():
-    """Plotly must not be loaded from the shell head (lazy-injected by client.js)."""
     assert not re.search(r"<script[^>]+src=\"[^\"]*plotly", _shell(), re.IGNORECASE)
 
 
 def test_plotly_lazy_url_is_versioned():
-    """The lazy-loader URL global exists and carries its per-file version token."""
     assert '__ASTRAL_PLOTLY_URL__ = "/static/vendor/plotly.min.js?v=%%ASTRAL_V:vendor/plotly.min.js%%"' in _shell()
 
 
 def test_every_static_reference_is_versioned():
-    """Each /static/ URL in the shell carries a %%ASTRAL_V:<path>%% token."""
     shell = _shell()
     for match in re.finditer(r"/static/[^\"'\s?%>]+", shell):
         rest = shell[match.end():]
@@ -60,7 +50,6 @@ def test_every_static_reference_is_versioned():
 
 
 def test_font_files_vendored():
-    """The fonts directory holds non-empty woff2 binaries (wOF2 magic)."""
     assert FONTS_DIR.is_dir(), "webrender/static/fonts/ is missing"
     files = sorted(FONTS_DIR.glob("*.woff2"))
     assert files, "no .woff2 files vendored"
@@ -71,14 +60,6 @@ def test_font_files_vendored():
 
 
 def test_font_faces_declared_with_swap():
-    """astral.css self-hosts every font it uses, with font-display: swap.
-
-    Feature 089 replaced Inter and JetBrains Mono with one Open Sans latin
-    variable slice covering body text, headings and code. What matters is
-    unchanged: the fonts are self-hosted, so no external origin sits on the
-    critical render path, and each declares `swap` so text is readable
-    before the file arrives.
-    """
     css = _css()
     blocks = re.findall(r"@font-face\s*\{[^}]*\}", css)
     assert blocks, "no @font-face blocks in astral.css"
@@ -99,12 +80,9 @@ def test_font_faces_declared_with_swap():
 
 
 def test_shell_preloads_primary_fonts():
-    """The shell preloads the vendored fonts with versioned URLs and crossorigin."""
     shell = _shell()
     preloads = re.findall(r"<link[^>]+rel=\"preload\"[^>]*>", shell)
     font_preloads = [p for p in preloads if 'as="font"' in p]
-    # One font file since 089, so one preload. More than one would mean a
-    # second family had been reintroduced.
     assert len(font_preloads) == 1, (
         f"expected exactly one preloaded font file, got {font_preloads}"
     )

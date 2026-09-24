@@ -1,4 +1,7 @@
-"""Dispatcher: ownership enforcement and basic resolution."""
+"""Tests for agents/general/file_tools' dispatcher: attachment-ownership enforcement,
+path-parser scoped leases, byte-reader/parser routing, and fail-closed dependency
+bindings.
+"""
 
 from __future__ import annotations
 

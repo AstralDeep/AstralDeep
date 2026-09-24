@@ -1,17 +1,6 @@
-"""Closed owner-read projection of a completed, retained research selection.
-
-The caller supplies the current owner and its existing Plane transaction, then
-revalidates read authority before delivery. These reads neither grant execution
-nor require the original execution session, provider configuration or instruction
-expansion. The named result MAC authenticates the stored selection and opaque
-input binding; it does not reconstruct the private input MAC or provider prompt.
-
-Selected metadata reads hold owner/assignment locks against retirement. Equality
-rereads also validate action integrity under READ COMMITTED. Only already
-settled, immutable action bindings are interpreted. A missing historical
-verification key makes the result unavailable, without adopting the active key.
-Plane's individual action reads lock their rows; the caller must bound SQL waits
-on the supplied transaction, with no external work while these locks are held.
+"""Owner-read projection of a completed, retained research selection, reread and
+MAC-verified inside the caller's existing Plane transaction. Feeds
+work_publication.py, work_service.py, and projection_surfaces/saved_results.py.
 """
 
 from __future__ import annotations
@@ -70,10 +59,6 @@ def _amount(value):
     value = thaw(value)
     counters = {"model_calls", "tool_calls", "tokens", "elapsed_ms"}
     base = counters | {"spend_micro_units", "currency"}
-    # Plane 088.008 (FR-022) made AssignmentResourceAmount carry an additive
-    # per-dimension charge-basis map; thaw() now always emits the `basis` key
-    # (None for every pre-088.008 amount). Accept both the legacy 6-key shape
-    # and the basis-bearing 7-key shape; never a synthetic counter.
     _require(type(value) is dict and set(value) in (base, base | {"basis"}))
     for name in counters:
         _integer(value[name])
@@ -121,8 +106,6 @@ def _settled(action):
     result = thaw(action.result)
     _require(type(result) is dict and type(result.get("outcome")) is str
              and result["outcome"] == "succeeded")
-    # No reconciliation, unknown fields, unavailable marker or copied private
-    # payload can be interpreted as this profile's original settled receipt.
     keys = {"outcome", "result_digest", "result", "evidence_reference", "actual"}
     disposition = result.get("result_disposition")
     if disposition is not None:
@@ -218,12 +201,6 @@ def _page(record, model, source, transient, source_key, selected):
 
 
 def project_research_result(transaction, repository, *, owner_id, read):
-    """Return bounded content only after same-transaction, exact ledger proof.
-
-    No network, provider store, execution authority, publication or direct SQL is used.
-    Missing/foreign records and invalid proofs share a data-free unavailable
-    result. The caller's normal owner-read policy remains mandatory.
-    """
     try:
         _require(type(read) is AssignmentOperationRead)
         record = read.assignment
@@ -252,8 +229,6 @@ def project_research_result(transaction, repository, *, owner_id, read):
                  and read.result_reference == operation.get("result_reference"))
         _identity(read.result_reference)
         source_request(record)
-        # Metadata only: a completed receipt never reopens guidance values or
-        # demands that an intentionally forgotten/archived head still exists.
         selected = repository.get_selected_input(transaction, owner_id=owner_id,
             assignment_id=record.assignment_id)
         if selected is not None:
@@ -261,8 +236,6 @@ def project_research_result(transaction, repository, *, owner_id, read):
                      and selected.assignment_id == record.assignment_id
                      and selected.instruction_revision == record.instruction_revision
                      and selected.envelope is not None)
-        # This unlocked inspection only discovers IDs. It cannot prove a result.
-        # Match execution's sorted lock order, then require exact locked equality.
         source_key, model_key = research_action_keys(record)
         current_key = "research-v1-" + model_key
         selected_key = current_key
@@ -271,8 +244,6 @@ def project_research_result(transaction, repository, *, owner_id, read):
         legacy = peek is None
         if legacy:
             _require(selected is None or selected.envelope is None)
-            # Compatibility is read-only and only for completed records. An
-            # invalid current-key receipt never selects a legacy alternate.
             selected_key = "research-v1-" + MODEL_KEY
             source_key = None
             peek = repository.get_action_by_key(transaction, owner_id=owner_id,
@@ -292,8 +263,6 @@ def project_research_result(transaction, repository, *, owner_id, read):
                 assignment_id=record.assignment_id, action_id=action.action_id)
             _require(type(actual) is AssignmentActionRecord and _same(actual, action))
         if legacy:
-            # A later current-key observation cannot be hidden by the earlier
-            # absence read, even if the legacy receipt itself stayed unchanged.
             _require(repository.get_action_by_key(transaction, owner_id=owner_id,
                 assignment_id=record.assignment_id, action_key=current_key) is None)
         final = repository.get_operation(transaction, owner_id=owner_id,

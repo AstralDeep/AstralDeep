@@ -1,10 +1,8 @@
-"""REST router for dreaming/consolidation (feature 025, US6/T054).
-
-Status + enable/disable (opt-out, default on per FR-029) + manual trigger +
-sweep-review list. The manual trigger runs a synchronous consolidation sweep
-(non-PHI, no delegation, no external delivery — safe to run inline). Audited
-under ``event_class="dreaming"`` (FR-030).
+"""REST router for dreaming status/enable/disable/manual-trigger/review, backed by
+dreaming/consolidation.py and dreaming/scheduling.py. The manual trigger runs a
+synchronous sweep since it touches no external systems.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,8 +42,6 @@ async def get_status(request: Request, user_id: str = Depends(require_user_id)):
     svc = _service(request)
     profile = svc.repo.get_profile(user_id)
     enabled = bool(profile.get("dreaming_enabled", True)) if profile else True
-    # 030 (025 T053): default-on users get their recurring job materialized the
-    # first time they interact with dreaming; disabled users have none.
     try:
         from .scheduling import ensure_dreaming_job, remove_dreaming_job
         plane_source = plane_source_from_orchestrator(_orchestrator(request))
@@ -63,7 +59,6 @@ async def enable(request: Request, user_id: str = Depends(require_user_id),
                  payload: dict = Depends(get_current_user_payload)):
     svc = _service(request)
     svc.repo.set_dreaming_enabled(user_id, True)
-    # 030 FR-013: ensure the recurring consolidation job exists/resumes.
     try:
         from .scheduling import ensure_dreaming_job
         ensure_dreaming_job(
@@ -81,7 +76,6 @@ async def disable(request: Request, user_id: str = Depends(require_user_id),
                   payload: dict = Depends(get_current_user_payload)):
     svc = _service(request)
     svc.repo.set_dreaming_enabled(user_id, False)
-    # 030 FR-014: stop future runs by pausing the recurring job.
     try:
         from .scheduling import remove_dreaming_job
         remove_dreaming_job(

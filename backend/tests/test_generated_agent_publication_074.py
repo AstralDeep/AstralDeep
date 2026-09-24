@@ -1,3 +1,9 @@
+"""Tests for GeneratedAgentPublicationService
+(orchestrator/generated_agent_publication.py, work_admission.py): replay-stable
+publication identity, two-phase publish/claim under lost-ack races, heartbeat-driven
+claim loss, and terminal-state replay.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -1464,7 +1470,7 @@ async def test_publish_rejects_non_request_and_concurrent_input_conflict() -> No
     with pytest.raises(GeneratedAgentPublicationRecoveryPendingError) as captured:
         await service.publish(changed)
     assert captured.value.claim_managed is True
-    if not captured.value.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not captured.value.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     store.stage_release.set()
@@ -1493,7 +1499,7 @@ async def test_replay_inspection_failure_preserves_unproven_durable_claim() -> N
         await service.publish(_request())
     assert captured.value.claim_managed is True
     assert isinstance(captured.value.__cause__, RuntimeError)
-    if not captured.value.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not captured.value.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     journal.get_error = None
@@ -1522,7 +1528,7 @@ async def test_cancelled_replay_lookup_error_preserves_unproven_durable_claim() 
     assert marker.claim_managed is True
     assert isinstance(marker.__cause__, RuntimeError)
     assert str(marker.__cause__) == "database unavailable"
-    if not marker.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not marker.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     journal.get_error = None
@@ -1563,7 +1569,7 @@ async def test_cancellation_during_failed_admission_lookup_stays_primary(
     assert str(marker.__cause__) == "authoritative lookup failed"
     assert isinstance(marker.__cause__.__cause__, RuntimeError)
     assert str(marker.__cause__.__cause__) == "admission failed"
-    if not marker.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not marker.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     await service.close()
@@ -1590,7 +1596,7 @@ async def test_failed_admission_with_lookup_ambiguity_is_claim_managed(
 
     assert captured.value.claim_managed is True
     assert isinstance(captured.value.__cause__, RuntimeError)
-    if not captured.value.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not captured.value.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     await service.close()
@@ -1708,7 +1714,7 @@ async def test_begin_commit_ack_loss_and_failed_readback_remains_claim_managed(
 
     assert captured.value.claim_managed is True
     assert journal.publication is not None and journal.publication.state == "claimed"
-    if not captured.value.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not captured.value.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     await service.close()
@@ -1739,7 +1745,7 @@ async def test_begin_commit_cancel_and_failed_readback_keeps_cancel_primary(
     assert isinstance(marker, GeneratedAgentPublicationRecoveryPendingError)
     assert marker.claim_managed is True
     assert journal.publication is not None and journal.publication.state == "claimed"
-    if not marker.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not marker.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     await service.close()
@@ -2239,7 +2245,7 @@ async def test_prejournal_cancelled_joiner_cannot_revoke_survivor_claim(
     marker = captured.value.__cause__
     assert isinstance(marker, GeneratedAgentPublicationManagedCancellation)
     assert marker.claim_managed is True
-    if not marker.claim_managed:  # Mirrors lifecycle's caller-owned cleanup.
+    if not marker.claim_managed:
         journal.draft.generation_claim_id = None
     assert journal.draft.generation_claim_id == CLAIM
     assert attempt.waiters == 1
@@ -2255,8 +2261,6 @@ async def test_late_joiner_never_attaches_to_zero_waiter_cancelling_attempt(
 ) -> None:
     store = _FakeStore()
     store.stage_release.clear()
-    # Keep the durable intent in progress until the late reader has observed it.
-    # The shared fake's automatic timeout must not settle this test's old attempt.
     stage_wait = store.stage_release.wait
     monkeypatch.setattr(store.stage_release, "wait", lambda _timeout=None: stage_wait())
     service, _journal, _store, _runtime, _admission = _service(store=store)
@@ -3535,7 +3539,7 @@ async def test_generation_claim_heartbeat_surfaces_stale_claim() -> None:
             heartbeat.assert_healthy()
         except GenerationClaimLostError:
             break
-    else:  # pragma: no cover - bounded diagnostic guard.
+    else:  # pragma: no cover
         pytest.fail("claim-loss heartbeat did not fail")
     with pytest.raises(GenerationClaimLostError, match="renewal failed"):
         await heartbeat.close()

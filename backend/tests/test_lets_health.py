@@ -1,4 +1,7 @@
-"""Redacted LETS health/readiness projection tests."""
+"""Tests for orchestrator/lets_health.py: readiness projection from runtime observations
+across off/active/shadow modes, mapping internal codes to stable public reasons, and
+that no secret ever reaches the public snapshot.
+"""
 
 from __future__ import annotations
 

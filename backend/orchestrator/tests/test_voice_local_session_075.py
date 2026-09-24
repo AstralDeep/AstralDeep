@@ -1,4 +1,7 @@
-"""Backend-aware local session construction and lifecycle tests."""
+"""Tests for backend-local (no remote media) voice session construction and lifecycle
+(voice_backend.py, voice_runtime.py, voice_sessions.py): activation claiming,
+cancellation reconciliation, capacity ordering, and takeover/end fencing.
+"""
 
 from __future__ import annotations
 
@@ -615,8 +618,6 @@ async def test_repeated_cancel_during_local_activation_joins_exact_abort(
     mutation: str,
     stage: str,
 ) -> None:
-    """A second cancel must not outrun exact durable activation cleanup."""
-
     previous = _round2_session(ended=True)
     replacement = _round2_session(generation=2 if mutation == "takeover" else 1)
     stage_entered = threading.Event()
@@ -716,8 +717,6 @@ async def test_repeated_cancel_during_local_activation_joins_exact_abort(
 
 @pytest.mark.asyncio
 async def test_repeated_cancel_records_failed_local_activation_abort_before_return() -> None:
-    """A failed exact end must retain its bounded production drain handle."""
-
     session = _round2_session()
     stage_entered = threading.Event()
     stage_release = threading.Event()
@@ -814,8 +813,6 @@ async def test_local_ownership_cancellation_phase_table_preserves_exact_owner(
     replayed: bool,
     cleanup_fails: bool,
 ) -> None:
-    """Every await boundary either rolls back new ownership or preserves replay."""
-
     previous = _round2_session(ended=True)
     session = SimpleNamespace(
         **{
@@ -1170,8 +1167,6 @@ async def test_local_early_activation_validation_never_exhausts_capacity(
     invalid_kind: str,
     expected_code: str,
 ) -> None:
-    """Every post-reservation validation refusal settles its exact slot."""
-
     sessions: dict[str, Any] = {}
     ended_ids: list[str] = []
 
@@ -1258,8 +1253,6 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
     invalid_kind: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A validation error remains primary until its exact slot is settled."""
-
     mutation_entered = threading.Event()
     mutation_release = threading.Event()
     cleanup_entered = threading.Event()
@@ -1339,8 +1332,6 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
     if not replayed:
         assert await asyncio.to_thread(cleanup_entered.wait, 1)
     else:
-        # Yielding the event loop cannot prove the repository thread returned.
-        # Cancel only after the validation error owns its real settlement path.
         await asyncio.wait_for(settlement_entered.wait(), timeout=3)
     task.cancel()
     task.cancel()
@@ -1365,8 +1356,6 @@ async def test_local_early_validation_settlement_joins_repeated_cancellation(
 async def test_same_activation_id_reservations_have_exact_request_ownership(
     mutation_kind: str,
 ) -> None:
-    """A cancelled same-ID waiter cannot release the current exact owner."""
-
     active = SimpleNamespace(**{**_round2_session().__dict__, "state": "active"})
     entered = [threading.Event(), threading.Event()]
     release = [threading.Event(), threading.Event()]
@@ -1431,8 +1420,6 @@ async def test_same_activation_id_reservations_have_exact_request_ownership(
     first = asyncio.create_task(request_coroutine())
     assert await asyncio.to_thread(entered[0].wait, 1)
     second = asyncio.create_task(request_coroutine())
-    # Takeover first awaits a repository thread; event-loop turns do not prove
-    # that work finished. Observe the actual reservation lock release instead.
     await asyncio.wait_for(second_reserved.wait(), timeout=2)
     assert not entered[1].is_set()
     assert len(runtime._local_activation_reservations) == 2
@@ -1461,8 +1448,6 @@ async def test_exact_activation_replay_waits_for_originating_abort_settlement(
     mutation_kind: str,
     origin_outcome: str,
 ) -> None:
-    """A replay cannot receive authority that its in-flight origin may revoke."""
-
     previous = _round2_session(ended=True)
     starting = _round2_session(generation=2 if mutation_kind == "takeover" else 1)
     first_apply_entered = threading.Event()
@@ -1599,8 +1584,6 @@ async def test_distinct_activation_identities_mutate_concurrently(
     mutation_kind: str,
     identity: str,
 ) -> None:
-    """Only an exact user/activation pair is serialized."""
-
     entered = [threading.Event(), threading.Event()]
     release = threading.Event()
     call_lock = threading.Lock()
@@ -1677,8 +1660,6 @@ async def test_distinct_activation_identities_mutate_concurrently(
 
 @pytest.mark.asyncio
 async def test_failed_activation_abort_retains_key_until_production_drain() -> None:
-    """A retained abort handle keeps an exact replay from racing its later end."""
-
     starting = _round2_session()
     apply_entered = threading.Event()
     apply_release = threading.Event()
@@ -1775,8 +1756,6 @@ async def test_exact_activation_replay_waits_at_every_postmutation_phase(
     mutation_kind: str,
     phase: str,
 ) -> None:
-    """A successful origin exclusively owns its key through return commit."""
-
     previous = _round2_session(ended=True)
     session = SimpleNamespace(
         **{
@@ -1927,8 +1906,6 @@ async def test_cancelled_active_local_session_handoffs_capacity_before_abort(
     mutation_kind: str,
     abort_fails: bool,
 ) -> None:
-    """An unreturned active session owns a cleanup slot before abort awaits."""
-
     previous = _round2_session(ended=True)
     session = _round2_session(generation=2 if mutation_kind == "takeover" else 1)
     abort_entered = threading.Event()
@@ -2039,8 +2016,6 @@ async def test_cancelled_active_local_session_handoffs_capacity_before_abort(
 
 @pytest.mark.asyncio
 async def test_local_activation_handoff_identity_loss_fails_closed() -> None:
-    """A missing exact token cannot free or replace another request's slot."""
-
     session = _round2_session()
     repository = SimpleNamespace(end_session=Mock())
     runtime = VoiceSessionRuntime(
@@ -2118,8 +2093,6 @@ def test_session_projection_adds_backend_only_to_versioned_local_lane() -> None:
 async def test_local_explicit_end_fences_before_mutation_and_resolves_exact_outcome(
     outcome: str,
 ) -> None:
-    """The exact reversible fence precedes CAS and survives cancellation."""
-
     session = _round2_session()
     ended = SimpleNamespace(**{**session.__dict__, "ended_at": NOW})
     prepare_entered = asyncio.Event()
@@ -2208,8 +2181,6 @@ async def test_local_explicit_end_fences_before_mutation_and_resolves_exact_outc
 async def test_local_takeover_fences_before_mutation_and_resolves_exact_outcome(
     outcome: str,
 ) -> None:
-    """Takeover resolves its old-generation fence on conflict and late commit."""
-
     previous = _round2_session()
     replacement = _round2_session(generation=2)
     prepare_entered = asyncio.Event()

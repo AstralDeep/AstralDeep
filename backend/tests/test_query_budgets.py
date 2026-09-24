@@ -1,16 +1,8 @@
-"""Query-budget tests for the feature-052 hot-path consolidations.
-
-Proves with the count_queries helper that:
-
-* ``HistoryManager.get_recent_chats`` is a single round trip (correlated
-  subquery for the last-message preview + the chats row's own
-  saved-components flag) and that previews/ordering/shape are unchanged.
-* ``ToolPermissionManager.get_effective_tool_permissions`` reads the
-  ``tool_overrides`` table once (per-kind and legacy rows split in Python)
-  and resolves mixed rows byte-identically to the previous two-query logic.
-
-Runs against the live test Postgres like the other HistoryManager suites.
+"""Tests for backend/orchestrator/history.py's get_recent_chats and
+tool_permissions.py's get_effective_tool_permissions: each resolves in a single Plane
+round trip, with previews, ordering and merged-scope results unchanged.
 """
+
 import os
 import sys
 import uuid
@@ -31,20 +23,17 @@ from tests.helpers.voice_plane_runtime import (
 
 @pytest.fixture(scope="module")
 def plane_runtime():
-    """One managed application Plane runtime for this integration module."""
     with isolated_plane_runtime("query_budgets") as runtime:
         yield runtime
 
 
 @pytest.fixture(scope="module")
 def hm(plane_runtime):
-    """A HistoryManager bound to the module's application Plane runtime."""
     return history_manager(plane_runtime)
 
 
 @contextmanager
 def _count_plane_queries(plane_runtime):
-    """Count real Plane transaction statements without a legacy DB facade."""
     counter = QueryCounter()
     original_transaction = plane_runtime.transaction
 
@@ -67,7 +56,6 @@ def _count_plane_queries(plane_runtime):
 
 @pytest.fixture
 def user_id(plane_runtime):
-    """A unique per-test user id; rows are cleaned up on teardown."""
     uid = f"qbudget-{uuid.uuid4().hex[:12]}"
     yield uid
     plane_runtime.execute("DELETE FROM saved_components WHERE user_id = ?", (uid,))
@@ -78,7 +66,6 @@ def user_id(plane_runtime):
 
 
 def _seed_three_chats(hm, plane_runtime, user_id):
-    """Seed 3 chats with deterministic recency and message ordering."""
     c1 = hm.create_chat(user_id=user_id)
     hm.add_message(c1, "user", "first question", user_id=user_id)
     hm.add_message(c1, "assistant", "the answer to the first question", user_id=user_id)
@@ -97,8 +84,6 @@ def _seed_three_chats(hm, plane_runtime, user_id):
     c3 = hm.create_chat(user_id=user_id)
     hm.add_message(c3, "user", "z" * (PREVIEW_MAX_CHARS * 2), user_id=user_id)
 
-    # Same-millisecond inserts would make "latest message" and the listing
-    # order nondeterministic; pin both to insertion order.
     plane_runtime.execute(
         "UPDATE messages SET timestamp = id WHERE user_id = ?", (user_id,)
     )
@@ -111,7 +96,6 @@ def _seed_three_chats(hm, plane_runtime, user_id):
 
 
 def test_recent_chats_single_query(hm, plane_runtime, user_id):
-    """3 chats with messages list in ONE round trip with correct previews."""
     c1, c2, c3 = _seed_three_chats(hm, plane_runtime, user_id)
 
     with _count_plane_queries(plane_runtime) as counter:
@@ -134,7 +118,6 @@ def test_recent_chats_single_query(hm, plane_runtime, user_id):
 def test_recent_chats_saved_component_flag_still_one_query(
     hm, plane_runtime, user_id
 ):
-    """The saved-components flag comes from the chats row, not extra lookups."""
     c1, c2, c3 = _seed_three_chats(hm, plane_runtime, user_id)
     hm.save_component(c2, {"type": "table", "rows": []}, "table", user_id=user_id)
 
@@ -150,7 +133,6 @@ def test_recent_chats_saved_component_flag_still_one_query(
 
 @pytest.fixture
 def perms(plane_runtime, user_id):
-    """A db-backed ToolPermissionManager with a unique registered agent."""
     manager = ToolPermissionManager(
         plane_runtime=plane_runtime,
         plane_repositories=plane_runtime.repositories,
@@ -172,7 +154,6 @@ def perms(plane_runtime, user_id):
 def test_effective_tool_permissions_merged_query_parity(
     perms, plane_runtime, user_id
 ):
-    """Mixed per-kind/legacy rows resolve identically to the old two-query logic."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {
         "tools:read": True,
@@ -210,7 +191,6 @@ def test_effective_tool_permissions_merged_query_parity(
 def test_effective_tool_permissions_no_rows_scope_fallback(
     perms, plane_runtime, user_id
 ):
-    """With zero override rows every tool falls back to its agent-wide scope."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {"tools:read": True})
 
@@ -229,9 +209,6 @@ def test_effective_tool_permissions_no_rows_scope_fallback(
 def test_effective_tool_permissions_safe_default_flips_absent_scopes(
     perms, plane_runtime, user_id
 ):
-    """Feature 040: with safe_default=True (a safe + public agent) a tool with no
-    explicit row shows ON, matching is_tool_allowed's deny→allow flip, while an
-    explicit opt-out still shows OFF. Still two reads (safe_default is passed)."""
     manager, agent_id = perms
     manager.set_agent_scopes(user_id, agent_id, {"tools:read": False})
 
@@ -240,10 +217,8 @@ def test_effective_tool_permissions_safe_default_flips_absent_scopes(
             user_id, agent_id, safe_default=True)
 
     assert counter.count == 2
-    # explicit opt-out on tools:read stays OFF
     assert result["gen_chart"] == {"tools:read": False}
     assert result["legacy_true_tool"] == {"tools:read": False}
-    # absent scopes fall through to the safe default (ON)
     assert result["modify"] == {"tools:write": True}
     assert result["search_web"] == {"tools:search": True}
     assert result["both_tool"] == {"tools:write": True}

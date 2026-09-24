@@ -1,4 +1,7 @@
-"""Feature 027 — T011: chrome_render wire shape + FR-018 non-regression."""
+"""Tests for the chrome_render wire shape (backend/shared/protocol.py): topbar region
+handling and that the prior ui_render component/html contract stays unaffected.
+"""
+
 import json
 
 from shared.protocol import ChromeRender, UIRender
@@ -24,7 +27,6 @@ def test_chrome_render_empty_html_means_close():
 
 
 def test_fr018_ui_render_still_carries_components_and_html():
-    """The 026 wire contract is untouched by the chrome addition (FR-018)."""
     msg = UIRender(components=[{"type": "text", "content": "hi"}], html="<p>hi</p>")
     data = json.loads(msg.to_json())
     assert data["type"] == "ui_render"

@@ -1,14 +1,8 @@
-"""Feature 058 — orchestrator tunnel / delivery / registration EDGE branches.
-
-``test_byo_tunnel.py`` pins the happy owner-bound tunnel; this covers the
-fail-safe corners: a malformed frame, the per-owner ingress cap dropping a frame
-inside the tunnel handler, a reconnect superseding a stale socket, honest-offline
-NOTIFYING the owner's other sockets, and the send/close/go_live exception handlers
-that must never abort a delivery, delete, or refusal.
-
-Sync DB helpers ride ``_t`` (asyncio.to_thread) — 052's loop-blocking detector is
-CI-enforced with an empty allowlist.
+"""Tests for the BYO tunnel's edge paths (backend/orchestrator/orchestrator.py):
+malformed frames, the ingress cap, reconnect supersession, honest-offline
+notification, and swallowed delivery/registration exceptions.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,9 +42,6 @@ class FakeUI:
 
 
 class RaisingUI(FakeUI):
-    """A socket that blows up on every outbound send — the orchestrator must
-    swallow it and carry on with the other sockets."""
-
     async def send_text(self, t):
         raise RuntimeError("socket send exploded")
 
@@ -133,16 +124,14 @@ async def _tunnel(
     await o._handle_agent_tunnel(ws, SimpleNamespace(action="agent_tunnel", payload=payload))
 
 
-# ── malformed frame + ingress cap inside the tunnel handler ──────────────────
-
 async def test_tunnel_ignores_a_frame_missing_the_agent_id(orch, edge_ids):
     ws = FakeUI()
     orch.ui_sessions[ws] = {"sub": edge_ids.owner}
     await orch._handle_agent_tunnel(ws, SimpleNamespace(
         action="agent_tunnel",
         payload={"frame": _reg_frame(edge_ids.agent_id)},
-    ))   # no agent_id
-    assert edge_ids.agent_id not in orch.agents  # malformed frame registered nothing
+    ))
+    assert edge_ids.agent_id not in orch.agents
 
 
 async def test_tunnel_drops_a_frame_that_trips_the_ingress_cap(
@@ -154,11 +143,9 @@ async def test_tunnel_drops_a_frame_that_trips_the_ingress_cap(
     ws = FakeUI()
     orch.ui_sessions[ws] = {"sub": edge_ids.owner}
     assert orch._tunnel_ingress_over_cap(edge_ids.owner) is False
-    await _tunnel(orch, ws, edge_ids)  # this frame is over the cap
-    assert edge_ids.agent_id not in orch.agents  # dropped before registration
+    await _tunnel(orch, ws, edge_ids)
+    assert edge_ids.agent_id not in orch.agents
 
-
-# ── reconnect supersedes the stale socket ────────────────────────────────────
 
 async def test_tunnel_reconnect_supersedes_the_stale_socket(orch, edge_ids):
     ws1 = FakeUI()
@@ -167,7 +154,7 @@ async def test_tunnel_reconnect_supersedes_the_stale_socket(orch, edge_ids):
     sock = orch._tunnel_sockets[(edge_ids.owner, edge_ids.agent_id)]
     assert isinstance(sock, TunnelSocket) and sock.ui_websocket is ws1
 
-    ws2 = FakeUI()                              # the host reconnects on a new socket
+    ws2 = FakeUI()
     orch.ui_sessions[ws2] = {"sub": edge_ids.owner}
     await _tunnel(
         orch,
@@ -178,15 +165,12 @@ async def test_tunnel_reconnect_supersedes_the_stale_socket(orch, edge_ids):
     assert orch._tunnel_sockets[(edge_ids.owner, edge_ids.agent_id)] is sock
     assert sock.ui_websocket is ws2
     assert sock.host_session_id == edge_ids.reconnect_session_id
-    # outbound now rides the new socket, not the stale one
     ws1.sent.clear()
     ws2.sent.clear()
     await sock.send('{"x":1}')
     assert any(json.loads(f).get("type") == "agent_tunnel" for f in ws2.sent)
     assert ws1.sent == []
 
-
-# ── honest-offline notifies the owner's OTHER sockets ────────────────────────
 
 async def test_teardown_notifies_the_owners_other_sockets_and_skips_foreigners(
     orch,
@@ -198,21 +182,19 @@ async def test_teardown_notifies_the_owners_other_sockets_and_skips_foreigners(
     await _tunnel(orch, host, edge_ids)
     assert edge_ids.agent_id in orch.agents
 
-    other = FakeUI()                            # the owner's second socket (e.g. a tab)
+    other = FakeUI()
     orch.ui_sessions[other] = {"sub": edge_ids.owner}
     orch.ui_clients.append(other)
-    stranger = FakeUI()                         # a different user — must NOT be told
+    stranger = FakeUI()
     orch.ui_sessions[stranger] = {"sub": edge_ids.foreign}
     orch.ui_clients.append(stranger)
 
     await orch._teardown_owner_tunnels(host)
-    assert edge_ids.agent_id not in orch.agents  # went offline
+    assert edge_ids.agent_id not in orch.agents
     offline = [json.loads(f) for f in other.sent if json.loads(f).get("type") == "agent_offline"]
     assert offline and offline[0]["agent_id"] == edge_ids.agent_id
-    assert stranger.sent == []                  # the stranger heard nothing
+    assert stranger.sent == []
 
-
-# ── deliver / delete / register exception handlers are swallowed ─────────────
 
 async def test_delivery_swallows_a_raising_low_level_send(
     orch,
@@ -228,8 +210,6 @@ async def test_delivery_swallows_a_raising_low_level_send(
         raise RuntimeError("low-level send exploded")
 
     monkeypatch.setattr(orch, "_safe_send", _raise)
-    # The push to the one host raises, but delivery must not crash — with no host
-    # actually reached it reports 0, which the caller surfaces as honest 'no_host'.
     delivered = await orch.deliver_agent_bundle(
         edge_ids.owner,
         edge_ids.agent_id,
@@ -250,7 +230,7 @@ async def test_delete_skips_foreign_sockets_and_swallows_a_send_error(
     stranger = FakeUI()
     orch.ui_sessions[stranger] = {"sub": edge_ids.foreign}
     orch.ui_clients.append(stranger)
-    boom = RaisingUI()                          # an owner socket whose agent_stop send fails
+    boom = RaisingUI()
     orch.ui_sessions[boom] = {"sub": edge_ids.owner}
     orch.ui_clients.append(boom)
 
@@ -259,7 +239,7 @@ async def test_delete_skips_foreign_sockets_and_swallows_a_send_error(
         edge_ids.agent_id,
     ) is True
     assert edge_ids.agent_id not in orch.agents
-    assert stranger.sent == []                                # foreign socket skipped
+    assert stranger.sent == []
     row = await _t(
         ua.get_user_agent,
         orch.user_agent_registry,
@@ -272,8 +252,6 @@ async def test_refused_tunnel_registration_closes_and_swallows_a_close_error(
     orch,
     edge_ids,
 ):
-    """A foreign-owner tunnel registration is refused, audited, and the socket is
-    closed — a close() that itself raises must not turn the refusal into a crash."""
     closed = {"tried": False}
 
     class ClosingWS(FakeUI):
@@ -290,8 +268,8 @@ async def test_refused_tunnel_registration_closes_and_swallows_a_close_error(
         ws,
         RegisterAgent.from_json(_reg_frame(edge_ids.agent_id)),
     )
-    assert closed["tried"] is True              # it attempted to close the socket
-    assert edge_ids.agent_id not in orch.agents  # and did not register the agent
+    assert closed["tried"] is True
+    assert edge_ids.agent_id not in orch.agents
 
 
 async def test_go_live_failure_during_registration_is_swallowed(
@@ -299,8 +277,6 @@ async def test_go_live_failure_during_registration_is_swallowed(
     edge_ids,
     monkeypatch,
 ):
-    """If go_live raises as the owner's host registers inward, the exception is
-    logged, not propagated — the socket is already routed."""
     from orchestrator import user_agents as _ua_mod
 
     def _boom(*a, **k):
@@ -318,5 +294,4 @@ async def test_go_live_failure_during_registration_is_swallowed(
         ws,
         RegisterAgent.from_json(_reg_frame(edge_ids.agent_id)),
     )
-    # Registration proceeded (routing set) even though go_live failed.
     assert orch.agents.get(edge_ids.agent_id) is ws

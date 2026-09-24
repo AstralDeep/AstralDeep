@@ -1,4 +1,7 @@
-"""Behavioral tests for feature-074 implementation-owned JSON schemas."""
+"""Tests for the implementation-owned JSON schemas covering
+composition/case-study/extraction contracts: promoted-schema parity, signed-ref
+requirements, and rejection of relabeled or unsafe evidence.
+"""
 
 from __future__ import annotations
 

@@ -1,9 +1,6 @@
-"""PostgreSQL ownership and idempotency authority for conversational voice.
-
-This module stores only content-free session/turn correlation.  It never
-stores audio, transcript text, recap text, media bearers, or credentials.
-Every mutating method locks the owner/session row and applies explicit
-generation/revision compare-and-swap fences before changing state.
+"""PostgreSQL ownership and idempotency authority for voice sessions and turns -
+content-free, row-locked, compare-and-swap mutations only. Backs voice_runtime.py and
+voice_media.py; never stores audio, transcript text, or credentials.
 """
 
 from __future__ import annotations
@@ -100,40 +97,34 @@ _OPAQUE = re.compile(r"^[A-Za-z0-9._:-]{1,255}$")
 
 
 class VoiceSessionRepositoryError(RuntimeError):
-    """Content-free repository failure safe for typed problem mapping."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 class VoiceSessionNotFound(VoiceSessionRepositoryError):
-    """The resource is absent or not owned by the authenticated principal."""
+    pass
 
 
 class TakeoverRequired(VoiceSessionRepositoryError):
-    """Another device currently owns the authenticated user's media session."""
-
     def __init__(self, current: VoiceSessionRecord) -> None:
         self.current = current
         super().__init__("voice_takeover_required")
 
 
 class IdempotencyConflict(VoiceSessionRepositoryError):
-    """An idempotency key was replayed with different or expired metadata."""
+    pass
 
 
 class ContextSyncPending(VoiceSessionRepositoryError):
-    """A desired chat context still awaits the ordered worker acknowledgement."""
+    pass
 
 
 class StaleSessionFence(StaleFence):
-    """A session generation, grant revision, or context revision is stale."""
+    pass
 
 
 class TranscriptSubmissionRejected(VoiceSessionRepositoryError):
-    """A final transcript failed before ordinary message acceptance."""
-
     def __init__(self, reason: str, retry_policy: str) -> None:
         self.reason = reason
         self.retry_policy = retry_policy
@@ -142,8 +133,6 @@ class TranscriptSubmissionRejected(VoiceSessionRepositoryError):
 
 @dataclass(frozen=True, slots=True)
 class CreateSession:
-    """Validated non-secret fields needed to create one owner session."""
-
     user_id: str
     activation_id: str
     device_id: str
@@ -222,8 +211,6 @@ class CreateSession:
 
 @dataclass(frozen=True, slots=True)
 class SessionTakeover:
-    """Explicit replacement request fenced to the prior session generation."""
-
     previous_session_id: str
     expected_generation: int
     expected_media_grant_revision: int
@@ -246,8 +233,6 @@ class SessionTakeover:
 
 @dataclass(frozen=True, slots=True)
 class MediaGrantRefresh:
-    """Non-secret metadata for one idempotent media-grant rotation."""
-
     user_id: str
     session_id: str
     refresh_id: str
@@ -287,8 +272,6 @@ class MediaGrantRefresh:
 
 @dataclass(frozen=True, slots=True)
 class RecognitionBinding:
-    """Immutable recognition-time chat/session fields echoed by the worker."""
-
     user_id: str
     session_id: str
     session_generation: int
@@ -323,8 +306,6 @@ class RecognitionBinding:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class TranscriptSubmission:
-    """One exact client-forwarded media final; content is never represented."""
-
     user_id: str
     session_id: str
     generation: int
@@ -403,13 +384,6 @@ class TranscriptSubmission:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class LocalTranscriptSubmission:
-    """One call-stack-only local transcript attestation.
-
-    The server constructs this only after the authenticated socket registry
-    validates the client final. It contains no client-minted worker proof and
-    is never persisted.
-    """
-
     user_id: str
     session_id: str
     generation: int
@@ -501,8 +475,6 @@ class LocalTranscriptSubmission:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class TranscriptAdmission:
-    """Verified canonical content plus its content-free durable turn."""
-
     canonical_text: str = field(repr=False)
     turn: VoiceTurnRecord
     replayed: bool = False
@@ -516,8 +488,6 @@ class TranscriptAdmission:
 
 @dataclass(frozen=True, slots=True)
 class SessionControl:
-    """Verified current UI binding fields used for an owner-row mutation."""
-
     device_id: str
     connection_generation: str
     binding_id: str
@@ -537,8 +507,6 @@ class SessionControl:
 
 @dataclass(frozen=True, slots=True)
 class SessionUpdate:
-    """Strict optional session controls applied under one PostgreSQL row lock."""
-
     user_id: str
     session_id: str
     expected_generation: int
@@ -600,8 +568,6 @@ class SessionUpdate:
 
 @dataclass(frozen=True, slots=True)
 class VoiceSessionRecord:
-    """Content-free durable snapshot of one voice session row."""
-
     session_id: str
     user_id: str
     activation_id: str
@@ -649,8 +615,6 @@ class VoiceSessionRecord:
 
     @property
     def chat_context_synced(self) -> bool:
-        """Whether the worker has acknowledged the desired chat context."""
-
         return (
             self.applied_visible_chat_id == self.visible_chat_id
             and self.applied_chat_context_revision == self.chat_context_revision
@@ -658,8 +622,6 @@ class VoiceSessionRecord:
 
     @property
     def idle_expires_at(self) -> datetime | None:
-        """Return the fixed five-minute true-idle deadline, when active."""
-
         if self.idle_started_at is None:
             return None
         return self.idle_started_at + IDLE_TIMEOUT
@@ -667,8 +629,6 @@ class VoiceSessionRecord:
 
 @dataclass(frozen=True, slots=True)
 class VoiceTurnRecord:
-    """Content-free durable snapshot of one recognition/dispatch correlation."""
-
     turn_id: str
     client_turn_id: str
     session_id: str
@@ -723,8 +683,6 @@ class TurnMutation:
 
 @dataclass(frozen=True, slots=True)
 class ChatUnavailableMutation:
-    """Content-free receipt for one owner/chat lifecycle fence."""
-
     user_id: str
     chat_id: str
     reason: str
@@ -738,8 +696,6 @@ class ChatUnavailableMutation:
 
 
 class VoiceSessionRepository:
-    """Deep voice policy over Plane-owned session and turn persistence."""
-
     def __init__(
         self,
         *,
@@ -778,8 +734,6 @@ class VoiceSessionRepository:
 
     @contextmanager
     def _transaction_or_existing(self, transaction: Any | None) -> Iterator[Any]:
-        """Join a caller-owned Plane transaction or open an application transaction."""
-
         if transaction is not None:
             required = ("execute", "fetch_one", "fetch_all")
             if not all(callable(getattr(transaction, name, None)) for name in required):
@@ -794,8 +748,6 @@ class VoiceSessionRepository:
     def create_session(
         self, request: CreateSession, *, now: datetime
     ) -> SessionMutation:
-        """Create one live owner session or return the exact activation replay."""
-
         if not isinstance(request, CreateSession):
             raise TypeError("request must be CreateSession")
         now = _aware(now, "invalid_current_time")
@@ -830,8 +782,6 @@ class VoiceSessionRepository:
         *,
         now: datetime,
     ) -> SessionMutation:
-        """Atomically end one owner generation and create its explicit replacement."""
-
         if not isinstance(request, SessionTakeover):
             raise TypeError("request must be SessionTakeover")
         now = _aware(now, "invalid_current_time")
@@ -886,8 +836,6 @@ class VoiceSessionRepository:
         return SessionMutation(_session(row))
 
     def get_session(self, *, user_id: str, session_id: str) -> VoiceSessionRecord:
-        """Return an owner-scoped session without revealing foreign ownership."""
-
         user_id = _user_id(user_id)
         session_id = _uuid4(session_id, "invalid_session_id")
         with self._transaction() as transaction:
@@ -901,8 +849,6 @@ class VoiceSessionRepository:
         return _session(row)
 
     def get_live_session(self, *, user_id: str) -> VoiceSessionRecord | None:
-        """Return the user's sole unended session, if present."""
-
         user_id = _user_id(user_id)
         with self._transaction() as transaction:
             row = self._voice.get_live_session_record(
@@ -920,15 +866,6 @@ class VoiceSessionRepository:
         delete_chat: bool,
         now: datetime,
     ) -> ChatUnavailableMutation:
-        """Fence one unavailable owner/chat before optional hard deletion.
-
-        The transaction intentionally leaves ``operation_record`` untouched:
-        accepted side effects and audit retain their ordinary lifecycle while
-        the voice correlation, private publication stage, and speech path are
-        terminally fenced. Retained voice IDs are tombstones, never renewed
-        authorization for the chat.
-        """
-
         user_id = _user_id(user_id)
         chat_id = _opaque(chat_id, "invalid_chat_id", max_length=255)
         if reason not in {"deleted", "access_revoked"}:
@@ -963,9 +900,6 @@ class VoiceSessionRepository:
                     aborted_result_commit_ids=(),
                 )
 
-            # Match the turn-before-session order used by transcript
-            # admission and atomic message acceptance. The owner/chat row lock
-            # prevents a new publication from entering behind this fence.
             turns = list(
                 self._voice.list_chat_turn_records_for_update(
                     transaction,
@@ -1085,8 +1019,6 @@ class VoiceSessionRepository:
         control: SessionControl,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Return and, for the same device, atomically adopt a fresh UI binding."""
-
         if not isinstance(control, SessionControl):
             raise TypeError("control must be SessionControl")
         now = _aware(now, "invalid_current_time")
@@ -1104,8 +1036,6 @@ class VoiceSessionRepository:
         *,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Apply owner state, context, mute, and interaction under one CAS lock."""
-
         if not isinstance(request, SessionUpdate):
             raise TypeError("request must be SessionUpdate")
         now = _aware(now, "invalid_current_time")
@@ -1190,7 +1120,7 @@ class VoiceSessionRepository:
                     "updated_at": now,
                 },
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_session_update_failed")
         return _session(updated)
 
@@ -1205,8 +1135,6 @@ class VoiceSessionRepository:
         reason: str,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """End media ownership without mutating or cancelling accepted turns."""
-
         if not isinstance(control, SessionControl):
             raise TypeError("control must be SessionControl")
         if reason not in _END_REASONS:
@@ -1221,15 +1149,6 @@ class VoiceSessionRepository:
                     expected_media_grant_revision,
                 )
                 if reason == "user":
-                    # A user-intent end of an already-ended generation is
-                    # satisfied, not stale: the lease reaper (or another
-                    # server-side end) may have fenced this exact session
-                    # moments earlier, and refusing the owner's DELETE only
-                    # wedges the client on a session that no longer exists.
-                    # The same-device authorization mirrors
-                    # _apply_control_binding: bindings rotate, so only the
-                    # authenticated owner device (already verified by the
-                    # control-binding gate upstream) must match.
                     if str(row["device_id"]) != control.device_id:
                         raise VoiceSessionRepositoryError(
                             "binding_scope_mismatch"
@@ -1261,15 +1180,6 @@ class VoiceSessionRepository:
         expected_session_id: str | None = None,
         expected_generation: int | None = None,
     ) -> VoiceSessionRecord | None:
-        """End one user's current media session for an authenticated lifecycle.
-
-        This service-side seam is used only after logout/auth-expiry authority
-        has already been established.  It cannot cancel accepted operations;
-        only recognizing/submitting rows for the ended generation are
-        abandoned.  Repeated callbacks are a credential-free no-op once no
-        live owner remains.
-        """
-
         user_id = _user_id(user_id)
         if reason not in {"logout", "auth_expired"}:
             raise ValueError("invalid_identity_end_reason")
@@ -1323,8 +1233,6 @@ class VoiceSessionRepository:
         now: datetime,
         batch_size: int = 1_000,
     ) -> tuple[VoiceSessionRecord, ...]:
-        """Fence this coordinator replica's live rows before worker shutdown."""
-
         owner_id = _opaque(owner_id, "invalid_control_owner_id", max_length=128)
         if reason != "shutdown":
             raise ValueError("invalid_owned_end_reason")
@@ -1353,8 +1261,6 @@ class VoiceSessionRepository:
         return ended
 
     def expire_session_leases(self, *, now: datetime) -> tuple[VoiceSessionRecord, ...]:
-        """End expired reconnect/media leases without cancelling accepted work."""
-
         now = _aware(now, "invalid_current_time")
         expired: list[VoiceSessionRecord] = []
         with self._transaction() as transaction:
@@ -1379,8 +1285,6 @@ class VoiceSessionRepository:
         now: datetime,
         batch_size: int = 100,
     ) -> tuple[VoiceTurnRecord, ...]:
-        """Boundedly repair pre-acceptance rows left by an already-ended session."""
-
         now = _aware(now, "invalid_current_time")
         if (
             isinstance(batch_size, bool)
@@ -1402,18 +1306,6 @@ class VoiceSessionRepository:
         now: datetime,
         batch_size: int = 100,
     ) -> tuple[VoiceTurnRecord, ...]:
-        """Repair ended-session rows whose exact operation is terminal.
-
-        Ending media deliberately does not cancel accepted work.  If inline
-        terminal delivery is then lost to a process/socket failure, the shared
-        operation record remains the durable outcome authority.  This bounded
-        repair handles only ended media generations and only exact
-        user/chat/request/connection correlations.  Success additionally
-        requires the exact committed acceptance/result pair and execution
-        generation; a completed operation without that proof fails closed as
-        result-unavailable.
-        """
-
         now = _aware(now, "invalid_current_time")
         if (
             isinstance(batch_size, bool)
@@ -1438,8 +1330,6 @@ class VoiceSessionRepository:
         expected_media_grant_revision: int,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Move a prepared foreground session to active under both fences."""
-
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
             row = self._session_for_update(transaction, user_id, session_id)
@@ -1473,8 +1363,6 @@ class VoiceSessionRepository:
         lease_duration: timedelta,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Renew a live session lease from authenticated server receipt time."""
-
         now = _aware(now, "invalid_current_time")
         duration = _duration(lease_duration, "invalid_lease_duration", 5, 300)
         with self._transaction() as transaction:
@@ -1498,8 +1386,6 @@ class VoiceSessionRepository:
         *,
         now: datetime,
     ) -> SessionMutation:
-        """Rotate grant metadata exactly once without persisting bearer material."""
-
         if not isinstance(request, MediaGrantRefresh):
             raise TypeError("request must be MediaGrantRefresh")
         now = _aware(now, "invalid_current_time")
@@ -1554,8 +1440,6 @@ class VoiceSessionRepository:
         expires_at: datetime,
         now: datetime,
     ) -> SessionMutation:
-        """Install one idempotent worker assignment and its non-secret grant fence."""
-
         assignment_id = _uuid4(assignment_id, "invalid_assignment_id")
         worker_identity = _opaque(worker_identity, "invalid_worker_identity")
         issued_at = _aware(issued_at, "invalid_worker_grant_issued_at")
@@ -1610,8 +1494,6 @@ class VoiceSessionRepository:
         owner_id: str,
         now: datetime,
     ) -> ControlLeaseState:
-        """Claim or renew one coordinator replica's durable control lease."""
-
         return await asyncio.to_thread(
             self._claim_control_lease_sync,
             user_id=user_id,
@@ -1667,13 +1549,6 @@ class VoiceSessionRepository:
         now: datetime,
         batch_size: int = 1_000,
     ) -> tuple[VoiceSessionRecord, ...]:
-        """Renew only still-live, still-owned coordinator control leases.
-
-        Expired leases are deliberately not resurrected: once the expiry fence
-        has passed, another replica is entitled to claim the session.  The
-        bounded maintenance pass renews healthy ownership before that point.
-        """
-
         owner_id = _opaque(owner_id, "invalid_control_owner_id", max_length=128)
         now = _aware(now, "invalid_current_time")
         if (
@@ -1727,8 +1602,6 @@ class VoiceSessionRepository:
         generation: int,
         owner_id: str,
     ) -> bool:
-        """Release the lease only when the supplied replica still owns it."""
-
         return await asyncio.to_thread(
             self._release_control_lease_sync,
             user_id=user_id,
@@ -1765,7 +1638,7 @@ class VoiceSessionRepository:
                 owner_id=user_id,
                 session_id=str(row["session_id"]),
             )
-            if not released_record:  # pragma: no cover - locked row invariant.
+            if not released_record:  # pragma: no cover
                 raise RuntimeError("voice_control_release_failed")
         return True
 
@@ -1776,8 +1649,6 @@ class VoiceSessionRepository:
         request: AnnouncementClaimRequest,
         now: datetime,
     ) -> AnnouncementMutation:
-        """Reserve one content-free speech quantum under the turn row lock."""
-
         return await asyncio.to_thread(
             self._claim_announcement_sync,
             user_id=user_id,
@@ -1907,7 +1778,7 @@ class VoiceSessionRepository:
                     "updated_at": now,
                 },
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_announcement_claim_failed")
         return mutation
 
@@ -1920,8 +1791,6 @@ class VoiceSessionRepository:
         generation: int,
         claim_id: str,
     ) -> bool:
-        """Release only the exact durable speech reservation claim."""
-
         return await asyncio.to_thread(
             self._complete_announcement_sync,
             user_id=user_id,
@@ -1983,7 +1852,7 @@ class VoiceSessionRepository:
                 claim_id=completed.announcement_claim_id,
                 claim_expires_at=completed.announcement_claim_expires_at,
             )
-            if not updated:  # pragma: no cover - locked row invariant.
+            if not updated:  # pragma: no cover
                 raise RuntimeError("voice_announcement_completion_failed")
         return True
 
@@ -1998,8 +1867,6 @@ class VoiceSessionRepository:
         visible_chat_id: str,
         now: datetime,
     ) -> SessionMutation:
-        """Advance desired context only after the prior desired value was applied."""
-
         visible_chat_id = _uuid4(visible_chat_id, "invalid_visible_chat_id")
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
@@ -2024,7 +1891,7 @@ class VoiceSessionRepository:
                     "updated_at": now,
                 },
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_chat_context_update_failed")
         return SessionMutation(_session(updated))
 
@@ -2040,8 +1907,6 @@ class VoiceSessionRepository:
         chat_context_revision: int,
         now: datetime,
     ) -> SessionMutation:
-        """Apply only the exact desired context from the live control owner."""
-
         control_owner_id = _opaque(
             control_owner_id,
             "invalid_control_owner_id",
@@ -2080,7 +1945,7 @@ class VoiceSessionRepository:
                     "updated_at": now,
                 },
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_chat_context_apply_failed")
         return SessionMutation(_session(updated))
 
@@ -2090,8 +1955,6 @@ class VoiceSessionRepository:
         *,
         now: datetime,
     ) -> TurnMutation:
-        """Allocate immutable turn/submission IDs once for a worker VAD start."""
-
         if not isinstance(request, RecognitionBinding):
             raise TypeError("request must be RecognitionBinding")
         now = _aware(now, "invalid_current_time")
@@ -2176,8 +2039,6 @@ class VoiceSessionRepository:
         control_owner_id: str,
         now: datetime,
     ) -> TurnMutation:
-        """Bind an authenticated worker start without trusting worker ownership data."""
-
         return await asyncio.to_thread(
             self._bind_worker_recognition_sync,
             start=start,
@@ -2304,8 +2165,6 @@ class VoiceSessionRepository:
         control_owner_id: str,
         now: datetime,
     ) -> TurnMutation:
-        """Abandon one authenticated pre-final ASR failure without content."""
-
         return await asyncio.to_thread(
             self._abandon_worker_recognition_sync,
             binding=binding,
@@ -2321,8 +2180,6 @@ class VoiceSessionRepository:
         control_owner_id: str,
         now: datetime,
     ) -> TurnMutation:
-        """Content-freely abandon recognized playback without inviting a retry."""
-
         return await asyncio.to_thread(
             self._abandon_worker_recognition_sync,
             binding=binding,
@@ -2436,8 +2293,6 @@ class VoiceSessionRepository:
         worker_control_secret: bytes,
         now: datetime,
     ) -> TranscriptAdmission:
-        """Verify one final and move only its content-free row to submitting."""
-
         if not isinstance(request, TranscriptSubmission):
             raise TypeError("request must be TranscriptSubmission")
         now = _aware(now, "invalid_current_time")
@@ -2559,13 +2414,6 @@ class VoiceSessionRepository:
         *,
         now: datetime,
     ) -> TranscriptAdmission:
-        """Admit a server-attested local final through the sibling lane.
-
-        This deliberately shares the durable turn transition and return type
-        with the remote lane while retaining separate authority: there is no
-        worker assignment, HMAC secret, proof, endpoint, or credential.
-        """
-
         if not isinstance(request, LocalTranscriptSubmission):
             raise TypeError("request must be LocalTranscriptSubmission")
         now = _aware(now, "invalid_current_time")
@@ -2683,8 +2531,6 @@ class VoiceSessionRepository:
         retry_policy: str,
         now: datetime,
     ) -> TurnMutation:
-        """Persist one idempotent pre-acceptance rejection without content."""
-
         user_id = _user_id(user_id)
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         if reason not in {
@@ -2750,14 +2596,6 @@ class VoiceSessionRepository:
         result_commit_id: str | None = None,
         transaction: Any | None = None,
     ) -> TurnMutation:
-        """Atomically bind ordinary message acceptance and foreground work.
-
-        ``transaction`` is the narrow publication integration seam: the
-        conversation repository may supply its already-fenced transaction so the
-        user bubble, linked private result stage, and voice correlation either
-        all commit or all roll back.
-        """
-
         user_id = _user_id(user_id)
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         if (
@@ -2862,8 +2700,6 @@ class VoiceSessionRepository:
         submission_id: str,
         request_generation: str,
     ) -> VoiceTurnRecord:
-        """Resolve an exact owner-scoped submission tuple for replay handling."""
-
         user_id = _user_id(user_id)
         submission_id = _uuid4(submission_id, "invalid_submission_id")
         request_generation = _uuid4(
@@ -2890,8 +2726,6 @@ class VoiceSessionRepository:
         expected_generation: int,
         now: datetime,
     ) -> VoiceTurnRecord:
-        """Select one foreground turn without cancelling any earlier work."""
-
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
@@ -2912,9 +2746,7 @@ class VoiceSessionRepository:
                 raise VoiceSessionNotFound("voice_turn_not_found")
             if target["state"] in _TERMINAL_TURN_STATES:
                 raise VoiceSessionRepositoryError("voice_turn_terminal")
-            # Clear before setting: PostgreSQL's immediate partial-unique check
-            # can otherwise observe the new foreground row before it visits the
-            # previous one within a single CASE update.
+            # Clear before set, or the unique check fires mid-CASE
             self._voice.clear_foreground_turns(
                 transaction,
                 owner_id=user_id,
@@ -2927,13 +2759,11 @@ class VoiceSessionRepository:
                 turn_id=turn_id,
                 updates={"is_foreground": True, "updated_at": now},
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise VoiceSessionNotFound("voice_turn_not_found")
         return _turn(updated)
 
     def get_turn(self, *, user_id: str, turn_id: str) -> VoiceTurnRecord:
-        """Return an owner-scoped voice turn."""
-
         user_id = _user_id(user_id)
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         with self._transaction() as transaction:
@@ -2966,14 +2796,6 @@ class VoiceSessionRepository:
         client_sequence: int,
         received_at: datetime,
     ) -> VoiceTurnRecord | None:
-        """Persist one validated, content-free local-render observation.
-
-        The caller's wall-clock observation is deliberately absent.  The
-        transaction records only the server receipt time after rechecking the
-        owner device/connection, live session, generation/grant, deterministic
-        announcement identity, and strictly increasing client sequence.
-        """
-
         user_id = _user_id(user_id)
         device_id = _uuid4(device_id, "invalid_device_id")
         connection_generation = _uuid4(
@@ -3127,7 +2949,7 @@ class VoiceSessionRepository:
                 turn_id=turn_id,
                 updates=updates,
             )
-            if updated is None:  # pragma: no cover - locked row is retained.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_playout_update_failed")
         return _turn(updated)
 
@@ -3142,8 +2964,6 @@ class VoiceSessionRepository:
         sensitivity: str,
         now: datetime,
     ) -> TurnMutation:
-        """Apply one content-free terminal result fence without cancelling work."""
-
         user_id = _user_id(user_id)
         turn_id = _uuid4(turn_id, "invalid_turn_id")
         if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
@@ -3220,8 +3040,6 @@ class VoiceSessionRepository:
         user_input_gate: bool,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Start/clear the idle clock from server-owned listening/gate state."""
-
         if not isinstance(listening, bool) or not isinstance(user_input_gate, bool):
             raise ValueError("invalid_idle_state")
         now = _aware(now, "invalid_current_time")
@@ -3253,7 +3071,7 @@ class VoiceSessionRepository:
                 session_id=str(row["session_id"]),
                 updates={"idle_started_at": idle_started_at, "updated_at": now},
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_idle_update_failed")
         return _session(updated)
 
@@ -3265,8 +3083,6 @@ class VoiceSessionRepository:
         expected_generation: int,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Stamp authenticated receipt time; no client wall clock is accepted."""
-
         now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
             row = self._session_for_update(transaction, user_id, session_id)
@@ -3285,13 +3101,11 @@ class VoiceSessionRepository:
                     "updated_at": now,
                 },
             )
-            if updated is None:  # pragma: no cover - locked row invariant.
+            if updated is None:  # pragma: no cover
                 raise RuntimeError("voice_interaction_update_failed")
         return _session(updated)
 
     def expire_true_idle(self, *, now: datetime) -> tuple[VoiceSessionRecord, ...]:
-        """End only rows that stayed continuously true-idle for five minutes."""
-
         now = _aware(now, "invalid_current_time")
         cutoff = now - IDLE_TIMEOUT
         expired: list[VoiceSessionRecord] = []
@@ -3466,8 +3280,6 @@ class VoiceSessionRepository:
         generation: int,
         now: datetime,
     ) -> None:
-        """Terminalize pre-acceptance rows while preserving accepted work."""
-
         self._voice.abandon_unaccepted_session_turns(
             transaction,
             owner_id=owner_id,
@@ -3484,8 +3296,6 @@ class VoiceSessionRepository:
         generation: int,
         now: datetime,
     ) -> None:
-        """Abandon only recognizing/submitting rows for one exact generation."""
-
         checked_now = _aware(now, "invalid_current_time")
         with self._transaction() as transaction:
             row = self._session_for_update(transaction, user_id, session_id)
@@ -3509,8 +3319,6 @@ class VoiceSessionRepository:
         chat_unavailable_at: datetime | None = None,
         abandon_unaccepted: bool = True,
     ) -> VoiceSessionRecord:
-        """Apply the one terminal media fence used by every lifecycle path."""
-
         if reason not in _END_REASONS:
             raise ValueError("invalid_end_reason")
         if row.get("ended_at") is not None:
@@ -3538,7 +3346,7 @@ class VoiceSessionRepository:
             },
             require_live=True,
         )
-        if updated is None:  # pragma: no cover - row lock/WHERE invariant.
+        if updated is None:  # pragma: no cover
             raise RuntimeError("voice_session_end_failed")
         if abandon_unaccepted:
             self._abandon_unaccepted_session_turns(
@@ -3556,8 +3364,6 @@ class VoiceSessionRepository:
         control: SessionControl,
         now: datetime,
     ) -> None:
-        """Authorize an exact repeated end without mutating a terminal row."""
-
         if (
             str(row["device_id"]) != control.device_id
             or str(row["owner_connection_generation"])
@@ -3576,8 +3382,6 @@ class VoiceSessionRepository:
         control: SessionControl,
         now: datetime,
     ) -> Mapping[str, Any]:
-        """Fence cross-device control and adopt only a verified same-device reconnect."""
-
         if str(row["device_id"]) != control.device_id:
             raise VoiceSessionRepositoryError("binding_scope_mismatch")
         if control.binding_expires_at <= now:
@@ -3599,7 +3403,7 @@ class VoiceSessionRepository:
                 "updated_at": now,
             },
         )
-        if updated is None:  # pragma: no cover - locked row cannot disappear.
+        if updated is None:  # pragma: no cover
             raise RuntimeError("voice_control_rebind_failed")
         return updated
 
@@ -3856,8 +3660,6 @@ def _language_policy(detected_language: str) -> tuple[str, str]:
 
 
 def canonicalize_local_transcript(text: str, text_digest_sha256: str) -> str:
-    """Canonicalize one untrusted client-local final and verify its digest."""
-
     if not isinstance(text, str) or not isinstance(text_digest_sha256, str):
         raise TranscriptSubmissionRejected(
             "malformed_final",

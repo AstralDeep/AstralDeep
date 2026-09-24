@@ -1,11 +1,8 @@
-"""Feature 027 — T015: audit settings surface structural/behavioral tests.
-
-Runs without Postgres: a minimal fake orchestrator exposes only
-``audit_repo`` (the attribute the surface uses), and the audit_view
-self-recording is observed through a fake process recorder installed via
-``audit.recorder.set_recorder``. Assertion style follows
-``backend/tests/chrome/test_topbar.py`` (structural, not byte-exact).
+"""Tests for orchestrator/projection_surfaces/audit.py: list and detail rendering,
+filter and cursor handling, and self-recording via audit.recorder, against a fake
+orchestrator exposing only audit_repo.
 """
+
 from datetime import datetime, timedelta, timezone
 import html as html_module
 import json
@@ -23,7 +20,6 @@ EVENT_ID_2 = "33333333-3333-3333-3333-333333333333"
 
 
 def make_dto(**overrides):
-    """Build a valid AuditEventDTO with overridable fields."""
     base = dict(
         event_id=EVENT_ID,
         event_class="auth",
@@ -42,8 +38,6 @@ def make_dto(**overrides):
 
 
 class FakeRepo:
-    """Stands in for orch.audit_repo; captures call kwargs."""
-
     def __init__(self, items=None, next_cursor=None, detail=None, fail_on_cursor=False):
         self.items = items or []
         self.next_cursor = next_cursor
@@ -64,8 +58,6 @@ class FakeRepo:
 
 
 class FakeRecorder:
-    """Captures AuditEventCreate objects passed to record()."""
-
     def __init__(self):
         self.events = []
 
@@ -75,10 +67,6 @@ class FakeRecorder:
 
 
 def make_orch(repo):
-    # The production surface always builds Plane-backed artifact availability
-    # checks before querying the audit repository.  This suite isolates the
-    # surface HTML, so inject the same narrow repository seam used by the audit
-    # API tests instead of constructing an application Plane runtime.
     attachments = SimpleNamespace(get_by_id=lambda _attachment_id, _user_id: None)
     return SimpleNamespace(
         audit_repo=repo,
@@ -94,10 +82,6 @@ def recorder():
     set_recorder(None)
 
 
-# ---------------------------------------------------------------------------
-# Module contract
-# ---------------------------------------------------------------------------
-
 def test_module_contract():
     assert audit_surface.TITLE == "Audit log"
     assert not getattr(audit_surface, "ADMIN_ONLY", False)
@@ -105,15 +89,10 @@ def test_module_contract():
     assert callable(audit_surface.HANDLERS["chrome_audit_page"])
 
 
-# ---------------------------------------------------------------------------
-# List view
-# ---------------------------------------------------------------------------
-
 async def test_list_renders_filter_bar_rows_and_row_actions():
     repo = FakeRepo(items=[make_dto(), make_dto(event_id=EVENT_ID_2, outcome="failure")])
     html = await audit_surface.render(make_orch(repo), "user-1", ["user"], {})
 
-    # Filter bar: data-ui-form container, both selects, keyword input, Apply.
     assert "data-ui-form" in html
     assert 'name="event_class"' in html and 'name="outcome"' in html and 'name="q"' in html
     for ec in EVENT_CLASSES:
@@ -123,18 +102,15 @@ async def test_list_renders_filter_bar_rows_and_row_actions():
     assert 'data-ui-action="chrome_audit_page"' in html
     assert 'data-ui-collect="true"' in html
 
-    # Rows: recorded_at, event_class, action_type, outcome badge, snippet.
     assert "2026-06-01 12:00:02" in html
     assert "auth.login_interactive" in html
     assert ">success</span>" in html and ">failure</span>" in html
     assert "Interactive login" in html
 
-    # Row click opens the detail view via chrome_open with event_id.
     assert 'data-ui-action="chrome_open"' in html
     assert f"&quot;event_id&quot;: &quot;{EVENT_ID}&quot;" in html
     assert f"&quot;event_id&quot;: &quot;{EVENT_ID_2}&quot;" in html
 
-    # Reads stay scoped to the websocket user.
     assert repo.list_calls and repo.list_calls[0][0] == "user-1"
 
 
@@ -168,7 +144,6 @@ async def test_list_selected_filters_round_trip_into_form():
         {"event_class": "auth", "q": "needle <tag>"},
     )
     assert 'value="auth" selected' in html
-    # Keyword echoes back escaped, preserving the submitted value (FR-016).
     assert "needle &lt;tag&gt;" in html and "<tag>" not in html
 
 
@@ -188,11 +163,10 @@ async def test_list_invalid_cursor_falls_back_to_first_page_with_notice():
     html = await audit_surface.render(
         make_orch(repo), "user-1", ["user"], {"cursor": "garbage"}
     )
-    # Error notice rendered, then the query retried without the cursor.
     assert "astral-chrome-notice" in html and "Invalid page cursor" in html
     assert len(repo.list_calls) == 2
     assert repo.list_calls[1][1]["cursor"] is None
-    assert "Interactive login" in html  # first page still shown
+    assert "Interactive login" in html
 
 
 async def test_list_empty_state():
@@ -225,10 +199,6 @@ async def test_list_records_audit_view_list(recorder):
     assert ev.outputs_meta == {"returned_count": 1}
 
 
-# ---------------------------------------------------------------------------
-# Detail view
-# ---------------------------------------------------------------------------
-
 async def test_detail_renders_full_fields_and_back_link():
     dto = make_dto(
         agent_id="grants",
@@ -243,15 +213,13 @@ async def test_detail_renders_full_fields_and_back_link():
     assert repo.get_calls == [("user-1", EVENT_ID)]
     for needle in (
         EVENT_ID, "auth.login_interactive", "Interactive login",
-        "22222222-2222-2222-2222-222222222222",  # correlation_id
+        "22222222-2222-2222-2222-222222222222",
         "grants", "conv-9", "all good",
         "2026-06-01 12:00:00", "2026-06-01 12:00:02",
     ):
         assert needle in html, f"detail missing: {needle}"
-    # Pretty-printed, escaped metadata inside <pre> blocks.
     assert "<pre" in html
     assert "&lt;value&gt;" in html and "<value>" not in html
-    # Back link re-opens the audit list.
     assert 'data-ui-action="chrome_open"' in html
     assert "&quot;surface&quot;: &quot;audit&quot;" in html
     assert "Back to audit log" in html
@@ -286,10 +254,6 @@ async def test_detail_not_found_records_nothing(recorder):
     )
     assert recorder.events == []
 
-
-# ---------------------------------------------------------------------------
-# chrome_audit_page handler
-# ---------------------------------------------------------------------------
 
 async def test_handler_builds_params_from_fields():
     handler = audit_surface.HANDLERS["chrome_audit_page"]

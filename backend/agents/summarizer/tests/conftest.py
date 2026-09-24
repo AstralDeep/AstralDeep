@@ -1,9 +1,8 @@
-"""Shared fixtures for the Summarizer agent test suite.
-
-Same pattern as the web_research/forecaster suites: ``HttpMock`` stubs the
-``requests.request`` transport under ``shared.external_http``; DNS is stubbed
-for deterministic SSRF-gate behavior; all LLM calls are stubbed (no network).
+"""Shared pytest fixtures for the Summarizer test suite: stubs requests via
+backend/shared/tests/_http_mock.py, stubs DNS for SSRF-gate determinism, and fakes
+the OpenAI client.
 """
+
 import socket
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -37,8 +36,6 @@ def stub_dns():
 
 
 def make_fake_openai(contents):
-    """Fake OpenAI client class: successive create() calls return ``contents``
-    in order (last repeats); Exception entries are raised. Records calls."""
     calls = []
 
     class _Completions:
@@ -64,15 +61,6 @@ def make_fake_openai(contents):
 
 @pytest.fixture
 def fake_openai(monkeypatch):
-    """Install a fake OpenAI class on the tools module; returns the class.
-
-    Feature 054: the OPENAI_* env fallback is gone — LLM credentials reach a
-    tool ONLY via the orchestrator-forwarded ``_session_llm_credentials``
-    kwarg (or the agent's decrypted ``_credentials`` bundle). Mimic the
-    orchestrator here: when a test passes neither kwarg, resolution sees the
-    turn's session credentials, exactly as a configured user's call would.
-    Tests that pass their own credential kwargs are left untouched.
-    """
     def _install(*contents):
         fake_cls = make_fake_openai(list(contents))
         monkeypatch.setattr(mcp_tools, "OpenAI", fake_cls)
@@ -82,8 +70,6 @@ def fake_openai(monkeypatch):
             has_session = bool((kwargs.get("_session_llm_credentials") or {}).get("OPENAI_API_KEY"))
             bundle = kwargs.get("_credentials") or {}
             has_bundle_key = bool(bundle.get("OPENAI_API_KEY"))
-            # An encrypted bundle key is opaque here (the real resolver
-            # ignores it); do NOT paper over that case with session creds.
             if not has_session and not has_bundle_key and not kwargs.get("_credentials_encrypted"):
                 kwargs = dict(kwargs)
                 kwargs["_session_llm_credentials"] = {"OPENAI_API_KEY": "test-key"}
@@ -96,8 +82,6 @@ def fake_openai(monkeypatch):
 
 @pytest.fixture
 def no_llm_credentials(monkeypatch):
-    """Remove every ambient LLM credential so resolution yields no client."""
-
     class _ExplodingOpenAI:
         def __init__(self, **_kwargs):
             raise AssertionError("The LLM client must not be constructed here")

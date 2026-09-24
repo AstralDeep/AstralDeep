@@ -1,4 +1,7 @@
-"""Golden and negative transcript-proof vectors for Feature 065."""
+"""Golden and negative vectors for shared/voice_transcript.py's transcript-proof HMAC:
+canonicalization and strict bounds, a fixed golden vector against a worker-derived
+key, and rejection of transplanted, altered, or expired proofs.
+"""
 
 from __future__ import annotations
 
@@ -223,8 +226,6 @@ def test_proof_types_and_representations_do_not_expose_or_persist_content() -> N
     )
     assert scope == BINDING.session_scope
 
-    # Schema ownership moved to AstralPlane in 074. Inspect its canonical
-    # fresh-install baseline rather than the removed Deep database facade.
     migration_source = inspect.getsource(
         _LegacyBaseline066Builder._migrate_conversational_voice_065
     )

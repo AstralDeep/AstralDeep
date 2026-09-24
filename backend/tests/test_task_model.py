@@ -1,9 +1,8 @@
-"""Feature 033 (capability C-N1 / F1+F2) — task-model-first generative UI.
-
-The deterministic heart: the typed-attribute → primitive rule table, the
-schema → layout-skeleton derivation, the schema parser/prompt, and the
-fail-open designer integration (a derived structural prior).
+"""Tests for orchestrator/task_model.py: the typed-attribute-to-primitive rule table,
+schema-to-layout-skeleton derivation, the schema parser, and its fail-open
+integration as a structural prior into ui_designer.py.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,8 +25,6 @@ ALLOWED = {
 }
 
 
-# ───────────────────────── attr_to_primitive (F2) ────────────────────────────
-
 @pytest.mark.parametrize("attr_type,role,card,expected", [
     ("SVAL", "metric", "one", "metric"),
     ("SVAL", "kpi", "one", "metric"),
@@ -41,7 +38,7 @@ ALLOWED = {
     ("ARRY", None, "one", "list"),
     ("PNTR", None, "one", "card"),
     ("TEMPORAL", None, "one", "timeline"),
-    ("WHATSIT", None, "one", "text"),     # unknown type → text
+    ("WHATSIT", None, "one", "text"),
 ])
 def test_attr_to_primitive_rules(attr_type, role, card, expected):
     assert tm.attr_to_primitive(attr_type, role=role, cardinality=card) == expected
@@ -55,8 +52,6 @@ def test_attr_to_primitive_only_emits_real_primitives():
     for t in ("SVAL", "DICT", "ARRY", "PNTR", "TEMPORAL"):
         assert tm.attr_to_primitive(t) in ALLOWED
 
-
-# ───────────────────────── derive_layout (F1) ────────────────────────────────
 
 def test_derive_layout_builds_hero_and_entity_cards():
     schema = {"task": "Quarterly sales", "entities": [
@@ -96,8 +91,6 @@ def test_schema_prior_empty_for_degenerate():
     assert tm.schema_prior({}) == ""
 
 
-# ───────────────────────── parse_task_schema ─────────────────────────────────
-
 def test_parse_valid_schema():
     s = tm.parse_task_schema('{"task":"T","entities":[{"name":"E","attributes":[]}]}')
     assert s["task"] == "T" and s["entities"][0]["name"] == "E"
@@ -124,8 +117,6 @@ def test_build_schema_messages_lists_request_and_types():
     assert "SVAL" in blob and "entities" in blob
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_taskmodel_default_off(monkeypatch):
     monkeypatch.delenv("FF_UI_DESIGNER_TASKMODEL", raising=False)
     assert tm.taskmodel_enabled() is False
@@ -136,8 +127,6 @@ def test_taskmodel_on_values(monkeypatch, value):
     monkeypatch.setenv("FF_UI_DESIGNER_TASKMODEL", value)
     assert tm.taskmodel_enabled() is True
 
-
-# ───────────────────────── designer integration ──────────────────────────────
 
 def test_design_prompt_includes_task_prior_when_set():
     msgs = build_design_messages("x", [{"type": "table", "component_id": "A"}],
@@ -182,7 +171,6 @@ async def test_driver_taskmodel_prepass_seeds_prior(monkeypatch):
         llm_call=_stub_llm([_SCHEMA, _DRAFT, "DONE"], captured), timeout_s=5, max_rounds=2,
     )
     assert out is not None
-    # the design prompt (2nd call) carried the derived structural prior
     assert any("Derived structure" in m[-1]["content"] for m in captured)
 
 
@@ -205,4 +193,4 @@ async def test_driver_taskmodel_bad_schema_is_fail_open(monkeypatch):
         chat_id="c3", layout_key="lk3", allowed_types=ALLOWED,
         llm_call=_stub_llm(["not a schema", _DRAFT, "DONE"]), timeout_s=5, max_rounds=2,
     )
-    assert out is not None  # unusable schema → no prior, design still proceeds
+    assert out is not None

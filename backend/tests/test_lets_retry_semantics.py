@@ -1,4 +1,7 @@
-"""Receipt-safe retry and uncertain-outcome semantics for governed effects."""
+"""Tests for orchestrator/tool_retry.py: receipt-safe retry reuses attempt identity
+before a response, a claimed receipt is never retried, a lost result is treated as
+uncertain, and reconcilable uncertainty is returned for compensation.
+"""
 
 from __future__ import annotations
 

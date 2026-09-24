@@ -1,4 +1,8 @@
-"""Scheduler scan hints advance only after commit and never serialize database work."""
+"""Tests that scheduler/store.py's scan-hint continuation only advances after a
+successful commit, never serializes database work, and still advances past ineligible
+handlers, including a real-store restart scenario.
+"""
+
 from __future__ import annotations
 
 import threading

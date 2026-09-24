@@ -1,4 +1,7 @@
-"""``read_dicom`` tool: parse a single DICOM file with PHI stripped by default."""
+"""read_dicom tool: parses a DICOM file and strips PHI-tagged fields by default
+(PS3.15); include_phi=True surfaces them and should be used only for
+already-authorized data.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +15,7 @@ from agents.general.file_tools.medical import _common
 logger = logging.getLogger("FileTools.read_dicom")
 
 
-# DICOM tags flagged as PHI by PS3.15 Basic Application Level Confidentiality.
-# Suppressed from the default response; surfaced only when include_phi=True.
+# PS3.15 PHI tags: hidden unless include_phi=True
 _PHI_TAGS = (
     "PatientName",
     "PatientID",
@@ -44,7 +46,6 @@ _PHI_TAGS = (
     "SOPInstanceUID",
 )
 
-# Non-identifying fields that are genuinely useful for reasoning about the image.
 _SAFE_TAGS = (
     "Modality",
     "Manufacturer",
@@ -78,7 +79,6 @@ _SAFE_TAGS = (
 
 
 def _safe_value(value: Any) -> Any:
-    """Coerce a pydicom value to something JSON-serialisable."""
     if value is None:
         return None
     if isinstance(value, (str, int, float, bool)):
@@ -111,12 +111,6 @@ def read_dicom(
     include_phi: bool = False,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return DICOM metadata + a thumbnail of the pixel data.
-
-    By default, patient-identifying tags are stripped (PS3.15 basic
-    confidentiality profile). Set ``include_phi=True`` to surface them
-    — use only when working with data already authorised for disclosure.
-    """
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -142,7 +136,6 @@ def read_dicom(
     if include_phi:
         result["phi"] = _collect_tags(ds, _PHI_TAGS)
 
-    # Attempt to render a thumbnail; absence of pixel data is not a failure.
     try:
         pixels = ds.pixel_array  # type: ignore[attr-defined]
     except Exception as exc:
@@ -150,7 +143,6 @@ def read_dicom(
         result["thumbnail_error"] = f"Pixel data unavailable: {exc}"
         return result
 
-    # Multi-frame: take middle frame.
     if pixels.ndim >= 3 and pixels.shape[0] > 1 and result["metadata"].get("NumberOfFrames"):
         mid = pixels.shape[0] // 2
         slice_2d = pixels[mid]

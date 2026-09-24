@@ -1,4 +1,8 @@
-"""Offline driver qualification; fixtures are never represented as live evidence."""
+"""Offline driver tests for persistent-agent qualification: strict JSON/endpoint
+validation, private-path and ACL safety, redacted process output, and bounded
+owner-consent/timeout controls.
+"""
+
 from __future__ import annotations
 
 import base64

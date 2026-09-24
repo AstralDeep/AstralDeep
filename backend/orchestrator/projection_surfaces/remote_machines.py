@@ -1,11 +1,8 @@
-"""Deep-owned host adapter for the remote-machines Projection surface.
-
-Surface key ``remote_machines``. Web ``render()`` (this file); native parity
-(``components()``) is a follow-up (spec task T025). The user registers their own
-SSH machines/clusters here and pastes a multi-line key; on save the product opens
-a real connection and shows an honest verdict (FR-013). Owner-scoped throughout
-(FR-010/FR-018). Template: webrender/chrome/surfaces/llm.py.
+"""Renders the remote-machines surface for registering SSH machines/clusters and probing
+them for an honest connection verdict. Owner-scoped throughout; credential handling
+delegates to orchestrator/credential_manager.py and remote_transport.py.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -23,11 +20,6 @@ _DISABLED_MSG = "Remote compute is disabled on this server."
 
 
 def _enabled() -> bool:
-    """FF_REMOTE_COMPUTE re-check (T064). The surfaces registry maps this key
-    unconditionally, so every entry point — render, components, and each
-    chrome_* handler — re-checks the flag itself; otherwise a crafted ui_event
-    could mutate machine state while the feature is off (the flag must keep
-    flag-off byte-identical, mirroring the BYO ``byo_enabled()`` posture)."""
     from shared.feature_flags import flags
     return flags.is_enabled("remote_compute")
 
@@ -70,13 +62,6 @@ def _text_field(name: str, label: str, *, value: str = "", placeholder: str = ""
 
 
 def _cred_inputs_html() -> str:
-    """The credential inputs shared by the add-machine form and each machine's
-    replace-credential form. SSH-key fields and the password field are BOTH in
-    the DOM; the astral-cred-type change handler in client.js shows only the
-    group that matches the selected credential type (the chrome modal has no
-    reactive re-render — same pattern as the LLM provider/endpoint toggle). The
-    server handlers already read private_key OR password by cred_type, so a
-    hidden field being submitted is inert."""
     return (
         f'<label class="{_LABEL_CLS}"><span class="{_LABEL_TEXT_CLS}">Credential type</span>'
         f'{_select("cred_type", _CRED, "ssh_key", extra_cls="astral-cred-type")}</label>'
@@ -100,8 +85,6 @@ def _machines_html(orch, user_id: str) -> str:
     for r in rows:
         mid = esc(r["machine_id"])
         verdict = esc(r.get("last_verdict") or "not yet probed")
-        # Re-trust is offered ONLY after a host_key_mismatch verdict — the one
-        # deliberate path that accepts a changed host identity (FR-020).
         retrust = ""
         if r.get("last_verdict") == "host_key_mismatch":
             retrust = (f'<button type="button" class="{_BTN_PRIMARY}" '
@@ -164,26 +147,11 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
 
 
 async def components(orch: Any, user_id: str, roles: Any, params: Any):
-    """Feature 063 (T025) — the surface as native SDUI components.
-
-    BOTH credential inputs — the private-key textarea and the password field —
-    are always present in the payload; the ``chrome_machine_add`` handler
-    already reads whichever matches ``cred_type`` and ignores the other. The
-    credential inputs additionally carry ``visible_when`` markers so clients
-    that support declarative visibility show only the inputs matching the
-    selected credential type; older shipped clients ignore the attribute and
-    render every field (the pre-063.1 behavior). Same handler keys + same
-    ``fields`` payload shape as the web ``render()`` form, so HANDLERS are
-    unchanged. Template: webrender/chrome/surfaces/llm.py.
-    """
     import asyncio
 
     from webrender.chrome.surfaces import _sdui
 
     def _cred_fields_sdui():
-        """The credential fields shared by the add-machine form and each
-        machine's replace-credential form (same names + visible_when markers,
-        so the same handler parsing applies)."""
         return [
             _sdui.field("cred_type", "Credential type", "select", default="ssh_key",
                         options=list(_CRED),
@@ -223,8 +191,6 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
                 {"label": "Last check", "value": r.get("last_verdict") or "not yet probed"},
             ], columns=2)
             buttons = [_sdui.button("Probe", "chrome_machine_probe", payload={"machine_id": mid})]
-            # Re-trust appears ONLY after a host_key_mismatch verdict — the one
-            # deliberate path that accepts a changed host identity (FR-020).
             if r.get("last_verdict") == "host_key_mismatch":
                 buttons.append(_sdui.button("Re-trust", "chrome_machine_retrust",
                                             payload={"machine_id": mid}))
@@ -254,19 +220,14 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
     return out
 
 
-# ── handlers ─────────────────────────────────────────────────────────────────
-
 def _credential_from_fields(f: Dict[str, str]):
-    """Validate the credential portion of a submitted form. Returns
-    ``(cred_type, secret, passphrase)``, or an error-message string. Reads ONLY
-    the inputs matching ``cred_type`` — legacy clients submit every field."""
     cred_type = f.get("cred_type") if f.get("cred_type") in _CRED else "ssh_key"
     if cred_type == "ssh_key":
         secret = f.get("private_key") or ""
         if not secret:
             return "Paste a private key for an SSH-key credential."
         if not secret.endswith("\n"):
-            secret += "\n"  # PEMs want a trailing newline
+            secret += "\n"
         return (cred_type, secret, f.get("passphrase") or None)
     secret = f.get("password") or ""
     if not secret:
@@ -275,7 +236,6 @@ def _credential_from_fields(f: Dict[str, str]):
 
 
 def _probe_notice(orch, user_id: str, machine_id: str, label: str) -> str:
-    """Probe a machine, persist the verdict + first host key, return a notice."""
     source = plane_source_from_orchestrator(orch)
     try:
         target = remote_machines.build_target(
@@ -370,10 +330,6 @@ async def _h_machine_delete(orch, websocket, user_id, roles, payload):
     label = row["label"] if row else machine_id
     ok = remote_machines.delete_machine(source, user_id, machine_id)
     if ok:
-        # Belt-and-suspenders credential destroy (FK also cascades) — ONLY after
-        # the owner-scoped delete succeeded: the credential-manager delete is
-        # keyed by machine_id alone, so running it on a refused delete would let
-        # a non-owner destroy another user's credential.
         try:
             orch.credential_manager.delete_machine_credential(machine_id, user_id)
         except Exception:
@@ -387,8 +343,6 @@ async def _h_machine_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _h_credential_set(orch, websocket, user_id, roles, payload):
-    """Machine-scoped credential replace: owner check, encrypt + upsert via the
-    credential manager, then an immediate probe verdict like add (FR-013)."""
     if not _enabled():
         return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     machine_id = (payload or {}).get("machine_id")
@@ -412,8 +366,6 @@ async def _h_credential_set(orch, websocket, user_id, roles, payload):
 
 
 async def _h_credential_delete(orch, websocket, user_id, roles, payload):
-    """Machine-scoped credential removal (FR-015). Owner check FIRST — the
-    credential-manager delete itself is keyed by machine_id only."""
     if not _enabled():
         return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     machine_id = (payload or {}).get("machine_id")
@@ -437,10 +389,6 @@ async def _h_credential_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _h_machine_retrust(orch, websocket, user_id, roles, payload):
-    """Deliberate re-trust after a host_key_mismatch — clears the pinned key via
-    ``remote_machines.retrust_host_key`` (the ONLY path that accepts a changed
-    host identity, FR-020), then re-probes so the new key is recorded and an
-    honest verdict shown."""
     if not _enabled():
         return (SURFACE_KEY, {}, notice_block("error", _DISABLED_MSG))
     machine_id = (payload or {}).get("machine_id")
@@ -458,10 +406,6 @@ async def _h_machine_retrust(orch, websocket, user_id, roles, payload):
     return (SURFACE_KEY, {}, _probe_notice(orch, user_id, machine_id, row["label"]))
 
 
-# The credential/retrust actions are machine-namespaced (chrome_machine_*):
-# chrome handlers aggregate into ONE flat action map (surfaces/__init__.py
-# collect_handlers), and the agents surface already owns plain
-# chrome_credential_delete for per-agent credentials.
 HANDLERS = {
     "chrome_machine_add": _h_machine_add,
     "chrome_machine_probe": _h_machine_probe,

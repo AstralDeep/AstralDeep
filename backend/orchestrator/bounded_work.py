@@ -1,9 +1,6 @@
-"""Small process-wide executors for blocking generation and maintenance work.
-
-The default asyncio executor is shared with unrelated interactive request work
-and has an implementation-defined queue.  These pools keep slow generation and
-maintenance calls in separate finite lanes so saturation is explicit instead
-of silently consuming every interactive worker.
+"""Small bounded thread-pool executors (GENERATION_EXECUTOR, MAINTENANCE_EXECUTOR)
+isolating slow generation/maintenance calls from the default asyncio executor shared
+with interactive requests; used by agentic_creation.py and knowledge_synthesis.py.
 """
 
 from __future__ import annotations
@@ -21,12 +18,10 @@ _T = TypeVar("_T")
 
 
 class WorkExecutorSaturated(RuntimeError):
-    """Raised before submission when a bounded blocking lane is full."""
+    pass
 
 
 class BoundedWorkExecutor:
-    """A thread pool with a finite submission budget and context propagation."""
-
     def __init__(self, *, name: str, max_workers: int, queue_limit: int) -> None:
         if not name or not name.replace("_", "").isalnum():
             raise ValueError("executor name must be a bounded identifier")
@@ -53,8 +48,6 @@ class BoundedWorkExecutor:
     async def run(
         self, function: Callable[..., _T], /, *args: Any, **kwargs: Any
     ) -> _T:
-        """Run one blocking callable or refuse immediately at finite capacity."""
-
         if not callable(function):
             raise TypeError("function must be callable")
         with self._lock:

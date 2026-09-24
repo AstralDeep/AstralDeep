@@ -1,3 +1,8 @@
+"""Tests for the evolutionary draft archive (orchestrator/draft_archive.py): the
+archive-enabled flag, the surrogate code-quality scorer, Jaccard-ranked exemplar
+retrieval, prompt conditioning, and the self-test skip threshold.
+"""
+
 from __future__ import annotations
 import sys
 from pathlib import Path
@@ -8,8 +13,6 @@ if str(BACKEND_DIR) not in sys.path:
 from orchestrator import draft_archive as da  # noqa: E402
 from orchestrator.draft_archive import ArchivedDraft  # noqa: E402
 
-
-# ──────────────────────────── fixtures / helpers ─────────────────────────────
 
 GOOD_CODE = '''
 """A small example agent."""
@@ -36,8 +39,6 @@ def do_thing(params):
 '''
 
 
-# ───────────────────────────────── flag ──────────────────────────────────────
-
 def test_archive_default_off(monkeypatch):
     monkeypatch.delenv("FF_DRAFT_ARCHIVE", raising=False)
     assert da.archive_enabled() is False
@@ -55,8 +56,6 @@ def test_archive_off_values(monkeypatch, v):
     assert da.archive_enabled() is False
 
 
-# ─────────────────────────── surrogate_score ─────────────────────────────────
-
 def test_surrogate_good_beats_empty():
     assert da.surrogate_score(GOOD_CODE) > da.surrogate_score("")
 
@@ -64,7 +63,7 @@ def test_surrogate_good_beats_empty():
 def test_surrogate_empty_is_zero():
     assert da.surrogate_score("") == 0.0
     assert da.surrogate_score("   ") == 0.0
-    assert da.surrogate_score("x = 1") == 0.0  # under the 20-char floor
+    assert da.surrogate_score("x = 1") == 0.0
 
 
 def test_surrogate_good_beats_eval():
@@ -89,7 +88,6 @@ def test_surrogate_good_beats_subprocess():
 
 
 def test_surrogate_red_flags_compound():
-    # Same rewards, more red flags => strictly lower score.
     one_flag = (
         '"""x"""\nTOOL_REGISTRY = {}\n'
         "def f(p):\n    return {'r': eval(p)}\n"
@@ -113,13 +111,9 @@ def test_surrogate_deterministic():
 
 
 def test_surrogate_rewards_registration_and_docstring():
-    # A bare expression with no docstring / no registry / no return should
-    # score below the fully-featured GOOD_CODE.
     plain = "a = 1\nb = 2\nc = a + b\nd = c * 3\ne = d - 1\n" * 2
     assert da.surrogate_score(GOOD_CODE) > da.surrogate_score(plain)
 
-
-# ─────────────────────────── top_exemplars ───────────────────────────────────
 
 def _draft(fp, score, code="x"):
     return ArchivedDraft(fingerprint=fp, code=code, score=score)
@@ -127,19 +121,17 @@ def _draft(fp, score, code="x"):
 
 def test_top_exemplars_ranks_by_overlap_then_score():
     archive = [
-        _draft("read pdf table", 0.9),   # high overlap with target
-        _draft("send email smtp", 0.95),  # no overlap, higher score
-        _draft("read pdf", 0.5),          # partial overlap, lower score
+        _draft("read pdf table", 0.9),
+        _draft("send email smtp", 0.95),
+        _draft("read pdf", 0.5),
     ]
     out = da.top_exemplars(archive, "read pdf table extract", k=3)
-    # Overlap dominates: the two "read pdf …" drafts come before the email one.
     assert out[0].fingerprint == "read pdf table"
     assert out[1].fingerprint == "read pdf"
     assert out[2].fingerprint == "send email smtp"
 
 
 def test_top_exemplars_overlap_tie_broken_by_score():
-    # Identical fingerprints => identical overlap => higher score wins.
     archive = [
         _draft("read pdf", 0.4, code="low"),
         _draft("read pdf", 0.8, code="high"),
@@ -175,8 +167,6 @@ def test_top_exemplars_non_positive_k():
     assert da.top_exemplars(archive, "read pdf", k=-1) == []
 
 
-# ─────────────────────────── condition_prompt ────────────────────────────────
-
 def test_condition_prompt_no_exemplars_returns_base():
     base = "GENERATE AN AGENT"
     assert da.condition_prompt(base, []) == base
@@ -199,7 +189,6 @@ def test_condition_prompt_within_max_chars():
     out = da.condition_prompt(base, ex, max_chars=1000)
     appended = out[len(base):]
     assert len(appended) <= 1000
-    # Still actually appended a header (room was available).
     assert "## Exemplars from past successful agents" in out
 
 
@@ -220,15 +209,12 @@ def test_condition_prompt_embeds_multiple_exemplars():
     assert "BBB_CODE" in out
 
 
-# ────────────────────────── should_skip_self_test ────────────────────────────
-
 def test_should_skip_self_test_true_for_empty():
     assert da.should_skip_self_test("") is True
     assert da.should_skip_self_test("   ") is True
 
 
 def test_should_skip_self_test_true_for_red_flag_stub():
-    # Short red-flag snippet: low surrogate score => skip.
     assert da.should_skip_self_test("eval(x)") is True
 
 
@@ -237,7 +223,5 @@ def test_should_skip_self_test_false_for_good_code():
 
 
 def test_should_skip_self_test_threshold_boundary():
-    # Custom threshold above any achievable score forces a skip.
     assert da.should_skip_self_test(GOOD_CODE, min_score=1.01) is True
-    # A threshold of 0 never skips anything non-trivial.
     assert da.should_skip_self_test(GOOD_CODE, min_score=0.0) is False

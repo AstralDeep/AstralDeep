@@ -1,4 +1,8 @@
-"""Exact legacy cutover and current human skill commands over real Plane."""
+"""Tests for the human skill command facade (user_skill_catalog.py, user_skills.py) over
+real Plane: legacy-bytes cutover, catalog revise/toggle/delete, ownership checks, and
+materialization rollback on conflicting writes.
+"""
+
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -351,10 +355,6 @@ async def test_collected_form_identity_cannot_conflict_with_rendered_payload():
     payload = {'skill_id':str(uuid4()),'command_id':str(uuid4()),'expected_revision':1}
     with pytest.raises(AssignmentError, match='skill_invalid'):
         authoring._skill_request_identity(payload, {'skill_id':str(uuid4())})
-
-
-# Direct implementation probes were migrated to actual admitted ingress in
-# test_turn_guidance_ingress_088.test_actual_foreground_admission_expands_only_original_current_guidance.
 
 
 async def test_serialized_chat_safe_cleanup_preserves_required_read_refusal():

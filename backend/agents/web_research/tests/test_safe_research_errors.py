@@ -1,4 +1,7 @@
-"""Upstream payloads and secrets never become user-facing research errors."""
+"""Tests that agents/web_research/mcp_tools.py never leaks upstream HTML, provider
+bodies, or API keys into user-facing search/fetch error messages.
+"""
+
 import json
 from unittest.mock import patch
 

@@ -1,20 +1,8 @@
-"""Durable destructive-operation confirmation for the remote-compute agents (US3).
-
-The net-new mechanism (spec contracts/confirmation.md): a durable, single-use,
-expiring, user-bound, argument-bound approval for destructive remote operations,
-enforced at the shared dispatch gate (``_run_gate_stack``) so a differently-named
-verb, a parallel batch, or a chained hop cannot bypass it, and refused outright on
-any turn with no live human principal (FR-033).
-
-Two entry points:
-- ``evaluate(...)`` — called SYNCHRONOUSLY from the gate (the orchestrator wraps it
-  in ``asyncio.to_thread`` because it touches the DB / SFTP). Returns ``None`` to let
-  the call proceed, or ``(message, [component_dicts])`` to refuse (the orchestrator
-  wraps that in a ``GateRefusal``).
-- ``handle_decision(...)`` — the ``remote_op_decision`` ui_event handler (async):
-  validates ownership/TTL/single-use and, on approval, re-enters the tool with the
-  STORED arguments so the operation faces the full gate stack once more.
+"""Durable single-use approval cards for destructive remote-compute and computer-use
+operations. The dispatch gate calls evaluate(); approvals re-enter it via
+handle_decision(), stored through astralplane's remote_proposals.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,13 +24,10 @@ from orchestrator.plane_repository_context import (
 
 logger = logging.getLogger("RemoteConfirmation")
 
-PROPOSAL_TTL_S = 900  # 15 minutes; absolute server time, clock-skew-safe (FR-031)
+PROPOSAL_TTL_S = 900
 
 MUTATING_AGENT_ID = "remote-compute-1"
 
-#: SINGLE SOURCE OF TRUTH for destructive classification (the gate enforces this;
-#: the agent's registry imports it so verb + classification cannot drift — FR-028).
-#: Values: "never" | "always" | "if_exists" | {"by_action": [<action>, ...]}.
 DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "make_directory": "never",
     "upload_file": "if_exists",
@@ -52,20 +37,14 @@ DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "control_service": {"by_action": ["stop", "disable", "restart"]},
     "manage_package": {"by_action": ["remove"]},
     "submit_job": "never",
-    "run_job": "never",  # US4: submitting a job creates new work (not destructive)
+    "run_job": "never",
 }
 
 _MARKER = "_remote_op_proposal_id"
 
-#: (owner, agent, tool, args_fingerprint) → (proposal_id, expires_at) for cards
-#: still awaiting an answer; a repeat reach re-uses the card. Cleared on any
-#: decision. In-process only — a restart simply allows a fresh card.
 _PENDING_CARDS: Dict[tuple, tuple] = {}
 
 
-#: (owner, agent, tool, args_fingerprint) → (proposal_id, expires_at) for
-#: approvals whose verb could not be attempted (computer paused) — one retry
-#: with identical arguments is admitted without a new card (076).
 _RETRY_GRACE: Dict[Tuple[Any, ...], Tuple[str, float]] = {}
 
 
@@ -75,16 +54,7 @@ def _forget_pending(proposal_id: str) -> None:
             _PENDING_CARDS.pop(key, None)
 
 
-# ── per-agent policy (feature 076 generalization) ─────────────────────────────
-#
-# The mechanism (durable single-use proposal → approval card → re-entry through
-# the full gate stack) is shared by every machine-control agent; only the verb
-# classification, the unattended rule, the card copy and the machine label
-# differ. Feature 063's behaviour is byte-identical under its own policy entry.
-
 class AgentConfirmationPolicy:
-    """What the shared gate needs to know about one machine-control agent."""
-
     def __init__(self, *, agent_id: str, classification: Dict[str, Any], machine_key: str,
                  gate_unclassified_unattended: bool, unattended_allowed: frozenset,
                  card_title: str, card_caption: str, summary, machine_label,
@@ -95,48 +65,19 @@ class AgentConfirmationPolicy:
         self.agent_id = agent_id
         self.classification = classification
         self.machine_key = machine_key
-        # False (063): read verbs — classification None — pass straight through,
-        # even unattended (status polls). True (076): an unattended turn may run
-        # ONLY ``unattended_allowed``; everything else is refused before any
-        # frame reaches the machine.
         self.gate_unclassified_unattended = gate_unclassified_unattended
         self.unattended_allowed = unattended_allowed
-        self.card_title = card_title      # may contain {host}
+        self.card_title = card_title
         self.card_caption = card_caption
-        self.summary = summary            # (orch, user_id, tool_name, args) -> str
-        self.machine_label = machine_label  # (orch, user_id, machine_ref) -> str
-        # Optional (tool_name, args) -> bool predicate for classifications the
-        # 063 vocabulary cannot express (076's shell-app rule); None ⇒ the
-        # shared ``_is_destructive`` vocabulary decides.
+        self.summary = summary
+        self.machine_label = machine_label
         self.is_destructive = is_destructive
-        # Model-facing text of the refusal that accompanies the card. 076 tells
-        # the model in so many words to END ITS TURN (live finding: without it
-        # the model re-requested approval and burned the whole turn budget).
         self.refusal_text = refusal_text or "confirmation_required: approve the operation to proceed."
-        # 076: after the owner approves and the verb ran, replay a continuation
-        # turn so the model finishes the task with the result in hand.
         self.auto_continue = auto_continue
-        # 076: a repeat reach of an operation whose card is still pending gets
-        # the same answer without a second card. 063 keeps one card per reach
-        # (its tests pin that), so this is opt-in per policy.
         self.dedupe_pending = dedupe_pending
-        # Optional (orch, user_id, args) -> str resolver for the machine id
-        # stored on the proposal row (the store requires a non-empty id). 076
-        # verbs may omit ``computer`` when one host is online, so the id is
-        # resolved from the registry rather than read off the arguments.
         self.machine_id = machine_id
-        # 076: deliver the card as the tool call's RESULT (canvas + transcript +
-        # every device, replaceable in place by its explicit id) instead of a
-        # transient chat alert that the 060 atomic commit discards.
         self.card_as_result = card_as_result
-        # Optional (orch, row) hook run after an approval, before the verb is
-        # re-dispatched (076: unlock terminal typing on the live session).
         self.on_approved = on_approved
-        # 076: when the approved verb could not even be ATTEMPTED because the
-        # computer was paused (someone at the PC), the approval is kept for
-        # this long so one retry with identical arguments passes the gate
-        # without a second card (single use). 0 ⇒ off (063 keeps one card per
-        # reach).
         self.retry_grace_s = float(retry_grace_s or 0.0)
 
 
@@ -145,7 +86,7 @@ def _computer_use_label(orch, user_id: str, ref) -> str:
         registry = getattr(orch, "computer_hosts", None)
         if registry is not None:
             return registry.resolve(user_id, ref).name
-    except Exception:  # noqa: BLE001 — a label only
+    except Exception:  # noqa: BLE001
         pass
     return "your computer"
 
@@ -155,14 +96,12 @@ def _computer_use_machine_id(orch, user_id: str, args: Dict[str, Any]) -> str:
         registry = getattr(orch, "computer_hosts", None)
         if registry is not None:
             return registry.resolve(user_id, args.get("computer")).host_id
-    except Exception:  # noqa: BLE001 — an unresolvable host still gets a card
+    except Exception:  # noqa: BLE001
         pass
     return str(args.get("computer") or "unresolved")
 
 
 def _computer_use_on_approved(orch, row) -> None:
-    """An approved terminal step (confirm_action, or opening a shell) unlocks
-    keystrokes into terminals on the owner's live session for a few minutes."""
     from orchestrator import computer_use_policy
     sessions = getattr(orch, "computer_sessions", None)
     if sessions is None:
@@ -215,7 +154,6 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
     }
 
 
-#: Agents whose tool calls the dispatch gate routes through this module.
 GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1"})
 
 
@@ -224,17 +162,6 @@ def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
         return None
     return _policies().get(agent_id)
 
-
-# ── hash-chained audit (FR-047/FR-048) ─────────────────────────────────────────
-#
-# Every proposal transition (proposed / approved / declined / expired / consumed)
-# and every refusal (unattended, non-owner, invalid approval) is appended to the
-# hash-chained audit under ``agent_lifecycle``, correlated by ``proposal_id`` and
-# naming the acting user + machine + verb — enough to reconstruct after the fact
-# what was done to which machine, by whom, under which approval. NO secrets and NO
-# argument values are recorded (FR-049) — only the machine id, the verb, and the
-# args *fingerprint* live in the row (via the proposal); ``inputs_meta`` carries a
-# hash-safe subset. Best-effort: an audit failure never blocks or breaks the gate.
 
 def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
                  proposal_id: Optional[str] = None, machine_id: Optional[str] = None,
@@ -265,20 +192,17 @@ def _audit_event(user_id: Optional[str], action_type: str, description: str, *,
 
 
 def _audit_sync(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
-    """Record a proposal-lifecycle event from the SYNC gate (runs in a worker
-    thread via asyncio.to_thread, so a blocking insert is safe)."""
     try:
         from audit.recorder import get_recorder
         rec = get_recorder()
         if rec is None:
             return
         rec.record_blocking(_audit_event(user_id, action_type, description, **kw))
-    except Exception:  # noqa: BLE001 — audit is best-effort, never fatal
+    except Exception:  # noqa: BLE001
         logger.debug("remote_op audit failed (%s)", action_type, exc_info=True)
 
 
 async def _audit_async(user_id: Optional[str], action_type: str, description: str, **kw) -> None:
-    """Record a proposal-lifecycle event from the async decision handler."""
     try:
         from audit.recorder import get_recorder
         rec = get_recorder()
@@ -289,10 +213,7 @@ async def _audit_async(user_id: Optional[str], action_type: str, description: st
         logger.debug("remote_op audit failed (%s)", action_type, exc_info=True)
 
 
-# ── fingerprint / summary ─────────────────────────────────────────────────────
-
 def _canonical_args(args: Dict[str, Any]) -> str:
-    """Canonical JSON of the model-supplied args (excluding injected ``_`` keys)."""
     clean = {k: v for k, v in args.items() if not str(k).startswith("_")}
     return json.dumps(clean, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -335,8 +256,6 @@ def _summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
     return f"{tool_name} on {m}"
 
 
-# ── classification ────────────────────────────────────────────────────────────
-
 def classification_for(tool_name: str, agent_id: Optional[str] = None) -> Any:
     policy = policy_for(agent_id) if agent_id else None
     table = policy.classification if policy is not None else DESTRUCTIVE_CLASSIFICATION
@@ -345,15 +264,6 @@ def classification_for(tool_name: str, agent_id: Optional[str] = None) -> Any:
 
 def is_destructive_unattended(tool_name: str, args: Dict[str, Any],
                               agent_id: Optional[str] = None) -> bool:
-    """Conservatively classify an unattended/MCP call without remote I/O.
-
-    ``if_exists`` cannot be proven safe without contacting the remote machine,
-    so the unattended boundary refuses it. Conditional action classifiers can
-    be decided entirely from the submitted arguments. For an agent whose policy
-    gates unclassified verbs unattended (076), everything outside its
-    ``unattended_allowed`` set counts as refused here too.
-    """
-
     policy = policy_for(agent_id) if agent_id else None
     if policy is not None and policy.gate_unclassified_unattended \
             and tool_name not in policy.unattended_allowed:
@@ -378,7 +288,6 @@ def _is_destructive(orch, user_id: str, tool_name: str, args: Dict[str, Any], cl
     if isinstance(classification, dict) and "by_action" in classification:
         return args.get("action") in set(classification["by_action"])
     if classification == "if_exists":
-        # A read-only stat decides: overwriting existing content is destructive.
         from orchestrator import remote_machines
         from orchestrator.remote_transport import get_transport
         try:
@@ -390,18 +299,14 @@ def _is_destructive(orch, user_id: str, tool_name: str, args: Dict[str, Any], cl
             )
             res = get_transport().stat(target, str(args.get("remote_path") or ""), timeout=15.0)
             if not res.ok:
-                return True  # cannot tell -> treat as destructive (fail-closed)
+                return True
             return bool((res.data or {}).get("exists"))
         except Exception:  # noqa: BLE001
             return True
-    return True  # unknown classification -> fail-closed
+    return True
 
 
 def _no_live_human(orch, websocket) -> bool:
-    """Every mutating remote-control verb needs a live human on an interactive
-    channel (FR-033) — destructive ones additionally to show a proposal + collect
-    an approval. A machine turn, a background/async VirtualWebSocket, or a None
-    socket has no such human — refuse there."""
     if websocket is None:
         return True
     try:
@@ -415,8 +320,6 @@ def _no_live_human(orch, websocket) -> bool:
         return True
     return False
 
-
-# ── proposal store ────────────────────────────────────────────────────────────
 
 def _proposal_context(orch) -> PlaneRepositoryContext:
     plane = orch.runtime_composition.plane
@@ -436,9 +339,6 @@ def _consume_if_valid(
     tool_name: str,
     args: Dict[str, Any],
 ) -> bool:
-    """Atomically consume an APPROVED, matching, unexpired proposal. Single-use: the
-    guarded ``UPDATE ... WHERE status='approved' RETURNING`` yields the row to exactly
-    one caller (FR-031)."""
     context = _proposal_context(orch)
     with context.transaction() as transaction:
         consumed = context.repository.consume_if_valid(
@@ -485,8 +385,7 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                 expires_at=now + PROPOSAL_TTL_S,
             ),
         )
-        # A persistent-action link is part of this same transaction. An orphan
-        # confirmation must never escape and fall back to ordinary chat dispatch.
+        # Must run in this same transaction — no orphaned confirmation
         if on_created is not None:
             on_created(transaction, proposal_id)
     logger.info("remote_op proposal created: %s verb=%s owner=%s", proposal_id, tool_name, user_id)
@@ -508,13 +407,10 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
 
 
 def card_component_id(proposal_id: str) -> str:
-    """Workspace identity of a 076 approval card (explicit author id → the
-    workspace keeps it verbatim, so a decision can replace it in place)."""
     return f"au_approval_{proposal_id}"
 
 
 async def _replace_card(orch, row, title: str, body: str, variant: str = "default") -> None:
-    """Swap the pending card for its outcome, in place, on every device."""
     if not row.conversation_id:
         return
     try:
@@ -533,18 +429,12 @@ async def _replace_card(orch, row, title: str, body: str, variant: str = "defaul
             chat_id=row.conversation_id, user_id=row.owner_id, mutation=_mutation)
         if ops:
             await orch.send_ui_upsert(None, row.conversation_id, row.owner_id, ops)
-    except Exception:  # noqa: BLE001 — the decision itself is already recorded
+    except Exception:  # noqa: BLE001
         logger.debug("remote_op card replacement failed", exc_info=True)
 
 
-# ── the gate hook (called from _run_gate_stack via asyncio.to_thread) ──────────
-
 def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
              args: Dict[str, Any], chat_id: Optional[str], user_id: Optional[str]):
-    """Return None to PROCEED, or (message, [component_dicts]) to REFUSE.
-
-    Mutates ``args`` to strip a consumed proposal marker so it never reaches the agent.
-    """
     from astralprims import Alert
     policy = policy_for(agent_id)
     if policy is None:
@@ -552,12 +442,9 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     machine_ref = args.get(policy.machine_key)
     classification = classification_for(tool_name, agent_id)
     if classification is None and not policy.gate_unclassified_unattended:
-        return None  # read verb — permitted unattended (FR-044's status-poll allowance)
+        return None
 
-    # FR-033: EVERY mutating verb needs a live human — checked BEFORE destructiveness
-    # (so before any transport contact, including the if_exists stat), before any
-    # proposal row, and before marker consumption (an approval can never be spent by
-    # a machine turn). Applies regardless of granted scope.
+    # Must run before the destructiveness and marker checks below
     if _no_live_human(orch, websocket) and tool_name not in policy.unattended_allowed:
         logger.info("remote_op refused (unattended): verb=%s owner=%s", tool_name, user_id)
         _audit_sync(user_id, "remote_op.refused_unattended",
@@ -569,29 +456,27 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                                "re-issue this interactively.", variant="error").to_dict()])
 
     if classification is None:
-        return None  # 076 observe/input verb on an attended turn — session-gated by the agent
+        return None
 
     from persistent_agents.dispatch_context import current_dispatch
     if current_dispatch() is not None and classification == "if_exists":
-        # Persistent work cannot perform an unreserved stat merely to decide
-        # whether to ask for approval. Conservative review needs no network I/O.
         destructive = True
     elif policy.is_destructive is not None:
         destructive = bool(policy.is_destructive(tool_name, args))
     else:
         destructive = _is_destructive(orch, user_id, tool_name, args, classification)
     if not destructive:
-        return None  # non-destructive mutating verb — the explicit grant already gated it
+        return None
 
     marker = args.get(_MARKER)
     if marker:
         ok = _consume_if_valid(orch, str(marker), user_id, tool_name, args)
-        args.pop(_MARKER, None)  # never hand the marker to the agent
+        args.pop(_MARKER, None)
         if ok:
             _audit_sync(user_id, "remote_op.consumed",
                         f"approved & consumed {tool_name}", proposal_id=str(marker),
                         machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
-            return None  # approved, fresh, matching, single-use consumed -> proceed
+            return None
         _audit_sync(user_id, "remote_op.approval_invalid",
                     f"invalid approval for {tool_name}", proposal_id=str(marker),
                     machine_id=machine_ref, verb=tool_name, outcome="failure", chat_id=chat_id)
@@ -601,8 +486,6 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                        variant="error").to_dict()])
 
     pending_key = (user_id, agent_id, tool_name, _fingerprint(args))
-    # A retry of an operation the owner approved moments ago whose verb could not
-    # be attempted (the computer was paused): admitted once, without a new card.
     if policy.retry_grace_s > 0:
         grace = _RETRY_GRACE.pop(pending_key, None)
         if grace is not None and grace[1] > time.time():
@@ -610,10 +493,6 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                         f"retry of approved {tool_name} admitted", proposal_id=grace[0],
                         machine_id=machine_ref, verb=tool_name, chat_id=chat_id)
             return None
-    # First reach of a destructive verb on an attended turn: refuse with a proposal.
-    # A repeat reach of the SAME operation while its card is still pending gets the
-    # same answer without a second card (076 live finding: a model that does not
-    # stop can otherwise paper the chat with identical cards).
     if policy.dedupe_pending:
         pending = _PENDING_CARDS.get(pending_key)
         if pending is not None and pending[1] > time.time():
@@ -624,8 +503,6 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         _PENDING_CARDS[pending_key] = (pid, time.time() + PROPOSAL_TTL_S)
     return (policy.refusal_text, [card])
 
-
-# ── the remote_op_decision ui_event handler (async) ────────────────────────────
 
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
     from astralprims import Alert
@@ -645,7 +522,6 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             proposal_id=str(proposal_id),
         )
     if row is None:
-        # Not found, or belongs to a different user (US3-4) — refuse + audit.
         logger.warning("remote_op_decision refused (not owner/found): id=%s actor=%s", proposal_id, user_id)
         await _audit_async(user_id, "remote_op.decision_refused",
                            "decision refused (not owner or not found)",
@@ -702,7 +578,6 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         await _replace_card(orch, row, "Declined", f"{row.summary} — not done.")
         return
 
-    # Approve atomically (single-use guard against a double-click / concurrent tab).
     def _approve():
         with context.transaction() as transaction:
             return context.repository.decide_if_pending(
@@ -724,12 +599,10 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if _pol is not None and _pol.on_approved is not None:
         try:
             _pol.on_approved(orch, row)
-        except Exception:  # noqa: BLE001 — the approval itself is recorded
+        except Exception:  # noqa: BLE001
             logger.debug("remote_op on_approved hook failed", exc_info=True)
 
-    # Re-enter the tool with the STORED args + the consume marker. The gate re-checks
-    # the full stack, matches the approved proposal by (owner, verb, args), consumes it
-    # single-use, strips the marker, and dispatches — FR-033's not-a-direct-dispatch.
+    # Goes back through the gate to re-validate — not a direct call
     stored_args = dict(row.arguments)
     stored_args[_MARKER] = proposal_id
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
@@ -742,10 +615,6 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         row.conversation_id,
         user_id=user_id,
     )
-    # 076: the approved verb ran, but the model's turn ended when it asked. Hand
-    # the outcome back as a continuation turn on the SAME chat so the task
-    # finishes without the user having to say "go on". A visible one-liner
-    # stands in for the machine-authored text in the transcript.
     policy = policy_for(row.agent_id)
     not_attempted = _not_attempted_code(result)
     if policy is not None and policy.retry_grace_s > 0 and not_attempted:
@@ -756,25 +625,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if policy is not None and policy.auto_continue and row.conversation_id and websocket is not None:
         outcome = _continuation_text(row, result, retry_grace_s=policy.retry_grace_s if not_attempted else 0)
         try:
-            # The continuation is a server-initiated turn, NOT part of the
-            # approval click's connection operation: a task created here would
-            # inherit that operation's execution fence through the contextvar,
-            # and the fence goes stale the moment the click finishes — the
-            # turn then aborts mid-way as "ownership changed" (seen live).
-            # Run it in a copy of the context with the operation cleared, so
-            # the turn takes the detached publication path (fanned out to every
-            # socket on the chat) under the per-socket/per-chat locks.
+            # Needs a detached context: the click's fence goes stale mid-task
             asyncio.create_task(
                 orch._serialized_chat(websocket, outcome, row.conversation_id,
                                       "✓ Approved — continuing", user_id=user_id),
                 context=_detached_turn_context(orch),
                 name=f"remote-op-continue-{row.proposal_id}")
-        except Exception:  # noqa: BLE001 — the approved verb already ran; continuation is best-effort
+        except Exception:  # noqa: BLE001
             logger.debug("remote_op auto-continue failed", exc_info=True)
 
 
 def _detached_turn_context(orch) -> contextvars.Context:
-    """See :func:`orchestrator.detached_context.detached_context`."""
     from orchestrator.detached_context import detached_context
     return detached_context(orch)
 
@@ -790,8 +651,6 @@ def _result_data(result) -> Tuple[Any, Any]:
 
 
 def _not_attempted_code(result) -> Optional[str]:
-    """``paused`` when the approved verb never reached the computer because
-    someone was using it; None when it ran (or failed for any other reason)."""
     data, error = _result_data(result)
     code = data.get("code") if isinstance(data, dict) else None
     if code is None and isinstance(error, dict):
@@ -801,7 +660,6 @@ def _not_attempted_code(result) -> Optional[str]:
 
 
 def _continuation_text(row, result, retry_grace_s: float = 0) -> str:
-    """The machine-authored user turn that resumes the task after an approval."""
     data, error = _result_data(result)
     try:
         rendered = json.dumps(data, default=str)[:4000] if data is not None else "(no data)"

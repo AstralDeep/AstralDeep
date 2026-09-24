@@ -1,7 +1,6 @@
-"""
-Summarizer Agent package for AstralDeep system.
-
-Provides text/URL summarization and two-document comparison tools.
+"""Summarizer agent package: exposes SummarizerAgent (summarizer_agent.py) and its MCP
+dispatch server/tools (mcp_server.py, mcp_tools.py) for text/URL summarization and
+document comparison.
 """
 
 from agents.summarizer.summarizer_agent import SummarizerAgent

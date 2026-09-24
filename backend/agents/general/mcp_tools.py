@@ -1,12 +1,8 @@
+"""General agent's broad tool surface: dynamic charting and CSV editing (modify_data),
+host system metrics (get_system_status, live_system_metrics), Wikipedia/arXiv search,
+and chat theme customization; registered in TOOL_REGISTRY alongside file_tools.
 """
-MCP Tools — tool functions that return UI Primitives.
 
-Includes:
-- Patient tools (mock): search_patients, graph_patient_data
-- System tools: get_system_status, get_cpu_info, get_memory_info, get_disk_info
-- System streaming tools: live_system_metrics (push streaming, 001-tool-stream-ui)
-- Search tools: search_wikipedia
-"""
 import asyncio
 import os
 import sys
@@ -23,7 +19,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Data processing dependencies (optional)
 try:
     import pandas as pd
     PANDAS_AVAILABLE = True
@@ -31,7 +26,6 @@ except ImportError:
     pd = None
     PANDAS_AVAILABLE = False
 
-# Expression evaluator
 from shared.expression_evaluator import ExpressionEvaluator  # noqa: E402
 from shared import external_http  # noqa: E402
 from shared.llm_text import strip_reasoning_markup  # noqa: E402
@@ -59,20 +53,6 @@ def generate_dynamic_chart(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Generate a chart dynamically based on generic input data.
-
-    Args:
-        data: List of dictionaries representing the dataset (e.g., [{"date": "2023", "sales": 10}, ...]).
-        x_key: The dictionary key to use for the X-axis (labels/categories).
-        y_key: The dictionary key for the Y-axis. If None, it plots the frequency count of x_key.
-        chart_type: 'auto', 'bar', 'line', 'pie', or 'scatter' (default: 'auto').
-        title: Title of the chart.
-
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
-    
-    # 1. Parse stringified JSON if necessary
     if isinstance(data, str):
         try:
             data = json.loads(data)
@@ -88,24 +68,19 @@ def generate_dynamic_chart(
             "_data": {}
         }
 
-    # --- THE FIX ---
-    # Normalize y_key (LLMs sometimes pass the string "null", "None", or "")
     if str(y_key).strip().lower() in ("null", "none", "", "undefined"):
         y_key = None
 
-    # 2. Extract Data Safely
     labels = []
     values = []
 
     if y_key is None:
-        # Frequency count mode (Now triggered correctly!)
         raw_labels = [str(row.get(x_key, "Unknown")) for row in data]
         counts = Counter(raw_labels)
         labels = list(counts.keys())
         values = list(counts.values())
         y_key = "count" 
     else:
-        # Explicit X vs Y mode
         labels = [str(row.get(x_key, "")) for row in data]
         
         for row in data:
@@ -114,7 +89,6 @@ def generate_dynamic_chart(
             except (ValueError, TypeError):
                 values.append(0)
 
-    # 3. Auto-determine Chart Type
     if chart_type == "auto":
         unique_labels = len(set(labels))
         is_date_like = len(labels) > 0 and any(char in labels[0] for char in ['-', '/']) and any(char.isdigit() for char in labels[0])
@@ -126,7 +100,6 @@ def generate_dynamic_chart(
         else:
             chart_type = "bar" 
 
-    # 4. Build Plotly Configuration
     chart_data = []
     layout_update = {}
     color_palette = ["#6366F1", "#8B5CF6", "#06B6D4", "#10B981", "#F59E0B", "#EF4444", "#EC4899", "#3B82F6"]
@@ -156,15 +129,13 @@ def generate_dynamic_chart(
             
         chart_data.append(trace)
 
-        # Plotly layout fixes for categories
         if chart_type == "bar":
             layout_update["xaxis"] = {
                 "type": "category",
                 "tickangle": -45,
-                "categoryorder": "category ascending" # This forces the X-axis to sort neatly!
+                "categoryorder": "category ascending"
             }
 
-    # 5. Build UI Primitives
     chart = PlotlyChart(
         title=title,
         data=chart_data,
@@ -193,16 +164,8 @@ def generate_dynamic_chart(
 
 
 
+# Model-supplied paths; confines reads to owned upload/download dirs
 def _confine_input_path(file_path: str, user_id: str) -> Optional[str]:
-    """Return the real path of ``file_path`` if this user may read it, else None.
-
-    Only the caller's own attachment upload root and their own download
-    directory qualify. Tool arguments are model-supplied, so an
-    unconstrained absolute path would read any file this process can open.
-    """
-    # A falsy user_id would collapse the per-user roots to ``backend/tmp`` and
-    # ``<upload_root>`` themselves — matching EVERY user's subtree — so refuse
-    # it outright rather than confine against a tenant-wide root.
     if not user_id or not str(user_id).strip():
         return None
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -227,28 +190,6 @@ def modify_data(
     user_id: str = "legacy",
     **kwargs
 ) -> Dict[str, Any]:
-    """Apply modifications to a CSV/Excel dataset and provide a download link.
-
-    Supports row-based calculations, conditional logic, and Excel file formats.
-
-    Args:
-        csv_data: Raw CSV string data (optional if file_path/file_handle is provided).
-        file_handle: AstralDeep attachment_id for a CSV/Excel uploaded via the
-            chat composer. Read through Plane's bounded byte stream; preferred
-            over file_path for chat-uploaded files.
-        modifications: List of modifications to apply. Each modification can have:
-            - action: "add_column", "update_column", "calculate_column"
-            - name: Column name
-            - value: Static value (optional if expression provided)
-            - expression: Python-like expression using row["column"] (optional)
-            - default: Fallback value if expression fails (optional)
-            - overwrite: Whether to overwrite existing column (default True)
-            - dtype: Data type for conversion ("string", "integer", "float", "boolean")
-        filename: Optional filename for the modified file (default: modified_data_<timestamp>.<ext>).
-        file_path: Server-side path to a CSV/Excel file. Not model-facing —
-            it is confined to the caller's own upload/download directories.
-        output_format: Output file format ("csv" or "excel"). Defaults to input format.
-    """
     if modifications is None:
         modifications = []
 
@@ -282,7 +223,6 @@ def modify_data(
         file_path = confined
 
     try:
-        # Determine input format
         input_format = None
         if attachment_payload is not None:
             input_format = (
@@ -293,25 +233,20 @@ def modify_data(
         elif file_path:
             if not os.path.exists(file_path):
                 return create_ui_response([Alert(message=f"File not found: {file_path}", variant="error")])
-            # Detect format from extension
             if file_path.lower().endswith('.csv'):
                 input_format = 'csv'
             elif file_path.lower().endswith(('.xlsx', '.xls')):
                 input_format = 'excel'
             else:
-                # Default to CSV
                 input_format = 'csv'
         else:
-            # No file path, assume CSV data
             input_format = 'csv'
 
-        # Load data
         rows = []
         fieldnames = []
         df = None
         
         if PANDAS_AVAILABLE and input_format == 'excel':
-            # Use pandas for Excel
             source = (
                 io.BytesIO(attachment_payload)
                 if attachment_payload is not None
@@ -321,7 +256,6 @@ def modify_data(
             rows = df.to_dict('records')
             fieldnames = list(df.columns)
         else:
-            # CSV fallback (or pandas not available)
             if attachment_payload is not None:
                 reader = csv.DictReader(
                     io.StringIO(attachment_payload.decode("utf-8", errors="replace"))
@@ -334,7 +268,6 @@ def modify_data(
                     fieldnames = list(reader.fieldnames) if reader.fieldnames else []
                     rows = list(reader)
             elif csv_data:
-                # Strip markdown code fences
                 csv_data = csv_data.strip()
                 if csv_data.startswith("```csv"):
                     csv_data = csv_data[6:].strip()
@@ -349,7 +282,6 @@ def modify_data(
             else:
                 return create_ui_response([Alert(message="Neither csv_data nor file_path provided.", variant="error")])
 
-        # Process each modification
         for mod in modifications:
             action = mod.get("action")
             name = mod.get("name", "")
@@ -394,7 +326,6 @@ def modify_data(
                             if evaluator.evaluate(row):
                                 filtered_rows.append(row)
                         except Exception:
-                            # if error evaluating, keep or drop? let's drop if evaluate fails unless default is True
                             if str(default).lower() == 'true':
                                 filtered_rows.append(row)
                     rows = filtered_rows
@@ -409,18 +340,14 @@ def modify_data(
                      df = pd.DataFrame(rows)
                  continue
 
-            # Determine if column exists
             column_exists = name in fieldnames
             
-            # Add column to fieldnames if needed
             if action in ("add_column", "calculate_column") and not column_exists:
                 fieldnames.append(name)
             elif action == "update_column" and not column_exists:
-                # update_column on non-existing column is treated as add_column
                 fieldnames.append(name)
                 column_exists = True
             
-            # Prepare evaluator if expression provided
             evaluator = None
             if expression:
                 try:
@@ -430,7 +357,6 @@ def modify_data(
                         Alert(message=f"Invalid expression '{expression}': {e}", variant="error")
                     ])
             
-            # Apply modification row by row
             for i, row in enumerate(rows):
                 result = None
                 if expression and evaluator:
@@ -441,7 +367,6 @@ def modify_data(
                 else:
                     result = value
                 
-                # Apply data type conversion
                 if dtype and result is not None:
                     try:
                         if dtype == "integer":
@@ -453,29 +378,22 @@ def modify_data(
                         elif dtype == "string":
                             result = str(result)
                     except (ValueError, TypeError):
-                        pass  # Keep original result
+                        pass
                 
-                # Store result
                 if overwrite or not column_exists or action == "add_column":
                     row[name] = result
                 elif action == "update_column" and column_exists:
                     row[name] = result
-                # calculate_column always overwrites if overwrite=True (default)
                 
-            # Update DataFrame if using pandas (for vectorized operations)
             if df is not None and name in fieldnames and PANDAS_AVAILABLE:
-                # Reconstruct column from rows (simpler but less efficient)
-                # In future could use pandas vectorized evaluation
                 df[name] = [row.get(name) for row in rows]
 
-        # Determine output format
         if output_format is None:
-            output_format = input_format  # Default to same as input
+            output_format = input_format
         
         if output_format not in ("csv", "excel"):
             output_format = "csv"
         
-        # Generate filename
         timestamp = int(time.time())
         if not filename:
             ext = "csv" if output_format == "csv" else "xlsx"
@@ -496,22 +414,16 @@ def modify_data(
         os.makedirs(download_dir, exist_ok=True)
         out_file_path = os.path.join(download_dir, filename)
 
-        # Save output
         if PANDAS_AVAILABLE and output_format == "excel" and df is not None:
-            # Use pandas to write Excel
             df.to_excel(out_file_path, index=False)
         else:
-            # Write CSV (fallback)
             with open(out_file_path, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
 
-        # Root-relative download URL — resolved against the serving origin by
-        # the browser (Constitution X: no hard-coded localhost; feature 030).
         download_url = f"/api/download/{session_id}/{filename}"
 
-        # Prepare preview (first 5 rows, first 5 columns)
         preview_headers = fieldnames[:5]
         preview_rows = [[str(row.get(f, "")) for f in preview_headers] for row in rows[:5]]
 
@@ -553,24 +465,18 @@ def modify_data(
         return create_ui_response([Alert(message=f"Failed to modify data: {e}", variant="error")])
 
 
-# =============================================================================
-# SYSTEM TOOLS
-# =============================================================================
 import psutil  # noqa: E402
 import platform  # noqa: E402
 
-# If running inside Docker with host procfs/sysfs mounted, point psutil at the host
 _host_proc = os.environ.get("HOST_PROC")
 if _host_proc and os.path.isdir(_host_proc):
-    os.environ["PSUTIL_PROCFS_PATH"] = _host_proc  # psutil >= 6.x
-    psutil.PROCFS_PATH = _host_proc                 # direct override for older psutil
+    os.environ["PSUTIL_PROCFS_PATH"] = _host_proc
+    psutil.PROCFS_PATH = _host_proc
 
-# Root path for disk usage — use host rootfs if mounted, otherwise container root
 _disk_root = "/hostfs" if os.path.isdir("/hostfs") else "/"
 
 
 def get_system_status(session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Get comprehensive system status information."""
     cpu_percent = psutil.cpu_percent(interval=0)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage(_disk_root)
@@ -633,7 +539,6 @@ def get_system_status(session_id: str = "default", **kwargs) -> Dict[str, Any]:
 
 
 def get_cpu_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Get detailed CPU information."""
     cpu_freq = psutil.cpu_freq()
     cpu_count = psutil.cpu_count()
     cpu_percent_per_core = psutil.cpu_percent(interval=0, percpu=True)
@@ -666,7 +571,6 @@ def get_cpu_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
 
 
 def get_memory_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Get detailed memory information."""
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
 
@@ -702,7 +606,6 @@ def get_memory_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
 
 
 def get_disk_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Get disk partition information."""
     partitions = psutil.disk_partitions()
     headers = ["Device", "Mount", "FS Type", "Total GB", "Used GB", "Free GB", "Usage %"]
     rows = []
@@ -738,30 +641,6 @@ def get_disk_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
     }
 
 
-# =============================================================================
-# STREAMING SYSTEM TOOLS (001-tool-stream-ui)
-# =============================================================================
-#
-# `live_system_metrics` is the push-streaming counterpart to the four
-# legacy poll-based system tools above. Where those return a single snapshot
-# (and rely on the orchestrator's polling loop in FF_LIVE_STREAMING to call
-# them repeatedly), this one is an async generator that pushes a fresh
-# snapshot every `interval_s` seconds via the new push pipeline. The agent
-# owns the cadence, so we can:
-#
-# - Run psutil.cpu_percent() with the proper sampling interval (which the
-#   poll path can't do — it always passes interval=0).
-# - Coalesce all three metrics into ONE Card with a single stream id, so
-#   the user sees one component updating in place rather than three
-#   independently-rendering cards racing each other.
-# - Clean up cleanly via the try/finally pattern when the user navigates
-#   away (the orchestrator sends ToolStreamCancel which propagates as
-#   GeneratorExit through this function).
-#
-# Existing one-shot calls to get_system_status / get_cpu_info / get_memory_info /
-# get_disk_info are unchanged. The legacy poll path still works for users
-# who haven't enabled FF_TOOL_STREAMING.
-
 @streaming_tool(
     name="live_system_metrics",
     description=(
@@ -782,26 +661,12 @@ def get_disk_info(session_id: str = "default", **kwargs) -> Dict[str, Any]:
             },
         },
     },
-    max_fps=2,   # cap at 2 fps — system metrics never need more than that
+    max_fps=2,
     min_fps=1,
 )
 async def live_system_metrics(
     args: Dict[str, Any], credentials: Dict[str, Any],
 ) -> AsyncIterator[StreamComponents]:
-    """Push CPU + memory + disk usage as a single Card every interval_s seconds.
-
-    Why a single Card with a Grid of three MetricCards rather than three
-    top-level streams: the orchestrator merges-by-id at the top level, and
-    one consolidated component means one stream subscription, one network
-    chunk per update, one render. The frontend renders three pulse-updating
-    metrics inside a stable parent — exactly the htop / Activity Monitor
-    pattern users expect.
-
-    Cleanup: the try/finally swallows GeneratorExit when the user leaves
-    the chat. psutil holds no per-process state we need to release here,
-    but the pattern is required by the SDK contract for any future tool
-    that does (e.g. an open file handle, a socket).
-    """
     interval = max(1, min(30, int(args.get("interval_s", 2))))
 
     def _variant(percent: float) -> str:
@@ -811,16 +676,10 @@ async def live_system_metrics(
             return "warning"
         return "default"
 
-    # Prime the CPU sampler with a non-blocking 0-interval call so that the
-    # FIRST yield reflects activity since startup rather than a misleading
-    # 0%. (psutil.cpu_percent returns the delta since the previous call.)
     psutil.cpu_percent(interval=0)
 
     try:
         while True:
-            # Sample. cpu_percent with interval=None returns the delta since
-            # the previous call — we control the sampling window via the
-            # asyncio.sleep below, so passing interval=0 is correct here.
             cpu_percent = psutil.cpu_percent(interval=0)
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage(_disk_root)
@@ -879,22 +738,10 @@ async def live_system_metrics(
         logger.info("live_system_metrics stream stopping")
 
 
-# =============================================================================
-# SEARCH TOOLS
-# =============================================================================
 import requests  # noqa: E402
 
 
 def search_wikipedia(query: str, language: str = "en", session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Search Wikipedia for articles and summaries.
-
-    Args:
-        query: The search query
-        language: Wikipedia language code (default: 'en')
-
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
         search_url = f"https://{language}.wikipedia.org/w/api.php"
         params = {
@@ -920,7 +767,6 @@ def search_wikipedia(query: str, language: str = "en", session_id: str = "defaul
 
         items = []
         for r in results:
-            # Clean HTML from snippet
             snippet = r.get("snippet", "").replace("<span class=\"searchmatch\">", "").replace("</span>", "")
             items.append(f"**{r['title']}** — {snippet}")
 
@@ -945,16 +791,8 @@ def search_wikipedia(query: str, language: str = "en", session_id: str = "defaul
         ])
 
 
-# =============================================================================
-# ACADEMIC SEARCH TOOLS
-# =============================================================================
-
 def extract_search_terms(query: str, **kwargs) -> str:
-    """Extract relevant search terms from a natural language query using LLM."""
     logger.debug("Extracting academic search terms")
-    # Feature 054: the per-turn credentials the orchestrator injects
-    # (_session_llm_credentials) are preferred, then the agent's own
-    # credential bundle. No env fallback — the operator-default path is gone.
     session_llm = kwargs.get("_session_llm_credentials") or {}
     creds = kwargs.get("_credentials", {}) or {}
     api_key = (
@@ -984,7 +822,7 @@ def extract_search_terms(query: str, **kwargs) -> str:
                 {"role": "user", "content": query}
             ],
             max_tokens=50,
-            timeout=10 # Add timeout
+            timeout=10
         )
         terms = strip_reasoning_markup(response.choices[0].message.content or "").strip()
         logger.debug("Academic search terms extracted")
@@ -994,8 +832,6 @@ def extract_search_terms(query: str, **kwargs) -> str:
         return query.strip()
 
 class _ArxivEgressTransport:
-    """Bound arxiv.py's transport to one egress-validated, size-capped request."""
-
     def __init__(self):
         self.requested = False
 
@@ -1010,12 +846,6 @@ class _ArxivEgressTransport:
 
 
 def search_arxiv(query: str, max_results: int = 10, session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Search arXiv for papers related to the query.
-    
-    Args:
-        query: The search query
-        max_results: Maximum number of results (default: 10)
-    """
     query = str(query or "").strip()
     if not query:
         return create_ui_response([Alert(
@@ -1025,7 +855,6 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
         limit = max(1, min(int(max_results), 20))
     except (TypeError, ValueError, OverflowError):
         limit = 10
-    # Use LLM to extract clean search terms
     clean_query = extract_search_terms(query, **kwargs)
     
     try:
@@ -1037,9 +866,7 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
         )
         
         client = arxiv.Client(page_size=limit, num_retries=0)
-        # arxiv.py exposes no transport parameter. Replace only its session;
-        # retain the public Client.results API and test the installed parser
-        # against real Atom bytes so upgrades cannot bypass the egress gate.
+        # arxiv.py has no transport hook; swap its session to keep egress gated
         client._session.close()
         client._session = _ArxivEgressTransport()
         results = []
@@ -1054,7 +881,6 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
             })
         logger.debug(f"Found {len(results)} papers")
         
-        # Create UI components
         if not results:
             components = [
                 Alert(
@@ -1064,14 +890,11 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
                 )
             ]
         else:
-            # Calculate metrics
             total_papers = len(results)
             latest_date = max(r["published"] for r in results) if results else "N/A"
-            # Find most common author
             all_authors = [a for r in results for a in r["authors"]]
             top_author = max(set(all_authors), key=all_authors.count) if all_authors else "N/A"
 
-            # Create list items with paper details
             list_items = []
             for paper in results:
                 authors_str = ", ".join(paper["authors"][:2])
@@ -1085,7 +908,6 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
                     "url": paper["url"]
                 })
             
-            # Cohesive UI: Card with Metrics + List
             components = [
                 Card(
                     title=f"ArXiv Research: {clean_query}",
@@ -1143,10 +965,6 @@ def search_arxiv(query: str, max_results: int = 10, session_id: str = "default",
         }
 
 
-# =============================================================================
-# THEME CUSTOMIZATION
-# =============================================================================
-
 THEME_PRESETS = {
     "midnight": {
         "bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
@@ -1182,7 +1000,6 @@ THEME_COLOR_LABELS = {
 
 
 def _build_theme_customization_card(active_preset: str = None):
-    """Build the interactive theme customization Card component."""
     preset_buttons = []
     for name, colors in THEME_PRESETS.items():
         preset_buttons.append(
@@ -1225,7 +1042,6 @@ def _build_theme_customization_card(active_preset: str = None):
 
 
 def change_theme(preset: str = None, **kwargs) -> Dict[str, Any]:
-    """Show theme customization interface with presets and color pickers."""
     components = [_build_theme_customization_card(preset)]
 
     return {
@@ -1240,7 +1056,6 @@ def change_theme(preset: str = None, **kwargs) -> Dict[str, Any]:
 import re  # noqa: E402
 
 def apply_theme_preset(preset: str, **kwargs) -> Dict[str, Any]:
-    """Apply a predefined theme preset directly."""
     preset = preset.lower().strip()
     if preset not in THEME_PRESETS:
         components = [
@@ -1269,7 +1084,6 @@ def apply_theme_preset(preset: str, **kwargs) -> Dict[str, Any]:
 
 
 def set_theme_color(color_key: str, hex_value: str, **kwargs) -> Dict[str, Any]:
-    """Change a single theme color."""
     color_key = color_key.lower().strip()
     hex_value = hex_value.strip()
 
@@ -1309,10 +1123,6 @@ def set_theme_color(color_key: str, hex_value: str, **kwargs) -> Dict[str, Any]:
         "_data": {"color_key": color_key, "color_value": hex_value, "message": message},
     }
 
-
-# =============================================================================
-# TOOL REGISTRY
-# =============================================================================
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
    "generate_dynamic_chart": {
@@ -1407,10 +1217,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         },
         "streamable": {"default_interval": 5, "min_interval": 2, "max_interval": 60}
     },
-    # 001-tool-stream-ui: push-streaming counterpart to the four poll-based
-    # system tools above. Single consolidated Card with CPU + memory + disk
-    # that updates in place every interval_s seconds. Use this for live
-    # dashboards instead of the snapshot-style get_system_status.
     "live_system_metrics": {
         "function": live_system_metrics,
         "scope": "tools:system",
@@ -1552,13 +1358,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
 }
 
-
-# =============================================================================
-# File-handling tools (feature 002-file-uploads)
-# =============================================================================
-# Registered out-of-line to keep the diff against the main TOOL_REGISTRY tight
-# and to make it easy to iterate on the file-tool surface without touching the
-# rest of the registry.
 
 from agents.general.file_tools.read_document import read_document as _read_document  # noqa: E402
 from agents.general.file_tools.read_spreadsheet import read_spreadsheet as _read_spreadsheet  # noqa: E402

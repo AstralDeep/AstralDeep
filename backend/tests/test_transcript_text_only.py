@@ -1,9 +1,8 @@
-"""Feature 045 — the chat transcript is TEXT ONLY.
-
-Exercises ``Orchestrator._transcript_html`` directly: text primitives render
-into the chat rail, rich components (tables/charts/metrics/dashboards) are
-dropped (they live on the canvas). Pure classmethod — no DB or instance.
+"""Tests for Orchestrator._transcript_html in orchestrator/orchestrator.py: text
+primitives render into the chat rail while rich components like tables and charts are
+dropped, since those live on the canvas instead.
 """
+
 from __future__ import annotations
 
 import os
@@ -64,7 +63,6 @@ def test_text_only_container_with_text_child_kept():
 
 
 def test_container_wrapping_rich_child_is_dropped():
-    # A text-only container TYPE that wraps a rich child is not text-only.
     assert _th([{"type": "card", "title": "x",
                  "children": [{"type": "table", "headers": ["h"], "rows": [["1"]]}]}]) == ""
 
@@ -72,7 +70,7 @@ def test_container_wrapping_rich_child_is_dropped():
 def test_non_list_inputs_are_empty():
     assert _th("just a string") == ""
     assert _th(None) == ""
-    assert _th({"type": "text", "content": "x"}) == ""  # a dict, not a list
+    assert _th({"type": "text", "content": "x"}) == ""
 
 
 def test_empty_list_is_empty():

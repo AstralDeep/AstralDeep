@@ -1,4 +1,9 @@
-"""088 private forced-refresh adapter against real Plane and normal JWT policy."""
+"""Tests for the private forced-refresh session adapter
+(orchestrator/session_authority.py, session_store.py, web_auth.py) against real Plane
+and JWT policy: cookie selection, generation binding, refresh races, and timeout
+bounds.
+"""
+
 import asyncio
 import threading
 import time
@@ -446,7 +451,6 @@ def test_cookie_context_change_during_remote_validation_refuses(fixture, monkeyp
     req = request(sid)
 
     async def exchange(*args):
-        # An enclosing request adapter must not repurpose this captured context.
         req.scope["headers"][:] = [(b"cookie", b"astral_session=another.bad")]
         return {"access_token": token()}
 
@@ -470,7 +474,6 @@ def test_remote_elapsed_time_cannot_extend_original_db_deadline(fixture, monkeyp
     monkeypatch.setattr(store, "capture_execution_reference", old_reference)
     monkeypatch.setattr(web_auth, "_exchange_session_refresh", exchange)
     unavailable(lambda: run(fixture))
-    # Rotation must remain persisted even when the observation has expired.
     assert store.get(sid)["refresh_token"] == "persisted-late-rotation"
 
 
@@ -563,7 +566,7 @@ def test_request_sql_wait_ends_and_releases_pool_while_blocker_is_still_held(
             with pytest.raises(ss.SessionRefreshUnavailable) as caught:
                 executor.submit(operation).result(timeout=3)
         assert str(caught.value) == "session execution database unavailable"
-        assert runtime._pool.snapshot.borrowed == 1  # The blocker is still inside its transaction.
+        assert runtime._pool.snapshot.borrowed == 1
         assert store._sessions.repository.get(blocker, owner_id=owner, session_id=sid) == before
         with runtime.transaction() as probe:
             assert probe.fetch_one("SELECT 1 AS alive")["alive"] == 1

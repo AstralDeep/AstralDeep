@@ -1,10 +1,6 @@
-"""Typed, redacted LETS health and user-facing denial projection.
-
-This module deliberately has no network or persistence behavior.  It combines
-the already-validated host configuration posture with a small, host-owned
-runtime observation and exposes only bounded status codes.  Raw LETS responses,
-receipts, identities, exception text, and configuration values are never part
-of the public model.
+"""Combines validated LETS configuration posture with a small runtime observation into
+redacted, bounded status codes for /readyz and the admin health route; never exposes
+raw responses or credentials. Used by lets_health_api.py and lets_probe.py.
 """
 
 from __future__ import annotations
@@ -53,8 +49,6 @@ _OPERATOR_CODES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class LetsRuntimeObservation:
-    """A value-free observation supplied by the eventual runtime monitor."""
-
     status: LetsRuntimeStatus
     observed_at_ns: int
     retryable: bool = False
@@ -72,8 +66,6 @@ class LetsRuntimeObservation:
 
 @dataclass(frozen=True, slots=True)
 class LetsDenyReason:
-    """Stable public denial projection with no source error detail."""
-
     code: str
     message: str
     retryable: bool
@@ -96,8 +88,6 @@ class LetsDenyReason:
 
 @dataclass(frozen=True, slots=True)
 class LetsHealthSnapshot:
-    """Redacted application and governed-dispatch readiness."""
-
     mode: LetsMode
     component_status: LetsComponentStatus
     application_ready: bool
@@ -249,8 +239,6 @@ def project_deny_reason(
     *,
     retryable: object = False,
 ) -> LetsDenyReason:
-    """Map an internal failure to an allowlisted, value-free public reason."""
-
     if type(source_code) is str:
         declared = _DENIALS.get(source_code)
         if declared is not None:
@@ -267,8 +255,6 @@ def project_lets_health(
     loaded: LetsConfigLoad,
     observation: LetsRuntimeObservation | None = None,
 ) -> LetsHealthSnapshot:
-    """Combine configuration and runtime posture without leaking source values."""
-
     if not isinstance(loaded, LetsConfigLoad):
         raise TypeError("invalid_config_load")
     readiness = loaded.readiness
@@ -367,18 +353,6 @@ def _runtime_failure_codes(status: LetsRuntimeStatus) -> tuple[str, str]:
 
 
 def observe_lets_runtime(runtime: object | None) -> LetsRuntimeObservation | None:
-    """Derive a value-free observation from the composition's cached state.
-
-    This reads only; it never contacts the warden.  A fully wired graph
-    carries a cached LIVE reachability observation (``runtime.reachability``,
-    ``orchestrator.lets_probe``) whose ``observed_at_ns`` is the time of the
-    last probe — ``None`` from the cache means the warden has never answered
-    and projects as ``starting``.  An active mode that fell back to the
-    explicit degraded graph (no client, so no probe) is ``unavailable`` as of
-    composition.  Off mode and invalid configuration carry no runtime
-    observation and are projected from the configuration posture alone.
-    """
-
     if runtime is None:
         return None
     loaded = getattr(runtime, "loaded", None)
@@ -393,8 +367,6 @@ def observe_lets_runtime(runtime: object | None) -> LetsRuntimeObservation | Non
         return LetsRuntimeObservation("unavailable", observed_at_ns, retryable=True)
     cached = getattr(getattr(runtime, "reachability", None), "cached", None)
     if not callable(cached):
-        # A wired graph with no probe seam cannot prove reachability: never
-        # fabricate "healthy" from the mere existence of a client.
         return None
     observation = cached()
     if observation is None:
@@ -409,14 +381,6 @@ def project_runtime_health(
     *,
     fallback: LetsConfigLoad | None = None,
 ) -> LetsHealthSnapshot:
-    """Project the application-scoped composition (or its absence) to health.
-
-    Without a composition there is no evidence that LETS was ever wired, so
-    ``fallback`` (the configuration posture alone) is projected with no
-    observation: an active mode reads as not yet observed, which blocks
-    readiness in enforce and degrades it in shadow.  Off mode stays disabled.
-    """
-
     loaded = getattr(runtime, "loaded", None)
     if isinstance(loaded, LetsConfigLoad):
         return project_lets_health(loaded, observe_lets_runtime(runtime))
@@ -426,15 +390,6 @@ def project_runtime_health(
 
 
 def readiness_entry(snapshot: LetsHealthSnapshot) -> dict[str, object]:
-    """The bounded ``lets`` object carried by ``/readyz``.
-
-    Off mode is exactly ``{"mode": "off", "status": "disabled"}`` so a
-    flag-off deployment exposes no LETS vocabulary beyond the fact that it is
-    off.  Active modes add the operator code, whether existing (ungoverned)
-    behavior may proceed, and the observation stamp: the time of the last
-    live probe (``lets_probe``), or ``0`` when the warden never answered.
-    """
-
     if not isinstance(snapshot, LetsHealthSnapshot):
         raise TypeError("invalid_health_snapshot")
     if snapshot.mode == "off":
@@ -455,13 +410,6 @@ def health_report(
     *,
     fallback: LetsConfigLoad | None = None,
 ) -> dict[str, object]:
-    """Full redacted projection for the admin-only ``GET /lets/health``.
-
-    Carries the snapshot, the configuration posture codes, and the redacted
-    host configuration (``LetsHostConfig.redacted()``): never a file path,
-    token, key, or raw LETS response.
-    """
-
     snapshot = project_runtime_health(runtime, fallback=fallback)
     loaded = getattr(runtime, "loaded", None)
     if not isinstance(loaded, LetsConfigLoad):

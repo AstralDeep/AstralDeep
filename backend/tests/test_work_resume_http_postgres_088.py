@@ -1,4 +1,8 @@
-"""Resume through the mounted ordinary IAM/body boundary and actual Plane."""
+"""Tests that the mounted Work resume HTTP route (work_api.py) applies one logical
+control through ordinary IAM and real Plane, and refuses cleanly on a missing session
+or ambiguous intent without side effects.
+"""
+
 import json
 from uuid import uuid4
 

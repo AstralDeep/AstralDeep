@@ -1,4 +1,8 @@
-"""Pure legacy skill capture using synthetic bytes, no user files or Plane stub."""
+"""Tests for orchestrator/user_skill_materialization.py's legacy skill-file capture:
+exact byte and manifest preservation, encoding and renaming edge cases,
+malformed-field refusal, and bounded owner-scoped catalogs.
+"""
+
 from dataclasses import FrozenInstanceError, replace
 import hashlib
 import json

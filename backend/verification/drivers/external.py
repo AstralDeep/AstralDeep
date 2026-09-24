@@ -1,13 +1,8 @@
-"""External-client driver — the opt-in live-network surface (T026 / D11).
-
-Proves the thin-client and delegated-authority claims through the REAL network:
-REST upload + WebSocket chat against a live deployment, authenticated against the
-real Keycloak realm via env-NAMED credentials. NOT a CI merge gate. When Keycloak
-is unreachable it degrades to a clearly-labelled mock run and flags it (SC-010).
-
-Transport is injectable (``http`` / ``ws_exchange``) so the driver's logic is
-unit-testable without a live network (coverage gate C1).
+"""Opt-in live-network driver (backend/verification/config.py, evidence.py,
+isolation.py): drives a live deployment over REST upload and WebSocket chat against a
+real Keycloak realm, degrading to a labelled mock run when unreachable.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,12 +20,6 @@ _UI_TYPES = {"ui_render", "ui_upsert", "chat_status", "user_message_acked", "cha
 
 
 def decide_auth_mode(config: RunConfig, reachable: Optional[bool] = None) -> tuple[str, List[str]]:
-    """Decide the authority mode + flags for an external run (pure).
-
-    Returns ``(auth_mode, flags)``. Real Keycloak requires the credentials to be
-    present (by name) AND reachable; otherwise the run degrades to mock and is
-    flagged so no reader mistakes it for a real-realm guarantee (SC-010).
-    """
     flags: List[str] = []
     if not config.keycloak_available():
         flags.append("keycloak_credentials_absent")
@@ -42,7 +31,6 @@ def decide_auth_mode(config: RunConfig, reachable: Optional[bool] = None) -> tup
 
 
 def parse_ws_messages(raw: List[Any]) -> List[Dict[str, Any]]:
-    """Normalize raw WS frames into captured UI messages (pure)."""
     out: List[Dict[str, Any]] = []
     for frame in raw:
         if isinstance(frame, str):
@@ -56,8 +44,6 @@ def parse_ws_messages(raw: List[Any]) -> List[Dict[str, Any]]:
 
 
 class ExternalDriver:
-    """Drives a live deployment over REST + WebSocket. Opt-in; not a CI gate."""
-
     mode = "external"
 
     def __init__(
@@ -69,8 +55,8 @@ class ExternalDriver:
         reachable: Optional[bool] = None,
     ) -> None:
         self.config = config
-        self._http = http  # callable(method, url, token=None, **kw) -> dict
-        self._ws_exchange = ws_exchange  # async callable(url, token, register, chat) -> [frames]
+        self._http = http
+        self._ws_exchange = ws_exchange
         self.auth_mode, self.flags = decide_auth_mode(config, reachable=reachable)
         self.base_url = config.base_url or os.environ.get("ASTRAL_VERIFY_BASE_URL", "")
 
@@ -82,12 +68,6 @@ class ExternalDriver:
         return None
 
     def _token_for(self, principal: Principal) -> str:
-        """Obtain an access token for ``principal``.
-
-        Real mode performs the Keycloak exchange (env-named creds); degraded mode
-        returns a dev token. Credential VALUES are read by name only and never
-        returned in evidence.
-        """
         if self.auth_mode == "real_keycloak" and self._http is not None:
             authority = os.environ.get("KEYCLOAK_AUTHORITY", "")
             realm = os.environ.get("KEYCLOAK_REALM", "astral")
@@ -108,14 +88,12 @@ class ExternalDriver:
         token = self._token_for(principal)
         persona = scenario.persona
 
-        # Upload over REST.
         upload = self._http(
             "POST", f"{self.base_url.rstrip('/')}/api/upload", token=token,
             files={"file": (persona.fixture.filename, b"<fixture>")},
         ) if self._http else {}
         attachment_id = (upload or {}).get("attachment_id", "")
 
-        # Chat over WebSocket.
         register = {"type": "register_ui", "token": token, "device": {"device_type": "browser"}}
         chat = {
             "type": "chat_message",

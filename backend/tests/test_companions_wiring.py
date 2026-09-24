@@ -1,8 +1,8 @@
-"""Real tests for the three companion wirings:
-  * voice/aom render-target dispatch (C-D4/C-D5) via target_for_profile,
-  * transaction_token mint↔verify round-trip (C-S8) via mint_action_token,
-  * model_router on-device lane (C-D6) surfaced as _last_route_ondevice.
+"""Tests for companion wiring (backend/orchestrator/model_router.py,
+transaction_token.py): voice/aom render-target dispatch, the transaction-token
+mint-verify round trip, and the on-device model-router lane.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,17 +23,13 @@ def _voice_profile():
                                                     viewport_width=0, viewport_height=0))
 
 
-# --------------------------------------------------------------------------- #
-# voice / aom render-target dispatch (C-D4 / C-D5)
-# --------------------------------------------------------------------------- #
-
 def test_target_for_profile_gating(monkeypatch):
     from webrender import target_for_profile
     vp = _voice_profile()
     monkeypatch.setenv("FF_NATIVE_TARGETS", "false")
-    assert target_for_profile(vp) == "web"           # default ⇒ web, unchanged
+    assert target_for_profile(vp) == "web"
     monkeypatch.setenv("FF_NATIVE_TARGETS", "true")
-    assert target_for_profile(vp) == "voice"          # voice device ⇒ SSML target
+    assert target_for_profile(vp) == "voice"
 
 
 def test_target_for_profile_explicit_aom(monkeypatch):
@@ -42,20 +38,16 @@ def test_target_for_profile_explicit_aom(monkeypatch):
     prof = MagicMock()
     prof.render_target = "aom"
     prof.device_type = "browser"
-    assert target_for_profile(prof) == "aom"          # explicit AOM target honored
+    assert target_for_profile(prof) == "aom"
 
 
 def test_voice_target_renders_ssml():
     from webrender import render_for_target
     out = render_for_target("voice", [{"type": "text", "content": "Hello there"}], _voice_profile())
-    assert isinstance(out, str) and out                # voice renderer reachable, emits text
+    assert isinstance(out, str) and out
     aom = render_for_target("aom", [{"type": "text", "content": "Hi"}], None)
-    assert aom is not None                             # aom renderer reachable
+    assert aom is not None
 
-
-# --------------------------------------------------------------------------- #
-# transaction_token mint ↔ verify round-trip (C-S8)
-# --------------------------------------------------------------------------- #
 
 def test_mint_action_token_round_trip(monkeypatch):
     monkeypatch.setenv("TXN_TOKEN_KEY", "test-signing-key-123")
@@ -71,14 +63,10 @@ def test_mint_action_token_round_trip(monkeypatch):
 
     store = txn.default_store()
     ok, _ = txn.verify_and_consume(store, token, agent, user, tool, args)
-    assert ok is True                                  # the gate accepts the minted token
+    assert ok is True
     ok2, why = txn.verify_and_consume(store, token, agent, user, tool, args)
-    assert ok2 is False                                # single-use: replay rejected
+    assert ok2 is False
 
-
-# --------------------------------------------------------------------------- #
-# model_router on-device lane (C-D6) — _last_route_ondevice is set
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_model_router_ondevice_surfaced(monkeypatch, orchestrator_factory):

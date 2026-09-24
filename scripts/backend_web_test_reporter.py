@@ -1,4 +1,6 @@
-"""Write failures immediately, so long suite runs remain diagnosable."""
+"""Pytest plugin that writes failing test results immediately during backend/web suites
+so long runs stay diagnosable if interrupted; loaded by test_backend_web_gate.py.
+"""
 
 import json
 import os
@@ -7,7 +9,6 @@ import re
 
 
 def pytest_collection_finish(session):
-    """Record the expected cases before any test executes, using JUnit identities."""
     target = os.environ.get("BQ_SUITE_INVENTORY_PATH")
     if target is None:
         return

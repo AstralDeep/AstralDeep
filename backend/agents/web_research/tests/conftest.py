@@ -1,10 +1,8 @@
-"""Shared fixtures for the Web Research agent test suite.
-
-Mirrors the forecaster/classify test pattern: ``HttpMock`` stubs the single
-``requests.request`` call site used by ``shared.external_http``; DNS is
-stubbed so the SSRF guard resolves the test hosts deterministically. All LLM
-calls are stubbed — no network anywhere.
+"""Shared pytest fixtures for the Web Research test suite: stubs requests via
+backend/shared/tests/_http_mock.py, stubs DNS for SSRF-gate determinism, and fakes
+the OpenAI client.
 """
+
 import socket
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -14,7 +12,6 @@ import pytest
 from agents.web_research import mcp_tools
 from shared.tests._http_mock import HttpMock
 
-# Hosts that resolve to a public address in tests.
 SAFE_HOSTS = {
     "html.duckduckgo.com",
     "lite.duckduckgo.com",
@@ -23,7 +20,6 @@ SAFE_HOSTS = {
     "direct.example.org",
     "redirect.example.com",
 }
-# Hosts that resolve into a private range (egress must be refused).
 PRIVATE_HOSTS = {"internal.example.com": "10.0.0.5"}
 
 
@@ -47,13 +43,6 @@ def stub_dns():
 
 
 def make_fake_openai(contents):
-    """Build a fake OpenAI client class.
-
-    Successive ``chat.completions.create`` calls return the strings in
-    ``contents`` in order (the last repeats). A content entry that is an
-    Exception instance is raised instead. Constructor kwargs and create()
-    kwargs are recorded on the class for assertions.
-    """
     calls = []
 
     class _Completions:
@@ -78,23 +67,12 @@ def make_fake_openai(contents):
 
 
 class ExplodingOpenAI:
-    """Sentinel client class: constructing it means an unwanted LLM call."""
-
     def __init__(self, **_kwargs):
         raise AssertionError("The LLM client must not be constructed in this test")
 
 
 @pytest.fixture
 def fake_openai(monkeypatch):
-    """Install a fake OpenAI class on the tools module; returns the class.
-
-    Feature 054: the OPENAI_* env fallback is gone — LLM credentials reach a
-    tool ONLY via the orchestrator-forwarded ``_session_llm_credentials``
-    kwarg (or the agent's decrypted ``_credentials`` bundle). Mimic the
-    orchestrator here: when a test passes neither kwarg, resolution sees the
-    turn's session credentials, exactly as a configured user's call would.
-    Tests that pass their own credential kwargs are left untouched.
-    """
     def _install(*contents):
         fake_cls = make_fake_openai(list(contents))
         monkeypatch.setattr(mcp_tools, "OpenAI", fake_cls)
@@ -104,8 +82,6 @@ def fake_openai(monkeypatch):
             has_session = bool((kwargs.get("_session_llm_credentials") or {}).get("OPENAI_API_KEY"))
             bundle = kwargs.get("_credentials") or {}
             has_bundle_key = bool(bundle.get("OPENAI_API_KEY"))
-            # An encrypted bundle key is opaque here (the real resolver
-            # ignores it); do NOT paper over that case with session creds.
             if not has_session and not has_bundle_key and not kwargs.get("_credentials_encrypted"):
                 kwargs = dict(kwargs)
                 kwargs["_session_llm_credentials"] = {"OPENAI_API_KEY": "test-key"}
@@ -118,7 +94,6 @@ def fake_openai(monkeypatch):
 
 @pytest.fixture
 def no_llm_credentials(monkeypatch):
-    """Remove every ambient LLM credential so resolution yields no client."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setattr(mcp_tools, "OpenAI", ExplodingOpenAI)

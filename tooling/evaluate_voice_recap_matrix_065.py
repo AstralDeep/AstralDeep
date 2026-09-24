@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Run the fixed Feature 065 synthetic recap matrix without emitting content.
-
-The evaluator exercises the production recap builder, sensitivity policy, and
-lifecycle phrase selector.  Its command-line output is intentionally limited to
-aggregate counts, rubric scores, and the fixture digest; synthetic source and
-spoken text never enter logs or evidence.
+"""Runs a fixed synthetic voice recap matrix through the production recap builder,
+sensitivity policy, and lifecycle phrase selector in
+backend/orchestrator/voice_recap.py and voice_coordinator.py, emitting only aggregate
+rubric counts.
 """
 
 from __future__ import annotations
@@ -80,13 +78,11 @@ TOP_LEVEL_KEYS = frozenset(
 
 
 class MatrixValidationError(ValueError):
-    """A content-free fixed-matrix validation error."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class MatrixCase:
-    """One fixed case identity and allowlisted input profile."""
-
     case_id: str
     category: str
     profile: str
@@ -94,8 +90,6 @@ class MatrixCase:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeBindings:
-    """Production functions loaded after the repository root is resolved."""
-
     build_spoken_recap: Callable[..., Any]
     apply_sensitivity_policy: Callable[..., Any]
     sanitize_speakable_text: Callable[[str], str]
@@ -105,8 +99,6 @@ class RuntimeBindings:
 
 @dataclass(frozen=True, slots=True)
 class CaseScore:
-    """Boolean-only rubric outcome; no source or spoken body is retained."""
-
     terminal_state_accuracy: bool
     unsupported_claims: bool
     material_caveat_preservation: bool | None
@@ -131,8 +123,6 @@ class CaseScore:
 
 @dataclass(frozen=True, slots=True)
 class ReviewSummary:
-    """Aggregate-only result suitable for non-content verification evidence."""
-
     fixture_sha256: str
     threshold_percent: int
     category_counts: Mapping[str, int]
@@ -167,8 +157,6 @@ class ReviewSummary:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return only aggregate counters and fixture identity."""
-
         return {
             "category_counts": dict(self.category_counts),
             "correct_cases": self.correct_cases,
@@ -206,8 +194,6 @@ def _reject_nonfinite(_value: str) -> None:
 
 
 def load_matrix(path: Path) -> tuple[dict[str, Any], str]:
-    """Load one bounded, duplicate-free fixture and return its byte digest."""
-
     try:
         payload = path.read_bytes()
     except OSError as exc:
@@ -229,8 +215,6 @@ def load_matrix(path: Path) -> tuple[dict[str, Any], str]:
 
 
 def validate_matrix(document: Mapping[str, Any]) -> tuple[MatrixCase, ...]:
-    """Validate exact distribution, stable identities, and profile allowlists."""
-
     if frozenset(document) != TOP_LEVEL_KEYS:
         raise _validation_error("matrix_top_level_invalid")
     if document.get("schema_version") != "1":
@@ -289,8 +273,6 @@ def validate_matrix(document: Mapping[str, Any]) -> tuple[MatrixCase, ...]:
 
 
 def load_runtime(repo_root: Path) -> RuntimeBindings:
-    """Resolve production bindings without making tooling a runtime dependency."""
-
     backend_root = repo_root.resolve() / "backend"
     if not backend_root.is_dir():
         raise _validation_error("backend_root_missing")
@@ -646,8 +628,6 @@ def _score_sensitive(case: MatrixCase, runtime: RuntimeBindings) -> CaseScore:
 
 
 def score_case(case: MatrixCase, runtime: RuntimeBindings) -> CaseScore:
-    """Exercise one production path and retain only its boolean rubric result."""
-
     if case.category == "authoritative_summary_success":
         return _score_authoritative(case, runtime)
     if case.category == "committed_visible_fallback_success":
@@ -683,8 +663,6 @@ def evaluate_document(
     fixture_sha256: str,
     repo_root: Path,
 ) -> ReviewSummary:
-    """Run all selected cases without dropping failures or retaining bodies."""
-
     cases = validate_matrix(document)
     runtime = load_runtime(repo_root)
     scores: list[CaseScore] = []
@@ -713,8 +691,6 @@ def evaluate_document(
 
 
 def evaluate_path(path: Path, *, repo_root: Path) -> ReviewSummary:
-    """Load, validate, and evaluate the fixed matrix at ``path``."""
-
     document, digest = load_matrix(path)
     return evaluate_document(document, fixture_sha256=digest, repo_root=repo_root)
 
@@ -737,8 +713,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Emit one aggregate JSON object and a threshold-sensitive exit code."""
-
     args = _parser().parse_args(argv)
     try:
         summary = evaluate_path(args.fixture, repo_root=args.repo_root)

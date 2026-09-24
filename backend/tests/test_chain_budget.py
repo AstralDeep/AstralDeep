@@ -1,11 +1,8 @@
-"""T032 (056-delegated-agent-chaining): the global chain budget (FR-021).
-
-One ceiling bounds cumulative depth, total hop count, and wall clock across
-ALL nesting in a turn — hops and sub-tasks alike, interactive or machine.
-Exhaustion yields honest partial results and an audited budget-stop, never
-runaway recursion. It composes with (and is distinct from) the per-chain depth
-bound (048) and the orchestrator's MAX_TURNS ReAct bound.
+"""Tests for the global chain budget (backend/orchestrator/chain_authority.py): one
+per-turn ceiling over cumulative depth, hop count, and wall clock across all hops and
+sub-tasks, reset at turn start.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,9 +39,6 @@ def orch(monkeypatch):
         await vws.send_json({"type": "chat_message", "payload": {"text": "ok"}})
 
     o.handle_chat_message = _turn
-    # These unit tests isolate budget accounting from guidance materialization.
-    # Supply the already-authorized parent contract; production handoff denial
-    # and inheritance are covered over real Plane by test_skill_turn_handoffs_088.
     from orchestrator import turn_guidance_authority as guidance
 
     parent = types.SimpleNamespace(origin=types.SimpleNamespace(owner_id="u1"))
@@ -59,8 +53,6 @@ SPECS = [{"title": f"t{i}", "instruction": f"do {i}"} for i in range(3)]
 
 @pytest.mark.asyncio
 async def test_exhausted_budget_yields_honest_partial_results(orch):
-    """Only what the budget affords runs; the rest is reported, not silently
-    dropped and not run anyway."""
     orch._chain_budgets["c1"] = ChainBudget(turn_id="t", chat_id="c1",
                                             max_hops=2, wall_clock_s=999)
     resp = await subtasks.handle_meta_tool(
@@ -72,7 +64,7 @@ async def test_exhausted_budget_yields_honest_partial_results(orch):
     assert len(ok) == 2
     assert len(stopped) == 1
     assert "budget exhausted" in stopped[0]["detail"]
-    assert orch._chain_budgets["c1"].spent_hops == 2  # never over the ceiling
+    assert orch._chain_budgets["c1"].spent_hops == 2
 
 
 @pytest.mark.asyncio
@@ -88,7 +80,6 @@ async def test_wall_clock_exhaustion_stops_the_tree(orch):
 
 
 def test_budget_is_per_turn_not_global():
-    """One turn's fan-out cannot starve another's."""
     o = MagicMock()
     o._chain_budgets = {}
     o._chain_budget_for = types.MethodType(Orchestrator._chain_budget_for, o)
@@ -98,35 +89,29 @@ def test_budget_is_per_turn_not_global():
     for _ in range(a.max_hops):
         assert a.charge(1) is None
     assert a.charge(1) == "hop_budget_exhausted"
-    assert b.charge(1) is None  # the other turn is unaffected
+    assert b.charge(1) is None
 
 
 def test_global_budget_recreated_when_exhausted():
-    """A chat-less (chat_id=None) budget has no turn boundary to reset on, so
-    an exhausted _global budget must be recreated rather than refusing every
-    chat-less hop forever."""
     o = MagicMock()
     o._chain_budgets = {}
     o._chain_budget_for = types.MethodType(Orchestrator._chain_budget_for, o)
     first = o._chain_budget_for(None)
-    # Exhaust it (wall clock 0 makes exhausted() true immediately after use).
     first.wall_clock_s = 0.0
     assert first.exhausted() is not None
     second = o._chain_budget_for(None)
-    assert second is not first          # recreated
-    assert second.exhausted() is None   # fresh window
+    assert second is not first
+    assert second.exhausted() is None
 
 
 def test_chat_keyed_budget_not_recreated_while_live():
-    """A live chat-keyed budget is NOT silently recreated mid-turn (only the
-    turn-start pop resets it)."""
     o = MagicMock()
     o._chain_budgets = {}
     o._chain_budget_for = types.MethodType(Orchestrator._chain_budget_for, o)
     first = o._chain_budget_for("c1")
-    first.wall_clock_s = 0.0  # exhausted, but chat-keyed
+    first.wall_clock_s = 0.0
     second = o._chain_budget_for("c1")
-    assert second is first  # same object — the turn owns its reset
+    assert second is first
 
 
 def test_new_turn_resets_the_budget():
@@ -136,7 +121,6 @@ def test_new_turn_resets_the_budget():
     first = o._chain_budget_for("c1")
     first.charge(1)
     assert first.spent_hops == 1
-    # handle_chat_message drops the chat's budget at turn start.
     o._chain_budgets.pop("c1", None)
     second = o._chain_budget_for("c1")
     assert second is not first
@@ -153,7 +137,6 @@ def test_depth_bound_composes_with_the_048_bound():
 
 
 def test_turn_start_resets_budget_in_the_real_orchestrator():
-    """The public turn wrapper delegates to the reset-bearing implementation."""
     import inspect
 
     wrapper = inspect.getsource(Orchestrator.handle_chat_message)

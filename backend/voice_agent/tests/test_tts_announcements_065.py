@@ -1,4 +1,7 @@
-"""Exact-profile and hard-budget tests for Feature 065 speech synthesis."""
+"""Tests for voice_agent/session.py and speech_adapters.py's TTS announcement flow:
+Kokoro request/response validation, quantum/aggregate budget ceilings, and
+retry/redaction on transport failures.
+"""
 
 from __future__ import annotations
 

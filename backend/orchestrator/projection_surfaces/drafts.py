@@ -1,14 +1,9 @@
-"""Deep-owned host adapter for the draft-agents Projection surface.
-
-One lifecycle, one list (SC-007): drafts created from chat (origin
-``auto_chat``), manually from this surface (``manual``), and staged live-agent
-revisions (``revision``) all appear here and share the same decision actions
-(``draft_approve`` / ``draft_refine`` / ``draft_discard`` / ``revision_*``,
-registered by ``orchestrator.agentic_creation``). Manual creation runs the
-SAME auto-create + self-test pipeline as chat (``create_capability``).
-
-Renders for the web target only (chrome layer).
+"""Renders the draft-agents surface: one unified list of chat-originated, manually
+created, and staged revision drafts sharing the same approve/refine/discard actions
+from orchestrator/agentic_creation.py. Manual creation runs the same pipeline as
+chat.
 """
+
 import asyncio
 import json
 import logging
@@ -34,7 +29,6 @@ _TERMINAL_NOTE = {
 
 
 def _user_drafts(orch, user_id):
-    """All non-live drafts for the user — including rejected (012 FR-010a)."""
     lifecycle = getattr(orch, "lifecycle_manager", None)
     store = vars(lifecycle).get("draft_store") if hasattr(lifecycle, "__dict__") else None
     if store is None:
@@ -97,8 +91,6 @@ def _detail(orch, user_id, draft, show_refine=False):
            if draft.get("error_message") else "")
         + (f'<div class="text-xs text-astral-muted mt-1">revises: {esc(draft.get("revises_agent_id") or "")}</div>'
            if draft.get("revises_agent_id") else "")
-        # Live drafts are done — no approve/refine/discard (discarding a live
-        # row would orphan the running agent; 027 click-through finding).
         + (_decision_row(draft) if status != "live"
            else '<div class="text-xs text-green-400 mt-2">This draft was approved and is '
                 "live — manage it under Agents &amp; permissions.</div>")
@@ -147,7 +139,6 @@ def _create_form():
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Drafts list / detail / create — unified across entry points (SC-007)."""
     draft_id = (params or {}).get("draft_id")
     if draft_id:
         lifecycle = getattr(orch, "lifecycle_manager", None)
@@ -191,7 +182,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def _h_draft_create(orch, websocket, user_id, roles, payload):
-    """Manual creation — the same pipeline as chat (US3 scenario 1)."""
     from orchestrator import agentic_creation
 
     fields = payload.get("fields") or {}

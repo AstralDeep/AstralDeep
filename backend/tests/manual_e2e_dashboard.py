@@ -1,10 +1,8 @@
-"""Manual E2E (not collected by pytest): drive the LIVE orchestrator over
-ws://localhost:8001/ws with the real dev LLM and verify a chat query produces
-a rich, designed dashboard on the canvas.
-
-Requires USE_MOCK_AUTH=true (token 'dev-token'). Run inside the container:
-    python tests/manual_e2e_dashboard.py "generate a rich dashboard for ..."
+"""Manual E2E script, not collected by pytest: drives the live orchestrator over its /ws
+endpoint with a real dev LLM and checks that a chat query produces a designed
+dashboard on the canvas.
 """
+
 import asyncio
 import json
 import sys
@@ -30,7 +28,7 @@ async def main():
             "device": {"device_type": "browser", "screen_width": 1920, "screen_height": 1080,
                        "supports_charts": True, "supports_tables": True, "supports_images": True},
         }))
-        await asyncio.sleep(1.5)  # drain registration burst lazily below
+        await asyncio.sleep(1.5)
         await ws.send(json.dumps({
             "type": "ui_event", "action": "chat_message",
             "payload": {"message": QUERY, "chat_id": None},
@@ -99,10 +97,6 @@ async def main():
             for component_id in upsert["component_ids"]
             if component_id
         ]
-        # "Rich": ≥2 distinct server-issued component identities and at least 3 of the 4
-        # visual marker groups on the final canvas (router variance on the
-        # weak dev LLM decides HOW MANY tool calls happen; the designer's
-        # garnish fills the gaps).
         ok = (len(set(component_ids)) >= 2
               and rich >= 3 and markers["no unsupported"] and markers["no render errors"])
         print("E2E VERDICT:", "RICH DASHBOARD OK" if ok else "NOT RICH ENOUGH — investigate")

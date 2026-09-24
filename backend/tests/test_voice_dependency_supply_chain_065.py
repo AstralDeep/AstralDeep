@@ -1,4 +1,7 @@
-"""Supply-chain contracts for feature 065 web and Android LiveKit clients."""
+"""Supply-chain tests for vendored LiveKit artifacts across the web and Android clients:
+checksum-pinned bundles, bundled upstream license and notices, and Android
+catalog/lock entries replacing vulnerable protobuf.
+"""
 
 from __future__ import annotations
 

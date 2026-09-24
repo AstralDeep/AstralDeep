@@ -1,9 +1,8 @@
-"""Rendered surfaces show "2-yr Mean Citedness (OpenAlex)" — never "Impact Factor".
-
-All four journal tools are exercised against mocked OpenAlex/CrossRef payloads
-(no network): the results table, the profile MetricCard + info table, the
-comparison table, and the field-landscape table.
+"""Tests for journal_review/mcp_tools.py: every rendered surface (results table, profile
+card, comparison table, landscape table) carries OpenAlex citedness attribution and
+never the term Impact Factor; also covers SSRF/DNS egress gating.
 """
+
 import json
 import socket
 from unittest.mock import patch
@@ -35,7 +34,6 @@ def _mock_openalex(rmock: HttpMock, sources=None) -> None:
 
 
 def _find_table(components):
-    """Depth-first search for the first table primitive in a component tree."""
     for comp in components:
         if comp.get("type") == "table":
             return comp
@@ -44,11 +42,6 @@ def _find_table(components):
             if found is not None:
                 return found
     return None
-
-
-# ---------------------------------------------------------------------------
-# find_matching_journals — results table
-# ---------------------------------------------------------------------------
 
 
 def test_results_table_header_carries_openalex_attribution(rmock: HttpMock) -> None:
@@ -82,11 +75,6 @@ def test_results_table_missing_citedness_shows_na(rmock: HttpMock) -> None:
     table = _find_table(result["_ui_components"])
     idx = table["headers"].index(CITEDNESS_LABEL)
     assert table["rows"][0][idx] == "N/A"
-
-
-# ---------------------------------------------------------------------------
-# get_journal_profile — MetricCard + info table
-# ---------------------------------------------------------------------------
 
 
 def _mock_profile(rmock: HttpMock, source=None) -> None:
@@ -132,11 +120,6 @@ def test_profile_data_payload_has_citedness_only(rmock: HttpMock) -> None:
     assert "approx_impact_factor" not in result["_data"]
 
 
-# ---------------------------------------------------------------------------
-# compare_journals — comparison table
-# ---------------------------------------------------------------------------
-
-
 def test_compare_table_has_citedness_row_no_impact_factor(rmock: HttpMock) -> None:
     rmock.add("GET", OPENALEX_SOURCES_URL, status=200,
               json={"results": [make_source()]})
@@ -158,11 +141,6 @@ def test_compare_data_payload_uses_citedness_key(rmock: HttpMock) -> None:
         assert "approx_impact_factor" not in entry
 
 
-# ---------------------------------------------------------------------------
-# get_field_landscape — ranked table
-# ---------------------------------------------------------------------------
-
-
 def test_landscape_header_and_value(rmock: HttpMock) -> None:
     _mock_openalex(rmock)
     result = get_field_landscape(field="cardiology")
@@ -173,11 +151,6 @@ def test_landscape_header_and_value(rmock: HttpMock) -> None:
     entry = result["_data"]["journals"][0]
     assert entry["two_year_mean_citedness"] == 35.46
     assert "approx_impact_factor" not in entry
-
-
-# ---------------------------------------------------------------------------
-# No surface, payload, or description ever says "Impact Factor"
-# ---------------------------------------------------------------------------
 
 
 def test_no_rendered_output_ever_says_impact_factor(rmock: HttpMock) -> None:
@@ -208,11 +181,6 @@ def test_agent_card_never_says_impact_factor() -> None:
     assert "impact-factor" not in JournalReviewAgent.skill_tags
 
 
-# ---------------------------------------------------------------------------
-# Egress posture — every call goes through shared.external_http
-# ---------------------------------------------------------------------------
-
-
 def test_openalex_calls_carry_polite_headers_and_bounds(rmock: HttpMock) -> None:
     _mock_openalex(rmock)
     find_matching_journals(query="cardiology")
@@ -228,7 +196,7 @@ def test_private_dns_resolution_is_blocked_before_any_request(rmock: HttpMock) -
     with patch("socket.getaddrinfo", return_value=private):
         result = find_matching_journals(query="cardiology")
     assert result["_ui_components"][0]["type"] == "alert"
-    assert rmock.calls == []  # the gate refused egress; nothing left the host
+    assert rmock.calls == []
 
 
 def test_api_failure_yields_warning_alert_never_fabricated_data() -> None:

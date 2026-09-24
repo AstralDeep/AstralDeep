@@ -1,4 +1,8 @@
-"""Isolation + Plane-owned cleanup (T030 / SC-013, FR-031)."""
+"""Tests for namespaced principals and Plane-owned cleanup
+(backend/verification/isolation.py, AstralPlane harness_cleanup repository): one
+transaction per teardown, fail-closed without an application Plane, and rollback on
+an invalid report.
+"""
 
 from __future__ import annotations
 

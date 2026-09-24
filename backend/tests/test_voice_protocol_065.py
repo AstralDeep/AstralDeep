@@ -1,9 +1,6 @@
-"""Feature 065 strict shared UI/voice frame contracts (T017/T028).
-
-These tests stay at the shared protocol boundary. Authenticated binding minting,
-socket-lifetime rotation, and server admission are exercised with the
-orchestrator in T029; this module proves that malformed wire values cannot
-reach that authority boundary as loosely shaped dictionaries.
+"""Tests for shared/protocol.py's strict UI/voice frame contracts: device registration,
+correlated chat/voice-origin frames, redacted control bindings, and content-free
+playout, keeping malformed values from reaching the admission boundary.
 """
 
 from __future__ import annotations
@@ -608,8 +605,6 @@ def test_content_free_playout_event_round_trips_under_two_kibibytes() -> None:
 
 
 def test_remote_v1_playout_cannot_accept_a_client_local_v2_golden_frame() -> None:
-    """The future local parser must remain separate from remote v1 proof/media."""
-
     remote = VoicePlayoutEvent.from_dict(_playout())
     assert remote.schema_version == "1"
     assert remote.media_grant_revision == 2

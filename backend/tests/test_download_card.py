@@ -1,17 +1,8 @@
-"""Feature 039 — desktop codegen download-card tests.
-
-Covers:
-  - the ``download_card`` webrender primitive (registry, renderer structure,
-    URL-validation defense-in-depth, escaping, unavailable variant)
-  - ROTE adaptation per device (browser/tv passthrough, mobile compaction,
-    watch collapse, voice speech)
-  - the ``desktop_codegen`` meta-tool: tool definition, injection gate,
-    build_download_card (available + unavailable), release-info cache +
-    fail-open last-good + SHA256 extraction, and handle_meta_tool end-to-end
-    with the GitHub API mocked.
-
-Pure Python — no DB. The GitHub Releases API is monkeypatched so no network.
+"""Tests for the desktop-codegen download card (orchestrator/desktop_codegen.py,
+AstralProjection webrender/renderer.py): URL-validated rendering, per-device ROTE
+adaptation, and the GitHub-release-info cache with fail-open last-good.
 """
+
 from __future__ import annotations
 
 import sys
@@ -29,10 +20,6 @@ from webrender.renderer import allowed_primitive_types, render_one  # noqa: E402
 def _profile(device_type: str) -> DeviceProfile:
     return DeviceProfile.from_dict({"device_type": device_type})
 
-
-# --------------------------------------------------------------------------- #
-# Primitive / renderer
-# --------------------------------------------------------------------------- #
 
 def test_download_card_registered():
     assert "download_card" in allowed_primitive_types()
@@ -52,13 +39,12 @@ def _card(**kw):
 def test_render_available_has_github_link_and_hash():
     html = render_one(_card())
     assert "https://github.com/AstralDeep/AstralDeep/releases/download/v1/AstralDeep.exe" in html
-    assert "a" * 64 in html  # sha256 shown
+    assert "a" * 64 in html
     assert "Download for Windows" in html
     assert "v1.2.3" in html
 
 
 def test_render_refuses_non_github_url():
-    # A crafted non-GitHub URL must NOT become a clickable download link.
     html = render_one(_card(download_url="https://evil.example/a.exe", variant="available"))
     assert "evil.example" not in html
     assert "Download temporarily unavailable" in html
@@ -67,7 +53,7 @@ def test_render_refuses_non_github_url():
 def test_render_unavailable_variant():
     html = render_one(_card(variant="unavailable", download_url="", sha256=""))
     assert "Download temporarily unavailable" in html
-    assert "GitHub Releases" in html  # link to releases page still present
+    assert "GitHub Releases" in html
 
 
 def test_render_escapes_title():
@@ -76,15 +62,11 @@ def test_render_escapes_title():
     assert "&lt;script&gt;" in html
 
 
-# --------------------------------------------------------------------------- #
-# ROTE adaptation
-# --------------------------------------------------------------------------- #
-
 def test_rote_browser_passthrough():
     c = _card()
     out = ComponentAdapter.adapt([c], _profile("browser"))
     assert out[0]["type"] == "download_card"
-    assert out[0].get("sha256") == "a" * 64  # full card preserved
+    assert out[0].get("sha256") == "a" * 64
 
 
 def test_rote_mobile_drops_sha_and_note():
@@ -92,7 +74,7 @@ def test_rote_mobile_drops_sha_and_note():
     assert out[0]["type"] == "download_card"
     assert "sha256" not in out[0]
     assert "description" not in out[0]
-    assert out[0]["download_url"]  # link still present
+    assert out[0]["download_url"]
 
 
 def test_rote_watch_collapses_to_button():
@@ -108,17 +90,12 @@ def test_rote_voice_speaks():
     assert "SHA-256" in out[0]["content"]
 
 
-# --------------------------------------------------------------------------- #
-# desktop_codegen meta-tool (GitHub API mocked)
-# --------------------------------------------------------------------------- #
-
 from orchestrator import desktop_codegen as dc  # noqa: E402
 
 
 def test_meta_tool_definition():
     defs = dc.meta_tool_definitions()
     assert defs[0]["function"]["name"] == "offer_desktop_codegen"
-    # 057: `code` is optional — a link-only ask calls the tool without it.
     assert defs[0]["function"]["parameters"]["required"] == []
     assert "code" in defs[0]["function"]["parameters"]["properties"]
 
@@ -127,7 +104,7 @@ def test_should_inject_respects_flag_and_draft(monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "desktop_codegen", True)
     assert dc.should_inject(None) is True
-    assert dc.should_inject("draft-1") is False  # draft-test exclusion
+    assert dc.should_inject("draft-1") is False
     monkeypatch.setitem(flags._flags, "desktop_codegen", False)
     assert dc.should_inject(None) is False
 
@@ -164,10 +141,9 @@ def test_get_release_info_caches_and_fails_open(monkeypatch):
     _mock_release(monkeypatch)
     info = dc.get_release_info()
     assert info["sha256"] == "c" * 64
-    # Second call within TTL must not re-fetch: make the fetcher raise.
     monkeypatch.setattr(dc, "_fetch_release_info", lambda: None)
     info2 = dc.get_release_info()
-    assert info2 is info or info2["sha256"] == "c" * 64  # last-good kept
+    assert info2 is info or info2["sha256"] == "c" * 64
 
 
 def test_get_release_info_none_when_no_cache_and_fetch_fails(monkeypatch):
@@ -206,7 +182,6 @@ def test_handle_meta_tool_returns_code_and_card(monkeypatch):
 
 
 def test_handle_meta_tool_link_only_returns_card_without_code(monkeypatch):
-    # 057: asking for the app without any generated code yields just the card.
     import asyncio
     _mock_release(monkeypatch)
     dc._CACHE.clear()
@@ -223,7 +198,6 @@ def test_handle_meta_tool_link_only_returns_card_without_code(monkeypatch):
 
 
 def test_handle_meta_tool_link_only_unavailable_keeps_honest_card(monkeypatch):
-    # No cached release + fetch failure -> unavailable variant, untouched text.
     import asyncio
     dc._CACHE.clear()
     monkeypatch.setattr(dc, "_fetch_release_info", lambda: None)
@@ -267,10 +241,6 @@ def test_handle_meta_tool_exception_returns_error_card(monkeypatch):
     assert res.result["status"] == "error"
     assert res.ui_components and res.ui_components[0]["variant"] == "error"
 
-
-# --------------------------------------------------------------------------- #
-# Real fetch-path coverage (requests + egress mocked)
-# --------------------------------------------------------------------------- #
 
 _GH_RELEASE = {
     "name": "v2.0.0", "tag_name": "v2.0.0", "html_url": "https://github.com/AstralDeep/AstralDeep/releases/latest",
@@ -377,7 +347,6 @@ def test_fetch_sha256_no_valid_hash(monkeypatch):
 
 
 def test_get_release_info_refresh_fetches_sha(monkeypatch):
-    """On a cache miss/refresh, get_release_info fetches the release then the SHA."""
     dc._CACHE.clear()
     import json
     import requests
@@ -393,11 +362,10 @@ def test_get_release_info_refresh_fetches_sha(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
     info = dc.get_release_info()
     assert info["sha256"] == "a" * 64
-    assert calls["n"] == 2  # release + sha
+    assert calls["n"] == 2
 
 
 def test_get_release_info_cache_hit_skips_fetch(monkeypatch):
-    """Within TTL, a second call does not re-fetch."""
     dc._CACHE.clear()
     import requests
     calls = {"n": 0}
@@ -411,8 +379,8 @@ def test_get_release_info_cache_hit_skips_fetch(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
     dc.get_release_info()
     first = calls["n"]
-    dc.get_release_info()  # cached
-    assert calls["n"] == first  # no new fetches
+    dc.get_release_info()
+    assert calls["n"] == first
 
 
 def test_get_release_info_refresh_failure_keeps_last_good(monkeypatch):
@@ -430,11 +398,10 @@ def test_get_release_info_refresh_failure_keeps_last_good(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
     first = dc.get_release_info()
     assert first is not None
-    # Force a TTL expiry + a failing fetcher; last-good must survive.
     dc._CACHE[dc._repo()] = (0.0, first)
     monkeypatch.setattr(dc, "_fetch_release_info", lambda: None)
     again = dc.get_release_info()
-    assert again is first  # fail-open last-good
+    assert again is first
 
 
 def test_offer_includes_summary_text(monkeypatch):
@@ -446,18 +413,11 @@ def test_offer_includes_summary_text(monkeypatch):
         {"language": "python", "code": "x", "summary": "sorts your downloads"},
         user_id="u1", chat_id="c1", websocket=None))
     types = [c["type"] for c in res.ui_components]
-    assert "text" in types  # summary text present
+    assert "text" in types
     assert res.result["status"] == "offered"
 
 
-# --------------------------------------------------------------------------- #
-# Orchestrator dispatch wiring (the __desktop_codegen__ branch in
-# Orchestrator.execute_single_tool)
-# --------------------------------------------------------------------------- #
-
 def test_execute_single_tool_dispatches_desktop_codegen(monkeypatch):
-    """execute_single_tool routes a __desktop_codegen__-mapped tool call to the
-    desktop_codegen meta-tool handler (covers the orchestrator dispatch branch)."""
     import asyncio
     import json
     from orchestrator import orchestrator as orch_mod
@@ -481,7 +441,6 @@ def test_execute_single_tool_dispatches_desktop_codegen(monkeypatch):
     class _TC:
         function = _Fn()
 
-    # Keep the real meta-tool authority guard and bind an attended owner session.
     orch = orch_mod.Orchestrator.__new__(orch_mod.Orchestrator)
     websocket = object()
     orch.ui_sessions = {websocket: {"sub": "u1"}}

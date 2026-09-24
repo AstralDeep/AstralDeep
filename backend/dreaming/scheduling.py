@@ -1,15 +1,8 @@
-"""030-finish-soul-integration — register dreaming as a recurring job (025 T053).
-
-Feature 025 shipped the consolidation sweep, the ``dreaming_enabled`` opt-out
-flag, and a manual trigger, but the per-user *recurring* job was never created
-(``DREAMING_DEFAULT_CRON`` was dead code), so dreaming only ran when triggered
-by hand. This module registers/pauses a per-user dreaming ``scheduled_job`` and
-is wired into the dreaming enable/disable/status endpoints.
-
-Dreaming jobs carry the reserved ``agent_id = "__dreaming__"`` marker so the
-scheduler runner routes them to the local consolidation sweep — which needs no
-offline grant or delegated authority (in-DB, non-PHI, no external calls).
+"""Registers or pauses each user's recurring dreaming job (agent_id '__dreaming__') via
+scheduler/store.py and scheduler/cron.py, routing it to the local consolidation
+sweep. Wired into dreaming/api.py's enable/disable/status endpoints.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,11 +28,6 @@ def _store(plane_source) -> ScheduledJobStore:
 
 
 def ensure_dreaming_job(plane_source, user_id: str) -> Optional[dict]:
-    """Idempotently ensure an *active* recurring dreaming job for the user.
-
-    Reactivates a previously-paused dreaming job if present, otherwise creates
-    one on the ``DREAMING_DEFAULT_CRON`` cadence. Returns the job dict.
-    """
     store = _store(plane_source)
     paused = None
     for job in store.list_jobs(user_id):
@@ -68,7 +56,6 @@ def ensure_dreaming_job(plane_source, user_id: str) -> Optional[dict]:
 
 
 def remove_dreaming_job(plane_source, user_id: str) -> int:
-    """Pause all active dreaming jobs for the user (on disable). Returns count paused."""
     store = _store(plane_source)
     paused = 0
     for job in store.list_jobs(user_id):

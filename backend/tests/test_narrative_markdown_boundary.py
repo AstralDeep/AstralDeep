@@ -1,14 +1,8 @@
-"""055-uniform-artifacts US2 (T021) — boundary-buffered narrative markdown.
-
-``markdown_safe_prefix_len`` holds an incremental narrative frame back to
-the last whitespace boundary outside every unclosed ``**``/``*``/backtick
-(incl. ``` fence)/``[link(`` span so no frame ever ships a dangling markup
-token (research D5, spec FR-013). Property-tested over seeded random split
-points of a markdown-heavy document: every frame is a safe prefix, prefixes
-are monotonic, and the terminal flush is byte-identical to the input. The
-``_call_llm`` streaming path is exercised end-to-end through the same
-fake-client seam as test_llm_streaming.py.
+"""Tests for orchestrator/stream_manager.py's markdown_safe_prefix_len: streamed
+narrative frames never end inside an open emphasis, code, fence, or link span,
+verified by property tests and through the live _call_llm streaming path.
 """
+
 from __future__ import annotations
 
 import random
@@ -25,12 +19,7 @@ from tests.test_llm_streaming import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# Unit — hand-picked boundary cases
-# ---------------------------------------------------------------------------
-
 def test_dangling_bold_held():
-    # The observed live defect: narrative rendered raw "You rolled **".
     assert markdown_safe_prefix_len("You rolled **") == len("You rolled ")
 
 
@@ -65,8 +54,6 @@ def test_partial_fence_marker_line_held():
 
 
 def test_completed_line_resets_inline_state():
-    # Inline spans never cross a newline (webrender applies them per line),
-    # so a finished line with a dangling ** is final and safe to ship.
     text = "oops **\nnext words "
     assert markdown_safe_prefix_len(text) == len(text)
 
@@ -76,17 +63,12 @@ def test_bullet_marker_is_not_emphasis():
 
 
 def test_bare_list_marker_held():
-    # "* " / "- " / "1. " alone would flash as literal text, not a list item.
     assert markdown_safe_prefix_len("* ") == 0
     assert markdown_safe_prefix_len("- ") == 0
     assert markdown_safe_prefix_len("1. ") == 0
 
 
 def test_backslash_is_not_an_escape():
-    # The renderer (webrender/sanitize.py inline_md) has no backslash-escape
-    # rule, so "\*" renders as a literal backslash plus a LIVE asterisk. The
-    # scanner must mirror what renders: the "*" opens an italic span and the
-    # tail is held until it closes.
     text = r"a \*lit and more"
     assert markdown_safe_prefix_len(text) == len("a ")
     assert markdown_safe_prefix_len(r"a \*lit\* done ") == len(r"a \*lit\* done ")
@@ -97,11 +79,7 @@ def test_no_boundary_yet():
     assert markdown_safe_prefix_len("Hello") == 0
 
 
-# ---------------------------------------------------------------------------
-# Property — random split points over a markdown-heavy document
-# ---------------------------------------------------------------------------
-
-_SPAN = "span"    # a markup span no frame may end inside
+_SPAN = "span"
 _PLAIN = "plain"
 
 _DOC_PARTS = [
@@ -150,7 +128,6 @@ def test_property_random_split_points_never_ship_dangling_tokens():
             text += piece
             safe = markdown_safe_prefix_len(text)
             assert 0 <= safe <= len(text)
-            # Frames are cumulative — a boundary once safe must stay safe.
             assert safe >= prev_safe
             if safe > prev_safe:
                 frame = text[:safe]
@@ -161,13 +138,8 @@ def test_property_random_split_points_never_ship_dangling_tokens():
                         f"frame ends inside span {_DOC[a:b]!r} at offset {safe}"
                     )
             prev_safe = safe
-        # Terminal flush ships the full text — hold-back never loses bytes.
         assert text == _DOC
 
-
-# ---------------------------------------------------------------------------
-# Integration — the narrative streaming path holds back and flushes
-# ---------------------------------------------------------------------------
 
 async def test_stream_path_never_ships_dangling_bold():
     full = "You rolled **6** and won."
@@ -190,7 +162,6 @@ async def test_stream_path_never_ships_dangling_bold():
         assert not bold_span[0] < len(content) < bold_span[1], (
             f"frame ends inside the bold span: {content!r}")
     assert frames[0]["components"][0]["content"] == "You rolled "
-    # The terminal flush delivered the held tail before the clearing frame.
     assert frames[-2]["components"][0]["content"] == full
 
 

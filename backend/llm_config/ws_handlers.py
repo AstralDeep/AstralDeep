@@ -1,25 +1,8 @@
-"""WebSocket message handlers for LLM configuration (features 006 + 054).
-
-Feature 054 re-keyed these from the per-WebSocket in-memory store to the
-persisted per-USER store (:class:`~llm_config.user_store.UserLLMConfigStore`):
-
-* :func:`handle_llm_config_set` — validates the submission field-by-field,
-  derives the base URL server-side for catalog presets, RE-RUNS the real
-  connection probe (a save that has not just passed a probe is refused —
-  spec FR-008), persists the record (API key Fernet-encrypted), audits, and
-  acks. Returns ``True`` iff a configuration was persisted so the caller
-  can run the first-run-gate unlock fan-out.
-* :func:`handle_llm_config_clear` — deletes the user's record, audits, and
-  acks. Returns ``True`` iff a record existed, so the caller can re-gate
-  every one of the user's sockets (spec FR-009/FR-013).
-* :func:`populate_from_register_ui` — RETIRED to accept-and-ignore: the
-  server-persisted record is authoritative, but old clients may still send
-  the field, so rejecting it would break wire compatibility.
-
-Both mutating handlers are no-ops on unauthenticated sockets — the
-orchestrator's ``_registered_events`` gating guarantees authentication
-before dispatch.
+"""WebSocket handlers for saving/clearing a user's LLM configuration: re-probes the
+exact submitted triple before persisting via user_store.py, audits, and acks. Returns
+whether a row changed so the caller can re-gate the user's sockets.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,8 +34,6 @@ LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 
 @dataclass(slots=True)
 class LLMConfigOperationContext:
-    """Task-local authority for one admitted credential-save execution."""
-
     coordinator: Any
     fence: Any
     deadline_at_monotonic: float
@@ -67,9 +48,6 @@ class LLMConfigOperationContext:
     def remember_failure(
         self, failure: "LLMConfigOperationFailure"
     ) -> "LLMConfigOperationFailure":
-        # The legacy chrome dispatcher converts handler exceptions into a UI
-        # notice.  Retaining the typed outcome here lets the outer durable
-        # operation wrapper observe and terminalize that same failure.
         self.failure = failure
         return failure
 
@@ -88,15 +66,12 @@ class LLMConfigOperationContext:
         if time.monotonic() >= self.deadline_at_monotonic:
             raise self.remember_failure(LLMConfigOperationFailure.deadline())
         await self.emit_phase(state, phase, label)
-        # The callback is delivery-only.  The durable revision above remains
-        # authoritative when its socket disappears or the frame is lost.
-        if operation.phase_code != phase:  # pragma: no cover - coordinator invariant
+        # Delivery-only: the durable revision above stays authoritative
+        if operation.phase_code != phase:  # pragma: no cover
             raise StaleExecutionFenceError("operation phase update was not retained")
 
 
 class LLMConfigOperationFailure(RuntimeError):
-    """Safe terminal outcome that the operation wrapper must durably commit."""
-
     def __init__(
         self,
         *,
@@ -129,8 +104,6 @@ _ACTIVE_LLM_CONFIG_OPERATION: contextvars.ContextVar[
 def active_llm_config_operation(
     operation: LLMConfigOperationContext,
 ) -> Iterator[None]:
-    """Bind the admitted execution across the existing chrome/WS router."""
-
     token = _ACTIVE_LLM_CONFIG_OPERATION.set(operation)
     try:
         yield
@@ -159,13 +132,6 @@ def _operation_failure(error_class: str | None) -> LLMConfigOperationFailure:
 
 
 def validate_config_submission(config: Dict[str, Any]) -> tuple:
-    """Validate an ``llm_config_set``-shaped submission.
-
-    Returns ``(fields, errors)`` where ``fields`` is the normalized
-    ``{provider, base_url, model, api_key}`` dict (base URL already
-    server-derived for catalog presets) and ``errors`` maps field name →
-    human message. A non-empty ``errors`` means nothing may be stored.
-    """
     if not isinstance(config, dict):
         return {}, {"config": "malformed payload"}
     provider = (config.get("provider") or "custom").strip().lower()
@@ -222,19 +188,6 @@ async def handle_llm_config_set(
     store: UserLLMConfigStore,
     recorder: Recorder,
 ) -> bool:
-    """Handle a ``llm_config_set`` WS message (persisted, probe-gated).
-
-    Behaviour:
-
-    * Field-level validation (per-field messages; nothing partial stored).
-    * Server-side probe against the EXACT triple being saved; a failing
-      probe refuses the save with its ``error_class``.
-    * Persists via the store (upsert; API key encrypted at rest), emits
-      ``llm_config_change(action=<created|updated>)``, acks
-      ``llm_config_ack {ok:true}``.
-
-    Returns ``True`` iff a configuration was persisted.
-    """
     operation = _ACTIVE_LLM_CONFIG_OPERATION.get()
     fields, errors = validate_config_submission(config)
     if errors:
@@ -272,7 +225,7 @@ async def handle_llm_config_set(
             result="success" if ok else "failure",
             error_class=error_class if not ok else None,
         )
-    except Exception as exc:  # pragma: no cover — audit is best-effort
+    except Exception as exc:  # pragma: no cover
         logger.warning(f"llm_config_change(tested) audit failed (non-fatal): {exc}")
     if not ok:
         failure = _operation_failure(error_class)
@@ -346,14 +299,10 @@ async def handle_llm_config_set(
             model=fields["model"],
             transport="ws",
         )
-    except Exception as exc:  # pragma: no cover — audit is best-effort
+    except Exception as exc:  # pragma: no cover
         logger.warning(f"llm_config_change audit failed (non-fatal): {exc}")
 
-    # The admitted operation commits its credential row and COMPLETED terminal
-    # atomically above. Its outer wrapper alone may now project terminal/UI
-    # state; emitting the legacy ack or unlocking here would recreate a gap in
-    # which a deadline could win after visible success. Non-operation legacy
-    # callers retain their established acknowledgement behavior.
+    # Ack is the outer wrapper's job — avoids a terminal-state race
     if operation is None:
         await safe_send(
             websocket,
@@ -371,14 +320,6 @@ async def handle_llm_config_clear(
     store: UserLLMConfigStore,
     recorder: Recorder,
 ) -> bool:
-    """Handle a ``llm_config_clear`` WS message.
-
-    Deletes the persisted record; emits ``llm_config_change(action="cleared")``
-    only if there was a record (avoids audit noise); acks unconditionally.
-    Returns ``True`` iff a record was removed — the caller uses this to
-    re-gate all of the user's connected sockets immediately (there is no
-    longer any default to revert to).
-    """
     removed = await store.clear(actor_user_id)
     if removed:
         try:
@@ -406,11 +347,6 @@ async def populate_from_register_ui(
     recorder: Recorder,
     store: Optional[UserLLMConfigStore] = None,
 ) -> None:
-    """RETIRED (feature 054): ``register_ui.llm_config`` is accepted and
-    ignored for wire compatibility with pre-054 clients. The server-persisted
-    per-user record is authoritative; seeding transient creds from a client
-    payload would bypass the probe-gated save path.
-    """
     if llm_config:
         logger.debug(
             "register_ui.llm_config ignored (feature 054: server-persisted "

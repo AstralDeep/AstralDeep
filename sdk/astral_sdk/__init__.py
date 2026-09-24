@@ -1,19 +1,8 @@
-"""Astral SDK — Python client for Deep's owner-issued framework credentials.
-
-::
-
-    from astral_sdk import AstralClient
-
-    client = AstralClient("https://your-astral-instance", token)
-    op = client.submit_operation(idempotency_key="...", name="Draft a note",
-                                 instructions="Write one short paragraph.")
-    op = client.wait_for_terminal(op.id)
-
-Only ``httpx`` is a runtime dependency. Framework-specific adapters live
-under :mod:`astral_sdk.integrations` and import their target framework only
-inside a function body, so installing this package never pulls in OpenAI,
-Anthropic, LangChain, or any other optional extra.
+"""Public entry point for the Astral SDK's AstralClient; only httpx is a runtime
+dependency, and framework adapters under astral_sdk.integrations import their target
+framework lazily so installing this never pulls in extras.
 """
+
 from __future__ import annotations
 
 from astral_sdk.client import AstralClient, AsyncAstralClient

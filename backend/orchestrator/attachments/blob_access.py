@@ -1,9 +1,6 @@
-"""AstralDeep attachment identities mapped onto Plane-owned blob streams.
-
-Plane owns the root, filesystem validation, streaming, atomic publication, and
-deletion mechanics.  Deep owns only the attachment metadata convention: legacy
-``storage_path`` values remain root-relative (``owner/attachment/file``), while
-Plane receives the owner and the owner-relative key separately.
+"""Maps AstralDeep's attachment metadata, including legacy root-relative storage_path
+values, onto Plane-owned blob streams; Plane handles path validation, streaming,
+atomic publication, and deletion.
 """
 
 from __future__ import annotations
@@ -21,12 +18,10 @@ _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
 
 class AttachmentBlobReferenceError(ValueError):
-    """Attachment metadata cannot be mapped to an owner-scoped Plane key."""
+    pass
 
 
 def attachment_storage_key(attachment_id: str, filename: str) -> str:
-    """Return the owner-relative key used for one newly uploaded attachment."""
-
     if not isinstance(attachment_id, str) or not attachment_id:
         raise AttachmentBlobReferenceError("attachment_id is required")
     if not isinstance(filename, str) or not filename:
@@ -35,8 +30,6 @@ def attachment_storage_key(attachment_id: str, filename: str) -> str:
 
 
 def metadata_storage_path(owner_id: str, storage_key: str) -> str:
-    """Preserve the existing root-relative metadata representation."""
-
     if not isinstance(owner_id, str) or not owner_id:
         raise AttachmentBlobReferenceError("attachment owner_id is required")
     normalized = _safe_relative_parts(storage_key, field="storage_key")
@@ -44,8 +37,6 @@ def metadata_storage_path(owner_id: str, storage_key: str) -> str:
 
 
 def blob_key_from_storage_path(owner_id: str, storage_path: str) -> str:
-    """Validate legacy metadata and detach its already-authorized owner prefix."""
-
     if not isinstance(owner_id, str) or not owner_id:
         raise AttachmentBlobReferenceError("attachment owner_id is required")
     parts = _safe_relative_parts(storage_path, field="storage_path")
@@ -57,8 +48,6 @@ def blob_key_from_storage_path(owner_id: str, storage_path: str) -> str:
 
 
 def blob_key_for_attachment(attachment: Any, owner_id: str) -> str:
-    """Derive the Plane key from typed identity and fence legacy locator drift."""
-
     attachment_id = getattr(attachment, "attachment_id", None)
     filename = getattr(attachment, "filename", None)
     key = attachment_storage_key(attachment_id, filename)
@@ -77,8 +66,6 @@ def open_attachment_reader(
     attachment: Any,
     owner_id: str,
 ) -> BlobReadStream:
-    """Open a bounded, integrity-fenced reader for one authorized attachment."""
-
     size = _attachment_size(attachment)
     digest = getattr(attachment, "sha256", None)
     if not isinstance(digest, str) or not digest:
@@ -98,13 +85,6 @@ def open_attachment_parser_lease(
     attachment: Any,
     owner_id: str,
 ) -> Iterator[os.PathLike[str]]:
-    """Yield a digest-verified scoped path to a trusted path-only parser.
-
-    Plane validates the exact descriptor's identity, size, and SHA-256 before
-    exposing the capability, then keeps the owner exclusion and descriptor
-    alive for the complete parser call.
-    """
-
     size = _attachment_size(attachment)
     digest = getattr(attachment, "sha256", None)
     if not isinstance(digest, str) or not digest:
@@ -120,8 +100,6 @@ def open_attachment_parser_lease(
 
 
 def blob_store_from_orchestrator(orchestrator: Any) -> StreamingBlobStore:
-    """Resolve the one application-scoped store, with explicit test injection."""
-
     injected = getattr(orchestrator, "attachment_blob_store", None)
     if injected is not None:
         return injected

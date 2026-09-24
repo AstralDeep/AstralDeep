@@ -1,8 +1,6 @@
-"""Attempt-local non-retained source proof; never execution authority.
-
-Only a live, scanned observation can produce this proof. Its keyed receipt binds
-the real settled read, while PostgreSQL retains no source body or body digest.
-Reconstruction after process/lease loss therefore requires a new charged read.
+"""Attempt-local proof for a non-retained source read; PostgreSQL keeps no body or
+digest, so recovery after process/lease loss requires a fresh charged read. Backs
+execution.py's non-retained profile via research_episode.py.
 """
 
 from __future__ import annotations
@@ -25,19 +23,12 @@ def _deny():
 
 
 def model_key(record, source):
-    """One model identity per exact newly charged observation, never per claim."""
     from persistent_agents.research_episode import research_action_keys
 
     return digest([research_action_keys(record)[1], source.source_action_id, source.receipt])
 
 
 def assert_ready(record):
-    """No new ephemeral acquisition may bypass an unresolved issued liability.
-
-    Call inside the existing owner/session/assignment transaction immediately
-    before preparation/reservation; the current claim alone is not this check.
-    Settlement deliberately never depends on it.
-    """
     outstanding = record.usage.get("outstanding", {})
     if (record.lifecycle != "active" or record.phase != "checking"
             or any(type(outstanding.get(key, 0)) is not int or outstanding.get(key, 0) != 0
@@ -49,8 +40,6 @@ def assert_ready(record):
 
 @dataclass(frozen=True, slots=True)
 class EphemeralAcquisition:
-    """One fresh local read identity, allocated before any action or permit."""
-
     generation: str
     action_key: str
     _execution_json: str = field(repr=False)
@@ -71,8 +60,6 @@ class EphemeralAcquisition:
 
 @dataclass(frozen=True, slots=True)
 class EphemeralResearchSource:
-    """Private exact bytes and receipt for one authentic, unavailable read."""
-
     source_action_id: str
     attempt_id: str
     generation: str
@@ -142,13 +129,11 @@ class EphemeralResearchSource:
         return self._key.key_id
 
     def assert_executor(self, executor):
-        """A new observation or physical lease retires this private capability."""
         if (executor._research_generation != self.generation
                 or canonical([thaw(executor.claim.fence), thaw(executor.binding)]) != self._execution_json):
             _deny()
 
     def identity(self, record, action):
-        """Validate an actual locked ledger row, never a peek or unavailable body."""
         try:
             self._validate(record, action)
             retained = thaw(action.result)
@@ -173,7 +158,6 @@ class EphemeralResearchSource:
             _deny()
 
     def metadata(self):
-        """Closed bounded checkpoint fields, excluding every source-body digest."""
         value = json.loads(self._observation_json)
         return {"version": 1, "action_id": self.source_action_id,
             "attempt_id": self.attempt_id, "observation_generation": self.generation,

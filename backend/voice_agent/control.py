@@ -1,4 +1,7 @@
-"""Authenticated, bounded worker-pool control transport for Feature 065."""
+"""Authenticated, bounded worker-pool control transport for the voice worker
+(backend/voice_agent/config.py, session.py): challenge-based WebSocket auth, frame
+rate limiting, session binding, and notice delivery between coordinator and worker.
+"""
 
 from __future__ import annotations
 
@@ -248,16 +251,12 @@ _NOTICE_METADATA_KEYS: dict[str, frozenset[str]] = {
 
 
 class ChallengeError(RuntimeError):
-    """A content-free worker challenge failure."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 class PoolConnectionError(RuntimeError):
-    """A content-free transient pool connection failure."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -265,8 +264,6 @@ class PoolConnectionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SessionNoticeContext:
-    """Bearer-free session snapshot retained in the outbound notice queue."""
-
     session_id: str
     generation: int
     assignment_id: str
@@ -300,8 +297,6 @@ class _QueuedNotice:
 
 @dataclass(frozen=True, slots=True)
 class Challenge:
-    """One short-lived HTTP-upgrade challenge, with no reusable credential."""
-
     nonce: str
     issued_at: int
     expires_at: int
@@ -325,16 +320,12 @@ class Challenge:
 
 
 class ChallengeRequired(PoolConnectionError):
-    """The server rejected an initial upgrade with a valid challenge."""
-
     def __init__(self, challenge: Challenge) -> None:
         self.challenge = challenge
         super().__init__("challenge_required")
 
 
 class ChallengeReplayWindow:
-    """Bound memory while refusing to reuse every still-live nonce."""
-
     def __init__(self, *, capacity: int = 64) -> None:
         if not 1 <= capacity <= 1_024:
             raise ValueError("invalid_challenge_window_capacity")
@@ -365,8 +356,6 @@ def sign_challenge(
     nonce: str,
     timestamp: int,
 ) -> str:
-    """Return a domain-separated SHA-256 HMAC for one upgrade retry."""
-
     if not isinstance(secret, bytes) or not secret:
         raise ChallengeError("invalid_challenge_secret")
     if _OPAQUE_ID.fullmatch(worker_identity) is None:
@@ -393,8 +382,6 @@ def build_challenge_response_headers(
     *,
     timestamp: int,
 ) -> dict[str, str]:
-    """Build the only four authentication headers sent by the worker."""
-
     return {
         WORKER_HEADER: worker_identity,
         NONCE_HEADER: challenge.nonce,
@@ -416,8 +403,6 @@ def verify_challenge_response(
     expected_worker_identity: str,
     now: int,
 ) -> bool:
-    """Constant-time verification helper shared with coordinator tests."""
-
     try:
         normalized = {name.lower(): value for name, value in headers.items()}
         identity = normalized[WORKER_HEADER.lower()]
@@ -474,8 +459,6 @@ class _NoRedirectConnect(WebsocketsConnect):
 
 
 class WebsocketsPoolConnector:
-    """Create one proxy-free, redirect-free, transport-bounded WebSocket."""
-
     def __init__(self, *, connect_factory: ConnectFactory | None = None) -> None:
         self._connect_factory = connect_factory or _NoRedirectConnect
 
@@ -536,8 +519,6 @@ def _single_header(headers: Mapping[str, str], name: str) -> str:
 
 
 def decode_control_frame(payload: str | bytes) -> dict[str, Any]:
-    """Decode one strict JSON object after enforcing the byte ceiling."""
-
     if not isinstance(payload, str):
         raise ProtocolViolation("text_frame_required")
     try:
@@ -575,8 +556,6 @@ def _raise_invalid_number() -> None:
 
 
 class FrameRateLimiter:
-    """Fixed-window admission with history bounded by the configured maximum."""
-
     def __init__(self, *, max_frames: int, window_seconds: float) -> None:
         if not 1 <= max_frames <= 10_000 or not 0 < window_seconds <= 60:
             raise ValueError("invalid_frame_rate_limit")
@@ -603,8 +582,6 @@ def parse_session_bind(
     expected_worker_identity: str,
     now: datetime,
 ) -> SessionBinding:
-    """Validate an assignment and its nested purpose-bound RTC grant."""
-
     required = {
         "type",
         "schema_version",
@@ -743,8 +720,6 @@ def parse_session_bind(
 
 
 class PoolClient:
-    """Own one challenge-authenticated multiplexed worker-pool connection."""
-
     def __init__(
         self,
         config: WorkerConfig,
@@ -782,14 +757,6 @@ class PoolClient:
     def enqueue_session_notice(
         self, binding: SessionBinding, notice: SessionNotice
     ) -> bool:
-        """Synchronously queue one content-free worker-control notification.
-
-        RTC callbacks and the serialized media owner may call this method, but
-        it performs no socket I/O and never retains transcript or speech text.
-        Final transcript content is published only through LiveKit reliable
-        data to the expected participant.
-        """
-
         if not isinstance(notice, SessionNotice):
             raise ProtocolViolation("invalid_session_notice")
         if notice.text is not None or notice.kind == "final_transcript":
@@ -822,8 +789,6 @@ class PoolClient:
         return True
 
     async def run_connection(self) -> None:
-        """Authenticate, register, process bounded frames, and always clean up."""
-
         if self._running:
             raise RuntimeError("pool_connection_already_running")
         self._running = True
@@ -903,8 +868,6 @@ class PoolClient:
             self._running = False
 
     async def run_forever(self, stop: asyncio.Event) -> None:
-        """Reconnect transient losses with bounded backoff until shutdown."""
-
         backoff = 0.5
         while not stop.is_set():
             connection = asyncio.create_task(self.run_connection())
@@ -945,8 +908,6 @@ class PoolClient:
         socket: PoolSocket,
         frame: dict[str, Any],
     ) -> None:
-        """Keep an attributable session fault off the multiplexed transport."""
-
         try:
             await self._dispatch(frame)
         except ProtocolViolation:
@@ -975,13 +936,6 @@ class PoolClient:
         self,
         frame: Mapping[str, Any],
     ) -> ClosedSessionRace | None:
-        """Return a terminal fence only for a safely attributable command.
-
-        Decode, direction, rate-limit, registration, and malformed-base faults
-        remain connection-fatal.  Never-bound non-bind commands also remain
-        fatal because they cannot be tied to an authenticated assignment.
-        """
-
         try:
             _validate_session_base(frame)
         except ProtocolViolation:
@@ -1028,8 +982,6 @@ class PoolClient:
             await self._send_next_notice(socket)
 
     async def _send_next_notice(self, socket: PoolSocket) -> None:
-        """Send one queued content-free notice through the sequence fence."""
-
         queued = await self._outbound_notices.get()
         payload = self._notice_payload(queued)
         await self._send_session_payload(

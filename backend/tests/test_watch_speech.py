@@ -1,11 +1,8 @@
-"""051 — spoken rendition for watch sockets + the watch degradation sweep.
-
-Covers the helper (`orchestrator/watch_speech.py`), the additive `speech`
-wire field (absent-not-null; contracts/spoken-rendition.md), and the US5 seed
-sweep: every component type in the committed manifest survives watch-profile
-adaptation without error, and the speakable core produces a non-empty spoken
-rendition. DB-free.
+"""Tests for orchestrator/watch_speech.py's spoken rendition: SSML/text generation,
+fail-open behavior on rendition or profile errors, the additive absent-not-null
+speech wire field, and every manifest component type surviving watch adaptation.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,8 +34,6 @@ BROWSER = DeviceProfile.from_dict({"device_type": "browser"})
 
 
 def _sample(component_type: str) -> dict:
-    """A minimal plausible instance of every manifest component type,
-    following astralprims field conventions."""
     base = {"type": component_type, "title": f"{component_type} sample"}
     extra = {
         "text": {"content": "Weather for Lexington: 72 and clear."},
@@ -81,10 +76,6 @@ def _sample(component_type: str) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
-# build_speech / speech_for_profile
-# ---------------------------------------------------------------------------
-
 def test_build_speech_ssml_and_text():
     speech = build_speech([
         {"type": "text", "content": "Weather & sky"},
@@ -92,10 +83,10 @@ def test_build_speech_ssml_and_text():
     ])
     assert speech is not None
     assert speech["ssml"].startswith("<speak>")
-    assert "&amp;" in speech["ssml"]            # SSML stays escaped
+    assert "&amp;" in speech["ssml"]
     assert "Temp" in speech["text"] and "72" in speech["text"]
-    assert "<" not in speech["text"]            # tags stripped
-    assert "&amp;" not in speech["text"]        # entities unescaped in fallback
+    assert "<" not in speech["text"]
+    assert "&amp;" not in speech["text"]
     assert "Weather & sky" in speech["text"]
 
 
@@ -106,8 +97,6 @@ def test_build_speech_nothing_speakable():
 
 
 def test_build_speech_fails_open_when_voice_target_raises(monkeypatch):
-    """A voice-rendition exception must yield None (visual delivery unaffected),
-    never propagate."""
     import webrender.voice as voice_mod
 
     def _boom(_comps):
@@ -118,14 +107,12 @@ def test_build_speech_fails_open_when_voice_target_raises(monkeypatch):
 
 
 def test_build_speech_none_when_rendition_is_blank(monkeypatch):
-    """Tag-only / whitespace SSML collapses to empty text ⇒ no speech."""
     import webrender.voice as voice_mod
     monkeypatch.setattr(voice_mod, "render_voice", lambda _c: "<speak>   </speak>")
     assert build_speech([{"type": "text", "content": "x"}]) is None
 
 
 def test_speech_for_profile_fails_open_on_bad_profile():
-    """A profile whose device_type access raises degrades to None, not an error."""
     class _Exploding:
         @property
         def device_type(self):
@@ -142,10 +129,6 @@ def test_speech_only_for_watch_profile():
     assert speech_for_profile(None, comps) is None
 
 
-# ---------------------------------------------------------------------------
-# Wire shape: absent, not null (contracts/spoken-rendition.md)
-# ---------------------------------------------------------------------------
-
 def test_speech_field_absent_when_none():
     frame = json.loads(UIRender(components=[{"type": "text"}]).to_json())
     assert "speech" not in frame
@@ -161,14 +144,7 @@ def test_speech_field_present_for_watch_payloads():
     assert up["speech"] == speech
 
 
-# ---------------------------------------------------------------------------
-# US5 seed sweep (T047): all 35 manifest types through the watch profile.
-# ---------------------------------------------------------------------------
-
 def test_manifest_lists_expected_vocabulary():
-    # 41 since feature 089: the six additive composite readouts. Only the web
-    # renderer draws them; a watch receives each one's ladder fallback, which
-    # the next test exercises for every type in the manifest.
     assert len(MANIFEST["component_types"]) == 41
     names = {item["name"] for item in MANIFEST["push_types"]}
     assert len(MANIFEST["push_types"]) == len(names) == 72
@@ -182,7 +158,6 @@ def test_every_component_type_survives_watch_adaptation():
         assert isinstance(adapted, list), ctype
         for comp in adapted:
             assert isinstance(comp, dict) and comp.get("type"), ctype
-        # the watch profile's own bounds hold: no over-wide tables sneak out
         for comp in adapted:
             if comp.get("type") == "table":
                 assert len(comp.get("rows", [])) <= WATCH.max_table_rows, ctype
@@ -199,8 +174,6 @@ def test_speakable_core_produces_speech_after_adaptation():
 
 
 def test_whole_manifest_speech_is_fail_open():
-    # No component type may ever make the speech helper raise — worst case is
-    # a silent (visual-only) delivery.
     for ctype in MANIFEST["component_types"]:
         adapted = ComponentAdapter.adapt([_sample(ctype)], WATCH)
-        build_speech(adapted)  # must not raise
+        build_speech(adapted)

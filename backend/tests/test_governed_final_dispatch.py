@@ -1,4 +1,7 @@
-"""Focused final-dispatch coverage for Feature 074 T159-T165/T168."""
+"""Tests for governed final dispatch (orchestrator/governed_dispatch.py,
+lets_gateway.py, shared/base_agent.py): per-channel binding lookup, per-attempt
+nonce/operation minting, shadow-mode non-blocking, and A2A bearer validation.
+"""
 
 from __future__ import annotations
 
@@ -705,8 +708,6 @@ async def test_unmarked_inprocess_executor_claims_at_last_shared_boundary(
     assert "_runtime" in order[1][1]
     assert LETS_CALLER_CAPABILITY not in order[1][1]
 
-    # Exact flag-off traffic with no typed permit skips even the local LETS
-    # verifier seam and preserves the pre-integration actuator path.
     order.clear()
     agent._verify_and_claim_protected_request.reset_mock()
     off_request = MCPRequest(

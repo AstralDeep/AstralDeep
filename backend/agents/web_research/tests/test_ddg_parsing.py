@@ -1,4 +1,7 @@
-"""DuckDuckGo HTML parsing + text-extraction unit tests (embedded fixtures)."""
+"""Tests for agents/web_research/mcp_tools.py: DuckDuckGo HTML result parsing, uddg href
+decoding, and readable-text extraction, against embedded HTML fixtures.
+"""
+
 from agents.web_research.mcp_tools import (
     PageTextExtractor,
     _decode_ddg_href,
@@ -8,8 +11,6 @@ from agents.web_research.mcp_tools import (
     _strip_out_of_range_citations,
 )
 
-# A trimmed-down but structurally faithful html.duckduckgo.com/html page:
-# uddg-wrapped first result, direct-href second result, duplicate third.
 DDG_HTML = """<!DOCTYPE html>
 <html><head><title>python at DuckDuckGo</title></head><body>
 <div class="serp__results">
@@ -45,11 +46,6 @@ EMPTY_HTML = """<!DOCTYPE html>
 <body><div class="no-results">No results.</div></body></html>"""
 
 
-# ---------------------------------------------------------------------------
-# uddg redirect decoding
-# ---------------------------------------------------------------------------
-
-
 def test_decode_uddg_wrapped_href() -> None:
     href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Ffoo.bar%2Fbaz%3Fq%3D1&rut=xyz"
     assert _decode_ddg_href(href) == "https://foo.bar/baz?q=1"
@@ -73,14 +69,9 @@ def test_decode_uddg_missing_param_falls_back() -> None:
     assert _decode_ddg_href(href) == href
 
 
-# ---------------------------------------------------------------------------
-# Result-page parsing
-# ---------------------------------------------------------------------------
-
-
 def test_parse_happy_path_extracts_title_url_snippet() -> None:
     results = _parse_ddg_html(DDG_HTML, max_results=10)
-    assert len(results) == 2  # duplicate URL dropped
+    assert len(results) == 2
     first = results[0]
     assert first["url"] == "https://example.com/python"
     assert first["title"] == "Python Tutorial — Example"
@@ -104,7 +95,6 @@ def test_parse_garbage_input_yields_nothing() -> None:
 
 
 def test_parse_nested_same_tag_inside_snippet() -> None:
-    """A nested <a> inside the snippet anchor must not end the capture early."""
     html = """
     <a class="result__a" href="https://example.com/x">Title X</a>
     <a class="result__snippet">starts <a href="#">nested anchor</a> ends.</a>
@@ -112,10 +102,6 @@ def test_parse_nested_same_tag_inside_snippet() -> None:
     results = _parse_ddg_html(html, max_results=10)
     assert results[0]["snippet"] == "starts nested anchor ends."
 
-
-# ---------------------------------------------------------------------------
-# Readable-text extraction
-# ---------------------------------------------------------------------------
 
 PAGE_HTML = """<!DOCTYPE html>
 <html><head><title>  The   Page Title </title>
@@ -149,20 +135,15 @@ def test_extract_readable_strips_chrome() -> None:
     _title, text = _extract_readable(PAGE_HTML)
     assert "do-not-leak" not in text
     assert "color: red" not in text
-    assert "Home" not in text          # nav stripped
-    assert "Site banner" not in text   # header stripped
-    assert "Copyright nobody" not in text  # footer stripped
+    assert "Home" not in text
+    assert "Site banner" not in text
+    assert "Copyright nobody" not in text
 
 
 def test_extractor_tolerates_unclosed_tags() -> None:
     parser = PageTextExtractor()
     parser.feed("<html><body><p>open paragraph <b>bold")
     assert "open paragraph bold" in parser.text()
-
-
-# ---------------------------------------------------------------------------
-# Brief helpers
-# ---------------------------------------------------------------------------
 
 
 def test_split_sections() -> None:

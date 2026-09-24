@@ -1,4 +1,7 @@
-"""Closed selected-guidance wire; identifiers never convey current authority."""
+"""Tests for the closed selected-guidance wire shape
+(backend/orchestrator/work_submit.py): canonical receipt binding, duplicate/omission
+handling, and refusal of malformed selection identifiers.
+"""
 
 import json
 from uuid import uuid4

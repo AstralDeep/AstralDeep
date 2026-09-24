@@ -1,18 +1,8 @@
-"""Sync and async clients for Deep's framework Work-over-MCP contract.
-
-A framework credential (``afk_...``, minted through the "Connections" surface
-in the product) has exactly one ingress today: the MCP endpoint
-(``POST {base_url}/mcp``), speaking JSON-RPC 2.0 per
-``orchestrator.mcp_server_endpoint``. There is no separate framework REST
-route — the interactive ``/api/work/v1/operations`` router is fenced to a
-live cookie session and never accepts this bearer (see
-``orchestrator.work_operations``'s module docstring). Both clients here speak
-that one real wire format; nothing is invented.
-
-Only ``httpx`` is a runtime dependency (already pinned in
-``backend/requirements.txt`` — this package never enters the product image;
-see ``sdk/pyproject.toml``).
+"""Sync and async clients speaking Deep's framework Work-over-MCP JSON-RPC contract over
+POST {base_url}/mcp, the framework credential's only ingress; depends on
+astral_sdk.models and astral_sdk.errors, only httpx at runtime.
 """
+
 from __future__ import annotations
 
 import re
@@ -40,10 +30,6 @@ _META = {
     "io.modelcontextprotocol/clientInfo": _CLIENT_INFO,
 }
 _CONFLICT_CODES = frozenset({
-    # These are Deep's own real safe-error-code strings (see
-    # astralplane.repositories.assignments._state_version /
-    # orchestrator.framework_credentials / orchestrator.work_operations) —
-    # never invented client-side vocabulary.
     "assignment_revision_conflict", "assignment_idempotency_conflict",
     "credential_allowance_exhausted", "framework_credential_authority_unavailable",
 })
@@ -68,11 +54,7 @@ def _headers(token: str, method: str, tool_name: Optional[str] = None) -> dict[s
         "Accept": "application/json",
     }
     if method == "tools/call":
-        # Every Astral tool name is plain printable ASCII (see
-        # sdk/astral_sdk/work_contract.json), so the raw name is always a
-        # valid, un-encoded Mcp-Name value per mcp_server_endpoint.py's
-        # ``_decode_name_header`` — the server REQUIRES this header on every
-        # tools/call and rejects a mismatch with params.name.
+        # Server rejects tools/call without this header
         headers["Mcp-Name"] = tool_name or ""
     return headers
 
@@ -89,14 +71,6 @@ _WWW_AUTHENTICATE_ERROR = re.compile(r'error="([^"]*)"')
 
 
 def _challenge_error_code(www_authenticate: Optional[str]) -> Optional[str]:
-    """Pull ``error="..."`` out of a ``WWW-Authenticate`` challenge, if present.
-
-    A 401/403 from ``mcp_authz.authorize_mcp_request`` always carries a
-    generic JSON-RPC body message ("MCP authorization failed") — the actual
-    machine-readable reason (``invalid_token``, ``insufficient_scope``, ...)
-    only ever appears in this RFC 6750-style challenge header
-    (``orchestrator.mcp_authz.challenge_header``), never in the body.
-    """
     if not www_authenticate:
         return None
     match = _WWW_AUTHENTICATE_ERROR.search(www_authenticate)
@@ -105,7 +79,6 @@ def _challenge_error_code(www_authenticate: Optional[str]) -> Optional[str]:
 
 def _raise_for_response(status_code: int, body: dict[str, Any],
                         www_authenticate: Optional[str] = None) -> dict[str, Any]:
-    """Return the JSON-RPC ``result`` on success; raise the mapped error otherwise."""
     if "error" in body:
         error = body["error"] or {}
         message = str(error.get("message") or "MCP request failed")
@@ -129,13 +102,6 @@ def _unwrap_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 class _Attempt(Exception):
-    """One failed attempt, carrying the real (typed) error and its retry class.
-
-    Internal only — never escapes ``_RetryLoop.run``/``run_async``, which
-    either raises ``real_error`` unchanged (non-retryable, or retries just ran
-    out) or wraps it in :class:`~astral_sdk.errors.RetryExhaustedError`.
-    """
-
     def __init__(self, real_error: Exception, *, status_code: Optional[int], is_network_error: bool) -> None:
         super().__init__(str(real_error))
         self.real_error = real_error
@@ -144,13 +110,6 @@ class _Attempt(Exception):
 
 
 class _RetryLoop:
-    """Shared attempt/backoff/give-up policy for both the sync and async clients.
-
-    A caller's per-attempt body raises ``_Attempt`` for anything retry-worthy
-    (network error, timeout, or a retryable HTTP/tool status); anything else
-    it raises directly and this loop never touches it.
-    """
-
     def __init__(self, policy: RetryPolicy) -> None:
         self.policy = policy
 
@@ -164,9 +123,6 @@ class _RetryLoop:
         return self.policy.delay_for(attempt)
 
     def outcome(self, attempt: int, failure: _Attempt):
-        """Decide what an attempt's failure means: ``("retry", None)``,
-        ``("raise", exc)`` (give up and surface the real error), or
-        ``("exhausted", exc)`` (give up and wrap it)."""
         retryable = (
             failure.is_network_error
             or (failure.status_code is not None and failure.status_code in self.policy.retryable_status_codes)
@@ -179,8 +135,6 @@ class _RetryLoop:
 
 
 class AstralClient:
-    """Synchronous client for one owner's framework credential."""
-
     def __init__(self, base_url: str, token: str, *, timeout: float = 30.0,
                  retry_policy: Optional[RetryPolicy] = None,
                  transport: Optional[httpx.BaseTransport] = None) -> None:
@@ -199,8 +153,6 @@ class AstralClient:
     def __exit__(self, exc_type: Optional[type[BaseException]], exc: Optional[BaseException],
                  tb: Optional[TracebackType]) -> None:
         self.close()
-
-    # -- transport ------------------------------------------------------
 
     def _attempt_once(self, method: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
         try:
@@ -241,15 +193,11 @@ class AstralClient:
         result = self._request("tools/call", {"name": name, "arguments": arguments})
         return _unwrap_tool_result(result)
 
-    # -- discovery --------------------------------------------------------
-
     def discover(self) -> dict[str, Any]:
         return self._request("server/discover", {})
 
     def list_tools(self) -> list[dict[str, Any]]:
         return self._request("tools/list", {}).get("tools", [])
-
-    # -- operations ---------------------------------------------------------
 
     def submit_operation(self, *, idempotency_key: str, name: str, instructions: str,
                          conversation_id: Optional[str] = None,
@@ -295,7 +243,6 @@ class AstralClient:
 
     def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                           timeout_seconds: Optional[float] = None) -> Operation:
-        """Poll until the operation reaches a terminal disposition (or ``timeout_seconds`` elapses)."""
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
         current = self.get_operation(operation_id)
         while not current.is_terminal:
@@ -308,8 +255,6 @@ class AstralClient:
 
 
 class AsyncAstralClient:
-    """Async twin of :class:`AstralClient` — same wire contract, ``httpx.AsyncClient``."""
-
     def __init__(self, base_url: str, token: str, *, timeout: float = 30.0,
                  retry_policy: Optional[RetryPolicy] = None,
                  transport: Optional[httpx.AsyncBaseTransport] = None) -> None:

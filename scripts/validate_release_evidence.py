@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Validate feature-060 release evidence without candidate-trusting fallbacks.
-
-The module deliberately uses only the Python standard library.  JSON Schema
-validation proves document shape; the policy layer separately proves
-same-candidate identity, required quantitative checks, protected provenance,
-and append-only exception-debt state.  A locally produced result is diagnostic
-only.  A qualifying decision additionally requires independently verified
-protected-workflow inputs and is emitted only from the protected execution
-context described by the CLI arguments.
+"""Validates release evidence with the standard library only: JSON-Schema shape checking
+plus a policy layer for same-candidate identity, required checks, protected
+provenance, and append-only exception debt.
 """
 
 from __future__ import annotations
@@ -185,37 +179,35 @@ NON_WAIVABLE_CHECKS = {"apple_first_login_llm", "candidate_staging"}
 
 
 class ReleaseEvidenceError(ValueError):
-    """Base class for deterministic release-evidence validation failures."""
+    pass
 
 
 class DocumentError(ReleaseEvidenceError):
-    """Raised when bounded, strict JSON decoding fails."""
+    pass
 
 
 class SchemaDefinitionError(ReleaseEvidenceError):
-    """Raised when a tracked schema exceeds the supported validator profile."""
+    pass
 
 
 class SchemaValidationError(ReleaseEvidenceError):
-    """Raised when a document does not satisfy its tracked schema."""
+    pass
 
 
 class PolicyError(ReleaseEvidenceError):
-    """Raised when schema-valid evidence violates release policy."""
+    pass
 
 
 class ProvenanceError(ReleaseEvidenceError):
-    """Raised when immutable bytes or protected producer identity cannot be proven."""
+    pass
 
 
 class LedgerError(ReleaseEvidenceError):
-    """Raised when the protected debt-ledger snapshot is invalid or stale."""
+    pass
 
 
 @dataclass(frozen=True)
 class EvidencePolicyResult:
-    """Non-authorizing result of deterministic evidence-set policy evaluation."""
-
     required_targets: tuple[str, ...]
     staging_environment_id: str
     used_exception_ids: tuple[str, ...]
@@ -223,8 +215,6 @@ class EvidencePolicyResult:
 
 @dataclass(frozen=True)
 class LedgerSnapshot:
-    """Exact protected Git commit/tree and canonical entry digest snapshot."""
-
     repository: str
     ref: str
     commit_sha: str
@@ -236,8 +226,6 @@ class LedgerSnapshot:
 
 @dataclass(frozen=True)
 class MeasurementRequirement:
-    """Exact metric semantics required for a thresholded release check."""
-
     aggregation: str
     comparator: str
     threshold: float
@@ -315,8 +303,6 @@ def _bound_document(value: Any, *, depth: int = 0) -> int:
 
 
 def load_json_bytes(content: bytes, *, source: str = "<bytes>") -> Any:
-    """Decode one bounded JSON value, rejecting duplicate keys and NaN/Infinity."""
-
     if not content or len(content) > MAX_DOCUMENT_BYTES:
         raise DocumentError(
             f"{source}: document size must be 1..{MAX_DOCUMENT_BYTES} bytes"
@@ -340,8 +326,6 @@ def load_json_bytes(content: bytes, *, source: str = "<bytes>") -> Any:
 
 
 def load_json_document(path: str | Path) -> dict[str, Any]:
-    """Load one strict, bounded JSON object from ``path``."""
-
     source = Path(path)
     try:
         size = source.stat().st_size
@@ -361,8 +345,6 @@ def load_json_document(path: str | Path) -> dict[str, Any]:
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """Return canonical compact sorted-key UTF-8 JSON with no trailing newline."""
-
     _bound_document(value)
     try:
         return json.dumps(
@@ -377,8 +359,6 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 
 def canonical_json_sha256(value: Any) -> str:
-    """Hash the canonical compact JSON representation used by protected payloads."""
-
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
@@ -404,8 +384,6 @@ def _schema_children(schema: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
 
 
 def validate_schema_document(schema: Mapping[str, Any]) -> None:
-    """Fail closed unless a schema uses exactly the documented local profile."""
-
     def walk(node: Any, location: str) -> None:
         if not isinstance(node, dict):
             raise SchemaDefinitionError(f"{location}: schema node must be an object")
@@ -685,8 +663,6 @@ def validate_document(
     *,
     root_schema: Mapping[str, Any] | None = None,
 ) -> None:
-    """Validate one decoded document against the tracked schema profile."""
-
     root = schema if root_schema is None else root_schema
     validate_schema_document(root)
     errors = _validation_errors(document, schema, root=root, location="$")
@@ -906,8 +882,6 @@ def evaluate_evidence_set(
     now: datetime | None = None,
     trusted_approvals: Sequence[Mapping[str, Any]] = (),
 ) -> EvidencePolicyResult:
-    """Evaluate same-candidate matrix policy without claiming protected trust."""
-
     now = (now or datetime.now(UTC)).astimezone(UTC)
     declared_targets = evidence_set.get("required_targets")
     if declared_targets != list(REQUIRED_TARGETS):
@@ -1066,8 +1040,6 @@ def evaluate_evidence_set(
 
 
 def exception_approval_payload_sha256(receipt: Mapping[str, Any]) -> str:
-    """Hash the exact requester-known fixed-field exception approval payload."""
-
     artifact = receipt.get("exception_artifact")
     if not isinstance(artifact, dict):
         raise ProvenanceError("approval receipt lacks exception_artifact")
@@ -1083,8 +1055,6 @@ def exception_approval_payload_sha256(receipt: Mapping[str, Any]) -> str:
 
 
 class ArtifactResolver:
-    """Resolve pre-fetched immutable references and always recompute byte hashes."""
-
     def __init__(
         self,
         *,
@@ -1133,8 +1103,6 @@ class ArtifactResolver:
 
     @staticmethod
     def _assert_prefetched_regular(target: Path) -> Path:
-        """Reject a pre-fetched path whose file or any parent is a symlink."""
-
         cursor = Path(target.anchor)
         try:
             for part in target.parts[1:]:
@@ -1155,8 +1123,6 @@ class ArtifactResolver:
 
     @staticmethod
     def _validate_prefetched_reference(reference: str) -> None:
-        """Require the exact immutable URI grammar and a normalized member path."""
-
         member: str | None = None
         if match := GH_RUN_MEMBER_RE.fullmatch(reference):
             member = match.group("member")
@@ -1198,8 +1164,6 @@ class ArtifactResolver:
             )
 
     def resolve(self, reference: str, expected_sha256: str) -> bytes:
-        """Resolve one allowed immutable reference and compare its actual SHA-256."""
-
         if not SHA256_RE.fullmatch(expected_sha256):
             raise ProvenanceError("expected artifact SHA-256 is malformed")
         if reference.startswith("bundle://"):
@@ -1255,8 +1219,6 @@ def _artifact_member_index(
     workflow: Mapping[str, Any],
     label: str,
 ) -> tuple[dict[str, str], str, str]:
-    """Validate one exact GitHub artifact's member claims and index their hashes."""
-
     if not isinstance(artifacts, list) or not artifacts:
         raise ProvenanceError(f"{label} artifact members are missing")
     if len(artifacts) > 4096:
@@ -1308,8 +1270,6 @@ def _artifact_member_index(
 
 
 def _bundle_claims(document: Mapping[str, Any]) -> dict[str, str]:
-    """Collect every bundle member/digest claim from one schema-valid report."""
-
     claims: dict[str, str] = {}
 
     def visit(value: Any) -> None:
@@ -1369,8 +1329,6 @@ def _hash_regular_file(path: Path) -> str:
 def _verify_source_artifact_tree(
     root: Path, source_members: Mapping[str, str], *, platform: str
 ) -> None:
-    """Re-hash one separately prefetched source artifact against its claims."""
-
     try:
         absolute = root.resolve(strict=True)
     except OSError as exc:
@@ -1405,8 +1363,6 @@ def _report_artifact_matches_manifest(
     repository: str,
     report_sha256: str | None,
 ) -> bool:
-    """Bind protected-decision report bytes to one final evidence artifact."""
-
     if report_sha256 is None:
         return True
     if SHA256_RE.fullmatch(report_sha256) is None:
@@ -1453,8 +1409,6 @@ def _stage_product_matches_report(
     candidate_sha: str,
     trusted_stage_deploy: Mapping[str, Any] | None,
 ) -> bool:
-    """Bind backend/web OCI identity to the separately attested deployment."""
-
     platform = str(report.get("platform"))
     expected_kind = {"backend": "container", "web": "web_deployment"}.get(platform)
     artifact = report.get("artifact")
@@ -1510,8 +1464,6 @@ def _windows_manifest_matches_report(
     candidate_sha: str,
     source_root: Path | None,
 ) -> bool:
-    """Bind Windows evidence to the exact build-once unsigned artifact."""
-
     workflow = manifest.get("workflow")
     source = manifest.get("source_provenance")
     if (
@@ -1676,8 +1628,6 @@ def bind_report_to_producer(
     trusted_stage_deploy: Mapping[str, Any] | None = None,
     report_artifact_sha256: str | None = None,
 ) -> Mapping[str, Any]:
-    """Bind one platform report to exactly one externally pinned producer job."""
-
     artifact = report.get("artifact")
     if not isinstance(artifact, dict):
         raise ProvenanceError("report lacks an artifact")
@@ -1781,8 +1731,6 @@ def read_ledger_snapshot(
     ref: str,
     commit: str,
 ) -> LedgerSnapshot:
-    """Read canonical debt/resolution bytes from one exact protected Git commit."""
-
     root = Path(checkout).resolve(strict=True)
     if not GIT_SHA_RE.fullmatch(commit):
         raise LedgerError("exception ledger commit must be one lowercase Git SHA")
@@ -1844,8 +1792,6 @@ def validate_exception_approval(
     resolver: ArtifactResolver,
     ledger: LedgerSnapshot,
 ) -> None:
-    """Validate exact request bytes, protected approval, and registered debt bytes."""
-
     for field in ("exception_id", "candidate_sha", "release_id", "requester_login"):
         if receipt.get(field) != request.get(field):
             raise ProvenanceError(f"exception approval {field} does not match request")
@@ -1907,8 +1853,6 @@ def validate_exception_history(
     approval_receipts: Sequence[Mapping[str, Any]],
     resolution_receipts: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Require one-time resolutions and block unresolved historical exception debt."""
-
     debts: dict[str, tuple[str, Mapping[str, Any]]] = {}
     resolutions: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
     for path, record in ledger.records.items():
@@ -1975,8 +1919,6 @@ def validate_windows_draft_provenance(
     now: datetime,
     resolver: ArtifactResolver,
 ) -> None:
-    """Validate build-once Windows draft lineage before any public transition."""
-
     for field in ("candidate_sha", "release_id"):
         if document.get(field) != trusted_decision.get(field):
             raise PolicyError(f"Windows draft {field} differs from trusted decision")
@@ -2165,8 +2107,6 @@ def _load_evidence_documents(
 def _protected_report_artifact_digests(
     root: Path, reports: Sequence[Mapping[str, Any]]
 ) -> dict[str, str]:
-    """Re-hash the exact root report files assembled by protected decision."""
-
     digests: dict[str, str] = {}
     for report in reports:
         platform = str(report.get("platform"))
@@ -2338,14 +2278,13 @@ def _decision_manifest(
         "valid_until": valid_until.isoformat().replace("+00:00", "Z"),
         "generated_at": now.isoformat().replace("+00:00", "Z"),
     }
-    del policy_result  # The validated set is already bound above; no candidate verdict is copied.
+    # Verdict already bound above; never copy a candidate one
+    del policy_result
     validate_document(decision, trust_schema)
     return decision
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run protected release-evidence validation and optionally emit a decision."""
-
     args = _parser().parse_args(argv)
     try:
         if not GIT_SHA_RE.fullmatch(args.base_sha) or not GIT_SHA_RE.fullmatch(
@@ -2467,7 +2406,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         for report in evidence_set["evidence"]:
             if report["platform"] == "docs":
                 continue
-            # The trust manifest also carries protected deployment-only identity.
             projected = dict(stage["deployment"])
             projected.pop("request_namespace", None)
             projected.pop("capability_manifest_sha256", None)

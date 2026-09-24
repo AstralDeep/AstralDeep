@@ -1,8 +1,8 @@
-"""Private request selection for unregistered Work acceptance, never dispatch.
-
-Accepted receipts need current normal owner authentication, not a fresh execution
-session. Only a new admission forces refresh of its original signed-cookie row.
+"""Captures the authenticated caller for a new Work submission or control request
+without granting dispatch, refreshing only on a genuinely new admission. Used by
+work_submit.py, work_control_authority.py, and work_admission_api.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,8 +56,6 @@ def _signed_selection(request):
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedWorkRequest:
-    """Server-private normal IAM snapshot; no serialized caller can supply it."""
-
     owner_id: str = field(repr=False)
     principal_expires_at: datetime = field(repr=False)
     _claims_json: str = field(repr=False)
@@ -91,7 +89,6 @@ class WorkSubmissionAuthority:
 async def _authenticate_work_request(
     request: Request, *, sessions: WebSessionStore, plane_runtime, methods, read_only=False,
 ) -> tuple[AuthenticatedWorkRequest, str | None]:
-    """Reuse ordinary IAM once on frozen transport for closed Work write adapters."""
     try:
         if (not isinstance(request, Request) or request.method not in methods
                 or (read_only and methods != ("GET",))
@@ -125,11 +122,6 @@ async def _authenticate_work_request(
 
 
 async def capture_human_caller(snapshot, *, context, sessions, until):
-    """Capture one original caller issuance after ordinary IAM, without refresh.
-
-    Shared by Work controls and independent metadata requests. A supplied but
-    unselected cookie cannot downgrade into a bare-Bearer command.
-    """
     supplied = [part.strip().split("=", 1)[0] for header in snapshot.headers.getlist("cookie")
                 for part in header.split(";")]
     if web_auth.COOKIE_NAME in supplied and context.session_id is None:
@@ -155,7 +147,6 @@ async def capture_human_caller(snapshot, *, context, sessions, until):
 async def authenticate_work_submission_request(
     request: Request, *, sessions: WebSessionStore, plane_runtime,
 ) -> AuthenticatedWorkRequest:
-    """Freeze a POST before normal IAM; accepted retry needs no new session."""
     context, _token = await _authenticate_work_request(
         request, sessions=sessions, plane_runtime=plane_runtime, methods=("POST",))
     return context
@@ -164,7 +155,6 @@ async def authenticate_work_submission_request(
 async def refresh_work_submission_authority(
     context: AuthenticatedWorkRequest, *, sessions: WebSessionStore,
 ) -> WorkSubmissionAuthority:
-    """Refresh one captured generation once; no owner/latest or retry fallback."""
     try:
         async with asyncio.timeout(15):
             if (type(context) is not AuthenticatedWorkRequest
@@ -176,9 +166,6 @@ async def refresh_work_submission_authority(
             reference = await asyncio.to_thread(sessions.capture_execution_reference,
                 owner_id=context.owner_id, session_id=context.session_id)
             context.assert_current(context.plane_runtime)
-            # Cookie IAM already selected an issuance before verifying its JWT.
-            # Bearer IAM resolves no cookie row: its first selection is this
-            # post-receipt capture. Accepted replay consumes neither selection.
             if (context.cookie_session is not None and context.cookie_session != (
                     reference.state.credential.session_id, reference.state.credential.incarnation_id)):
                 _refuse()

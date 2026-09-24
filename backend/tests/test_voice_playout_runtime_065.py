@@ -1,4 +1,7 @@
-"""Authenticated direct-runtime wiring for Feature-065 playout evidence."""
+"""Tests that authenticated voice playout frames (orchestrator.py,
+voice_control_binding.py) bypass operation admission, route without spurious audit or
+error frames, and fail content-free on the wrong socket.
+"""
 
 from __future__ import annotations
 

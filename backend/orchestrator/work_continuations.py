@@ -1,4 +1,8 @@
-"""Private manual owner holds and factual settlements; never continuation grants."""
+"""Owner wait-for-event and reconcile-uncertain-attempt commands, layered on
+work_controls.py and work_service.py without granting continuation. Used by
+work_api.py and work_publication.py.
+"""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -19,12 +23,6 @@ from persistent_agents.runtime_values import digest
 
 
 class WorkOwnerWaitRequest(WorkControlRequest):
-    """Wait for a manual owner event, never a source/provider revision.
-
-    A later separately authorized wake must use this owner's event namespace.
-    Neither the identifier nor revision is evidence of an external observation.
-    """
-
     owner_event_id: str = Field(min_length=36, max_length=36)
     owner_revision: int = Field(ge=0, le=2**53 - 1)
 
@@ -35,12 +33,6 @@ class WorkOwnerWaitRequest(WorkControlRequest):
 
 
 class WorkReconcileRequest(WorkControlRequest):
-    """An authenticated owner's decision about one already uncertain attempt.
-
-    The decision does not recover output, verify provider evidence or refund
-    usage. Plane conservatively charges the previously reserved maximum once.
-    """
-
     prior_result_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     decision: Literal["confirmed_applied", "confirmed_not_applied"]
 
@@ -49,7 +41,6 @@ def _request(body, expected):
     if type(body) is not expected:
         raise AssignmentError("work_control_invalid", 422)
     try:
-        # Snapshot before the first await, including privately constructed models.
         return expected.model_validate(body.model_dump())
     except ValidationError:
         raise AssignmentError("work_control_invalid", 422) from None
@@ -64,12 +55,6 @@ def _prepared(value, expected, owner, identity):
 
 
 class WorkContinuationService(WorkControlService):
-    """Commit safe owner decisions with caller checks and mandatory atomic audit.
-
-    Both methods retain ordinary safe-control Bearer eligibility. No original
-    execution session is refreshed or supplied to Plane, and no route is mounted.
-    """
-
     def _owner(self, caller):
         if type(caller) is not WorkCallerAuthority:
             raise AssignmentError("work_authentication_required", 401)
@@ -78,7 +63,6 @@ class WorkContinuationService(WorkControlService):
         return owner
 
     async def wait(self, identity, body: WorkOwnerWaitRequest, *, caller):
-        """Retire old delivery fences and await only the named manual owner event."""
         owner = self._owner(caller)
         body = _request(body, WorkOwnerWaitRequest)
         identity = _identity(identity)
@@ -118,13 +102,6 @@ class WorkContinuationService(WorkControlService):
         return result
 
     async def reconcile(self, identity, action_id, body: WorkReconcileRequest, *, caller):
-        """Settle an authentic uncertain attempt conservatively without waking.
-
-        Unlike pause/wait, expected_revision is a transient CAS observation and
-        is excluded from the immutable decision digest. Plane preparation checks
-        an exact accepted decision before that CAS, allowing lost-ack replay even
-        after a later control changes state. All other decision fields must match.
-        """
         owner = self._owner(caller)
         body = _request(body, WorkReconcileRequest)
         identity, action_id = _identity(identity), _identity(action_id)

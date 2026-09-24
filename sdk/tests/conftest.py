@@ -1,3 +1,7 @@
+"""Pytest fixtures wrapping sdk/tests/fake_server.py's FakeAstralServer for the SDK test
+suite.
+"""
+
 from __future__ import annotations
 
 import pytest

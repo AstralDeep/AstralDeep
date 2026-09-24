@@ -1,9 +1,6 @@
-"""Unregistered finite one-page USER research episode and private result proof.
-
-Retained operations can checkpoint exact attributed excerpts. Non-retained
-operations checkpoint only closed source metadata, authenticated by a live
-attempt-local proof. Both are checked again in the transaction retiring the
-execution leases. Neither grants Save or publication authority.
+"""Runs one finite USER research episode (one page read, one fixed model action, never
+recurrence) and produces its private result proof; orchestrated by runner.py via
+research_input.py and research_recovery.py.
 """
 
 from __future__ import annotations
@@ -17,20 +14,11 @@ from persistent_agents.research_input import ResearchInput, fixed_reader_source,
 from persistent_agents.research_result import build_page_result
 from persistent_agents.runtime_values import canonical, digest, thaw
 
-# Legacy keys identify already completed results only. Continuation never uses
-# them: a new control epoch cannot adopt an old action or spend its receipt again.
 SOURCE_KEY = "research-source-v1"
 MODEL_KEY = "research-selection-v1"
 
 
 def research_action_keys(record):
-    """Stable v2 keys within one revision/epoch, independent of physical claims.
-
-    Plane already scopes each key to the owner and assignment. Canonical arrays
-    separate source/model domains and integer pairs without concatenation aliases.
-    The full digest fits the fixed model adapter's existing 64-character key bound.
-    This is an action identity successor, not a wire or transient-input version.
-    """
     for value in (record.instruction_revision, record.control_epoch):
         if type(value) is not int or not 1 <= value <= 2**53 - 1:
             raise DispatchDenied("assignment_operation_profile_unavailable")
@@ -67,13 +55,10 @@ def _matching_checks(action, checks):
 
 @dataclass(frozen=True, slots=True)
 class ResearchCompletion:
-    """Closed in-memory binding to one exact source and settled model attempt."""
-
     private: ResearchInput = field(repr=False)
     model_action_id: str
 
     def rebuild(self, executor, tx, repository, current, checks):
-        """Called only inside the executor's guarded source/config transaction."""
         repository.assert_current_assignment_execution(
             tx,
             fence=executor.claim.fence,
@@ -129,8 +114,6 @@ class ResearchCompletion:
 
     def assert_completion(self, executor, tx, repository, current, checks, completion):
         rebuilt = self.rebuild(executor, tx, repository, current, checks)
-        # Lease renewal may advance state_version without changing meaningful
-        # state. The runner separately binds the handler's exact snapshot version.
         expected = thaw(rebuilt)
         expected["expected_state_version"] = completion.expected_state_version
         if canonical(expected) != canonical(thaw(completion)):
@@ -139,8 +122,6 @@ class ResearchCompletion:
 
 @dataclass(frozen=True, slots=True)
 class EphemeralResearchCompletion(ResearchCompletion):
-    """Live model selection proof permits only closed metadata incorporation."""
-
     _selection_json: str = field(repr=False)
 
     def rebuild(self, executor, tx, repository, current, checks):
@@ -158,8 +139,7 @@ class EphemeralResearchCompletion(ResearchCompletion):
         self.private._ephemeral.identity(current, source)
         self.private.ephemeral_result(model, json.loads(self._selection_json))
         metadata = self.private._ephemeral.metadata()
-        # Replace only this closed source checkpoint. Never copy any previous
-        # text checkpoint into a non-retained completion.
+        # Never copy a prior text checkpoint into a non-retained run
         if canonical(thaw(current.checkpoint)) not in {"{}", '{"schema_version":1}'}:
             raise DispatchDenied("assignment_research_result_invalid")
         checkpoint = {"schema_version": 1, "research_source": metadata}
@@ -176,12 +156,6 @@ class EphemeralResearchCompletion(ResearchCompletion):
 
 
 async def run_research_episode(executor):
-    """One public-page read and one fixed model action, never recurrence.
-
-    Retained sources reuse current governed action identities. A non-retained
-    episode acquires fresh, charged text and never reconstructs discarded input.
-    Provider retry classification and breadth remain separate, unsupported work.
-    """
     from persistent_agents.runner import OneShotEpisodeResult
 
     request = source_request(executor.record)

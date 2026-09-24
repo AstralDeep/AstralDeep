@@ -1,10 +1,6 @@
-"""Production acceptance coverage for feature-060 task compatibility wiring.
-
-These tests focus on the integration seams that are easy to regress while the
-legacy background-task and Re-Act DTOs are projected over one durable operation
-authority.  PostgreSQL itself is covered by the repository integration suite;
-this file verifies that production construction selects that repository and
-that asyncio call sites never create a second authority or block the loop.
+"""Tests for production wiring of orchestrator/task_state.py and work_admission.py over
+astralplane: legacy background-task and Re-Act DTOs project over one durable
+Plane-backed operation authority, never a second authority or a blocked loop.
 """
 
 from __future__ import annotations
@@ -68,8 +64,6 @@ def _call_supplies_shared_authority(call: ast.Call) -> bool:
 
 
 def test_production_constructor_loads_one_plane_authority_for_both_managers() -> None:
-    """The production object graph must not create process-local authorities."""
-
     tree = ast.parse(textwrap.dedent(inspect.getsource(Orchestrator.__init__)))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     coordinator_calls = [
@@ -596,13 +590,6 @@ async def test_background_react_projection_reuses_operation_fence_off_loop(
 
 
 def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() -> None:
-    """The simulated manager seam above must also be wired into production."""
-
-    # Feature 088 put a turn-guidance wrapper in front of the Re-Act
-    # implementation, so the production callsite is now two hops:
-    # ``handle_chat_message`` -> ``_handle_chat_message_with_guidance`` ->
-    # ``_handle_chat_message_impl``. Walk both hops and prove the exact
-    # managed authority is forwarded verbatim across each of them.
     for outer, inner in (
         (Orchestrator.handle_chat_message, "self._handle_chat_message_with_guidance"),
         (Orchestrator._handle_chat_message_with_guidance, "self._handle_chat_message_impl"),
@@ -629,9 +616,6 @@ def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() 
         }
         assert forwarded["operation_context"] == "operation_context"
 
-    # Conversation publication now wraps the Re-Act implementation. Inspect
-    # the delegated production callsite as well as proving the wrapper carries
-    # the exact managed authority through that boundary.
     source = textwrap.dedent(
         inspect.getsource(Orchestrator._handle_chat_message_impl)
     )

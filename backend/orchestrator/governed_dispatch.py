@@ -1,15 +1,6 @@
-"""One final host adapter for every Astral tool actuator dispatch.
-
-Astral's existing identity, delegation, permission, policy, security, taint,
-PHI, egress, confirmation, rewrite, and credential gates remain upstream.  A
-caller gives this adapter only the final rewritten argument mapping.  For a
-governed runtime the adapter then resolves the exact Plane binding, obtains a
-LETS permit, and carries that permit solely in MCP caller capabilities.
-
-The adapter deliberately has an injectable runtime resolver and Plane/runtime
-seam.  AstralDeep startup and lifecycle code can bind those dependencies once
-the independently versioned AstralPlane runtime is ready without creating a
-second database implementation here.
+"""Final host adapter authorizing one tool-actuator dispatch under LETS after Astral's
+own identity/permission/policy gates, resolving the Plane binding and permit for
+governed runtimes; used by agent_lifecycle.py and orchestrator.py.
 """
 
 from __future__ import annotations
@@ -39,14 +30,10 @@ T = TypeVar("T")
 
 
 class PlaneRuntime(Protocol):
-    """Public AstralPlane transaction seam used for exact binding reads."""
-
     def transaction(self, **options: object): ...
 
 
 class AuthorityRepository(Protocol):
-    """Public AstralPlane authority query required by final dispatch."""
-
     def get_active_binding(
         self,
         transaction: object,
@@ -60,13 +47,6 @@ class AuthorityRepository(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DispatchRuntime:
-    """Exact host-owned runtime identity selected before final dispatch.
-
-    ``runtime_id`` and ``runtime_generation`` may be absent only for an
-    explicitly ungoverned population such as ``builtin`` or ``external``.
-    Governed populations are validated before Plane is queried.
-    """
-
     owner_id: str | None
     agent_id: str
     population: str
@@ -84,8 +64,6 @@ Actuator = Callable[[dict[str, object]], T | Awaitable[T]]
 
 
 class GovernedDispatchError(RuntimeError):
-    """Stable, content-free final-dispatch refusal."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -99,15 +77,6 @@ async def _resolve(value: T | Awaitable[T]) -> T:
 
 
 class GovernedFinalDispatch:
-    """Authorize exactly one possible physical tool invocation.
-
-    Existing Astral retry behavior remains outside this class.  Each entry to
-    :meth:`execute` represents one possible physical attempt and therefore
-    uses a one-attempt :class:`ProtectedToolRetrier`, which allocates a fresh
-    operation ID and nonce.  A later legacy retry re-enters this adapter and
-    necessarily receives different authority.
-    """
-
     def __init__(
         self,
         *,
@@ -135,18 +104,10 @@ class GovernedFinalDispatch:
 
     @classmethod
     def off(cls) -> "GovernedFinalDispatch":
-        """Return the exact no-LETS adapter used by flag-off deployments."""
-
         return cls(mode="off")
 
     @classmethod
     def unavailable(cls, mode: LetsMode) -> "GovernedFinalDispatch":
-        """Represent active configuration whose injected runtime is not ready.
-
-        Enforce mode refuses before an actuator.  Shadow remains observational
-        and therefore preserves the existing Astral decision.
-        """
-
         return cls(mode=mode)
 
     @classmethod
@@ -199,14 +160,6 @@ class GovernedFinalDispatch:
         auth_principal: str | None = None,
         conversation_id: str | None = None,
     ) -> T:
-        """Run one final actuator attempt under the selected rollout mode.
-
-        Off mode calls no resolver, Plane query, context builder, retrier, or
-        gateway and fabricates no caller capability.  Shadow mode attempts the
-        same authorization but never converts a LETS/Plane failure into an
-        Astral denial.  Enforce mode fails closed before ``invoke``.
-        """
-
         if self.mode == "off":
             return await _resolve(invoke({}))
 
@@ -230,16 +183,11 @@ class GovernedFinalDispatch:
                 return await _resolve(invoke({}))
             raise
         if runtime.population not in self.governed_populations:
-            # External/builtin populations remain ordinary Astral-mediated
-            # dispatch and never receive a misleading protected permit.
             return await _resolve(invoke({}))
         if (
             self.governed_agent_allowlist
             and agent_id not in self.governed_agent_allowlist
         ):
-            # The optional agent allowlist narrows a governed population; an
-            # excluded agent retains ordinary Astral-mediated dispatch and is
-            # not misrepresented as an enforcement failure.
             return await _resolve(invoke({}))
 
         try:
@@ -407,10 +355,7 @@ class GovernedFinalDispatch:
         *,
         owner_id: str | None,
     ) -> None:
-        # A host binding cannot substitute for the authenticated invocation
-        # owner.  Every governed channel (including unattended work) must
-        # carry its owner into final dispatch; otherwise a transport that
-        # skipped identity/owner gates could borrow an agent's durable binding.
+        # Without it, a caller could borrow another's binding
         if owner_id is None:
             raise GovernedDispatchError("dispatch_owner_unavailable")
         if runtime.owner_id != owner_id:

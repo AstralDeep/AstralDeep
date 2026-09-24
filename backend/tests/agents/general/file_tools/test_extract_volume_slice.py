@@ -1,4 +1,7 @@
-"""extract_volume_slice: slice selection across supported volumetric formats."""
+"""Tests for agents/general/file_tools/medical/extract_volume_slice.py: default
+middle-slice selection, explicit index, out-of-range handling, across NIfTI and MHA
+volumes.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +28,8 @@ def test_slice_nifti_default_middle(repo, upload_root):
     )
     out = extract_volume_slice(attachment_id=aid, user_id="alice")
     assert "error" not in out
-    assert out["axis_used"] == 2  # default 'z' → axis 2
-    assert out["index_used"] == 7  # middle of size 14 is 7
+    assert out["axis_used"] == 2
+    assert out["index_used"] == 7
     img = Image.open(io.BytesIO(base64.b64decode(out["thumbnail_png_base64"])))
     assert img.size[0] > 0 and img.size[1] > 0
 

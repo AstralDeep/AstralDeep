@@ -1,18 +1,8 @@
+"""Scans agent tool declarations for threat patterns (egress, code execution, credential
+access, destructive ops, privilege escalation, network manipulation) at registration,
+before orchestrator.py allows the agent's tools to run.
 """
-Proactive Tool Security Analyzer for the AstralDeep Orchestrator.
 
-Analyzes agent tool declarations (name, description, input_schema) for
-patterns that indicate nefarious behavior. Runs automatically when agents
-register, before any user interaction.
-
-Threat categories:
-  - DATA_EGRESS:           External data transmission
-  - CODE_EXECUTION:        Arbitrary code/script/command execution
-  - CREDENTIAL_ACCESS:     Access to secrets, API keys, tokens
-  - DESTRUCTIVE:           Deletion, wiping, or corruption of data
-  - PRIVILEGE_ESCALATION:  Modification of permissions/roles/admin access
-  - NETWORK_MANIPULATION:  DNS, firewall, routing changes
-"""
 import re
 import logging
 from dataclasses import dataclass
@@ -21,10 +11,6 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("ToolSecurity")
 
-
-# =============================================================================
-# Data Structures
-# =============================================================================
 
 class ThreatCategory(str, Enum):
     DATA_EGRESS = "DATA_EGRESS"
@@ -37,11 +23,10 @@ class ThreatCategory(str, Enum):
 
 @dataclass
 class SecurityFlag:
-    """A security flag raised against a specific tool."""
     tool_name: str
     category: ThreatCategory
     reason: str
-    blocked: bool = True  # system-level block
+    blocked: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -52,12 +37,7 @@ class SecurityFlag:
         }
 
 
-# =============================================================================
-# Threat Pattern Definitions
-# =============================================================================
-
 THREAT_PATTERNS: List[Dict[str, Any]] = [
-    # DATA_EGRESS — tools that send/transmit/exfiltrate data externally
     {
         "category": ThreatCategory.DATA_EGRESS,
         "name_patterns": [
@@ -82,7 +62,6 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
         ],
         "reason": "Data egress detected — tool attempts external data transmission",
     },
-    # CODE_EXECUTION — tools that write, execute, or eval arbitrary code
     {
         "category": ThreatCategory.CODE_EXECUTION,
         "name_patterns": [
@@ -105,7 +84,6 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
         ],
         "reason": "Code execution detected — tool can execute arbitrary code or commands",
     },
-    # CREDENTIAL_ACCESS — tools that access secrets, API keys, tokens
     {
         "category": ThreatCategory.CREDENTIAL_ACCESS,
         "name_patterns": [
@@ -125,7 +103,6 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
         ],
         "reason": "Credential access detected — tool may steal secrets, API keys, or passwords",
     },
-    # DESTRUCTIVE — tools that delete, wipe, truncate, or destroy data
     {
         "category": ThreatCategory.DESTRUCTIVE,
         "name_patterns": [
@@ -144,7 +121,6 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
         ],
         "reason": "Destructive operation detected — tool can delete, wipe, or destroy data",
     },
-    # PRIVILEGE_ESCALATION — tools that modify permissions/roles/admin access
     {
         "category": ThreatCategory.PRIVILEGE_ESCALATION,
         "name_patterns": [
@@ -164,7 +140,6 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
         ],
         "reason": "Privilege escalation detected — tool can modify permissions, roles, or admin access",
     },
-    # NETWORK_MANIPULATION — tools that modify DNS, firewall, routing
     {
         "category": ThreatCategory.NETWORK_MANIPULATION,
         "name_patterns": [
@@ -186,17 +161,7 @@ THREAT_PATTERNS: List[Dict[str, Any]] = [
 ]
 
 
-# =============================================================================
-# Analyzer
-# =============================================================================
-
 class ToolSecurityAnalyzer:
-    """Analyzes agent tool declarations for security threats.
-
-    Uses regex/keyword pattern matching on tool name, description,
-    and input_schema field names to detect potential threats.
-    """
-
     def __init__(self):
         self._compiled_patterns: List[Dict[str, Any]] = []
         for pattern_set in THREAT_PATTERNS:
@@ -216,10 +181,6 @@ class ToolSecurityAnalyzer:
         input_schema: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[SecurityFlag]:
-        """Analyze a single tool for security threats.
-
-        Returns a SecurityFlag if a threat is detected, None otherwise.
-        """
         schema_fields = []
         if input_schema and "properties" in input_schema:
             schema_fields = list(input_schema["properties"].keys())
@@ -234,9 +195,7 @@ class ToolSecurityAnalyzer:
         def _build_flag(category: ThreatCategory, reason: str, match_kind: str) -> SecurityFlag:
             blocked = True
             final_reason = reason
-            # DESTRUCTIVE tools that explicitly act on an external service
-            # are advisory-only; the per-user `tools:write` permission is
-            # the sole gate.
+            # Advisory only — tools:write permission is the real gate
             if category is ThreatCategory.DESTRUCTIVE and external_target:
                 blocked = False
                 final_reason = (
@@ -258,17 +217,14 @@ class ToolSecurityAnalyzer:
             return flag
 
         for pattern_set in self._compiled_patterns:
-            # Check tool name
             for regex in pattern_set["name_re"]:
                 if regex.search(tool_name):
                     return _build_flag(pattern_set["category"], pattern_set["reason"], "name match")
 
-            # Check description
             for regex in pattern_set["desc_re"]:
                 if regex.search(description):
                     return _build_flag(pattern_set["category"], pattern_set["reason"], "description match")
 
-            # Check schema field names
             if schema_text:
                 for regex in pattern_set["schema_re"]:
                     if regex.search(schema_text):
@@ -277,11 +233,6 @@ class ToolSecurityAnalyzer:
         return None
 
     def analyze_agent(self, card) -> Dict[str, SecurityFlag]:
-        """Analyze all skills in an AgentCard.
-
-        Returns dict of {tool_name: SecurityFlag} for flagged tools only.
-        Empty dict means no threats detected.
-        """
         flags: Dict[str, SecurityFlag] = {}
         for skill in card.skills:
             flag = self.analyze_tool(

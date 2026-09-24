@@ -1,4 +1,7 @@
-"""030 — scheduler routes dreaming jobs to the sweep, no grant needed (US4 / T027)."""
+"""Tests for backend/scheduler/runner.py: a dreaming job routes straight to the
+consolidation sweep without needing a grant, and is skipped when disabled.
+"""
+
 import asyncio
 import sys
 import types
@@ -86,7 +89,6 @@ def test_dreaming_job_runs_sweep_without_grant(monkeypatch):
     outcome = asyncio.run(runner.run_job(dict(_DREAM_JOB)))
     assert outcome == "success"
     assert store.finished and store.finished[0][1] == "success"
-    # rescheduled (cron has a next run), not completed
     assert store.after and store.after[0][2] is False
 
 

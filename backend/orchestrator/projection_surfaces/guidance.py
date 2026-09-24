@@ -1,9 +1,8 @@
-"""Current private notes through one authenticated, correlated delivery lifetime.
-
-This adapter deliberately has no generic render/components callback. It retains
-the exact opened notes through rendering and rechecks those values before send.
-Navigation tokens carry no IAM authority: the original CurrentHumanCaller does.
+"""Host adapter for the current-notes and per-chat selection picker surface. Retains
+only server-verified navigation state, trusting no client-supplied session id or
+binding, and re-derives the offered agents, skills, and notes fresh on every render.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,10 +31,7 @@ HANDLERS = {}
 _ACTIONS = frozenset({"chrome_note_search", "chrome_note_save", "chrome_note_toggle",
                       "chrome_note_forget", "chrome_turn_selection_set"})
 
-#: The guidance view the composer's Advanced button opens. Absent, the
-#: surface is the private-notes list it has always been.
 SELECTION_VIEW = "selection"
-#: Bounds on what one selection may name, mirroring the view builder's own.
 MAX_SELECTION_SKILLS = 20
 MAX_SELECTION_NOTES = 8
 _MAX_REVISION = 2**53 - 2
@@ -79,12 +75,6 @@ def _selection_reference(value, key):
 
 
 def _selection_input(value):
-    """The exact version-1 selection shape the client and Work both use.
-
-    Validated as a shape only. Whether the things it names still exist, and
-    still at those revisions, is decided by re-reading them — never by
-    trusting the request.
-    """
     _require(type(value) is dict and set(value) == {"version", "agent", "skills", "notes"})
     _require(value["version"] == 1)
     agent = value["agent"]
@@ -103,7 +93,6 @@ def _selection_input(value):
 
 
 def _selection_payload(chosen) -> dict:
-    """The version-1 selection shape ``work_submit._selected_ids`` accepts."""
     return {"version": 1,
             "agent": None if chosen["agent"] is None else dict(chosen["agent"]),
             "skills": [dict(item) for item in chosen["skills"]],
@@ -111,7 +100,6 @@ def _selection_payload(chosen) -> dict:
 
 
 def _is_selection(action, payload) -> bool:
-    """Is this request about the per-chat selection rather than the notes?"""
     if action == "chrome_turn_selection_set":
         return True
     return (action == "chrome_open"
@@ -119,7 +107,6 @@ def _is_selection(action, payload) -> bool:
 
 
 def _request(action, payload):
-    """Snapshot all command fields before any read, IAM, audit or rendering wait."""
     try:
         _require(type(payload) is dict and type(action) is str)
         payload = deepcopy(payload)
@@ -128,10 +115,6 @@ def _request(action, payload):
             params = payload.get("params", {})
             _require(type(params) is dict)
             if params.get("view") == SELECTION_VIEW:
-                # Nothing but the view. The 088 open contract is that this
-                # request carries no client state at all -- not a session id,
-                # not the binding the composer is holding -- so the picker
-                # opens from what the server can see for itself.
                 _require(set(params) == {"view"})
                 return payload
             mode = params.get("mode", "list")
@@ -190,7 +173,6 @@ def invalidate_navigation(orch, websocket):
 
 
 def _payload(pending):
-    """Normalize only envelope duplicates already bound by the shared capture."""
     pending.assert_socket()
     payload = deepcopy(pending.message.get("payload"))
     if type(payload) is not dict:
@@ -206,8 +188,6 @@ def _payload(pending):
 
 
 class GuidanceNavigation:
-    """Host-private latest request token, never a substitute for human authority."""
-
     def __init__(self, orch, pending):
         self.orch, self.pending, self.closed = orch, pending, False
 
@@ -232,7 +212,6 @@ class GuidanceNavigation:
 
 
 def capture_navigation(orch, *, pending):
-    """Ingress calls before the first session/admission await; invalid attempts retire old reads."""
     if type(pending) is not _HumanSocketRequest:
         raise AssignmentError("explicit_note_navigation_unavailable", 503)
     invalidate_navigation(orch, pending.websocket)
@@ -270,7 +249,6 @@ def _service_current(orch, service, caller):
 
 
 async def _offered_agents(orch, caller):
-    """The user's own declarative agents that have an active revision."""
     try:
         heads = await orch.declarative_agents.list_heads(caller=caller)
     except Exception:
@@ -289,7 +267,6 @@ async def _offered_agents(orch, caller):
 
 
 async def _offered_skills(orch, caller):
-    """The user's own skills, current revision each."""
     try:
         from orchestrator import user_skills
 
@@ -316,7 +293,6 @@ async def _offered_skills(orch, caller):
 
 
 def _offered_notes(notes):
-    """The note rows the picker offers, from the same read the notes list uses."""
     out = []
     for note in notes:
         metadata = note.metadata
@@ -330,12 +306,6 @@ def _offered_notes(notes):
 
 
 def _narrow_selection(selection, agents, skills, notes):
-    """Keep only what is still on offer at exactly the revision named.
-
-    A skill deleted, or a note edited, since the selection was made is simply
-    no longer selected — the alternative is a picker that refuses to draw
-    because of something the person cannot see.
-    """
     chosen = {"agent": None, "skills": [], "notes": []}
     if not isinstance(selection, dict):
         return chosen
@@ -362,7 +332,6 @@ def _narrow_selection(selection, agents, skills, notes):
 
 
 async def _selection_state(orch, service, caller, action, payload):
-    """The selection picker's state, and the notes the read is verified against."""
     page = await service.list(caller=caller, after_id=None, search="")
     notes = page.notes
     agents = await _offered_agents(orch, caller)
@@ -373,11 +342,6 @@ async def _selection_state(orch, service, caller, action, payload):
         notice = "cleared" if (payload["agent"] is None and not payload["skills"]
                                and not payload["notes"]) else "saved"
     else:
-        # An open render shows nothing selected. The per-chat binding lives in
-        # the browser and the open request may not carry it, so the server has
-        # nothing to show as chosen until it is told -- and a render that
-        # claimed an empty selection would then be adopted and wipe the real
-        # one, which is why only a selection command stamps below.
         incoming = None
         notice = None
     state = {
@@ -436,7 +400,6 @@ async def _state(service, caller, action, payload):
 
 
 async def deliver(orch, websocket, user_id, action, payload, request_generation, *, guidance_navigation=None):
-    """Complete correlated render/send. No current token means no read or mutation."""
     import json
 
     from astralprojection.chrome import render_html
@@ -476,10 +439,6 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
         if device == "browser":
             body = render_html(view)
             if action == "chrome_turn_selection_set":
-                # Stamp what was rendered as selected on the surface root. The
-                # composer adopts exactly this, so what it will send with the
-                # next turn is what the picker just showed, at these revisions
-                # -- not whatever the browser happened to be holding.
                 body = ('<div data-chrome-surface="guidance" data-astral-selection="'
                         + esc(json.dumps(_selection_payload(state["selected"])))
                         + '">' + body + "</div>")
@@ -515,21 +474,6 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
             token.close()
 
 
-# ---------------------------------------------------------------------------
-# 088 T032 — declarative-agent metadata handlers, registered HERE
-# ---------------------------------------------------------------------------
-# ``_h_declarative_view``/``_h_declarative_command`` are DEFINED in
-# ``authoring.py`` (they operate on ``authoring.SURFACE_KEY`` state and
-# ``DeclarativeAgentService``) but are registered in THIS module's HANDLERS,
-# not authoring's own: a pinned contract test
-# (test_declarative_agent_definition_088.py) asserts ``authoring.HANDLERS``
-# names no "declarative" action, because the declarative *definition* parsing
-# contract is a distinct, inert surface from the metadata-lifecycle dispatch
-# added by T032/T037. ``chrome_events.collect_handlers()`` aggregates every
-# projection-surface module's HANDLERS by action name alone, and
-# ``human_request_authority`` classifies WS_READ/WS_WRITE by the action name
-# itself — so which module registers a handler is transparent to dispatch;
-# only the handler's own returned ``SURFACE_KEY`` decides what re-renders.
 from orchestrator.projection_surfaces import authoring as _declarative_authoring  # noqa: E402
 
 HANDLERS["chrome_declarative_view"] = _declarative_authoring._h_declarative_view

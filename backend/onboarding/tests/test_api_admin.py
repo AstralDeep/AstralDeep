@@ -1,4 +1,8 @@
-"""Admin-side API contract tests for the onboarding subsystem (feature 005)."""
+"""Tests for onboarding/api.py's admin router: non-admin refusal, step
+create/duplicate-slug conflicts, target-consistency validation, partial updates with
+changed_fields tracking, archive/restore, and revision history.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -54,7 +58,6 @@ def _build_app(database, *, is_admin: bool, user_id: str = "pytest-admin"):
             return payload
         app.dependency_overrides[verify_admin] = _verify_admin_ok
     else:
-        # Real verify_admin will see no admin role and raise 403.
         async def _no_admin():
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Not authorized (Requires 'admin' role)")
@@ -105,7 +108,6 @@ def test_create_step_201(database, wire_audit):
     body = r.json()
     assert body["slug"] == slug
     assert body["title"] == "Hello"
-    # Audit row should now exist
     with database.transaction() as transaction:
         row = transaction.fetch_one(
             "SELECT count(*) AS count FROM audit_events "
@@ -134,14 +136,12 @@ def test_duplicate_slug_409(database, wire_audit):
 def test_target_consistency_validation(database, wire_audit):
     app = _build_app(database, is_admin=True)
     client = TestClient(app)
-    # target_kind='none' with non-null target_key
     r = client.post("/api/admin/tutorial/steps", json={
         "slug": _slug("bad-target"), "audience": "user", "display_order": 120,
         "target_kind": "none", "target_key": "should-be-null",
         "title": "T", "body": "B",
     })
-    assert r.status_code == 422  # pydantic model_validator catches it
-    # target_kind='static' with empty target_key
+    assert r.status_code == 422
     r2 = client.post("/api/admin/tutorial/steps", json={
         "slug": _slug("bad-target-2"), "audience": "user", "display_order": 121,
         "target_kind": "static", "target_key": "",
@@ -160,13 +160,11 @@ def test_update_step_changed_fields_minimal(database, wire_audit):
         "title": "Original", "body": "Body",
     })
     step_id = r.json()["id"]
-    # Update only title; body sent matching existing value -> not in changed_fields
     r2 = client.put(f"/api/admin/tutorial/steps/{step_id}", json={
         "title": "Renamed", "body": "Body",
     })
     assert r2.status_code == 200
     assert r2.json()["title"] == "Renamed"
-    # Audit row's changed_fields should contain title but NOT body
     with database.transaction() as transaction:
         row = transaction.fetch_one(
             "SELECT inputs_meta FROM audit_events "
@@ -219,9 +217,7 @@ def test_revisions_endpoint(database, wire_audit):
     r = client.get(f"/api/admin/tutorial/steps/{step_id}/revisions")
     assert r.status_code == 200
     revs = r.json()["revisions"]
-    # At least the create + update revisions
     assert len(revs) >= 2
-    # Newest first
     assert revs[0]["change_kind"] in ("update", "create")
 
 
@@ -235,12 +231,10 @@ def test_list_admin_includes_archived(database, wire_audit):
         "title": "T", "body": "B",
     }).json()["id"]
     client.post(f"/api/admin/tutorial/steps/{step_id}/archive")
-    # Default include_archived=true
     r = client.get("/api/admin/tutorial/steps")
     assert r.status_code == 200
     slugs = [s["slug"] for s in r.json()["steps"]]
     assert slug in slugs
-    # Explicit false excludes
     r2 = client.get("/api/admin/tutorial/steps?include_archived=false")
     slugs2 = [s["slug"] for s in r2.json()["steps"]]
     assert slug not in slugs2

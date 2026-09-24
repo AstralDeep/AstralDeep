@@ -1,8 +1,6 @@
-"""Source-less one-shot chat through actual HTTP admission, supervision and PG.
-
-Plane, encrypted configuration, JWT verification, reservations, the private
-proof binding and audit are real. Only institutional replies and the final
-model transport are synthetic. No source is read and none may be claimed.
+"""Tests for persistent_agents/chat_episode.py through real HTTP admission and Postgres:
+turn execution without any source, receipt replay/tick safety, refusal of sources and
+unknown kinds, and shared session/deadline fences with research.
 """
 
 import asyncio
@@ -74,7 +72,6 @@ def chat_reply(text=ANSWER, **changes):
 
 @pytest.fixture(autouse=True)
 def bounded_supervisor(monkeypatch):
-    # Existing operator-supported bounds: fast discovery, one worker slot.
     monkeypatch.setenv("PERSISTENT_AGENTS_TICK_SECONDS", "1")
     monkeypatch.setenv("PERSISTENT_AGENTS_CONCURRENCY", "1")
     monkeypatch.setenv("PERSISTENT_AGENTS_LEASE_SECONDS", "15")
@@ -108,7 +105,6 @@ async def test_chat_turn_is_admitted_executed_and_retained_without_any_source(
     assert final["usage"]["spent"]["model_calls"] == 1
     assert final["usage"]["spent"].get("tool_calls", 0) == 0
     assert all(value == 0 for value in final["usage"]["outstanding"].values())
-    # No reader ran; exactly one fixed model send carried the owner's text.
     assert len(op.physical) == prior_reads and len(op.model_calls) == 1
     method, url, sent = op.model_calls[0]
     assert method == "POST" and url == profile.ENDPOINT
@@ -203,7 +199,6 @@ async def test_unusable_or_refused_answer_is_charged_and_never_retained(
         monkeypatch.setattr("shared.isolated_http.request", failing)
     else:
         op.chat_response = chat_reply("Patient John Doe has a fever.")
-        # Only the answer trips the gate; the owner's own prompt still passes.
         monkeypatch.setattr("persistent_agents.execution.get_phi_gate",
                             lambda: SimpleNamespace(contains_phi=lambda text: "John Doe" in text))
     accepted = await client.post("/api/work/v1/operations", json=chat_command())
@@ -238,7 +233,7 @@ async def test_chat_result_projection_is_honest_and_cites_nothing(integrated, ch
     repository = op.runtime.repositories.assignments
 
     class _Discard(Exception):
-        """Roll the tampering transaction back; nothing tampered is committed."""
+        pass
 
     def project(projector, tamper=None):
         outcome = []
@@ -257,7 +252,6 @@ async def test_chat_result_projection_is_honest_and_cites_nothing(integrated, ch
     envelope = project(project_chat_result)
     assert envelope == {"version": 1, "available": True, "reason": None, "content": {
         "version": 1, "kind": "chat", "scope": "model_only", "sources": [], "text": ANSWER}}
-    # The research projection never lends a chat answer source attribution.
     assert project(project_research_result) == {
         "version": 1, "available": False, "reason": "unsupported", "content": None}
     with op.runtime.transaction() as tx:
@@ -292,28 +286,22 @@ async def test_chat_original_session_fence_and_terminal_forget_are_the_shared_on
     integrated, chat_transport,
 ):
     op, runner, client = integrated
-    # Hold the single worker slot so no claim can race the session replacement.
     runner._active[("blocker", 0)] = asyncio.create_task(asyncio.sleep(3600))
     accepted = await client.post("/api/work/v1/operations", json=chat_command())
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
     original = await asyncio.to_thread(get_session_record, op.runtime, op.sid)
-    # The original incarnation is replaced before any claim: discovery must
-    # refuse without a model send, exactly as the research profile does.
     replaced = await asyncio.to_thread(replace_session_record, op.runtime, original)
     assert replaced.incarnation_id != original.incarnation_id
     runner._active.pop(("blocker", 0)).cancel()
     await runner.tick()
     await runner.tick()
     row, actions, _ = await stored(op, identity)
-    # Never claimed: the accepted turn stays due, unclaimed and unexecuted.
     assert row["lifecycle"] == "active" and row["phase"] == "waiting"
     assert row["claim_token"] is None and actions == [] and op.model_calls == []
     listing = await client.get("/api/work/v1/operations")
     assert any(item["id"] == identity and item["kind"] == "chat"
                for item in listing.json()["operations"])
-    # A second, unfenced chat completes and is then forgotten through the
-    # shared terminal delete: replay of its key is refused, its rows are gone.
     second = chat_command()
     accepted = await client.post("/api/work/v1/operations", json=second)
     assert accepted.status_code == 201, accepted.text
@@ -324,8 +312,6 @@ async def test_chat_original_session_fence_and_terminal_forget_are_the_shared_on
     assert deleted.status_code == 200 and deleted.json()["deleted"] is True
     assert (await client.get(f"/api/work/v1/operations/{other}")).status_code == 404
     replay = await client.post("/api/work/v1/operations", json=second)
-    # The tombstoned key never creates another task; the admission route's
-    # closed error allowlist keeps the deletion reason private over HTTP.
     assert replay.status_code == 503 and replay.json() == {"error": "work_submit_unavailable"}
     listing = await client.get("/api/work/v1/operations")
     assert all(item["id"] != other for item in listing.json()["operations"])
@@ -354,15 +340,11 @@ async def test_chat_private_input_and_executor_entries_refuse_the_other_profile(
                                                key_id=model.intent.transient_input.binding_key_id)
     assert private.kind == "chat" and private.passage_ids == () and private.source_action_id is None
     assert private.transient().references == ()
-    # A completed operation's private input MAC is never reconstructed: the
-    # binding covers the pre-completion operation, so even the chat reader
-    # refuses it here, exactly as research does (delivery verifies by key).
     for denied in (lambda: private.chat_result(model), lambda: private.retained_result(model),
                    lambda: private.selection_result([]), lambda: private.ephemeral_result(model, {}),
                    lambda: private.assert_current(record, model, None)):
         with pytest.raises(DispatchDenied):
             denied()
-    # The research fixture record is not a chat turn: no chat entry accepts it.
     research_executor = op.executor
     with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
         await research_executor.chat_turn("not-a-chat-key")
@@ -374,7 +356,6 @@ async def test_chat_private_input_and_executor_entries_refuse_the_other_profile(
     with pytest.raises(DispatchDenied):
         await ResearchInput.capture(record, model, config_store=op.executor.orch._llm_store)
     assert type(private._ephemeral) is not EphemeralResearchSource
-    # The chat projection is honest about a research record and an unfinished turn.
     repository = op.runtime.repositories.assignments
     with op.runtime.transaction() as tx:
         research = repository.get_operation(tx, owner_id=op.owner,
@@ -385,11 +366,6 @@ async def test_chat_private_input_and_executor_entries_refuse_the_other_profile(
 
 
 async def test_chat_deadline_expiry_fence_is_the_shared_one(integrated, chat_transport):
-    """A chat turn past its deadline is retired by the shared claim-time fence.
-
-    No chat-specific expiry exists: Plane refuses the claim, records the closed
-    deadline code and terminalizes the operation without any model send.
-    """
     op, runner, client = integrated
     runner._active[("blocker", 0)] = asyncio.create_task(asyncio.sleep(3600))
     deadline = datetime.now(timezone.utc) + timedelta(seconds=4)

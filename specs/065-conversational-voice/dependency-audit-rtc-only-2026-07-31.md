@@ -13,7 +13,7 @@ for this closure.
 
 The checked-in `backend/voice_agent/CLOSURE.json` is a canonical, deterministic
 `astraldeep.voice-worker-closure.inventory.v1` snapshot. Its SHA-256 is
-`sha256:9ef9e195cd73ba3ff536b7c4d3ec4c15f8ab13472c7fcfe8dc10e4749da6b074`.
+`sha256:9b0bf51e52934074adcf08e31728bf471d51f006629bab7c9fd64927618b84a1`.
 It deliberately records false approval flags and null final-evidence fields. The ordinary final
 closure verifier rejects this inventory schema; only the explicit unapproved-snapshot verifier
 accepts its integrity. Candidate-controlled bytes therefore cannot approve distribution.

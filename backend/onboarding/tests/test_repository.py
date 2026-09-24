@@ -1,4 +1,8 @@
-"""Repository unit tests for the onboarding subsystem."""
+"""Tests for onboarding/repository.py: state defaults and upserts, step
+listing/ordering/archival, revision writes on create and update including the no-op
+case, and idempotent archive/restore.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -11,10 +15,6 @@ from onboarding.repository import DuplicateSlug, StepNotFound
 def _slug(request, suffix: str) -> str:
     return f"pytest-{request.node.name}-{suffix}-{uuid.uuid4().hex[:6]}"
 
-
-# ---------------------------------------------------------------------------
-# Onboarding state
-# ---------------------------------------------------------------------------
 
 def test_get_state_returns_not_started_default(onboarding_repo, unique_user):
     state = onboarding_repo.get_state(unique_user)
@@ -54,10 +54,6 @@ def test_upsert_state_idempotent_on_repeat(onboarding_repo, unique_user):
     b, _ = onboarding_repo.upsert_state(unique_user, "in_progress", None)
     assert a.status == b.status == "in_progress"
 
-
-# ---------------------------------------------------------------------------
-# Tutorial steps — read paths
-# ---------------------------------------------------------------------------
 
 def test_list_steps_user_only_excludes_admin(onboarding_repo, request, unique_user):
     user_slug = _slug(request, "u")
@@ -124,10 +120,6 @@ def test_get_step_audience_returns_none_for_archived(onboarding_repo, request, u
     assert onboarding_repo.get_step_audience(dto.id) is None
 
 
-# ---------------------------------------------------------------------------
-# Tutorial steps — admin write paths
-# ---------------------------------------------------------------------------
-
 def test_create_step_writes_create_revision(onboarding_repo, request, unique_user):
     slug = _slug(request, "cr")
     dto = onboarding_repo.create_step(
@@ -164,7 +156,6 @@ def test_update_step_minimizes_changed_fields(onboarding_repo, request, unique_u
         display_order=55555, target_kind="none", target_key=None,
         title="Original", body="Body",
     )
-    # Patch with one real change and one no-op (same value)
     updated, changed = onboarding_repo.update_step(
         step_id=dto.id, editor_user_id=unique_user,
         partial={"title": "New title", "body": "Body"},
@@ -185,7 +176,6 @@ def test_update_step_writes_revision_with_previous(onboarding_repo, request, uni
         step_id=dto.id, editor_user_id=unique_user, partial={"title": "B"},
     )
     revs = onboarding_repo.list_revisions(dto.id)
-    # newest first
     assert revs[0].change_kind == "update"
     assert revs[0].previous["title"] == "A"
     assert revs[0].current["title"] == "B"
@@ -233,7 +223,6 @@ def test_archive_idempotent(onboarding_repo, request, unique_user):
     pre = onboarding_repo.list_revisions(dto.id)
     onboarding_repo.archive_step(step_id=dto.id, editor_user_id=unique_user)
     post = onboarding_repo.list_revisions(dto.id)
-    # second archive on already-archived step writes no extra revision
     assert len(pre) == len(post)
 
 

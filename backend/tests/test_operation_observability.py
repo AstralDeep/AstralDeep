@@ -1,10 +1,7 @@
-"""Feature-060 non-sensitive runtime observability contracts (T024).
-
-These tests are intentionally contract-first and are expected to remain red
-until T030 supplies ``RuntimeObservability`` in
-``orchestrator.orchestrator``.  T024 does not add counters to production code;
-it fixes the required metric names, age semantics, and label safety boundary
-for the later implementation task.
+"""Tests defining the metric-name, age and label-safety contract for
+RuntimeObservability (backend/orchestrator/orchestrator.py, work_admission.py):
+capacity, queue-wait, retention, refusal and scheduler counters, rejecting unsafe
+labels.
 """
 
 from __future__ import annotations

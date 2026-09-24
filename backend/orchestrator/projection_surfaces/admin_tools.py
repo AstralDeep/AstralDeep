@@ -1,36 +1,8 @@
-"""Deep-owned host adapter for the Admin Tools Projection surface.
-
-Two tabs (``params.tab``):
-
-* ``quality`` (default) — the feedback-admin read views: latest
-  underperforming-tool quality signals and pending knowledge-update
-  proposals, with approve/reject actions that reuse the SAME internals
-  (and therefore the same audit emission) as the
-  ``feedback_admin_router`` endpoints in ``backend/feedback/api.py``
-  (``feedback.proposals.apply_accepted`` / ``reject_proposal``).
-* ``diagnostics`` — deployment-wide runtime counters and gauges, the
-  same payload-free ``RuntimeObservability.snapshot()`` the admin-only
-  ``GET /api/runtime-reliability/metrics`` endpoint returns, rendered
-  read-only through Projection's ``build_diagnostics_view``. The view
-  carries no action: nothing here resets, exports or reconfigures the
-  collector, and no user, conversation, credential or target identity
-  is recorded in a sample.
-* ``tutorial`` — tutorial-step administration: full step list including
-  archived rows (``OnboardingRepository.list_all_steps`` — the
-  ``GET /api/admin/tutorial/steps`` internals), a per-step edit/create
-  form, and archive/restore actions, all mirroring the
-  ``onboarding_admin_router`` endpoint bodies in
-  ``backend/onboarding/api.py`` including their
-  ``record_tutorial_step_edited`` audit calls.
-
-This surface is admin-only. ``ADMIN_ONLY = True`` gates it at the
-dispatcher; additionally — defense in depth (FR-014) — ``render`` and
-EVERY handler hard-check ``"admin" in roles`` themselves and return an
-error notice (plus a best-effort ``settings`` audit event for handler
-rejections) when the check fails.
-
-Escape-by-default: every dynamic interpolation goes through ``esc()``.
+"""Host adapter for the Admin Tools Projection surface's quality and diagnostics tabs,
+reusing the same internals and audit emission as feedback/api.py's admin endpoints.
+Registered in projection_surfaces via SURFACE_MODULES.
 """
+
 import asyncio
 import json
 import logging
@@ -63,8 +35,7 @@ SURFACE_KEY = "admin_tools"
 
 _DENIED_MESSAGE = "Admin role required for this action."
 
-# Editable tutorial-step columns (slug is create-only; stable thereafter,
-# mirroring AdminTutorialStepUpdateRequest which omits it).
+# Excludes slug — matches the update schema's immutability
 _STEP_UPDATE_FIELDS = ("audience", "display_order", "target_kind", "target_key", "title", "body")
 _STEP_CREATE_FIELDS = ("slug",) + _STEP_UPDATE_FIELDS
 
@@ -88,26 +59,10 @@ _LABEL_CLS = "flex flex-col gap-1 text-xs text-astral-muted"
 
 
 def _is_admin(roles) -> bool:
-    """True when the session roles include ``admin``."""
     return "admin" in (roles or [])
 
 
-# ---------------------------------------------------------------------------
-# Render
-# ---------------------------------------------------------------------------
-
 async def render(orch, user_id, roles, params) -> str:
-    """Render the Admin tools surface body (tab bar + active tab).
-
-    Args:
-        orch: Orchestrator instance (``feedback_repo`` / ``onboarding_repo``).
-        user_id: Acting user id (JWT subject).
-        roles: Session roles; must contain ``admin`` (re-checked here).
-        params: ``{tab?: quality|tutorial, step_id?, draft?}``.
-
-    Returns:
-        Body HTML for the modal shell; an error block for non-admins.
-    """
     if not _is_admin(roles):
         logger.warning("admin_tools render denied for non-admin user %s", user_id)
         return chrome_error_block("Admin role required to view this surface.")
@@ -125,7 +80,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 def _tab_bar(active: str) -> str:
-    """Tab buttons re-opening this surface with the chosen ``tab`` param."""
     buttons = []
     for key, label in (("quality", "Tool quality"), ("diagnostics", "Runtime diagnostics"),
                        ("tutorial", "Tutorial admin")):
@@ -145,17 +99,7 @@ def _tab_bar(active: str) -> str:
     return f'<div class="flex items-center gap-2" role="tablist">{inner}</div>'
 
 
-# ----- Runtime diagnostics tab ----------------------------------------------
-
 def _render_diagnostics(orch, roles) -> str:
-    """Render the runtime-observability snapshot read-only for an admin.
-
-    The role check is repeated here so the builder can never be reached with an
-    unauthorized snapshot even if a future caller skips ``render``'s own gate;
-    a non-admin is given the refusal view and no sample at all. A collector that
-    is not wired, or one that cannot answer, is reported as unavailable rather
-    than as an empty deployment.
-    """
     from astralprojection.chrome import render_html
     from astralprojection.chrome.admin import build_diagnostics_view
 
@@ -176,10 +120,7 @@ def _render_diagnostics(orch, roles) -> str:
             + render_html(build_diagnostics_view(samples)) + "</div>")
 
 
-# ----- Tool quality tab -----------------------------------------------------
-
 def _pct(value) -> str:
-    """Format a 0..1 ratio as a percentage string."""
     try:
         return f"{float(value) * 100:.1f}%"
     except (TypeError, ValueError):
@@ -187,18 +128,10 @@ def _pct(value) -> str:
 
 
 def _iso_short(value) -> str:
-    """Trim an ISO timestamp string to a readable minute precision."""
     return (str(value or ""))[:16].replace("T", " ")
 
 
 def _render_quality(orch) -> str:
-    """Tool-quality read views + pending proposals with decide actions.
-
-    Mirrors ``list_flagged`` and ``list_proposals`` in
-    ``backend/feedback/api.py`` — the same ``FeedbackRepository`` calls,
-    the same per-item enrichment (category breakdown, pending-proposal
-    badge via ``to_admin_view``).
-    """
     repo = getattr(orch, "feedback_repo", None)
     if repo is None:
         return notice_block("error", "Feedback subsystem not initialized.")
@@ -320,10 +253,7 @@ def _proposals_section(proposals) -> str:
     )
 
 
-# ----- Tutorial admin tab ---------------------------------------------------
-
 def _parse_step_id(value):
-    """Coerce a payload/params step id to int; None when absent/invalid."""
     if value in (None, "", "new"):
         return None
     try:
@@ -333,11 +263,6 @@ def _parse_step_id(value):
 
 
 def _render_tutorial(orch, params) -> str:
-    """Tutorial-step admin: full list (incl. archived) + edit/create form.
-
-    Step list uses ``list_all_steps(include_archived=True)`` — exactly the
-    ``GET /api/admin/tutorial/steps`` internals (onboarding/api.py:255-268).
-    """
     repo = getattr(orch, "onboarding_repo", None)
     if repo is None:
         return notice_block("error", "Onboarding subsystem not initialized.")
@@ -426,12 +351,6 @@ def _select(name: str, options, current) -> str:
 
 
 def _step_form(step, draft, default_order) -> str:
-    """Edit (``step`` set) or create (``step`` None) form for one step.
-
-    ``draft`` — submitted values preserved across a failed save (FR-016).
-    Slug is editable on create only (mirrors the PUT contract: slugs are
-    stable identifiers), so the edit form shows it read-only and unnamed.
-    """
     values = {}
     if step is not None:
         values = {
@@ -496,12 +415,7 @@ def _step_form(step, draft, default_order) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Handlers
-# ---------------------------------------------------------------------------
-
 async def _audit_denied(user_id, action: str) -> None:
-    """Best-effort ``settings`` audit event for a rejected non-admin call."""
     try:
         from audit.recorder import get_recorder, make_correlation_id, now_utc
         from audit.schemas import AuditEventCreate
@@ -526,7 +440,6 @@ async def _audit_denied(user_id, action: str) -> None:
 
 
 async def _deny_non_admin(user_id, roles, action: str):
-    """Return the error-path tuple for non-admins, None for admins (FR-014)."""
     if _is_admin(roles):
         return None
     logger.warning("admin_tools: non-admin %s invoked %s — rejected", user_id, action)
@@ -535,14 +448,6 @@ async def _deny_non_admin(user_id, roles, action: str):
 
 
 async def handle_proposal_decide(orch, websocket, user_id, roles, payload):
-    """``chrome_admin_proposal_decide {proposal_id, decision, fields?}``.
-
-    accept → ``feedback.proposals.apply_accepted`` (the POST
-    ``/proposals/{id}/accept`` internals); reject →
-    ``feedback.proposals.reject_proposal`` with the collected rationale
-    (the POST ``/proposals/{id}/reject`` internals). Both emit their own
-    ``proposal_review`` audit events.
-    """
     denied = await _deny_non_admin(user_id, roles, "chrome_admin_proposal_decide")
     if denied:
         return denied
@@ -599,11 +504,6 @@ async def handle_proposal_decide(orch, websocket, user_id, roles, payload):
 
 
 def _normalize_step_fields(fields: dict) -> dict:
-    """Coerce collected form values into repo/schema shapes.
-
-    Raises:
-        ValueError: ``display_order`` is not an integer.
-    """
     out = {}
     for key in _STEP_CREATE_FIELDS:
         if key not in fields:
@@ -625,7 +525,6 @@ def _normalize_step_fields(fields: dict) -> dict:
 
 
 def _validation_message(exc: ValidationError) -> str:
-    """Condense a pydantic ValidationError into a one-line notice message."""
     try:
         parts = []
         for err in exc.errors()[:3]:
@@ -638,16 +537,6 @@ def _validation_message(exc: ValidationError) -> str:
 
 
 async def handle_step_save(orch, websocket, user_id, roles, payload):
-    """``chrome_admin_step_save {step_id?, fields}`` — create or update.
-
-    No ``step_id`` → create (the POST ``/api/admin/tutorial/steps``
-    internals: ``AdminTutorialStepCreateRequest`` validation,
-    ``create_step``, ``record_tutorial_step_edited('create')``).
-    With ``step_id`` → partial update (the PUT internals: field
-    validation, merged target consistency check, ``update_step``,
-    ``record_tutorial_step_edited('update')`` when fields changed).
-    Failed saves preserve submitted values via ``params.draft``.
-    """
     denied = await _deny_non_admin(user_id, roles, "chrome_admin_step_save")
     if denied:
         return denied
@@ -742,7 +631,6 @@ async def handle_step_save(orch, websocket, user_id, roles, payload):
 
 
 async def _toggle_archive(orch, user_id, roles, payload, *, archive: bool):
-    """Shared body for archive/restore — the POST archive/restore internals."""
     action = "chrome_admin_step_archive" if archive else "chrome_admin_step_restore"
     denied = await _deny_non_admin(user_id, roles, action)
     if denied:
@@ -776,12 +664,10 @@ async def _toggle_archive(orch, user_id, roles, payload, *, archive: bool):
 
 
 async def handle_step_archive(orch, websocket, user_id, roles, payload):
-    """``chrome_admin_step_archive {step_id}`` — soft-delete a step."""
     return await _toggle_archive(orch, user_id, roles, payload, archive=True)
 
 
 async def handle_step_restore(orch, websocket, user_id, roles, payload):
-    """``chrome_admin_step_restore {step_id}`` — restore an archived step."""
     return await _toggle_archive(orch, user_id, roles, payload, archive=False)
 
 

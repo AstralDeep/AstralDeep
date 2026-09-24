@@ -1,4 +1,7 @@
-"""Supply-chain guards for Feature 065 Windows and contract-tool locks."""
+"""Supply-chain lock tests for the Windows client's LiveKit pin and the contract
+validator's dependency lock: exact hashes, isolation from product manifests, and a
+scoped policy for which files may drift from the frozen baseline.
+"""
 
 from __future__ import annotations
 
@@ -187,8 +190,6 @@ def _hashes(path: Path) -> dict[str, set[str]]:
 
 
 def _deep_dependency_authority_kind(relative_path: str) -> str | None:
-    """Classify only tracked, Deep-owned dependency and model authorities."""
-
     normalized = PurePosixPath(relative_path).as_posix()
     policy = DEEP_DEPENDENCY_AUTHORITY_POLICY
     if normalized in policy["exact_paths"]:
@@ -316,8 +317,6 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
 
 
 def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
-    """Freeze the 075 closure except the reviewed 079 build-tool security patch."""
-
     base_tracked = _git_tracked_paths(
         "ls-tree", "-r", "--name-only", FEATURE_075_BASE_COMMIT
     )
@@ -338,10 +337,6 @@ def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
         assert base_sha256 == expected_sha256, relative
         expected_current = base_bytes
         if relative in {"Dockerfile", "pyproject.toml"}:
-            # 0dfc768f04f2c658cad368eb7dc112f5bc5b3dfd changed only this
-            # isolated build backend to close the setuptools advisory. See
-            # specs/079-persistent-agents/verification/production-readiness.md.
-            # Keep every other byte frozen; no runtime/model drift is permitted.
             assert base_bytes.count(b"setuptools==80.9.0") == 1, relative
             expected_current = base_bytes.replace(
                 b"setuptools==80.9.0", b"setuptools==83.0.0", 1)

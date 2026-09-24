@@ -1,4 +1,7 @@
-"""Contract tests for the feature-074 component boundary ports."""
+"""Tests for backend/orchestrator/component_ports.py: boundary ports stay host-neutral
+and structural, with frozen presentation values and fail-closed validation of
+boundary values and records.
+"""
 
 from __future__ import annotations
 

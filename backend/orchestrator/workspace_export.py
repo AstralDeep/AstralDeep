@@ -1,9 +1,8 @@
-"""Ephemeral, independently authorized rendering of a visible canvas capture.
-
-The submitted tree is display data, never a committed result or an authority
-claim. This adapter performs no layout, tool, share, audit-payload or store write.
-Legacy canvas-export authorization/audit and public share rendering stay separate.
+"""Bounded, owner/revision-fenced HTTP export of a visible canvas capture via
+ExportService and AstralProjection's webrender; never a committed result, audit
+write, or authority claim. Registered by orchestrator/api.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,8 +42,6 @@ _RENDER_SECONDS = 15.0
 
 
 class ExportRefusal(Exception):
-    """A bounded, data-free public refusal."""
-
     def __init__(self, code: str, status: int):
         self.code, self.status = code, status
 
@@ -58,7 +55,6 @@ class ExportIdentity:
 async def export_identity(
     request: Request, credential: HTTPAuthorizationCredentials | None = Depends(auth.security),
 ) -> ExportIdentity:
-    """Use current institutional cookie/bearer IAM without profile persistence."""
     if "token" in request.query_params:
         raise ExportRefusal("presentation_query_token_refused", 403)
     claims = await auth.get_web_or_bearer_user_payload(request, credential)
@@ -85,7 +81,6 @@ def _origin(value: str, *, base: bool = False):
 
 
 def _request_policy(request: Request, identity: ExportIdentity) -> int:
-    """Validate the transport envelope before consuming any private tree bytes."""
     types = request.headers.getlist("content-type")
     if len(types) != 1 or types[0].split(";", 1)[0].strip().lower() != "application/json":
         raise ExportRefusal("presentation_json_required", 415)
@@ -131,13 +126,6 @@ async def _body(request: Request) -> bytes:
 
 
 class ExportService:
-    """Application-scoped bounded admission for reads and pure CPU rendering.
-
-    No request waits in a render queue. Cancellation retains admission until
-    an already-running worker finishes; a caller cannot multiply render threads
-    by disconnecting. Submitted bytes live only within the admitted request.
-    """
-
     def __init__(self, orchestrator):
         source = plane_source_from_orchestrator(orchestrator)
         self.orchestrator = orchestrator
@@ -147,7 +135,6 @@ class ExportService:
         self.capacity = threading.BoundedSemaphore(2)
 
     async def check(self, owner: str, chat: str, revision: int):
-        """Read exact owner/revision through the application's public repository."""
         _enabled()
         record = await self.runtime.run_in_transaction(lambda tx: self.repository.get(
             tx, owner_id=owner, conversation_id=chat))
@@ -157,7 +144,6 @@ class ExportService:
             raise ExportRefusal("presentation_revision_changed", 409)
 
     async def present(self, request: Request, identity: ExportIdentity, chat: str, revision: int) -> bytes:
-        """Authorize and render once, retaining the slot through cancelled work."""
         if not self.capacity.acquire(blocking=False):
             raise ExportRefusal("presentation_busy", 429)
         worker = None
@@ -182,7 +168,6 @@ class ExportService:
 
     @staticmethod
     def _render(payload: bytes) -> bytes:
-        """Render and serialize off-loop; returned bytes remain a bounded envelope."""
         output = json.dumps(render_presentation(payload), ensure_ascii=False,
                             allow_nan=False, separators=(",", ":")).encode("utf-8")
         if len(output) > MAX_OUTPUT_BYTES:
@@ -198,8 +183,6 @@ class ExportService:
 
 
 class PresentationRoute(APIRoute):
-    """Keep refusals payload-free, including dependency and unexpected failures."""
-
     def get_route_handler(self):
         handler = super().get_route_handler()
 
@@ -247,7 +230,6 @@ workspace_export_router = APIRouter(route_class=PresentationRoute)
 async def export_presentation(
     chat_id: str, request: Request, identity: ExportIdentity = Depends(export_identity),
 ):
-    """Return only an owner/revision-fenced, no-store presentation envelope."""
     from orchestrator.api import _get_orchestrator
 
     revision = _request_policy(request, identity)

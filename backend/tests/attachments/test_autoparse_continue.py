@@ -1,4 +1,8 @@
-"""031 T031 — auto-continue the original turn once a parser goes live."""
+"""Tests for orchestrator/attachment_autoparse.py: once a parser goes live, the original
+chat turn that triggered its creation replays automatically; a missing link or
+missing args returns false instead of raising.
+"""
+
 import asyncio
 import sys
 import types
@@ -80,9 +84,6 @@ class _Attachments:
 
 
 def _machine_seam(ns):
-    """056 US2: model the orchestrator's machine-turn authority seam on a
-    SimpleNamespace stand-in (no durable consent in tests → AuthoritySkip, so
-    the turn runs unbound exactly as it does in dev posture)."""
     async def derive_machine_authority(**kwargs):
         from orchestrator.chain_authority import AuthoritySkip
         return AuthoritySkip("missing_consent", "test double")
@@ -122,7 +123,7 @@ def test_auto_continue_replays_original_turn():
         extension="xyz", category="data"))
     assert ok is True
     assert len(calls) == 1
-    assert calls[0]["message"] == "summarize this file"  # original (un-augmented) text
+    assert calls[0]["message"] == "summarize this file"
     assert calls[0]["chat_id"] == "c1"
     assert calls[0]["user_id"] == "u1"
     assert calls[0]["attachments"][0]["attachment_id"] == "a1"

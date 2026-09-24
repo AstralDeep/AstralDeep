@@ -1,4 +1,8 @@
-"""Private current-caller fences for Work writes; never dispatch authority."""
+"""Verifies the current caller for Work write commands - bare-Bearer or cookie-bound -
+without granting dispatch authority. Composes work_submit_authority.py and
+work_continuation_authority.py for work_controls.py and work_publication.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -103,13 +107,6 @@ class _Composition:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class WorkCallerAuthority:
-    """One original IAM request and optional caller issuance, bounded to 15 seconds.
-
-    Safe bare-Bearer writes retain normal human IAM plus the original expiry and
-    deadline. They cannot invent a persisted session or prove instantaneous remote
-    revocation. Cookie callers additionally hold a real consent fence in SQL.
-    """
-
     context: AuthenticatedWorkRequest
     caller: SessionConsentObservation | None
     _binding: _Composition
@@ -129,18 +126,12 @@ class WorkCallerAuthority:
         assignments._owner(self.context.owner_id, self.context.claims)
 
     def require_session(self) -> SessionConsentObservation:
-        """Require the already selected caller B; never select or refresh a row."""
         self._assert_local(self._binding.assignments)
         if self.caller is None:
             _unauthenticated()
         return self.caller
 
     def assert_current(self, tx, *, assignments):
-        """Check before assignment locks and again after every later write/wait.
-
-        The caller owns SQL wait caps and the outer transaction. Any refusal must
-        roll back its mutation/audit. Original A checks never replace caller B.
-        """
         self._assert_local(assignments)
         repository = self._binding.runtime.repositories.history.sessions
         state = None
@@ -150,8 +141,6 @@ class WorkCallerAuthority:
                 self.context.assert_current(self._binding.runtime, now=state.observed_at)
             if self._original is not None:
                 current = repository.assert_current_execution(tx, observation=self._original.observation)
-                # A's row lock can wait after B was checked. B's locked identity
-                # cannot change, but its shorter observation may expire meanwhile.
                 if self.caller is not None and not (
                         self.caller.started_at <= current.observed_at < self.caller.valid_until):
                     _unauthenticated()
@@ -166,7 +155,6 @@ class WorkCallerAuthority:
         return state
 
     def with_original(self, authority: OperationControlAuthority) -> WorkCallerAuthority:
-        """Bind original A; same-session rotation requires the exact pre-CAS proof."""
         caller = self.require_session()
         if (self._original is not None or type(authority) is not OperationControlAuthority
                 or authority.request_context is not self.context
@@ -195,7 +183,6 @@ class WorkCallerAuthority:
         return replace(self, caller=caller, _original=authority)
 
     async def verify_delivery(self) -> None:
-        """Verify only the original JWT and selected lineage before private output."""
         try:
             async with asyncio.timeout_at(self._deadline):
                 self._assert_local(self._binding.assignments)
@@ -216,7 +203,6 @@ class WorkCallerAuthority:
 async def authenticate_work_control_request(
     request: Request, *, assignments, sessions,
 ) -> WorkCallerAuthority:
-    """Freeze/verify ordinary IAM, then capture exactly one caller issuance B."""
     deadline = time.monotonic() + 15
     until = datetime.now(timezone.utc) + timedelta(seconds=15)
     try:

@@ -1,15 +1,8 @@
-"""055-uniform-artifacts US3 (T032) — canvas origin independence.
-
-The SAME multi-component tool turn driven once from a browser-profile socket
-and once from an android-profile socket (fresh chats each) persists a
-``workspace_layout`` row in BOTH chats with equal arrangement trees —
-component identities are content-derived fingerprints (agent|tool|params),
-so equality across chats is exact, not merely structural. The materialized
-canvases are equivalent per profile capability (same identity sets, same
-layout tree shape modulo profile degradation); only the delivery point
-differs by contract (wire-contract §5): web receives the designed render
-mid-turn, natives receive it once after ``chat_status done``.
+"""Tests for canvas origin independence (backend/orchestrator/ui_designer.py,
+workspace.py): a browser and an android turn persist equal workspace_layout rows with
+matching content-derived identities, differing only in delivery point.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,7 +46,6 @@ def _usage():
 
 
 def _rich_components():
-    """Two rich components — enough to trigger the designer on every origin."""
     return [
         {"type": "table", "title": "Alpha", "headers": ["A"], "rows": [["1"]]},
         {"type": "metric", "title": "Beta", "value": "42"},
@@ -61,8 +53,6 @@ def _rich_components():
 
 
 def _expected_family():
-    """The identity family both chats must mint: same agent/tool/params ⇒
-    same fingerprint base, batch sibling gets the deterministic ordinal."""
     from orchestrator.workspace import fingerprint, ordinal_identity
     base = fingerprint(AGENT, TOOL, {})
     return [base, ordinal_identity(base, 1)]
@@ -85,7 +75,6 @@ def _last_done_index(ws):
 
 
 def _identities(nodes):
-    """Every component identity in a (materialized) tree, depth-first."""
     found = []
 
     def walk(n):
@@ -106,8 +95,6 @@ def _identities(nodes):
 
 
 def _shape(node):
-    """Structural skeleton (type + child skeletons) — tolerant of the
-    profile-specific keys ROTE adaptation adds or rewrites."""
     if not isinstance(node, dict):
         return None
     kids = []
@@ -124,12 +111,8 @@ def _shapes(nodes):
 
 @pytest.fixture()
 async def env(monkeypatch):
-    """A real Orchestrator + one user on two sockets — browser and android —
-    each viewing its own fresh chat."""
     monkeypatch.setenv("FF_UI_DESIGNER", "true")
     monkeypatch.setitem(flags._flags, "designer_all_devices", True)
-    # Canvas-origin parity is independent of compatibility TaskManager
-    # admission; do not let unrelated shared-database queue state gate a turn.
     monkeypatch.setitem(flags._flags, "task_state_machine", False)
     for mod in ("agentic_creation", "scheduling_chat", "memory_chat",
                 "desktop_codegen"):
@@ -160,8 +143,6 @@ async def env(monkeypatch):
     orch.tool_permissions.is_tool_allowed.return_value = True
 
     async def _tool_result(*args, **kwargs):
-        # Fresh dicts per call: identity stamping mutates the components, and
-        # the two turns must not share (already-stamped) objects.
         return SimpleNamespace(result={"ok": True}, error=None,
                                ui_components=_rich_components(),
                                correlation_id=None)
@@ -197,9 +178,6 @@ async def env(monkeypatch):
 
 
 def _install_llm(orch, final_text="All set."):
-    """One tool round then a short final answer; designer passes answered
-    through the same _call_llm seam (feature audit intact). Re-install
-    before each turn — the round counter is per-turn."""
     state = {"n": 0}
 
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -215,8 +193,6 @@ def _install_llm(orch, final_text="All set."):
 
 
 def _install_designer(monkeypatch):
-    """Deterministic design_round shared by BOTH origins: exercises llm_call
-    once, then arranges the round's components into a 2-column grid."""
     from orchestrator import ui_designer
     calls = []
 
@@ -232,7 +208,6 @@ def _install_designer(monkeypatch):
 
 
 async def _drive_both(orch, sockets, chats, user_id):
-    """The identical turn, once per origin, each on its own fresh chat."""
     for device in ("browser", "android"):
         _install_llm(orch)
         await registered_chat(orch,
@@ -240,8 +215,6 @@ async def _drive_both(orch, sockets, chats, user_id):
 
 
 async def test_both_origins_persist_equal_layout_rows(env, monkeypatch):
-    """Identical turn from web and Android → a workspace_layout row in BOTH
-    chats, claiming the same content-derived identities in the same tree."""
     orch, sockets, chats, user_id = env
     design_calls = _install_designer(monkeypatch)
 
@@ -262,8 +235,6 @@ async def test_both_origins_persist_equal_layout_rows(env, monkeypatch):
 
 
 async def test_materialized_canvases_equivalent_per_profile(env, monkeypatch):
-    """Persisted materialization equal across chats; the wire canvases carry
-    the same identity set and tree shape on both profiles."""
     orch, sockets, chats, user_id = env
     _install_designer(monkeypatch)
 
@@ -290,9 +261,6 @@ async def test_materialized_canvases_equivalent_per_profile(env, monkeypatch):
 
 
 async def test_delivery_point_differs_by_contract(env, monkeypatch):
-    """Same designed canvas, per-profile delivery point (wire-contract §5):
-    flat ui_upsert first on both; web render mid-turn, native render
-    post-done."""
     orch, sockets, chats, user_id = env
     _install_designer(monkeypatch)
 

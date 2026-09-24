@@ -1,9 +1,8 @@
-"""CLI entry point: ``python -m verification`` (T027 / contracts/cli.md).
-
-Runs the harness (in-process by default; external opt-in), writes the dual run
-record, and exits with a code that distinguishes success / failure / credential
-near-exposure / harness-could-not-observe.
+"""CLI entry point for `python -m verification`; an operator or CI job runs the harness
+(backend/verification/runner.py, drivers/in_process.py, report.py) and exits with a
+code distinguishing pass, fail, and near-exposure.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,7 +34,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def config_from_args(args: argparse.Namespace) -> RunConfig:
     run_id = args.run_id or f"__verif__{args.stamp}"
     kwargs: Dict[str, Any] = {
-        "mode": args.mode,  # RunConfig normalizes in-process -> in_process
+        "mode": args.mode,
         "run_id": run_id,
         "personas": list(args.personas or []),
         "base_url": args.base_url,
@@ -92,7 +91,6 @@ async def run_in_process(config: RunConfig) -> Dict[str, Any]:
                       "query": scenario.query}
             for check in us1 + us3:
                 verdicts.append(_verdict_for(check, ev, inputs, scenario))
-        # US2 authority probes (run once).
         probes = {
             "xuser": await driver.probe_cross_user(config.run_id),
             "scope": await driver.probe_scope_withheld(config.run_id),
@@ -130,7 +128,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     from verification.report import write_report
 
     if config.mode == "external":
-        # Opt-in live surface; not exercised in CI.
         from verification.drivers.external import ExternalDriver  # noqa: F401
         raise SystemExit("external mode requires a live deployment; run with a base URL "
                          "and network access (not a CI gate)")

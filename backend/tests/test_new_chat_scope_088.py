@@ -1,4 +1,7 @@
-"""New chat retires socket presentation scope without cancelling old work."""
+"""Tests for orchestrator/orchestrator.py: starting a new chat retires the socket's old
+presentation scope without cancelling in-flight work, and stale or replaced
+connection generations never leak old-chat events into the new scope.
+"""
 
 from __future__ import annotations
 
@@ -360,7 +363,6 @@ async def test_replaced_session_during_failed_await_receives_no_old_error(
     if phase == "render":
         orchestrator.send_ui_render = AsyncMock(side_effect=failing_await)
     else:
-        # Keep the real to_thread call, with a worker released by the loop.
         import threading
 
         thread_release = threading.Event()
@@ -406,9 +408,6 @@ async def test_session_replacement_during_welcome_write_suppresses_followup(runt
     release = asyncio.Event()
 
     async def delayed_send(raw):
-        # The current-session check reaches the actual transport dispatch
-        # without yielding. A write already issued before replacement cannot
-        # be revoked; only its later chat_created/marker must be suppressed.
         assert orchestrator.ui_sessions[socket] is session
         socket.frames.append(json.loads(raw))
         entered.set()

@@ -1,17 +1,8 @@
-"""T002 (056-delegated-agent-chaining): flag posture for the chaining seams.
-
-Feature 056 introduces NO new product flag. The interactive chaining seam
-(mediated agent-to-agent hops + planner sub-task decomposition) rides the
-existing ``recursive_delegation`` flag (048), and the machine-turn root
-authority (consent-derived offline-grant threading) rides the existing
-``scheduler_execution`` flag, which stays dark pending the T057 offline-grant
-security review. Both MUST default off (fail closed) so that flag-off behavior
-is byte-identical to the single-hop path (FR-009, FR-016, SC-009).
-
-NOTE: these tests construct fresh ``FeatureFlags()`` instances rather than
-reloading the module — a reload would rebind the process-global ``flags``
-singleton out from under every module that imported it.
+"""Tests confirming chained-agent delegation reuses the existing recursive_delegation
+and scheduler_execution flags (shared/feature_flags.py), both defaulting off, with no
+new flag registered.
 """
+
 from shared.feature_flags import FeatureFlags
 
 
@@ -44,7 +35,6 @@ def test_flags_enable_via_env(monkeypatch):
 
 
 def test_no_new_056_flag_registered(monkeypatch):
-    """056 reuses the two existing flags — no 056-specific flag exists."""
     flags = _fresh_flags(monkeypatch)
     names = set(flags._flags)
     assert "recursive_delegation" in names

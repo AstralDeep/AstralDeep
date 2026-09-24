@@ -1,29 +1,16 @@
-"""Task-model-first generative UI.
-
-Instead of free-forming a layout, the model first describes the turn as a typed
-**task model** — a task plus entities whose attributes are typed (SVAL / DICT /
-ARRY / PNTR / TEMPORAL) and role-annotated — and the layout is then *derived
-deterministically* by a fixed ``<attribute → primitive>`` rule table. This
-separates "what the data is" from "how it looks", giving stable, predictable UI
-from variable data, and gives the designer a principled structural prior rather
-than relying on the LLM's (demonstrably uneven) layout taste.
-
-This module is the pure, deterministic heart: the rule table
-(:func:`attr_to_primitive`), the schema→skeleton derivation
-(:func:`derive_layout`), the schema parser, and the prompt builder for the
-optional LLM schema pre-pass. Integration lives in ``ui_designer`` behind
-``FF_UI_DESIGNER_TASKMODEL`` and is strictly fail-open.
+"""Deterministic rule table for task-model-first generative UI: typed, role-annotated
+entity attributes map to astralprims primitives, deriving a layout skeleton without
+relying on the LLM's layout choices. Integrated into ui_designer.py.
 """
+
 from __future__ import annotations
 
 import json
 import os
 from typing import Any, Dict, List, Optional
 
-#: Typed attributes the task model can carry, mapped onto AstralDeep's needs.
 ATTR_TYPES = ("SVAL", "DICT", "ARRY", "PNTR", "TEMPORAL")
 
-#: Roles that refine how a scalar (SVAL) or array (ARRY) is rendered.
 _METRIC_ROLES = frozenset({"metric", "kpi", "measure", "count", "total", "amount", "stat"})
 _RATING_ROLES = frozenset({"rating", "score", "stars", "grade"})
 _STATUS_ROLES = frozenset({"status", "state", "badge", "flag", "label"})
@@ -33,16 +20,6 @@ _TIMELINE_ROLES = frozenset({"timeline", "events", "history", "schedule", "log"}
 
 def attr_to_primitive(attr_type: str, *, role: Optional[str] = None,
                       cardinality: str = "one") -> str:
-    """Rule table: map a typed, role-annotated attribute to ONE astralprims
-    primitive type. Deterministic and total — an unknown type falls back to
-    ``text``.
-
-    - SVAL  → metric (measure roles) / rating (score roles) / badge (status) / text
-    - DICT  → keyvalue
-    - ARRY  → table (tabular / many) / timeline (event roles) / list
-    - PNTR  → card (a reference/thumbnail+link)
-    - TEMPORAL → timeline
-    """
     t = (attr_type or "").strip().upper()
     r = (role or "").strip().lower()
     if t == "SVAL":
@@ -76,19 +53,11 @@ def _attr_spec(attr: Dict[str, Any]) -> Optional[Dict[str, str]]:
                               cardinality=str(attr.get("cardinality") or "one"))
     spec: Dict[str, str] = {"type": ptype}
     if name:
-        # metric/rating use it as a title; text/list/etc. as a label too.
         spec["title"] = name
     return spec
 
 
 def derive_layout(schema: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Deterministic derivation: a typed task schema → a layout SKELETON
-    (astralprims structural dicts; no data — the semantic spine).
-
-    ``schema = {"task": str, "entities": [{"name": str, "attributes":
-    [{"name","type","role","cardinality"}]}]}``. A hero anchors the task; each
-    entity becomes a titled card grouping its attributes' primitives. Returns
-    ``[]`` for an empty/degenerate schema (caller falls back)."""
     if not isinstance(schema, dict):
         return []
     layout: List[Dict[str, Any]] = []
@@ -127,9 +96,6 @@ def _outline(nodes: List[Dict[str, Any]], indent: int = 0) -> List[str]:
 
 
 def schema_prior(schema: Dict[str, Any]) -> str:
-    """A short textual outline of the derived skeleton, to seed the designer
-    prompt (the deterministic structural spine the LLM should follow). ''
-    when nothing derives."""
     layout = derive_layout(schema)
     if not layout:
         return ""
@@ -137,8 +103,6 @@ def schema_prior(schema: Dict[str, Any]) -> str:
 
 
 def parse_task_schema(content: str) -> Optional[Dict[str, Any]]:
-    """Parse the LLM's task-schema reply into a dict with at least one entity.
-    Tolerant of a ```json fence / surrounding prose. None when unusable."""
     if not isinstance(content, str):
         return None
     s = content.strip()
@@ -179,7 +143,6 @@ _MAX_REQUEST_CHARS = 800
 
 def build_schema_messages(user_request: str,
                           components: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Prompt the LLM for a small typed task schema for this round (pure)."""
     request = (user_request or "").strip()
     if len(request) > _MAX_REQUEST_CHARS:
         request = request[:_MAX_REQUEST_CHARS] + "…"
@@ -201,8 +164,4 @@ def build_schema_messages(user_request: str,
 
 
 def taskmodel_enabled() -> bool:
-    """FF_UI_DESIGNER_TASKMODEL (default OFF). When on, the designer runs a
-    task-schema pre-pass and derives a deterministic structural prior. Default
-    OFF because it adds an LLM round-trip; the deterministic engine is always
-    available. Fail-open: any error → no prior."""
     return os.getenv("FF_UI_DESIGNER_TASKMODEL", "false").strip().lower() in ("1", "true", "yes", "on")

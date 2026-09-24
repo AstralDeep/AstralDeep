@@ -1,31 +1,8 @@
-"""Bug A regression (2026-08-03): the first answer of a new chat vanished.
-
-Live symptom, reproduced on the iOS simulator against the real stack: start
-a new chat in ANY client (``new_chat`` → ``chat_created`` → ``chat_message``
-WITH the created id), send a first message, get no response and no UI update;
-repeating the message works.
-
-Root cause chain:
-- ``_chat_narrative`` persists a multi-paragraph answer (>280 chars, a blank
-  line, or a leading heading — the common shape of a fresh answer) as
-  ``Card(title=…, content=[Text(answer)])``. That card is chat-rail
-  narrative and NEVER enters the workspace.
-- Feature 063's ``_rail_parts`` dropped every non-``text`` component from the
-  snapshot transcript, so the committed conversation snapshot contained the
-  user message but NOT the answer (and the canvas was empty too).
-- Feature 066's operation-chat adoption made the end-of-turn commit snapshot
-  actually publish — and the authoritative snapshot then REPLACED the live
-  view answer-less on every client, wiping the transient render ~ms after it
-  appeared. A terse repeat answer (single line ≤280 chars) stayed a bare
-  ``Text`` and survived, which is why repeating "worked".
-
-The fix lifts the words out of TEXT-ONLY wrapper chrome in ``_rail_parts``
-(orchestrator/history.py). This file pins the end-to-end truth over the REAL
-ingress path: new_chat → chat_message(chat_id) with a scripted two-paragraph
-LLM answer must deliver a commit ``conversation_snapshot`` whose transcript
-carries the assistant's words. Requires the docker-compose Postgres; skipped
-where unreachable.
+"""Tests for orchestrator/orchestrator.py: a fresh chat's first answer survives the
+end-of-turn commit snapshot as chat-rail Card narrative, covering multi-paragraph
+answers that would otherwise be dropped from the transcript.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,7 +20,6 @@ if str(BACKEND_DIR) not in sys.path:
 
 pytestmark = pytest.mark.asyncio
 
-# Two paragraphs — the exact shape _chat_narrative wraps in a Card.
 ANSWER = (
     "9 + 10 = 21.\n\n"
     "Just kidding — it is actually 19; the 21 is a meme answer."
@@ -68,7 +44,7 @@ async def orch(monkeypatch):
 
     try:
         o = await asyncio.to_thread(Orchestrator)
-    except Exception as exc:  # pragma: no cover — env-dependent
+    except Exception as exc:  # pragma: no cover
         pytest.skip(f"orchestrator/database unavailable: {exc}")
     try:
         yield o
@@ -153,10 +129,7 @@ async def _cleanup(orch, user_id: str, chat_id: str | None) -> None:
 
 
 async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
-    """new_chat → first chat_message: the commit snapshot carries the answer."""
     user_id = f"buga-{uuid.uuid4().hex[:10]}"
-    # set_sync is a synchronous DB write — keep it off the event-loop thread
-    # (LOOP_GUARD_ENFORCE=1 in CI raises on it).
     await asyncio.to_thread(_seed_user, orch, user_id)
     ws, context = _connect(orch, user_id)
     chat_id = None
@@ -170,7 +143,6 @@ async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
         chat_id = created[0]["payload"]["chat_id"]
         ws.frames.clear()
 
-        # The client sends the id it was given — the chat EXISTS branch.
         assert await orch._route_ui_frame(
             context,
             _ui_event(
@@ -200,9 +172,6 @@ async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
             for part in message.get("parts", [])
             if part.get("type") == "text"
         )
-        # Pre-fix: the assistant message reduced to zero rail parts and was
-        # omitted — the snapshot held only the user's message and every
-        # client rendered the turn answer-less.
         assert "actually 19" in assistant_text, (
             "assistant answer missing from the committed snapshot: "
             f"{json.dumps(snapshot)[:600]}"
@@ -212,7 +181,6 @@ async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
 
 
 async def test_snapshot_transcript_lifts_card_narrative_words(orch):
-    """build_snapshot-level pin: a persisted Card narrative keeps its words."""
     user_id = f"buga-{uuid.uuid4().hex[:10]}"
     chat_id = None
     try:

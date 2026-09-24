@@ -1,4 +1,7 @@
-"""Current policy is re-read at every fixed-reader content/effect boundary."""
+"""Tests for persistent_agents dispatch readers: policy is re-read at every content or
+effect boundary -- revocation after async checks denies the permit or content, and
+typed refusal survives a real transaction while releasing its reservation.
+"""
 
 import asyncio
 

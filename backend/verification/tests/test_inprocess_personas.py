@@ -1,11 +1,9 @@
-"""US1 — tangible, server-driven UI across personas (T018).
-
-Drives all four personas in-process and asserts the acceptance criteria:
-every scenario reaches a verdict (SC-001); UI-warranting queries yield
-file-derived, persisted, re-executable components (SC-002/004); a prose answer is
-a legitimate outcome (FR-015); coverage spans >= 3 file categories (SC-003); and a
-dual run record is written.
+"""Tests for the in-process driver across all four personas
+(backend/verification/drivers/in_process.py, runner.py, report.py): every scenario
+reaches a verdict, tabular personas get the full tangible-UI proof, and a run record
+is written.
 """
+
 from __future__ import annotations
 
 from verification.checks.tangible_ui import build_us1_checks
@@ -50,20 +48,17 @@ def _run_all(run_config):
 def test_us1_personas_tangible_ui(run_config):
     runner, scenarios = _run_all(run_config)
 
-    # SC-001: every scenario reached at least one verdict.
     persona_keys = {s.persona.key for s in scenarios}
     verdict_personas = {v.refs.get("persona") for v in runner.verdicts}
     assert persona_keys <= verdict_personas, (
         f"missing verdicts for {persona_keys - verdict_personas}"
     )
 
-    # No outright failures anywhere (PASS or UNCERTAIN only).
     failures = [v for v in runner.verdicts if v.outcome == Outcome.FAIL]
     assert not failures, "FAIL verdicts: " + "; ".join(
         f"{v.refs.get('persona')}/{v.refs.get('check')}: {v.reason}" for v in failures
     )
 
-    # SC-002/004: tabular personas carry the full tangible-UI proof.
     for persona in _TABULAR:
         passed = {
             v.refs.get("check")
@@ -73,7 +68,6 @@ def test_us1_personas_tangible_ui(run_config):
         missing = _STRONG_CHECKS - passed
         assert not missing, f"{persona}: expected PASS on {sorted(missing)} (got {sorted(passed)})"
 
-    # SC-003: >= 3 file categories exercised across the catalogue.
     record = build_record(
         run_config, runner.verdicts, runner.evidence,
         auth_mode="mock_inprocess", personas=sorted(persona_keys),
@@ -81,14 +75,12 @@ def test_us1_personas_tangible_ui(run_config):
     cats = record["coverage"]["file_categories"]
     assert len(cats) >= 3, f"expected >=3 file categories, got {cats}"
 
-    # Dual run record is produced and the differentiation claim is grounded.
     paths = write_report(record, run_config.run_dir)
     assert paths["json"].endswith("verdicts.json")
     assert record["differentiation"], "differentiation claim should be non-empty"
 
 
 def test_us1_every_scenario_terminates(run_config):
-    """SC-001: bounded — no scenario is left without a definite verdict."""
     runner, scenarios = _run_all(run_config)
     for scenario in scenarios:
         outcomes = [

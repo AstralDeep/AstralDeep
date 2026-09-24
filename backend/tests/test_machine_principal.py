@@ -1,11 +1,8 @@
-"""T006 (056-delegated-agent-chaining): machine-principal audit attribution.
-
-Machine-initiated turns carry a synthetic machine-context claims dict (from
-``MachineAuthority.machine_claims()``); the audit identity helper resolves it
-to ``machine:<class>`` acting for the owning human BEFORE the legacy fallback,
-so machine-turn records are recorded — never dropped as "legacy" (FR-014,
-SC-005). Interactive turns are unchanged.
+"""Tests for audit/hooks.py: machine-context claims resolve to a machine:<class>
+actor-principal ahead of the legacy fallback so machine-initiated turns are recorded
+rather than dropped; interactive turns are unaffected.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,10 +17,6 @@ import audit.hooks as hooks  # noqa: E402
 from audit.hooks import ToolDispatchAudit, actor_principal_from_claims  # noqa: E402
 
 
-# --------------------------------------------------------------------------- #
-# actor_principal_from_claims
-# --------------------------------------------------------------------------- #
-
 def test_machine_claims_resolve_to_machine_principal():
     for turn_class in ("scheduled_job", "parser_replay", "draft_self_test"):
         user, principal = actor_principal_from_claims(
@@ -34,7 +27,6 @@ def test_machine_claims_resolve_to_machine_principal():
 
 
 def test_machine_claims_without_owner_stay_legacy():
-    """A machine marker with no owning human must not fabricate attribution."""
     user, principal = actor_principal_from_claims(
         {"machine_class": "scheduled_job"})
     assert user == "legacy"
@@ -53,10 +45,6 @@ def test_absent_claims_still_legacy():
     assert actor_principal_from_claims({}) == ("legacy", "legacy")
 
 
-# --------------------------------------------------------------------------- #
-# ToolDispatchAudit records machine turns (previously dropped)
-# --------------------------------------------------------------------------- #
-
 def _capture_recorder(monkeypatch):
     rec = MagicMock()
     rec.record = AsyncMock()
@@ -73,7 +61,7 @@ async def test_machine_turn_tool_dispatch_is_recorded(monkeypatch):
             claims=machine_claims, agent_id="a1", tool_name="web_search",
             chat_id="c1", args_meta={"query": "arxiv sdui"}):
         pass
-    assert rec.record.await_count == 2  # paired start + end rows
+    assert rec.record.await_count == 2
     start, end = (call.args[0] for call in rec.record.await_args_list)
     for row in (start, end):
         assert row.actor_user_id == "owner-1"
@@ -86,7 +74,6 @@ async def test_machine_turn_tool_dispatch_is_recorded(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_claimless_turn_still_dropped(monkeypatch):
-    """Turns with no identity at all keep today's drop behavior."""
     rec = _capture_recorder(monkeypatch)
     async with ToolDispatchAudit(claims=None, agent_id="a1",
                                  tool_name="t", chat_id=None):

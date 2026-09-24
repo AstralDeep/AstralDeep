@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Build deterministic provenance for blobs selected from one Git commit.
-
-The working tree is deliberately not consulted for source content. Every
-manifest entry comes from ``git ls-tree`` over one caller-confirmed, full
-commit object ID, so ignored and untracked files cannot enter the inventory.
-
-``manifestSha256`` is the SHA-256 of compact, sorted-key UTF-8 JSON after
-removing that top-level field. Excluding the field avoids an impossible
-self-referential digest while leaving every provenance-bearing field bound.
+"""Builds deterministic Git-blob provenance manifests for cross-repo migration, reading
+only from an immutable git ls-tree over a caller-confirmed commit — never the working
+tree — and hashing canonical sorted-key JSON minus its own digest field.
 """
 
 from __future__ import annotations
@@ -51,13 +45,11 @@ _TRACKED_BLOB_MODES = {"100644", "100755", "120000"}
 
 
 class ManifestError(RuntimeError):
-    """The requested manifest could not be produced unambiguously."""
+    pass
 
 
 @dataclass(frozen=True)
 class BlobEntry:
-    """One tracked Git blob before destination mapping."""
-
     source_path: str
     mode: str
     object_id: str
@@ -66,16 +58,12 @@ class BlobEntry:
 
 @dataclass(frozen=True)
 class Selection:
-    """One exact file or recursive tree-root destination mapping."""
-
     source_path: str
     destination_path: str
 
 
 @dataclass(frozen=True)
 class LegacyBaseline:
-    """Remote default state preceding the destination replacement."""
-
     repository: str
     source_ref: str
     commit: str
@@ -243,14 +231,11 @@ def inventory_tracked_blobs(
     source_revision: str,
     expected_source_revision: str,
 ) -> tuple[str, tuple[BlobEntry, ...]]:
-    """Return one immutable tree ID and its sorted tracked-blob inventory."""
-
     requested = _require_full_commit(source_revision, field="source revision")
     expected = _require_full_commit(
         expected_source_revision, field="expected source revision"
     )
-    # This comparison intentionally precedes every Git call. A caller cannot
-    # accidentally inventory a different valid commit merely because it exists.
+    # Verified first so a valid but wrong commit can't slip in
     if requested != expected:
         raise ManifestError(
             f"source revision mismatch: requested {requested}, expected {expected}"
@@ -382,12 +367,6 @@ def _mapped_entries(
 
 
 def canonical_manifest_bytes(manifest: Mapping[str, Any]) -> bytes:
-    """Canonical bytes covered by ``manifestSha256``.
-
-    Only the top-level digest field is excluded. A digest-bearing nested field
-    remains covered like every other provenance value.
-    """
-
     projected = dict(manifest)
     projected.pop(DIGEST_FIELD, None)
     try:
@@ -403,8 +382,6 @@ def canonical_manifest_bytes(manifest: Mapping[str, Any]) -> bytes:
 
 
 def compute_manifest_sha256(manifest: Mapping[str, Any]) -> str:
-    """Compute the non-self-referential canonical manifest digest."""
-
     return hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()
 
 
@@ -419,9 +396,6 @@ def build_extraction_manifest(
     selected_branch: str,
     selections: Iterable[Selection],
 ) -> dict[str, object]:
-    """Build a canonical extraction manifest from an immutable Git tree."""
-
-    # Preserve the mismatch-before-Git guarantee even if another input is bad.
     requested = _require_full_commit(source_revision, field="source revision")
     expected = _require_full_commit(
         expected_source_revision, field="expected source revision"
@@ -489,8 +463,6 @@ def build_extraction_manifest(
 
 
 def manifest_document_bytes(manifest: Mapping[str, Any]) -> bytes:
-    """Return deterministic human-readable manifest bytes for a tracked file."""
-
     try:
         document = json.dumps(
             manifest,
@@ -505,8 +477,6 @@ def manifest_document_bytes(manifest: Mapping[str, Any]) -> bytes:
 
 
 def write_manifest(path: str | Path, manifest: Mapping[str, Any]) -> None:
-    """Atomically replace one regular output path in an existing directory."""
-
     output = Path(path)
     if not output.name or output.name in {".", ".."}:
         raise ManifestError("manifest output must name one file")

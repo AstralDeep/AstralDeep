@@ -1,8 +1,8 @@
-"""030 — deferred REST contract tests for profile/memory/skills + personalize steps.
-
-Closes 025 T013 (profile), T033 (memory), T024 (skills), and T014 (personalize
-steps) — the formal pytest-TestClient files that 025 deferred (FR-015).
+"""REST contract tests for personalization/api.py and onboarding/api.py: profile get/put
+roundtrip, memory list/delete, skills catalog with scope gating, and the
+personalize-step ParamPicker response.
 """
+
 import sys
 import uuid
 from pathlib import Path
@@ -20,7 +20,6 @@ class _CleanGate:
 
 
 class _FakeTP:
-    """Minimal ToolPermissionManager for skills + personalize-steps tests."""
     def __init__(self, authorized=True):
         self._authorized = authorized
         self._tool_scope_map = {"web-research-1": {"web_search": "tools:search"}}
@@ -56,7 +55,6 @@ def client(monkeypatch):
     from onboarding import api as oapi
     from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
-    # Avoid the heavy Presidio gate in tests — values here are clean.
     monkeypatch.setattr(papi, "get_phi_gate", lambda: _CleanGate())
 
     user_id = f"pytest-pms-{uuid.uuid4().hex[:8]}"
@@ -96,15 +94,12 @@ def client(monkeypatch):
 
 def test_profile_get_put_roundtrip(client):
     tc, svc, user_id, tp = client
-    # default empty profile
     r = tc.get("/api/personalization/profile")
     assert r.status_code == 200
-    # PUT persists
     r = tc.put("/api/personalization/profile",
                json={"profession": "Researcher", "goals": ["grants"]})
     assert r.status_code == 200, r.text
     assert r.json()["profession"] == "Researcher"
-    # GET reflects it
     assert tc.get("/api/personalization/profile").json()["goals"] == ["grants"]
 
 
@@ -124,11 +119,9 @@ def test_skills_catalog_and_scope_gating(client):
     r = tc.get("/api/skills")
     assert r.status_code == 200
     assert any(s["agent_id"] == "web-research-1" for s in r.json()["skills"])
-    # authorized enable succeeds
     r = tc.put("/api/skills", json={"agent_id": "web-research-1",
                                     "tool_name": "web_search", "enabled": True})
     assert r.status_code == 200
-    # FR-011: unauthorized scope is refused with 403
     tp._authorized = False
     r = tc.put("/api/skills", json={"agent_id": "web-research-1",
                                     "tool_name": "web_search", "enabled": True})

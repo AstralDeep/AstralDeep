@@ -1,27 +1,6 @@
-"""The third-party data-sharing notice and its acknowledgment (feature 089, US7).
-
-Saving a credential for a third-party model provider means the content of the
-user's requests will be sent to that provider. US7's requirement is that the
-user is told so, in the same place and at the same moment they hand over the
-key, and that they say they understand before the key is saved.
-
-Three properties make that more than a checkbox.
-
-**It gates the save, not the chat.** Acknowledgment is required as the *first*
-step of every credential save -- the LLM save, the TypeSafe save and the legacy
-WebSocket path -- before any validation probe. It is never consulted during a
-turn, so an existing user is never interrupted mid-conversation by a consent
-prompt.
-
-**The version is part of the record.** Acknowledgment means the stored version
-equals :data:`NOTICE_VERSION`. Changing the wording without bumping the version
-would silently reuse consent the user gave to different text, so a test fails
-if the strings move and the version does not.
-
-**An explicit no is a no.** A submitted ``False`` -- the user unchecking a box
-that was checked -- rejects the save. Only an *absent* field falls back to the
-stored acknowledgment, which is what lets a client that does not send the field
-at all keep working.
+"""Gates every credential save (LLM, TypeSafe, and the legacy WS path) on an
+acknowledged third-party data-sharing notice, recording acceptance or refusal via
+audit/recorder.py. Never interrupts an existing user mid-conversation.
 """
 
 from __future__ import annotations
@@ -36,8 +15,7 @@ from orchestrator.plane_repository_context import PlaneRepositoryContext, reposi
 
 logger = logging.getLogger("LLMConfig.DataSharing")
 
-#: Bump this whenever :data:`NOTICE_TITLE` or :data:`NOTICE_BODY` changes.
-#: ``test_the_notice_text_is_pinned_to_its_version`` fails otherwise.
+# Bump on any title/body change — a test pins this
 NOTICE_VERSION = "2026-09-17.1"
 
 NOTICE_TITLE = "Your data may be shared"
@@ -57,8 +35,6 @@ FIELD_NAME = "data_sharing_acknowledged"
 
 FIELD_ERROR = "Check this box to confirm you understand how your data is shared."
 
-#: The legacy WebSocket path has no field to attach an error to, so it says
-#: where to go instead.
 LEGACY_ERROR = (
     "Confirm the data-sharing notice in Settings → LLM settings, then save again."
 )
@@ -69,8 +45,6 @@ CHECKBOX_ELEMENT_ID = "data-sharing-ack"
 
 @dataclass(frozen=True, slots=True)
 class AckResult:
-    """The outcome of the acknowledgment check for one save attempt."""
-
     allowed: bool
     acknowledged_at: Optional[datetime] = None
     newly_acknowledged: bool = False
@@ -83,16 +57,12 @@ class AckResult:
 
 @dataclass(frozen=True, slots=True)
 class AcknowledgmentState:
-    """What a settings surface needs to render the checkbox."""
-
     acknowledged: bool = False
     acknowledged_at: Optional[datetime] = None
     notice_version: Optional[str] = None
 
 
 class DataSharingStore:
-    """Deep's facade over the Plane acknowledgment repository."""
-
     def __init__(
         self,
         db: Any = None,
@@ -111,7 +81,7 @@ class DataSharingStore:
         resolved = acknowledgment_repository
         if resolved is None:
             resolved = getattr(repository, "data_sharing", None)
-        if resolved is None:  # pragma: no cover - a catalog without the store
+        if resolved is None:  # pragma: no cover
             raise ValueError("the Plane data-sharing acknowledgment store is required")
         self._repository = PlaneRepositoryContext(
             repository=resolved,
@@ -120,7 +90,6 @@ class DataSharingStore:
         )
 
     def state_sync(self, user_id: str) -> AcknowledgmentState:
-        """Read the owner's acknowledgment. A durable failure reads as absent."""
         try:
             record = self._repository.call(
                 self._repository.repository.get_user, owner_id=user_id
@@ -167,17 +136,6 @@ def require_acknowledgment(
     *,
     legacy: bool = False,
 ) -> AckResult:
-    """Decide whether a credential save may proceed.
-
-    ``submitted`` is tri-state on purpose:
-
-    * ``True``  -- the user ticked the box now. Record it and allow the save.
-    * ``False`` -- the user explicitly unticked it. Reject, even if they had
-      acknowledged before: the most recent statement wins.
-    * ``None``  -- the client did not send the field. Fall back to the stored
-      acknowledgment, which is what keeps a client that has not been updated
-      working.
-    """
     error = LEGACY_ERROR if legacy else FIELD_ERROR
 
     if submitted is True:
@@ -206,7 +164,6 @@ async def record_acknowledged(
     transport: str = "ws",
     correlation_id: Optional[str] = None,
 ) -> None:
-    """Emit ``llm_data_sharing.acknowledged``, once per notice version."""
     await _record(
         recorder,
         actor_user_id=actor_user_id,
@@ -231,7 +188,6 @@ async def record_save_blocked(
     transport: str = "ws",
     correlation_id: Optional[str] = None,
 ) -> None:
-    """Emit ``llm_data_sharing.save_blocked`` when a save is refused."""
     await _record(
         recorder,
         actor_user_id=actor_user_id,
@@ -260,7 +216,6 @@ async def _record(
     correlation_id: Optional[str],
     target: Optional[str] = None,
 ) -> None:
-    """Record one acknowledgment audit event. Never raises into a save path."""
     if recorder is None:
         return
     from audit.schemas import AuditEventCreate
@@ -293,7 +248,7 @@ async def _record(
                 completed_at=started,
             )
         )
-    except Exception:  # pragma: no cover - auditing must not break a save
+    except Exception:  # pragma: no cover
         logger.warning("data-sharing audit event failed", exc_info=True)
 
 

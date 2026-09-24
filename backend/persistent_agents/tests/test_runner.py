@@ -1,4 +1,7 @@
-"""Source normalization and deterministic model proposal boundaries."""
+"""Tests for persistent_agents/runtime_values.py: source normalization folds page
+content into the revision, failure is never reported as unchanged, and a model plan
+cannot create authority or reference an invalid step or tool.
+"""
 
 from types import SimpleNamespace
 

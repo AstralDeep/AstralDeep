@@ -1,4 +1,7 @@
-"""Feature 064 Phase A: additive MCP envelope and dialect regressions."""
+"""Tests for shared/protocol.py's MCP envelope: forward-compatible tolerance of unknown
+additive fields, fail-closed rejection of malformed or unsupported-version requests,
+and that protocol metadata never leaks into splatted tool arguments.
+"""
 
 from __future__ import annotations
 
@@ -67,8 +70,6 @@ def test_network_request_decoder_tolerates_unknown_field_repeatedly() -> None:
 
 @pytest.mark.asyncio
 async def test_malformed_correlated_response_fails_future_promptly() -> None:
-    # This exercises the swallowed-exception seam directly. Before feature
-    # 064, the future remained pending and its caller waited 30 seconds.
     from orchestrator.orchestrator import Orchestrator
 
     pending = asyncio.get_running_loop().create_future()

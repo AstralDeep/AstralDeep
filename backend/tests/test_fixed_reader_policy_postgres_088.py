@@ -1,4 +1,7 @@
-"""Actual manager + Plane snapshot on an isolated current PostgreSQL schema."""
+"""Tests for the fixed-reader policy snapshot (orchestrator/tool_permissions.py) against
+a real Plane-backed manager: stored precedence matches normal dispatch, and revoke
+outranks cached turn/trust state.
+"""
 
 from types import SimpleNamespace
 
@@ -86,6 +89,6 @@ def test_actual_revoke_outranks_existing_turn_and_trust_caches(policy, change):
                 runtime.repositories.tool_policy_state.set_agent_disabled(
                     tx, owner_id=OWNER, agent_id=AGENT, disabled=True, updated_at=1,
                 )
-        assert manager.is_tool_allowed(OWNER, AGENT, TOOL)  # Legacy memo behavior unchanged.
+        assert manager.is_tool_allowed(OWNER, AGENT, TOOL)
         with pytest.raises(FixedReaderPolicyError, match="assignment_scope_revoked"):
             check(policy)

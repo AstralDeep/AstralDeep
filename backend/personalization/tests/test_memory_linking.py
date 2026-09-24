@@ -1,10 +1,8 @@
-"""Feature 033 (capability C-M2) — A-MEM linked memory notes.
-
-Each new memory gets deterministic keywords and is linked to its
-keyword-overlapping neighbours; recall pulls in a hit's linked neighbours
-(single-step multi-hop). Covers the pure keyword derivation, the write-time
-linking, the link-aware retrieval, and a real-DB round-trip.
+"""Tests for the linked-note graph in memory_tools.py and repository.py: keyword
+derivation, write-time linking between overlapping memories, link-aware multi-hop
+recall, and a real-DB link round-trip that excludes superseded rows.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -27,10 +25,9 @@ class _FakeGate:
 
 
 class _LinkRepo:
-    """In-memory repo with the C-M2 link surface."""
     def __init__(self):
         self.rows = []
-        self.links = set()  # directed (memory_id, linked_id) pairs
+        self.links = set()
 
     def create_memory(self, user_id, category, value, *, source="explicit",
                        salience=0.0, keywords=None, project_id=None):
@@ -70,8 +67,6 @@ def _mt(repo=None):
     return MemoryTools(repo or _LinkRepo(), phi_gate=_FakeGate())
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_linking_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_MEMORY_LINKING", raising=False)
     assert linking_enabled() is True
@@ -82,8 +77,6 @@ def test_linking_flag_off_values(monkeypatch, value):
     monkeypatch.setenv("FF_MEMORY_LINKING", value)
     assert linking_enabled() is False
 
-
-# ───────────────────────── derive_keywords ───────────────────────────────────
 
 def test_keywords_extract_content_skip_stopwords():
     kw = derive_keywords("I prefer concise answers in markdown")
@@ -101,18 +94,16 @@ def test_keywords_dedup_and_limit():
 
 def test_keywords_empty_and_short():
     assert derive_keywords("") == ""
-    assert derive_keywords("a an to") == ""  # all stopwords / <3 chars
+    assert derive_keywords("a an to") == ""
 
-
-# ───────────────────────── write-time linking ────────────────────────────────
 
 def test_overlapping_memories_get_linked():
     repo = _LinkRepo()
     mt = _mt(repo)
     a = mt._do_add("u", "goal", "track NSF grant deadlines")
-    b = mt._do_add("u", "workflow_tag", "grant submission portal")  # shares "grant"
+    b = mt._do_add("u", "workflow_tag", "grant submission portal")
     assert b["id"] in repo.linked_ids("u", a["id"])
-    assert a["id"] in repo.linked_ids("u", b["id"])  # undirected
+    assert a["id"] in repo.linked_ids("u", b["id"])
 
 
 def test_unrelated_memories_are_not_linked():
@@ -139,19 +130,16 @@ def test_linking_off_creates_no_links(monkeypatch):
     assert repo.links == set()
 
 
-# ───────────────────────── link-aware retrieval ──────────────────────────────
-
 def test_search_pulls_in_linked_neighbour():
-    """A neighbour sharing NO query token surfaces via its link (multi-hop)."""
     repo = _LinkRepo()
     mt = _mt(repo)
     a = repo.create_memory("u", "goal", "track grant deadlines", keywords="track grant deadlines")
     b = repo.create_memory("u", "workflow_tag", "submission portal login",
                            keywords="submission portal login")
     repo.add_link("u", a["id"], b["id"])
-    hits = mt.memory_search("u", "grant")  # only A matches the query directly
+    hits = mt.memory_search("u", "grant")
     ids = [h["id"] for h in hits]
-    assert a["id"] in ids and b["id"] in ids  # B arrives via the link
+    assert a["id"] in ids and b["id"] in ids
 
 
 def test_search_without_links_is_direct_only():
@@ -162,8 +150,6 @@ def test_search_without_links_is_direct_only():
     hits = mt.memory_search("u", "grant")
     assert [h["value"] for h in hits] == ["track grant deadlines"]
 
-
-# ───────────────────────── real-DB round-trip ────────────────────────────────
 
 def test_repo_links_round_trip_and_exclude_superseded():
     with isolated_plane_runtime("personalization_links") as runtime:
@@ -189,9 +175,8 @@ def test_repo_links_round_trip_and_exclude_superseded():
 
         assert repo.add_link(user, first["id"], second["id"]) is True
         assert second["id"] in repo.linked_ids(user, first["id"])
-        assert first["id"] in repo.linked_ids(user, second["id"])  # undirected
+        assert first["id"] in repo.linked_ids(user, second["id"])
         assert repo.add_link(user, first["id"], first["id"]) is False
 
-        # Superseding a linked memory drops it from the neighbour's link list.
         repo.supersede_memory(user, second["id"], None)
         assert repo.linked_ids(user, first["id"]) == []

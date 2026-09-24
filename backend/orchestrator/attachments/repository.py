@@ -1,10 +1,6 @@
-"""Product adapter for Plane-owned attachment persistence.
-
-Application callers bind this adapter to the one initialized AstralPlane
-runtime/catalog.  The temporary positional ``db`` argument remains only for
-older focused tests while the shared Deep database facade is retired.  All
-methods enforce user ownership; non-owner reads return ``None`` rather than
-the row, so callers get a uniform "not found" surface.
+"""Adapter over AstralPlane's artifact repositories for attachment persistence; enforces
+per-user ownership so non-owner reads return None instead of the row, giving callers
+a uniform not-found surface.
 """
 
 from __future__ import annotations
@@ -24,7 +20,6 @@ from orchestrator.plane_repository_context import (
 
 
 def _to_attachment(record: AttachmentRecord) -> Attachment:
-    """Convert a detached Plane record to an :class:`Attachment`."""
     created_at = record.created_at
     if isinstance(created_at, (int, float)):
         created_at_dt = datetime.fromtimestamp(created_at / 1000.0, tz=timezone.utc)
@@ -71,8 +66,6 @@ def _decode_cursor(cursor: str) -> Optional[Tuple[int, str]]:
 
 
 class AttachmentRepository:
-    """Product model adapter over AstralPlane's artifact repositories."""
-
     def __init__(
         self,
         db=None,
@@ -96,8 +89,6 @@ class AttachmentRepository:
 
     @classmethod
     def from_plane_source(cls, source) -> "AttachmentRepository":
-        """Bind to an application-scoped Plane runtime/catalog source."""
-
         runtime = getattr(source, "plane_runtime", None) or getattr(source, "runtime", None)
         repositories = getattr(source, "plane_repositories", None) or getattr(
             source, "repositories", None
@@ -107,7 +98,6 @@ class AttachmentRepository:
         return cls(plane_runtime=runtime, plane_repositories=repositories)
 
     def get_by_id(self, attachment_id: str, user_id: str) -> Optional[Attachment]:
-        """Return the live attachment for *user_id*, or ``None`` if missing/foreign/deleted."""
         record = self._artifacts.call(
             self._artifacts.repository.attachments.get,
             owner_id=user_id,
@@ -123,7 +113,6 @@ class AttachmentRepository:
         limit: int = 50,
         cursor: Optional[str] = None,
     ) -> Tuple[List[Attachment], Optional[str]]:
-        """Cursor-paginated listing of a user's live attachments, newest first."""
         limit = max(1, min(int(limit), 200))
         decoded = _decode_cursor(cursor) if cursor else None
         cursor_created_at, cursor_id = decoded if decoded else (None, None)
@@ -143,9 +132,7 @@ class AttachmentRepository:
             next_cursor = _encode_cursor(last.created_at, last.attachment_id)
         return items, next_cursor
 
-    # ── async facade (event-loop-safe twins of the sync reads above) ──────
     async def aget_by_id(self, attachment_id: str, user_id: str) -> Optional[Attachment]:
-        """Async twin of :meth:`get_by_id`, run off the event loop."""
         return await asyncio.to_thread(self.get_by_id, attachment_id, user_id)
 
     async def alist_for_user(
@@ -156,7 +143,6 @@ class AttachmentRepository:
         limit: int = 50,
         cursor: Optional[str] = None,
     ) -> Tuple[List[Attachment], Optional[str]]:
-        """Async twin of :meth:`list_for_user`, run off the event loop."""
         return await asyncio.to_thread(
             self.list_for_user, user_id, category=category, limit=limit, cursor=cursor,
         )

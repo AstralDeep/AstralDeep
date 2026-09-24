@@ -1,9 +1,6 @@
-"""Convert trusted, expiring quote coverage into a conservative reservation.
-
-Coverage comes from the host's quote provider during reviewed activation. No
-source, model, UI or external tool response supplies these prices. Quotes cover
-all configured model routes and complete downstream tool execution; absence is
-an explicit refusal when the owner selects a currency ceiling.
+"""Converts trusted, host-supplied quote coverage into a conservative currency
+reservation for a dispatch; refuses explicitly when no quote covers the request. Used
+by persistent_agents/execution.py for owner currency ceilings.
 """
 
 from __future__ import annotations

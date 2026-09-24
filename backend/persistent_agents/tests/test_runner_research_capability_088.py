@@ -1,7 +1,6 @@
-"""Fixed research selection with actual private Plane/session/claim boundaries.
-
-Synthetic IAM replies never qualify a live provider. Unsupported rows must remain
-untouched, and selecting a handler is not permission to perform a tool/model call.
+"""Tests for persistent_agents/runner.py's fixed research capability against real Plane,
+session and claim boundaries: unsupported profiles stay untouched and never starve
+supported research, and scope changes refuse a locked claim.
 """
 
 import asyncio
@@ -36,7 +35,6 @@ runtime = plane
 
 @pytest.fixture
 def capability(runtime, fixture):
-    """Use real repositories and admission, without starting a global runner."""
     store = AssignmentStore(plane_runtime=runtime)
     host = SimpleNamespace(
         work_admission=WorkAdmissionCoordinator.from_plane(plane_runtime=runtime),
@@ -58,7 +56,6 @@ def capability(runtime, fixture):
 
 def create(capability, *, kind="research", retention="operation", source=None,
            tools=("web-research-1:fetch_page",), scopes=("tools:read",), limits=None):
-    """Create one genuine due record under the fixture's original session."""
     op = capability
     sessions, owner, sid, _, _ = op.session_fixture
     state = sessions.capture_execution_reference(owner_id=owner, session_id=sid).state
@@ -236,7 +233,6 @@ async def test_scope_change_during_authority_refresh_refuses_locked_claim(capabi
 
 
 async def claim(op, record):
-    """Model a previously admitted queued claim without executing its handler."""
     authority = await op.runner._operation_authority(record)
     return await op.store.operation_lifecycle_transaction(
         authority=authority, callback=lambda tx, repo, current_record:
@@ -329,8 +325,6 @@ async def test_source_replacement_after_selection_cannot_use_old_authority(capab
     original = op.runner._operation_authority
     async def replace_source(current_record):
         authority = await original(current_record)
-        # Deliberate private-fixture storage mutation models a definition change
-        # after the observation; the ordinary store comparison must refuse it.
         def replace_stored_source():
             with op.runtime.transaction() as tx:
                 tx.execute(
@@ -362,5 +356,4 @@ async def test_supported_dispatch_reaches_existing_source_boundary_once(capabili
         "kind": "tool", "agent_id": "web-research-1", "tool_name": "fetch_page",
         "arguments": {"url": "https://example.test/page"},
     })
-    # A deliberately refused source is not a generated answer or provider pass.
     assert "research_result" not in (await current(op, record)).checkpoint

@@ -1,4 +1,7 @@
-"""Final-boundary LETS verification, Plane claim, and actuator ordering."""
+"""Tests for orchestrator/lets_gateway.py: ordering of the local replay guard, Plane
+claim, and actuator invocation at the final LETS boundary, host-binding and
+signature-tamper denial, and default-uncertain actuator exceptions.
+"""
 
 from __future__ import annotations
 

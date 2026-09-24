@@ -1,4 +1,7 @@
-"""030 — memory meta-tool wiring (US2 / T014)."""
+"""Tests for orchestrator/memory_chat.py: memory meta-tool definitions, injection
+gating, remember/search/get dispatch, and refusing to persist PHI.
+"""
+
 import asyncio
 import sys
 import types
@@ -35,7 +38,6 @@ class _FakeRepo:
     def add_signal(self, user_id, category, value):
         self.signals.append((category, value))
 
-    # C-M2 link surface (links not asserted by these dispatch tests).
     def add_link(self, user_id, a_id, b_id):
         return True
 
@@ -55,8 +57,6 @@ def _fake_orch(repo, gate):
     orch = types.SimpleNamespace(
         personalization_service=types.SimpleNamespace(repo=repo),
     )
-    # Pre-seed the cached MemoryTools so handle_meta_tool uses our injected gate
-    # (avoids constructing the real Presidio gate in tests).
     orch._memory_tools = MemoryTools(repo, phi_gate=gate)
     return orch
 
@@ -67,7 +67,7 @@ def test_definitions_expose_three_tools():
 
 
 def test_should_inject_respects_draft_and_flag():
-    assert memory_chat.should_inject(None) is True  # flag default ON
+    assert memory_chat.should_inject(None) is True
     assert memory_chat.should_inject("draft-123") is False
 
 

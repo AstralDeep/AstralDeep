@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""computer-use-1 — drive the user's OWN desktop from any of their clients (feature 076).
-
-The user's Windows PC runs the AstralDeep desktop client with "Allow remote
-control" switched on; this agent looks at its screen (screenshots the model
-sees as images), moves and clicks the mouse, types, presses keys, opens
-applications, reads the clipboard and files, and — only after the user approves
-on the device they are holding — runs commands or writes/deletes files.
-
-Runs IN-PROCESS only (it needs the orchestrator's host registry); gated by
-FF_COMPUTER_USE. Safe-seeded so the observe verbs work out of the box, while
-every consequential verb is gated per-reach by the durable confirmation
-mechanism (``orchestrator/remote_confirmation.py`` + ``computer_use_policy``).
+"""Bundled agent driving the user's own desktop (screenshots, mouse/keyboard, files)
+in-process via the orchestrator's host registry; consequential verbs are gated
+per-reach by orchestrator/remote_confirmation.py and computer_use_policy.
 """
 import logging
 import os
@@ -25,8 +16,6 @@ logger = logging.getLogger("ComputerUseAgent")
 
 
 class ComputerUseAgent(BaseA2AAgent):
-    """The bundled computer-use agent: one grantable agent, verb tiers inside."""
-
     agent_id = "computer-use-1"
     service_name = "My computer"
     description = (

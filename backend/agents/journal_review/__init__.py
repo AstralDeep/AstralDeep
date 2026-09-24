@@ -1,10 +1,8 @@
+"""Journal Review agent package: evaluates scientific journals for publication fit using
+OpenAlex/CrossRef data; aggregates journal_review_agent.py, mcp_server.py, and
+mcp_tools.py.
 """
-Journal Review Agent package for AstralDeep system.
 
-Evaluates scientific journals to recommend optimal publication venues
-for research papers based on impact, topical fit, review timelines,
-submission requirements, and audience relevance.
-"""
 from agents.journal_review.journal_review_agent import JournalReviewAgent
 from agents.journal_review.mcp_server import MCPServer
 from agents.journal_review.mcp_tools import (

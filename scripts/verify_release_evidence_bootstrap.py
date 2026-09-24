@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Create, verify, and lease-push a fail-closed evidence bootstrap candidate.
-
-The verifier is intentionally loaded from a separate clean checkout of the
-provider's current default-branch commit.  It never authorizes merge or release:
-it permits one exact, lead-approved, draft-only diagnostic push when canonical
-provider evidence cannot exist before the candidate SHA is remotely addressable.
+"""Creates, verifies, and lease-pushes a fail-closed evidence bootstrap candidate loaded
+from a separate clean checkout, permitting one lead-approved draft-only diagnostic
+push when canonical provider evidence can't yet exist.
 """
 
 from __future__ import annotations
@@ -154,7 +151,7 @@ APPROVAL_KEYS = {
 
 
 class BootstrapError(RuntimeError):
-    """A fail-closed bootstrap inventory, verification, or push error."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -997,8 +994,6 @@ def _policy_identity(policy_root: Path, state: ProviderState) -> dict[str, str]:
 
 
 def build_inventory(args: argparse.Namespace) -> dict[str, Any]:
-    """Execute the parser and build one non-authorizing missing-input inventory."""
-
     repo = Path(args.repo).resolve()
     policy_root = Path(__file__).resolve().parents[1]
     candidate_sha = _require_sha(args.candidate_sha, field="candidate_sha")
@@ -1272,8 +1267,6 @@ def _validate_approval(
 
 
 def verify_bootstrap(args: argparse.Namespace) -> dict[str, Any]:
-    """Reproduce all inputs and verify provider approval for one candidate."""
-
     repo = Path(args.repo).resolve()
     policy_root = Path(__file__).resolve().parents[1]
     candidate_sha = _require_sha(args.candidate_sha, field="candidate_sha")
@@ -1415,8 +1408,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run one bootstrap inventory, verification, or lease-bound push."""
-
     args = _parser().parse_args(argv)
     try:
         repo = Path(args.repo).resolve()

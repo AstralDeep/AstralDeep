@@ -1,8 +1,7 @@
-"""Quick test: exchange a real user token for a delegation token.
-
-This script reads credentials from environment variables (not hardcoded)
-and should only be run manually against a live Keycloak instance.
+"""Manual script exchanging a real user token for a delegation token against a live
+Keycloak instance, reading credentials from the environment; not run in CI.
 """
+
 import os
 import json
 import base64
@@ -12,7 +11,6 @@ import argparse
 
 
 def load_env(path: str):
-    """Load .env file into os.environ."""
     if os.path.exists(path):
         with open(path) as f:
             for line in f:
@@ -31,7 +29,6 @@ def decode(tok):
 
 
 async def main(token: str | None = None):
-    # Load config from .env (two levels up from tests/)
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
     load_env(env_path)
 

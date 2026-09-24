@@ -1,12 +1,8 @@
-"""T023/T024/T028 (056-delegated-agent-chaining): machine-turn root authority.
-
-A scheduled run derives fresh, consent-derived authority per run (narrowed to
-consented ∩ current), threads it into the turn so real-agent tools dispatch
-DELEGATED in production, attributes every audit row to ``machine:scheduled_job``
-acting for the owning human, and mints hop children off that same root. Without
-derivable authority it dispatches nothing, records ``skipped_auth``, pauses, and
-notifies exactly once (FR-012/FR-013/FR-014/FR-015).
+"""Tests for scheduler/runner.py and orchestrator/chain_authority.py: a scheduled run
+derives authority narrowed to consented-and-current scopes so tools dispatch
+delegated, pausing with one notification when authority can't be derived.
 """
+
 from __future__ import annotations
 
 import os
@@ -55,15 +51,6 @@ def _grants(valid=True, token="consent-token"):
 
 
 def _orch(current_scopes=None):
-    """Orchestrator double whose CURRENT grants are ``current_scopes``.
-
-    Callers still describe the user's grants as a ``{scope: enabled}`` dict,
-    but derivation reads ``get_enabled_scope_names`` — the effective predicate
-    — so the double exposes that instead of the raw ``get_agent_scopes``. The
-    distinction is the point of ``test_safe_baseline_*`` below: a user with no
-    explicit rows has an empty ``get_agent_scopes`` and a NON-empty effective
-    scope list.
-    """
     scopes = ({"tools:read": True, "tools:search": True}
               if current_scopes is None else current_scopes)
     o = MagicMock()
@@ -75,10 +62,6 @@ def _orch(current_scopes=None):
     return o
 
 
-# --------------------------------------------------------------------------- #
-# The run threads a derived root into the turn (T023)
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_scheduled_run_threads_consent_derived_authority():
     orch, store, grants = _orch(), _store(), _grants()
@@ -87,14 +70,13 @@ async def test_scheduled_run_threads_consent_derived_authority():
     grants.mint_access_token.assert_awaited_once_with(
         "grant-1",
         user_id="u1",
-    )  # fresh per run and owner-bound
+    )
     kwargs = orch.run_scheduled_turn.await_args.kwargs
     authority = kwargs["authority"]
     assert isinstance(authority, MachineAuthority)
     assert authority.access_token == "consent-token"
     assert authority.principal == "machine:scheduled_job"
     assert authority.consent_ref == "grant-1"
-    # Narrowed to (consented ∩ current).
     assert kwargs["allowed_scopes"] == ["tools:read", "tools:search"]
 
 
@@ -110,15 +92,10 @@ async def test_authority_never_wider_than_current_grants():
 
 @pytest.mark.asyncio
 async def test_safe_baseline_user_is_not_mistaken_for_having_no_grants():
-    """A user whose tools run on the feature-040 safe baseline has NO
-    ``agent_scopes`` rows. Deriving from that raw table collapsed the
-    intersection to empty and skipped the run — for exactly the users who never
-    granted a scope explicitly, which after 040 is the default population.
-    """
     orch = _orch()
-    orch.tool_permissions.get_agent_scopes = MagicMock(return_value={})  # no rows
+    orch.tool_permissions.get_agent_scopes = MagicMock(return_value={})
     orch.tool_permissions.get_enabled_scope_names = MagicMock(
-        return_value=["tools:read", "tools:search"])           # but tools DO run
+        return_value=["tools:read", "tools:search"])
     store, grants = _store(), _grants()
 
     outcome = await JobRunner(orch, store, grants).run_job(_job())
@@ -131,8 +108,6 @@ async def test_safe_baseline_user_is_not_mistaken_for_having_no_grants():
 
 @pytest.mark.asyncio
 async def test_effective_revocation_still_skips():
-    """The containment itself is unchanged: when the effective set no longer
-    intersects what was consented, the run skips rather than running wider."""
     orch = _orch()
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=[])
     store, grants = _store(), _grants()
@@ -142,10 +117,6 @@ async def test_effective_revocation_still_skips():
     assert outcome == "skipped_auth"
     orch.run_scheduled_turn.assert_not_awaited()
 
-
-# --------------------------------------------------------------------------- #
-# Fail-closed skips + collapsed notification (T024, FR-013)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setup,reason", [
@@ -158,7 +129,7 @@ async def test_skip_dispatches_nothing_and_pauses(setup, reason):
     setup(grants)
     outcome = await JobRunner(orch, store, grants).run_job(_job())
     assert outcome == "skipped_auth"
-    orch.run_scheduled_turn.assert_not_awaited()  # ZERO dispatch
+    orch.run_scheduled_turn.assert_not_awaited()
     assert store.finish_run.call_args.kwargs["outcome"] == "skipped_auth"
     store.set_status.assert_called_once_with("u1", "job-1", "paused")
     orch.notify_user.assert_awaited_once()
@@ -184,23 +155,17 @@ async def test_empty_scope_intersection_skips():
 
 @pytest.mark.asyncio
 async def test_revocation_pauses_with_one_notification():
-    """A paused job that keeps skipping notifies ONCE, not per firing."""
     orch, store, grants = _orch(), _store(), _grants(valid=False)
     runner = JobRunner(orch, store, grants)
     for _ in range(4):
         assert await runner.run_job(_job()) == "skipped_auth"
     assert orch.notify_user.await_count == 1
-    # A later healthy run re-arms the notification.
     grants.is_valid = MagicMock(return_value=True)
     assert await runner.run_job(_job()) == "success"
     grants.is_valid = MagicMock(return_value=False)
     assert await runner.run_job(_job()) == "skipped_auth"
-    assert orch.notify_user.await_count == 3  # skip, success, skip
+    assert orch.notify_user.await_count == 3
 
-
-# --------------------------------------------------------------------------- #
-# The bound turn dispatches delegated + audits as a machine principal
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def real_orch(orchestrator_factory):
@@ -223,15 +188,12 @@ def _authority():
 
 @pytest.mark.asyncio
 async def test_bound_machine_turn_dispatches_delegated(real_orch, monkeypatch):
-    """Production posture: the bound root makes the RFC 8693 exchange work, so
-    a real-agent tool dispatches instead of being refused fail-closed."""
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
     vws = VirtualWebSocket(BackgroundTask(task_id="t", chat_id="c1", user_id="u1"))
     real_orch._bind_machine_turn(vws, _authority())
 
-    # The exchange consumes the session's _raw_token, which is the consent token.
     seen = {}
 
     async def _exchange(raw, agent, tools, uid, scopes):
@@ -256,13 +218,12 @@ async def test_bound_machine_turn_dispatches_delegated(real_orch, monkeypatch):
         vws, tc, {"t1": "a1"}, "c1", user_id="u1")
 
     assert resp.result == "ok", "machine turn must dispatch, not be refused"
-    assert seen["raw"] == "consent-token"  # the consent-derived subject token
+    assert seen["raw"] == "consent-token"
     assert dispatched["args"]["_delegation_token"] == "delegated-from-consent"
 
 
 @pytest.mark.asyncio
 async def test_unbound_machine_turn_still_refused_in_production(real_orch, monkeypatch):
-    """Without consent there is no root — production refuses fail-closed."""
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
@@ -277,8 +238,6 @@ async def test_unbound_machine_turn_still_refused_in_production(real_orch, monke
 
 @pytest.mark.asyncio
 async def test_machine_turn_chains_attenuate(real_orch):
-    """FR-015: a hop inside a machine turn mints children off the consent root
-    exactly as an interactive hop does — one authority model, two roots."""
     import asyncio
 
     from orchestrator import delegation as dg
@@ -293,7 +252,6 @@ async def test_machine_turn_chains_attenuate(real_orch):
         real_orch._bind_machine_turn(vws, _authority())
 
         now = int(time.time())
-        # The root the machine turn's dispatch carried (minted from consent).
         root = {"sub": "u1", "act": {"sub": "agent:a1"},
                 "scope": "tools:read tool:peer_tool",
                 "iss": "mock-astral-delegation", "aud": "svc",
@@ -324,6 +282,6 @@ async def test_machine_turn_chains_attenuate(real_orch):
         assert child["delegation_depth"] == 1
         assert set(child["scope"].split()) <= set(root["scope"].split())
         assert dg.actor_chain(child) == ["agent:b1", "agent:a1"]
-        assert child["sub"] == "u1"  # terminates at the owning human
+        assert child["sub"] == "u1"
     finally:
         flags._flags["recursive_delegation"] = prior

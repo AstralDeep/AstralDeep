@@ -1,4 +1,8 @@
-"""Actual HTTP/child handoffs retain original guidance IAM over real Plane."""
+"""Tests that HTTP and subtask handoffs retain original guidance authority over real
+Plane (orchestrator/turn_guidance_authority.py, subtasks.py, chain_authority.py,
+api.py): a turn reader can read but never write or escalate scope.
+"""
+
 import asyncio
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -245,7 +249,7 @@ async def test_rest_origin_custody_is_released_on_all_task_exits(catalog, human,
         tasks[0].cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(0)  # allow the task's registered completion callback
+        await asyncio.sleep(0)
     assert len(origins) == 1 and origins[0].closed
     assert 'synthetic-private-turn-content' not in caplog.text
     assert end != 'cancel_before_entry' or not started.is_set()

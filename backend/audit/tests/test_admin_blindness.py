@@ -1,14 +1,8 @@
-"""Admin-blindness integration test (FR-019).
-
-Confirms that:
-
-1. Even an admin role cannot read another user's audit entries via
-   ``list_for_user`` / ``get_for_user``.
-2. Cross-user fetch returns ``None`` (REST surfaces 404), indistinguishable
-   from non-existent ids.
-3. The WS publisher's filter never delivers user A's event to user B's
-   connection.
+"""Tests for audit/repository.py and ws_publisher.py: cross-user reads return None, not
+an error, even for an admin, and the WS publisher never delivers one user's event to
+another's connection.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,23 +34,15 @@ def test_get_for_user_returns_none_for_other_users_event(repo, make_event):
     alice = f"alice-{uuid.uuid4().hex[:8]}"
     bob = f"bob-{uuid.uuid4().hex[:8]}"
     bob_event = repo.insert(make_event(actor_user_id=bob, auth_principal=bob))
-    # Alice tries to fetch by Bob's event_id — must come back None
     assert repo.get_for_user(alice, bob_event.event_id) is None
-    # Bob himself can fetch it
     assert repo.get_for_user(bob, bob_event.event_id) is not None
 
 
 def test_get_for_user_returns_none_for_garbage_event_id(repo):
-    # Indistinguishable from "not yours" — same None response
     assert repo.get_for_user("anyone", "not-a-uuid") is None
 
 
 def test_ws_publisher_only_delivers_to_owning_connection(make_event):
-    """The publisher must filter strictly by ``actor_user_id``.
-
-    We feed a fake orchestrator with two connections (alice + bob) and
-    confirm an event for alice never reaches bob's connection.
-    """
     from audit.ws_publisher import WSPublisher
     from audit.schemas import AuditEventDTO
     from datetime import datetime, timezone
@@ -98,4 +84,4 @@ def test_ws_publisher_only_delivers_to_owning_connection(make_event):
     )
     asyncio.run(pub.publish(dto, "alice"))
     assert len(ws_alice.received) == 1
-    assert ws_bob.received == []  # absolute: never delivered
+    assert ws_bob.received == []

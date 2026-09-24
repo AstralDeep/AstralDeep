@@ -1,16 +1,8 @@
-"""Tests for GET /api/chats/{chat_id}/steps (feature 014, T020).
-
-Covers contracts/chat_steps_rest.md:
-* 401 without auth.
-* 200 with empty list for an authenticated user's empty chat.
-* 200 with sorted entries when steps exist.
-* 403 when the chat exists but is owned by another user.
-* 404 when the chat does not exist.
-* Read-time interrupted healing: in-progress rows older than 30 s with no
-  active task are reported as ``interrupted`` (not persisted).
-* Defense-in-depth re-redaction on the read path.
-* Cache-Control: no-store header.
+"""Tests for GET /api/chats/{chat_id}/steps (backend/orchestrator/api.py): auth and
+ownership checks, read-time healing of stale in-progress steps into 'interrupted',
+defense-in-depth redaction, and no-store caching.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,7 +34,6 @@ AUTH_HEADER = {"Authorization": f"Bearer {MOCK_JWT_TOKEN}"}
 
 @pytest.fixture
 def app_and_orch(plane_runtime):
-    """Build a FastAPI test app with the chat router and a real History+TaskManager."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -103,7 +94,6 @@ def orch(app_and_orch):
 
 @pytest.fixture
 def fresh_chat(orch):
-    """Create a chat owned by the mock-auth user (dev-user-id)."""
     chat_id = orch.history.create_chat(user_id="dev-user-id")
     yield chat_id
     with orch.plane_runtime.transaction() as transaction:
@@ -213,7 +203,6 @@ class TestPermissions:
 
 class TestInterruptedHealing:
     def test_stale_in_progress_with_no_active_task_is_interrupted(self, client, orch, fresh_chat):
-        # 60-second-old in-progress row, no active task on the chat.
         long_ago = int(time.time() * 1000) - 60_000
         _insert_step(
             orch.plane_runtime,
@@ -237,7 +226,6 @@ class TestInterruptedHealing:
         resp = client.get(f"/api/chats/{fresh_chat}/steps", headers=AUTH_HEADER)
         assert resp.json()["steps"][0]["status"] == "interrupted"
 
-        # Underlying row still says in_progress.
         with orch.plane_runtime.transaction() as transaction:
             row = orch.plane_runtime.repositories.chat_steps.get_step(
                 transaction,
@@ -248,7 +236,7 @@ class TestInterruptedHealing:
         assert row.status.value == "in_progress"
 
     def test_recent_in_progress_is_NOT_healed(self, client, orch, fresh_chat):
-        recent = int(time.time() * 1000) - 1000  # 1 second old
+        recent = int(time.time() * 1000) - 1000
         _insert_step(
             orch.plane_runtime,
             chat_id=fresh_chat, user_id="dev-user-id",
@@ -261,9 +249,6 @@ class TestInterruptedHealing:
 
 class TestDefenseInDepthRedaction:
     def test_phi_in_result_is_re_redacted_on_read(self, client, orch, fresh_chat):
-        # Simulate a row written by a code path that bypassed the recorder
-        # (defense-in-depth scenario): raw PHI sitting in the result_summary
-        # column. The endpoint MUST scrub before returning.
         now = int(time.time() * 1000)
         _insert_step(
             orch.plane_runtime,

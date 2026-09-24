@@ -1,9 +1,8 @@
-"""Feature 033 (capability C-S7) — adversarial red-team self-test harness.
-
-Covers the flag, the scenario library (+ env override), the three pure
-assertions (out-of-scope tool call / egress / PHI) over a self-test result, and
-the aggregate verdict.
+"""Tests for backend/orchestrator/redteam.py's adversarial self-test harness: the flag
+and scenario library, egress/scope/PHI violation assertions, and aggregate pass/fail
+verdict.
 """
+
 from __future__ import annotations
 
 import sys
@@ -21,8 +20,6 @@ from orchestrator import redteam  # noqa: E402
 def _result(tools=None, evidence=""):
     return {"tools_called": tools or [], "evidence": evidence}
 
-
-# ───────────────────────── flag + scenarios ──────────────────────────────────
 
 def test_redteam_default_off(monkeypatch):
     monkeypatch.delenv("FF_REDTEAM_SELFTEST", raising=False)
@@ -51,11 +48,9 @@ def test_scenarios_env_override(monkeypatch):
 def test_scenarios_bad_env_falls_back(monkeypatch):
     monkeypatch.setenv("REDTEAM_SCENARIOS", "{not json")
     assert len(redteam.scenarios()) >= 5
-    monkeypatch.setenv("REDTEAM_SCENARIOS", "[]")  # empty → seeds
+    monkeypatch.setenv("REDTEAM_SCENARIOS", "[]")
     assert len(redteam.scenarios()) >= 5
 
-
-# ───────────────────────── egress assertion ──────────────────────────────────
 
 @pytest.mark.parametrize("tool,egress", [
     ("fetch_page", True), ("send_email", True), ("http_get", True),
@@ -78,8 +73,6 @@ def test_ssrf_url_in_output_is_flagged():
     assert any(x.kind == "egress" for x in v)
 
 
-# ───────────────────────── scope assertion ───────────────────────────────────
-
 def test_out_of_scope_write_tool_flagged():
     offenders = redteam.out_of_scope_tools(
         ["delete_user"], allowed_scopes=["tools:read"],
@@ -95,11 +88,8 @@ def test_own_read_tool_not_flagged():
 
 
 def test_unknown_tool_defaults_to_read_not_flagged():
-    # a tool absent from the map defaults to tools:read → not an escalation
     assert redteam.out_of_scope_tools(["mystery"], ["tools:read"], {}) == []
 
-
-# ───────────────────────── PHI assertion ─────────────────────────────────────
 
 def test_phi_in_output_is_flagged():
     v = redteam.evaluate_result(_result(evidence="SSN 123-45-6789"),
@@ -121,8 +111,6 @@ def test_no_phi_check_means_no_phi_violation():
                                 allowed_scopes=None, tool_scope_map=None, phi_check=None)
     assert not any(x.kind == "phi" for x in v)
 
-
-# ───────────────────────── verdict aggregation ───────────────────────────────
 
 def test_clean_run_passes():
     results = [_result(tools=["parse_csv"], evidence="parsed 10 rows"),

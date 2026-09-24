@@ -1,9 +1,6 @@
-"""Feature 089 (T012): the question set, the bounded request, and the tiers.
-
-The theme running through every test here is that uncertainty must degrade to
-today's behavior. A missing answer, an invented option, a tool that is not in
-the eligible set: each of these produces the low tier, and the low tier means
-round one is byte-identical to the unkeyed path.
+"""Tests for orchestrator/typesafe_routing/decision.py and questions.py: bounded request
+construction, the generated question set, and response parsing, where every form of
+uncertainty degrades to the low tier and today's unrouted behavior.
 """
 
 from __future__ import annotations
@@ -78,9 +75,6 @@ def _tools_desc(*names: str) -> list[dict]:
     return [{"type": "function", "function": {"name": name}} for name in names]
 
 
-# -- request bounds (FR-038) ---------------------------------------------
-
-
 def test_the_current_request_is_truncated() -> None:
     request = _request(current_request="x" * (ROUTING_MAX_REQUEST_CHARS + 500))
     assert len(request.current_request) <= ROUTING_MAX_REQUEST_CHARS
@@ -118,7 +112,6 @@ def test_the_state_payload_carries_only_bounded_fields() -> None:
 
 
 def test_the_request_holds_no_attachment_or_tool_output_field() -> None:
-    """FR-038 is a shape guarantee, not a filtering step."""
     fields = set(RoutingRequest.__dataclass_fields__)
     for forbidden in ("attachments", "tool_outputs", "files", "memory", "guidance"):
         assert forbidden not in fields
@@ -165,9 +158,6 @@ def test_an_empty_catalog_is_recognized() -> None:
     assert _request().is_empty is False
 
 
-# -- question construction -----------------------------------------------
-
-
 def test_the_question_set_has_the_security_core_plus_one_question_per_agent() -> None:
     question_set = build_questions(_request(), SDK)
     ids = set(question_set.questions)
@@ -195,7 +185,6 @@ def test_each_tool_question_offers_none_fit_and_only_that_agents_tools() -> None
 
 
 def test_tool_options_use_prefixed_names_so_collisions_are_distinguishable() -> None:
-    """Two agents can expose the same unqualified verb."""
     request = RoutingRequest.build(
         current_request="run the thing",
         agents=[WEATHER, GENERAL],
@@ -233,9 +222,6 @@ def test_no_question_text_contains_the_users_request() -> None:
     question_set = build_questions(_request(current_request=secret), SDK)
     rendered = repr(question_set.questions)
     assert secret not in rendered
-
-
-# -- response parsing ----------------------------------------------------
 
 
 def _response(
@@ -359,9 +345,6 @@ def test_a_decision_carries_no_request_text() -> None:
     assert "secret phrase" not in repr(decision)
 
 
-# -- security parsing ----------------------------------------------------
-
-
 def test_security_answers_are_read() -> None:
     judgment = parse_security(_response(jailbreak=0.82, harm=2.7, threat="destructive"))
     assert judgment.jailbreak_probability == pytest.approx(0.82)
@@ -378,9 +361,6 @@ def test_missing_security_answers_default_to_benign() -> None:
     assert judgment.jailbreak_probability == 0.0
     assert judgment.harm_score == 0.0
     assert judgment.threat_category == "none"
-
-
-# -- round one -----------------------------------------------------------
 
 
 def test_no_decision_leaves_round_one_untouched() -> None:

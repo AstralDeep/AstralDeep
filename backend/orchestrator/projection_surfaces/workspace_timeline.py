@@ -1,11 +1,8 @@
-"""Deep-owned host adapter for the workspace-timeline Projection surface.
-
-Lists a chat's workspace snapshots (one per turn / component-action
-mutation); selecting one pushes a full historical canvas render flagged
-read-only, with an explicit "Back to live" affordance (FR-031/FR-032).
-Viewing history is audited (FR-033) and mutating component actions are
-refused server-side while a socket is in timeline mode.
+"""Renders a chat's workspace-snapshot timeline; selecting a snapshot pushes a read-only
+historical canvas render with a back-to-live affordance, refusing component mutations
+while a socket is in timeline mode.
 """
+
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -50,7 +47,6 @@ async def render(orch, user_id, roles, params) -> str:
                 'Snapshots appear as turns produce or update components.</p>')
 
     rows = []
-    # Newest-first list; number entries as turns counting back from total.
     for i, s in enumerate(snaps):
         n = total - (page * _PAGE_SIZE) - i
         label = _CAUSE_LABELS.get(s.get("cause"), s.get("cause", ""))
@@ -92,15 +88,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def components(orch, user_id, roles, params):
-    """Feature 044 — the workspace timeline as native SDUI components.
-
-    Mirrors ``render()`` exactly (same data + the SAME actions): a snapshot
-    list newest-first ("#n · <cause> · <timestamp>") whose rows fire
-    ``chrome_workspace_timeline_view``, Newer/Older paging via ``chrome_open``,
-    and a ``chrome_workspace_timeline_live`` "Back to live" button. The web
-    ``render()`` HTML is unchanged (contract §3.1); the paging payloads match
-    the web nav so history navigation behaves identically on either target.
-    """
     chat_id = str((params or {}).get("chat_id") or "")
     page = max(0, int((params or {}).get("page") or 0))
     if not chat_id:
@@ -118,8 +105,6 @@ async def components(orch, user_id, roles, params):
         _sdui.button("Back to live", "chrome_workspace_timeline_live",
                      {"chat_id": chat_id}, variant="primary"),
     ]
-    # Newest-first list; number entries as turns counting back from total —
-    # identical to render().
     for i, s in enumerate(snaps):
         n = total - (page * _PAGE_SIZE) - i
         label = _CAUSE_LABELS.get(s.get("cause"), s.get("cause", ""))
@@ -143,7 +128,6 @@ async def components(orch, user_id, roles, params):
 
 
 def _banner_components(snapshot, chat_id):
-    """Read-only banner prepended to a historical canvas render."""
     label = _CAUSE_LABELS.get(snapshot.get("cause"), snapshot.get("cause", ""))
     return [
         {
@@ -163,7 +147,6 @@ def _banner_components(snapshot, chat_id):
 
 
 async def _view(orch, websocket, user_id, roles, payload):
-    """Push a historical, read-only canvas render for one snapshot."""
     chat_id = str((payload or {}).get("chat_id") or "")
     try:
         snapshot_id = int((payload or {}).get("snapshot_id"))
@@ -187,14 +170,10 @@ async def _view(orch, websocket, user_id, roles, payload):
     except Exception:
         pass
 
-    # Tell the client to defer live canvas updates while in the past.
     await orch._safe_send(websocket, json.dumps({
         "type": "workspace_timeline_mode", "active": True, "chat_id": chat_id,
         "snapshot_id": snapshot_id,
     }))
-    # Feature 029: snapshots carry the designed arrangements that were live at
-    # capture time — materialize them so history looks the way it looked.
-    # (Pre-029 snapshots have no layouts and render flat, as before.)
     snap_components = list(snap.get("components") or [])
     layouts = [lay for lay in (snap.get("layouts") or []) if isinstance(lay, dict)]
     if layouts:
@@ -212,17 +191,11 @@ async def _view(orch, websocket, user_id, roles, payload):
         snap_components = body
     components = _banner_components(snap, chat_id) + snap_components
     await orch.send_ui_render(websocket, components)
-    # Close the modal so the historical canvas is visible. Feature 044: the
-    # close is device-aware (contract §2/§3.1) — web clears the HTML modal
-    # region, native SDUI clients (windows/android) get the documented
-    # empty-components ChromeSurface (was a web-only ChromeRender the natives
-    # couldn't read). Reuses the same helper the chrome_close action uses.
     await _close_modal(orch, websocket)
     return None
 
 
 async def _live(orch, websocket, user_id, roles, payload):
-    """Return to the live workspace exactly as it now stands (FR-032)."""
     chat_id = str((payload or {}).get("chat_id") or "") or orch._ws_active_chat.get(id(websocket), "")
     orch._ws_timeline_mode.pop(id(websocket), None)
     await orch._safe_send(websocket, json.dumps({
@@ -230,8 +203,6 @@ async def _live(orch, websocket, user_id, roles, payload):
     }))
     if chat_id:
         try:
-            # Feature 029: back-to-live restores the designed canvas when the
-            # orchestrator provides the materializer (test fakes may not).
             canvas_fn = getattr(orch, "_canvas_components", None)
             if canvas_fn:
                 components = await asyncio.to_thread(canvas_fn, chat_id, user_id)
@@ -242,19 +213,11 @@ async def _live(orch, websocket, user_id, roles, payload):
         except Exception:
             import logging
             logging.getLogger("Orchestrator.Chrome").exception("back-to-live render failed")
-    # Feature 044: device-aware modal close (see _view).
     await _close_modal(orch, websocket)
     return None
 
 
 async def _close_modal(orch, websocket):
-    """Feature 044 — device-aware modal close shared by ``_view``/``_live``.
-
-    Delegates to the chrome dispatcher's ``push_close`` so the frame is
-    IDENTICAL to the ``chrome_close`` action: an empty-HTML ``chrome_render``
-    for web, an empty-components ``chrome_surface`` for native SDUI
-    (windows/android). Imported lazily to avoid an import cycle (chrome_events
-    imports the surface registry)."""
     from orchestrator.chrome_events import push_close
     await push_close(orch, websocket)
 

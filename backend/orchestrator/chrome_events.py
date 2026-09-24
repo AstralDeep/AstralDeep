@@ -1,17 +1,8 @@
-"""Feature 027 — chrome ui_event dispatcher.
-
-Routes the settings-menu / surface / creation actions that arrive as
-``{type:"ui_event", action, payload}`` from the web shell. Hooked from
-``Orchestrator.handle_ui_message`` AFTER the legacy if/elif chain so the
-026 actions are untouched; returns ``True`` when the action was handled
-(including handled-with-error) and ``False`` for actions outside the
-chrome/creation namespace.
-
-Contract (contracts/chrome-ws-protocol.md): every failure renders an
-in-modal error notice and structured-logs the exception — never a silent
-drop. Admin-only surfaces/actions re-check the role server-side here
-regardless of what the menu rendered (FR-014).
+"""Dispatches settings-menu, surface, and creation ui_event actions from web/native
+clients, rendering per device via ROTE; called from Orchestrator.handle_ui_message,
+shared by projection_surfaces modules.
 """
+
 import asyncio
 import json
 import contextvars
@@ -25,14 +16,9 @@ from shared.protocol import OperationStatus
 
 logger = logging.getLogger("Orchestrator.Chrome")
 
-#: Feature 076: the UI socket a settings surface is being rendered FOR, set by
-#: ``_render_surface`` around the builder call (``None`` outside a render).
 current_surface_socket: contextvars.ContextVar = contextvars.ContextVar(
     "chrome_surface_socket", default=None)
 
-# Lazily aggregated {action: (surface_key, handler)} — surfaces register via
-# their module-level HANDLERS dicts; agentic_creation contributes the
-# draft/revision decision actions through the same mechanism.
 _HANDLERS = None
 
 
@@ -54,8 +40,6 @@ def canonical_operation_status(
     retry_after_ms: Optional[int],
     updated_at: Optional[datetime] = None,
 ) -> OperationStatus:
-    """Build and validate one canonical operation-status projection."""
-
     timestamp = updated_at or datetime.now(UTC)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
@@ -81,8 +65,6 @@ def canonical_operation_status(
 
 
 async def emit_operation_status(orch: Any, websocket: Any, **projection: Any) -> bool:
-    """Send one validated status frame over the orchestrator's safe-send seam."""
-
     frame = canonical_operation_status(**projection)
     return bool(await orch._safe_send(websocket, frame.to_json()))
 
@@ -110,7 +92,6 @@ def _is_chrome_action(action: str) -> bool:
 
 
 def _roles(orch, websocket) -> list:
-    """Roles from the validated register_ui JWT claims (mock auth ⇒ admin)."""
     claims = orch.ui_sessions.get(websocket) or {}
     roles = list((claims.get("realm_access") or {}).get("roles") or [])
     for client in (claims.get("resource_access") or {}).values():
@@ -136,16 +117,10 @@ async def _verify_human_delivery(orch, websocket):
         caller._assert_local(orch)
 
 
-# --- Feature 043: device-target-aware surface delivery -----------------------
-# Web (browser) → ChromeRender HTML modal (feature 027, unchanged). Native SDUI
-# (windows/android) → ChromeSurface: a ROTE-adapted astralprims component list
-# the client renders through its EXISTING renderer (contracts/chrome-surface.md).
-
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _device_type(orch, websocket) -> str:
-    """The connecting client's ROTE device type ('browser'|'windows'|'android')."""
     try:
         prof = orch.rote.get_profile(websocket)
         return getattr(prof.device_type, "value", str(prof.device_type))
@@ -154,21 +129,15 @@ def _device_type(orch, websocket) -> str:
 
 
 def _strip_html(html: str) -> str:
-    """Best-effort plain text from a chrome notice's HTML (native has no HTML).
-
-    Tags become SPACES (then whitespace collapses) so adjacent blocks don't
-    fuse into one word — the theme notice used to read
-    "Daylight theme saved.Theme applied" on native clients."""
     import html as _htmlmod
     return " ".join(_htmlmod.unescape(_TAG_RE.sub(" ", html or "")).split())
 
 
 def _notice_components(notice_html: str) -> list:
-    """Map a handler's re-render notice (HTML) to a leading Alert component."""
     text = _strip_html(notice_html)
     if not text:
         return []
-    low = (notice_html or "").lower()  # infer kind from the notice_block color class
+    low = (notice_html or "").lower()
     variant = "error" if "red-" in low else "success" if "green-" in low else "info"
     return [{"type": "alert", "variant": variant, "message": text}]
 
@@ -182,18 +151,11 @@ async def _push_surface(orch, websocket, surface_key, title, admin_only, compone
     ).to_json())
 
 
-# Feature 051: iOS/macOS join Windows/Android as chrome-model SDUI natives
-# (the watch is deliberately chrome-free — no surfaces on the wrist).
 _NATIVE_SDUI_DEVICE_TYPES = ("windows", "android", "ios", "macos")
 
 
 async def _push_error_notice(orch, websocket, title: str, message: str,
                              surface_key: str = ""):
-    """Device-aware error notice (feature 044, FR-002/FR-017).
-
-    Web keeps the feature-027 HTML modal; native SDUI clients get a
-    ``chrome_surface`` carrying an error Alert — an HTML frame would be
-    invisible to them (the pre-044 gap)."""
     if _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES:
         from webrender.chrome.surfaces import _sdui
         await _push_surface(orch, websocket, surface_key or "error", title, False,
@@ -205,19 +167,10 @@ async def _push_error_notice(orch, websocket, title: str, message: str,
 
 
 def is_native_sdui(orch, websocket) -> bool:
-    """Does this socket render surfaces as native SDUI components?
-
-    Native surfaces are full screens with no modal ✕ (web) and, on Apple, no
-    system Back (Android) — so a handler that leaves one on screen strands it.
-    """
     return _device_type(orch, websocket) in _NATIVE_SDUI_DEVICE_TYPES
 
 
 def open_surface_for(orch, websocket) -> str:
-    """The surface key this socket last rendered and has not closed ("" when
-    none). Feature 077: background work (the quick-create pipeline) re-renders
-    a surface only while the person is still looking at it — never reopening
-    a modal they closed or replacing one they navigated to."""
     return (getattr(orch, "_open_chrome_surface", None) or {}).get(id(websocket), "")
 
 
@@ -226,7 +179,7 @@ def _note_open_surface(orch, websocket, surface_key: str) -> None:
     if table is None:
         try:
             table = orch._open_chrome_surface = {}
-        except Exception:  # noqa: BLE001 — a frozen test double
+        except Exception:  # noqa: BLE001
             return
     if surface_key:
         table[id(websocket)] = surface_key
@@ -235,8 +188,6 @@ def _note_open_surface(orch, websocket, surface_key: str) -> None:
 
 
 async def push_close(orch, websocket):
-    """Device-aware modal close: web clears the HTML modal region; native SDUI
-    clients receive the documented empty-components ``chrome_surface`` form."""
     _note_open_surface(orch, websocket, "")
     if is_native_sdui(orch, websocket):
         await _push_surface(orch, websocket, "", "", False, [])
@@ -246,19 +197,9 @@ async def push_close(orch, websocket):
 
 async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
                           params: dict, notice_html: str = ""):
-    """Render a surface into the modal, adapting to the connecting client.
-
-    Web → ChromeRender HTML (unchanged). Native SDUI (windows/android) →
-    ChromeSurface (ROTE-adapted astralprims components). Admin-gated and
-    gracefully-degrading on either path (Constitution X/XII, FR-014).
-    """
     if surface_key == "guidance":
         from persistent_agents.models import AssignmentError
         raise AssignmentError("explicit_note_navigation_unavailable", 503)
-    # Feature 076: a surface may need to know WHICH of the owner's sockets is
-    # asking (the My computers surface offers the consent switch only to the
-    # desktop that can host). Exposed as a context variable for the duration of
-    # the render — never through ``params``, which surfaces may serialize.
     token = current_surface_socket.set(websocket)
     _note_open_surface(orch, websocket, surface_key)
     try:
@@ -274,19 +215,6 @@ async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
 
 
 async def _surface_title(mod, surface_key: str, orch, user_id, params) -> str:
-    """The dialog's heading for this render.
-
-    A surface whose heading depends on what it is showing (an agent's own
-    dialog is headed by that agent's name) declares an async
-    ``title(orch, user_id, params)``; the rest keep their fixed ``TITLE``.
-    It is async because a heading that names a record has to answer the same
-    "may this account see it?" question the body does, and that question
-    reaches the database.
-
-    A title() that raises falls back to ``TITLE`` rather than failing the
-    render — a heading is never worth losing a dialog over, and the fallback
-    reveals nothing.
-    """
     maker = getattr(mod, "title", None)
     if callable(maker):
         try:
@@ -299,14 +227,6 @@ async def _surface_title(mod, surface_key: str, orch, user_id, params) -> str:
 
 
 def _surface_sections(mod) -> tuple:
-    """The surface's tab strip: a tuple of ``(key, label)`` string pairs.
-
-    Anything else is dropped. A module that binds ``SECTIONS`` to something
-    other than a tab strip — the User guide imported its own content sections
-    under that name for a while — used to have the dispatcher print a repr of
-    whatever it found across the top of the dialog. A tab strip that cannot be
-    read as one is no tab strip.
-    """
     raw = getattr(mod, "SECTIONS", ()) or ()
     if isinstance(raw, (str, bytes, dict)):
         return ()
@@ -321,12 +241,6 @@ def _surface_sections(mod) -> tuple:
 
 
 def _session_identity(orch, websocket, roles) -> dict:
-    """Who the settings dialog belongs to, for its account block.
-
-    Derived from the SAME validated ``register_ui`` claims the roles come
-    from, through the one shared derivation in ``web_auth``, so the dialog
-    and the shell cannot disagree about who is signed in. Display only.
-    """
     try:
         from orchestrator.web_auth import (
             MOCK_IDENTITY,
@@ -343,18 +257,6 @@ def _session_identity(orch, websocket, roles) -> dict:
 
 
 def _settings_nav_html(roles, surface_key: str, identity=None) -> str:
-    """The settings dialog's left rail for this session, or "" if unavailable.
-
-    The gear opens the dialog instead of a dropdown, so the menu has to travel
-    with every surface the dialog shows. It is built from the same
-    ``build_menu_model`` the shell's gear and the native ``chrome_menu`` frame
-    use, with the same host availability inputs, so what the rail offers can
-    never drift from what the menu offers.
-
-    A rail is navigation, not authority: a failure here leaves the dialog
-    without one rather than taking the surface down, and every entry it draws
-    still goes through the ordinary ``chrome_open`` checks.
-    """
     try:
         from webrender.chrome import render_settings_nav
         from webrender.chrome.menu_model import build_menu_model
@@ -369,7 +271,6 @@ def _settings_nav_html(roles, surface_key: str, identity=None) -> str:
 
 async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str,
                                params: dict, notice_html: str = ""):
-    """Web path — server-rendered HTML modal (feature 027; behavior unchanged)."""
     from webrender.chrome import chrome_error_block, render_modal_shell
     from orchestrator.projection_surfaces import get_surface
 
@@ -393,14 +294,6 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
             getattr(mod, "TITLE", surface_key),
             chrome_error_block("This surface failed to load. Please retry.", surface_key)))
         return
-    # Feature 089: a surface may declare a subtitle, an icon, section tabs and
-    # a footer action row; the ones that declare nothing render exactly as
-    # before. Declaring is opt-in per surface module, so a native surface is
-    # unaffected either way (this is the web path only).
-    # The rail is the settings menu. A surface that is not one of its entries
-    # (an agent's own dialog, opened from the directory) declares NO_NAV and
-    # renders as a plain dialog, so opening an agent does not look like
-    # opening settings.
     nav_html = "" if getattr(mod, "NO_NAV", False) else _settings_nav_html(
         roles, surface_key, _session_identity(orch, websocket, roles))
     await _push_modal(orch, websocket, render_modal_shell(
@@ -415,7 +308,6 @@ async def _render_surface_html(orch, websocket, user_id, roles, surface_key: str
 
 async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str,
                                params: dict, notice_html: str = ""):
-    """Native SDUI path (feature 043) — a ROTE-adapted ChromeSurface frame."""
     from orchestrator.projection_surfaces import get_surface
     from webrender.chrome.surfaces import _sdui
 
@@ -434,8 +326,6 @@ async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str
         return
     builder = getattr(mod, "components", None)
     if builder is None:
-        # Not yet converted to SDUI → a single labeled placeholder (FR-014),
-        # never the retired text placeholder and never a blank screen.
         await _push_surface(orch, websocket, surface_key, title, False, [_sdui.placeholder(title)])
         return
     try:
@@ -446,9 +336,7 @@ async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str
                             [_sdui.alert("This surface failed to load. Please retry.", "error")])
         return
     payload = _notice_components(notice_html) + comps
-    # ROTE-adapt for this device. Use ComponentAdapter directly (not
-    # orch.rote.adapt) so surface components don't clobber the canvas
-    # re-adaptation cache (orch.rote._last_components).
+    # Not orch.rote.adapt — would clobber the canvas cache
     try:
         from rote.adapter import ComponentAdapter
         payload = ComponentAdapter.adapt(payload, orch.rote.get_profile(websocket))
@@ -459,7 +347,6 @@ async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str
 
 
 async def _audit_admin_rejection(orch, websocket, user_id: str, what: str):
-    """US4 scenario 3 — audit a server-side admin rejection (best-effort)."""
     try:
         from datetime import datetime, timezone
 
@@ -482,16 +369,12 @@ async def _audit_admin_rejection(orch, websocket, user_id: str, what: str):
         logger.debug("chrome: admin-rejection audit failed", exc_info=True)
 
 
-# Feature 054: setup actions remain available while unconfigured. Feature 079
-# also preserves owner inspection and authority-reducing assignment controls;
-# continued work, consent and approvals retain the setup gate.
 _LLM_GATE_ALLOWED_ACTIONS = frozenset({
     "chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear",
 })
 
 
 def _assignment_control_without_llm(orch, websocket, action, payload, user_id):
-    """Let a verified owner inspect or quiesce work without granting new work."""
     if action not in {"chrome_assignment_pause", "chrome_assignment_stop", "chrome_assignment_revoke"}:
         if action != "chrome_open" or not isinstance(payload, dict):
             return False
@@ -504,8 +387,6 @@ def _assignment_control_without_llm(orch, websocket, action, payload, user_id):
 
     from orchestrator.projection_surfaces.personalization import _assignment_access
     try:
-        # Reuse the same feature, live human socket and owner checks as the
-        # final handler. Every resource read/control still enforces its owner.
         _assignment_access(orch, websocket, user_id)
     except (AssignmentError, TypeError, AttributeError):
         return False
@@ -513,19 +394,12 @@ def _assignment_control_without_llm(orch, websocket, action, payload, user_id):
 
 
 async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, payload=None) -> bool:
-    """Server-authoritative first-run gate (feature 054, FR-014).
-
-    Returns True when the action was refused: the refusal is audited
-    (``llm_unconfigured``) and the mandatory setup dialog is (re)pushed so
-    the client lands back on the only actionable surface."""
     try:
         claims = orch.ui_sessions.get(websocket) or {}
         uid = claims.get("sub") or user_id or ""
         if not uid or await orch.llm_configured_for(uid):
             return False
     except Exception:
-        # Predicate failure: fail open here — the chat pre-flight and the
-        # per-call resolver still fail closed on actual LLM use.
         logger.exception("chrome: llm gate predicate failed (failing open)")
         return False
     if action in _LLM_GATE_ALLOWED_ACTIONS:
@@ -583,7 +457,6 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
 async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                               user_id: str, *, request_generation=None, work_read=None,
                               guidance_navigation=None) -> bool:
-    """Dispatch one chrome/creation ui_event. Returns True if handled."""
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
@@ -605,8 +478,6 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                 from persistent_agents.models import AssignmentError
                 raise AssignmentError("work_read_unavailable", 503)
             return True
-    # New work and approvals keep the normal setup gate. Owner Schedule reads
-    # and pause/stop/revoke remain operable when personal LLM setup is absent.
     if await _llm_gate_refusal(orch, websocket, action, user_id, payload=payload):
         return True
     from orchestrator.human_request_authority import current_human_caller
@@ -616,8 +487,6 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
     else:
         from orchestrator.auth import _extract_roles
         roles = _extract_roles(human_caller.claims)
-    # Resolved before the handler runs so an exception's error notice carries
-    # the acting surface key (feature 044 — native key-matched reducers).
     err_surface = ""
 
     try:
@@ -634,10 +503,6 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                 except json.JSONDecodeError:
                     params = {}
             if isinstance(params, dict) and not params.get("chat_id"):
-                # Feature 044: native clients don't inject chat_id client-side
-                # (web's client.js does) — default to the socket's active chat
-                # so per-chat surfaces (workspace_timeline) work everywhere.
-                # Same fallback the timeline's _live handler already uses.
                 chat_id = getattr(orch, "_ws_active_chat", {}).get(id(websocket), "")
                 if chat_id:
                     params["chat_id"] = chat_id
@@ -653,7 +518,6 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
 
         surface_key, fn = entry
         err_surface = surface_key
-        # Admin re-check for actions owned by admin-only surfaces (FR-014).
         from orchestrator.projection_surfaces import get_surface
         owner = get_surface(surface_key)
         if owner is not None and getattr(owner, "ADMIN_ONLY", False) and "admin" not in roles:

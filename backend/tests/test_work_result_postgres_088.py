@@ -1,8 +1,6 @@
-"""Owner-read excerpts from real completed research and authentic PG receipts.
-
-Only external IAM/JWKS, page and provider replies are synthetic. These fixtures
-execute the normal audited dispatcher, public Plane actions and final lifecycle.
-No read test obtains an execution permit or opens provider configuration.
+"""Tests for orchestrator/work_result.py's owner-read excerpts from completed research
+over real Plane receipts: result tamper detection, retirement races during a read,
+and refusal of unfinished or unsupported records.
 """
 
 import asyncio
@@ -72,7 +70,6 @@ async def test_completed_result_is_rebuilt_from_actual_settled_receipts(complete
 
 
 async def _mutate_action(op, action, change):
-    """Synthetic corruption only; shipping code reads through public repositories."""
     def mutate():
         with op.runtime.transaction() as tx:
             row = tx.fetch_one("SELECT data FROM persistent_assignment_action WHERE id=%s "
@@ -202,8 +199,6 @@ async def test_model_receipt_tampering_cannot_create_readable_result(completed, 
             return
         else:
             result["result"]["private"] = "private-provider-key"
-        # Alter both mirrors: equality alone is insufficient; the result MAC
-        # must authenticate selection, attempt and consumption facts.
         data["attempts"][-1]["outcome"] = {key: value for key, value in result.items()
                                          if key != "result_available"}
     await _mutate_action(completed, completed.model, corrupt)
@@ -329,8 +324,6 @@ async def test_unknown_and_nonretained_operations_never_reuse_checkpoint(complet
 async def test_actual_committed_retirement_between_reads_suppresses_content(completed, monkeypatch):
     op = completed
     repository = op.runtime.repositories.assignments
-    # Retire after unlocked discovery but before the first metadata owner/row
-    # lock. A synchronous second writer after that lock would wait on this test.
     original = repository.get_selected_input
     retired = False
     def read(tx, **kwargs):
@@ -510,8 +503,6 @@ async def test_discovery_alone_cannot_authorize_content(completed, monkeypatch, 
             transient = value.intent.transient_input
             return replace(value, intent=replace(value.intent, transient_input=replace(transient,
                 references=(replace(transient.references[0], resource_id=op.source_action.action_id),))))
-        # Same identities, different descriptor between unlocked peek and locked
-        # read: the locked receipt may not silently replace the observed one.
         return replace(value, intent=replace(value.intent, precondition_digest="a" * 64))
     monkeypatch.setattr(repository, "get_action_by_key", discover)
     unavailable(await project(op))

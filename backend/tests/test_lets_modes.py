@@ -1,4 +1,7 @@
-"""Feature 074 T172: shadow observes; enforce is the fail-closed boundary."""
+"""Tests for orchestrator/governed_dispatch.py and lets_client.py: shadow mode only
+observes and never alters the actuator, while enforce mode claims a receipt before
+every effect and denies on infrastructure failure.
+"""
 
 from __future__ import annotations
 

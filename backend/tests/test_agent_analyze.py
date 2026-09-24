@@ -1,4 +1,8 @@
-"""Feature 057 — deterministic Analyze gate (A–L) rule tests."""
+"""Tests for orchestrator/agent_analyze.py: the deterministic Analyze gate's rule set
+(A-L) over tool-permission scope mapping, cross-user references, secret exfiltration,
+and egress shape.
+"""
+
 from __future__ import annotations
 
 import os
@@ -35,7 +39,7 @@ def _principles(result):
 def test_clean_spec_passes_and_stamps_version():
     r = az.check(_clean_spec(), constitution_version="0.1.0")
     assert r.passed is True and not r.violations
-    assert r.constitution_version == "0.1.0"  # L — version binding
+    assert r.constitution_version == "0.1.0"
 
 
 def test_A_non_platform_scope_denied():
@@ -123,7 +127,7 @@ def test_valid_scopes_all_accepted():
     r = az.check(_clean_spec(declared_scopes=list(VALID_SCOPES),
                              plan={"tools_used": ["greet"],
                                    "tool_scopes": {s: s for s in VALID_SCOPES}}))
-    assert "A" not in _principles(r)  # every canonical scope is a valid request
+    assert "A" not in _principles(r)
 
 
 def test_as_dict_shape():

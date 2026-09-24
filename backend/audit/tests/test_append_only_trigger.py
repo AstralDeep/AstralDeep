@@ -1,9 +1,8 @@
-"""Append-only enforcement tests (FR-014 / AU-9).
-
-Direct UPDATE/DELETE against ``audit_events`` MUST raise unless the
-session has set ``audit.allow_purge = 'true'`` (held only by the
-retention CLI). The application repository never sets that GUC.
+"""Tests for the audit_events table's append-only DB trigger: direct UPDATE/DELETE are
+rejected unless the session holds the audit.allow_purge GUC, which only the retention
+CLI sets.
 """
+
 from __future__ import annotations
 
 import pytest

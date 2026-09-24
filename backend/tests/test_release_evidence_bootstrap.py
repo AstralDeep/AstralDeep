@@ -1,4 +1,7 @@
-"""Fail-closed tests for the default-branch evidence-bootstrap verifier."""
+"""Tests for the default-branch evidence-bootstrap verifier: inventory execution binds
+every input and rejects a passing parser or crash, input snapshots reject stale
+providers, and workflow policy accepts only safe, draft-bounded jobs.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify_release_evidence_bootstrap.py"
-if not SCRIPT.is_file():  # repo-root tooling is intentionally absent in the image
+if not SCRIPT.is_file():
     pytest.skip("bootstrap verifier is not part of the product image", allow_module_level=True)
 
 SPEC = importlib.util.spec_from_file_location("release_evidence_bootstrap", SCRIPT)

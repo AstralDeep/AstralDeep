@@ -1,4 +1,7 @@
-"""Typed, redacted boundary around the signed LETS v1.0.11 public client."""
+"""Typed, redacted boundary around the signed public LETS client: mints short-lived
+EdDSA bearer tokens per request or carries a static service token, and maps warden
+responses to value-free errors. Used by lets_composition.py and lets_gateway.py.
+"""
 
 from __future__ import annotations
 
@@ -54,8 +57,6 @@ _WireModel = TypeVar("_WireModel", LeaseGrant, LeaseSnapshot, Receipt, BranchRev
 
 
 class LetsClientBoundaryError(RuntimeError):
-    """Stable, value-free LETS boundary failure safe for logs and clients."""
-
     def __init__(
         self,
         code: str,
@@ -70,15 +71,6 @@ class LetsClientBoundaryError(RuntimeError):
 
 
 class LetsIdentityMinter:
-    """Mint short-lived EdDSA JWTs in the exact shape the warden verifies.
-
-    Header is exactly ``{alg, kid, typ}``; claims carry ``iss``, ``sub``,
-    ``aud``, ``tenant_id``, ``jti``, ``scope`` and an integer interval with
-    ``iat == nbf`` one second in the past (tolerating warden clock skew) and
-    ``exp - iat == ttl``.  The signing key never leaves this object and its
-    representation carries no values.
-    """
-
     __slots__ = (
         "_signing_key",
         "_kid",
@@ -146,17 +138,6 @@ class LetsIdentityMinter:
 
 
 class _MintingHTTPClient:
-    """Per-request bearer injection at the ``httpx.Client.stream`` seam.
-
-    ``LETSClient._request`` sends every attempt through
-    ``active_client.stream(...)`` while holding ``_request_lock``; wrapping the
-    client here attaches a freshly minted token to the exact request being
-    sent, under that lock, without ever mutating shared client headers.  The
-    inner client carries no ``authorization`` header at all, so a client
-    recreated by the total-deadline watchdog cannot send unauthenticated and a
-    concurrent caller cannot overwrite another caller's bearer.
-    """
-
     __slots__ = ("_inner", "_token_minter")
 
     def __init__(self, inner: httpx.Client, token_minter: LetsIdentityMinter) -> None:
@@ -192,15 +173,6 @@ class _MintingHTTPClient:
 
 
 class MintingLETSClient(LETSClient):
-    """LETS client that presents a freshly minted bearer on every request.
-
-    The live ``httpx.Client`` (and every client the deadline watchdog
-    recreates through ``_client_factory``) is wrapped in
-    :class:`_MintingHTTPClient`, so the token is minted and attached per
-    request inside the base class's ``_request_lock`` critical section.
-    Shared client headers are never written.
-    """
-
     def __init__(
         self,
         base_url: str,
@@ -227,8 +199,6 @@ class MintingLETSClient(LETSClient):
 
 @dataclass(frozen=True, slots=True)
 class LetsClientIdentity:
-    """Authenticated deployment identity used for response correlation."""
-
     tenant_id: str
     envelope_id: str
     warden_id: str
@@ -238,8 +208,6 @@ class LetsClientIdentity:
 
 
 class LetsWardenClient:
-    """Astral-owned typed adapter over LETS public client contracts only."""
-
     def __init__(
         self,
         *,
@@ -280,15 +248,6 @@ class LetsWardenClient:
                 raise LetsClientBoundaryError("client_close_failed") from None
 
     def probe(self) -> None:
-        """Cheap live reachability check (``GET /health/ready``, idempotent).
-
-        Used only by the cached readiness probe (``orchestrator.lets_probe``),
-        never by tool dispatch.  Shares the client's request lock, so one
-        in-flight probe is bounded by the configured request timeout like any
-        other call; the probe layer waits a much shorter window on top.
-        Returns nothing: success is the only value, failure is a boundary code.
-        """
-
         self._invoke(lambda: self._client.readiness())
 
     def provision_agent(
@@ -600,13 +559,6 @@ def create_lets_warden_client(
     secret_reader: Callable[[SecretFileReference], str] | None = None,
     seed_reader: Callable[[SecretFileReference], bytes] | None = None,
 ) -> LetsWardenClient:
-    """Create one hardened client from an already authenticated active config.
-
-    With ``LETS_SERVICE_TOKEN_FILE`` the static bearer is read once and baked
-    into the client.  With ``LETS_IDENTITY_SEED_FILE`` the seed is read once
-    and a :class:`MintingLETSClient` presents a fresh EdDSA JWT per request.
-    """
-
     values = _active_config(config)
     credential: dict[str, Any]
     if values.identity is not None:

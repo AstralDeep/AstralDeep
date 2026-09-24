@@ -1,3 +1,8 @@
+"""Tests for orchestrator/lets_composition.py: off/active/shadow/enforce wiring of the
+LETS client, Plane gateway lifecycle and owner recovery, minted-identity composition,
+and refusal on invalid configuration or a missing probe seam.
+"""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -168,7 +173,7 @@ async def test_active_composition_wires_plane_gateway_lifecycle_and_owner_recove
         200,
     )
 
-    assert client.probes == 1  # first live reachability probe at composition
+    assert client.probes == 1
     assert runtime.reachability is not None
     await runtime.stop()
     assert client.closed is True

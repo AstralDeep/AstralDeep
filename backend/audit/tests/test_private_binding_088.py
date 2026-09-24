@@ -1,4 +1,7 @@
-"""Strict private MAC key rotation leaves historical audit behavior unchanged."""
+"""Tests for audit/pii.py: MAC key rotation and lookup, where active vs historical keys
+stay exact-match with no case or alias fallback, and malformed key ids never silently
+resolve.
+"""
 
 import hashlib
 import hmac
@@ -14,7 +17,6 @@ from audit.pii import (
     private_binding_key,
 )
 
-# Synthetic values assembled explicitly, never provider or operator credentials.
 KEY = "synthetic-only-binding-" + "0123456789abcdef" * 2
 OTHER = "synthetic-rotation-binding-" + "fedcba9876543210" * 2
 
@@ -101,7 +103,6 @@ def test_active_versioned_only_and_conflict(monkeypatch):
 )
 def test_missing_placeholder_or_malformed_key_never_falls_back(monkeypatch, secret):
     if secret is not None:
-        # A surrogate cannot enter os.environ on every host; inject resolver only.
         if "\ud800" in secret:
             original = os.getenv
             monkeypatch.setattr(

@@ -1,4 +1,8 @@
-"""Bounded async access to the composition-owned assignment repository."""
+"""Bounded async wrapper over the composition-owned assignment repository; translates
+driver/timeout failures into data-free AssignmentError at the HTTP boundary. Used by
+AssignmentService, AssignmentRunner and AssignmentApprovalBridge.
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -43,7 +47,6 @@ class AssignmentStore:
     async def transaction(
         self, callback: Callable[[Any, Any], _T], *, bound_session_waits: bool = False,
     ) -> _T:
-        """Run repository work, optionally bounding SQL before any consent receipt read."""
         def work(transaction):
             if bound_session_waits:
                 self.plane_runtime.repositories.history.sessions.bound_request_execution_waits(transaction)
@@ -68,8 +71,6 @@ class AssignmentStore:
             raise AssignmentError(code, status) from exc
         except Exception:
             if bound_session_waits:
-                # Driver lock/statement timeouts need not be PlaneError. Keep
-                # bounded request failures data-free at the HTTP boundary.
                 raise AssignmentError("assignment_transaction_unavailable", 503) from None
             raise
 
@@ -80,11 +81,6 @@ class AssignmentStore:
         return await self.transaction(lambda transaction, _: method(transaction, **kwargs))
 
     async def call_for_operation(self, method_name: str, **kwargs):
-        """Use the qualified named v2 boundaries with bounded database waits.
-
-        Settlement deliberately accepts absent current authority: an authentic
-        issued permit must still charge after its session or claim is retired.
-        """
         if method_name not in {
             "assert_current_assignment_execution", "put_action_for_execution",
             "reserve_action_for_execution", "start_action_for_execution", "record_action_outcome",
@@ -100,7 +96,6 @@ class AssignmentStore:
         return await self.transaction(invoke, bound_session_waits=True)
 
     async def read_current_action(self, *, fence, binding, action_id, authority):
-        """Reread actual retained content between both guards in one transaction."""
         guard = getattr(self.repository, "assert_current_assignment_execution", None)
         if not callable(guard):
             raise AssignmentError("assignment_repository_contract_unavailable", 503)
@@ -118,12 +113,6 @@ class AssignmentStore:
     async def current_execution_transaction(
         self, *, fence, binding, callback: Callable[[Any, Any, Any], _T], action_id=None,
     ) -> _T:
-        """Guard and mutate through one bounded, caller-owned Plane transaction.
-
-        Remote authorization must complete before this call. The callback is
-        synchronous repository work only; it may not open another pool or do I/O.
-        Older Plane pins cannot fall back to an inverted or incomplete guard.
-        """
         guard = getattr(self.repository, "assert_current_assignment_execution", None)
         if not callable(guard):
             raise AssignmentError("assignment_repository_contract_unavailable", 503)
@@ -150,15 +139,6 @@ class AssignmentStore:
         self, *, authority, callback: Callable[[Any, Any, Any], _T], fence=None, binding=None,
         final_check: Callable[[], None] | None = None,
     ) -> _T:
-        """Guard one-shot writes and recheck original session and guidance afterward.
-
-        Resolve remote authority before entry. SQL caps apply before the first
-        query; the synchronous callback uses this transaction only. A post-write
-        check can roll back claim/lease retirement after its execution fence is
-        intentionally gone. It never refreshes or adopts authority under locks.
-        The optional final check validates local captured identities only; it
-        must not wait or perform I/O and must return None or raise.
-        """
         from orchestrator.session_authority import OperationExecutionAuthority
 
         if (not isinstance(authority, OperationExecutionAuthority)
@@ -181,8 +161,7 @@ class AssignmentStore:
                 current = synchronous(repository.assert_current_assignment_execution(
                     tx, fence=fence, binding=binding, authority=authority.observation))
             else:
-                # This public session guard itself locks owner before session;
-                # it supplies the bind/preclaim ordering before assignment rows.
+                # Owner is locked before session, then assignment rows
                 synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
                 if fence is not None:
                     current = synchronous(repository.assert_current_claim(tx, fence=fence))
@@ -202,9 +181,6 @@ class AssignmentStore:
                 raise AssignmentError("assignment_state_changed", 409)
             result = synchronous(callback(tx, repository, current))
             synchronous(sessions.assert_current_execution(tx, observation=authority.observation))
-            # Completion intentionally retires the old claim. Use the updated
-            # candidate's counters for the last DB-time selected-guidance check;
-            # even the final session query may have waited across note expiry.
             after = synchronous(repository.get_operation(
                 tx, owner_id=current.owner_id,
                 assignment_id=current.assignment_id)).assignment

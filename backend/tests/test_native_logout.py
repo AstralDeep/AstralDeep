@@ -1,10 +1,8 @@
-"""Feature 044 (FR-005/SC-004) — POST /api/auth/logout: native sign-out parity.
-
-Covers: allowlist validation, revoked/queued outcomes with the originating
-client_id, the public-client revocation payload (no secret for native client
-ids), the retrier honoring the stored client_id, and Deep's use of Plane's
-nullable client-id revocation contract.
+"""Tests for orchestrator/web_auth.py's POST /api/auth/logout: native sign-out parity,
+allow-listed client validation, omitting the client secret for public native clients,
+and the retrier honoring the stored client_id.
 """
+
 import asyncio
 from contextlib import asynccontextmanager
 import json
@@ -69,7 +67,6 @@ def test_logout_queues_when_idp_unreachable(monkeypatch):
 
     class FakeStore:
         async def aenqueue_revocation(self, user_id, refresh_token, client_id=None):
-            """Async twin mirroring WebSessionStore's event-loop-safe facade."""
             enq.update(user_id=user_id, refresh_token=refresh_token, client_id=client_id)
 
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", fake_revoke)
@@ -83,10 +80,10 @@ def test_logout_queues_when_idp_unreachable(monkeypatch):
 
 
 @pytest.mark.parametrize("body", [
-    {},                                                       # nothing
-    {"refresh_token": "rt"},                                  # no client_id
-    {"refresh_token": "rt", "client_id": "evil-client"},      # not allow-listed
-    {"client_id": "astral-desktop"},                          # no refresh token
+    {},
+    {"refresh_token": "rt"},
+    {"refresh_token": "rt", "client_id": "evil-client"},
+    {"client_id": "astral-desktop"},
 ])
 def test_logout_rejects_bad_bodies(monkeypatch, body):
     c = _client(monkeypatch)
@@ -94,9 +91,6 @@ def test_logout_rejects_bad_bodies(monkeypatch, body):
 
 
 def test_logout_refuses_the_confidential_web_client(monkeypatch):
-    """Security: the native endpoint must NOT accept the web client id — that
-    would apply the server's confidential secret to a caller-supplied token
-    (a revocation oracle). The web app uses the cookie-bound /auth/logout."""
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
 
     called = {"revoke": False}
@@ -106,16 +100,14 @@ def test_logout_refuses_the_confidential_web_client(monkeypatch):
         return True
 
     monkeypatch.setattr(web_auth, "_revoke_refresh_token", fake_revoke)
-    c = _client(monkeypatch)  # sets KEYCLOAK_ALLOWED_AZP=astral-desktop,astral-mobile
+    c = _client(monkeypatch)
     r = c.post("/api/auth/logout",
                json={"refresh_token": "victim-web-rt", "client_id": "astral-frontend"})
     assert r.status_code == 400
-    assert called["revoke"] is False  # never reached the secret-backed revoke
+    assert called["revoke"] is False
 
 
 def test_revocation_post_omits_secret_for_native_public_clients(monkeypatch):
-    """Keycloak public clients (astral-desktop/mobile) must not receive the web
-    client's secret; the web client keeps sending it."""
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://kc.example/realms/Astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "s3cr3t")
@@ -160,8 +152,6 @@ def test_retrier_uses_stored_client_id(monkeypatch):
         return True
 
     class FakeStore:
-        """Mirrors WebSessionStore's async facade (the retrier's contract)."""
-
         @asynccontextmanager
         async def revocation_pass(self):
             yield [
@@ -183,12 +173,10 @@ def test_retrier_uses_stored_client_id(monkeypatch):
         web_auth.process_revocation_queue_once())
     assert resolved == 2
     assert ("rt-native", "astral-mobile") in seen
-    assert ("rt-web", None) in seen  # NULL → falls back to the web client id
+    assert ("rt-web", None) in seen
 
 
 def test_plane_revocation_contract_keeps_client_id_nullable():
-    """Pre-044 rows remain representable without a client identity."""
-
     legacy = RevocationQueueRecord(
         queue_id=1,
         owner_id="owner",
@@ -207,7 +195,6 @@ def test_plane_revocation_contract_keeps_client_id_nullable():
 
 
 def test_client_local_manifest_untouched():
-    """The endpoint is REST — the WS accept_actions manifest must not grow."""
     manifest = json.loads(
         (
             REPO_ROOT
@@ -223,7 +210,7 @@ def test_client_local_manifest_untouched():
 @pytest.mark.skipif(
     not (
         REPO_ROOT / "components" / "AstralProjection" / "apple-clients"
-    ).is_dir(),  # composition source absent inside the product image
+    ).is_dir(),
     reason="repo-root tooling files are not part of the product image",
 )
 @pytest.mark.parametrize(
@@ -236,8 +223,6 @@ def test_client_local_manifest_untouched():
 def test_apple_sign_out_wipes_local_credentials_before_any_network_await(
     relative_path,
 ):
-    """A killed or frozen revocation request cannot restore the prior account."""
-
     source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
     body = _swift_function(source, "func signOut(revokeRemote: Bool = true) async")
 

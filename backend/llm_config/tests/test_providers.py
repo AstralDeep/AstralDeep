@@ -1,9 +1,8 @@
-"""Feature 054 — provider preset catalog tests (spec FR-011/FR-012).
-
-The catalog is the single server-owned source of truth for the setup
-dialog's dropdown; base URLs for presets are server-derived at save time
-(submitted values ignored), and only ``custom`` honors a caller URL.
+"""Tests for llm_config/providers.py: the preset catalog's shape, get_preset lookups,
+and resolve_base_url's rule that only the 'custom' preset honors a caller-submitted
+URL.
 """
+
 from __future__ import annotations
 
 from urllib.parse import urlparse
@@ -33,10 +32,6 @@ class TestCatalogShape:
         assert all_presets()[-1].key == CUSTOM_PROVIDER_KEY
 
     def test_key_optional_for_local_runtimes_and_custom(self):
-        # Hosted providers require a key at save; local runtimes and custom
-        # OpenAI-compatible endpoints (commonly keyless vLLM/sglang) may save
-        # with an empty key — the probe-gated save still refuses a keyless
-        # config the endpoint actually rejects.
         keyless = {p.key for p in all_presets() if not p.key_required}
         assert keyless == {"ollama", "lmstudio", "custom"}
 
@@ -72,8 +67,6 @@ class TestGetPreset:
 
 class TestResolveBaseUrl:
     def test_preset_ignores_submitted_url(self):
-        # Server-derived: a submitted (potentially attacker-chosen) URL is
-        # ignored for every non-custom preset.
         assert resolve_base_url("openai", "https://evil.example/v1") == \
             "https://api.openai.com/v1"
 

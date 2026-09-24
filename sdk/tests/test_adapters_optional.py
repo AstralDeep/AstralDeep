@@ -1,9 +1,8 @@
-"""Every framework adapter must be importable, and usable for pure schema
-generation, WITHOUT its target framework installed. Only the function that
-actually needs the third-party package raises ``ImportError`` (with an
-actionable ``pip install astral-sdk[...]`` hint) — and only when that package
-genuinely is not installed in this environment.
+"""Tests for astral_sdk.integrations: every adapter imports and builds schemas without
+its target framework installed; only the function that needs the package raises an
+actionable ImportError.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -25,8 +24,6 @@ def _not_installed(name: str) -> bool:
     "astral_sdk.mcp_bridge",
 ])
 def test_module_imports_without_the_optional_framework(module_name):
-    # A prior test in this process may have already imported (and cached) the
-    # module; re-import is still cheap and still proves no import-time error.
     sys.modules.pop(module_name, None)
     importlib.import_module(module_name)
 

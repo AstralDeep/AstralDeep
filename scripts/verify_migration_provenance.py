@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""Verify feature-074 repository identity and extraction provenance.
-
-The verifier is intentionally read-only.  It checks local Git metadata and
-queries each canonical GitHub URL with redirects disabled.  A renamed or
-wrong-cased URL that happens to redirect is therefore not accepted as proof of
-repository identity.
-
-Plane and Projection carry extraction manifests.  For those components the
-tool additionally verifies the manifest schema and canonical digest, the
-immutable AstralDeep source tree and every selected blob, the retained legacy
-``master`` ref, ordinary ancestry, the pushed feature ref, and the extraction
-commit trailers.  Later ordinary commits may advance a component: the trailer
-proof may appear on any commit between the recorded baseline and the pinned
-component commit.
+"""Verifies repository identity and extraction provenance read-only, querying each
+canonical GitHub URL with redirects disabled and, for Plane/Projection, checking
+their extraction manifest digest and commit trailers.
 """
 
 from __future__ import annotations
@@ -50,8 +39,6 @@ DATE_TIME = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class ComponentSpec:
-    """One component whose repository identity is part of the composition."""
-
     name: str
     path: str
     repository: str
@@ -86,8 +73,6 @@ DEFAULT_COMPONENTS = (
 
 @dataclass(frozen=True, slots=True)
 class RemoteState:
-    """Direct, non-redirected ``git ls-remote --symref`` result."""
-
     repository: str
     head: str
     refs: Mapping[str, str]
@@ -95,8 +80,6 @@ class RemoteState:
 
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One stable, machine-readable verification failure."""
-
     code: str
     repository: str
     message: str
@@ -105,8 +88,6 @@ class Diagnostic:
 
 @dataclass(frozen=True, slots=True)
 class VerificationReport:
-    """Deterministic feature-074 provenance verification result."""
-
     verified_repositories: tuple[str, ...]
     diagnostics: tuple[Diagnostic, ...]
 
@@ -124,12 +105,10 @@ class VerificationReport:
 
 
 class VerificationError(RuntimeError):
-    """A verification input could not be interpreted safely."""
+    pass
 
 
 class RemoteProbeError(VerificationError):
-    """A canonical remote could not be inspected without ambiguity."""
-
     def __init__(self, message: str, *, redirect_only: bool = False) -> None:
         super().__init__(message)
         self.redirect_only = redirect_only
@@ -196,8 +175,6 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 
 def compute_manifest_sha256(document: Mapping[str, object]) -> str:
-    """Return the canonical digest after removing only ``manifestSha256``."""
-
     projected = dict(document)
     projected.pop("manifestSha256", None)
     return hashlib.sha256(_canonical_json_bytes(projected)).hexdigest()
@@ -245,8 +222,6 @@ def _schema_errors(
     *,
     path: str = "$",
 ) -> list[str]:
-    """Validate the assertion vocabulary used by the extraction schema."""
-
     if not isinstance(schema, dict):
         raise VerificationError(f"schema node at {path} is not an object")
     errors: list[str] = []
@@ -352,8 +327,6 @@ def _schema_errors(
 def validate_manifest_schema(
     manifest: object, schema: object
 ) -> tuple[str, ...]:
-    """Return deterministic errors for the committed extraction schema."""
-
     if not isinstance(schema, dict):
         raise VerificationError("extraction schema root must be an object")
     if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
@@ -537,8 +510,6 @@ def _parse_ls_remote(repository: str, payload: bytes) -> RemoteState:
 
 
 def probe_direct_remote(repository: str) -> RemoteState:
-    """Query one canonical URL, proving it works with redirects disabled."""
-
     direct = _run_git(
         None,
         (
@@ -954,8 +925,6 @@ def verify_migration_provenance(
     components: Sequence[ComponentSpec] = DEFAULT_COMPONENTS,
     remote_probe: RemoteProbe | None = None,
 ) -> VerificationReport:
-    """Verify the local composition and live, non-redirected remote identities."""
-
     diagnostics: list[Diagnostic] = []
     probe = remote_probe or probe_direct_remote
     try:
@@ -1030,7 +999,7 @@ def verify_migration_provenance(
                 str(exc),
                 "verify the exact canonical URL directly with non-interactive credentials",
             )
-        except Exception as exc:  # defensive boundary for injected probes
+        except Exception as exc:
             state = None
             _add(
                 diagnostics,

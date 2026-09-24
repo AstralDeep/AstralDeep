@@ -1,6 +1,6 @@
-"""Feature 031 — message_attachment + attachment_parser repositories (T023).
-
-Covers turn→attachment linking + the dedup-safe global parser registry DAO.
+"""Tests for orchestrator/attachments/message_attachment_repo.py and parser_repo.py:
+turn-to-attachment linking, chat-scoped bulk reads, and the dedup-safe global parser
+registry.
 """
 
 from __future__ import annotations
@@ -76,10 +76,9 @@ def test_message_attachment_insert_and_list_for_message():
     repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
     repo.insert(chat_id="c1", attachment_id="a2", user_id="u1", message_id="m1")
-    repo.insert(chat_id="c1", attachment_id="a3", user_id="u2", message_id="m1")  # other user
+    repo.insert(chat_id="c1", attachment_id="a3", user_id="u2", message_id="m1")
     rows = repo.list_for_message("m1", "u1")
     assert [r["attachment_id"] for r in rows] == ["a1", "a2"]
-    # ownership scoping: u2 only sees its own link.
     assert [r["attachment_id"] for r in repo.list_for_message("m1", "u2")] == ["a3"]
 
 
@@ -93,12 +92,6 @@ def test_message_attachment_list_for_chat():
 
 
 def test_list_for_chat_grouped_by_message_matches_per_message_reads():
-    """The chat-scoped bulk read is the substitute for the per-message N+1.
-
-    load_chat groups list_for_chat by message_id instead of issuing one
-    list_for_message per user message, so the grouping must reproduce the
-    per-message result exactly — same attachments, same order, same scoping.
-    """
     db = FakeDB()
     repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id="m1")
@@ -116,18 +109,12 @@ def test_list_for_chat_grouped_by_message_matches_per_message_reads():
         assert [
             r["attachment_id"] for r in repo.list_for_message(message_id, "u1")
         ] == attachment_ids
-    # Another user's link and another chat's link never enter the grouping.
     assert "a4" not in grouped["m1"]
     assert "m3" not in grouped
 
 
+# message_id is TEXT; must compare as str(messages.id)
 def test_list_for_chat_reports_message_id_as_text():
-    """Callers key the grouping on ``str(messages.id)``.
-
-    ``messages.id`` is an integer PK but ``message_attachment.message_id`` is
-    TEXT, so insert stores the text form and reads must return it — otherwise
-    the bulk grouping silently matches nothing.
-    """
     db = FakeDB()
     repo = _message_repository(db)
     repo.insert(chat_id="c1", attachment_id="a1", user_id="u1", message_id=4242)
@@ -145,7 +132,6 @@ def test_parser_repo_create_pending_is_dedup_safe():
         requested_by="u1",
     )
     assert row1["status"] == STATUS_PENDING
-    # Second create for the same gap returns the SAME row (no duplicate draft).
     row2 = repo.create_pending(
         gap_fingerprint="gap1", category="data", extension="parquet",
         draft_agent_id="d2", source_attachment_id="a9", source_chat_id="c9",

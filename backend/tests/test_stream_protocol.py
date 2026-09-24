@@ -1,15 +1,8 @@
+"""Tests for shared/protocol.py streaming messages: ToolStreamData/Cancel/End round-trip
+serialization, the MCPRequest _stream flag, and validate_streaming_metadata's
+acceptance and rejection rules.
 """
-Unit tests for streaming protocol message types and metadata validation
-(001-tool-stream-ui foundational T025).
 
-Covers:
-- ToolStreamData / ToolStreamCancel / ToolStreamEnd round-trip serialization.
-- MCPRequest with the new _stream / _stream_id keys round-trips through JSON.
-- validate_streaming_metadata accepts good metadata and rejects bad.
-
-These tests do not exercise the streaming pipeline end-to-end — that is the
-job of test_stream_lifecycle.py (US1+) and test_stream_reconnect.py (US5).
-"""
 import os
 import sys
 
@@ -26,10 +19,6 @@ from shared.protocol import (
     validate_streaming_metadata,
 )
 
-
-# ---------------------------------------------------------------------------
-# Round-trip serialization
-# ---------------------------------------------------------------------------
 
 class TestToolStreamDataRoundTrip:
     def test_minimal_chunk_round_trips(self):
@@ -120,7 +109,6 @@ class TestMCPRequestStreamingFlag:
         assert decoded.params["arguments"]["lat"] == 51.5
 
     def test_request_without_stream_keys_still_works(self):
-        # Backwards compat: existing single-response calls have no _stream key.
         req = MCPRequest(
             request_id="r",
             method="tools/call",
@@ -131,13 +119,8 @@ class TestMCPRequestStreamingFlag:
         assert "_stream" not in decoded.params
 
 
-# ---------------------------------------------------------------------------
-# Metadata validation
-# ---------------------------------------------------------------------------
-
 class TestValidateStreamingMetadata:
     def test_non_streamable_is_noop(self):
-        # No streamable key → no validation. Existing tools unaffected.
         validate_streaming_metadata({})
         validate_streaming_metadata({"streamable": False})
 

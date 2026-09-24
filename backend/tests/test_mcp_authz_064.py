@@ -1,3 +1,8 @@
+"""Tests for orchestrator/mcp_authz.py: scope-hierarchy challenges, bearer-token
+extraction and strict issuer/audience validation, canonical-resource HTTPS
+enforcement, and that a token value is never echoed back or forwarded.
+"""
+
 from __future__ import annotations
 
 import pytest

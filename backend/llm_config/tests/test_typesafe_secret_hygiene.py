@@ -1,8 +1,6 @@
-"""Feature 089 (T007): the TypeSafe key is covered by the same hygiene the LLM key is.
-
-Every test here uses ``CANARY``, a synthetic value that matches the committed
-TypeSafe pattern and is not a credential. It is allowlisted in ``.gitleaks.toml``
-for exactly this purpose. No real key ever appears in this repository.
+"""Tests that TypeSafe API keys get the same redaction hygiene as LLM keys:
+log_scrub.py's pattern against synthetic CANARY values in the real vendor shape, the
+audit-event guard, and the committed gitleaks rule.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from llm_config.log_scrub import (
     redact_llm_config,
 )
 
-# Synthetic. Matches the committed pattern; is not a key.
 CANARY = "ts_live_CANARY0000NOTAREALKEY000000"
 CANARY_VARIANTS = (
     CANARY,
@@ -31,18 +28,9 @@ CANARY_VARIANTS = (
     "ts-CANARY0000NOTAREALKEY0000000000",
 )
 
-# A synthetic key in the *real* vendor shape: a short lowercase prefix, an
-# underscore, then a long lowercase-alphanumeric tail. The first version of the
-# pattern was guessed from other vendors' prefixes and did not match a real key
-# at all, which meant the scrubber silently passed it through. This constant
-# exists so that class of miss fails a test instead of reaching a log file. The
-# prefix letters are invented; only the shape is real.
 SHAPED_CANARY = "zqkfmp_" + ("0canary9notarealkey" * 6)[:101]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-
-
-# -- field-name matching -------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -67,9 +55,6 @@ def test_every_api_key_spelling_is_recognized(name: str) -> None:
 )
 def test_non_key_fields_are_left_alone(name: object) -> None:
     assert _is_api_key_field(name) is False
-
-
-# -- log scrubbing -------------------------------------------------------
 
 
 def test_typesafe_field_is_redacted_alongside_the_llm_field() -> None:
@@ -129,7 +114,6 @@ def test_the_logging_filter_scrubs_a_typesafe_key_from_a_message(
 
 
 def test_a_short_token_is_not_mistaken_for_a_key() -> None:
-    # The pattern requires a long enough tail, so ordinary prose survives.
     assert redact_llm_config("ts_ok") == "ts_ok"
     assert redact_llm_config("the ts-1 lane") == "the ts-1 lane"
 
@@ -138,9 +122,6 @@ def test_the_committed_pattern_matches_the_canary_and_nothing_ordinary() -> None
     assert TYPESAFE_KEY_PATTERN.search(CANARY) is not None
     assert TYPESAFE_KEY_PATTERN.search("timestamp") is None
     assert TYPESAFE_KEY_PATTERN.search("ts_") is None
-
-
-# -- audit-event guard ---------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -174,9 +155,6 @@ def test_the_audit_guard_shares_the_scrubber_pattern() -> None:
     assert TYPESAFE_KEY_PATTERN in _KEY_PREFIX_PATTERNS
 
 
-# -- committed configuration ---------------------------------------------
-
-
 def test_gitleaks_carries_named_typesafe_rules() -> None:
     config = tomllib.loads(
         (REPO_ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
@@ -185,7 +163,7 @@ def test_gitleaks_carries_named_typesafe_rules() -> None:
     assert "typesafe-system-one-key" in rules
     assert "typesafe-api-key-assignment" in rules
     for rule in rules.values():
-        re.compile(rule["regex"])  # every committed pattern must compile
+        re.compile(rule["regex"])
         assert rule["description"]
         assert "typesafe" in rule["tags"]
     assert re.compile(rules["typesafe-system-one-key"]["regex"]).search(CANARY)
@@ -200,8 +178,6 @@ def test_the_synthetic_canary_is_the_only_allowlisted_typesafe_value() -> None:
         entry for entry in allowlisted
         if "ts_" in entry or "tsk_" in entry or entry.startswith("zqkfmp_")
     ]
-    # One entry per canary shape, and nothing else. A third entry here would
-    # mean something real had been allowlisted.
     assert typesafe_entries == [CANARY, "zqkfmp_(0canary9notarealkey)+"]
     assert SHAPED_CANARY.startswith("zqkfmp_")
 
@@ -217,22 +193,12 @@ def test_typesafe_env_names_are_scrubbed_from_harness_artifacts() -> None:
 
 
 def test_no_real_typesafe_key_is_committed_in_this_test() -> None:
-    """The canary must stay synthetic: a real key here would be a leak."""
     source = Path(__file__).read_text(encoding="utf-8")
     assert "CANARY" in CANARY
     assert source.count("NOTAREALKEY") >= 1
 
 
-# -- the real vendor key shape -------------------------------------------
-
-
 def test_a_key_in_the_real_vendor_shape_is_redacted() -> None:
-    """The regression that motivated the pattern's second version.
-
-    A long lowercase-alphanumeric key behind a short lowercase prefix must be
-    redacted. The original pattern required one of a handful of guessed
-    prefixes and matched nothing of this shape.
-    """
     assert TYPESAFE_KEY_PATTERN.search(SHAPED_CANARY) is not None
     scrubbed = redact_llm_config("saving key " + SHAPED_CANARY + " for the user")
     assert SHAPED_CANARY not in scrubbed
@@ -267,12 +233,6 @@ def test_the_gitleaks_rule_covers_the_real_vendor_shape() -> None:
     ],
 )
 def test_ordinary_identifiers_are_not_redacted(identifier: str) -> None:
-    """The shape rule must not eat snake_case out of every debug line.
-
-    This is why the pattern requires a digit in the tail as well as length: a
-    long identifier is common, a long identifier carrying a digit inside a
-    single token is not.
-    """
     assert TYPESAFE_KEY_PATTERN.search(identifier) is None
     assert redact_llm_config(identifier) == identifier
 

@@ -1,19 +1,6 @@
-"""Parsing a System One response into a routing decision (feature 089).
-
-The model's answer is a set of typed judgments with confidences. This module
-turns them into something the turn can act on, and its governing rule is that
-uncertainty degrades to today's behavior rather than to a guess.
-
-That is what the tiers encode. **High** means the model was confident about
-both the agent and the tool, and confident by a margin over its second choice:
-the first round gets one tool and, where the provider supports it, a forced
-call. **Medium** means it was confident about the agent but spread across that
-agent's tools: the first round gets a shortlist. **Low** -- and every
-malformed, missing or unrecognized answer -- means the round is exactly what it
-would have been with no TypeSafe key at all.
-
-Nothing here raises. A decision that cannot be parsed is a ``None`` decision,
-and a ``None`` decision is the unkeyed path.
+"""Parses a System One response into a tiered RoutingDecision (high/medium/low
+confidence) that runner.py and orchestrator.py act on; any malformed, missing, or
+low-confidence answer degrades to the same behavior as no TypeSafe key.
 """
 
 from __future__ import annotations
@@ -38,8 +25,6 @@ from .questions import (
 
 logger = logging.getLogger("Orchestrator.TypeSafe.Decision")
 
-# -- tier thresholds (provisional; T028 sets the final values) --------------
-
 HIGH_AGENT_CONFIDENCE = 0.80
 HIGH_TOOL_CONFIDENCE = 0.75
 HIGH_MARGIN = 0.30
@@ -48,10 +33,7 @@ MEDIUM_AGENT_CONFIDENCE = 0.55
 MEDIUM_MASS = 0.80
 MEDIUM_MAX_TOOLS = 6
 
-#: Provider presets that accept a forced ``tool_choice``. Everything else --
-#: ``custom``, ``ollama``, ``lmstudio`` -- gets ``"auto"``, because a forced
-#: choice an endpoint does not understand turns a narrowed round into a failed
-#: one. Confirmed in T015.
+# Unlisted providers get 'auto' — forced tool_choice fails on them
 FORCED_CHOICE_PROVIDERS = frozenset(
     {"openai", "anthropic", "openrouter", "groq", "together", "mistral", "xai"}
 )
@@ -65,8 +47,6 @@ class Tier(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class SecurityJudgment:
-    """The three security answers, with safe defaults."""
-
     jailbreak_probability: float = 0.0
     harm_score: float = 0.0
     threat_category: str = "none"
@@ -74,12 +54,6 @@ class SecurityJudgment:
 
 @dataclass(frozen=True, slots=True)
 class RoutingDecision:
-    """One turn's parsed routing answer.
-
-    Carries no request text: a decision is passed around a turn, logged in
-    metric labels and audited, so it holds identifiers and numbers only.
-    """
-
     tier: Tier = Tier.LOW
     agent_id: Optional[str] = None
     agent_confidence: float = 0.0
@@ -98,8 +72,6 @@ class RoutingDecision:
 
 @dataclass(frozen=True, slots=True)
 class RoundOnePlan:
-    """What round one should actually send."""
-
     tools_desc: Any
     tool_choice: Any = "auto"
     tier: Tier = Tier.LOW
@@ -111,7 +83,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         number = float(value)
     except (TypeError, ValueError):
         return default
-    if number != number:  # NaN
+    if number != number:
         return default
     return number
 
@@ -127,12 +99,6 @@ def _answer(response: Any, bucket: str, question_id: str) -> Any:
 
 
 def _choice_and_confidence(answer: Any) -> tuple[Optional[str], float, float]:
-    """Return ``(choice, confidence, margin)`` from a Choice answer.
-
-    ``margin`` is the gap to the runner-up when the SDK exposes a distribution,
-    and ``0.0`` when it does not. A missing margin only ever demotes a tier, so
-    an SDK that stops reporting one degrades safely.
-    """
     if answer is None:
         return None, 0.0, 0.0
     choice = getattr(answer, "choice", None)
@@ -168,7 +134,6 @@ def _distribution(answer: Any) -> dict[str, float]:
 
 
 def _shortlist_from(distribution: Mapping[str, float], eligible: Sequence[str]) -> tuple[str, ...]:
-    """Smallest top-k (k <= MEDIUM_MAX_TOOLS) whose mass reaches MEDIUM_MASS."""
     allowed = {name for name in eligible}
     ranked = sorted(
         ((name, value) for name, value in distribution.items() if name in allowed),
@@ -186,7 +151,6 @@ def _shortlist_from(distribution: Mapping[str, float], eligible: Sequence[str]) 
 
 
 def parse_security(response: Any) -> SecurityJudgment:
-    """Read the three security answers, defaulting to benign on anything odd."""
     jailbreak = _answer(response, "nouls", QUESTION_IS_JAILBREAK)
     harm = _answer(response, "scores", QUESTION_HARM_SCORE)
     threat_answer = _answer(response, "choices", QUESTION_THREAT_CATEGORY)
@@ -201,12 +165,6 @@ def parse_security(response: Any) -> SecurityJudgment:
 
 
 def parse_decision(response: Any, question_set: QuestionSet) -> RoutingDecision:
-    """Turn a System One response into a :class:`RoutingDecision`.
-
-    Never raises. Anything unexpected -- a missing answer, an option the model
-    invented, a tool that is not in the eligible set -- lands in the low tier,
-    which is the unkeyed behavior.
-    """
     security = parse_security(response)
 
     agent_answer = _answer(response, "choices", QUESTION_TARGET_AGENT)
@@ -227,7 +185,6 @@ def parse_decision(response: Any, question_set: QuestionSet) -> RoutingDecision:
         )
 
     if agent_id is None or agent_id not in question_set.tool_names:
-        # An unknown or hallucinated agent id.
         return RoutingDecision(tier=Tier.LOW, style=style, security=security)
 
     question_id = question_set.tool_question_id(agent_id)
@@ -289,7 +246,6 @@ def parse_decision(response: Any, question_set: QuestionSet) -> RoutingDecision:
 
 
 def _tool_name_of(entry: Any) -> Optional[str]:
-    """Read a tool's name out of an OpenAI-shaped tool definition."""
     if isinstance(entry, Mapping):
         function = entry.get("function")
         if isinstance(function, Mapping):
@@ -307,20 +263,12 @@ def apply_round_one(
     tools_desc: Any,
     provider_preset: Optional[str] = None,
 ) -> RoundOnePlan:
-    """Return the round-one tool list and ``tool_choice`` for ``decision``.
-
-    A pure function, so the orchestrator seam is one call and the tier rules
-    are testable without a turn. Any decision that does not narrow returns the
-    inputs unchanged, which is what makes invariant 1 -- byte-identical
-    round-one arguments without a key -- hold by construction.
-    """
     if decision is None or not decision.narrows_round_one or not tools_desc:
         return RoundOnePlan(tools_desc=tools_desc, tool_choice="auto")
 
     wanted = set(decision.shortlist)
     narrowed = [entry for entry in tools_desc if _tool_name_of(entry) in wanted]
     if not narrowed:
-        # The shortlist did not survive contact with the real catalog.
         return RoundOnePlan(tools_desc=tools_desc, tool_choice="auto")
 
     if decision.tier is Tier.HIGH and decision.tool_name:

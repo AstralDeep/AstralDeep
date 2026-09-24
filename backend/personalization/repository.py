@@ -1,11 +1,8 @@
-"""Persistence facade for personalization, personality, and durable memory.
-
-All durable operations delegate to typed AstralPlane repositories and remain
-strictly user-scoped.
-PHI gating is applied by callers (service / memory_tools) before values reach
-this layer — the repository is dumb persistence.
-
+"""Persistence facade over AstralPlane repositories for personalization profiles,
+durable memory, linked-note graphs, and short-term signals; strictly user-scoped,
+with PHI gating left to callers like memory_tools.py and service.py.
 """
+
 from __future__ import annotations
 
 import time
@@ -83,8 +80,6 @@ class PersonalizationRepository:
             raise RuntimeError("personalization repository is not bound")
         return self._personalization
 
-    # ── Profile / personality ────────────────────────────────────────────
-
     def get_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
         context = self._personalization_context()
         record = context.call(
@@ -102,7 +97,6 @@ class PersonalizationRepository:
         personality: Optional[Dict[str, Any]] = None,
         dreaming_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        """Insert or update the user's profile. Only provided fields change."""
         context = self._personalization_context()
         with context.transaction() as transaction:
             existing = context.repository.get_profile(
@@ -152,7 +146,6 @@ class PersonalizationRepository:
         return _profile_to_dict(record)
 
     def reset_profile(self, user_id: str) -> None:
-        """Reset a user's profile/personality to defaults (keeps the row)."""
         context = self._personalization_context()
         with context.transaction() as transaction:
             existing = context.repository.get_profile(
@@ -169,21 +162,10 @@ class PersonalizationRepository:
             )
 
     def set_dreaming_enabled(self, user_id: str, enabled: bool) -> None:
-        # Ensure a row exists, then set the flag.
         self.upsert_profile(user_id, dreaming_enabled=enabled)
-
-    # ── Durable memory ───────────────────────────────────────────────────
 
     def list_memory(self, user_id: str, *, project_id: Optional[str] = None,
                     include_global: bool = True) -> List[Dict[str, Any]]:
-        # Superseded (soft-deleted / replaced) memories are excluded from all
-        # recall — reconciliation keeps the live set clean.
-        #
-        # C-U9 — ``project_id`` semantics:
-        #   * None          → NO filter, every live row (legacy / flag-off path).
-        #   * GLOBAL sentinel → the global slice only (project_id IS NULL).
-        #   * a concrete id → that project's rows plus (when ``include_global``)
-        #                     the untagged/global ones; private rows never leak.
         from .project_scope import GLOBAL
 
         context = self._personalization_context()
@@ -197,11 +179,8 @@ class PersonalizationRepository:
         )
         return [_memory_to_dict(record) for record in records]
 
-    # ── Living memory seams (temporal / recall / persona) ──
-
     def set_validity(self, user_id: str, mem_id: str, *, valid_from=None,
                      valid_to=None, ingested_at=None) -> bool:
-        """C-M6: set a memory's temporal-validity bounds (epoch-ms; NULL = open)."""
         context = self._personalization_context()
         with context.transaction() as transaction:
             existing = context.repository.get_memory(
@@ -224,8 +203,6 @@ class PersonalizationRepository:
         return record is not None
 
     def record_recall(self, user_id: str, mem_id: str, now: Optional[int] = None) -> bool:
-        """C-M7: reinforcement-on-recall — bump recall_count and reset the decay
-        clock (last_recalled_at). Idempotent per call."""
         ts = now if now is not None else _now_ms()
         context = self._personalization_context()
         record = context.call(
@@ -237,7 +214,6 @@ class PersonalizationRepository:
         return record is not None
 
     def get_persona(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """C-M8: the user's current evolving persona row (or None)."""
         context = self._personalization_context()
         record = context.call(
             context.repository.get_persona,
@@ -251,7 +227,6 @@ class PersonalizationRepository:
         }
 
     def set_persona(self, user_id: str, persona: str, score: float) -> None:
-        """C-M8: upsert the user's persona (keep-best is decided by the caller)."""
         context = self._personalization_context()
         context.call(
             context.repository.put_persona,
@@ -272,10 +247,8 @@ class PersonalizationRepository:
             raise ValueError(f"invalid memory source: {source}")
         mem_id = str(uuid.uuid4())
         now = _now_ms()
-        # HMAC-sign the row's identifying fields (None when no key set).
-        # project_id is partition metadata (like keywords) — NOT part of the
-        # signed identity, so pre-C-U9 signed rows stay valid.
         from .memory_guard import sign_fields
+        # project_id is excluded — keeps legacy signatures valid
         signature = sign_fields(mem_id, user_id, category, value, source)
         context = self._personalization_context()
         record = context.call(
@@ -360,10 +333,6 @@ class PersonalizationRepository:
 
     def supersede_memory(self, user_id: str, old_id: str,
                          new_id: Optional[str] = None) -> bool:
-        """Soft-delete a memory (reconcile UPDATE/DELETE). Sets ``superseded_at``
-        so the row drops out of recall; ``new_id`` optionally points at the
-        replacement memory (UPDATE) — left NULL for a plain removal (DELETE).
-        Only affects a currently-live row (idempotent)."""
         context = self._personalization_context()
         return context.call(
             context.repository.supersede_memory,
@@ -373,12 +342,7 @@ class PersonalizationRepository:
             superseded_at=_now_ms(),
         )
 
-    # ── Linked-note graph ──
-
     def add_link(self, user_id: str, a_id: str, b_id: str) -> bool:
-        """Create an undirected link between two memories (stored as both
-        directed edges so a single-column lookup finds neighbours either way).
-        Idempotent; a self-link is ignored."""
         if not a_id or not b_id or a_id == b_id:
             return False
         graph = self._graph_context()
@@ -395,8 +359,6 @@ class PersonalizationRepository:
         return len(pair) == 2
 
     def linked_ids(self, user_id: str, mem_id: str) -> List[str]:
-        """Ids of memories linked to ``mem_id`` (live links only — superseded
-        targets are filtered out by the join)."""
         graph = self._graph_context()
         return list(
             graph.call(
@@ -408,9 +370,6 @@ class PersonalizationRepository:
         )
 
     def list_links(self, user_id: str) -> List[Dict[str, str]]:
-        """All live directed link edges for a user (both directions of each
-        undirected link), filtered to live endpoints. Powers the
-        Personalized-PageRank graph in one query."""
         graph = self._graph_context()
         records = graph.call(
             graph.repository.list_links,
@@ -421,8 +380,6 @@ class PersonalizationRepository:
             {"memory_id": record.memory_id, "linked_id": record.linked_id}
             for record in records
         ]
-
-    # ── Short-term signals ───────────────────────────────────────────────
 
     def add_signal(self, user_id: str, category: str, value: str) -> Dict[str, Any]:
         if category not in MEMORY_CATEGORIES:
@@ -476,8 +433,6 @@ class PersonalizationRepository:
             owner_id=user_id,
             signal_id=sig_id,
         )
-
-    # ── Consolidation sweeps ("dreams") ──────────────────────────────────
 
     def record_sweep(self, sweep: Dict[str, Any]) -> None:
         graph = self._graph_context()

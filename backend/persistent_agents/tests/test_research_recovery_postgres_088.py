@@ -1,6 +1,6 @@
-"""Non-retained source custody through real IAM verification, dispatch and PG.
-
-Only external source/model/JWKS responses are synthetic. No provider is called.
+"""Tests for persistent_agents/research_recovery.py through real IAM, dispatch and
+Postgres: non-retained source custody completes without durable text, discarded
+sources are reacquired and charged on recovery, and no source text reaches a row.
 """
 
 import asyncio
@@ -38,8 +38,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path, request):
-    # Construct the real supported Plane operation with the existing none
-    # retention policy; no stored-row mutation or runtime admission bypass.
     constructor = reader.AssignmentOperationSpec
     monkeypatch.setattr(reader, "AssignmentOperationSpec",
         lambda *a, **kw: replace(constructor(*a, **kw), source_retention="none"))
@@ -144,7 +142,6 @@ async def test_discarded_source_is_reacquired_and_charged_after_real_claim_recov
             old_executor.operation_fence, state=OperationState.CANCELLED,
             terminal_code="synthetic_owner_pause", safe_summary=None, retry_after_ms=None)
         await reader.control(op, "resume")
-    # Complete reconstruction of the host executor, with a real new claim.
     runner = attach_runner(op, run_research_episode)
     executor = await fresh_executor(op, runner)
     from persistent_agents.research_recovery import model_key
@@ -204,8 +201,6 @@ async def test_unknown_model_consumption_cannot_escape_by_reacquiring_source(eph
         with pytest.raises((AssignmentError, DispatchDenied, SessionAuthorityUnavailable)):
             await fresh_executor(op, runner)
     else:
-        # Older Plane can re-claim this stale-result phase; the host must still
-        # refuse effects. The qualified successor refuses the claim itself.
         try:
             executor = await fresh_executor(op, runner)
         except (AssignmentError, DispatchDenied, SessionAuthorityUnavailable):
@@ -532,8 +527,6 @@ async def test_no_source_or_prompt_canary_in_any_private_database_row(ephemeral,
     op = ephemeral
     runner = attach_runner(op, run_research_episode)
     final = await runner._finish_operation(op.executor, await run_research_episode(op.executor))
-    # This is an isolated synthetic schema. Inspect every table, not just the
-    # projected DTO, so accidental checkpoint/attempt/audit persistence is caught.
     with op.runtime.transaction() as tx:
         tables = tx.fetch_all("SELECT tablename FROM pg_tables WHERE schemaname=current_schema()")
         for table in tables:
@@ -591,8 +584,6 @@ async def test_source_only_claim_cannot_validate_model_completion(ephemeral):
         authority = checks["model"]["authority"].observation
         repository.assert_current_assignment_execution(tx, fence=op.executor.claim.fence,
             binding=op.executor.binding, authority=authority)
-        # A persisted source-only restriction must be enforced even if a
-        # malformed host executor forgot to copy its approved_action_id field.
         tx.execute("UPDATE persistent_assignment SET data=jsonb_set(data, "
             "'{approved_action_id}',to_jsonb(%s::text)) WHERE id=%s",
             (proof.private.source_action_id, op.executor.record.assignment_id))

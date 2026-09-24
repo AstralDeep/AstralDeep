@@ -1,19 +1,8 @@
+"""REST endpoints for a user's own audit log (list + get-by-id), scoping every query to
+the JWT-derived caller via orchestrator/auth.require_user_id; also accepts the
+frontend's session-resume-failure reports.
 """
-REST API for the audit log (feature 003-agent-audit-log).
 
-Endpoints:
-
-* ``GET /api/audit`` — list the authenticated user's audit entries with
-  optional filters and cursor pagination.
-* ``GET /api/audit/{event_id}`` — fetch one entry by id, scoped to the
-  authenticated user.
-
-Per FR-007 / FR-019 the API NEVER accepts an external ``actor_user_id``
-or any equivalent path/query parameter. The owning user is exclusively
-derived from the validated JWT (``require_user_id``). Every successful
-list call also produces an ``audit_view`` audit event in the caller's
-own log (closing the AU-2 / AU-12 loop).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -58,13 +47,6 @@ def _get_orchestrator(request: Request):
 
 
 def _availability_resolver(orch, user_id: str):
-    """Return a callable that checks whether an artifact pointer still resolves.
-
-    For artifacts in the ``user_attachments`` store the resolver consults
-    Plane's owner-scoped attachment repository for a non-deleted row; for unknown stores the
-    pointer is reported as available by default (FR-017 only requires
-    that *known* stores be checked — unknown integrations are opaque).
-    """
     from orchestrator.attachments.repository import AttachmentRepository
     from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
@@ -88,11 +70,6 @@ def _availability_resolver(orch, user_id: str):
 
 
 def _reject_forbidden_params(request: Request) -> None:
-    """Reject any forbidden query/body parameter that names another user.
-
-    Defends FR-007 / FR-019 even against future refactors that might
-    accidentally bind such a parameter.
-    """
     bad = [k for k in request.query_params.keys() if k.lower() in _FORBIDDEN_QUERY_PARAMS]
     if bad:
         raise HTTPException(
@@ -134,14 +111,10 @@ async def list_audit(
             raise HTTPException(status_code=400, detail=f"unknown outcome: {oc!r}")
 
     orch = _get_orchestrator(request)
-    repo = orch.audit_repo  # set during orchestrator startup
+    repo = orch.audit_repo
     recorder = get_recorder()
 
     try:
-        # The audit query invokes the availability resolver synchronously for
-        # every pointer in its bounded page. Keep the complete query + READY
-        # evaluation on one worker so neither PostgreSQL call path touches the
-        # ASGI event loop and the repository retains one coherent evaluation.
         items, next_cursor = await asyncio.to_thread(
             repo.list_for_user,
             user_id,
@@ -157,8 +130,6 @@ async def list_audit(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Self-record this read (AU-2 / AU-12). Never let recording failure
-    # break the read itself.
     if recorder is not None:
         try:
             await recorder.record(AuditEventCreate(
@@ -254,20 +225,7 @@ async def get_audit_event(
     return dto
 
 
-# ---------------------------------------------------------------------------
-# Feature 016 — Persistent-login: session-resume-failed audit endpoint
-# ---------------------------------------------------------------------------
-
 class SessionResumeFailedBody(BaseModel):
-    """Body of POST /api/audit/session-resume-failed.
-
-    Posted by the frontend (a) after the FR-011 retry budget is
-    exhausted on the silent-resume path, (b) when the FR-013 hard-max
-    365-day clear path discards a stored credential, and (c) when the
-    FR-007 deployment-origin check fails. In all three cases the WS is
-    not yet authenticated, so the audit row cannot be written via the
-    normal WS-register path.
-    """
     reason: Literal[
         "retry-budget-exhausted",
         "definitive-4xx",
@@ -298,11 +256,7 @@ async def post_session_resume_failed(
     request: Request,
     body: SessionResumeFailedBody,
 ):
-    # Best-effort identity attribution. The caller's bearer token is
-    # almost certainly invalid (that is *why* the resume failed), so we
-    # do NOT cryptographically validate it — we only decode the payload
-    # claims to attribute the audit row. If decoding fails the row is
-    # attributed to "anonymous".
+    # Not signature-verified — this token is already known-bad
     actor_user_id = "anonymous"
     auth_principal = "anonymous"
     try:
@@ -320,13 +274,11 @@ async def post_session_resume_failed(
                     if sub:
                         actor_user_id = sub
                         auth_principal = decoded.get("preferred_username") or sub
-    except Exception as exc:  # pragma: no cover — defensive
+    except Exception as exc:  # pragma: no cover
         logger.debug("session-resume-failed identity lookup failed: %s", exc)
 
     recorder = get_recorder()
     if recorder is None:
-        # No recorder wired (tests, degraded mode). Acknowledge the request
-        # silently so the frontend's fire-and-forget call doesn't retry.
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     try:
@@ -351,7 +303,5 @@ async def post_session_resume_failed(
         ))
     except Exception as exc:  # pragma: no cover
         logger.debug("session-resume-failed self-record failed: %s", exc)
-        # Still return 204 — the frontend cannot do anything with a server
-        # error here, and the audit gap will surface in metrics anyway.
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

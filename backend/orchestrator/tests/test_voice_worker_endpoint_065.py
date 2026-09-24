@@ -1,4 +1,7 @@
-"""Authenticated worker-control HTTP-upgrade tests for Feature 065."""
+"""Tests for orchestrator/voice_worker_endpoint.py's authenticated worker-control HTTP
+upgrade: challenge/signature verification, disconnect cleanup fencing, lease
+sweeping, quarantine of malformed frames, and secret-free error settings.
+"""
 
 from __future__ import annotations
 
@@ -211,8 +214,6 @@ def test_upgrade_challenge_interoperates_with_worker_and_unregisters(
         assert registered["type"] == "worker_registered"
         assert registered["worker_identity"] == "voice-worker-a"
         assert registered["accepted_max_sessions"] == 2
-        # The client can receive the acknowledgement before the server's
-        # awaited send returns and registration commits on the portal loop.
         assert registered_on_server.wait(timeout=5)
         assert endpoint.readiness().ready is True
 
@@ -222,14 +223,6 @@ def test_upgrade_challenge_interoperates_with_worker_and_unregisters(
 
 
 def test_disconnect_hook_receives_credential_free_cleanup_fence() -> None:
-    # The hook runs in the server handler's `finally` on the TestClient
-    # portal loop, and the client-side context exit does not synchronize
-    # with it — on loaded hosted runners a portal cycle occasionally never
-    # wakes the handler at all (observed even with a 10s wait). The
-    # CONTRACT here is liveness — "the hook fires after disconnect with a
-    # credential-free receipt and no released fences" — not latency, so
-    # retry whole connect/disconnect cycles on a FRESH client/portal;
-    # a genuine product regression still fails all three.
     for _attempt in range(3):
         cleanups: list[tuple[str, tuple[str, ...]]] = []
         cleaned = threading.Event()

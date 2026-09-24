@@ -1,4 +1,7 @@
-"""Deterministic five-user isolation proofs for conversational voice 065."""
+"""Deterministic five-user isolation tests across voice_control_binding.py,
+voice_coordinator.py, and work_admission.py: control bindings, rooms, turns, and
+takeovers stay isolated per user, with bounded Postgres capacity races.
+"""
 
 from __future__ import annotations
 
@@ -172,8 +175,6 @@ def _worker_grant(
 
 
 class _PoolMedia:
-    """Small media adapter that still drives the real worker control authority."""
-
     def __init__(self, pool: WorkerPool) -> None:
         self.pool = pool
         self.bindings: dict[str, tuple[Any, SessionBindRequest]] = {}
@@ -939,7 +940,6 @@ async def test_five_runtime_users_keep_rooms_turns_and_takeovers_isolated(
     assert "voice_session_total" in metric_dump
     assert "voice_takeover_total" in metric_dump
 
-    # Keep the current bindings authoritative after every unrelated takeover.
     for index, bearer in enumerate(bearers):
         assert (
             control_orchestrator.validate_voice_control_binding(

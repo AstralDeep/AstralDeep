@@ -1,4 +1,6 @@
-"""Bounded exact-model batch ASR tests for Feature 065."""
+"""Tests for voice_agent/speech_adapters.py's batch ASR path: request shape,
+retry-once-on-5xx, and content-free failure typing.
+"""
 
 from __future__ import annotations
 
@@ -19,9 +21,8 @@ from voice_agent.tests.fake_speech_service import (
     StrictFakeSpeechService,
 )
 try:
-    # The isolated image renames the reviewed shared source into this package.
     from voice_agent.streaming_egress import FixedOriginHttpTransport
-except ModuleNotFoundError:  # Host-tree test layout.
+except ModuleNotFoundError:
     from shared.streaming_egress import FixedOriginHttpTransport
 
 
@@ -260,8 +261,6 @@ async def test_strict_fake_service_statuses_are_redacted(
                 "application/json",
             ),
         )
-        # The adapter retries one transient 5xx, so both attempts receive the
-        # same content-bearing failure and still expose only the typed reason.
         if status == 503:
             service.enqueue(
                 "/v1/audio/transcriptions",

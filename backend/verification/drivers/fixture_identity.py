@@ -1,9 +1,8 @@
-"""Signed fixture identities for the explicitly non-production in-process harness.
-
-Only JWKS retrieval is supplied locally. The ordinary product JWT signature,
-issuer, client, expiry, user-role and registered-caller checks still execute.
-This is synthetic IAM evidence, never real Keycloak or release qualification.
+"""Signed fixture identities for the in-process harness (backend/shared/jwks_cache.py):
+supplies only local JWKS retrieval while the product's real JWT signature, issuer,
+and role checks still run; never real Keycloak.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,8 +15,6 @@ from jose import jwk, jwt
 
 
 class FixtureIdentity:
-    """Own one temporary realm configuration and its public-key cache entry."""
-
     _active = None
 
     def __init__(self, run_id: str) -> None:
@@ -58,7 +55,6 @@ class FixtureIdentity:
         type(self)._active = self
 
     def claims_and_token(self, claims: dict) -> tuple[dict, str]:
-        """Sign only this run's principals; never accept arbitrary owner claims."""
         if self.closed or not claims.get("sub", "").startswith(self.run_id + "_"):
             raise ValueError("fixture principal is outside the active run")
         issued = dict(claims) | {
@@ -70,7 +66,6 @@ class FixtureIdentity:
         return issued, token
 
     def close(self) -> None:
-        """Remove the fixture trust and restore the process's prior IAM settings."""
         if self.closed:
             return
         self.closed = True

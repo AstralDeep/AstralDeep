@@ -1,9 +1,8 @@
-"""US3 — verify per-call credential lookup never serves stale values (T049).
-
-The CredentialManager hits the DB on every read; there is no in-process cache
-that could survive a save/clear. This test pins that property as a regression
-guard so a future caching optimization doesn't silently break FR-006/FR-007.
+"""Regression tests for orchestrator/credential_manager.py: every read hits the database
+with no in-process cache that could serve a stale value after save/clear, plus
+per-user isolation and internal-key filtering.
 """
+
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -16,8 +15,6 @@ from orchestrator.credential_manager import CredentialManager
 
 
 class FakeCredentialRepository:
-    """Typed in-memory Plane credential repository used by this focused unit."""
-
     def __init__(self) -> None:
         self.rows: dict[tuple[str, str, str], CredentialRecord] = {}
         self.sequence = 0
@@ -131,8 +128,6 @@ class FakePlaneRuntime:
 
 @pytest.fixture
 def cm(monkeypatch) -> CredentialManager:
-    """Build against the typed Plane seam without creating a key file."""
-
     monkeypatch.setenv(
         "CREDENTIAL_ENCRYPTION_KEY",
         Fernet.generate_key().decode("ascii"),
@@ -147,7 +142,6 @@ def cm(monkeypatch) -> CredentialManager:
 
 
 def test_save_then_save_returns_latest_value(cm: CredentialManager) -> None:
-    """Saving twice for the same key must surface the second value on read."""
     cm.set_credential("alice", "classify-1", "CLASSIFY_URL", "https://first.example/")
     first = cm.get_agent_credentials_encrypted("alice", "classify-1")
     assert cm.get_credential("alice", "classify-1", "CLASSIFY_URL") == (
@@ -182,9 +176,7 @@ def test_remove_agent_credentials_clears_all_keys(cm: CredentialManager) -> None
 def test_user_isolation(cm: CredentialManager) -> None:
     cm.set_credential("alice", "classify-1", "CLASSIFY_API_KEY", "alice-key")
     assert cm.list_credential_keys("alice", "classify-1") == ["CLASSIFY_API_KEY"]
-    # bob has no credentials, even for the same agent.
     assert cm.list_credential_keys("bob", "classify-1") == []
-    # bob saving his own credentials does not affect alice.
     cm.set_credential("bob", "classify-1", "CLASSIFY_API_KEY", "bob-key")
     alice_creds = cm.get_agent_credentials_encrypted("alice", "classify-1")
     bob_creds = cm.get_agent_credentials_encrypted("bob", "classify-1")
@@ -200,12 +192,9 @@ def test_user_isolation(cm: CredentialManager) -> None:
 
 
 def test_internal_keys_filtered_out_of_listing(cm: CredentialManager) -> None:
-    """Keys starting with '_' are reserved (e.g., session tokens) and not listed."""
     cm.set_credential("alice", "classify-1", "PUBLIC_KEY", "v")
     cm.set_credential("alice", "classify-1", "_INTERNAL", "v")
     cm.list_credential_keys("alice", "classify-1")
-    # list_credential_keys returns ALL keys; filtering of '_'-prefixed happens in
-    # get_agent_credentials_encrypted (the path tools see).
     creds = cm.get_agent_credentials_encrypted("alice", "classify-1")
     assert "PUBLIC_KEY" in creds
     assert "_INTERNAL" not in creds

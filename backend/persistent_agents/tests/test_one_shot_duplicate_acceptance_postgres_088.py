@@ -1,10 +1,6 @@
-"""Concurrent one-shot acceptance of one caller key against the live runtime.
-
-The integrated runtime fixture supplies real Plane, encrypted configuration,
-JWT verification, audit and a running supervisor. Only external IAM replies and
-the (unused here) source/model transports are synthetic. Two concurrent
-WorkSubmitService.submit calls with the same caller key must add exactly one
-persistent_assignment row, one operation receipt and one work.accept audit row.
+"""Tests for orchestrator/work_submit.py against the live runtime: concurrent
+submissions with the same caller key add exactly one assignment, receipt and audit
+row, and a replayed key after commit reuses the single receipt.
 """
 
 import asyncio
@@ -34,7 +30,6 @@ pytestmark = [
 
 
 def submit_service(op, runner):
-    """A source-only acceptance service over the integrated runtime's stores."""
     return WorkSubmitService(
         runner.service,
         op.audit._repo,
@@ -44,7 +39,6 @@ def submit_service(op, runner):
 
 
 def added(base, after):
-    """The per-owner (assignment, receipt, audit) delta above the fixture baseline."""
     return tuple(after[index] - base[index] for index in range(3))
 
 
@@ -54,9 +48,6 @@ async def test_concurrent_same_key_admits_one_receipt_and_audit_atomically(
     op, runner, client = integrated
     service = submit_service(op, runner)
     base = totals(runtime, fixture[1])
-    # One body, submitted twice under two current sessions: the same caller key,
-    # source and limits. Two sessions avoid a same-incarnation authority conflict
-    # so the race is decided purely by admission idempotency.
     body = research_command(SimpleNamespace(assignments=runner.service))
     second_sid = uuid4().hex
     fixture[0].create(
@@ -85,7 +76,6 @@ async def test_concurrent_same_key_admits_one_receipt_and_audit_atomically(
         values = await asyncio.gather(
             service.submit(first, body), service.submit(second, body)
         )
-        # Both expanded the intent, but only one admission created durable state.
         assert arrived == [True, True]
         assert sum(value.created for value in values) == 1
         assert values[0].record.assignment_id == values[1].record.assignment_id
@@ -107,7 +97,6 @@ async def test_replayed_key_after_commit_reuses_the_single_receipt(
     body = research_command(SimpleNamespace(assignments=runner.service))
     accepted = await service.submit(await context(fixture, runtime), body)
     assert accepted.created
-    # A later duplicate acceptance replays the same receipt without a new row.
     replay = await service.submit(
         await context(fixture, runtime, cookie=False, bearer=True), body
     )

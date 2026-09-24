@@ -1,16 +1,8 @@
-"""Feature 033 (capability C-D9) — the deterministic WCAG audit wired as a
-designer-side accessibility check.
-
-When ``FF_UI_DESIGNER_A11Y`` is on, :func:`design_round`'s lint stage runs
-``webrender.a11y.a11y_audit`` over the chosen arrangement and logs any findings
-(image without alt, an action with no accessible label, an unlabelled
-landmark/tab, an empty heading). The audit is advisory — it annotates/logs but
-never drops a valid arrangement, so the fail-open posture is preserved. With the
-flag OFF the audit never runs.
-
-These tests drive the REAL ``design_round`` end-to-end (the LLM is a stub) and
-assert against both the structured log and a spy on the real audit function.
+"""Tests for the accessibility check wired into design_round in
+orchestrator/ui_designer.py: with the flag on, webrender/a11y.py audits the chosen
+arrangement and logs findings advisorily, never dropping a valid arrangement.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,14 +30,11 @@ _COMPS = [
     {"type": "line_chart", "component_id": "B", "title": "Chart", "_source_agent": "a", "_source_tool": "t"},
 ]
 
-# A draft whose garnish carries a KNOWN a11y problem: an UNTITLED card landmark
-# (a11y_audit → "landmark has no label (title)") wrapping the two refs.
 _DRAFT_BAD_A11Y = json.dumps({"layout": [
     {"type": "card", "content": [
         {"type": "ref", "component_id": "A"}, {"type": "ref", "component_id": "B"}]},
 ]})
 
-# A clean draft: a titled card landmark.
 _DRAFT_CLEAN = json.dumps({"layout": [
     {"type": "card", "title": "Results", "content": [
         {"type": "ref", "component_id": "A"}, {"type": "ref", "component_id": "B"}]},
@@ -63,8 +52,6 @@ def _stub_llm(replies):
     return _call
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_a11y_audit_flag_default_off(monkeypatch):
     monkeypatch.delenv("FF_UI_DESIGNER_A11Y", raising=False)
     assert ui_designer.a11y_audit_enabled() is False
@@ -76,13 +63,9 @@ def test_a11y_audit_flag_on(monkeypatch, value):
     assert ui_designer.a11y_audit_enabled() is True
 
 
-# ───────────────────────── audit flags a known problem ───────────────────────
-
 async def test_designer_a11y_flags_unlabelled_landmark(monkeypatch, caplog):
-    """ON: the designer flow runs a11y_audit on the final arrangement and logs
-    the untitled-card landmark finding."""
     monkeypatch.setenv("FF_UI_DESIGNER_A11Y", "true")
-    monkeypatch.setenv("FF_UI_DESIGNER_LINT", "false")  # isolate the a11y stage
+    monkeypatch.setenv("FF_UI_DESIGNER_LINT", "false")
     with caplog.at_level(logging.WARNING, logger="orchestrator.ui_designer"):
         out = await design_round(
             user_request="x", round_components=_COMPS, canvas_rows=[],
@@ -90,18 +73,13 @@ async def test_designer_a11y_flags_unlabelled_landmark(monkeypatch, caplog):
             llm_call=_stub_llm([_DRAFT_BAD_A11Y, "DONE"]), timeout_s=5, max_rounds=2,
         )
     assert out is not None
-    # The arrangement is still delivered (advisory, never dropped) ...
     assert any(n.get("type") == "card" for n in out)
-    # ... and the finding was logged.
     assert any("ui_designer.a11y_findings" in r.getMessage() for r in caplog.records)
     assert any("card" in r.getMessage() for r in caplog.records
                if "a11y_findings" in r.getMessage())
 
 
 async def test_designer_a11y_runs_real_audit_on_final(monkeypatch):
-    """Spy on the REAL a11y_audit to prove design_round actually calls it with
-    the chosen arrangement (a card node present), and that it returns the known
-    finding for the untitled card."""
     seen = {}
     real_audit = a11y.a11y_audit
 
@@ -120,14 +98,11 @@ async def test_designer_a11y_runs_real_audit_on_final(monkeypatch):
     )
     assert out is not None
     assert "components" in seen, "design_round never called a11y_audit"
-    # It audited the real chosen arrangement (the untitled card is in it) ...
     assert any(isinstance(n, dict) and n.get("type") == "card" for n in seen["components"])
-    # ... and the audit flagged the unlabelled landmark.
     assert any(f["type"] == "card" and "label" in f["issue"] for f in seen["result"])
 
 
 async def test_designer_a11y_clean_arrangement_no_findings(monkeypatch, caplog):
-    """A clean (titled) arrangement produces no a11y findings → no warning."""
     monkeypatch.setenv("FF_UI_DESIGNER_A11Y", "true")
     monkeypatch.setenv("FF_UI_DESIGNER_LINT", "false")
     with caplog.at_level(logging.WARNING, logger="orchestrator.ui_designer"):
@@ -140,11 +115,7 @@ async def test_designer_a11y_clean_arrangement_no_findings(monkeypatch, caplog):
     assert not any("ui_designer.a11y_findings" in r.getMessage() for r in caplog.records)
 
 
-# ───────────────────────── flag OFF + fail-open ──────────────────────────────
-
 async def test_designer_a11y_off_does_not_run(monkeypatch):
-    """OFF (default): a11y_audit is never invoked — a spy that would explode is
-    never reached, and the arrangement is delivered unchanged."""
     monkeypatch.delenv("FF_UI_DESIGNER_A11Y", raising=False)
 
     def _boom(_components):
@@ -161,8 +132,6 @@ async def test_designer_a11y_off_does_not_run(monkeypatch):
 
 
 async def test_designer_a11y_failure_is_fail_open(monkeypatch):
-    """An a11y_audit that raises must never break the designer — the arrangement
-    is still delivered (advisory check, fail-open)."""
     monkeypatch.setenv("FF_UI_DESIGNER_A11Y", "true")
 
     def _boom(_components):
@@ -174,5 +143,5 @@ async def test_designer_a11y_failure_is_fail_open(monkeypatch):
         chat_id="a5", layout_key="lk5", allowed_types=ALLOWED,
         llm_call=_stub_llm([_DRAFT_BAD_A11Y, "DONE"]), timeout_s=5, max_rounds=2,
     )
-    assert out is not None  # never crashes
+    assert out is not None
     assert any(n.get("type") == "card" for n in out)

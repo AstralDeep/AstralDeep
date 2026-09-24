@@ -1,8 +1,7 @@
-"""Unregistered lifecycle contracts on actual Plane, session/JWT and admission.
-
-These no-output completion fixtures qualify lifecycle mechanics only. They do not
-claim a completed research answer or exercise a production ingress/runner.
-External IAM replies are synthetic; every row belongs to a disposable schema.
+"""Tests for persistent_agents/runner.py's one-shot lifecycle against real
+Plane/Postgres: claim, renewal and completion transactions, recovery of expired
+leases, discovery pagination and shutdown, and the fixed reader's delegation-window
+renewal.
 """
 
 import asyncio
@@ -46,8 +45,6 @@ from tests.helpers.session_plane_runtime import (
 )
 
 
-# This fixture supplies the real reader, normal governed dispatch, real audit and
-# session/JWT stores. Only external IAM/delegation and reader transport are fake.
 from persistent_agents.tests.test_operation_reader_postgres_088 import (
     operation as operation,
     REQUEST,
@@ -94,7 +91,6 @@ async def lifecycle(runtime, fixture):
         ),
     )
     operation_fence = await runner._admit(claim)
-    # Base executor is used only as a typed fence holder before reader integration.
     executor = ActionExecutor(runner, claim, operation_fence, object())
     authority = await runner._operation_authority(record)
 
@@ -340,7 +336,6 @@ async def test_renewal_transaction_uses_configured_admission_duration_and_rolls_
         19 <= (renewals[0].lease_expires_at - datetime.now(UTC)).total_seconds() <= 21
     )
     assert await current(op) == before
-    # A successful later call uses the same pool transaction and both exact fences.
     result = await op.store.operation_lifecycle_transaction(
         authority=observed,
         fence=op.executor.claim.fence,
@@ -472,7 +467,6 @@ async def test_original_current_hold_is_factual_failure_with_plane_retry(lifecyc
     assert result.safe_error_code == "assignment_failed"
     assert 3 <= (result.next_wake_at - datetime.now(UTC)).total_seconds() <= 5
     assert (await admission(op)).state == OperationState.COMPLETED
-    # A completion acknowledgement is final even if cleanup asks to hold again.
     assert await op.runner._hold_operation(op.executor, observed) is None
 
 
@@ -499,7 +493,6 @@ async def test_cancellation_while_session_row_locked_releases_worker_before_bloc
     op = lifecycle
     observed = await authority(op)
     started = asyncio.Event()
-    # Fixture-only lock injection, never product SQL or a live database.
     with op.runtime.transaction() as blocker:
         blocker.fetch_one(
             "SELECT sid FROM web_session WHERE sid=%s FOR UPDATE", (op.fixture[2],)
@@ -527,7 +520,6 @@ async def test_cancellation_while_session_row_locked_releases_worker_before_bloc
         ):
             await asyncio.sleep(0.01)
         assert op.store.async_runtime._active == 0
-        # SQL lock cap must release the owner lock despite the retained blocker.
         await op.store.transaction(
             lambda tx, repo: tx.fetch_one("SELECT 1 AS alive"), bound_session_waits=True
         )
@@ -537,7 +529,6 @@ async def test_cancellation_while_session_row_locked_releases_worker_before_bloc
 async def test_recovery_retires_only_expired_exact_operation_binding(lifecycle):
     op = lifecycle
     before = await current(op)
-    # Test-only crash clock perturbation; recovery itself uses public Plane APIs.
     with op.runtime.transaction() as tx:
         expiry = datetime.now(UTC) - timedelta(seconds=1)
         tx.execute(
@@ -570,7 +561,6 @@ async def test_discovery_continues_past_unavailable_original_session(
         return await original(record)
 
     monkeypatch.setattr(op.runner, "_operation_authority", resolve)
-    # Prevent actual episode execution until the separately qualified reader is integrated.
     started = []
     monkeypatch.setattr(op.runner, "_start_claim", lambda claim: started.append(claim))
     await op.runner._tick_operations()
@@ -790,8 +780,6 @@ async def reader_runner(op, handler):
             assignment_id=executor.record.assignment_id,
         )
     ).assignment
-    # The reader fixture initially owns an episode. Truthfully yield that empty
-    # episode now, so tick must discover and claim it afresh through real Plane.
     await runner._finish_operation(
         executor,
         OneShotEpisodeResult(
@@ -826,8 +814,6 @@ async def test_tick_runs_actual_governed_reader_then_yields_without_claiming_res
         handled.append(executor)
         return OneShotEpisodeResult(
             snapshot,
-            # The actual source action is already durable. A lifecycle-only
-            # handler has no result proof and must leave the checkpoint intact.
             completion(snapshot),
         )
 
@@ -970,8 +956,6 @@ async def test_renewal_does_not_rotate_inside_actual_reader_delegation_window(
             runner._renew_operation(op.executor, task), name="test-renew-window"
         )
         await original_sleep(0.15)
-        # Fails before coordination: renewal replaces the snapshot already used
-        # for actual delegation, so the following final gate cannot use it.
         after = len(op.refreshes)
         assert after == before
         release.set()
@@ -1074,11 +1058,9 @@ async def test_long_physical_reader_renews_while_authority_window_is_released(
         await runner.tick()
         await asyncio.wait_for(entered.wait(), 15)
         before = len(op.refreshes)
-        await asyncio.sleep(1.5)  # Longer than the actual initial admission lease.
+        await asyncio.sleep(1.5)
         after = len(op.refreshes)
         assert after > before
-        # A renewal may currently own the window; the still-held physical call
-        # must allow that renewal to finish and this independent waiter through.
         async with asyncio.timeout(2):
             async with _episode_lease(selected[0]).lock:
                 current_admission = await asyncio.to_thread(

@@ -1,9 +1,6 @@
-"""Tests for the Feature 089 scope guard.
-
-The guard protects two invariants recorded in spec FR-039 and SC-011: no
-native client directory changes, and no workflow changes, in any of the five
-repositories. These tests build throwaway git repositories so the assertions
-do not depend on the working tree's real state.
+"""Tests for the repository migration scope guard: rejects native-client directory and
+workflow changes across the five component repositories, using throwaway git
+fixtures.
 """
 
 from __future__ import annotations
@@ -48,7 +45,6 @@ def _write(repo: Path, relative: str, text: str) -> None:
 
 
 def _init_repo(path: Path) -> str:
-    """Create a one-commit repository and return its baseline SHA."""
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "--quiet")
     _git(path, "config", "user.email", "test@example.invalid")
@@ -67,7 +63,6 @@ def _commit(repo: Path, relative: str, text: str) -> None:
 
 @pytest.fixture()
 def fleet(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Five sibling repositories plus their baseline SHAs."""
     parent = tmp_path / "fleet"
     baselines = {name: _init_repo(parent / name) for name in REPO_NAMES}
     return parent, baselines

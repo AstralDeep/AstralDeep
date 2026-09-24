@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Verify an AstralDeep composition entirely from local, pinned inputs.
-
-The verifier intentionally never fetches, clones, or queries a remote.  It
-checks the superproject index, initialized component worktrees, static package
-exports, and deterministic contract digests.  A checkout without access to a
-private component therefore fails with an actionable access diagnostic instead
-of attempting an interactive credential flow.
+"""Verifies an AstralDeep composition purely from local pinned inputs (superproject
+index, worktrees, package exports, contract digests) with no network access, so a
+missing private component fails with an actionable diagnostic.
 """
 
 from __future__ import annotations
@@ -66,13 +62,11 @@ _MAX_LITERAL_SEQUENCE_ITEMS = 4096
 
 
 class CompositionError(RuntimeError):
-    """A local composition input could not be interpreted safely."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One stable, machine-readable composition failure."""
-
     code: str
     component: str | None
     message: str
@@ -81,8 +75,6 @@ class Diagnostic:
 
 @dataclass(frozen=True, slots=True)
 class VerificationReport:
-    """Deterministic result returned by :func:`verify_composition`."""
-
     manifest_sha256: str | None
     diagnostics: tuple[Diagnostic, ...]
 
@@ -181,8 +173,6 @@ def _schema_errors(
     *,
     path: str = "$",
 ) -> list[str]:
-    """Validate the assertion vocabulary used by the committed Draft 2020-12 schema."""
-
     if not isinstance(schema, dict):
         raise CompositionError(f"schema at {path} is not an object")
     errors: list[str] = []
@@ -630,8 +620,6 @@ def _canonical_json_sha256(document: object) -> str:
 
 
 def compute_primitives_digest(component_root: Path) -> str:
-    """Apply the exact uint32be-path/uint64be-content framing from the schema."""
-
     source_root = component_root / "src" / "astralprims"
     files = sorted(
         source_root.glob("*.py"),
@@ -660,13 +648,6 @@ def compute_primitives_digest(component_root: Path) -> str:
 def _plane_schema_literal_import(
     component_root: Path, tree: ast.Module, *, stem: str, symbol: str
 ) -> dict[str, object]:
-    """Read one reviewed local literal module; never execute or resolve imports.
-
-    Historical registries remain entirely local to migrations.py. The caller
-    names only the reviewed data-only sibling modules. Aliasing,
-    rebinding, executable module statements, and filesystem indirection are
-    refused instead of extending the general literal expression vocabulary.
-    """
     module = f"astralplane.database.{stem}_schema"
     imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
                and (node.module == module or any(alias.name == symbol or alias.asname == symbol
@@ -705,8 +686,7 @@ def _plane_schema_literal_import(
     if (declarations and isinstance(declarations[0], ast.Expr)
             and isinstance(declarations[0].value, ast.Constant) and isinstance(declarations[0].value.value, str)):
         declarations = declarations[1:]
-    # 088.004's exact declaration uses typing.Final. Recognize its syntax only;
-    # never import typing/candidate modules or evaluate an annotation expression.
+    # Recognizes this exact Final syntax only, never evaluates
     if (stem == "declarative_agent" and len(declarations) == 2
             and isinstance(declarations[0], ast.ImportFrom)
             and declarations[0].module == "typing" and declarations[0].level == 0
@@ -724,10 +704,6 @@ def _plane_schema_literal_import(
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
         raise CompositionError(f"Plane {stem} schema must contain only the reviewed literal tuple")
     items = list(declarations[0].value.elts)
-    # 088.006 writes multiline SQL as literal_string.strip(), and 089.001
-    # follows it. Normalize only that exact syntax in the reviewed modules;
-    # never execute candidate calls or broaden other imported schemas'
-    # literal grammar.
     for index, item in enumerate(items):
         if (stem in {"selected_input", "scheduler_policy", "framework_credential",
                      "typesafe_credential"}
@@ -747,8 +723,6 @@ def _plane_schema_literal_import(
 def _plane_migration_digest(component_root: Path) -> str:
     path = component_root / "src" / "astralplane" / "database" / "migrations.py"
     tree = _parse_python(path)
-    # These are the only supported cross-module schema declarations. Never
-    # resolve arbitrary imports or execute the candidate's Python sources.
     reviewed_literals = {}
     for stem, symbol in (
         ("assignment", "ASSIGNMENT_SCHEMA_STATEMENTS"),
@@ -758,8 +732,6 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("selected_input", "SELECTED_INPUT_SCHEMA_STATEMENTS"),
         ("scheduler_policy", "SCHEDULER_POLICY_SCHEMA_STATEMENTS"),
         ("framework_credential", "FRAMEWORK_CREDENTIAL_SCHEMA_STATEMENTS"),
-        # Feature 089 (089.001): the TypeSafe credential and data-sharing
-        # acknowledgment tables.
         ("typesafe_credential", "TYPESAFE_CREDENTIAL_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
@@ -1236,8 +1208,6 @@ def verify_composition(
     schema_path: Path | None = None,
     gitmodules_path: Path | None = None,
 ) -> VerificationReport:
-    """Verify one checkout without using the network or importing component code."""
-
     root = root.resolve()
     manifest_path = manifest_path or root / "config/astral-composition.json"
     schema_path = schema_path or root / SCHEMA_RELATIVE_PATH

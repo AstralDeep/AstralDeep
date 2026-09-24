@@ -1,7 +1,6 @@
-"""Closed fixed-research HTTP submission; exported without global registration.
-
-The application supplies every capability. Request bytes carry intent only;
-receipt replay remains in WorkSubmitService and never implies runner resumption.
+"""HTTP submission route for fixed-research work, mounted explicitly rather than
+globally registered. Delegates acceptance to work_submit.py under
+work_submit_authority.py's caller fence; wired into api.py.
 """
 
 from __future__ import annotations
@@ -91,8 +90,6 @@ def _orchestrator(app):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _Composition:
-    """Exact server objects, rechecked inside acceptance without external I/O."""
-
     app: object = field(repr=False)
     orch: object = field(repr=False)
     assignments: object = field(repr=False)
@@ -126,7 +123,6 @@ class _Composition:
         return value
 
     def assert_current(self):
-        """Refuse replaced or cross-runtime application bindings, even on replay."""
         if (
             type(self.assignments) is not AssignmentService
             or type(self.sessions) is not WebSessionStore
@@ -162,7 +158,6 @@ class _Composition:
             _unavailable()
 
     def new_admission(self):
-        """Check only new acceptance; stopped/absent runners cannot consume work."""
         self.assert_current()
         if (
             type(self.runner) is not AssignmentRunner
@@ -178,13 +173,10 @@ class _Composition:
 
 
 async def _body(request, expected):
-    """Retain the admission-specific time bound over shared raw framing."""
     return await read_work_body(request, expected, seconds=_BODY_SECONDS)
 
 
 class WorkAdmissionRoute(APIRoute):
-    """Never send exception details, parsed input or private authority to HTTP."""
-
     def get_route_handler(self):
         handler = super().get_route_handler()
 
@@ -223,7 +215,6 @@ class WorkAdmissionRoute(APIRoute):
         return safe
 
 
-# The containing operation router supplies the single /api prefix.
 work_admission_router = APIRouter(
     prefix="/work/v1/operations", tags=["Work"], route_class=WorkAdmissionRoute
 )
@@ -231,7 +222,6 @@ work_admission_router = APIRouter(
 
 @work_admission_router.post("")
 async def submit_work(request: Request):
-    """Accept one fixed research intent or return its original authenticated receipt."""
     expected = _content_length(request)
     if "token" in request.query_params:
         raise AssignmentError("work_query_token_refused", 403)
@@ -241,8 +231,6 @@ async def submit_work(request: Request):
     context = await authenticate_work_submission_request(
         request, sessions=composition.sessions, plane_runtime=composition.runtime
     )
-    # Normal IAM verified these claims on its private snapshot. Only this
-    # detached attribution reaches the existing outer HTTP audit middleware.
     request.state.audit_claims = context.claims
     raw = await _body(request, expected)
     composition.assert_current()

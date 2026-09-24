@@ -1,4 +1,8 @@
-"""Service authorization with repository and current authority test doubles."""
+"""Tests for persistent_agents/service.py and api.py: create and replay avoid duplicate
+grants, activation failures create no running assignment, live execution rechecks
+grant and source arguments, and owner reads hide dispatch capabilities.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -19,7 +23,6 @@ def make_record(assignment_id, owner_id, definition):
 
 
 class MemoryStore:
-    """Test-only replay seam; Plane integration tests own transactional guarantees."""
     def __init__(self):
         self.records = {}
         self.receipts = {}
@@ -87,7 +90,6 @@ def service(monkeypatch):
 async def test_create_replay_no_duplicate_grant_and_owner_projection(service):
     model = CreateAssignmentRequest.model_validate(create_payload())
     first = await service.create("owner", {"sub": "owner"}, model, selected_session=synthetic_consent("owner"))
-    # An accepted receipt replays without selecting today's consenting session.
     again = await service.create("owner", {"sub": "owner"}, model)
     assert first == again
     assert service.orch.offline_grants.capture_in_transaction.call_count == 1

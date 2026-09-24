@@ -1,8 +1,6 @@
-"""Feature-060 contract tests for durable work admission and execution fences.
-
-These tests use a manually advanced UTC clock.  They intentionally contain no
-wall-clock sleeps: queue expiry, reconciliation retention, and purge behavior
-must be deterministic state transitions rather than timing races.
+"""Tests for orchestrator/work_admission.py's durable admission and execution fences
+using a manually advanced clock: capacity preselection, FIFO queueing, idempotency,
+and generation/lease fencing.
 """
 
 from __future__ import annotations
@@ -325,7 +323,6 @@ def test_terminalize_unselected_settles_only_queued_or_preselected_work() -> Non
         == 0
     )
 
-    # The first terminal result is immutable even when recovery is replayed.
     clock.advance(timedelta(seconds=1))
     assert (
         coordinator.terminalize_unselected(
@@ -443,8 +440,6 @@ def test_finite_queue_is_fifo_and_full_refusal_is_immutable() -> None:
     assert third_claim is not None
     assert third_claim.operation.operation_id == third.operation_id
 
-    # A retained submission refusal cannot silently become accepted just
-    # because capacity later changes.
     assert coordinator.submit(refused_request) == refused
     reconciled = coordinator.reconcile_submission(
         owner=refused_request.owner,
@@ -454,8 +449,6 @@ def test_finite_queue_is_fifo_and_full_refusal_is_immutable() -> None:
 
 
 def test_ordinary_interactive_class_keeps_existing_per_user_capacity_behavior() -> None:
-    """Feature 065's voice limit must not narrow ordinary typed chat."""
-
     clock = _FakeClock()
     coordinator = _coordinator(clock, active_limit=3, queue_limit=1)
 
@@ -507,7 +500,6 @@ def test_idempotency_reuses_original_operation_and_conflicts_on_new_input() -> N
     assert conflict.retryable is False
     assert getattr(conflict, "operation_id", None) is None
 
-    # Idempotency is partitioned by authenticated owner, not globally by key.
     other_owner = dataclasses.replace(
         original,
         owner=_owner("owner-b"),
@@ -694,7 +686,6 @@ def test_queued_and_running_cancellation_are_idempotent() -> None:
     assert terminal.execution_lease_token is None
     assert terminal.execution_generation == running_claim.fence.execution_generation
 
-    # The first terminal state owns the result; a late success cannot replace it.
     assert _terminalize_completed(coordinator, running_claim.fence) == terminal
     with pytest.raises(OperationNotFoundError):
         coordinator.cancel(
@@ -782,7 +773,6 @@ def test_generation_and_lease_token_jointly_fence_execution() -> None:
     with pytest.raises(StaleExecutionFenceError):
         coordinator.assert_current_execution(replacement)
 
-    # A stale executor may clean up, but its late terminal cannot mutate truth.
     late = coordinator.terminalize(
         fence,
         state=OperationState.COMPLETED,
@@ -847,8 +837,6 @@ def test_terminal_records_are_queryable_for_24h_and_purged_by_25h() -> None:
                 submission_id=request.submission_id,
             )
 
-    # Non-terminal accepted work and its reconciliation identity do not age
-    # out behind the worker that still owns them.
     assert (
         coordinator.query_operation(
             owner=retained_request.owner,

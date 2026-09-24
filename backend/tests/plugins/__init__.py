@@ -1,1 +1,3 @@
-"""Test-suite pytest plugins (feature 052): event-loop blocking detector."""
+"""Package for the test-suite's pytest plugins, currently the event-loop blocking
+detector.
+"""

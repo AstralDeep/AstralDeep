@@ -1,1 +1,1 @@
-"""Verification harness pytest suite (the in-process CI merge gate)."""
+"""Verification harness pytest suite package: the in-process CI merge-gate tests."""

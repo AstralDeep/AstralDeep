@@ -1,14 +1,8 @@
-"""Feature 055 US1 — the first-turn loading contract (server side).
-
-Root cause under test: the turn-start welcome-blanking ``ui_render []``
-reached the web client one RTT after send and destroyed its optimistic
-skeleton (hideSkeleton + setHTML), leaving a blank canvas for the whole first
-turn. With FF_FIRST_TURN_CONTRACT on, the frame is not sent — clients purge
-the wel_-identified welcome components locally. Flag off restores the legacy
-frame byte-for-byte. Also covers the all-tools-denied loop exit, which
-previously ended the turn without a terminal ``chat_status done`` (stuck
-skeletons on every client).
+"""Tests for the first-turn loading contract (orchestrator.py): the welcome-blanking
+ui_render frame is suppressed when FF_FIRST_TURN_CONTRACT is on, restored
+byte-for-byte when off, and an all-tools-denied turn still ends with a terminal done.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,9 +51,6 @@ def _ws(o, user_id=USER):
     return ws
 
 
-# ── _retire_welcome_canvas ────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_flag_on_sends_no_blanking_frame(orch, monkeypatch):
     monkeypatch.setitem(flags._flags, "first_turn_contract", True)
@@ -100,12 +91,9 @@ async def test_blanking_send_failure_never_raises(orch, monkeypatch):
     orch._ws_welcome[id(ws)] = True
     orch.send_ui_render = AsyncMock(side_effect=RuntimeError("socket gone"))
 
-    await orch._retire_welcome_canvas(ws)  # must not raise
+    await orch._retire_welcome_canvas(ws)
 
     assert id(ws) not in orch._ws_welcome
-
-
-# ── all-tools-denied loop exit sends a terminal done ──────────────────────
 
 
 def _msg(content=None, tool_calls=None):

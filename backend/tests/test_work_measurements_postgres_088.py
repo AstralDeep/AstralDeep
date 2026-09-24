@@ -1,13 +1,8 @@
-"""T052 — operation measurements over the real Plane ledger and PostgreSQL.
-
-The measurement read joins three durable facts: the assignment's own window, the
-action ledger (one entry per LOGICAL task, one attempt per PHYSICAL claim) and
-the activity sequence that splits the window. Nothing is estimated here, so an
-operation whose claims were never measured must read as unmeasured rather than
-as zero, and a row written before per-claim accounting must not be credited with
-an attempt that was never recorded. Only the explicit future-version fixture
-uses SQL, to reproduce storage written by a newer Plane.
+"""Tests that operation measurements join the assignment window, action ledger, and
+activity sequence over real Plane/PostgreSQL: unmeasured claims never read as zero,
+and usage disclosures forward Plane's values verbatim.
 """
+
 from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -42,12 +37,6 @@ OWNER = {"sub": "owner"}
 
 
 async def claimed(service, identity, *, owner="owner"):
-    """Claim one operation through the real session/admission guards.
-
-    The stored incarnation and database-clock observation are genuine; this
-    fixture refreshes no external IAM and starts no host runner. It returns the
-    live claim so a test can append activity and issue claims under that fence.
-    """
     sessions = service.store.plane_runtime.repositories.history.sessions
     work = WorkAdmissionRepository()
     configs = (
@@ -89,7 +78,6 @@ async def claimed(service, identity, *, owner="owner"):
 
 
 async def issue_task(service, identity, fence, binding, authority, *, key="measured-effect"):
-    """Declare one logical task (an action) with no claim recorded yet."""
     request = {"kind": "tool", "agent_id": "fixture", "tool_name": key, "arguments": {}}
 
     def put(tx, repo):
@@ -104,7 +92,6 @@ async def issue_task(service, identity, fence, binding, authority, *, key="measu
 
 
 async def claim_task(service, identity, fence, binding, authority, action, *, outcome, elapsed):
-    """Record one PHYSICAL claim; ``outcome`` None leaves it started/unmeasured."""
     attempt = str(uuid4())
 
     def start(tx, repo):
@@ -138,7 +125,6 @@ async def test_one_logical_task_reports_every_physical_claim_separately(records)
     identity = ids[0]
     fence, binding, authority = await claimed(service, identity)
     action = await issue_task(service, identity, fence, binding, authority)
-    # A declared task with no attempt yet is one logical task and zero claims.
     declared = await service.measurements("owner", OWNER, identity)
     assert declared["task_count"] == 1 and declared["claim_count"] == 0
     assert declared["tasks"][0]["claims"] == 0 and declared["tasks"][0]["observed_ms"] is None
@@ -147,13 +133,11 @@ async def test_one_logical_task_reports_every_physical_claim_separately(records)
     await claim_task(service, identity, fence, binding, authority, action,
                      outcome="succeeded", elapsed=11)
     measured = await service.measurements("owner", OWNER, identity)
-    # One task, two claims: the retry is physical and never collapses the task.
     assert measured["task_count"] == 1 and measured["claim_count"] == 2
     assert measured["measured_claim_count"] == 2 and measured["observed_ms"] == 18
     assert measured["tasks"][0]["id"] == action.action_id
     assert measured["tasks"][0]["claims"] == 2 and measured["tasks"][0]["observed_ms"] == 18
     assert measured["tasks"][0]["incomplete"] is False and measured["incomplete"] is False
-    # The window is still open, so the elapsed union is not yet a fact.
     assert measured["cutoff"] is True and measured["elapsed_ms"] is None
     assert measured["intervals"][-1]["open"] is True
     assert measured["intervals"][-1]["end_at"] is None
@@ -169,7 +153,6 @@ async def test_an_unmeasured_claim_is_incomplete_and_never_counted_as_zero(recor
                      outcome=None, elapsed=None)
     started = await service.measurements("owner", OWNER, identity)
     assert started["claim_count"] == 1 and started["measured_claim_count"] == 0
-    # An in-flight claim has no observation: absent, never a measured zero.
     assert started["observed_ms"] is None and started["tasks"][0]["observed_ms"] is None
     assert started["tasks"][0]["incomplete"] is True and started["incomplete"] is True
 
@@ -180,7 +163,6 @@ async def test_operation_without_a_ledger_gets_no_synthesized_attempt(records):
     result = await service.measurements("owner", OWNER, ids[0])
     assert result["task_count"] == 0 and result["claim_count"] == 0
     assert result["measured_claim_count"] == 0 and result["tasks"] == []
-    # A queued operation that never recorded a claim is not credited with one.
     assert result["observed_ms"] is None and result["elapsed_ms"] is None
     assert result["disposition"] == "queued"
     assert result["incomplete"] is False and result["cutoff"] is True
@@ -203,11 +185,9 @@ async def test_activity_sequence_splits_the_window_into_measured_intervals(recor
     closed = result["intervals"][:2]
     assert all(item["open"] is False and item["end_at"] is not None for item in closed)
     assert all(item["duration_ms"] >= 0 for item in closed)
-    # Each interval starts where the previous one ended; the last stays open.
     assert closed[0]["end_at"] == closed[1]["start_at"]
     assert result["intervals"][-1]["start_at"] == closed[1]["end_at"]
     assert result["intervals"][-1]["open"] is True and result["cutoff"] is True
-    # Activity titles and summaries are not a measurement and are not disclosed.
     assert "attention" not in str(result) and "Ongoing agent" not in str(result)
 
 
@@ -233,7 +213,6 @@ async def test_terminal_operation_closes_the_window_and_reports_elapsed(records)
 async def test_future_operation_reports_no_measurement_instead_of_guessing(records):
     _, service, ids, _ = records
     def future_record(tx, repo):
-        # Fixture-only forward-version simulation in the isolated schema.
         tx.execute(
             "UPDATE persistent_assignment SET data=jsonb_set(data, '{operation}', %s::jsonb) "
             "WHERE id=%s",
@@ -284,8 +263,6 @@ async def test_http_measurements_route_is_owner_scoped_and_never_cached(records,
 async def test_plane_charge_basis_and_money_disclosure_are_forwarded_verbatim(records):
     _, service, ids, _ = records
     def annotate(tx, repo):
-        # Reproduce Plane's additive usage annotations without a schema change:
-        # an explicit unknown price, a known currency and a per-dimension basis.
         tx.execute(
             "UPDATE persistent_assignment SET data=jsonb_set(data, '{usage}', "
             "data->'usage' || %s::jsonb) WHERE id=%s",
@@ -295,7 +272,6 @@ async def test_plane_charge_basis_and_money_disclosure_are_forwarded_verbatim(re
     await service.store.transaction(annotate)
     usage = (await service.get("owner", OWNER, ids[0]))["usage"]
     assert usage["money_status"] == "unknown" and usage["currency"] == "USD"
-    # A reported zero and an uncertain zero must not read alike.
     assert usage["spent"]["spend_micro_units"] == 0
     assert usage["basis"] == {"tokens": "observed", "spend_micro_units": "uncertain",
                               "elapsed_ms": None}
@@ -305,8 +281,7 @@ async def test_plane_charge_basis_and_money_disclosure_are_forwarded_verbatim(re
 async def test_absent_and_null_usage_disclosures_are_never_coerced(records):
     _, service, ids, _ = records
     baseline = (await service.get("owner", OWNER, ids[0]))["usage"]
-    # Plane writes money_status today; currency and basis are absent, and an
-    # absent key must stay absent rather than becoming a default value.
+    # Absent key must stay absent, never default to a value
     assert baseline["money_status"] == "unknown"
     assert "currency" not in baseline and "basis" not in baseline
 

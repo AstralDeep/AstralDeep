@@ -1,4 +1,7 @@
-"""Contracts for feature 060's isolated JavaScript CI tooling."""
+"""Tests for the isolated JavaScript CI tooling's manifest and lock files: exact private
+dependencies, a digest-pinned Playwright image, ESLint coverage of maintained web JS,
+and no leakage into product manifests.
+"""
 
 from __future__ import annotations
 

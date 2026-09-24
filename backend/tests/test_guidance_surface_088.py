@@ -1,4 +1,9 @@
-"""Closed private-note UI inputs; no caller, secret, file or provider access."""
+"""Tests for the closed private-note UI surface
+(orchestrator/human_request_authority.py, projection_surfaces/guidance.py): input
+copying, data-free validation refusals, exact UTC date handling, and code-owned
+socket policy.
+"""
+
 from copy import deepcopy
 from uuid import uuid4
 

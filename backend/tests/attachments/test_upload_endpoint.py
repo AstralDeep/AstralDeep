@@ -1,10 +1,6 @@
-"""HTTP contract tests for /api/upload and /api/attachments.
-
-We mount the attachments_router into a fresh FastAPI app, stub out the
-``require_user_id`` dependency to return a configurable test user, and stub the
-repository factory to return a StubDatabase-backed repo. This exercises the
-real router code (validation, sniffing-aware path, JSON shapes) without
-needing a running PostgreSQL or Keycloak.
+"""HTTP contract tests for /api/upload and /api/attachments: mounts the real
+attachments_router with a stubbed auth dependency and StubDatabase-backed repo to
+exercise validation, sniffing, and response shapes without Postgres or Keycloak.
 """
 
 from __future__ import annotations
@@ -43,8 +39,6 @@ class _PlaneRuntime:
 
 
 class _ImmediatePurgeCoordinator:
-    """Router-level durable-acceptance double; recovery has separate proofs."""
-
     def __init__(self, repo, blob_store) -> None:
         self.repo = repo
         self.blob_store = blob_store
@@ -81,8 +75,6 @@ class _ImmediatePurgeCoordinator:
 
 
 class _MaterializationService:
-    """Router test double for the single pending->READY production boundary."""
-
     def __init__(self, repo) -> None:
         self.repo = repo
         self.calls: list[dict[str, object]] = []
@@ -177,12 +169,10 @@ def test_purge_factory_requires_the_application_composition():
 
 @pytest.fixture
 def app(monkeypatch, stub_db: StubDatabase) -> FastAPI:
-    """A minimal FastAPI app wired only with the attachments router."""
     app = FastAPI()
     app.include_router(attachments_router)
     app.state.orchestrator = SimpleNamespace()
 
-    # Stub repo factory to bypass the orchestrator dependency.
     runtime = _PlaneRuntime(stub_db.plane_repositories)
     repo = AttachmentRepository(
         plane_runtime=runtime,
@@ -199,7 +189,6 @@ def app(monkeypatch, stub_db: StubDatabase) -> FastAPI:
         attachments_router_module, "_get_repository", lambda request: repo,
     )
 
-    # Default user override (per-test can re-override).
     app.dependency_overrides[require_user_id] = lambda: "user-A"
 
     return app
@@ -207,11 +196,6 @@ def app(monkeypatch, stub_db: StubDatabase) -> FastAPI:
 
 def _client(app: FastAPI) -> TestClient:
     return TestClient(app)
-
-
-# ---------------------------------------------------------------------------
-# Happy paths
-# ---------------------------------------------------------------------------
 
 
 def test_upload_returns_201_with_attachment_id(app):
@@ -290,8 +274,6 @@ def test_account_retirement_is_async_owner_bound_and_not_cached(app):
 
 
 def test_upload_reports_parser_status_from_coverage_check(app, monkeypatch):
-    """With an orchestrator on app state, the eager coverage check runs
-    off-loop and its status lands in the response body (feature 031/052)."""
     from orchestrator import attachment_autoparse
 
     seen = {}
@@ -324,11 +306,6 @@ def test_upload_delegates_stream_and_policy_to_materialization_service(app):
     assert callable(service.calls[0]["resolve_content_type"])
 
 
-# ---------------------------------------------------------------------------
-# Negative paths
-# ---------------------------------------------------------------------------
-
-
 def test_upload_unsupported_extension_returns_415(app):
     client = _client(app)
     res = client.post("/api/upload", files={"file": ("blueprint.dwg", b"\x00\x01", "application/octet-stream")})
@@ -338,13 +315,11 @@ def test_upload_unsupported_extension_returns_415(app):
 
 def test_upload_legacy_binary_format_returns_415(app):
     client = _client(app)
-    # .doc is in LEGACY_BINARY_FORMATS — must be rejected at upload time.
     res = client.post("/api/upload", files={"file": ("legacy.doc", b"some bytes", "application/msword")})
     assert res.status_code == 415
 
 
 def test_upload_oversize_returns_413(app, monkeypatch):
-    """A file larger than the per-category cap is rejected with 413."""
     from orchestrator.attachments import content_type as ct
 
     monkeypatch.setitem(ct.MAX_BYTES_BY_CATEGORY, "text", 100)
@@ -355,27 +330,19 @@ def test_upload_oversize_returns_413(app, monkeypatch):
 
 
 def test_upload_oversize_respects_per_category_caps(app, monkeypatch):
-    """A medical-size file (>30 MB) that fits under the medical cap is accepted;
-    the same size uploaded as a text file is rejected."""
     from orchestrator.attachments import content_type as ct
 
-    # Shrink medical cap to make the test fast but still larger than the text cap.
     monkeypatch.setitem(ct.MAX_BYTES_BY_CATEGORY, "text", 1000)
     monkeypatch.setitem(ct.MAX_BYTES_BY_CATEGORY, "medical", 100_000)
 
     client = _client(app)
-    payload = b"x" * 5000  # 5 KB: > text cap (1 KB), < medical cap (100 KB)
+    payload = b"x" * 5000
 
-    # .txt (text category) → 413
     res_text = client.post(
         "/api/upload", files={"file": ("big.txt", payload, "text/plain")},
     )
     assert res_text.status_code == 413, res_text.text
 
-    # .nii (medical category) → bypasses the smaller text cap.
-    # We can't easily satisfy the libmagic sniff for NIfTI in a 5KB blob, but
-    # the size check runs before the sniff so it'll pass the 413 gate. If it
-    # fails, it must fail with 415 (mismatch), NOT 413 (oversize).
     res_med = client.post(
         "/api/upload", files={"file": ("big.nii", payload, "application/octet-stream")},
     )
@@ -412,11 +379,9 @@ def test_plane_materialization_failure_returns_retryable_error(app):
 
 
 def test_get_foreign_attachment_returns_404_not_403(app):
-    """Non-owners must not be able to confirm existence."""
     client = _client(app)
     aid = client.post("/api/upload", files={"file": ("a.txt", b"hi", "text/plain")}).json()["attachment_id"]
 
-    # Switch to a different user and try to read it.
     app.dependency_overrides[require_user_id] = lambda: "user-B"
     res = client.get(f"/api/attachments/{aid}")
     assert res.status_code == 404
@@ -456,7 +421,6 @@ def test_delete_replay_returns_the_same_durable_cleanup_identity(app):
 
 
 def test_listing_is_per_user(app):
-    """Same endpoint, two users — each only sees their own."""
     client = _client(app)
     client.post("/api/upload", files={"file": ("a.txt", b"hi", "text/plain")})
     app.dependency_overrides[require_user_id] = lambda: "user-B"

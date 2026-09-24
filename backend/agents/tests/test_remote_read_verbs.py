@@ -1,14 +1,8 @@
-"""T031 (US2) — read-verb shape tests for remote-compute's observe library.
-
-list_queue / job_status / job_history parse CANNED, realistic Slurm ``--json``
-payloads (squeue --me --json / sacct --json, Slurm 23.02 envelope with dict-typed
-numbers and list-typed states) into the typed fields the verbs emit; the delimited
-``-o`` fallback for a pre---json scheduler maps onto the SAME typed shape.
-host_facts / list_directory / list_processes return typed, bounded,
-control-char-sanitised fields with truncation visibly marked (SC-002/SC-008).
-
-Transport seam + monkeypatched machine resolution; no DB / SSH / network.
+"""Tests for agents/remote_observe/mcp_tools.py:
+list_queue/job_status/job_history/host_facts parsing of canned Slurm --json and
+delimited-fallback payloads into typed, bounded fields.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,8 +38,6 @@ def _fake(**kw):
 
 
 class SequencedTransport(FakeTransport):
-    """FakeTransport whose run() outcomes advance per call: (stdout, exit[, stderr])."""
-
     def __init__(self, outcomes, **kw):
         super().__init__(**kw)
         self._outcomes = list(outcomes)
@@ -73,7 +65,6 @@ def _verdict(res):
 
 
 def _rows(res):
-    """The first Table's rows inside the rendered component tree."""
     def walk(node):
         if isinstance(node, dict):
             if "rows" in node:
@@ -92,8 +83,6 @@ def _rows(res):
     assert rows is not None, "no Table rendered"
     return rows
 
-
-# ── canned Slurm --json payloads (23.02 envelope) ─────────────────────────────
 
 _META = {"plugin": {"type": "openapi/v0.0.39", "name": "Slurm OpenAPI v0.0.39"},
          "Slurm": {"version": {"major": 23, "micro": 8, "minor": 2}, "release": "23.02.8"}}
@@ -132,14 +121,11 @@ SACCT_JSON = json.dumps({
 })
 
 
-# ── list_queue: canned --json → typed fields ──────────────────────────────────
-
 def test_list_queue_parses_canned_squeue_json():
     t = _fake(command_stdout=SQUEUE_JSON, command_exit=0)
     res = obs.list_queue(user_id=USER, machine_id="dgx")
     assert res["_data"]["jobs"] == 2
     rows = _rows(res)
-    # dict-typed node_count and list-typed job_state land as plain typed cells
     assert rows[0] == ["4242", "train-llm", "RUNNING", "gpu", "2", "None"]
     assert rows[1][2] == "PENDING" and rows[1][4] == "1" and rows[1][5] == "Priority"
     assert _argvs(t) == [["squeue", "--me", "--json"]]
@@ -151,7 +137,7 @@ def test_list_queue_bounds_and_sanitises_job_name():
     _fake(command_stdout=json.dumps(doc), command_exit=0)
     res = obs.list_queue(user_id=USER, machine_id="dgx")
     cell = _rows(res)[0][1]
-    assert cell.endswith("…") and len(cell) == 41  # 40-char bound, truncation marked
+    assert cell.endswith("…") and len(cell) == 41
     assert "\x1b" not in cell and "\x07" not in cell
 
 
@@ -165,8 +151,6 @@ def test_list_queue_bounds_rows_and_marks_truncation():
     assert "Showing 200 of 201" in str(res["_ui_components"])
 
 
-# ── list_queue / job_status: delimited -o fallback, same typed shape ──────────
-
 def test_list_queue_delimited_fallback_maps_to_same_shape():
     t = _seq([("", 1, "squeue: unrecognized option '--json'"),
               ("4242|gpu|RUNNING|10:03|1:59:57|2|16|32G|gpu:2|None\n"
@@ -176,7 +160,6 @@ def test_list_queue_delimited_fallback_maps_to_same_shape():
                          ["squeue", "--me", "--noheader", "-o", obs._SQUEUE_FALLBACK_FMT]]
     assert res["_data"]["jobs"] == 2
     rows = _rows(res)
-    # same 6-column typed shape; the pinned format has no name column → ""
     assert rows[0] == ["4242", "", "RUNNING", "gpu", "2", "None"]
     assert rows[1][2] == "PENDING" and rows[1][5] == "(Priority)"
 
@@ -202,8 +185,6 @@ def test_list_queue_empty_fallback_is_an_empty_queue():
     assert res["_data"] == {"jobs": 0}
 
 
-# ── job_status: accounting leg parses canned sacct --json ─────────────────────
-
 def test_job_status_finished_job_from_canned_sacct_json():
     t = _seq([('{"jobs": []}', 0), (SACCT_JSON, 0)])
     res = obs.job_status(user_id=USER, machine_id="dgx", job_id="4100")
@@ -213,8 +194,6 @@ def test_job_status_finished_job_from_canned_sacct_json():
     assert _argvs(t) == [["squeue", "--job", "4100", "--json"],
                          ["sacct", "-j", "4100", "--json", "-X"]]
 
-
-# ── job_history: canned sacct --json → typed fields ───────────────────────────
 
 def test_job_history_parses_canned_sacct_json():
     t = _fake(command_stdout=SACCT_JSON, command_exit=0)
@@ -227,16 +206,12 @@ def test_job_history_parses_canned_sacct_json():
     assert argv[0] == "sacct" and "--json" in argv and "now-7days" in argv
 
 
-# ── host_facts: typed, bounded, sanitised (SC-002/SC-008) ─────────────────────
-
-_PROC = ("0.52 0.48 0.45 2/1234 99999\n"          # /proc/loadavg
-         "273900.42 1090000.00\n"                  # /proc/uptime
+_PROC = ("0.52 0.48 0.45 2/1234 99999\n"
+         "273900.42 1090000.00\n"
          "MemTotal:       131072000 kB\n"
          "MemFree:         4194304 kB\n"
          "MemAvailable:   65536000 kB\n")
 
-# df -B1 --output=target,size,used,avail: header + rows + malformed lines the
-# parser must skip (short row, non-numeric fields, control chars in a mount name).
 _DF = ("Mounted on            1B-blocks         Used        Avail\n"
        "/                  105089261568  57544186368  42171953152\n"
        "/scratch          1099511627776 549755813888 549755813888\n"
@@ -246,7 +221,6 @@ _DF = ("Mounted on            1B-blocks         Used        Avail\n"
 
 
 def _all_tables(res):
-    """Every Table's rows in render order (host_facts now emits several tables)."""
     tables = []
 
     def walk(node):
@@ -279,25 +253,22 @@ def test_host_facts_sanitises_and_bounds_cpu_count():
     res = obs.host_facts(user_id=USER, machine_id="dgx")
     cpus = res["_data"]["cpus"]
     assert "\x07" not in cpus
-    assert cpus.endswith("…") and len(cpus) == 17  # 16-char field bound, marked
+    assert cpus.endswith("…") and len(cpus) == 17
 
 
 def test_host_facts_disk_facts_typed_and_malformed_lines_skipped():
     _seq([(_PROC, 0), ("64\n", 0), (_DF, 0)])
     res = obs.host_facts(user_id=USER, machine_id="dgx")
     d = res["_data"]
-    # header + the two malformed lines are dropped, never guessed at
     assert d["disks_total"] == 3 and d["disks_truncated"] is False
     assert d["disks"][0] == {"mount": "/", "size_bytes": 105089261568,
                              "used_bytes": 57544186368, "avail_bytes": 42171953152,
                              "use_pct": 54.8}
     assert d["disks"][1]["mount"] == "/scratch" and d["disks"][1]["use_pct"] == 50.0
-    # mount names are untrusted remote strings → sanitised (SC-002)
     assert d["disks"][2]["mount"] == "/mnt/evil"
     assert "omitted" not in d
     disk_rows = _all_tables(res)[1]
     assert disk_rows[0] == ["/", "97.9 GiB", "53.6 GiB", "39.3 GiB", "55%"]
-    # non-cluster role → no sinfo leg, no gpus key
     assert "gpus" not in d
 
 
@@ -317,7 +288,6 @@ def test_host_facts_df_failure_is_partial_with_noted_omission():
           ("df: unrecognized option '--output'", 1)])
     res = obs.host_facts(user_id=USER, machine_id="dgx")
     d = res["_data"]
-    # working facts still stand; the gap is named, not silent (FR-034)
     assert d["load"] == "0.52 0.48 0.45" and d["cpus"] == "64"
     assert "disks" not in d
     assert d["omitted"] == ["disk usage"]
@@ -332,9 +302,9 @@ def _cluster_role(monkeypatch):
 
 def test_host_facts_cluster_role_parses_sinfo_gres(monkeypatch):
     _cluster_role(monkeypatch)
-    sinfo = ("gpu*|gpu:a100:4(S:0-1)\n"          # typed + socket-affinity suffix
-             "batch|gpu:8,shard:a100:16\n"       # untyped count + non-gpu gres
-             "cpu|(null)\n"                       # no GPUs on this partition
+    sinfo = ("gpu*|gpu:a100:4(S:0-1)\n"
+             "batch|gpu:8,shard:a100:16\n"
+             "cpu|(null)\n"
              "broken line without delimiter\n")
     t = _seq([(_PROC, 0), ("64\n", 0), (_DF, 0), (sinfo, 0)])
     res = obs.host_facts(user_id=USER, machine_id="dgx")
@@ -342,7 +312,6 @@ def test_host_facts_cluster_role_parses_sinfo_gres(monkeypatch):
         {"node_or_partition": "gpu", "gpu_type": "a100", "count": 4},
         {"node_or_partition": "batch", "gpu_type": "", "count": 8},
     ]
-    # the GPU leg is sinfo GRES — NEVER nvidia-smi on the queried host (contract)
     assert _argvs(t)[3] == ["sinfo", "--noheader", "-o", "%P|%G"]
     assert not any("nvidia-smi" in a for argv in _argvs(t) for a in argv)
     gpu_rows = _all_tables(res)[2]
@@ -354,7 +323,7 @@ def test_host_facts_cluster_all_null_gres_is_real_zero_not_omission(monkeypatch)
     _seq([(_PROC, 0), ("64\n", 0), (_DF, 0), ("cpu*|(null)\n", 0)])
     res = obs.host_facts(user_id=USER, machine_id="dgx")
     d = res["_data"]
-    assert d["gpus"] == []           # a known GPU-less cluster, not a failure
+    assert d["gpus"] == []
     assert "omitted" not in d
 
 
@@ -365,7 +334,7 @@ def test_host_facts_sinfo_failure_notes_gpu_omission(monkeypatch):
     res = obs.host_facts(user_id=USER, machine_id="dgx")
     d = res["_data"]
     assert "gpus" not in d
-    assert d["disks_total"] == 3     # disk facts unaffected
+    assert d["disks_total"] == 3
     assert d["omitted"] == ["GPU inventory"]
     assert "Unavailable right now: GPU inventory" in str(res["_ui_components"])
 
@@ -375,8 +344,6 @@ def test_host_facts_plain_role_never_runs_sinfo():
     obs.host_facts(user_id=USER, machine_id="dgx")
     assert not any(argv[0] == "sinfo" for argv in _argvs(t))
 
-
-# ── list_directory: typed entries, sanitised names, bounded rows ──────────────
 
 def test_list_directory_sanitises_control_and_escape_bytes():
     _fake(command_stdout="f\t512\t1700000000.0\tinno\x1bcent\x07.txt\n"
@@ -396,15 +363,12 @@ def test_list_directory_bounds_rows_and_marks_truncation():
     assert "Showing 200 of 201" in str(res["_ui_components"])
 
 
-# ── list_processes: typed rows, sanitised comm, bounded ───────────────────────
-
 def test_list_processes_sanitises_other_users_comm():
-    # ps comm values are genuinely untrusted (other users' processes — R12)
     _fake(command_stdout="1234 mallory 1.5 0.3 20480 bad\x1b]0;pwn\x07cmd\n", command_exit=0)
     res = obs.list_processes(user_id=USER, machine_id="dgx", own_only=False)
     comm = _rows(res)[0][5]
     assert "\x1b" not in comm and "\x07" not in comm
-    assert _rows(res)[0][4] == "20.0 MiB"  # rss kB → typed bytes, formatted
+    assert _rows(res)[0][4] == "20.0 MiB"
 
 
 def test_list_processes_bounds_rows_and_marks_truncation():

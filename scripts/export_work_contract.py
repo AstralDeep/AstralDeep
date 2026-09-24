@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""Export Deep's framework-facing Work contract as one checked-in JSON schema.
-
-The Astral SDK (``sdk/``) and the backend's own MCP projection
-(``backend/orchestrator/mcp_projection.py``) must describe exactly the same
-set of ``astral_*`` tools, scopes and operation fields. Rather than hand-copy
-those names into the SDK (where they silently drift), this script imports the
-server's OWN source-of-truth constants and writes them out as one JSON
-document that ``sdk/astral_sdk/tools.py`` loads at import time and that
-``scripts/tests/test_export_work_contract.py`` re-runs to catch drift on every
-commit — if this script's output no longer matches the checked-in file, the
-server contract changed and the SDK needs a matching (reviewed) update.
-
-Nothing here talks to Postgres, a network, or a running Deep instance: every
-value is a Python-level constant already present in the reviewed backend
-modules it imports. Running it requires only the backend package importable
-on ``sys.path`` (``backend/`` on the repo root, exactly like every other
-in-repo tool).
-
-Usage::
-
-    python scripts/export_work_contract.py                  # writes the default path
-    python scripts/export_work_contract.py --check           # exits 1 on drift, writes nothing
-    python scripts/export_work_contract.py --out some/path.json
+"""Exports the framework Work contract (astral_* tools, scopes, fields) as checked-in
+JSON from mcp_projection.py/mcp_authz.py/work_operations.py, so
+sdk/astral_sdk/tools.py loads one drift-checked source of truth.
 """
 from __future__ import annotations
 
@@ -35,9 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = REPO_ROOT / "backend"
 DEFAULT_OUTPUT = REPO_ROOT / "sdk" / "astral_sdk" / "work_contract.json"
 
-#: Bumped only when this script's OWN output shape changes (not when the
-#: server's tool/field set changes — that is tracked by the document's own
-#: content and caught by the drift test).
 CONTRACT_FORMAT_VERSION = 1
 
 
@@ -48,11 +25,6 @@ def _ensure_backend_importable() -> None:
 
 
 def build_contract() -> dict[str, Any]:
-    """Return the exportable contract as a plain JSON-serializable dict.
-
-    Every value is read from an existing backend module's own module-level
-    constant or dataclass field default — nothing is re-typed by hand.
-    """
     _ensure_backend_importable()
 
     from astralplane.repositories.framework_credentials import (
@@ -96,11 +68,7 @@ def build_contract() -> dict[str, Any]:
         "dispatchable_tool_names": list(DISPATCHABLE_TOOL_NAMES),
         "tools": tools,
         "operation": {
-            # The exact key set ``orchestrator.work_service._public`` returns
-            # for one operation. Not itself an importable constant (it is a
-            # dict literal), so it is pinned here by name and cross-checked by
-            # ``backend/tests/test_framework_conformance_088.py`` against a
-            # REAL live response from the running server.
+            # Hand-pinned; a conformance test cross-checks it live
             "fields": [
                 "id", "revision", "instruction_revision", "control_epoch", "title",
                 "kind", "disposition", "lifecycle", "phase", "created_at", "updated_at",

@@ -1,4 +1,8 @@
-"""Strict ephemeral note commands never become authority or value history."""
+"""Tests for personalization/explicit_note_service.py: ephemeral note commands normalize
+and detach from authority, malformed or cross-field commands refuse, and controls
+require an existing revision without carrying a value.
+"""
+
 from dataclasses import replace
 from uuid import uuid4
 

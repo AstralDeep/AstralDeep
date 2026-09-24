@@ -1,11 +1,7 @@
-"""Compatibility guards for the voice proxy retired by Feature 065.
-
-The former test module exercised three backend-owned Speaches proxy endpoints,
-ambient ``SPEACHES_*`` configuration, and process-local session bookkeeping.
-Feature 065 deliberately removed that data path: authenticated clients now use
-the fixed-profile voice control plane while audio stays on direct RTC tracks.
-These tests keep the legacy filename in the root suite and fail if the retired
-HTTP/audio proxy surface is accidentally restored.
+"""Tests that the retired Speaches voice proxy stays removed and
+orchestrator/voice_api.py exposes only the fixed-profile voice control router, with
+speech_server_available reflecting the live voice runtime and failing closed
+otherwise.
 """
 
 from __future__ import annotations
@@ -84,13 +80,6 @@ def test_legacy_proxy_dependencies_and_process_local_helpers_stay_absent() -> No
 
 
 def test_legacy_speech_server_env_is_gone_from_the_orchestrator() -> None:
-    """The retired dedicated speech-server URL setting has no reader left.
-
-    The ``rote_config`` handshake used to report ``speech_server_available``
-    from an ambient ``SPEACHES_URL`` value the orchestrator never consumed
-    otherwise. The worker's speech endpoint is ``VOICE_SPEECH_BASE_URL`` and
-    this process must not grow a second, unused speech-server knob back.
-    """
     from orchestrator import orchestrator as orchestrator_module
 
     source = inspect.getsource(orchestrator_module)
@@ -138,12 +127,6 @@ def test_speech_server_available_reflects_the_voice_runtime(
     worker_count: int,
     expected: bool,
 ) -> None:
-    """``speech_server_available`` keeps its wire name but answers from voice.
-
-    True only when ``FF_CONVERSATIONAL_VOICE`` is on, the voice services were
-    constructed, and a preflight-gated speech worker is live — never from an
-    ambient URL.
-    """
     from orchestrator import orchestrator as orchestrator_module
 
     monkeypatch.setattr(
@@ -162,11 +145,8 @@ def test_speech_server_available_reflects_the_voice_runtime(
 def test_speech_server_available_fails_closed_on_an_unconstructed_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A process whose voice bootstrap failed reports no speech server."""
     from orchestrator import orchestrator as orchestrator_module
 
-    # Pin the flag ON so the assertion exercises the missing-runtime branch,
-    # not the flag branch (FF_CONVERSATIONAL_VOICE is not ambient-stripped).
     monkeypatch.setattr(orchestrator_module.flags, "is_enabled", lambda name: True)
     orch = _bare_orchestrator()
     assert orch.speech_server_available() is False

@@ -1,4 +1,7 @@
-"""Truthfulness checks for feature-060 curated welcome examples."""
+"""Tests for the curated welcome examples (orchestrator/welcome.py): each example
+matches its backing agent's real tool contract (dice_roller, weather, web_research,
+summarizer) or is honestly composition-only.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +21,6 @@ def _example(title_fragment: str) -> tuple[str, str, str]:
 
 
 def test_every_curated_example_is_nonempty_and_has_one_capability_disposition() -> None:
-    """Each tile is either tool-backed or explicitly UI-composition-only."""
-
     expected_titles = {
         "Build a business dashboard",
         "Brief me, with citations",
@@ -29,9 +30,6 @@ def test_every_curated_example_is_nonempty_and_has_one_capability_disposition() 
         "Choose a journal for a paper",
         "Roll some dice",
     }
-    # The title is the whole title. It used to be read with the first token
-    # stripped off, because that token was an emoji; a plain-text title must
-    # not be silently truncated by a test that still assumes one.
     actual_titles = {title for title, _caption, _query in WELCOME_EXAMPLES}
     assert actual_titles == expected_titles
     assert not any(ord(ch) > 0x2100 for title, _, _ in WELCOME_EXAMPLES for ch in title), (

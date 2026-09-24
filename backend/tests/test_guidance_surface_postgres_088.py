@@ -1,9 +1,8 @@
-"""Notes adapter over actual signed IAM, selected cookie, encryption, SQL and audit.
-
-Direct socket captures below qualify the adapter boundary; real ingress/client
-correlation is a separate integration cohort, never inferred from these calls.
-Institutional JWT replies and PHI analyzer are synthetic; no provider is called.
+"""Tests for the notes adapter (projection_surfaces/guidance.py,
+personalization/explicit_note_service.py) over real IAM, encryption, SQL, and audit:
+create/edit/expiry/search, navigation-scoped delivery, and bounded-wait correlation.
 """
+
 import asyncio
 import json
 import time
@@ -187,7 +186,6 @@ async def test_actual_built_snapshot_delivery_is_correlated_and_no_setup_gate(no
     assert notes.sent[-1]["request_generation"] == pending.request_generation
     assert "Prefer short paragraphs." in json.dumps(notes.sent[-1])
     assert token.closed and not notes.orch._guidance_navigation
-    # This tests generated payloads; native form/navigation execution is separate.
 
 
 @pytest.mark.parametrize("change", ["correct", "forget", "expire", "session", "navigation", "service", "socket"])
@@ -207,8 +205,6 @@ async def test_final_snapshot_or_authority_change_delivers_no_private_frame(note
             await service.command(caller=write, body=ExplicitNoteCommand(
                 command="forget", note_id=payload["note_id"], expected_revision=1))
         elif change == "expire":
-            # Existing service time guard is real; advance only its clock to the
-            # selected note's actual expiry after the frame has been rendered.
             monkeypatch.setattr("personalization.explicit_note_service._now", lambda: 2**53-1)
         elif change == "session":
             old = await asyncio.to_thread(get_session_record, runtime, fixture[2])
@@ -223,7 +219,6 @@ async def test_final_snapshot_or_authority_change_delivers_no_private_frame(note
         await original(service, caller=caller, notes=notes)
     state = notes
     if change == "expire":
-        # Replace the fixture note with a real bounded expiry before capture.
         pending.close()
         payload["expected_revision"] = 1
         payload["fields"].update(expiry="Set a date", expiry_date="2030-12-31T23:59:00Z")
@@ -282,8 +277,6 @@ async def test_transport_wait_is_bounded_by_original_request_deadline(notes):
             cancelled.set()
     notes.orch._safe_send = stalled
     with human_module.bind_human_caller(caller):
-        # The outer bound only prevents a broken adapter hanging qualification.
-        # The expected error must come from its original one-second deadline.
         with pytest.raises(AssignmentError, match="explicit_note_delivery_timeout"):
             async with asyncio.timeout(3):
                 await guidance.deliver(notes.orch, notes.socket, caller.owner_id, "chrome_open",

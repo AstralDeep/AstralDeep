@@ -1,13 +1,8 @@
-"""055-uniform-artifacts — late-join: a device opening a chat mid-stream gets
-the stream's current component state, not a blank placeholder.
-
-Server half: ``load_chat`` attaches the loading socket to ACTIVE
-subscriptions of that (user, chat) — ``resume()`` only covers DORMANT — and
-``StreamManager.replay_retained`` re-delivers the retained content chunk to
-just the attaching socket (after its ``stream_subscribed`` ack, so clients
-key the placeholder first). Flag off keeps load_chat's frames byte-identical
-to pre-055. Requires the docker-compose Postgres; skipped where unreachable.
+"""Tests for load_chat late-join in orchestrator/orchestrator.py: a socket opening a
+chat mid-stream attaches to the active subscription and replays the retained
+component state instead of a blank placeholder.
 """
+
 import asyncio
 import json
 import os
@@ -29,9 +24,6 @@ TOOL = "live_fake_feed"
 
 
 class HoldOpenAgent:
-    """Accepts the stream dispatch and never ends it — the subscription stays
-    ACTIVE while tests inject chunks directly via handle_agent_chunk."""
-
     def __init__(self):
         self.requests = []
         self.cancels = []
@@ -108,7 +100,6 @@ def _frames(ws, ftype):
 
 
 async def _subscribe_and_chunk(orch, ws1, chat_id, user_id, seq=1, value=1):
-    """Subscribe ws1 and (when seq) inject one content chunk from the agent."""
     stream_id, attached = await orch.stream_manager.subscribe(
         ws=ws1, user_id=user_id, chat_id=chat_id,
         tool_name=TOOL, agent_id=AGENT, params={"interval_s": 1},
@@ -155,15 +146,12 @@ async def test_load_chat_attaches_and_replays_current_state(env):
     assert replays[0]["seq"] == 1
     assert replays[0]["components"][0]["value"] == 1
     assert replays[0]["component_id"] == acks[0]["component_id"]
-    # Ack precedes the replay so clients key the placeholder first.
     outputs = ws2.task.outputs
     assert outputs.index(acks[0]) < outputs.index(replays[0])
 
-    # The agent run was NOT re-dispatched by the attach.
     agent = orch.local_agents[AGENT]
     assert len(agent.requests) == 1
 
-    # Subsequent live chunks fan out to BOTH sockets.
     await _emit(orch, stream_id, 2, 2)
     for ws in (ws1, ws2):
         seqs = [f["seq"] for f in _frames(ws, "ui_stream_data")]
@@ -173,7 +161,7 @@ async def test_load_chat_attaches_and_replays_current_state(env):
 async def test_load_chat_attach_without_retained_chunk_sends_no_replay(env):
     orch, ws1, ws2, chat_id, user_id = env
     stream_id = await _subscribe_and_chunk(
-        orch, ws1, chat_id, user_id, seq=0)  # no chunk yet
+        orch, ws1, chat_id, user_id, seq=0)
 
     await _load_chat(orch, ws2, chat_id)
 
@@ -185,7 +173,7 @@ async def test_load_chat_attach_without_retained_chunk_sends_no_replay(env):
 
 async def test_flag_off_load_chat_does_not_attach(env):
     orch, ws1, ws2, chat_id, user_id = env
-    flags._flags["stream_artifacts"] = False  # push_flags restores it
+    flags._flags["stream_artifacts"] = False
     stream_id = await _subscribe_and_chunk(orch, ws1, chat_id, user_id)
 
     await _load_chat(orch, ws2, chat_id)

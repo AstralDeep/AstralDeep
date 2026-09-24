@@ -1,4 +1,8 @@
-"""The host guard keeps authority, assignment and admission in one transaction."""
+"""Tests for persistent_agents/store.py: the host guard keeps authority, assignment and
+admission in one transaction; denial rolls back without a callback or leaking private
+error text; guard callbacks cannot return an awaitable.
+"""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 

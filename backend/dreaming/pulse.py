@@ -1,19 +1,8 @@
-"""Proactive digest (Pulse) + conversational scheduled tasks — 033 Wave-5 (C-U8).
-
-Two deterministic pieces sitting on top of the existing dreaming sweep + the
-egress-gated HTTP / scheduling paths:
-
-* :func:`build_digest` turns the sweep's derived signals/memories into a compact
-  **card-grid** (the Pulse chrome surface) — grouped, deduped, bounded — so a
-  user opening the app sees "here's what I worked out while you were away."
-* :func:`propose_schedule` parses a conversational scheduling ask ("every
-  morning", "remind me weekly", "in 2 hours") into a structured proposal the
-  user CONFIRMS before anything is scheduled (the model proposes; the human
-  approves; delivery rides the existing push/email path).
-
-Pure, stdlib only. **No new dependency.** Flag ``FF_PULSE_DIGEST`` (default OFF).
-Additive — the digest/schedule are only built when asked.
+"""Deterministic helpers riding on the dreaming sweep: build_digest turns sweep signals
+into the Pulse card-grid chrome surface, and propose_schedule parses conversational
+scheduling asks into a proposal the user must confirm.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,18 +12,10 @@ from typing import Any, Dict, List, Optional
 
 
 def pulse_enabled() -> bool:
-    """FF_PULSE_DIGEST feature flag (default OFF; feature 033 C-U8)."""
     return os.getenv("FF_PULSE_DIGEST", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
-# ───────────────────────── digest (card-grid) ────────────────────────────────
-
 def build_digest(items: List[Dict[str, Any]], *, max_cards: int = 6) -> List[Dict[str, Any]]:
-    """Build the Pulse card-grid from dreaming-sweep items. Each item is a dict
-    like ``{"category": "goal", "title": ..., "value": ..., "salience": 0.7}``.
-    Items are grouped by category into one card each (highest-salience first),
-    bounded to ``max_cards``. Returns a list of card dicts (astralprims-shaped:
-    type=card, title, content). Pure + deterministic."""
     by_cat: Dict[str, List[Dict[str, Any]]] = {}
     for it in (items or []):
         if not isinstance(it, dict):
@@ -69,12 +50,10 @@ def build_digest(items: List[Dict[str, Any]], *, max_cards: int = 6) -> List[Dic
     return cards
 
 
-# ───────────────────────── conversational scheduling ─────────────────────────
-
 @dataclass(frozen=True)
 class ScheduleProposal:
-    cadence: str            # "daily" | "weekly" | "weekday" | "hourly" | "once" | "unknown"
-    at: Optional[str]       # e.g. "morning", "09:00", "monday", a relative "+2h"
+    cadence: str
+    at: Optional[str]
     description: str
     confirm_needed: bool = True
     fields: Dict[str, Any] = field(default_factory=dict)
@@ -93,10 +72,6 @@ _RELATIVE = re.compile(r"\bin\s+(\d+)\s*(min(?:ute)?s?|hours?|hrs?|days?)\b", re
 
 
 def propose_schedule(request: str) -> ScheduleProposal:
-    """Parse a conversational scheduling ask into a structured proposal (the user
-    still confirms). Deterministic; an unrecognized cadence yields
-    ``cadence='unknown'`` so the caller asks for clarification rather than
-    guessing."""
     r = request or ""
     cadence = "unknown"
     for name, pat in _CADENCE_PATTERNS:
@@ -131,6 +106,4 @@ def propose_schedule(request: str) -> ScheduleProposal:
 
 
 def is_schedulable(proposal: ScheduleProposal) -> bool:
-    """Whether a proposal is concrete enough to schedule on confirmation (a known
-    cadence). ``unknown`` needs clarification first."""
     return proposal.cadence != "unknown"

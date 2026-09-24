@@ -1,13 +1,8 @@
-"""055-uniform-artifacts US2 (T019) — stream→workspace identity bridge.
-
-With FF_STREAM_ARTIFACTS on, ``StreamManager.subscribe`` assigns the
-workspace rule-2 fingerprint to ``StreamSubscription.component_id``, every
-``ui_stream_data`` frame carries it, and the newest content-bearing chunk is
-retained on the subscription for the orchestrator's persist-on-terminal
-(T020). Flag off: frames stay byte-identical to pre-055 and nothing is
-retained. Narrative (``narrative-*``) and legacy polling frames never carry
-the field.
+"""Tests for the stream-to-workspace identity bridge (orchestrator/stream_manager.py,
+workspace.py) behind FF_STREAM_ARTIFACTS: subscribe-time fingerprint assignment,
+terminal-persist retention, late-join replay, and seq continuation.
 """
+
 import asyncio
 import json
 import os
@@ -27,12 +22,7 @@ from shared.protocol import ToolStreamData, ToolStreamEnd
 pytestmark = pytest.mark.asyncio
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
 class FakeWebSocket:
-    """Minimal websocket double — tracks messages sent to it for assertion."""
     def __init__(self):
         self.sent: list = []
         self.closed = False
@@ -42,8 +32,6 @@ class FakeWebSocket:
 
 
 def _make_manager(dispatcher_returns_request_id: str = "req-1"):
-    """StreamManager with mocked dependencies (same shape as
-    test_stream_lifecycle). Returns (manager, deps)."""
     rote = Mock()
     rote.adapt = Mock(side_effect=lambda ws, components: components)
     send_to_ws = AsyncMock()
@@ -85,10 +73,7 @@ def _sent_frames(deps):
     return [json.loads(call.args[1]) for call in deps["send_to_ws"].await_args_list]
 
 
-# The bridge behaviors under test are flag-on semantics, so force the flag
-# rather than inherit the environment's default (the SC-009 CI job runs this
-# suite with every 055 flag off). Autouse fixtures instantiate before the
-# explicitly-requested stream_artifacts_off, so flag-off tests still win.
+# Autouse fixtures run first, so flag-off tests still win
 @pytest.fixture(autouse=True)
 def stream_artifacts_on():
     prior = flags._flags["stream_artifacts"]
@@ -104,10 +89,6 @@ def stream_artifacts_off():
     yield
     flags._flags["stream_artifacts"] = prior
 
-
-# ---------------------------------------------------------------------------
-# Identity assignment at subscribe
-# ---------------------------------------------------------------------------
 
 class TestIdentityAssignment:
     async def test_subscribe_assigns_rule2_fingerprint(self):
@@ -142,7 +123,6 @@ class TestIdentityAssignment:
             "weather", "live_temperature", {"latitude": 51.5, "longitude": -0.12})
         assert mgr.component_id_for(stream_id) == expected
 
-        # ws disconnect parks the subscription DORMANT — still resolvable.
         await mgr.detach(ws)
         assert mgr.component_id_for(stream_id) == expected
         assert mgr.component_id_for("stream-never-existed") is None
@@ -155,10 +135,6 @@ class TestIdentityAssignment:
         assert sub.bridged_component_id is None
         assert mgr.component_id_for(stream_id) is None
 
-
-# ---------------------------------------------------------------------------
-# Last content-bearing chunk retention (persist-on-terminal payload for T020)
-# ---------------------------------------------------------------------------
 
 class TestRetention:
     async def test_content_chunk_retained(self):
@@ -176,7 +152,7 @@ class TestRetention:
         mgr, deps = _make_manager()
         ws, stream_id = await _subscribed(mgr, deps)
         await mgr.handle_agent_chunk(_chunk(stream_id, 1, [{"type": "metric", "value": "12C"}]))
-        await mgr.handle_agent_chunk(_chunk(stream_id, 2, []))  # empty delta
+        await mgr.handle_agent_chunk(_chunk(stream_id, 2, []))
         await asyncio.sleep(0.05)
 
         sub = next(iter(mgr._active.values()))
@@ -202,8 +178,6 @@ class TestRetention:
         sub = next(iter(mgr._active.values()))
 
         await mgr.handle_agent_end(ToolStreamEnd(request_id="req-1", stream_id=stream_id))
-        # Teardown must not clear the retention — the orchestrator's
-        # persist-on-terminal wrapper reads it after handle_agent_end.
         assert sub.retained_chunk is not None
         assert sub.retained_chunk.components[0]["value"] == "12C"
 
@@ -216,10 +190,6 @@ class TestRetention:
         sub = next(iter(mgr._active.values()))
         assert sub.retained_chunk is None
 
-
-# ---------------------------------------------------------------------------
-# component_id field presence on the wire
-# ---------------------------------------------------------------------------
 
 class TestFrameFieldPresence:
     async def test_chunk_frames_carry_component_id(self):
@@ -246,8 +216,6 @@ class TestFrameFieldPresence:
         assert frames[0]["component_id"].startswith("wc_")
 
     async def test_unsubscribe_ack_carries_component_id(self):
-        # The unsubscribe ack goes through the single-ws builder
-        # (_send_chunk_to_ws) — the other of the two frame builders.
         mgr, deps = _make_manager()
         ws, stream_id = await _subscribed(mgr, deps)
         await mgr.unsubscribe(ws, stream_id)
@@ -265,18 +233,12 @@ class TestFrameFieldPresence:
 
         frames = _sent_frames(deps)
         assert frames
-        # Pre-055 key sets, exactly: fan-out frames carry html, the
-        # single-ws ack does not. No component_id anywhere.
         fanout_keys = {"type", "stream_id", "session_id", "seq",
                        "components", "html", "raw", "terminal", "error"}
         ack_keys = fanout_keys - {"html"}
         for frame in frames:
             assert set(frame.keys()) in (fanout_keys, ack_keys)
 
-
-# ---------------------------------------------------------------------------
-# Narrative + legacy polling streams stay identity-less
-# ---------------------------------------------------------------------------
 
 class TestNarrativeAndLegacyExclusion:
     async def test_narrative_frames_never_carry_component_id(self):
@@ -358,16 +320,7 @@ class TestNarrativeAndLegacyExclusion:
             assert "component_id" not in frame
 
 
-# ---------------------------------------------------------------------------
-# Late-join attach replay — a socket joining mid-stream gets current state
-# ---------------------------------------------------------------------------
-
 class TestAttachReplay:
-    """Attaching to an existing bridged subscription replays the retained
-    content chunk to JUST the attaching socket (spec edge case: a device
-    joining mid-stream gets the current component state, not a blank
-    placeholder). Unbridged/flag-off attach stays send-free as before."""
-
     async def _attach_second_ws(self, mgr, deps):
         ws2 = FakeWebSocket()
         deps["sessions"][ws2] = {"sub": "alice"}
@@ -394,12 +347,11 @@ class TestAttachReplay:
         assert calls[0].args[0] is ws2
         frame = json.loads(calls[0].args[1])
         assert frame["type"] == "ui_stream_data"
-        assert frame["seq"] == 3  # stored seq: the joining ws has no seq state
+        assert frame["seq"] == 3
         assert frame["components"] == [{"type": "metric", "value": "12C"}]
         assert frame["component_id"] == fingerprint(
             "weather", "live_temperature", {"latitude": 51.5, "longitude": -0.12})
         assert frame["terminal"] is False
-        # Replay must match the fan-out shape web clients render from.
         assert "html" in frame
 
     async def test_no_replay_when_nothing_retained(self):
@@ -441,9 +393,6 @@ class TestAttachReplay:
 
 
 class TestAttachToChat:
-    """Manager half of the load_chat late-join wiring: walk _active for the
-    (user, chat), attach the loading socket, report what was attached."""
-
     async def test_attaches_and_reports_new_socket(self):
         mgr, deps = _make_manager()
         ws1, stream_id = await _subscribed(mgr, deps)
@@ -454,7 +403,6 @@ class TestAttachToChat:
         assert attached == [(stream_id, "live_temperature")]
         sub = mgr.subscription_for_stream(stream_id)
         assert ws2 in sub.subscribers and ws1 in sub.subscribers
-        # Idempotent: a second load of the same chat attaches nothing.
         assert await mgr.attach_to_chat(ws2, "alice", "chat-1") == []
 
     async def test_other_chat_and_other_user_excluded(self):
@@ -464,7 +412,6 @@ class TestAttachToChat:
         deps["sessions"][ws2] = {"sub": "alice"}
         assert await mgr.attach_to_chat(ws2, "alice", "chat-1") == []
 
-        # Session mismatch is refused outright (defense in depth).
         ws3 = FakeWebSocket()
         deps["sessions"][ws3] = {"sub": "mallory"}
         assert await mgr.attach_to_chat(ws3, "alice", "chat-other") == []
@@ -472,7 +419,6 @@ class TestAttachToChat:
     async def test_replay_retained_sends_only_bridged_retained(self):
         mgr, deps = _make_manager()
         ws1, stream_id = await _subscribed(mgr, deps)
-        # Nothing retained yet → no send.
         await mgr.replay_retained(ws1, stream_id)
         assert deps["send_to_ws"].await_args_list == []
 
@@ -485,20 +431,11 @@ class TestAttachToChat:
         assert len(frames) == 1
         assert frames[0]["seq"] == 2
         assert frames[0]["component_id"].startswith("wc_")
-        # Unknown stream: no-op.
         await mgr.replay_retained(ws1, "stream-never-existed")
         assert len(_sent_frames(deps)) == 1
 
 
-# ---------------------------------------------------------------------------
-# Seq continuation across retry/wake + terminal-hook coverage (review fixes)
-# ---------------------------------------------------------------------------
-
 class TestSeqContinuation:
-    """A fresh agent run restarts seq near 0; the manager must offset it past
-    the previous high-water or every client (dedup keyed on stream_id) drops
-    the recovered frames."""
-
     async def test_retry_offsets_new_run_seqs(self):
         mgr, deps = _make_manager()
         ws, stream_id = await _subscribed(mgr, deps)
@@ -508,7 +445,6 @@ class TestSeqContinuation:
             await asyncio.sleep(0.01)
         assert sub.max_seq_seen == 3
 
-        # Transient error → RECONNECTING; fire the retry immediately.
         await mgr._handle_error(sub, "upstream_unavailable", "blip")
         assert sub.state.value == "reconnecting"
         if sub._retry_handle is not None:
@@ -517,7 +453,6 @@ class TestSeqContinuation:
         await mgr._retry(sub)
         assert sub.seq_offset == 3
 
-        # New run restarts at seq 1 — the wire frame must land ABOVE 3.
         await mgr.handle_agent_chunk(_chunk(stream_id, 1, [{"type": "text"}]))
         await asyncio.sleep(0.01)
         data_frames = [f for f in _sent_frames(deps)
@@ -536,9 +471,6 @@ class TestSeqContinuation:
 
 
 class TestTerminalHook:
-    """FR-011: every terminal transition — including the out-of-band ones no
-    agent frame reaches — must offer the subscription to the persist hook."""
-
     def _hook(self):
         seen = []
 
@@ -557,9 +489,6 @@ class TestTerminalHook:
         assert seen == [(stream_id, "failed", "upstream_unavailable")]
 
     async def test_agent_end_after_dormancy_is_unroutable_no_hook(self):
-        # Dormancy cancels the agent run and pops the request mapping, so a
-        # straggler ToolStreamEnd must be dropped — the TTL sweep owns the
-        # abandoned-content persist instead.
         mgr, deps = _make_manager()
         hook, seen = self._hook()
         mgr.terminal_hook = hook
@@ -567,7 +496,7 @@ class TestTerminalHook:
         await mgr.detach(ws)
         await mgr.handle_agent_end(ToolStreamEnd(request_id="req-1", stream_id=stream_id))
         assert seen == []
-        assert mgr.subscription_for_stream(stream_id) is not None  # still parked dormant
+        assert mgr.subscription_for_stream(stream_id) is not None
 
     async def test_dormant_ttl_eviction_fires_hook(self):
         import orchestrator.stream_manager as sm
@@ -579,7 +508,7 @@ class TestTerminalHook:
         await mgr.detach(ws)
         sub.created_at -= (sm.DORMANT_TTL_SECONDS + 1)
         mgr._sweep_dormant_ttl()
-        await asyncio.sleep(0.05)  # hook is scheduled from the sync sweep
+        await asyncio.sleep(0.05)
         assert seen == [(stream_id, "stopped", "dormant_ttl")]
 
     async def test_unsubscribe_fires_hook_as_success_terminal(self):

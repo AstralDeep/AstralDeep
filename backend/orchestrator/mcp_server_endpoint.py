@@ -1,4 +1,9 @@
-"""Flag-gated MCP 2026-07-28 Streamable HTTP resource server."""
+"""Flag-gated MCP Streamable HTTP resource server: parses and admits requests, discovers
+and dispatches tools through mcp_projection.py and mcp_authz.py, and routes
+framework-projected Work tools through work_operations.py. Installed by
+orchestrator.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -415,8 +420,6 @@ def _with_origin(response: Response, origin: str | None, allowed_origin: str) ->
 
 
 class MCPNoCredentialsCORSMiddleware:
-    """Outer MCP-only CORS policy that cannot alter application CORS."""
-
     def __init__(self, app: Any, *, allowed_origin: str):
         self.app = app
         self.allowed_origin = allowed_origin
@@ -478,12 +481,6 @@ class MCPNoCredentialsCORSMiddleware:
 
 
 def _framework_bearer_resolver(orchestrator: Any):
-    """A sync ``token -> FrameworkCaller | None`` closure, or ``None`` (088 T049).
-
-    ``None`` when the flag is off or the service isn't wired — restoring the
-    JWT-only path exactly (``authorize_mcp_request`` never even inspects the
-    token shape when this is ``None``).
-    """
     try:
         from shared.feature_flags import flags
 
@@ -498,13 +495,6 @@ def _framework_bearer_resolver(orchestrator: Any):
 
 
 async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, arguments: Any):
-    """Route one framework-projected Work tool call; returns an ``MCPResponse``.
-
-    ``claims["_framework_caller"]`` is the exact ``FrameworkCaller``
-    ``mcp_authz.authorize_mcp_request``'s framework branch already resolved
-    for THIS request — never re-derived from a bearer this function does not
-    have, and never persisted or logged beyond this one dispatch.
-    """
     from shared.protocol import MCPResponse
 
     from orchestrator.framework_credentials import FrameworkCaller
@@ -538,7 +528,7 @@ async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, a
                 expected_revision=args.get("expected_revision"))
         elif method_name == "result":
             result = await ops.result(caller, args.get("operation_id"))
-        else:  # pragma: no cover - dispatch_name only returns the names handled above
+        else:  # pragma: no cover
             return MCPResponse(result_type="complete",
                                error={"message": "Tool is unavailable or not authorized"})
     except AssignmentError as exc:
@@ -677,8 +667,6 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         claims,
                     )
                 except Exception:
-                    # Identity-bound tools remain hidden from the unaugmented
-                    # claims. Discovery and unrelated agents stay available.
                     logger.warning(
                         "external identity lookup failed user=%s", user_id
                     )
@@ -739,11 +727,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                                 "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                             }
                         elif projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
-                            # 088 T049: a framework Work tool never reaches the
-                            # ordinary agent dispatch stack (permission memo,
-                            # taint tracking, MoA, delegation) — it is a
-                            # different admission model entirely, gated by its
-                            # own scope and Plane's execution-authority guard.
+                            # Work tools skip the normal agent dispatch security stack
                             try:
                                 tool_response = await _wait_for_disconnect(
                                     request,
@@ -780,8 +764,6 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             except asyncio.CancelledError:
                                 raise
                             except Exception:
-                                # Once invocation starts, a tool/runtime failure is
-                                # data in a completed tool result, not a protocol error.
                                 result = {
                                     "resultType": "complete",
                                     "content": [{"type": "text", "text": "Tool execution failed"}],
@@ -862,10 +844,7 @@ def install_mcp_server(
     *,
     public_base_url: str | None = None,
 ) -> None:
-    """Install the complete MCP surface. Call only when the startup flag is on."""
-
     base_url = canonical_public_base_url(public_base_url)
-    # Validate authorization metadata before mounting a partially usable route.
     protected_resource_metadata(base_url)
     install_mcp_renderer()
     app.include_router(create_mcp_router(orchestrator, public_base_url=base_url))

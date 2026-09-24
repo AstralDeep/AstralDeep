@@ -1,16 +1,6 @@
-"""Bounded, cached LIVE reachability observation of the LETS warden.
-
-Composition binds the warden client exactly once and sends nothing, so a
-composed graph proves only that configuration and credentials were loadable:
-a down, unresolvable, or mis-certified warden would otherwise read "healthy"
-forever.  This module owns the one place the host actually contacts the warden
-for posture: a cheap idempotent ``GET /health/ready`` executed on a worker
-thread, waited on for a short bounded window, and cached for a configurable
-interval.  It never runs on the tool-dispatch path; ``/readyz`` and the admin
-health route are its only callers besides the first probe at composition.
-
-Every value it emits is a ``LetsRuntimeObservation`` status code plus the
-probe time: no exception text, response body, or configuration value escapes.
+"""Bounded, cached live reachability probe for the LETS warden: runs a cheap GET
+/health/ready on a worker thread, waits a short bounded window, and caches the result
+for a configurable interval. Backs lets_composition.py and lets_health_api.py.
 """
 
 from __future__ import annotations
@@ -25,21 +15,16 @@ from orchestrator.lets_health import LetsRuntimeObservation
 PROBE_INTERVAL_ENV = "LETS_HEALTH_PROBE_INTERVAL_SECONDS"
 DEFAULT_PROBE_INTERVAL_SECONDS = 30.0
 MAX_PROBE_INTERVAL_SECONDS = 3_600.0
-# Hard ceiling on how long any caller waits for a probe to answer.
 PROBE_WAIT_SECONDS = 2.0
 
 
 class LetsProbeConfigError(ValueError):
-    """Stable refusal for an unusable probe interval (no value echoed)."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 def probe_interval_seconds(environ: Mapping[str, str] | None = None) -> float:
-    """Parse ``LETS_HEALTH_PROBE_INTERVAL_SECONDS`` (default 30, 1..3600)."""
-
     raw = None if environ is None else environ.get(PROBE_INTERVAL_ENV)
     if raw is None or not raw.strip():
         return DEFAULT_PROBE_INTERVAL_SECONDS
@@ -57,23 +42,10 @@ def _observation_for_failure(code: object, at_ns: int) -> LetsRuntimeObservation
         return LetsRuntimeObservation("trust_failed", at_ns)
     if code in {"client_closed", "client_not_configured"}:
         return LetsRuntimeObservation("unavailable", at_ns, retryable=False)
-    # Transport, timeout, TLS, DNS, 5xx, invalid body: all retryable
-    # "unavailable" — the warden may come back without operator action.
     return LetsRuntimeObservation("unavailable", at_ns, retryable=True)
 
 
 class LetsReachabilityProbe:
-    """One cached, single-flight reachability observation per composition.
-
-    ``probe`` is a blocking callable that returns on success and raises
-    ``LetsClientBoundaryError`` on failure (``LetsWardenClient.probe``).  It
-    runs on a daemon thread; callers of :meth:`refresh_if_due` wait at most
-    ``wait_seconds`` and otherwise record a retryable ``unavailable``
-    observation so the cache is never empty after the first attempt.  A late
-    answer from that same thread still lands (newer evidence wins), and only
-    one probe is ever in flight.
-    """
-
     def __init__(
         self,
         probe: Callable[[], object],
@@ -106,24 +78,14 @@ class LetsReachabilityProbe:
         return self._interval
 
     def cached(self) -> LetsRuntimeObservation | None:
-        """The last observation without touching the network (None = never)."""
-
         with self._lock:
             return self._observation
 
     def close(self) -> None:
-        """Stop scheduling new probes; the cached observation stays readable."""
-
         with self._lock:
             self._closed = True
 
     def refresh_if_due(self, *, force: bool = False) -> LetsRuntimeObservation | None:
-        """Return the cached observation, refreshing it first when stale.
-
-        Blocks the calling thread for at most ``wait_seconds``; never call it
-        from the event loop directly (``asyncio.to_thread`` it).
-        """
-
         with self._lock:
             if self._closed:
                 return self._observation
@@ -149,10 +111,6 @@ class LetsReachabilityProbe:
                 done = self._inflight
         if not done.wait(self._wait):
             with self._lock:
-                # Still unanswered inside the bound: record a retryable
-                # unavailable stamp so readiness is honest now, and mark the
-                # cache checked so callers do not pile up behind one slow
-                # warden. The in-flight thread overwrites this when it lands.
                 if self._inflight is done:
                     self._observation = LetsRuntimeObservation(
                         "unavailable", self._clock_ns(), retryable=True

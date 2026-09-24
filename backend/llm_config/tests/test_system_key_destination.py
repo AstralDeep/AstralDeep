@@ -1,8 +1,8 @@
-"""System-key destination and admin refusals through the real chrome dispatcher.
-
-The existing typed encrypted-store fixture is isolated and all provider calls
-are replaced at their network boundary; no application database or IAM is used.
+"""Tests for the admin system-credential save path through the real chrome dispatcher:
+endpoint changes refuse before probing, non-admins cannot reuse or probe the system
+key, and preset saves ignore a submitted destination.
 """
+
 from __future__ import annotations
 
 import json

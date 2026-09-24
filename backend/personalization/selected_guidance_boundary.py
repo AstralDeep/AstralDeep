@@ -1,10 +1,9 @@
-"""Exact selected-row capture under caller-owned authority and ordered locks.
-
-This boundary checks application identity, not IAM, permission, or dispatch.
-Its caller holds owner/session and any assignment/action locks, supplies a fresh
-database-time observation, and performs the final Plane selected-input assertion
-after all other waits. No durable prompt or latest-head fallback is returned.
+"""Captures exact selected-guidance rows under the caller's already-held owner/session
+locks and a fresh DB-time observation; a thin identity boundary over
+selected_guidance.py, not an authority or dispatch check. Used by
+orchestrator/work_submit.py.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,7 +31,6 @@ class CapturedSelectedGuidance:
     _boundary: object = field(repr=False)
 
     def compose(self, *, observation, approved_request_bytes):
-        """Use only captured rows; exact stable MAC detects any input mutation."""
         self._boundary.assert_current()
         return reconstruct_selected_research_input(self.prepared.envelope,
             **self._inputs, observation=observation, approved_request_bytes=approved_request_bytes)
@@ -50,7 +48,6 @@ class SelectedGuidanceBoundary:
         self.assert_current()
 
     def assert_current(self):
-        """Local identity only. A caller must separately prove current authority."""
         plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
         if (getattr(plane, "runtime", None) is not self.runtime
                 or getattr(plane, "repositories", None) is not self.repositories
@@ -66,7 +63,6 @@ class SelectedGuidanceBoundary:
             service._current()
 
     def capture(self, tx, *, owner_id, instruction, agent, references, binding_key, now):
-        """Capture requested current rows under the caller's existing owner79 lock."""
         self.assert_current()
         if (type(references) is not tuple or any(type(ref) is not GuidanceReference for ref in references)
                 or len({(r.kind, r.resource_id) for r in references}) != len(references)

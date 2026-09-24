@@ -1,4 +1,7 @@
-"""Private manual-owner wake; an event acknowledgment is never an execution permit."""
+"""Acknowledges a manual owner event to unblock a waiting operation, checking current
+continuation state via work_control_authority.py without granting execution; the
+runner still acquires its own fences later. Used by work_api.py.
+"""
 
 from __future__ import annotations
 
@@ -20,13 +23,6 @@ from persistent_agents.runtime_values import digest, thaw
 
 
 class WorkOwnerWakeRequest(WorkControlRequest):
-    """A manual owner event in the same namespace as WorkOwnerWaitRequest.
-
-    Neither this identifier nor its revision attests to provider/source content.
-    The submission ID identifies the event; expected_revision is only its CAS
-    observation and cannot change the immutable accepted event receipt.
-    """
-
     owner_event_id: str = Field(min_length=36, max_length=36)
     owner_revision: int = Field(ge=0, le=2**53 - 1)
 
@@ -46,14 +42,6 @@ def _prepared(value, owner, identity):
 
 
 class WorkWakeService(WorkControlService):
-    """Acknowledge only the named owner event with current continuation checks.
-
-    Matching accepted receipts bypass mutable runner/config/original-session
-    prerequisites, while retaining current caller authentication. New wakes
-    preserve original authority and absolute limits; the ordinary runner must
-    independently acquire both execution fences before any future effect.
-    """
-
     async def wake(self, identity, body: WorkOwnerWakeRequest, *, caller):
         if type(caller) is not WorkCallerAuthority:
             raise AssignmentError("work_authentication_required", 401)
@@ -124,8 +112,6 @@ class WorkWakeService(WorkControlService):
                     raise AssignmentError("assignment_revision_conflict", 409)
                 composition.new_admission()
                 composition.runner._assert_operation_capability(current.assignment)
-                # Lock every actual action/liability before the USER config row.
-                # Receipt replay above never asks for fresh continuation rights.
                 clear = _sync(_method(repository, "assert_operation_continuation_clear")(
                     tx, owner_id=owner, assignment_id=identity,
                     expected_instruction_revision=selected.instruction_revision,

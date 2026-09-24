@@ -1,4 +1,8 @@
-"""Mounted Work writes retain caller identity through body and audit waits."""
+"""Tests for mounted Work writes (backend/orchestrator/work_api.py,
+work_control_audit.py, work_controls.py): caller identity retained across body and
+audit waits, and lost-delivery retry without re-auditing.
+"""
+
 import asyncio
 from dataclasses import replace
 import json
@@ -172,7 +176,6 @@ async def test_original_attempt_deadline_bounds_body_wait_without_mutation(mount
     async def authenticate(*args, **kwargs):
         caller = await original(*args, **kwargs)
         captured.append(caller)
-        # Narrow only this real authenticated attempt; never extend the policy.
         return replace(caller, _deadline=time.monotonic() + .03)
     monkeypatch.setattr(work_api, "authenticate_work_control_request", authenticate)
     async def stream():

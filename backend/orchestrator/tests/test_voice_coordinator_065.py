@@ -1,4 +1,7 @@
-"""Worker-pool and coordinator-fence tests for conversational voice (065)."""
+"""Tests for orchestrator/voice_coordinator.py's worker pool and session-bind fencing:
+registration/selection, ready/media-applied ack ordering, recognition binding,
+grant-revision rebinding, and bounded send/receive validation.
+"""
 
 from __future__ import annotations
 
@@ -571,8 +574,6 @@ async def test_bounded_ready_and_media_applied_waits_require_exact_ordered_acks(
     assert media_ready.applied_media_refresh_id == refresh_id
     assert media_ready.applied_media_grant_revision == 2
 
-    # An exact REST retry re-drives the pending worker command without
-    # advancing the durable revision or clearing the prior acknowledgement.
     await pool.send_session_command(
         reservation,
         "media_grant_rotated",
@@ -2159,7 +2160,6 @@ def test_result_reservation_is_conservative_bounded_and_never_refunded() -> None
     assert continuation.claim.quantum_index == 1
     assert continuation.claim.max_duration_samples == 96_000
     assert continuation.claim.result_reserved_samples_after == 132_000
-    # Failure/interruption completes ownership but deliberately retains reservation.
     state = adapter.complete(continuation.state, generation=3, claim_id=CLAIM_2)
     assert state.result_reserved_samples == 132_000
     assert state.result_quantum_count == 2

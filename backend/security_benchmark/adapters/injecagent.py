@@ -1,10 +1,8 @@
-"""InjecAgent adapter (spec 047 US3).
-
-InjecAgent (Zhan et al., ACL 2024) separates direct-harm and data-stealing
-indirect prompt-injection attacks against tool-calling agents. Same normalized
-schema as the other adapters (US3). Real-corpus loading gates on
-``ASTRAL_BENCH_LOAD_REAL``.
+"""Adapts the InjecAgent direct-harm and data-stealing prompt-injection benchmark onto
+BenchmarkCase/AdversarialObjective (adapters/base.py); real-corpus loading gates on
+ASTRAL_BENCH_LOAD_REAL.
 """
+
 from __future__ import annotations
 
 import os

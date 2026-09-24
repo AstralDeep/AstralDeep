@@ -1,9 +1,8 @@
-"""Pydantic / dataclass DTOs for the component-feedback subsystem.
-
-Wire shapes (REST + WebSocket) are documented in
-``specs/004-component-feedback-loop/contracts/``. The DB row shapes match
-``data-model.md``.
+"""Pydantic/dataclass DTOs for component feedback: request/ack wire shapes plus
+read-side row DTOs for feedback, quality signals, proposals, and quarantine entries.
+Shared by feedback/api.py, recorder.py, repository.py, and safety.py.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,16 +11,11 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, field_validator
 
-# ---------------------------------------------------------------------------
-# Enum-like literals (kept as plain strings so they round-trip cleanly via
-# JSONB columns, the wire, and Pydantic). Validators enforce the closed set.
-# ---------------------------------------------------------------------------
-
 SENTIMENTS = ("positive", "negative")
-Sentiment = str  # one of SENTIMENTS
+Sentiment = str
 
 CATEGORIES = ("wrong-data", "irrelevant", "layout-broken", "too-slow", "other", "unspecified")
-Category = str  # one of CATEGORIES
+Category = str
 
 LIFECYCLES = ("active", "superseded", "retracted")
 Lifecycle = str
@@ -41,24 +35,15 @@ QuarantineDetector = str
 QUARANTINE_STATUSES = ("held", "released", "dismissed")
 QuarantineStatus = str
 
-# Hard length cap on free-text comment; matches contracts.
 COMMENT_MAX_CHARS = 2048
 RATIONALE_MAX_CHARS = 2048
 
-# Default 10 s per-(user, correlation_id, component_id) dedup window.
 DEFAULT_DEDUP_WINDOW_SECONDS = 10
 
-# Default 24 h retract / amend lock.
 DEFAULT_EDIT_WINDOW_SECONDS = 24 * 3600
 
 
-# ---------------------------------------------------------------------------
-# Wire DTOs
-# ---------------------------------------------------------------------------
-
 class FeedbackSubmitRequest(BaseModel):
-    """Inbound submit payload (REST body or WS ``component_feedback`` payload)."""
-
     correlation_id: Optional[str] = None
     component_id: Optional[str] = None
     source_agent: Optional[str] = None
@@ -96,12 +81,6 @@ class FeedbackSubmitRequest(BaseModel):
 
 
 class FeedbackAmendRequest(BaseModel):
-    """Subset of submit fields permitted for an amendment.
-
-    Any field omitted is inherited from the prior version; passing
-    ``comment=null`` explicitly clears the comment.
-    """
-
     sentiment: Optional[str] = None
     category: Optional[str] = None
     comment: Optional[str] = None
@@ -138,7 +117,7 @@ class FeedbackAmendRequest(BaseModel):
 
 class FeedbackSubmitAck(BaseModel):
     feedback_id: str
-    status: str  # "recorded" | "quarantined"
+    status: str
     deduped: bool = False
 
 
@@ -147,14 +126,8 @@ class FeedbackError(BaseModel):
     message: str
 
 
-# ---------------------------------------------------------------------------
-# Read-side row DTOs
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ComponentFeedbackDTO:
-    """Read-side row from the ``component_feedback`` table."""
-
     id: str
     user_id: str
     conversation_id: Optional[str]
@@ -173,7 +146,6 @@ class ComponentFeedbackDTO:
     updated_at: datetime
 
     def to_user_view(self) -> Dict[str, Any]:
-        """Serializer for ``GET /api/feedback`` (the user's own view)."""
         return {
             "id": str(self.id),
             "conversation_id": self.conversation_id,
@@ -183,9 +155,6 @@ class ComponentFeedbackDTO:
             "component_id": self.component_id,
             "sentiment": self.sentiment,
             "category": self.category,
-            # The owner always sees their own raw comment regardless of
-            # safety status — quarantining only excludes the text from
-            # the synthesizer's LLM input, not from the user's own view.
             "comment": self.comment_raw,
             "comment_safety": self.comment_safety,
             "lifecycle": self.lifecycle,
@@ -258,7 +227,6 @@ class QuarantineEntryDTO:
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
-    """Render a datetime as RFC 3339 / ISO 8601 with 'Z' suffix."""
     if dt is None:
         return None
     return dt.isoformat()

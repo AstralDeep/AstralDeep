@@ -1,4 +1,6 @@
-"""``read_nifti`` tool: parse .nii / .nii.gz volumes with nibabel."""
+"""read_nifti tool: parses .nii/.nii.gz volumes via nibabel, returning header info plus
+three orthogonal mid-plane thumbnails.
+"""
 
 from __future__ import annotations
 
@@ -18,14 +20,13 @@ def read_nifti(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return NIfTI header info plus three orthogonal mid-plane thumbnails."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
 
     try:
         import nibabel as nib  # type: ignore
-        import numpy as np  # noqa: F401  (imported by _common but surface the error here too)
+        import numpy as np  # noqa: F401
     except Exception as exc:
         return _common.missing_dep("nibabel", exc)
 

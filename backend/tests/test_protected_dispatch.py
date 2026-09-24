@@ -1,4 +1,7 @@
-"""Canonicalization and privacy-boundary tests for protected dispatch."""
+"""Tests for backend/orchestrator/protected_dispatch.py and lets_scope_profile.py: LETS
+evidence stays exact, immutable and content-free, canonical ordering is stable, and
+malformed or noncanonical input fails closed.
+"""
 
 from __future__ import annotations
 

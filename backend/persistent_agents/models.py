@@ -1,4 +1,8 @@
-"""Canonical, strictly bounded owner commands for persistent assignments."""
+"""Canonical, strictly bounded Pydantic request/error models for persistent assignments
+-- instructions, sources, tool references, and usage ceilings -- shared across
+persistent_agents and orchestrator's work_* routes.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -202,8 +206,6 @@ class ApprovalDecisionRequest(ControlRequest):
 
 
 class AssignmentError(Exception):
-    """Stable non-sensitive public error, independent of exception diagnostics."""
-
     def __init__(self, code: str, status_code: int = 409):
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", code):
             code = "assignment_unavailable"

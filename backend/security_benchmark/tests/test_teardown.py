@@ -1,4 +1,7 @@
-"""Plane-owned benchmark cleanup boundary (spec 047 FR-008)."""
+"""Tests for security_benchmark/isolation.py's teardown(): cleanup runs inside the
+caller's one application Plane transaction, failures roll back and propagate, and
+non-namespaced principals are refused.
+"""
 
 from __future__ import annotations
 

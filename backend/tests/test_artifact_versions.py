@@ -1,12 +1,8 @@
-"""Feature 055 (US4) — component version history store (research D10, FR-024).
-
-Exercises backend/orchestrator/artifact_versions.py against a real Postgres:
-monotonic version numbering, archive-time pruning to the newest RETAIN rows,
-bounded metadata listing, full-dict retrieval, (chat_id, user_id) ownership
-scoping, the async twins, and the deletion cascades wired into
-WorkspaceManager.remove, HistoryManager.delete_component and
-HistoryManager.delete_chat.
+"""Tests for orchestrator/artifact_versions.py against live Postgres: monotonic
+per-component version numbering, retention pruning, bounded listings, ownership
+scoping, and deletion cascades from workspace.py and HistoryManager.
 """
+
 from __future__ import annotations
 
 import sys
@@ -26,11 +22,6 @@ from tests.helpers.voice_plane_runtime import (  # noqa: E402
     history_manager,
     isolated_voice_plane_runtime,
 )
-
-
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +46,6 @@ def ws(history, plane_runtime):
 
 @pytest.fixture
 def chat(history):
-    """A fresh chat with a unique user per test; delete_chat sweeps versions."""
     user_id = f"pytest-av-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     yield chat_id, user_id
@@ -66,11 +56,6 @@ def _comp(n: int, **extra):
     c = {"type": "card", "title": f"Version {n}", "body": f"content v{n}"}
     c.update(extra)
     return c
-
-
-# ----------------------------------------------------------------------
-# archive()
-# ----------------------------------------------------------------------
 
 
 def test_archive_assigns_monotonic_version_numbers(history, chat):
@@ -103,7 +88,6 @@ def test_archive_rejects_invalid_args(history, chat):
 
 
 def test_retention_prunes_to_newest_five(history, chat):
-    """FR-024: at most RETAIN (=5) versions survive per component."""
     chat_id, user_id = chat
     cid = "wc_avtest_prune01"
     for n in range(1, 8):
@@ -114,11 +98,6 @@ def test_retention_prunes_to_newest_five(history, chat):
     assert av.get_version(history, chat_id, user_id, cid, 2) is None
     assert av.get_version(history, chat_id, user_id, cid, 3) is not None
     assert len(versions) == av.RETAIN
-
-
-# ----------------------------------------------------------------------
-# list_versions() / get_version()
-# ----------------------------------------------------------------------
 
 
 def test_list_versions_metadata_only_and_bounded(history, chat):
@@ -133,9 +112,8 @@ def test_list_versions_metadata_only_and_bounded(history, chat):
     assert newest["reason"] == "restore"
     assert newest["title"] == "Version 2"
     assert newest["component_type"] == "card"
-    assert isinstance(newest["created_at"], str)  # wire-ready ISO string
-    assert "component" not in newest  # metadata only, no payloads
-    # explicit limit respected; oversized/garbage limits clamp to RETAIN
+    assert isinstance(newest["created_at"], str)
+    assert "component" not in newest
     assert len(av.list_versions(history, chat_id, user_id, cid, limit=1)) == 1
     assert len(av.list_versions(history, chat_id, user_id, cid, limit=999)) == 2
     assert len(av.list_versions(history, chat_id, user_id, cid, limit="junk")) == 2
@@ -193,7 +171,6 @@ def test_plain_component_thaws_mapping_proxy_and_rejects_non_json_values():
 
 
 def test_reads_and_deletes_are_user_scoped(history, chat):
-    """Ownership: another user sees nothing and can delete nothing."""
     chat_id, user_id = chat
     cid = "wc_avtest_scope01"
     av.archive(history, chat_id, user_id, cid, _comp(1))
@@ -216,11 +193,6 @@ def test_delete_helpers_return_row_counts(history, chat):
     assert av.get_version(history, chat_id, user_id, "wc_avtest_del_b", 1) is None
 
 
-# ----------------------------------------------------------------------
-# Deletion cascades
-# ----------------------------------------------------------------------
-
-
 def test_workspace_remove_cascades_versions(history, ws, chat):
     chat_id, user_id = chat
     ops = ws.upsert(chat_id, user_id, [{
@@ -236,7 +208,6 @@ def test_workspace_remove_cascades_versions(history, ws, chat):
 
 
 def test_history_delete_component_cascades_versions(history, ws, chat):
-    """The WS/REST delete verb path (row-uuid keyed) sweeps version rows."""
     chat_id, user_id = chat
     ops = ws.upsert(chat_id, user_id, [{
         "type": "card", "title": "Live",
@@ -261,11 +232,6 @@ def test_delete_chat_cascades_versions(history):
     history.delete_chat(chat_id, user_id)
     assert av.get_version(history, chat_id, user_id, "wc_avtest_chatdel", 1) is None
     assert av.get_version(history, chat_id, user_id, "wc_avtest_chatde2", 1) is None
-
-
-# ----------------------------------------------------------------------
-# Async twins (loop-guard-safe: only a*-functions touch the DB here)
-# ----------------------------------------------------------------------
 
 
 async def test_async_twins_cover_full_cycle(history, chat):

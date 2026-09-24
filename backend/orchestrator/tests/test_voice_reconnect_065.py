@@ -1,4 +1,7 @@
-"""Ordered reconnect and credential-free recovery guards for Feature 065."""
+"""Tests for ordered voice reconnect in orchestrator/voice_coordinator.py:
+credential-free recovery after a uuid4 refresh replay, worker RTC remint rejecting
+stale revisions, and navigation context applied before capture resumes.
+"""
 
 from __future__ import annotations
 

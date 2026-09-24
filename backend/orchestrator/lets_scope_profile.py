@@ -1,7 +1,6 @@
-"""Fixed Astral-to-LETS tool authority profile.
-
-The profile is reviewed source rather than operator configuration. Unknown or
-ambiguous mappings fail closed before any LETS request is constructed.
+"""Fixed, reviewed mapping from Astral tool calls to LETS authority scopes and executor
+audiences; unknown or ambiguous mappings fail closed before any LETS request is
+built. Used by lets_client.py, lets_gateway.py, and lets_lifecycle.py.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ RESOURCE_DIMENSIONS: Final = 6
 
 
 class ScopeProfileError(ValueError):
-    """A tool effect cannot be mapped to one exact LETS authority entry."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,8 +63,6 @@ def _canonical_profile_bytes(entries: Sequence[ScopeBinding]) -> bytes:
 
 
 def profile_sha256(entries: Sequence[ScopeBinding] = SCOPE_BINDINGS) -> str:
-    """Return the canonical profile digest for evidence and drift checks."""
-
     if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
         raise ScopeProfileError("scope profile entries must be an ordered sequence")
     if not entries or any(not isinstance(entry, ScopeBinding) for entry in entries):
@@ -98,8 +95,6 @@ def binding_for_tool(
     tool_id: str,
     tool_scope_map: Mapping[str, str],
 ) -> ScopeBinding:
-    """Resolve one registered tool to one exact profile entry."""
-
     if (
         not isinstance(tool_id, str)
         or not tool_id
@@ -115,8 +110,6 @@ def binding_for_tool(
 
 
 def validate_allocation(allocation: Sequence[int]) -> tuple[int, ...]:
-    """Validate the exact six-dimensional non-negative allocation."""
-
     if (
         not isinstance(allocation, Sequence)
         or isinstance(allocation, (str, bytes))
@@ -136,8 +129,6 @@ def validate_allocation(allocation: Sequence[int]) -> tuple[int, ...]:
 
 
 def require_single_audience(audiences: Iterable[str]) -> str:
-    """Return one exact executor audience or reject ambiguity."""
-
     if isinstance(audiences, (str, bytes)) or not isinstance(audiences, Iterable):
         raise ScopeProfileError("executor audiences must be an iterable of strings")
     values = tuple(audiences)

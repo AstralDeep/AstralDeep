@@ -1,8 +1,8 @@
-"""Short, deterministic tool failure notices, isolated to each chat turn.
-
-The diagnostic response remains available to dispatch/audit. Provider bodies,
-exception strings, URLs, and arbitrary tool-supplied text never enter this UI.
+"""Builds short, deterministic tool-failure notices for chat, deduplicated per turn, so
+provider bodies/exception strings/URLs never reach the UI though the fuller
+diagnostic stays available to audit. Used by coordinator.py and orchestrator.py.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,7 +34,6 @@ _MAX_NOTICES = 64
 
 @contextmanager
 def turn_tool_notices():
-    """Share deduplication across a turn's parallel calls, never across users."""
     token = _NOTICES.set(set())
     try:
         yield
@@ -43,11 +42,9 @@ def turn_tool_notices():
 
 
 def tool_failure_message(tool_name: object, error: object) -> str:
-    """Use only host-owned text for both inline feedback and model context."""
     code = error.get("code") if isinstance(error, Mapping) else None
     message = PUBLIC_ERRORS.get(code) if isinstance(code, str) else None
     if message is None:
-        # A tool name is a registry identifier, not Markdown or a provider body.
         label = "Tool"
         if isinstance(tool_name, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", tool_name):
             label = tool_name.replace("_", " ").capitalize()
@@ -56,7 +53,6 @@ def tool_failure_message(tool_name: object, error: object) -> str:
 
 
 def tool_failure_content(tool_name: object, error: object) -> str:
-    """A bounded model-facing failure; raw diagnostics never reach narration."""
     error = error if isinstance(error, Mapping) else {}
     code = error.get("code")
     code = code if isinstance(code, str) and code in PUBLIC_ERRORS else "TOOL_FAILED"
@@ -69,7 +65,6 @@ def tool_failure_content(tool_name: object, error: object) -> str:
 
 
 def tool_failure_notice(tool_name: object, error: object) -> dict | None:
-    """Build one compact Alert, or suppress an identical notice in this turn."""
     message = tool_failure_message(tool_name, error)
     notices = _NOTICES.get()
     if notices is not None:

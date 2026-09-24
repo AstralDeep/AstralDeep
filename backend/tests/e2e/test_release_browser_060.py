@@ -1,4 +1,7 @@
-"""Pinned real-browser release-lane contracts and opt-in staging orchestration."""
+"""Pins the real-browser release lane's tooling versions, container-only runner posture,
+coverage-producer wiring, and report schema, plus an opt-in run against trusted
+staging.
+"""
 
 from __future__ import annotations
 
@@ -122,7 +125,6 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
         "agent_lifecycle",
         "runResumeTrials",
         "for (let trial = 0; trial < 20; trial += 1)",
-        # T108 quantitative floors and screenshot-grade raw evidence.
         "resume_success_rate",
         "resume_latency_max_ms",
         "unnamed_visible_controls",
@@ -136,14 +138,11 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
 
 
 def test_release_lane_wires_the_lock_pinned_coverage_producer() -> None:
-    """The browser lane must emit exactly the envelope the coverage gate parses."""
-
     spec_source = RELEASE_SPEC.read_text(encoding="utf-8")
     assert 'from "../coverage-conversion.mjs"' in spec_source
     assert "convertPlaywrightV8Coverage" in spec_source
     assert "ASTRAL_RELEASE_COVERAGE_OUTPUT" in spec_source
     assert "ASTRAL_RELEASE_COVERAGE_ISTANBUL_OUTPUT" in spec_source
-    # Executable-syntax filtering rides the pinned producer, never a re-write.
     assert "v8ToIstanbul" not in spec_source
     assert "espree" not in spec_source
     assert "backend/webrender/static/client.js" in spec_source
@@ -178,8 +177,6 @@ def test_release_lane_wires_the_lock_pinned_coverage_producer() -> None:
 
 
 def test_release_report_shape_is_validated_by_the_production_schema_engine() -> None:
-    # The browser producer writes this exact top-level shape; schema validation
-    # remains in Python so the JavaScript lane cannot declare itself trusted.
     source = RELEASE_SPEC.read_text(encoding="utf-8")
     for field in (
         "document_type",
@@ -198,8 +195,6 @@ def test_release_report_shape_is_validated_by_the_production_schema_engine() -> 
 
 
 def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> None:
-    """Run only when the protected producer explicitly opts into live staging."""
-
     if os.environ.get("ASTRAL_RELEASE_E2E") != "true":
         pytest.skip("set ASTRAL_RELEASE_E2E=true only on the trusted staging producer")
     required = (
@@ -302,7 +297,6 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
     assert report["outcome"] == "passed"
     assert coverage.is_file() and coverage.stat().st_size > 0
 
-    # All six client checks passed with policy-canonical quantitative floors.
     checks = {check["id"]: check for check in report["checks"]}
     assert set(checks) == {
         "sign_in",
@@ -316,7 +310,6 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
     for check in checks.values():
         validator._validate_measurements(check)
 
-    # Every raw evidence reference is bundle-bound and re-hashes exactly.
     for check in checks.values():
         assert check["evidence_artifacts"], f"{check['id']} lacks raw evidence"
         for artifact in check["evidence_artifacts"]:
@@ -326,8 +319,6 @@ def test_real_browser_release_lane_against_trusted_staging(tmp_path: Path) -> No
             digest = hashlib.sha256(member.read_bytes()).hexdigest()
             assert digest == artifact["sha256"], f"raw bytes drifted: {reference}"
 
-    # The lock-pinned producer converted the raw V8 into the exact envelope
-    # scripts/check_changed_coverage.py parses for the changed-line gate.
     gate = _load_module("coverage_gate_060_live", COVERAGE_GATE)
     istanbul = validator.load_json_document(tmp_path / "web-istanbul.json")
     assert set(istanbul) == gate.JAVASCRIPT_REPORT_KEYS

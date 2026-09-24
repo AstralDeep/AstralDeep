@@ -1,4 +1,9 @@
-"""Synthetic IAM verifies signatures and bounds trust to one development run."""
+"""Tests for the synthetic fixture IAM
+(backend/verification/drivers/fixture_identity.py, backend/orchestrator/auth.py):
+signature verification, trust scoped to one namespaced run, and refusal of foreign or
+overlapping realms.
+"""
+
 from __future__ import annotations
 
 import asyncio

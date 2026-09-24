@@ -1,3 +1,8 @@
+"""Tests for orchestrator/ledger.py: TaskLedger construction and JSON-safe audit
+serialization, and ProgressLedger's completion tracking, consecutive-stall counting,
+and should_replan threshold logic.
+"""
+
 from __future__ import annotations
 import sys
 from pathlib import Path
@@ -9,8 +14,6 @@ from orchestrator import ledger  # noqa: E402
 
 import json  # noqa: E402
 
-
-# ───────────────────────────── ledger_enabled ────────────────────────────────
 
 def test_ledger_enabled_default_off(monkeypatch):
     monkeypatch.delenv("FF_DUAL_LEDGER", raising=False)
@@ -29,8 +32,6 @@ def test_ledger_enabled_falsy_values(monkeypatch, value):
     assert ledger.ledger_enabled() is False
 
 
-# ───────────────────────────── TaskLedger ────────────────────────────────────
-
 def test_from_request_defaults_empty_lists():
     tl = ledger.TaskLedger.from_request("do the thing")
     assert tl.request == "do the thing"
@@ -47,7 +48,6 @@ def test_from_request_seeds_given_and_recalled():
     )
     assert tl.given_facts == ["a", "b"]
     assert tl.recalled_facts == ["c"]
-    # The other buckets remain empty.
     assert tl.derived_facts == []
     assert tl.guesses == []
     assert tl.plan == []
@@ -59,7 +59,6 @@ def test_from_request_copies_inputs():
     tl = ledger.TaskLedger.from_request("req", given=given, recalled=recalled)
     given.append("mutated")
     recalled.append("mutated")
-    # Mutating the caller's lists must not leak into the ledger.
     assert tl.given_facts == ["a"]
     assert tl.recalled_facts == ["c"]
 
@@ -82,7 +81,6 @@ def test_to_audit_dict_shape_and_json_safe():
     assert d["derived_facts"] == ["3 sources needed"]
     assert d["guesses"] == ["user wants PDF"]
     assert d["plan"] == ["fetch", "render"]
-    # Must round-trip through JSON unchanged (audit-chain safe).
     assert json.loads(json.dumps(d)) == d
 
 
@@ -91,7 +89,6 @@ def test_to_audit_dict_lists_are_copies():
     d = tl.to_audit_dict()
     d["given_facts"].append("tampered")
     d["plan"].append("tampered")
-    # Mutating the snapshot must not reach back into the live ledger.
     assert tl.given_facts == ["a"]
     assert tl.plan == []
 
@@ -100,12 +97,9 @@ def test_revise_plan_returns_copy_without_mutating_original():
     tl = ledger.TaskLedger.from_request("req")
     tl.plan.extend(["old1", "old2"])
     revised = tl.revise_plan(["new1", "new2", "new3"])
-    # Original is untouched (pre-replan snapshot preserved).
     assert tl.plan == ["old1", "old2"]
-    # Revised carries the fresh plan and is a distinct object.
     assert revised.plan == ["new1", "new2", "new3"]
     assert revised is not tl
-    # Other fields are carried over.
     assert revised.request == "req"
 
 
@@ -114,11 +108,8 @@ def test_revise_plan_copies_new_plan_argument():
     new_plan = ["x", "y"]
     revised = tl.revise_plan(new_plan)
     new_plan.append("z")
-    # Mutating the caller's list after the call must not affect the ledger.
     assert revised.plan == ["x", "y"]
 
-
-# ───────────────────────────── ProgressLedger ────────────────────────────────
 
 def test_progress_ledger_starts_empty():
     pl = ledger.ProgressLedger()
@@ -147,9 +138,7 @@ def test_completed_count_and_is_complete():
     pl.record("b", complete=False, stalled=True)
     pl.record("c", complete=True)
     assert pl.completed_count() == 2
-    # 2 of 3 done → not complete yet.
     assert pl.is_complete(3) is False
-    # Threshold met (>=) → complete.
     assert pl.is_complete(2) is True
     assert pl.is_complete(1) is True
 
@@ -158,10 +147,9 @@ def test_consecutive_stalls_counts_only_trailing_run():
     pl = ledger.ProgressLedger()
     pl.record("a", complete=False, stalled=True)
     pl.record("b", complete=False, stalled=True)
-    pl.record("c", complete=True)          # progress resets the run
+    pl.record("c", complete=True)
     pl.record("d", complete=False, stalled=True)
     pl.record("e", complete=False, stalled=True)
-    # Only d + e are trailing stalls; a + b were before the reset.
     assert pl.consecutive_stalls() == 2
 
 
@@ -170,7 +158,6 @@ def test_consecutive_stalls_resets_after_non_stalled_record():
     pl.record("a", complete=False, stalled=True)
     pl.record("b", complete=False, stalled=True)
     assert pl.consecutive_stalls() == 2
-    # A non-stalled step (even if not complete) breaks the run.
     pl.record("c", complete=False, stalled=False)
     assert pl.consecutive_stalls() == 0
 
@@ -179,7 +166,6 @@ def test_next_incomplete_returns_first_uncompleted_step():
     pl = ledger.ProgressLedger()
     plan = ["fetch", "parse", "render"]
     pl.record("fetch", complete=True)
-    # "fetch" done → next is "parse".
     assert pl.next_incomplete(plan) == "parse"
     pl.record("parse", complete=True)
     assert pl.next_incomplete(plan) == "render"
@@ -189,7 +175,6 @@ def test_next_incomplete_ignores_stalled_non_complete_steps():
     pl = ledger.ProgressLedger()
     plan = ["fetch", "parse", "render"]
     pl.record("fetch", complete=True)
-    # A stalled (incomplete) attempt at "parse" does not count it done.
     pl.record("parse", complete=False, stalled=True)
     assert pl.next_incomplete(plan) == "parse"
 
@@ -207,13 +192,10 @@ def test_next_incomplete_empty_plan_is_none():
     assert pl.next_incomplete([]) is None
 
 
-# ───────────────────────────── should_replan ─────────────────────────────────
-
 def test_should_replan_false_below_threshold():
     pl = ledger.ProgressLedger()
     pl.record("a", complete=False, stalled=True)
     pl.record("b", complete=False, stalled=True)
-    # 2 stalls, default threshold 3 → no replan.
     assert pl.consecutive_stalls() == 2
     assert ledger.should_replan(pl) is False
 
@@ -222,7 +204,6 @@ def test_should_replan_true_at_threshold():
     pl = ledger.ProgressLedger()
     for name in ("a", "b", "c"):
         pl.record(name, complete=False, stalled=True)
-    # 3 consecutive stalls == default threshold → replan.
     assert pl.consecutive_stalls() == 3
     assert ledger.should_replan(pl) is True
 
@@ -231,7 +212,6 @@ def test_should_replan_respects_custom_threshold():
     pl = ledger.ProgressLedger()
     pl.record("a", complete=False, stalled=True)
     pl.record("b", complete=False, stalled=True)
-    # With threshold 2, two stalls is enough.
     assert ledger.should_replan(pl, stall_threshold=2) is True
     assert ledger.should_replan(pl, stall_threshold=3) is False
 

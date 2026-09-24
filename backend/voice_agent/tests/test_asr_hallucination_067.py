@@ -1,13 +1,5 @@
-"""Whisper silence-hallucination refusal (067 follow-up to the 2026-08-05 review).
-
-Observed live: ambient room noise (a click, a breath) opened a VAD turn that
-Whisper returned as ``"Thank you."`` / ``"Obrigado."``, and each entered chat
-as a genuine user turn burning a full agentic run. The refusal is a
-CONJUNCTION — the canonical text is a bounded stock hallucination phrase AND
-the utterance carried fewer at-or-above-``VAD_THRESHOLD`` frames than the
-phrase can physically be spoken in. Either half alone is unsafe: the phrase
-list would eat a genuine "thank you", the duration floor would eat genuine
-short commands ("stop", "yes").
+"""Tests for voice_agent/session.py's ASR-hallucination refusal: the voiced-frame floor
+combined with the stock-phrase check, and that neither alone eats legitimate speech.
 """
 
 from __future__ import annotations
@@ -65,8 +57,6 @@ async def _run_utterance(
     frames: int,
     settled: object,
 ) -> set[str]:
-    """Drive one utterance; return the retained texts BEFORE close scrubs."""
-
     task = asyncio.create_task(session.run())
     try:
         await session.wait_started()
@@ -88,7 +78,6 @@ def test_floor_is_256ms_of_voiced_evidence() -> None:
 
 @pytest.mark.asyncio
 async def test_stock_phrase_without_voiced_evidence_is_refused_silently() -> None:
-    # 4 voiced frames (128 ms) then endpoint silence — the live noise shape.
     notices: list[SessionNotice] = []
     session = _session(
         [0.9] * 4 + [0.0] * 40,
@@ -104,8 +93,6 @@ async def test_stock_phrase_without_voiced_evidence_is_refused_silently() -> Non
             for item in notices
         ),
     )
-    # Torn down like self_speech: nothing retained, no binding left for a
-    # retry-guidance disposition, and no transcript ever emitted.
     assert retained == set()
     assert session._recognition_bindings == {}
     assert not any(item.kind == "transcript_emitted" for item in notices)
@@ -113,7 +100,6 @@ async def test_stock_phrase_without_voiced_evidence_is_refused_silently() -> Non
 
 @pytest.mark.asyncio
 async def test_stock_phrase_with_real_voiced_evidence_is_retained() -> None:
-    # 12 voiced frames (384 ms) — a genuine spoken "Thank you." must pass.
     notices: list[SessionNotice] = []
     session = _session(
         [0.9] * 12 + [0.0] * 40,
@@ -135,7 +121,6 @@ async def test_stock_phrase_with_real_voiced_evidence_is_retained() -> None:
 
 @pytest.mark.asyncio
 async def test_short_command_below_floor_is_not_eaten() -> None:
-    # The duration floor alone must never refuse a genuine short command.
     notices: list[SessionNotice] = []
     session = _session(
         [0.9] * 4 + [0.0] * 40,

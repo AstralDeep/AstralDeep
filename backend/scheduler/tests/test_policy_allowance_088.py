@@ -1,15 +1,6 @@
-"""Feature-088 T039/T040 (Deep half): scheduler policy, admission, and Stop.
-
-Real-PostgreSQL tests: owner-scoped CAS, occurrence-to-assignment binding, and
-the finite allowance are database concurrency/consistency properties over the
-Plane 088.007 ``SchedulerRepository`` contract (``get_job_policy``/
-``put_job_policy``/``admit_assignment_episode``/``stop_assignment_job``). These
-exercise the Deep-side wrapper in ``scheduler.store`` and the admission gate
-wired into ``scheduler.runner.JobRunner.run_occurrence`` — the actual
-minting/continuation of a monitoring assignment for a FIRST-ever policy job is
-a separate, injectable ``monitoring_dispatcher`` seam (see
-``scheduler.runner.default_monitoring_dispatcher``), exercised here with a
-test double standing in for that not-yet-wired creation path.
+"""Tests for scheduler job policy, admission, and Stop against real PostgreSQL
+(backend/scheduler/store.py, runner.py): owner-scoped CAS, finite allowance, and the
+admission gate in JobRunner.run_occurrence.
 """
 
 from __future__ import annotations
@@ -38,8 +29,6 @@ from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_r
 
 @pytest.fixture(scope="module")
 def postgres_database() -> Iterator[PlaneTestRuntime]:
-    """Create one isolated database initialized only by AstralPlane."""
-
     with isolated_plane_runtime("policy_allowance_088") as runtime:
         yield runtime
 
@@ -116,8 +105,6 @@ def _job(
 
 
 def _assignment(db: PlaneTestRuntime, *, owner: str, lifecycle: str = "active") -> str:
-    """Insert a minimal, valid ``persistent_assignment`` row for admission tests."""
-
     assignment_id = str(uuid.uuid4())
     db.execute(
         """
@@ -147,8 +134,6 @@ def _set_lifecycle(db: PlaneTestRuntime, assignment_id: str, lifecycle: str) -> 
 
 
 def _claim_one(store: ScheduledJobStore, instance: str, *, job_id: str):
-    """Materialize+claim due work and return the one claim for ``job_id``."""
-
     claims = store.materialize_and_claim_due(instance, limit=10)
     matches = [claim for claim in claims if str(claim.job["id"]) == job_id]
     assert len(matches) == 1, f"expected exactly one claim for {job_id}, got {claims}"
@@ -162,11 +147,6 @@ def _run_now(store: ScheduledJobStore, *, owner: str, job_id: str) -> None:
         submission_id=uuid.uuid4(),
         eligibility=lambda _job: True,
     )
-
-
-# ---------------------------------------------------------------------------
-# Store-level: policy CRUD
-# ---------------------------------------------------------------------------
 
 
 def test_get_job_policy_is_none_for_a_legacy_job(clean_database: PlaneTestRuntime) -> None:
@@ -199,7 +179,6 @@ def test_set_job_policy_creates_then_updates_under_version_cas(
     assert updated["version"] == 2
     assert updated["max_runs"] == 10
     assert updated["monitor_changes"] is True
-    # Scheduler-owned fields are untouched by the owner-editable form.
     assert updated["admitted_runs"] == 0
     assert updated["terminal_stop"] is False
     assert updated["last_assignment_id"] is None
@@ -235,11 +214,6 @@ def test_set_job_policy_validates_bounds_before_any_sql(
     with pytest.raises(ValueError):
         store.set_job_policy("owner-policy-bounds", str(job["id"]), **kwargs)
     assert store.get_job_policy("owner-policy-bounds", str(job["id"])) is None
-
-
-# ---------------------------------------------------------------------------
-# Store-level: admission (finite allowance, outstanding cap, terminal stop)
-# ---------------------------------------------------------------------------
 
 
 def test_admit_episode_admits_then_replays_idempotently(
@@ -296,9 +270,8 @@ def test_admit_episode_refuses_a_second_outstanding_episode_and_charges_nothing(
     refused = store.admit_episode(claim_two, assignment_id=assignment_b)
     assert refused.admitted is False
     assert refused.reason == "episode_outstanding"
-    assert refused.policy["admitted_runs"] == 1  # nothing charged
+    assert refused.policy["admitted_runs"] == 1
 
-    # Once A resolves it no longer counts as outstanding, so B can admit.
     _set_lifecycle(clean_database, assignment_a, "completed")
     second = store.admit_episode(claim_two, assignment_id=assignment_b)
     assert second.admitted is True
@@ -342,8 +315,6 @@ def test_admit_episode_refuses_after_terminal_stop_of_a_running_claim(
     store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
     assignment_id = _assignment(clean_database, owner=owner)
     claim = _claim_one(store, "stop-admit", job_id=job_id)
-    # Started (running) occurrences are NOT cancelled by Stop, unlike
-    # pending/claimed ones — the in-flight run is allowed to settle.
     attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
 
     outcome = store.stop_job(owner, job_id, expected_version=1)
@@ -355,11 +326,6 @@ def test_admit_episode_refuses_after_terminal_stop_of_a_running_claim(
     assert refused.policy["admitted_runs"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Store-level: Stop
-# ---------------------------------------------------------------------------
-
-
 def test_stop_job_cancels_unstarted_occurrence_and_blocks_the_next_scan(
     clean_database: PlaneTestRuntime,
 ) -> None:
@@ -369,7 +335,7 @@ def test_stop_job_cancels_unstarted_occurrence_and_blocks_the_next_scan(
     job = _job(store, owner=owner, label="stop-scan")
     job_id = str(job["id"])
     store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    claim = _claim_one(store, "stop-scan", job_id=job_id)  # claimed, not started
+    claim = _claim_one(store, "stop-scan", job_id=job_id)
 
     outcome = store.stop_job(owner, job_id, expected_version=1)
     assert outcome.stopped is True
@@ -380,8 +346,6 @@ def test_stop_job_cancels_unstarted_occurrence_and_blocks_the_next_scan(
     assert job_row is not None
     assert job_row["status"] == "completed"
 
-    # A repeat scan admits nothing new for this job — the terminal Stop is
-    # honoured by the ordinary due-scan eligibility path, no special casing.
     assert store.materialize_and_claim_due("stop-scan-again", limit=50) == ()
 
 
@@ -404,7 +368,6 @@ def test_stop_job_is_idempotent_and_repeats_the_same_outstanding_families(
     second = store.stop_job(owner, job_id, expected_version=first.policy["version"])
     assert second.stopped is False
     assert {str(v) for v in second.outstanding_assignment_ids} == {assignment_id}
-    # History/charges are retained across the repeat Stop.
     assert second.policy["admitted_runs"] == 1
 
 
@@ -424,11 +387,6 @@ def test_stop_job_refuses_stale_version_and_missing_policy(
     with pytest.raises(ScheduleActionError) as excinfo:
         store.stop_job(owner, job_id, expected_version=99)
     assert excinfo.value.code == "schedule_policy_version_conflict"
-
-
-# ---------------------------------------------------------------------------
-# JobRunner-level: the admission gate wired into run_occurrence
-# ---------------------------------------------------------------------------
 
 
 def _recording_orchestrator():
@@ -517,7 +475,7 @@ async def test_run_occurrence_admits_and_dispatches_with_an_injected_dispatcher(
 
     def dispatcher(transaction, job_row, prior_assignment_id):
         assert job_row["id"] == job_id
-        assert prior_assignment_id is None  # first-ever episode for this policy
+        assert prior_assignment_id is None
         return assignment_id
 
     orchestrator, calls = _recording_orchestrator()
@@ -546,9 +504,6 @@ async def test_run_occurrence_pauses_and_notifies_once_when_allowance_exhausted(
     assignment_a = _assignment(clean_database, owner=owner)
     assignment_b = _assignment(clean_database, owner=owner)
 
-    # Pre-charge the allowance directly, then resolve A so it stops counting
-    # as an outstanding episode — isolating the allowance check from the
-    # outstanding-episode-cap check exercised in the store-level tests above.
     _run_now(store, owner=owner, job_id=job_id)
     pre_claim = _claim_one(store, "run-exhausted-pre", job_id=job_id)
     assert store.admit_episode(pre_claim, assignment_id=assignment_a).admitted is True
@@ -580,9 +535,6 @@ async def test_run_occurrence_pauses_and_notifies_once_when_allowance_exhausted(
 async def test_run_occurrence_is_unaffected_for_a_legacy_job_without_a_policy(
     clean_database: PlaneTestRuntime,
 ) -> None:
-    """Regression (FR-008): cron/interval/one-shot cadence and dispatch are
-    byte-identical when a job carries no policy row at all."""
-
     coordinator = _coordinator(clean_database)
     store = ScheduledJobStore(clean_database, coordinator=coordinator)
     owner = "owner-run-legacy"

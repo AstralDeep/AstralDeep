@@ -1,4 +1,7 @@
-"""Actual Plane USER row selection; no provider, model, route or permit activity."""
+"""Tests for llm_config/user_store.py against real Postgres: cross-process config
+updates bypass the stale in-memory cache, owner/system rows never alias, and a
+corrupt record is retained rather than silently discarded.
+"""
 
 import asyncio
 from dataclasses import FrozenInstanceError
@@ -41,7 +44,7 @@ def test_real_cross_process_update_bypasses_stale_cache(stores):
     before = selected(first)
     save(other, key="synthetic-rotated-no-network-key")
     after = selected(first)
-    assert first.get_sync("alice") is cached  # Legacy 30-second cache is unchanged.
+    assert first.get_sync("alice") is cached
     assert after.revision != before.revision
     assert not before.matches(after._capture._record)
     assert before._api_key == "synthetic-no-network-key"
@@ -59,7 +62,7 @@ def test_real_clear_recreate_same_plaintext_has_new_cipher_and_revision(stores):
     before = selected(first)
     other.clear_sync("alice")
     assert first.capture_user_sync("alice") is None
-    assert first.get_sync("alice") is not None  # B0 does not invalidate old cache.
+    assert first.get_sync("alice") is not None
     save(other)
     after = selected(first)
     assert before._api_key == after._api_key
@@ -112,7 +115,6 @@ async def test_real_async_capture_detaches_transaction(stores, plane):
     first, other = stores
     await asyncio.to_thread(save, first)
     capture = await first.capture_user("alice")
-    # A completed capture holds no row lock; another writer finishes immediately.
     await asyncio.wait_for(
         asyncio.to_thread(save, other, "alice", "synthetic-new-key"), 2
     )
@@ -132,10 +134,7 @@ async def test_table_blocker_remains_held_when_capture_worker_releases_transacti
 ):
     first, _ = stores
     await asyncio.to_thread(save, first)
-    # Fixture-only SQL holds a real table lock; product selection uses public Plane.
     with ExitStack() as holders, plane.transaction() as blocker:
-        # Exhaust all but the capture slot: successful probe proves that slot
-        # returned, rather than merely borrowing a different idle connection.
         for _ in range(6):
             held = holders.enter_context(plane.transaction())
             held.fetch_one("SELECT 1 AS held")
@@ -145,11 +144,9 @@ async def test_table_blocker_remains_held_when_capture_worker_releases_transacti
             UserConfigCaptureUnavailable, match="^user_config_capture_unavailable$"
         ):
             await asyncio.wait_for(blocked, 2)
-        # The worker has physically completed, while this blocker is still active.
         assert blocked.done()
         assert blocker.fetch_one("SELECT 1 AS held")["held"] == 1
         with plane.transaction() as probe:
-            # Another pooled transaction remains usable before releasing blocker.
             assert probe.fetch_one("SELECT 1 AS released")["released"] == 1
     assert first.capture_user_sync("alice") is not None
 
@@ -164,7 +161,7 @@ async def test_statement_timeout_finishes_worker_and_returns_pool_slot(
     original = repository.get_user
 
     def delayed(transaction, *, owner_id):
-        transaction.fetch_one("SELECT pg_sleep(3)")  # Fixture-only real statement wait.
+        transaction.fetch_one("SELECT pg_sleep(3)")
         return original(transaction, owner_id=owner_id)
 
     monkeypatch.setattr(repository, "get_user", delayed)
@@ -197,7 +194,6 @@ async def test_short_outer_cancellation_does_not_leave_worker_waiting_for_slow_q
         try:
             return capture_sync(owner_id)
         finally:
-            # Observe the whole synchronous worker, after transaction exit.
             finished.set()
 
     monkeypatch.setattr(repository, "get_user", delayed)
@@ -207,8 +203,6 @@ async def test_short_outer_cancellation_does_not_leave_worker_waiting_for_slow_q
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # Coroutine cancellation is not physical cleanup; the Plane statement cap
-    # independently finishes this actual worker well before its three-second SQL.
     assert await asyncio.to_thread(finished.wait, 2)
     monkeypatch.setattr(repository, "get_user", original)
     assert await first.capture_user("alice") is not None

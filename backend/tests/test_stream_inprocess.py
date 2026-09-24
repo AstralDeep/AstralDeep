@@ -1,12 +1,8 @@
-"""Push streaming to IN-PROCESS built-in agents (feature 040 gap, fixed in 055).
-
-``_dispatch_stream_request`` predated feature 040 and knew only WS-connected
-agents (``self.agents``), so every built-in's push-streaming tool failed with
-"agent not connected" — found live during 055 US2 verification. The fix routes
-local agents through a LoopbackSocket, whose frames re-enter
-``handle_agent_message`` exactly like the networked path; cancels call the
-agent's ``_handle_stream_cancel`` directly.
+"""Tests for push-streaming to in-process built-in agents in
+orchestrator/orchestrator.py: local agents are routed through a LoopbackSocket into
+handle_agent_message, and cancels reach the agent directly.
 """
+
 import asyncio
 import os
 import sys
@@ -27,9 +23,6 @@ TOOL = "live_fake_metrics"
 
 
 class FakeLocalStreamingAgent:
-    """Emits one content chunk + end through whatever socket it is handed —
-    the same contract BaseA2AAgent honors for ``_stream`` requests."""
-
     def __init__(self):
         self.requests = []
         self.cancels = []

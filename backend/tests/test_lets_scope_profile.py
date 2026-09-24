@@ -1,4 +1,7 @@
-"""Fixed six-scope LETS profile and fail-closed mapping tests."""
+"""Tests for orchestrator/lets_scope_profile.py: the fixed six-scope allocation profile,
+fail-closed denial of malformed allocations or unknown scope/tool mappings, and
+digest detection of any profile change.
+"""
 
 from __future__ import annotations
 

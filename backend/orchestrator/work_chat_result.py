@@ -1,10 +1,6 @@
-"""Closed owner-read projection of a completed, retained one-shot chat answer.
-
-The caller supplies the current owner and its existing Plane transaction, then
-revalidates read authority before delivery. A chat answer has no source: the
-envelope names its kind and cites nothing. The named result MAC authenticates
-the stored answer and opaque input binding exactly as the research projection
-does; it never reconstructs the private prompt or provider configuration.
+"""Owner-read projection of one completed, retained chat answer, reread and MAC-verified
+inside the caller's existing Plane transaction. Shares its verification shape with
+work_result.py's research projection.
 """
 
 from __future__ import annotations
@@ -84,12 +80,6 @@ def _answer(record, model, transient):
 
 
 def project_chat_result(transaction, repository, *, owner_id, read):
-    """Return the bounded answer only after same-transaction, exact ledger proof.
-
-    No network, provider store, execution authority, publication or direct SQL
-    is used. Missing/foreign records and invalid proofs share a data-free
-    unavailable result. The caller's normal owner-read policy remains mandatory.
-    """
     try:
         _require(type(read) is AssignmentOperationRead)
         record = read.assignment

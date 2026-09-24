@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""Feature 089 (T004): the turn timeline on a running candidate stack.
-
-`typesafe_turn_latency.py` measures the routing seam in isolation, which is an
-**upper bound** on what a turn waits: it assumes nothing overlaps the call. The
-turn does not work that way. `start_routing` is opened early and the decision
-is collected several hundred lines later, after the history load, the tool
-assembly, the permission checks and the prompt build. Whatever those take is
-time the routing call was already using.
-
-So this drives real turns through a running stack over the same WebSocket the
-web client uses, and reads two things:
-
-* **client-side**, the time from Send to the first frame that puts something on
-  screen — the "first progress state" of SC-001;
-* **server-side**, from the orchestrator's own `perf` log, the window between
-  `turn.typesafe_start` and `turn.first_llm_call_start` — the preparation the
-  routing call overlaps.
-
-The added wait SC-002 bounds is then `max(0, routing - preparation)`, and both
-halves are measured rather than assumed.
-
-No key is ever read here: whether the signed-in user has one is the stack's
-business, and this script only times what happens.
-
-Usage:
-    python scripts/typesafe_turn_timeline.py --turns 30
+"""Drives real turns through a running stack over the web client's own websocket,
+measuring client-visible first-progress time plus the orchestrator perf-log window
+between the routing seam opening and the first model call.
 """
 
 from __future__ import annotations
@@ -44,14 +21,8 @@ from typing import Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: Frames that mean "something is on screen now".
 PROGRESS_FRAMES = {
-    # `operation_status` is the frame the orchestrator emits when it ACCEPTS the
-    # turn (chrome_events.emit_operation_status -> protocol.OperationStatus,
-    # `type: "operation_status"`), and it is what actually puts the first
-    # progress state on screen. Leaving it out of this set measured the first
-    # *render* instead, which is a different and much larger number -- 2.8 s at
-    # p50 against the 7 ms the client sees.
+    # Omitting this frame measures render, not first progress
     "operation_status",
     "status", "ui_render", "ui_update", "ui_append", "ui_upsert",
     "ui_stream_data", "turn_phase", "processing_async", "chat_message",
@@ -93,11 +64,6 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
     completed = 0
     hung = 0
 
-    # The chat frame must carry the same envelope the web client sends:
-    # a session/chat id plus per-turn submission and generation identifiers.
-    # A minimal {type, action, payload} frame is accepted by the socket and
-    # then silently dropped, which is why an earlier raw driver saw turns
-    # "complete" with no markers at all.
     session_id = str(uuid.uuid4())
     connection_generation = None
 
@@ -158,14 +124,6 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
                 if first is None and frame.get("type") in PROGRESS_FRAMES:
                     first = (time.perf_counter() - sent) * 1000.0
                     to_first_frame.append(first)
-                # The turn ends with a TERMINAL `operation_status` frame
-                # (`state: completed|failed`), which is what the web client
-                # itself waits for. The two names below were guesses and the
-                # orchestrator sends neither, so every turn used to sit here
-                # until `per_turn_timeout` expired: a 2.5 s turn was measured
-                # as 90 s, and a 40-turn run took an hour instead of two
-                # minutes. The timing numbers were unaffected -- they come
-                # from the perf log -- but the run never finished.
                 if (frame.get("type") == "operation_status"
                         and frame.get("terminal")):
                     completed += 1
@@ -182,28 +140,17 @@ async def _drive(uri: str, token: str, prompts: Sequence[str], turns: int,
 
 
 def _perf_windows(container: str, since: str) -> dict:
-    """The preparation window, from the orchestrator's own perf log.
-
-    `turn.typesafe_start` is logged when the seam opens and
-    `turn.first_llm_call_start` when the first model call is about to be made,
-    both with the chat id, so the gap between the two log lines is the work the
-    routing call overlapped.
-    """
     try:
         raw = subprocess.run(
             ["docker", "logs", "--since", since, container],
             capture_output=True, text=True, timeout=120,
             env={**os.environ, "MSYS_NO_PATHCONV": "1"},
         )
-    except Exception as exc:  # pragma: no cover - diagnostics only
+    except Exception as exc:  # pragma: no cover
         return {"error": str(exc), "windows": []}
 
     opened: dict[str, float] = {}
     windows: list[float] = []
-    # SC-002 needs the two halves paired per turn, not two independent
-    # distributions: the added wait is max(0, routing - preparation) for the
-    # SAME turn, and percentiles of the difference are not the difference of
-    # percentiles.
     routing_ms: dict[str, float] = {}
     added: list[float] = []
     sent_at: dict[str, float] = {}
@@ -232,8 +179,6 @@ def _perf_windows(container: str, since: str) -> dict:
         elif match.group("name") == "turn.first_llm_call_start" and chat in opened:
             preparation = (moment - opened.pop(chat)) * 1000.0
             windows.append(preparation)
-            # pop, not get: a turn whose routing call never logged a duration
-            # (a failure path) must not silently borrow the previous turn's.
             routing = routing_ms.pop(chat, None)
             if routing is not None:
                 added.append(max(0.0, routing - preparation))

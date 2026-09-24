@@ -1,10 +1,6 @@
-"""Durable scheduled jobs, occurrence claims, attempts, and effect fencing.
-
-Feature 060 keeps the feature-025 job APIs as compatibility methods while
-making PostgreSQL ``scheduled_occurrence`` and ``effect_ledger`` rows the only
-execution authority.  New scheduler workers never dispatch from ``list_due``;
-they materialize, advance, and claim in one transaction and carry both the
-occurrence and accepted-operation fences through every mutation.
+"""PostgreSQL-backed durable store for scheduled jobs, occurrence claims, attempts, and
+idempotent effect fencing over AstralPlane's scheduler repository; the sole execution
+authority for scheduler/loop.py and runner.py.
 """
 
 from __future__ import annotations
@@ -60,8 +56,6 @@ _INSTANCE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 class StaleOccurrenceClaimError(RuntimeError):
-    """The supplied occurrence token/generation no longer owns the row."""
-
     def __init__(
         self,
         code: str,
@@ -75,20 +69,16 @@ class StaleOccurrenceClaimError(RuntimeError):
 
 
 class ScheduleActionError(RuntimeError):
-    """Safe, owner-scoped refusal from a scheduler definition action."""
-
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
 
 
 class EffectIdempotencyConflictError(RuntimeError):
-    """One effect key was reused with different normalized payload bytes."""
+    pass
 
 
 class ScheduledAdmissionRefusedError(RuntimeError):
-    """The scheduled operation could not enter its finite admission queue."""
-
     def __init__(self, refusal: RefusedAdmission) -> None:
         super().__init__(refusal.code)
         self.code = refusal.code
@@ -98,8 +88,6 @@ class ScheduledAdmissionRefusedError(RuntimeError):
 
 @dataclass(frozen=True)
 class OccurrenceClaim:
-    """One current PostgreSQL claim for a stable scheduled occurrence."""
-
     occurrence_id: uuid.UUID
     job: Dict[str, Any]
     scheduled_for: datetime
@@ -113,8 +101,6 @@ class OccurrenceClaim:
 
 @dataclass(frozen=True)
 class ScheduledAttempt:
-    """Attempt-scoped accepted operation attached to an occurrence claim."""
-
     claim: OccurrenceClaim
     operation_id: uuid.UUID
     operation_state: OperationState
@@ -130,8 +116,6 @@ class ScheduledAttempt:
 
 @dataclass(frozen=True)
 class EffectReservation:
-    """Safe effect-ledger reconciliation result."""
-
     state: str
     created: bool
     ambiguous: bool
@@ -139,8 +123,6 @@ class EffectReservation:
 
 @dataclass(frozen=True)
 class RunNowMaterialization:
-    """Canonical result of one owner-scoped run-now submission."""
-
     occurrence_id: uuid.UUID
     job_id: uuid.UUID
     owner_user_id: str
@@ -151,13 +133,6 @@ class RunNowMaterialization:
 
 @dataclass(frozen=True)
 class EpisodeAdmission:
-    """Safe, owner-scoped outcome of one occurrence-to-assignment admission (088.007).
-
-    ``reason`` is one of ``admitted``/``replayed`` (both ``admitted=True``) or
-    a refusal: ``policy_missing``/``terminal_stop``/``episode_outstanding``/
-    ``allowance_exhausted``. Every refusal writes nothing and charges nothing.
-    """
-
     job_id: uuid.UUID
     owner_id: str
     occurrence_id: uuid.UUID
@@ -171,13 +146,6 @@ class EpisodeAdmission:
 
 @dataclass(frozen=True)
 class JobStopOutcome:
-    """Safe, owner-scoped outcome of a terminal policy-job Stop (088.007).
-
-    History and charges are never erased. ``outstanding_assignment_ids`` are
-    the still-unresolved episode families the caller must stop separately
-    (each through its own assignment control).
-    """
-
     job_id: uuid.UUID
     owner_id: str
     stopped: bool
@@ -204,8 +172,6 @@ def _now_ms() -> int:
 
 
 def _plane_terminal_code(error: PlaneError) -> str | None:
-    """Read Plane's immutable metadata pairs without assuming a mapping API."""
-
     value = dict(error.metadata).get("terminal_code")
     return None if value in {None, "None"} else value
 
@@ -251,8 +217,6 @@ class ScheduledJobStore:
         self._scan_lock = threading.Lock()
 
     def bind_coordinator(self, coordinator: WorkAdmissionCoordinator) -> None:
-        """Bind the shared production operation authority exactly once."""
-
         if self._coordinator is not None and self._coordinator is not coordinator:
             raise RuntimeError("cannot replace the scheduler operation coordinator")
         self._coordinator = coordinator
@@ -350,8 +314,6 @@ class ScheduledJobStore:
             "updated_at": policy.updated_at,
         }
 
-    # ── Jobs ─────────────────────────────────────────────────────────────
-
     def count_active(self, user_id: str) -> int:
         return self._plane.call(
             self._plane.repository.count_active_jobs,
@@ -408,9 +370,7 @@ class ScheduledJobStore:
                         or prepared_consent.owner_id != user_id
                         or offline_grant_id is not None or offline_grants is None))):
                 raise ScheduleActionError("schedule_consent_unavailable")
-            # The original socket registration is checked again in the worker
-            # after every SQL wait; consent and job either commit together or
-            # both roll back. No cleanup revoke guesses a commit's outcome.
+            # Never revoke here — a failure can't tell if it committed
             try:
                 with self._plane.transaction() as transaction:
                     self._plane.plane_runtime.repositories.history.sessions.bound_request_execution_waits(transaction)
@@ -430,8 +390,6 @@ class ScheduledJobStore:
             except (OfflineGrantError, ScheduleActionError):
                 raise
             except Exception:
-                # A failed acknowledgement may follow a committed transaction.
-                # Preserve its grant and require observation before any retry.
                 raise ScheduleActionError("schedule_write_unavailable") from None
         return self._job_dict(job)
 
@@ -457,11 +415,6 @@ class ScheduledJobStore:
     def set_offline_grant(
         self, user_id: str, job_id: str, grant_id: Optional[str]
     ) -> bool:
-        """Attach (or clear) the captured offline-grant id on a job (030 FR-003 / 025 T042).
-
-        Written by the WS consent-capture flow after ``OfflineGrantStore.capture``
-        so the runner can mint a fresh token per run. Until set, ``offline_grant_id``
-        is NULL and the runner refuses to execute (``skipped_auth``)."""
         return self._plane.call(
             self._plane.repository.set_job_offline_grant,
             owner_id=user_id,
@@ -490,8 +443,6 @@ class ScheduledJobStore:
         submission_id: uuid.UUID,
         eligibility: Callable[[Dict[str, Any]], Any] | None = None,
     ) -> RunNowMaterialization:
-        """Create or reconcile one manual firing without changing cadence."""
-
         try:
             job_identity = uuid.UUID(str(job_id))
         except (TypeError, ValueError, AttributeError) as exc:
@@ -558,8 +509,6 @@ class ScheduledJobStore:
         status: str,
         terminal_code: str,
     ) -> bool:
-        """Transition a job and atomically cancel every unstarted occurrence."""
-
         expected_codes = {
             "paused": "cancelled_job_paused",
             "disabled": "cancelled_job_deleted",
@@ -652,32 +601,12 @@ class ScheduledJobStore:
             updated_at=_now_ms(),
         )
 
-    # ── 088.007 optional job policy, episode admission and terminal Stop ──
-    #
-    # A job without a policy row keeps every pre-088.007 semantic untouched;
-    # nothing here is consulted by the due scan, claims, runs or effects
-    # above. Lock order matches Plane's documented contract: definition ->
-    # policy -> occurrence -> binding, and the caller creates or locks the
-    # episode's persistent assignment BEFORE calling ``admit_episode`` so the
-    # assignment-before-admission order the assignment repository documents
-    # holds across repositories too.
-
     @contextmanager
     def transaction(self):
-        """Expose the shared Plane transaction for cross-repository admission.
-
-        A caller that must create or continue a monitoring assignment
-        episode in the SAME transaction as :meth:`admit_episode` opens this
-        once and passes the yielded transaction to both calls; either
-        raising rolls back both, so an episode is never created without its
-        admission or charged without its episode.
-        """
         with self._plane.transaction() as transaction:
             yield transaction
 
     def get_job_policy(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
-        """One owner-scoped policy row, or ``None`` for legacy job semantics."""
-
         try:
             policy = self._plane.call(
                 self._plane.repository.get_job_policy,
@@ -697,16 +626,6 @@ class ScheduledJobStore:
         monitor_changes: bool,
         expected_version: int,
     ) -> Dict[str, Any]:
-        """Create (``expected_version=0``) or update the bounded owner form.
-
-        Only ``max_runs``/``monitor_changes`` are owner-editable through this
-        form. ``admitted_runs``, ``terminal_stop`` and ``last_assignment_id``
-        are scheduler-owned: they are always carried through unchanged from
-        the current row (unset on create), matching Plane's ``put_job_policy``
-        CAS contract exactly — a charge is never lowered and a Stop is never
-        cleared through this method.
-        """
-
         if max_runs is not None and (
             isinstance(max_runs, bool)
             or not isinstance(max_runs, int)
@@ -773,17 +692,6 @@ class ScheduledJobStore:
         spend: int = 1,
         transaction: Any = None,
     ) -> EpisodeAdmission:
-        """Admit one claimed occurrence into ``assignment_id``'s episode allowance.
-
-        Admission, run/grant spend and the occurrence-to-assignment binding
-        commit together. Every refusal writes nothing; an exact replay of an
-        already-committed binding is idempotent (``reason="replayed"``). Pass
-        an externally opened ``transaction`` (see :meth:`transaction`) to
-        commit this admission atomically with the caller's own creation or
-        continuation of that episode's assignment record; omit it to admit
-        standalone against an assignment that already exists.
-        """
-
         admitted_at = _now_ms()
 
         def call(cursor: Any) -> Any:
@@ -821,17 +729,6 @@ class ScheduledJobStore:
         )
 
     def stop_job(self, user_id: str, job_id: str, *, expected_version: int) -> JobStopOutcome:
-        """Terminally stop a policy job: refuse future claims, keep history/charges.
-
-        Atomically (inside Plane): ``terminal_stop`` is set under version
-        CAS, the definition leaves ``active`` so the due scan never
-        materializes it again, and every unstarted occurrence is cancelled.
-        Any operation those occurrences had already been admitted for is then
-        best-effort settled at the coordinator here, exactly like a claim the
-        scheduler recovers after a restart — a repeat Stop is a no-op that
-        returns the same still-outstanding episode families.
-        """
-
         stopped_at = _now_ms()
         try:
             with self._plane.transaction() as transaction:
@@ -881,19 +778,13 @@ class ScheduledJobStore:
             ),
         )
 
-    # ── Scheduler-internal (cross-user) ──────────────────────────────────
-
     def list_due(self, now_ms: int) -> List[Dict[str, Any]]:
-        """Legacy read-only due list; feature-060 execution does not use it."""
-
         jobs = self._plane.call(
             self._plane.repository.list_due_jobs_for_administration,
             due_at_ms=now_ms,
             limit=1000,
         )
         return [self._job_dict(job) for job in jobs]
-
-    # ── Feature 060 occurrence authority ────────────────────────────────
 
     def materialize_and_claim_due(
         self,
@@ -903,16 +794,6 @@ class ScheduledJobStore:
         lease_seconds: int = 15,
         eligibility: Callable[[Dict[str, Any]], Any] | None = None,
     ) -> tuple[OccurrenceClaim, ...]:
-        """Materialize due jobs, advance them, and claim occurrences atomically.
-
-        ``eligibility`` is a pure pre-materialization handler declaration
-        check.  A false decision leaves the job untouched; no occurrence or
-        accepted operation is fabricated for an ineligible handler.
-        A resettable local continuation advances past refused rows. Its short
-        lock never spans a database call; concurrent scans remain protected by
-        PostgreSQL claim fences, and an older completion cannot regress hints.
-        """
-
         self._validate_claim_settings(
             instance_id, limit=limit, lease_seconds=lease_seconds
         )
@@ -982,8 +863,6 @@ class ScheduledJobStore:
         execution_lease_token: uuid.UUID | None = None,
         state: str | None = None,
     ) -> None:
-        """Settle the prior operation before its replacement is allocated."""
-
         coordinator = self._coordinator
         if coordinator is None:
             return
@@ -1031,8 +910,6 @@ class ScheduledJobStore:
     def renew_claim(
         self, claim: OccurrenceClaim, *, lease_seconds: int = 15
     ) -> datetime | None:
-        """Renew one unexpired current claim using PostgreSQL time."""
-
         self._validate_claim_settings(
             claim.lease_owner, limit=1, lease_seconds=lease_seconds
         )
@@ -1086,8 +963,6 @@ class ScheduledJobStore:
         }
 
     def _lock_claim_job(self, cursor: Any, claim: OccurrenceClaim) -> None:
-        """Serialize attempt allocation with pause/delete definition changes."""
-
         try:
             self._plane.repository.assert_claim_job_active(
                 cursor,
@@ -1098,8 +973,6 @@ class ScheduledJobStore:
             raise _stale_plane_error(exc) from exc
 
     def allocate_attempt(self, claim: OccurrenceClaim) -> ScheduledAttempt:
-        """Create/resolve and attach one attempt-scoped scheduled operation."""
-
         coordinator = self._require_coordinator()
         with self._plane.transaction() as cursor:
             self._lock_claim_job(cursor, claim)
@@ -1212,8 +1085,6 @@ class ScheduledJobStore:
     def claim_attempt_execution(
         self, attempt: ScheduledAttempt
     ) -> ScheduledAttempt | None:
-        """Select the exact queued attempt only while its claim is current."""
-
         if attempt.execution_fence is not None:
             return attempt
         coordinator = self._require_coordinator()
@@ -1267,8 +1138,6 @@ class ScheduledJobStore:
     def start_attempt(
         self, attempt: ScheduledAttempt, *, lease_seconds: int = 15
     ) -> ScheduledAttempt:
-        """Fenced claimed→running transition and unique ``job_run`` insert."""
-
         self._validate_claim_settings(
             attempt.claim.lease_owner, limit=1, lease_seconds=lease_seconds
         )
@@ -1317,8 +1186,6 @@ class ScheduledJobStore:
         error_code: str,
         retry_after_seconds: int = 1,
     ) -> None:
-        """Release a current claim for a later attempt without an effect."""
-
         if not _SAFE_NAME_RE.fullmatch(error_code):
             raise ValueError("error_code must be bounded snake_case")
         if retry_after_seconds < 0 or retry_after_seconds > 86_400:
@@ -1401,8 +1268,6 @@ class ScheduledJobStore:
         effect_key: str,
         payload_digest: str,
     ) -> EffectReservation:
-        """Reserve or reconcile one stable AstralDeep-controlled effect."""
-
         self._validate_effect_identity(
             effect_kind=effect_kind,
             effect_key=effect_key,
@@ -1438,14 +1303,6 @@ class ScheduledJobStore:
         effect_key: str,
         payload_digest: str,
     ) -> EffectReservation:
-        """Reserve a database-only chat effect with crash-safe reassignment.
-
-        A ``reserved`` row from an older attempt is recoverable here because
-        scheduled chat messages exist only in memory until the same PostgreSQL
-        transaction inserts them and marks this row ``published``.  Therefore
-        a committed ``reserved`` state proves that no target message escaped.
-        """
-
         effect_kind = "chat_history"
         self._validate_effect_identity(
             effect_kind=effect_kind,
@@ -1484,8 +1341,6 @@ class ScheduledJobStore:
         effect_key: str,
         payload_digest: str,
     ) -> EffectReservation:
-        """Atomically publish one conversation revision and its effect row."""
-
         if effect_kind != "chat_history":
             raise ValueError("staged chat publication requires chat_history")
         self._validate_effect_identity(
@@ -1604,8 +1459,6 @@ class ScheduledJobStore:
         payload_digest: str,
         downstream_receipt_digest: str | None = None,
     ) -> EffectReservation:
-        """Publish a reservation only under the exact creating fences."""
-
         self._validate_effect_identity(
             effect_kind=effect_kind,
             effect_key=effect_key,
@@ -1646,8 +1499,6 @@ class ScheduledJobStore:
         payload_digest: str,
         failure_code: str,
     ) -> EffectReservation:
-        """Mark a reservation failed only when no visible effect occurred."""
-
         self._validate_effect_identity(
             effect_kind=effect_kind,
             effect_key=effect_key,
@@ -1688,8 +1539,6 @@ class ScheduledJobStore:
         result_code: str | None = None,
         retry_after_seconds: int = 1,
     ) -> Dict[str, Any]:
-        """Commit one fenced job-run and occurrence terminal/retry state."""
-
         if attempt.execution_fence is None or attempt.run_id is None:
             raise StaleOccurrenceClaimError("attempt has not started")
         if outcome not in {"success", "failure", "interrupted", "skipped_auth"}:
@@ -1763,8 +1612,6 @@ class ScheduledJobStore:
                 "last_error_code": record.last_error_code,
             }
 
-    # ── Runs ─────────────────────────────────────────────────────────────
-
     def start_run(self, job_id: str, user_id: str, correlation_id: str) -> str:
         run_id = str(uuid.uuid4())
         self._plane.call(
@@ -1806,7 +1653,6 @@ class ScheduledJobStore:
         return [self._run_dict(run) for run in runs]
 
     def reconcile_interrupted(self) -> int:
-        """On startup, mark any run left 'running' (by a crash/restart) as interrupted."""
         return self._plane.call(
             self._plane.repository.reconcile_interrupted_for_administration,
             ended_at=_now_ms(),

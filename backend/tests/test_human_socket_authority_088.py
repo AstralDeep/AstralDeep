@@ -1,4 +1,8 @@
-"""Original registered-human metadata callers over real Plane and normal JWT IAM."""
+"""Tests for orchestrator/human_request_authority.py: registered-socket capture binds
+the original caller through JWT waits, cancellation and reset, and boundary close
+ordering against chrome_events and Plane.
+"""
+
 import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
@@ -480,17 +484,6 @@ async def test_chrome_deadline_cancels_handler_and_resets_private_context(human,
 
 
 async def test_threaded_operation_context_survives_a_reset_context_var(human, socket_request):
-    """The turn's own caller must not depend on a ContextVar that may be reset.
-
-    The admission executor sets ``_CONNECTION_OPERATION_CONTEXT`` around a frame
-    and resets it in its ``finally``, while a chat turn keeps running past that
-    point. A turn could therefore observe the variable populated on entry to
-    ``handle_chat_message`` and empty a few milliseconds later inside this
-    helper -- which refused the turn its own registered caller and failed every
-    chat message with ``skill_lookup_unavailable`` for any signed-in user with
-    ``FF_USER_SKILLS`` on (the default). Reproduced on a real realm session,
-    2026-09-18.
-    """
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
 
     socket, context, _message = socket_request
@@ -506,7 +499,6 @@ async def test_threaded_operation_context_survives_a_reset_context_var(human, so
         await pending.capture_session()
         operation_context = {"human_request": pending}
 
-        # The executor has already reset the variable: nothing to re-read.
         token = _CONNECTION_OPERATION_CONTEXT.set(None)
         try:
             with pytest.raises(AssignmentError, match="human_skill_lookup_unavailable"):

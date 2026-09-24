@@ -1,9 +1,8 @@
-"""Feature 027 — T025: agentic creation unit/behavior tests.
-
-DB-free: a fake orchestrator/lifecycle exercises the meta-tool handlers,
-dedup (FR-007), decision handlers (ownership + audit), and the revision
-apply/rollback safety (FR-006) against a real temp filesystem.
+"""Tests for orchestrator/agentic_creation.py: meta-tool handlers, fingerprint-based
+dedup, ownership/audit decision handlers, and revision apply/rollback safety, against
+fake DB/lifecycle doubles and a real temp filesystem.
 """
+
 import asyncio
 import json
 import types
@@ -11,10 +10,6 @@ import types
 
 from orchestrator import agentic_creation as ac
 
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 class FakeDB:
     def __init__(self):
@@ -149,11 +144,6 @@ class FakeHistory:
 
 
 class FakeOrch:
-
-    # 056 US2: machine-turn classes derive their root authority at the
-    # orchestrator's shared seam; a stand-in must model it. No durable consent
-    # exists in these tests, so the honest answer is an AuthoritySkip (the turn
-    # runs unbound, exactly as it does in dev posture today).
     async def derive_machine_authority(self, **kwargs):
         from orchestrator.chain_authority import AuthoritySkip
         return AuthoritySkip("missing_consent", "test double")
@@ -181,7 +171,6 @@ class FakeOrch:
                                   user_id=None, draft_agent_id=None, selected_tools=None,
                                   attachments=None):
         self.chat_calls.append((message, chat_id, draft_agent_id))
-        # Simulate a successful draft-test turn: one tool step + one card.
         await websocket.send_json({"type": "chat_step",
                                    "step": {"kind": "tool_call", "name": "new_tool", "status": "completed"}})
         await websocket.send_json({"type": "ui_render", "components": [
@@ -191,10 +180,6 @@ class FakeOrch:
 def run(coro):
     return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
-
-# ---------------------------------------------------------------------------
-# Fingerprint + injection guards
-# ---------------------------------------------------------------------------
 
 def test_fingerprint_stable_and_order_insensitive():
     a = ac.gap_fingerprint("Stock Tracker", [{"name": "track"}, {"name": "report"}])
@@ -207,7 +192,7 @@ def test_should_inject_respects_flag_and_draft_session(monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
     assert ac.should_inject(None) is True
-    assert ac.should_inject("draft-123") is False  # draft-test exclusion
+    assert ac.should_inject("draft-123") is False
     monkeypatch.setitem(flags._flags, "agentic_creation", False)
     assert ac.should_inject(None) is False
 
@@ -219,10 +204,6 @@ def test_meta_tool_definitions_shape():
     cc = defs[0]["function"]["parameters"]
     assert set(cc["required"]) == {"agent_name", "description", "tools_spec", "user_request"}
 
-
-# ---------------------------------------------------------------------------
-# Self-test summarizer
-# ---------------------------------------------------------------------------
 
 def test_summarize_outputs_pass_and_fail():
     ok = ac._summarize_outputs([
@@ -239,10 +220,6 @@ def test_summarize_outputs_pass_and_fail():
     assert bad["status"] == "failed" and bad["errors"]
 
 
-# ---------------------------------------------------------------------------
-# create_capability flow
-# ---------------------------------------------------------------------------
-
 def test_create_capability_happy_path(tmp_path, monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
@@ -256,15 +233,12 @@ def test_create_capability_happy_path(tmp_path, monkeypatch):
     assert res.error is None
     assert res.result["status"] == "created"
     draft_id = res.result["draft_id"]
-    # lifecycle path: create -> generate -> start -> (self-test via chat) once
     steps = [c[0] for c in orch.lifecycle_manager.calls]
     assert steps[:3] == ["create_draft", "generate_code", "start"]
-    assert orch.chat_calls and orch.chat_calls[0][2] == draft_id  # draft-test self-test
-    # card carries the three decisions
+    assert orch.chat_calls and orch.chat_calls[0][2] == draft_id
     card = res.ui_components[0]
     actions = [c.get("action") for c in card["content"] if c.get("type") == "button"]
     assert actions == ["draft_approve", "draft_refine", "draft_discard"]
-    # provenance persisted
     row = orch.db.drafts[draft_id]
     assert row["origin"] == "auto_chat" and row["gap_fingerprint"]
     assert json.loads(row["self_test"])["status"] == "passed"
@@ -292,10 +266,6 @@ def test_create_capability_rejects_bad_args(tmp_path):
     assert res.error is not None
 
 
-# ---------------------------------------------------------------------------
-# extend_agent ownership gate
-# ---------------------------------------------------------------------------
-
 def test_extend_agent_requires_ownership(tmp_path):
     orch = FakeOrch(str(tmp_path))
     orch.db.ownership["weather-1"] = {"owner_email": "someone-else@x", "is_public": True}
@@ -315,10 +285,6 @@ def test_extend_agent_requires_lifecycle_managed_live_agent(tmp_path):
     assert res.result["status"] == "not_revisable"
 
 
-# ---------------------------------------------------------------------------
-# Decision handlers
-# ---------------------------------------------------------------------------
-
 def _seed_draft(orch, user_id="u1"):
     orch.db.drafts["d1"] = {"id": "d1", "user_id": user_id, "agent_name": "T",
                             "agent_slug": "t", "description": "d", "status": "testing"}
@@ -330,7 +296,7 @@ def test_draft_approve_owner_only(tmp_path):
     _seed_draft(orch, user_id="someone_else")
     run(ac.HANDLERS["draft_approve"](orch, object(), "u1", [], {"draft_id": "d1"}))
     target, comps = orch.sent[-1]
-    assert comps[0]["type"] == "alert"  # not found / not yours
+    assert comps[0]["type"] == "alert"
     assert ("approve", "d1") not in orch.lifecycle_manager.calls
 
 
@@ -362,10 +328,6 @@ def test_draft_discard_deletes(tmp_path):
     assert "d1" not in orch.db.drafts
 
 
-# ---------------------------------------------------------------------------
-# apply_revision — gate + swap + rollback (FR-006)
-# ---------------------------------------------------------------------------
-
 class _Sev:
     def __init__(self, name):
         self.name = name
@@ -392,13 +354,11 @@ class _Validation:
 def _revision_fixture(tmp_path, gate_pass=True, start_raises=False):
     orch = FakeOrch(str(tmp_path))
     lc = orch.lifecycle_manager
-    # live agent on disk
     live_dir = tmp_path / "stock_tracker"
     live_dir.mkdir()
     (live_dir / "mcp_tools.py").write_text("OLD = 1\n", encoding="utf-8")
     orch.db.drafts["live1"] = {"id": "live1", "user_id": "u1", "agent_name": "Stock Tracker",
                                "agent_slug": "stock_tracker", "description": "d", "status": "live"}
-    # staged revision on disk
     rev_dir = tmp_path / "stock_tracker_revision"
     rev_dir.mkdir()
     (rev_dir / "mcp_tools.py").write_text("NEW = 2\n", encoding="utf-8")
@@ -425,7 +385,7 @@ def test_apply_revision_success_swaps_and_cleans_up(tmp_path):
     live_code = (tmp_path / "stock_tracker" / "mcp_tools.py").read_text(encoding="utf-8")
     assert "NEW = 2" in live_code
     assert not (tmp_path / "stock_tracker" / "mcp_tools.py.bak027").exists()
-    assert "rev1" not in orch.db.drafts  # staged row cleaned up
+    assert "rev1" not in orch.db.drafts
 
 
 def test_apply_revision_gate_failure_leaves_live_untouched(tmp_path):
@@ -433,8 +393,8 @@ def test_apply_revision_gate_failure_leaves_live_untouched(tmp_path):
     out = run(ac.apply_revision(orch, orch.db.drafts["rev1"], "u1"))
     assert out["applied"] is False
     live_code = (tmp_path / "stock_tracker" / "mcp_tools.py").read_text(encoding="utf-8")
-    assert "OLD = 1" in live_code  # FR-006: unchanged on gate failure
-    assert orch.db.drafts["rev1"]["status"] == "rejected"  # stays editable
+    assert "OLD = 1" in live_code
+    assert orch.db.drafts["rev1"]["status"] == "rejected"
 
 
 def test_apply_revision_swap_failure_rolls_back(tmp_path):
@@ -442,4 +402,4 @@ def test_apply_revision_swap_failure_rolls_back(tmp_path):
     out = run(ac.apply_revision(orch, orch.db.drafts["rev1"], "u1"))
     assert out["applied"] is False
     live_code = (tmp_path / "stock_tracker" / "mcp_tools.py").read_text(encoding="utf-8")
-    assert "OLD = 1" in live_code  # backup restored
+    assert "OLD = 1" in live_code

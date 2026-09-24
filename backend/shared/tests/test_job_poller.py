@@ -1,4 +1,7 @@
-"""Tests for shared.job_poller.JobPoller (T035, T040)."""
+"""Tests for shared/job_poller.JobPoller: intermediate/terminal phase emission,
+failure-threshold handling and recovery, and cancellation.
+"""
+
 import asyncio
 import json
 
@@ -8,7 +11,6 @@ from shared.job_poller import JobPoller
 
 
 class _FakeWS:
-    """Captures every send_text payload as parsed JSON for inspection."""
     def __init__(self):
         self.sent = []
 
@@ -85,7 +87,6 @@ async def test_failures_below_threshold_recover(make_poller) -> None:
 
     poller, ws = make_poller(_flaky, failure_threshold=5)
     await asyncio.wait_for(poller.run(), timeout=1.0)
-    # Three failures swallowed; one terminal emit on recovery.
     phases = [m["metadata"]["phase"] for m in ws.sent]
     assert phases == ["completed"]
 
@@ -97,7 +98,7 @@ async def test_cancellation_emits_status_unknown(make_poller) -> None:
 
     poller, ws = make_poller(lambda: {"status": "in_progress", "message": "still going"})
     task = asyncio.create_task(poller.run())
-    await asyncio.sleep(0.0)  # let it start
+    await asyncio.sleep(0.0)
     task.cancel()
     try:
         await task

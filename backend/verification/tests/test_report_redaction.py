@@ -1,4 +1,8 @@
-"""Report + redaction (T029 / SC-011, FR-022/028). Pure — no orchestrator boot."""
+"""Tests for the run report and redaction (backend/verification/config.py, evidence.py,
+report.py): secret masking, near-exposure flagging, and that differentiation claims
+are grounded only in passing verdicts.
+"""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +20,7 @@ def test_redact_masks_known_secret_and_flags():
     assert hit is True
     blob = json.dumps(cleaned)
     assert "topsecretvalue" not in blob
-    assert "abcdef123456" not in blob  # generic Bearer pattern also masked
+    assert "abcdef123456" not in blob
 
 
 def test_redact_clean_when_no_secrets():
@@ -58,14 +62,12 @@ def test_build_record_and_dual_report(tmp_path):
     assert record["coverage"]["file_categories"] == ["spreadsheet"]
     assert record["coverage"]["component_types"] == ["table"]
     assert 0.0 < record["uncertain_ratio"] < 1.0
-    # Differentiation is grounded in PASS verdicts only.
     assert any("real contents" in d for d in record["differentiation"])
 
     paths = write_report(record, cfg.run_dir)
     assert os.path.exists(paths["json"]) and os.path.exists(paths["markdown"])
     md = open(paths["markdown"], encoding="utf-8").read()
     assert "__verif__rep" in md and "mock_inprocess" in md
-    # Mock run must carry the not-a-guarantee banner.
     assert "NOT a real-realm" in md
 
 

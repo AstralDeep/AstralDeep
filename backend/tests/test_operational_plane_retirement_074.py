@@ -1,4 +1,7 @@
-"""Static guards for feature-074 operational data-plane retirement."""
+"""Static guards that operational data-plane access is retired: no legacy Deep database
+migration commands, container startup fails closed without inputs, and orchestrator
+file tools bind only to the application Plane.
+"""
 
 from pathlib import Path
 

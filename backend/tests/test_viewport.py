@@ -1,8 +1,8 @@
-"""Feature 033 (capability C-D7) — live viewport targeted re-adaptation.
-
-Covers the flag and the pure targeted-diff that selects only the canvas
-components whose rendered fragment changed between two device profiles.
+"""Tests for orchestrator/viewport.py's targeted re-adaptation diff: the feature flag,
+pushing only components whose rendered fragment changed between device profiles, and
+skipping components without an id or with a render error.
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,8 +17,6 @@ if str(BACKEND_DIR) not in sys.path:
 from orchestrator import viewport  # noqa: E402
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_viewport_default_off(monkeypatch):
     monkeypatch.delenv("FF_LIVE_VIEWPORT", raising=False)
     assert viewport.viewport_enabled() is False
@@ -30,8 +28,6 @@ def test_viewport_on_values(monkeypatch, v):
     assert viewport.viewport_enabled() is True
 
 
-# ───────────────────────── targeted diff ─────────────────────────────────────
-
 def _comps():
     return [{"type": "grid", "component_id": "g1"},
             {"type": "text", "component_id": "t1"},
@@ -39,8 +35,6 @@ def _comps():
 
 
 def test_only_changed_components_are_pushed():
-    # old profile: 1 grid column; new profile: 3 columns → grids re-render,
-    # the text is identical under both.
     def render_old(c):
         return c, f"<{c['type']} cols=1>"
 
@@ -49,7 +43,7 @@ def test_only_changed_components_are_pushed():
         return c, html
 
     ops = viewport.targeted_ops(_comps(), render_old, render_new)
-    assert [o["component_id"] for o in ops] == ["g1", "g2"]   # only the grids
+    assert [o["component_id"] for o in ops] == ["g1", "g2"]
     assert all(o["op"] == "upsert" and "html" in o for o in ops)
 
 
@@ -73,7 +67,6 @@ def test_render_error_skips_that_component_not_the_batch():
         return c, "old"
 
     ops = viewport.targeted_ops(comps, render_old, lambda c: (c, "new"))
-    # g1 raised → skipped; t1 and g2 still diffed and pushed
     assert [o["component_id"] for o in ops] == ["t1", "g2"]
 
 

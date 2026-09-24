@@ -1,4 +1,8 @@
-"""Private owner control observations; no route, mutation, or dispatch authority."""
+"""Observes an owner's original session for a paused resume or event wake without
+granting route, mutation, or dispatch authority. Used by work_control_authority.py,
+work_resume.py, and work_wake.py before they commit.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,12 +19,6 @@ from orchestrator.work_submit_authority import AuthenticatedWorkRequest
 
 @dataclass(frozen=True, slots=True)
 class OperationControlAuthority:
-    """Ephemeral original command selection; committing callers recheck it.
-
-    No subject token or execution-authority subtype is exposed. A resumed row
-    must independently qualify through the ordinary execution resolver later.
-    """
-
     record: AssignmentRecord = field(repr=False)
     command: Literal["resume", "wake"]
     observation: SessionExecutionObservation = field(repr=False)
@@ -31,7 +29,6 @@ class OperationControlAuthority:
 
     @property
     def claims(self) -> dict:
-        """Return a detached copy of the freshly verified original-owner claims."""
         return json.loads(self._claims_json)
 
 
@@ -40,18 +37,6 @@ async def refresh_operation_control_authority(
     command: Literal["resume", "wake"], sessions: WebSessionStore,
     expected_request_credential: SessionCredentialFence | None = None,
 ) -> OperationControlAuthority:
-    """Observe a paused resume or active event wake using its original session.
-
-    Authenticate and resolve any accepted receipt before calling. The immutable
-    record comes from that owner-scoped receipt miss, never request JSON. Remote
-    refresh and JWT verification happen without SQL locks. The same original
-    record/session is checked after awaits, and validity cannot exceed the
-    requesting principal, original work, or refreshed session/JWT lifetime.
-
-    This helper cannot resume or wake anything. The service must enforce command
-    semantics, current capability, atomic audit, and repeat these observations
-    around its mutation. Cancellation propagates; errors are data-free refusals.
-    """
     try:
         if (type(context) is not AuthenticatedWorkRequest
                 or type(original) is not AssignmentRecord

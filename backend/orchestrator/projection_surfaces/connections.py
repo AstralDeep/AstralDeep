@@ -1,29 +1,9 @@
-"""Deep-owned host adapter for the "Connections" Projection surface.
-
-Surface key ``connections`` (feature 088 T048). Lists the owner's issued
-framework credentials (see ``orchestrator.framework_credentials``) and lets
-them issue a new one or revoke an existing one, using AstralProjection's pure
-``astralprojection.chrome.connections`` builders exactly like
-``admin_tools.py`` reuses ``astralprojection.chrome.admin``. Every dynamic
-value flows through those builders' own closed validation; this module's job
-is authorization, reading Plane state, and dispatching the two commands.
-
-Issuing a key requires a FRESH live interactive session (the WS-socket
-equivalent of ``work_submit_authority.capture_human_caller`` /
-``assert_current_consent``): a bare-Bearer session with no live cookie
-issuance can never mint or revoke a key. That binding is
-``orchestrator.human_request_authority.current_human_caller`` — wired in via
-``human_request_authority._SOCKET_WRITES`` for the two actions below (see the
-module docstring's "known gap" note if that registration has not landed yet;
-until it has, both actions fail closed with ``human_authentication_required``
-rather than minting or revoking without a fresh consent fence).
-
-The freshly issued secret is shown exactly once, in the SAME response that
-issued it, via a short-lived per-socket stash (``_stash_secret``/``_pop_secret``)
-that is consumed on first read and swept on a bounded TTL — the secret is
-never placed in ``params`` (which a client can echo back on navigation
-replay) and never persisted anywhere.
+"""Renders the Connections surface for issuing and revoking the owner's framework
+credentials, using astralprojection.chrome.connections builders. Issuing a key
+requires a fresh live session via human_request_authority.py, never a bare-bearer
+one.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,8 +36,6 @@ _REVOKE_ERRORS = {
     "framework_credential_authority_unavailable": "That key could not be revoked. Try again.",
 }
 
-# {(id(websocket), credential_id): (secret, deadline_monotonic)} — process-local,
-# one-time, and swept on a bound TTL. Never serialized, never logged.
 _PENDING_SECRETS: dict[tuple[int, str], tuple[str, float]] = {}
 
 
@@ -113,12 +91,6 @@ def _form_state(*, name: str = "", scopes=None, expires_in_seconds: int = 30 * 8
 
 
 def _current_human_caller(orch, user_id: str):
-    """The live-session human caller a mutating handler may act as, or ``None``.
-
-    Deliberately never falls back to the WS session's bare claims — issuing or
-    revoking a framework credential requires the SAME fresh consent fence
-    ``work_submit_authority.capture_human_caller`` produces for Work writes.
-    """
     from orchestrator.human_request_authority import current_human_caller
     caller = current_human_caller(expected_orchestrator=orch)
     if caller is None or caller.owner_id != user_id:
@@ -224,10 +196,6 @@ async def _h_issue(orch, websocket, user_id, roles, payload):
 
 
 def _issue_form_notice(message: str, _fail_state: dict) -> str:
-    # The re-render itself carries the failed name/scopes back through
-    # ``render``'s own form_state defaults; a bare error notice is enough here
-    # since Connections' issue form is not currently draft-preserving across a
-    # validation failure (unlike Personalization's soul form).
     return notice_block("error", message)
 
 

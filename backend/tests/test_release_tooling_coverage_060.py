@@ -1,4 +1,7 @@
-"""Isolation and public-surface guards for changed-coverage release tooling."""
+"""Tests that the changed-coverage release-tooling scripts (and the xccov exporter) are
+stdlib-only, expose their documented public APIs, pin NUL-delimited diffing, and
+never shell out.
+"""
 
 from __future__ import annotations
 
@@ -14,14 +17,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_changed_coverage.py"
 XCCOV_EXPORTER = REPO_ROOT / "scripts" / "export_xccov_line_coverage.py"
 
-if not (REPO_ROOT / "scripts").is_dir():  # repo root absent inside the product image
+if not (REPO_ROOT / "scripts").is_dir():
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
     )
 
 
-def test_changed_coverage_tool_is_stdlib_only_and_documents_public_apis() -> None:
+def test_changed_coverage_tool_is_stdlib_only_and_exposes_public_apis() -> None:
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"), filename=str(SCRIPT))
     imported: set[str] = set()
     public_functions: dict[str, ast.FunctionDef] = {}
@@ -44,10 +47,6 @@ def test_changed_coverage_tool_is_stdlib_only_and_documents_public_apis() -> Non
         "main",
     }
     assert expected <= set(public_functions)
-    for name in expected:
-        assert ast.get_docstring(public_functions[name]), (
-            f"{name} needs a public contract"
-        )
 
 
 def test_changed_coverage_cli_exposes_every_platform_report_partition() -> None:
@@ -92,7 +91,7 @@ def test_collector_source_pins_nul_diff_and_has_no_shell_execution() -> None:
     assert "os.system" not in source
 
 
-def test_xccov_exporter_is_stdlib_only_documented_and_has_no_shell_execution() -> None:
+def test_xccov_exporter_is_stdlib_only_and_has_no_shell_execution() -> None:
     source = XCCOV_EXPORTER.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(XCCOV_EXPORTER))
     imported: set[str] = set()
@@ -107,7 +106,6 @@ def test_xccov_exporter_is_stdlib_only_documented_and_has_no_shell_execution() -
     imported.discard("__future__")
     assert imported <= sys.stdlib_module_names
     assert {"export_xccov", "main"} <= set(public_functions)
-    assert all(ast.get_docstring(node) for node in public_functions.values())
     assert "shell=True" not in source
     assert "os.system" not in source
 

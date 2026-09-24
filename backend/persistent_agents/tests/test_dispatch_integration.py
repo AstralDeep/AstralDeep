@@ -1,9 +1,9 @@
-"""Persistent capabilities at actual Orchestrator provider/transport seams.
-
-Construct the hub without startup to avoid changing the qualified Plane pin.
-The methods under test are the live central dispatch implementations; only
-external provider/transport and already-covered governance results are faked.
+"""Tests for persistent_agents/dispatch_context.py at real Orchestrator
+provider/transport seams: one permit per governed send, denial never consumes a
+physical permit, no reservation reuse across transport fallback, and a capped model
+boundary.
 """
+
 from __future__ import annotations
 
 import json

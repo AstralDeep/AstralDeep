@@ -1,4 +1,7 @@
-"""Fail-closed candidate-staging driver and topology contracts (T103/T107)."""
+"""Tests for the candidate-staging deploy driver: fail-closed fixture validation,
+digest-qualified images, protected-environment checks, and the CLI's
+validate/deploy/cleanup command surface.
+"""
 
 from __future__ import annotations
 
@@ -63,7 +66,7 @@ def _voice_cli() -> list[str]:
 
 if not (
     (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "specs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -107,7 +110,6 @@ def test_fixture_validation_detects_manifest_fingerprint_drift(
     copied["files"]["representative-057.sql"]["sha256"] = "0" * 64
     path = tmp_path / "fixture-manifest.json"
     path.write_text(json.dumps(copied), encoding="utf-8")
-    # Keep the tampered manifest beside symlinks to the real public fixtures.
     for name in ("representative-057.sql", "keycloak-realm.json", "legacy-agent-root"):
         (tmp_path / name).symlink_to(fixture_root / name, target_is_directory=name.endswith("root"))
     with pytest.raises(driver.StagingError, match="fingerprint"):

@@ -1,9 +1,7 @@
-"""Executable entrypoint for the isolated Feature 065 direct-RTC worker.
-
-This production worker is intentionally outside the application data plane.
-It receives bounded, authenticated session assignments over the worker-control
-channel and must never import AstralPlane, a database driver, or Deep product
-authority code.
+"""Executable entrypoint for the isolated direct-RTC voice worker
+(backend/voice_agent/control.py, session.py, speech_adapters.py): speech preflight
+with bounded retry, phrase-cache warming, and a runtime guard against
+authority-bearing imports.
 """
 
 from __future__ import annotations
@@ -92,22 +90,12 @@ def build_pool_client(
     rtc_factory: Any | None = None,
     vad_factory: Any | None = None,
 ) -> PoolClient:
-    """Construct the production direct-RTC sessions from worker-only config.
-
-    The fixed-origin transport import is delayed because the isolated image
-    copies its audited source into ``voice_agent.streaming_egress``. Tests may
-    inject the transport, RTC adapter, and VAD constructor without loading
-    native packages on the host.
-    """
-
     if transport is None:
         transport = _build_speech_transport(config)
     resolved_rtc = rtc_factory or LiveKitRtcFactory()
     resolved_vad_factory = vad_factory or SileroVad
     asr = SpeachesBatchSTT(transport=transport, api_key=config.speech_api_key)
-    # Feature 066: repeated server-owned announcements are served from bounded
-    # worker memory instead of a fresh TTS round trip; user-content text never
-    # matches the closed vocabulary and passes straight through.
+    # Only fixed phrases are cached — user speech never matches.
     tts = FixedPhraseTTSCache(
         SpeachesTTS(transport=transport, api_key=config.speech_api_key)
     )
@@ -141,8 +129,6 @@ def build_pool_client(
         session_factory=create_session,
     )
     client = PoolClient(config, supervisor=supervisor)
-    # The runtime cache is reachable from the client so startup can warm it
-    # without rebuilding the adapters the sessions actually share.
     client.speech_tts = tts
     client_holder["client"] = client
     return client
@@ -153,8 +139,6 @@ async def run_speech_preflight(
     *,
     transport: Any | None = None,
 ) -> SpeechPreflightResult:
-    """Prove the exact live speech profile before pool authentication."""
-
     resolved_transport = transport or _build_speech_transport(config)
     return await SpeechPreflight(
         transport=resolved_transport,
@@ -162,16 +146,9 @@ async def run_speech_preflight(
     ).run()
 
 
-# Feature 066 (FR-036). A speech service that is briefly missing its models
-# or routes used to kill the worker at startup: the preflight raised, nothing
-# caught it, and the process exited 78 — silently, because this package logs
-# nothing before admission. Under `restart: "no"` (staging) the worker then
-# stayed dead until an operator noticed, which is the exact failure this
-# requirement removes. Re-check on bounded backoff instead, and say why on
-# every attempt (reason codes only — a closed, content-free vocabulary).
 _PREFLIGHT_RETRY_INITIAL_SECONDS = 5.0
 _PREFLIGHT_RETRY_MAX_SECONDS = 60.0
-#: A misconfigured credential cannot heal by waiting — fail fast as before.
+# A misconfigured credential can't heal by waiting — fail fast.
 _PREFLIGHT_FATAL_REASONS = frozenset({"missing_credential"})
 
 
@@ -180,13 +157,6 @@ def _log_preflight(reason: str, attempt: int) -> None:
 
 
 async def preflight_until_ready(config: WorkerConfig, stop: asyncio.Event) -> bool:
-    """Re-check the speech profile until it is ready or shutdown is requested.
-
-    Returns True once the profile is proven, False if stopped first. Calls
-    ``run_speech_preflight`` with exactly its production signature so the
-    single-call-site contract (and every test double of it) is unchanged.
-    """
-
     backoff = _PREFLIGHT_RETRY_INITIAL_SECONDS
     attempt = 0
     while not stop.is_set():
@@ -207,26 +177,16 @@ async def preflight_until_ready(config: WorkerConfig, stop: asyncio.Event) -> bo
     return False
 
 
-# The preflight proves TTS by synthesizing "On it!" and then deliberately
-# discards it (zero retention before pool authentication), so the first real
-# acknowledgement of the worker's life used to pay a full cold round trip
-# against the <=1.5 s budget. Warm the runtime cache instead, off the critical
-# path, with the phrases that can be spoken earliest. Members of the closed
-# server-owned vocabulary only — the cache refuses anything else anyway.
 WARM_PHRASE_TEXTS: tuple[str, ...] = (
     "On it!",
     "Hi! I'm ready when you are.",
     "I'm on it.",
     "Let me take care of that.",
 )
-#: Every warmed phrase is an acknowledgement or greeting, which the
-#: coordinator reserves at the single-announcement ceiling.
 _WARM_PHRASE_SAMPLES = KOKORO_SAMPLE_RATE * 4
 
 
 async def warm_phrase_cache(tts: Any) -> None:
-    """Prime the bounded phrase cache without ever failing the worker."""
-
     for text in WARM_PHRASE_TEXTS:
         if text not in SERVER_OWNED_PHRASE_TEXTS:
             continue
@@ -235,8 +195,6 @@ async def warm_phrase_cache(tts: Any) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The service regressed since the preflight proved it. The live
-            # synthesis path is unchanged; stop rather than retry the rest.
             return
 
 
@@ -259,12 +217,10 @@ def _build_speech_transport(config: WorkerConfig) -> Any:
 
 
 class ForbiddenRuntimeImport(RuntimeError):
-    """An authority-bearing package crossed the worker isolation boundary."""
+    pass
 
 
 class RuntimeImportGuard(importlib.abc.MetaPathFinder):
-    """Reject Agents, LLM, tool, database, and LiveKit API imports at runtime."""
-
     def find_spec(
         self,
         fullname: str,
@@ -278,16 +234,12 @@ class RuntimeImportGuard(importlib.abc.MetaPathFinder):
         return None
 
     def assert_clean(self, module_names: Set[str]) -> None:
-        """Fail if forbidden authority was imported before guard installation."""
-
         for name in sorted(module_names):
             forbidden = _matching_prefix(name, _FORBIDDEN_MODULE_PREFIXES)
             if forbidden is not None:
                 raise ForbiddenRuntimeImport(f"forbidden_runtime_import:{forbidden}")
 
     def install(self) -> None:
-        """Install once at the front of import resolution."""
-
         if self not in sys.meta_path:
             sys.meta_path.insert(0, self)
 
@@ -295,8 +247,6 @@ class RuntimeImportGuard(importlib.abc.MetaPathFinder):
 def assert_runtime_distributions(
     installed: Mapping[str, str] | None = None,
 ) -> None:
-    """Verify the deployed closure excludes authority-bearing distributions."""
-
     if installed is None:
         installed = {
             distribution.metadata["Name"]: distribution.version
@@ -317,8 +267,6 @@ def assert_runtime_distributions(
 
 
 async def run_worker(config: WorkerConfig | None = None) -> None:
-    """Run the authenticated pool client until the process receives a signal."""
-
     resolved = config or WorkerConfig.from_environ()
     guard = RuntimeImportGuard()
     guard.assert_clean(set(sys.modules))
@@ -355,8 +303,6 @@ async def run_worker(config: WorkerConfig | None = None) -> None:
 
 
 def main() -> int:
-    """Return a stable process status without rendering secret-bearing errors."""
-
     try:
         asyncio.run(run_worker())
     except (ConfigError, ForbiddenRuntimeImport, SpeechPreflightError) as exc:

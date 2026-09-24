@@ -1,4 +1,7 @@
-"""Durable Plane evidence around the final LETS protected-effect boundary."""
+"""Tests for orchestrator/lets_effects.py and protected_dispatch.py: durable, redacted
+persistence of the intent/receipt/claim sequence, repeat-safe retries, failing before
+effect on an unhealthy authority, and reconciling uncertain outcomes.
+"""
 
 from __future__ import annotations
 

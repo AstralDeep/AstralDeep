@@ -1,4 +1,7 @@
-"""Real filesystem/Git fixtures for same-build Apple artifact closure."""
+"""Tests for scripts/apple_coverage_artifacts.py and native_xccov_domain.py: same-build
+Apple archive closure over real filesystem/Git fixtures — bundle identity, symlink
+integrity, and coverage-domain reconstruction.
+"""
 
 import json
 from pathlib import Path
@@ -558,7 +561,6 @@ def test_committed_external_scope_file_and_directory_links_have_exact_closure(
 
 
 def observation(lane):
-    """Minimal Xcode 26 summary/tests shape witnessed from real retained results."""
     plan = "AstralCore" if lane == "core" else "AstralApp"
     target = {"core": "AstralCoreTests", "unit": "AstralAppTests"}.get(
         lane, "AstralAppUITests"
@@ -1045,7 +1047,6 @@ def test_private_result_copy_rejects_unsafe_unbounded_or_changed_input(tmp_path,
 
 
 def native_fixture(tmp_path):
-    """Synthetic retained inputs exercise policy orchestration, not native qualification."""
     from backend.tests.test_native_xccov_domain_088 import _macho, _mapping, _metadata
     from scripts import native_xccov_domain as domain
 
@@ -1142,7 +1143,6 @@ def test_native_domain_reconstructs_selected_retained_binary_and_exact_sources(
         return json.dumps(value).encode()
 
     monkeypatch.setattr(exporter, "_bounded_command", run)
-    # The fixture LLVM root is the same explicit historical path passed here.
     from backend.tests.test_native_xccov_domain_088 import ROOT
 
     core = helper.native_domain(repo, output, "core", ROOT)
@@ -1236,15 +1236,13 @@ def test_protected_reconstruction_refuses_self_asserted_reduced_mapping_domain(
         repo=repo, inputs=inputs, output=report, platform="ios", profile="release"
     )
     if forgery:
-        # Genuine source hash and syntactically valid binary/geometry digests
-        # cannot authenticate a reduced domain or missing executable row.
         for value in actual["domains"].values():
             for facts in value["sources"].values():
                 facts["native_last_line"] = 1
                 facts["geometry_sha256"] = "c" * 64
         for rows in actual["coverage"].values():
             rows.pop()
-        domain.parse_native_report(actual)  # shape-only consumer is not authority
+        domain.parse_native_report(actual)
         report.write_text(json.dumps(actual))
         with pytest.raises(helper.ArtifactError):
             helper.verify_native_domains(repo, output, report, str(repo))

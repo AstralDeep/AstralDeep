@@ -1,11 +1,8 @@
+"""Tests for orchestrator/stream_manager.py: chunk_too_large fails straight to FAILED as
+retryable, a cancelled stream fails as non-retryable, and one stream's failure never
+affects its session siblings.
 """
-US5 failure handling tests (001-tool-stream-ui T087).
 
-Covers FR-019, FR-020, SC-007:
-- chunk_too_large goes directly to FAILED with retryable=True
-- cancelled goes to FAILED with retryable=False (user explicitly stopped)
-- One stream failing does not affect other streams in the same session.
-"""
 import asyncio
 import json
 import os
@@ -57,14 +54,12 @@ async def test_chunk_too_large_goes_directly_to_failed():
         error={"code": "chunk_too_large", "message": "70KB"},
     ))
     await asyncio.sleep(0.05)
-    # Subscription is gone (FAILED → torn down). No retry attempt.
     assert sid not in [s.stream_id for s in mgr._active.values()]
     assert dispatcher.await_count == 1
     msgs = [json.loads(p) for w, p in sent]
     failed = [m for m in msgs if (m.get("error") or {}).get("phase") == "failed"]
     assert len(failed) >= 1
     assert failed[-1]["error"]["code"] == "chunk_too_large"
-    # chunk_too_large IS retryable (the user might fix the tool)
     assert failed[-1]["error"]["retryable"] is True
 
 
@@ -91,8 +86,6 @@ async def test_cancelled_goes_to_failed_not_retryable():
 
 @pytest.mark.asyncio
 async def test_one_failure_does_not_affect_other_streams():
-    """FR-020: one stream failing must not affect other streams in the same
-    session."""
     mgr, sessions, sent, dispatcher = _mgr()
     ws = FakeWS()
     sessions[ws] = {"sub": "alice"}
@@ -107,15 +100,12 @@ async def test_one_failure_does_not_affect_other_streams():
     )
     assert len(mgr._active) == 2
 
-    # Stream A fails terminally (chunk_too_large is non-retryable in
-    # the auto-retry sense — goes straight to FAILED)
     await mgr.handle_agent_chunk(ToolStreamData(
         request_id="req-A", stream_id=sid_a, agent_id="a", tool_name="t1",
         seq=1, components=[],
         error={"code": "chunk_too_large", "message": "too big"},
     ))
     await asyncio.sleep(0.05)
-    # Stream B still active
     active_ids = [s.stream_id for s in mgr._active.values()]
     assert sid_a not in active_ids
     assert sid_b in active_ids

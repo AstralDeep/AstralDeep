@@ -1,4 +1,7 @@
-"""Fail-closed construction of the Feature-065 voice control/media services."""
+"""Fail-closed construction of the voice control and media services (announcement
+runner, local recognition, worker pool, reaper) that voice_api.py and
+voice_runtime.py call; voice_backend.py supplies the fixed speech backend.
+"""
 
 from __future__ import annotations
 
@@ -88,8 +91,6 @@ _MAX_LOCAL_IDENTITY_END_ATTEMPTS = MAX_LOCAL_ACTIVATION_STATES + 1
 async def _join_task_outcome_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
-    """Join retained repository work despite repeated caller cancellation."""
-
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -109,13 +110,11 @@ async def _join_task_outcome_through_cancellation(
 
 
 class VoiceBootstrapError(RuntimeError):
-    """Content-free deployment refusal that leaves ordinary chat untouched."""
+    pass
 
 
 @dataclass(eq=False, slots=True)
 class _LocalRecognitionRequest:
-    """Exact request-owned reference for one content-free recognition key."""
-
     user_id: str
     client_turn_id: str
     cleanup_epoch: _LocalCleanupEpoch | None = field(default=None, repr=False)
@@ -125,8 +124,6 @@ class _LocalRecognitionRequest:
 
 @dataclass(eq=False, slots=True)
 class _LocalCleanupEpoch:
-    """Identity token invalidated before exact durable session cleanup."""
-
     user_id: str
     session_id: str
     generation: int
@@ -146,8 +143,6 @@ class _LocalCleanupEpoch:
 
 @dataclass(eq=False, slots=True)
 class _LocalCleanupOperation:
-    """One retained, cancellation-safe exact cleanup attempt."""
-
     epoch: _LocalCleanupEpoch
     mutation_tasks: tuple[asyncio.Task[Any], ...] = field(
         default=(),
@@ -159,8 +154,6 @@ class _LocalCleanupOperation:
 
 @dataclass(eq=False, slots=True)
 class _LocalEndFence:
-    """Reversible in-memory barrier around one exact durable end CAS."""
-
     epoch: _LocalCleanupEpoch
     status: str = "pending"
     pending_attempts: int = 0
@@ -169,8 +162,6 @@ class _LocalEndFence:
 
 @dataclass(frozen=True, eq=False, slots=True)
 class _LocalReadyTransition:
-    """Exact post-cleanup readiness delivery allowed to reopen one epoch."""
-
     revision: int
     socket_id: int
     user_id: str
@@ -188,16 +179,12 @@ class _LocalReadyTransition:
 
 @dataclass(slots=True)
 class _LocalRecognitionKeyState:
-    """Bounded FIFO ownership for one content-free recognition identity."""
-
     owner: _LocalRecognitionRequest
     waiters: deque[tuple[_LocalRecognitionRequest, asyncio.Future[None]]]
 
 
 @dataclass(frozen=True, slots=True)
 class _PendingLocalRejection:
-    """Content-free durable-terminalization handle for one local turn."""
-
     user_id: str
     client_turn_id: str
     turn_id: str
@@ -221,8 +208,6 @@ class _PendingLocalRejection:
 
 @dataclass(frozen=True, slots=True)
 class _PendingLocalRejectionReservation:
-    """Content-free capacity held before one recognition insert can commit."""
-
     user_id: str
     client_turn_id: str
     session_id: str
@@ -235,8 +220,6 @@ class _PendingLocalRejectionReservation:
 
 @dataclass(slots=True)
 class _AnnouncementCommand:
-    """One in-process lifecycle mutation for a session-owned output stream."""
-
     action: str
     turn: VoiceTurnRecord | None
     future: asyncio.Future[Any] = field(repr=False)
@@ -253,8 +236,6 @@ class _AnnouncementCommand:
 
 @dataclass(slots=True)
 class _PreparedQuantum:
-    """One already-reserved speech command; text stays process-local."""
-
     turn: VoiceTurnRecord
     mutation: AnnouncementMutation
     text: str = field(repr=False)
@@ -264,8 +245,6 @@ class _PreparedQuantum:
 
 @dataclass(slots=True)
 class _QuantumBundle:
-    """Serialized terminal or consented recap quanta for one exact turn."""
-
     turn: VoiceTurnRecord
     quanta: deque[_PreparedQuantum] = field(repr=False)
     completion: asyncio.Future[Any] = field(repr=False)
@@ -275,13 +254,6 @@ class _QuantumBundle:
 
 @dataclass(frozen=True, slots=True)
 class VoiceTerminalAnnouncementResult:
-    """Durable terminal turn plus its ephemeral source-speech outcome.
-
-    ``source_finished`` means only that every requested speech quantum reached
-    the worker/source terminal event.  It does not claim local client playout
-    or audibility, which remains independently observed by playout events.
-    """
-
     turn: VoiceTurnRecord
     speech_outcome: str
 
@@ -295,14 +267,6 @@ class VoiceTerminalAnnouncementResult:
 
 
 class _SessionAnnouncementRunner:
-    """Own the sole assistant-speech stream for one session generation.
-
-    Commands are applied while media is in flight.  This lets a same-turn
-    waiting or terminal transition fence stale progress immediately, while a
-    newer accepted turn is merely queued and never supersedes the older
-    turn's current lifecycle utterance.
-    """
-
     _IDLE_WAIT_SECONDS = 60.0
     _SOURCE_TERMINAL_SECONDS = 12.0
 
@@ -343,8 +307,6 @@ class _SessionAnnouncementRunner:
         )
 
     def submit(self, command: _AnnouncementCommand) -> None:
-        """Queue one bounded command without starting another speech task."""
-
         if self._closing or self.task.done():
             raise VoiceBootstrapError("voice_announcement_runner_unavailable")
         if len(self._commands) >= 32:
@@ -353,13 +315,9 @@ class _SessionAnnouncementRunner:
         self._wake.set()
 
     def wake(self) -> None:
-        """Wake fake-clock tests or an externally advanced monotonic source."""
-
         self._wake.set()
 
     async def close(self) -> None:
-        """Fence timers/queued speech and settle callers without content."""
-
         if self._closing:
             await asyncio.gather(self.task, return_exceptions=True)
             return
@@ -380,10 +338,6 @@ class _SessionAnnouncementRunner:
                 decision = self._scheduler.next_decision()
                 degrades = self._scheduler.handoff_degrades
                 if degrades != self._observed_handoff_degrades:
-                    # Content-free telemetry for the degrade path: pre-fix,
-                    # the same condition raised stream_handoff_budget_exceeded
-                    # and was the signal used to diagnose the 2026-08-05 live
-                    # failure. Keep the recurrence visible.
                     logger.warning(
                         "voice_cadence_handoff_degraded total=%d deferred_quanta=%d",
                         degrades,
@@ -401,9 +355,7 @@ class _SessionAnnouncementRunner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # A command can fail after it fenced the scheduler but before the
-            # in-flight media waiter reports terminal.  Always send the exact
-            # session stop on runner failure so stale audio cannot outlive it.
+            # Always stop on failure here, or stale audio can outlive the session
             await self._stop_current_speech()
             logger.warning(
                 "voice_announcement_runner_failed reason=%s",
@@ -598,9 +550,6 @@ class _SessionAnnouncementRunner:
             if turn_id != turn.turn_id and self._scheduler.has_turn(turn_id)
         )
         if active_turn_ids:
-            # The scheduler permits at most two active turns. Labels describe
-            # request order, not completion order, and remain bound even if
-            # the earlier terminal bundle drains before the later one.
             self._turn_attribution[active_turn_ids[-1]] = "earlier"
             self._turn_attribution[turn.turn_id] = "latest"
         self._scheduler.add_turn(
@@ -616,8 +565,6 @@ class _SessionAnnouncementRunner:
             self._scheduler.set_muted(turn.turn_id, True)
 
     def _set_muted(self, muted: bool) -> bool:
-        """Apply one session-wide speech fence without queuing catch-up audio."""
-
         if self._muted == muted:
             return False
         self._muted = muted
@@ -634,14 +581,10 @@ class _SessionAnnouncementRunner:
         return (muted and self._speaking) or preempted
 
     def _mark_intentional_stop(self) -> bool:
-        """Fence active and queued output for this exact session generation."""
-
         bundle = self._active_bundle
         if bundle is not None:
             bundle.intentionally_suppressed = True
             if bundle.quanta:
-                # Remaining quanta are deliberately discarded and therefore
-                # cannot truthfully be described as source-finished.
                 bundle.quanta.clear()
                 bundle.speech_outcome = "suppressed"
         preempted = self._one_shot_scheduler_fence(self._active_turn_id)
@@ -663,9 +606,6 @@ class _SessionAnnouncementRunner:
                 _settle(queued_bundle.completion, None)
             completed_ids.add(id(queued_bundle))
 
-        # A terminal bundle whose first quantum has not started is owned by the
-        # scheduler rather than the continuation deque. Suppress and settle it
-        # in the same stop command so an idle-boundary race cannot restart it.
         for queued_bundle in tuple(self._terminal.values()):
             if queued_bundle is bundle or id(queued_bundle) in completed_ids:
                 continue
@@ -680,8 +620,6 @@ class _SessionAnnouncementRunner:
         return preempted
 
     def _one_shot_scheduler_fence(self, turn_id: str | None) -> bool:
-        """Cancel one active/offered quantum without persisting user mute."""
-
         if turn_id is None or not self._scheduler.has_turn(turn_id):
             return False
         snapshot = self._scheduler.snapshot(turn_id)
@@ -689,21 +627,13 @@ class _SessionAnnouncementRunner:
             return False
         preempted = self._scheduler.set_muted(turn_id, True)
         if not self._muted:
-            # Explicit stop/background interruption is a one-shot fence. The
-            # durable user mute state remains authoritative for future speech.
             self._scheduler.set_muted(turn_id, False)
         return preempted
 
     def _drop_muted_bundles(self) -> None:
-        """Discard queued result speech while preserving durable text outcomes."""
-
         active = self._active_bundle
         if active is not None:
-            # Mute/background is accepted while the source may already be
-            # racing to its normal terminal event.  Fence the remainder now so
-            # a late ``speech_finished`` cannot requeue it after the user has
-            # asked for silence.  The active bundle is settled only after its
-            # exact source waiter terminates.
+            # Fences late speech_finished from requeuing audio after a mute
             active.intentionally_suppressed = True
             active.quanta.clear()
             active.speech_outcome = "suppressed"
@@ -726,8 +656,6 @@ class _SessionAnnouncementRunner:
             self._complete_terminal_bundle(bundle)
 
     def _abandon_turn(self, turn: VoiceTurnRecord) -> bool:
-        """Cancel only voice output for an unavailable origin chat."""
-
         turn_id = turn.turn_id
         preempted = False
         if self._scheduler.has_turn(turn_id):
@@ -961,9 +889,6 @@ class _SessionAnnouncementRunner:
     def _next_continuation(self) -> _QuantumBundle | None:
         if not self._continuations:
             return None
-        # Handoff is a maximum switch-latency allowance, not an inter-quantum
-        # pause. Attempt eligible continuation media immediately; the cadence
-        # reservation below still protects an equally due peer's hard bound.
         bundle = self._continuations[0]
         claim = bundle.quanta[0].mutation.claim
         duration = claim.max_duration_samples / 24_000
@@ -1053,12 +978,6 @@ class _SessionAnnouncementRunner:
         *,
         status: str,
     ) -> str:
-        """Classify intentional lifecycle fences separately from speech failure."""
-
-        # ``speech_interrupted`` is an authenticated, exact-announcement worker
-        # terminal.  Its protocol reasons are intentional fences (barge-in,
-        # user stop, mute, takeover, end, terminal supersession, or staleness),
-        # whereas synthesis/publication failures use ``speech_failed``.
         if status == "speech_interrupted":
             return "suppressed"
         key = (bundle.turn.session_id, bundle.turn.session_generation)
@@ -1279,8 +1198,6 @@ class VoiceServices:
         self,
         notifier: Callable[[VoiceTurnRecord], Awaitable[None]],
     ) -> None:
-        """Bind one content-free repaired-turn delivery seam."""
-
         if not callable(notifier):
             raise TypeError("terminal turn notifier must be callable")
         if self.terminal_turn_notifier is not None:
@@ -1350,17 +1267,9 @@ class VoiceServices:
             raise
 
     def voice_status(self) -> dict[str, Any]:
-        """Project the FR-034 operator surface: readiness, workers, refusals.
-
-        Every field is credential-free.  Speech-preflight verdicts live in the
-        worker's own logs (FR-036) and are deliberately absent here.
-        """
-
         def _stamp(value: datetime) -> str:
             return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
-        # Preserve the pre-075 projection contract for focused harnesses (and
-        # embedders) that provide only the established remote worker fields.
         speech_backend = getattr(
             self, "speech_backend", VoiceSpeechBackend.LLM_FACTORY
         )
@@ -1424,8 +1333,6 @@ class VoiceServices:
         *,
         environ: Mapping[str, str] | None = None,
     ) -> WorkerControlEndpoint:
-        """Mount the authenticated pool socket exactly once on the root app."""
-
         del environ
         if self.speech_backend is not VoiceSpeechBackend.LLM_FACTORY:
             raise VoiceBootstrapError("worker_control_not_available")
@@ -1446,14 +1353,6 @@ class VoiceServices:
         receipt: WorkerRegistrationReceipt,
         released_session_ids: tuple[str, ...],
     ) -> None:
-        """Reconcile only assignments still absent after one exact disconnect.
-
-        WorkerPool already makes a stale replaced connection's unregister a
-        no-op. This second check closes the narrow scheduling window between
-        unregister and durable cleanup: if any session has since acquired a
-        current assignment, the delayed callback cannot end it.
-        """
-
         try:
             await self.runtime.reconcile_worker_disconnect(
                 worker_identity=receipt.worker_identity,
@@ -1464,16 +1363,12 @@ class VoiceServices:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The pool fence has already failed media closed. Durable lease
-            # expiry and room reconciliation remain bounded backstops.
             logger.warning(
                 "voice_worker_disconnect_reconcile_unavailable "
                 "reason=runtime_cleanup_failed"
             )
 
     def _worker_assignment_is_current(self, session_id: str) -> bool:
-        """Deny stale cleanup whenever the pool has a current assignment."""
-
         try:
             self.worker_pool.assignment_snapshot(session_id)
         except StaleFence:
@@ -1485,8 +1380,6 @@ class VoiceServices:
         receipt: WorkerRegistrationReceipt,
         frame: Mapping[str, Any],
     ) -> None:
-        """Apply only post-authentication worker effects to durable state."""
-
         frame_type = frame.get("type")
         terminal_state = self._terminal_worker_state(frame)
         try:
@@ -1546,9 +1439,6 @@ class VoiceServices:
         except Exception:
             if terminal_state is None:
                 raise
-            # Terminal assignment repair is the authoritative fail-closed
-            # effect. A local media/metrics failure must not strand its slot or
-            # escalate one session failure to every peer on the worker socket.
             logger.warning(
                 "voice_terminal_worker_effect_unavailable "
                 "reason=terminal_effect_failed"
@@ -1562,8 +1452,6 @@ class VoiceServices:
 
     @staticmethod
     def _terminal_worker_state(frame: Mapping[str, Any]) -> str | None:
-        """Project only authenticated worker states that end one media lease."""
-
         frame_type = frame.get("type")
         if frame_type == "media_state":
             state = frame.get("state")
@@ -1582,8 +1470,6 @@ class VoiceServices:
         *,
         terminal_state: str,
     ) -> None:
-        """Release and reconcile one exact terminal assignment, leaving peers live."""
-
         session_id = frame.get("session_id")
         generation = frame.get("generation")
         if (
@@ -1616,8 +1502,6 @@ class VoiceServices:
         *,
         listening: bool,
     ) -> None:
-        """Translate an authenticated worker state into true-idle state."""
-
         session_id = frame.get("session_id")
         generation = frame.get("generation")
         if not isinstance(session_id, str) or not isinstance(generation, int):
@@ -1654,8 +1538,6 @@ class VoiceServices:
         *,
         now: datetime,
     ) -> TranscriptAdmission:
-        """Verify a final with the same memory-only secret as its worker."""
-
         try:
             admission = await asyncio.to_thread(
                 self.repository.admit_transcript,
@@ -1708,8 +1590,6 @@ class VoiceServices:
         now: datetime,
         allow_reconnecting: bool = False,
     ) -> None:
-        """Require this replica's exact, live session/control lease."""
-
         checked_now = now.astimezone(UTC)
         try:
             valid = (
@@ -1738,8 +1618,6 @@ class VoiceServices:
         frame: Any,
         now: datetime,
     ) -> VoiceSessionRecord:
-        """Authorize one readiness observation against server-held state."""
-
         self._require_local_backend()
         cleanup_key = self._local_cleanup_key(
             user_id=user_id,
@@ -1821,9 +1699,6 @@ class VoiceServices:
                 now=now,
             )
             if cleanup_epoch is not None and not cleanup_epoch.accepting:
-                # A successful readiness check starts a fresh announcement
-                # epoch, but output remains closed until the session-ready
-                # frame is actually delivered on the same ordered socket.
                 self.local_announcements.clear_session(
                     session_id=session.session_id,
                     generation=session.generation,
@@ -1857,8 +1732,6 @@ class VoiceServices:
         now: datetime,
         authority_is_current: Callable[[], bool],
     ) -> None:
-        """Open a cleaned local epoch only after its ready frame was delivered."""
-
         self._require_local_backend()
         cleanup_key = self._local_cleanup_key(
             user_id=session.user_id,
@@ -1967,8 +1840,6 @@ class VoiceServices:
         execution_base_render_revision: int,
         now: datetime,
     ) -> tuple[VoiceTurnRecord, Any]:
-        """Bind a local recognition start to one durable content-free turn."""
-
         self._require_local_backend()
         coordination = await self._acquire_local_recognition_request(
             user_id=user_id,
@@ -2003,8 +1874,6 @@ class VoiceServices:
         now: datetime,
         coordination: _LocalRecognitionRequest,
     ) -> tuple[VoiceTurnRecord, Any]:
-        """Run one recognition bind while its exact identity is exclusively owned."""
-
         await self._drain_pending_local_rejections(now=now)
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
@@ -2231,8 +2100,6 @@ class VoiceServices:
         frame: Any,
         now: datetime,
     ) -> TranscriptAdmission:
-        """Verify and admit one local final without worker proof authority."""
-
         canonical = await self.verify_local_final_authority(
             socket_id=socket_id,
             current_socket_id=current_socket_id,
@@ -2266,8 +2133,6 @@ class VoiceServices:
         frame: Any,
         now: datetime,
     ) -> str:
-        """Verify ephemeral and current durable authority before replay lookup."""
-
         self._require_local_backend()
         if (user_id, frame.client_turn_id) in self.pending_local_rejections:
             raise VoiceControlBindingError("invalid_binding")
@@ -2309,8 +2174,6 @@ class VoiceServices:
         reason: str,
         now: datetime,
     ) -> None:
-        """Content-free terminal cleanup for a refused preacceptance final."""
-
         await self._drain_pending_local_rejections(now=now)
         key = (user_id, client_turn_id)
         if key in self.pending_local_rejections:
@@ -2460,8 +2323,6 @@ class VoiceServices:
         *,
         force: bool = False,
     ) -> None:
-        """Release one exact owner/waiter and advance only its FIFO key."""
-
         if not force and self._local_recognition_is_retained_locked(request):
             return
         self.local_recognition_requests.discard(request)
@@ -2500,8 +2361,6 @@ class VoiceServices:
         binding: RecognitionBinding,
         now: datetime,
     ) -> asyncio.Task[Any]:
-        """Publish exact durable work before it can run outside the lock."""
-
         async with self.pending_local_rejection_lock:
             key = (reserved.user_id, reserved.client_turn_id)
             if (
@@ -2533,8 +2392,6 @@ class VoiceServices:
         request: _LocalRecognitionRequest,
         task: asyncio.Task[Any],
     ) -> None:
-        """Release a completed task after any cleanup snapshot has observed it."""
-
         async with self.pending_local_rejection_lock:
             epoch = request.cleanup_epoch
             if epoch is not None:
@@ -2566,8 +2423,6 @@ class VoiceServices:
         coordination: _LocalRecognitionRequest,
         now: datetime,
     ) -> None:
-        """Prove replay authority and settle its owner at the return boundary."""
-
         async with self.pending_local_rejection_lock:
             try:
                 current = self.local_bindings.get_turn(
@@ -2691,8 +2546,6 @@ class VoiceServices:
     def _deferrable_local_end_fence_locked(
         end_fence: _LocalEndFence | None,
     ) -> _LocalEndFence | None:
-        """Never attach work after failed-end reconciliation took its snapshot."""
-
         if end_fence is not None and (
             end_fence.status == "reconciling"
             or (
@@ -2738,8 +2591,6 @@ class VoiceServices:
                     if existing != pending:
                         raise VoiceBootstrapError("invalid_binding")
                     return existing
-                # A successful session-wide abandon is the only other owner
-                # permitted to remove a reserved slot.
                 return None
             if current != reserved or key in self.pending_local_rejections:
                 raise VoiceBootstrapError("invalid_binding")
@@ -2761,8 +2612,6 @@ class VoiceServices:
         self,
         reserved: _PendingLocalRejectionReservation,
     ) -> bool:
-        """Acquire the exact slot lock for a no-await success/abort decision."""
-
         await self.pending_local_rejection_lock.acquire()
         key = (reserved.user_id, reserved.client_turn_id)
         current = self.pending_local_rejection_reservations.get(key)
@@ -3018,8 +2867,6 @@ class VoiceServices:
         self,
         session: VoiceSessionRecord,
     ) -> _LocalEndFence:
-        """Close one reversible epoch and join its published mutations."""
-
         cleanup_key = self._local_cleanup_key(
             user_id=session.user_id,
             session_id=session.session_id,
@@ -3077,8 +2924,6 @@ class VoiceServices:
         fence: _LocalEndFence,
         committed: bool,
     ) -> None:
-        """Settle one exact durable-end attempt without reopening its epoch."""
-
         epoch = fence.epoch
         cleanup_key = self._local_cleanup_key(
             user_id=epoch.user_id,
@@ -3140,8 +2985,6 @@ class VoiceServices:
         self,
         session: VoiceSessionRecord,
     ) -> None:
-        """Publish an already-durable end before clearing exact authority."""
-
         cleanup_key = self._local_cleanup_key(
             user_id=session.user_id,
             session_id=session.session_id,
@@ -3221,8 +3064,6 @@ class VoiceServices:
             raise remembered_cancellation
 
     async def cleanup_local_buffers(self, session: VoiceSessionRecord) -> None:
-        """Fence and retain one exact durable session abandonment."""
-
         cleanup_key = self._local_cleanup_key(
             user_id=session.user_id,
             session_id=session.session_id,
@@ -3488,8 +3329,6 @@ class VoiceServices:
         started_monotonic: float,
         started_at: datetime,
     ) -> None:
-        """Record content-free server timings at the serialized stream start."""
-
         if self.observability is None:
             return
         session = await self.media.current_session(
@@ -3554,8 +3393,6 @@ class VoiceServices:
         )
 
     def start(self, *, maintenance_interval_seconds: float = 5.0) -> None:
-        """Start one bounded server-owned lease/idle cleanup loop."""
-
         if not 0.5 <= maintenance_interval_seconds <= 60:
             raise ValueError("invalid_voice_maintenance_interval")
         if self.maintenance_task is not None and not self.maintenance_task.done():
@@ -3576,8 +3413,6 @@ class VoiceServices:
             await asyncio.sleep(interval_seconds)
 
     async def _sweep_sessions(self) -> None:
-        """End expired media and reconcile only durably terminal accepted work."""
-
         now = datetime.now(UTC)
         await asyncio.to_thread(
             self.repository.renew_owned_control_leases,
@@ -3626,9 +3461,7 @@ class VoiceServices:
                 session,
                 session.end_reason or "lease_expired",
             )
-            # A reaper end is otherwise invisible to the owner device: without
-            # this push a client that silently stopped renewing keeps showing
-            # a live session it no longer has (and its later DELETE conflicts).
+            # Without this push, a reaped session still looks live to the client
             publish_state = getattr(self.runtime, "publish_session_state", None)
             if callable(publish_state):
                 await publish_state(session)
@@ -3654,8 +3487,6 @@ class VoiceServices:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Durable end fences the generation. Short-lived grants and
-                # later reconciliation remain the cleanup backstop.
                 logger.warning(
                     "voice_media_cleanup_unavailable reason=media_end_failed"
                 )
@@ -3677,8 +3508,6 @@ class VoiceServices:
         session_id: str,
         generation: int,
     ) -> None:
-        """Release one exact session stream without touching accepted work."""
-
         key = (session_id, generation)
         async with self.announcement_runner_lock:
             runner = self.announcement_runners.pop(key, None)
@@ -3692,8 +3521,6 @@ class VoiceServices:
         session: VoiceSessionRecord,
         reason: str,
     ) -> None:
-        """Fence server-owned queues after runtime media teardown."""
-
         del reason
         release_fence = getattr(
             self.runtime,
@@ -3728,8 +3555,6 @@ class VoiceServices:
         user_id: str,
         reason: str,
     ) -> VoiceSessionRecord | None:
-        """Apply logout/auth-expiry teardown without cancelling accepted work."""
-
         operation = asyncio.create_task(
             self._end_user_voice_session_operation(
                 user_id=user_id,
@@ -3749,8 +3574,6 @@ class VoiceServices:
         user_id: str,
         reason: str,
     ) -> VoiceSessionRecord | None:
-        """Retain one complete authenticated teardown through cancellation."""
-
         local_process = self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
         attempts = _MAX_LOCAL_IDENTITY_END_ATTEMPTS if local_process else 1
         for attempt in range(attempts):
@@ -3815,8 +3638,6 @@ class VoiceServices:
         self,
         mutation: ChatUnavailableMutation,
     ) -> None:
-        """Consume one deletion/revocation receipt at the live media edge."""
-
         if not isinstance(mutation, ChatUnavailableMutation):
             raise TypeError("mutation must be ChatUnavailableMutation")
         async with self.announcement_runner_lock:
@@ -3889,8 +3710,6 @@ class VoiceServices:
         session: VoiceSessionRecord,
         reason: str,
     ) -> None:
-        """Idempotently close timers, worker media, participant, and room."""
-
         await self.handle_runtime_session_end(session, reason)
         selected_backend = (
             self.speech_backend.value
@@ -3906,8 +3725,6 @@ class VoiceServices:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # The durable end fence is authoritative. The bounded grant and
-                # room reconcilers remain the cleanup backstop.
                 logger.warning(
                     "voice_media_cleanup_unavailable reason=media_end_failed"
                 )
@@ -3918,8 +3735,6 @@ class VoiceServices:
         generation: int,
         muted: bool,
     ) -> None:
-        """Fence or freshly resume the exact session's serialized speech stream."""
-
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("invalid_session_id")
         if (
@@ -3965,8 +3780,6 @@ class VoiceServices:
         generation: int,
         suspended: bool,
     ) -> None:
-        """Persistently block unsolicited output for an exact background session."""
-
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("invalid_session_id")
         if (
@@ -4005,8 +3818,6 @@ class VoiceServices:
         claims: VoiceControlClaims,
         event: VoicePlayoutEvent,
     ) -> None:
-        """Accept one direct, content-free UI playout observation."""
-
         session = await asyncio.to_thread(
             self.repository.get_session,
             user_id=user_id,
@@ -4054,8 +3865,6 @@ class VoiceServices:
         event: Any,
         now: datetime,
     ) -> None:
-        """Apply one content-free local playout observation under all fences."""
-
         self._require_local_backend()
         session = await asyncio.to_thread(
             self.repository.get_controlled_session,
@@ -4080,8 +3889,6 @@ class VoiceServices:
         )
 
     async def start_turn_announcements(self, turn: VoiceTurnRecord) -> None:
-        """Queue one exactly-once acknowledgement on the session stream."""
-
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
@@ -4093,8 +3900,6 @@ class VoiceServices:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # Local synthesis/delivery degradation never rolls back the
-                # already accepted ordinary chat turn.
                 logger.warning("voice_local_acknowledgement_unavailable")
             return
         await self._set_turn_idle(
@@ -4110,7 +3915,6 @@ class VoiceServices:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # Speech degradation never rolls back durable chat acceptance.
             logger.warning(
                 "voice_acknowledgement_unavailable reason=%s",
                 _safe_failure_reason(exc),
@@ -4122,13 +3926,6 @@ class VoiceServices:
         *,
         reason: str,
     ) -> None:
-        """Speak one safe instruction after a worker cleared rejected text.
-
-        This is deliberately not an accepted-turn lifecycle: it never adds the
-        abandoned turn to the progress scheduler, and the repository permits
-        only the exact first announcement for the persisted rejection reason.
-        """
-
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
         if reason not in PREACCEPTANCE_REJECTION_PHRASES:
@@ -4192,8 +3989,6 @@ class VoiceServices:
         *,
         reason: str,
     ) -> None:
-        """Run worker-origin guidance off its control receive loop."""
-
         if (
             len(self.preacceptance_guidance_tasks)
             >= _MAX_PREACCEPTANCE_GUIDANCE_TASKS
@@ -4229,8 +4024,6 @@ class VoiceServices:
         *,
         waiting_reason: str,
     ) -> None:
-        """Speak one allowlisted action request and suspend progress cadence."""
-
         future = asyncio.get_running_loop().create_future()
         runner = await self._announcement_runner(turn)
         runner.submit(
@@ -4244,8 +4037,6 @@ class VoiceServices:
         await future
 
     async def resume_turn_announcements(self, turn: VoiceTurnRecord) -> None:
-        """Resume a waiting turn's cadence without replaying its wait prompt."""
-
         future = asyncio.get_running_loop().create_future()
         runner = await self._announcement_runner(turn)
         runner.submit(_AnnouncementCommand("resume", turn, future))
@@ -4262,8 +4053,6 @@ class VoiceServices:
         result_commit_id: str | None,
         with_delivery_status: bool = False,
     ) -> VoiceTurnRecord | VoiceTerminalAnnouncementResult:
-        """Fence stale progress and serialize one honest terminal outcome."""
-
         if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
             raise ValueError("invalid_terminal_kind")
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
@@ -4392,8 +4181,6 @@ class VoiceServices:
         return delivery if with_delivery_status else terminal_turn
 
     def _fallback_terminal_speech_outcome(self, turn: VoiceTurnRecord) -> str:
-        """Classify a failed scheduling path without consulting speech content."""
-
         key = (turn.session_id, turn.session_generation)
         if (
             key in self.announcement_closed_sessions
@@ -4409,14 +4196,6 @@ class VoiceServices:
         session_id: str,
         generation: int,
     ) -> None:
-        """Intentionally stop one exact session-generation output stream.
-
-        Routing runtime stop/background controls through the serialized runner
-        binds a later worker ``speech_interrupted`` event to the exact active
-        turn.  A session without a live runner still receives the same bounded
-        media stop command, but no unrelated turn is inferred or mutated.
-        """
-
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("invalid_session_id")
         if (
@@ -4441,8 +4220,6 @@ class VoiceServices:
         self,
         turn: VoiceTurnRecord,
     ) -> _SessionAnnouncementRunner:
-        """Return the one stream owner for an exact session generation."""
-
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
         key = (turn.session_id, turn.session_generation)
@@ -4475,8 +4252,6 @@ class VoiceServices:
 
     @staticmethod
     def _remember_announcement_fence(fences: dict[Any, None], key: Any) -> None:
-        """Retain a bounded exact-session/turn tombstone in insertion order."""
-
         fences.pop(key, None)
         fences[key] = None
         while len(fences) > _MAX_ANNOUNCEMENT_FENCES:
@@ -4493,8 +4268,6 @@ class VoiceServices:
         result_commit_id: str | None,
         attribution: str | None = None,
     ) -> tuple[VoiceTurnRecord, list[_PreparedQuantum], bool]:
-        """Reserve bounded terminal speech before the durable terminal fence."""
-
         refreshed = await asyncio.to_thread(
             self.repository.get_turn,
             user_id=turn.user_id,
@@ -4579,8 +4352,6 @@ class VoiceServices:
         *,
         reason: str | None,
     ) -> _PreparedQuantum:
-        """Reserve one exact abandoned-turn phrase with no caller text."""
-
         try:
             kind, phrase_key = PREACCEPTANCE_REJECTION_PHRASES[reason]
         except (KeyError, TypeError):
@@ -4624,8 +4395,6 @@ class VoiceServices:
         turn: VoiceTurnRecord,
         text: str,
     ) -> list[_PreparedQuantum]:
-        """Reserve consented detail quanta for the same serialized stream."""
-
         prepared: list[_PreparedQuantum] = []
         cursor = turn
         for quantum_text in _sensitive_result_quanta(text):
@@ -4670,8 +4439,6 @@ class VoiceServices:
         result_id: str,
         text: str,
     ) -> None:
-        """Stage one bounded result recap only in process memory."""
-
         await self.sensitive_recaps.remember(
             user_id=turn.user_id,
             session_id=turn.session_id,
@@ -4692,8 +4459,6 @@ class VoiceServices:
         control: Mapping[str, Any],
         request: Mapping[str, Any],
     ) -> None:
-        """Consume one exact consent and speak only its bound sensitive recap."""
-
         now = datetime.now(UTC)
         if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
             self._require_local_backend()
@@ -4964,8 +4729,6 @@ class _ClientLocalCapability:
 
 
 class _ClientLocalMedia:
-    """No-op lifecycle adapter that has no network or media dependencies."""
-
     async def apply_context(self, _session: VoiceSessionRecord) -> None:
         return None
 
@@ -5176,8 +4939,6 @@ def install_voice_worker_control(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> WorkerControlEndpoint | None:
-    """Keep the route absent when fail-closed voice construction did not pass."""
-
     if (
         services is None
         or services.speech_backend is not VoiceSpeechBackend.LLM_FACTORY
@@ -5187,8 +4948,6 @@ def install_voice_worker_control(
 
 
 def _metric_dimensions(session: VoiceSessionRecord) -> tuple[str, str]:
-    """Map durable media vocabulary to the reviewed metric dimensions."""
-
     transport = (
         "watch_bridge"
         if session.transport == "watch_pcm_websocket"
@@ -5215,15 +4974,11 @@ def _bounded_int(
 
 
 def _settle(future: asyncio.Future[Any], value: Any) -> None:
-    """Complete one in-process waiter without raising on a stale caller."""
-
     if not future.done():
         future.set_result(value)
 
 
 def _safe_failure_reason(exc: BaseException) -> str:
-    """Return only an allowlisted content-free exception reason."""
-
     code = getattr(exc, "code", None)
     if isinstance(code, str) and _SAFE_REASON.fullmatch(code) is not None:
         return code
@@ -5239,8 +4994,6 @@ def _iso_datetime(value: datetime) -> str:
 
 
 def _result_quanta(text: str, *, attribution: str | None = None) -> list[str]:
-    """Fit a recap into one 1.5s opening plus <=7 four-second continuations."""
-
     openings = {
         None: "Done.",
         "earlier": "Earlier request done.",
@@ -5261,8 +5014,6 @@ def _result_quanta(text: str, *, attribution: str | None = None) -> list[str]:
 
 
 def _sensitive_result_quanta(text: str) -> list[str]:
-    """Fit consented details into the seven remaining result continuations."""
-
     if not isinstance(text, str) or not text.strip():
         return ["The sensitive result is available on screen."]
     words = text.split()[:63]

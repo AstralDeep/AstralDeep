@@ -1,9 +1,6 @@
-"""LETS posture on ``/readyz`` and the admin-only ``GET /lets/health``.
-
-Pins: flag-off keeps the pre-existing ``/readyz`` keys byte-identical and adds
-exactly ``{"mode": "off", "status": "disabled"}``; enforce + blocked is the only
-LETS-driven 503; shadow degradation stays 200 but says so; the admin route is
-role-gated and never emits a path or secret.
+"""Tests for orchestrator/lets_health_api.py: LETS posture surfaced on /readyz and the
+admin-only GET /lets/health, byte-identical flag-off keys, enforce-blocked as the
+only LETS-driven 503, and role-gated admin output.
 """
 
 from __future__ import annotations
@@ -48,7 +45,7 @@ SECRET_PATH = "/etc/astral/lets/service-token-must-not-escape"
 
 
 class FakePlane(PlaneRuntime):
-    def __init__(self) -> None:  # no pool: composition never touches Plane here
+    def __init__(self) -> None:
         pass
 
     @contextmanager
@@ -57,8 +54,6 @@ class FakePlane(PlaneRuntime):
 
 
 class FakeClient:
-    """Warden client stub whose ``probe`` answers like the real boundary."""
-
     def __init__(self, failure: LetsClientBoundaryError | None = None) -> None:
         self.failure = failure
         self.probes = 0
@@ -68,7 +63,7 @@ class FakeClient:
         if self.failure is not None:
             raise self.failure
 
-    def close(self) -> None:  # pragma: no cover - shutdown only
+    def close(self) -> None:  # pragma: no cover
         pass
 
 
@@ -143,9 +138,6 @@ def _orch(runtime: object | None, *, bind: bool = True) -> SimpleNamespace:
     return orch
 
 
-# ── /readyz ────────────────────────────────────────────────────────────────
-
-
 def test_off_readyz_keeps_legacy_shape_and_adds_only_the_disabled_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,8 +172,6 @@ def test_enforce_reachable_at_boot_is_ready_and_governed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _compose(monkeypatch, "enforce", reachable=True)
-    # The first LIVE probe ran at composition; healthy is its answer, not an
-    # inference from the client merely existing.
     assert runtime.client.probes == 1
     observation = observe_lets_runtime(runtime)
     assert observation is not None
@@ -205,9 +195,6 @@ def test_enforce_reachable_at_boot_is_ready_and_governed(
 def test_enforce_warden_down_at_boot_is_blocked_503_but_composes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A composed client proves nothing about reachability: the first probe
-    # fails, composition still succeeds (boot semantics unchanged) and the
-    # readiness probe takes the instance out of rotation.
     runtime = _compose(
         monkeypatch,
         "enforce",
@@ -273,7 +260,6 @@ def test_wired_graph_without_an_observation_is_starting_not_healthy() -> None:
     assert body["lets"]["reason"] == "lets_starting"
     assert body["lets"]["observed_at_ns"] == 0
 
-    # A wired graph with no probe seam at all must not read as healthy either.
     bare = SimpleNamespace(
         loaded=_load("enforce", config=_config("enforce")),
         ready=True,
@@ -283,9 +269,6 @@ def test_wired_graph_without_an_observation_is_starting_not_healthy() -> None:
 
 
 def test_enforce_blocked_turns_readiness_into_503() -> None:
-    # An enforce process whose composition exists but bound no client: the
-    # constructor normally refuses to boot, so this pins the fail-closed
-    # projection should it ever be observed (e.g. a client torn down later).
     runtime = SimpleNamespace(
         loaded=_load("enforce", config=_config("enforce")),
         ready=False,
@@ -378,7 +361,7 @@ def test_off_mode_binds_no_probe_and_refresh_is_a_no_op(
 ) -> None:
     runtime = _compose(monkeypatch, "off", reachable=True)
     assert runtime.reachability is None
-    refresh_lets_reachability(_orch(runtime))  # no network, no error
+    refresh_lets_reachability(_orch(runtime))
     refresh_lets_reachability(_orch(None, bind=False))
     assert readyz_body(_orch(runtime))[0]["lets"] == {"mode": "off", "status": "disabled"}
 
@@ -390,14 +373,12 @@ def test_refresh_runs_the_cached_probe_only_when_due(
     assert runtime.client.probes == 1
     refresh_lets_reachability(_orch(runtime))
     refresh_lets_reachability(_orch(runtime))
-    assert runtime.client.probes == 1  # cache fresh: no new network
+    assert runtime.client.probes == 1
 
 
 def test_unbound_active_mode_is_projected_as_starting_not_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # No composition bound but the environment asks for enforce: the fallback
-    # load refuses (master flag absent) and readiness fails closed.
     monkeypatch.delenv("FF_LETS_EXTERNAL_WARDEN", raising=False)
     monkeypatch.setenv("LETS_MODE", "enforce")
     body, code = readyz_body(_orch(None, bind=False))
@@ -411,9 +392,6 @@ def test_projection_rejects_missing_posture() -> None:
         project_runtime_health(None)
     with pytest.raises(TypeError):
         readiness_entry(object())  # type: ignore[arg-type]
-
-
-# ── GET /lets/health ───────────────────────────────────────────────────────
 
 
 def _app(runtime: object | None, roles: list[str] | None) -> TestClient:

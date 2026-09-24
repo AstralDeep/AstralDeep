@@ -1,4 +1,7 @@
-"""Feature-060 conformance tests for the backend child-process supervisor."""
+"""Tests for backend/shared/process_supervision.py's child-process supervisor:
+bounded-ring stream reading, output forwarding, truncation of oversized lines, exit
+handling, and single/bulk process-group termination.
+"""
 
 from __future__ import annotations
 
@@ -193,9 +196,6 @@ def test_limits_and_owner_reject_invalid_contract_values(kwargs: dict) -> None:
 
 
 def test_reader_forwards_child_output_to_supervisor_stream(monkeypatch) -> None:
-    """docker-logs observability: every consumed chunk is teed verbatim to the
-    supervisor's matching stream, while the bounded ring fills unchanged."""
-
     host = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
     monkeypatch.setattr(sys, "stdout", host)
     payload = b"hello from the child\nsecond line\n"
@@ -214,8 +214,6 @@ def test_reader_forwards_child_output_to_supervisor_stream(monkeypatch) -> None:
 
 
 def test_reader_forwarding_failure_never_breaks_the_ring(monkeypatch) -> None:
-    """A broken host stream must not take the reader (or the child) down."""
-
     class _BrokenHost:
         def write(self, _data) -> int:
             raise OSError("host stream gone")

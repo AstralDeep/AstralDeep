@@ -1,4 +1,8 @@
-"""088: original issued-session observations survive delayed auth work."""
+"""Tests that original issued-session observations survive delayed auth work
+(orchestrator/session_store.py, web_auth.py, device_login.py): exact-incarnation
+reads, replacement isolation, and refresh/claim races over real Plane.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +19,6 @@ B = "22222222-2222-4222-8222-222222222222"
 
 
 def session_row(incarnation=A):
-    """Return synthetic equal-content rows differing only by issued identity."""
     return {"sid": "same-sid", "user_id": "owner", "access_token": "access",
             "refresh_token": "refresh", "created_at": 100,
             "interactive_anchor": 100, "hard_expires_at": 9999999999,
@@ -24,7 +27,6 @@ def session_row(incarnation=A):
 
 
 def web_session(incarnation=A):
-    """Return a private cache observation, never an authentication bypass."""
     return {**session_row(incarnation), "sub": "owner"}
 
 
@@ -121,7 +123,6 @@ def issued(runtime, monkeypatch):
 
 
 def replacement(runtime, sid):
-    """Reissue identical durable bytes through real owner-scoped Plane APIs."""
     from dataclasses import replace
     from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
     original = get_session_record(runtime, sid)
@@ -650,7 +651,6 @@ def test_selected_incarnation_read_releases_pool_before_table_blocker(issued, ru
     from concurrent.futures import ThreadPoolExecutor
     from orchestrator.session_store import SessionRefreshUnavailable
     store, sid, owner, row = issued
-    # This is the test-owned database only; no application pool is borrowed.
     with ThreadPoolExecutor(max_workers=1) as executor:
         with runtime.transaction() as blocker:
             blocker.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")

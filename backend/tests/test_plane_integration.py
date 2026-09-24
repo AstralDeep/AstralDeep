@@ -1,4 +1,7 @@
-"""AstralDeep-to-AstralPlane compatibility and startup admission contract."""
+"""Tests that AstralDeep's declared Plane composition matches AstralPlane's
+compatibility and schema revision (AstralPlane/src/astralplane/compatibility.py,
+database/revision.py) and that startup failures are attributed per cause.
+"""
 
 from __future__ import annotations
 

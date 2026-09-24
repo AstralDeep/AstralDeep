@@ -1,4 +1,8 @@
-"""Deterministic, content-isolated tests for the Feature 065 recap matrix."""
+"""Tests for the deterministic content-isolated recap review matrix and its
+evaluator/CLI: exact case distribution, production recap paths passing the fixed
+rubric, detection of unsupported claims, and fail-closed loading of malformed
+matrices.
+"""
 
 from __future__ import annotations
 

@@ -1,14 +1,8 @@
-"""Feature 058 T011 (SC-002) — zero user-agent processes on the orchestrator host.
-
-A BYO agent's code belongs to the user and runs on the user's desktop. Two paths
-could put it on the central host, so both are pinned here:
-
-1. the boot relaunch, which re-Popen'd every ``draft_agents`` row in status
-   ``live`` with no origin filter, and
-2. ``start_draft_agent`` itself, which is the only thing that Popens generated
-   code — it now refuses a ``byo_client`` draft outright, so a future call site
-   cannot reintroduce (1).
+"""Tests that no user-agent code ever runs on the orchestrator host: boot relaunch
+filters by origin, and start_draft_agent/approve_agent refuse BYO drafts outright
+since both would exec or Popen them.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +26,6 @@ from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E4
 
 
 async def _t(fn, *a, **k):
-    """Run a synchronous (DB-touching) helper off the event loop (052)."""
     return await asyncio.to_thread(fn, *a, **k)
 
 
@@ -88,8 +81,7 @@ async def test_start_draft_agent_refuses_a_byo_draft(
 
 
 async def test_approve_agent_refuses_a_byo_draft(plane_runtime, tmp_path):
-    # approve_agent both exec's the tools in-process AND Popens them. A BYO draft
-    # id belongs to the user, so this entry point is reachable — refuse it.
+    # approve_agent execs tools in-process — BYO code must never run here
     lm = AgentLifecycleManager(
         orchestrator=None,
         plane_runtime=plane_runtime,
@@ -107,7 +99,6 @@ async def test_approve_agent_refuses_a_byo_draft(plane_runtime, tmp_path):
 async def test_refine_validates_a_byo_draft_out_of_process(
     plane_runtime, monkeypatch, tmp_path
 ):
-    # The refine entry point validates too — and validation EXECUTES the tools.
     lm = AgentLifecycleManager(
         orchestrator=None,
         plane_runtime=plane_runtime,
@@ -173,13 +164,9 @@ async def test_authoring_path_never_starts_a_process(monkeypatch, plane_runtime)
     o.deliver_agent_bundle = AsyncMock(return_value=1)
 
     async def _generate(draft_id, **kw):
-        # The origin filter only protects us if the row is stamped BEFORE the
-        # draft can be picked up — i.e. before generation, not after delivery.
         assert BYO_ORIGIN in created_origins, \
             "draft was generated before it was stamped byo_client"
         assert kw.get("target") == "byo"
-        # The immutable Plane-allocated target, not a name-derived identity,
-        # is carried from draft persistence into generation.
         assert kw.get("agent_id") == created_target_ids[-1]
         return {"status": "generated",
                 "files": {"agent_main.py": "x", "mcp_tools.py": "y",
@@ -195,9 +182,9 @@ async def test_authoring_path_never_starts_a_process(monkeypatch, plane_runtime)
             description="greets the owner by their name",
             declared_tools=["greet"], declared_scopes=["tools:read"],
             plan={"tools_used": ["greet"], "tool_scopes": {"greet": "tools:read"}})
-        assert res["status"] == "delivered"          # bundle went to the host…
+        assert res["status"] == "delivered"
         o.deliver_agent_bundle.assert_awaited_once()
-        lifecycle.start_draft_agent.assert_not_awaited()   # …and nowhere else
+        lifecycle.start_draft_agent.assert_not_awaited()
         lifecycle.approve_agent.assert_not_awaited()
     finally:
         for draft_id in created_draft_ids:

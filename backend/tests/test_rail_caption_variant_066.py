@@ -1,28 +1,7 @@
-"""Feature-066 T023 contract pins: the bounded caption carry.
-
-T023 CLOSED (2026-08-05) as a deliberate cross-client contract extension:
-canonical transcript text parts are ``{"type", "text"}`` plus an OPTIONAL
-``variant`` drawn from the closed set ``CANONICAL_TEXT_PART_VARIANTS``
-(exactly ``{"caption"}``). The server validator, the web client
-(``validateSnapshotShape``), Windows (``astral_client/protocol.py``),
-Android (``Wire.kt``) and Apple (``ConversationContinuity.swift``) all
-accept the same bounded shape — see
-specs/060-runtime-reliability-hardening/contracts/conversation-continuity.md.
-
-These pins hold the NEW boundary from both sides: a lifted caption keeps
-its weight through commit and hydration, every other authoring variant
-still normalizes away, and the canonical validator refuses anything
-outside the closed set — the extension must never become an open door for
-arbitrary part keys.
-
-EMISSION GATE (added later): T023 landed AFTER the apple-v1.2 tag and the
-Android versionCode-4 bundle, whose clients compare a text part's key set for
-EXACT equality and therefore discard the whole snapshot when the variant
-appears. So *emitting* the carry is now gated by ``FF_RAIL_CAPTION_VARIANT``
-(default OFF) while *accepting* it is not. The lift pins below therefore
-declare the gate ON — they pin what T023 buys once it is safe to send. The
-default-off shape that protects shipped clients is pinned separately in
-tests/test_rail_caption_emission_gate.py.
+"""Tests for the bounded caption carry on canonical transcript text parts
+(backend/orchestrator/history.py, protocol.py): lift preserves caption weight, the
+canonical validator bounds variant to the closed set, and hydration renders it
+correctly.
 """
 
 from __future__ import annotations
@@ -46,19 +25,10 @@ def _components_part(*components: dict) -> dict:
 
 
 def test_bounded_alphabet_is_exactly_caption() -> None:
-    # Drift pin: widening the closed set is a NEW cross-client contract
-    # change (five validators + the 060 contract doc), never a casual edit.
     assert CANONICAL_TEXT_PART_VARIANTS == frozenset({"caption"})
 
 
 class TestLiftCarriesCaption:
-    """The T023 carry, pinned with the emission gate explicitly ON.
-
-    These assert what the gate ENABLES. With the gate at its shipped default
-    (OFF) every one of these lifts to the bare canonical shape instead — see
-    tests/test_rail_caption_emission_gate.py.
-    """
-
     @pytest.fixture(autouse=True)
     def _emit_caption_variant(self, monkeypatch):
         monkeypatch.setitem(flags._flags, "rail_caption_variant", True)
@@ -110,11 +80,6 @@ class TestLiftCarriesCaption:
         ]
 
     def test_stored_text_parts_normalize_but_keep_bounded_variant(self) -> None:
-        # R-9 rail fix pins still hold: STORED narrative parts carrying
-        # authoring fields (variant/content) normalize to the canonical
-        # shape — except the bounded caption carve-out, which must survive
-        # re-derivation or a committed caption would lose its weight on the
-        # next hydration.
         parts = _rail_parts(
             [
                 {"type": "text", "variant": "markdown", "text": "Narrative words"},
@@ -149,8 +114,6 @@ class TestLiftCarriesCaption:
 
 
 class TestCanonicalContractBoundsVariant:
-    """The validator accepts the closed set and refuses everything else."""
-
     @staticmethod
     def _snapshot(parts: list[dict]) -> ConversationSnapshot:
         return ConversationSnapshot(
@@ -241,8 +204,6 @@ class TestHydrationRendition:
         assert "&lt;script&gt;" in html
 
     def test_native_target_keeps_the_variant_key_untouched(self) -> None:
-        # The 060 native == original rule: the semantic snapshot passes
-        # through byte-identical, caption carry included.
         part = self._hydrated_part(
             {"type": "text", "text": "As of July", "variant": "caption"},
             target="windows",

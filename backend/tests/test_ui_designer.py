@@ -1,10 +1,8 @@
-"""Feature 029 — adaptive UI designer unit tests (T011).
-
-Pure-Python coverage of backend/orchestrator/ui_designer.py: the invocation
-predicate, response parsing, the validate → dedupe → repair pipeline,
-deterministic garnish identity stamping, materialization, and the fail-open
-driver. No database, no network — the LLM is always a stub.
+"""Tests for orchestrator/ui_designer.py: the invocation predicate, response parsing,
+the validate-dedupe-repair pipeline, deterministic garnish ID stamping,
+materialization onto webrender, and the fail-open design_round driver.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,11 +48,6 @@ def _comp(cid, **extra):
     return c
 
 
-# ---------------------------------------------------------------------------
-# flags / predicate
-# ---------------------------------------------------------------------------
-
-
 def test_designer_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
     assert ui_designer.designer_enabled() is True
@@ -86,11 +79,6 @@ def test_should_design_thresholds(monkeypatch):
     assert should_design(two, timeline_mode=True) is False, "timeline views are read-only"
     monkeypatch.setenv("FF_UI_DESIGNER", "false")
     assert should_design(two) is False, "flag off restores legacy behavior"
-
-
-# ---------------------------------------------------------------------------
-# parse_design_response
-# ---------------------------------------------------------------------------
 
 
 def test_parse_plain_layout_object():
@@ -131,11 +119,6 @@ def test_parse_failures_carry_reasons(raw, reason):
     assert exc.value.reason == reason
 
 
-# ---------------------------------------------------------------------------
-# validate_layout
-# ---------------------------------------------------------------------------
-
-
 def test_validate_drops_unknown_ref():
     clean, refs = validate_layout([_ref("wc_known"), _ref("wc_ghost")], {"wc_known"}, ALLOWED)
     assert refs == ["wc_known"]
@@ -173,11 +156,6 @@ def test_validate_walks_tabs_content():
     assert clean[0]["tabs"][0]["content"] == [{"type": "ref", "component_id": "wc_a"}]
 
 
-# ---------------------------------------------------------------------------
-# repair_layout (FR-018 — nothing the round produced may be lost)
-# ---------------------------------------------------------------------------
-
-
 def test_repair_appends_missing_components_in_dispatch_order():
     layout = [_ref("wc_b")]
     repaired = repair_layout(layout, ["wc_b"], ["wc_a", "wc_b", "wc_c"])
@@ -187,11 +165,6 @@ def test_repair_appends_missing_components_in_dispatch_order():
 def test_repair_noop_when_complete():
     layout = [_ref("wc_a"), _ref("wc_b")]
     assert repair_layout(layout, ["wc_a", "wc_b"], ["wc_a", "wc_b"]) == layout
-
-
-# ---------------------------------------------------------------------------
-# stamp_garnish_ids (FR-019 — deterministic, namespaced)
-# ---------------------------------------------------------------------------
 
 
 def test_garnish_ids_deterministic_and_namespaced():
@@ -204,11 +177,6 @@ def test_garnish_ids_deterministic_and_namespaced():
     assert "id" not in once[1], "ref nodes are never stamped"
     other_round = stamp_garnish_ids(layout, "chat-1", "ly_zzz")
     assert other_round[0]["id"] != once[0]["id"], "different rounds, different garnish ids"
-
-
-# ---------------------------------------------------------------------------
-# materialize
-# ---------------------------------------------------------------------------
 
 
 def test_materialize_substitutes_and_anchors_nested_refs():
@@ -243,18 +211,11 @@ def test_materialize_walks_tabs():
     assert out[0]["tabs"][0]["content"][0]["component_id"] == "wc_a"
 
 
-# ---------------------------------------------------------------------------
-# design_round driver — every failure mode is fail-open (FR-022)
-# ---------------------------------------------------------------------------
-
-
 def _round_components():
     return [_comp("wc_a"), _comp("wc_b")]
 
 
 def _drive(llm_call, timeout_s=None, max_rounds=None):
-    """Drive design_round; multi-round tests pin max_rounds=3 explicitly
-    because the product default is a single pass since feature 052."""
     return asyncio.run(design_round(
         user_request="compare things",
         round_components=_round_components(),
@@ -270,7 +231,6 @@ def _drive(llm_call, timeout_s=None, max_rounds=None):
 
 def test_design_round_success_with_repair_and_garnish():
     async def llm(messages):
-        # References only wc_a — wc_b must be repair-appended; garnish kept.
         return ('{"layout": [{"type": "metric", "title": "Headline", "value": "1"},'
                 ' {"type": "ref", "component_id": "wc_a"}]}')
 
@@ -309,16 +269,11 @@ def test_design_round_all_refs_invalid_falls_back():
         return '{"layout": [{"type": "ref", "component_id": "wc_ghost"}]}'
 
     layout = _drive(llm)
-    # Ghost ref drops, but repair re-adds the round's two components — the
-    # layout is still valid and complete.
     assert layout is not None
     assert set(ui_designer.iter_refs(layout)) == {"wc_a", "wc_b"}
 
 
 def test_renderer_emits_nested_morph_anchor():
-    """FR-021: a materialized nested ref's attributes["data-component-id"]
-    must reach the HTML so ui_upsert morphs find it inside arrangements —
-    and only safe data-* attributes are honored (no handler injection)."""
     from webrender import render_one
 
     comp = {"type": "table", "headers": ["A"], "rows": [["1"]],
@@ -328,7 +283,6 @@ def test_renderer_emits_nested_morph_anchor():
     assert 'data-component-id="wc_anchor1"' in html_out
     assert "onclick" not in html_out, "non-data attributes must never render"
     assert 'data-ok="yes"' in html_out, "data-* keys are case-normalized and allowed"
-    # Components without attributes render byte-identically to before.
     plain = render_one({"type": "table", "headers": ["A"], "rows": [["1"]]})
     assert "data-component-id" not in plain
 
@@ -347,11 +301,6 @@ def test_prompt_carries_ids_palette_and_rules():
     assert len(prompt) < 20000, "prompt stays bounded on huge inputs"
 
 
-# ---------------------------------------------------------------------------
-# multi-round refinement — draft, critique, improve, keep-best
-# ---------------------------------------------------------------------------
-
-
 _DRAFT = '{"layout": [{"type": "ref", "component_id": "wc_a"}, {"type": "ref", "component_id": "wc_b"}]}'
 _IMPROVED = ('{"layout": [{"type": "metric", "title": "Headline", "value": "2"},'
              ' {"type": "grid", "columns": 2, "children": ['
@@ -359,7 +308,6 @@ _IMPROVED = ('{"layout": [{"type": "metric", "title": "Headline", "value": "2"},
 
 
 def _scripted_llm(replies):
-    """An llm_call stub that walks through scripted replies (last one repeats)."""
     calls = []
 
     async def llm(messages):
@@ -391,7 +339,6 @@ def test_refine_pass_improves_the_draft():
     assert layout[0]["type"] == "metric", "refined arrangement won"
     assert layout[0]["id"].startswith("dg_"), "garnish stamped on the final layout"
     assert set(ui_designer.iter_refs(layout)) == {"wc_a", "wc_b"}
-    # The refinement prompt showed the model its own current arrangement.
     refine_prompt = calls[1][1]["content"]
     assert "CURRENT ARRANGEMENT" in refine_prompt
     assert "wc_a" in refine_prompt and "DONE" in refine_prompt
@@ -422,13 +369,10 @@ def test_failed_refinement_keeps_best_arrangement():
 
 
 def test_degenerate_refinement_keeps_best_arrangement():
-    """Parseable-but-degenerate refinements (ref-free meta-commentary, empty
-    nodes, ref omissions) must be rejected — omission repair never runs on
-    refine passes, so they cannot launder into replacements."""
     for degen in (
         '{"layout": ["The arrangement is already well-designed"]}',
         '{"layout": [""]}',
-        '{"layout": [{"type": "ref", "component_id": "wc_a"}]}',  # omits wc_b
+        '{"layout": [{"type": "ref", "component_id": "wc_a"}]}',
     ):
         llm, calls = _scripted_llm([_IMPROVED, degen])
         layout = _drive(llm, max_rounds=3)
@@ -441,7 +385,7 @@ def test_refinement_must_keep_canvas_refs():
     draft = ('{"layout": [{"type": "ref", "component_id": "wc_a"},'
              ' {"type": "ref", "component_id": "wc_b"},'
              ' {"type": "ref", "component_id": "wc_old"}]}')
-    llm, calls = _scripted_llm([draft, _IMPROVED])  # refinement loses wc_old
+    llm, calls = _scripted_llm([draft, _IMPROVED])
     layout = asyncio.run(design_round(
         user_request="rearrange everything into one dashboard",
         round_components=_round_components(),
@@ -455,7 +399,6 @@ def test_refinement_must_keep_canvas_refs():
     assert layout is not None
     assert set(ui_designer.iter_refs(layout)) == {"wc_a", "wc_b", "wc_old"}, \
         "a refinement that loses a placed canvas ref is rejected"
-    # The refine prompt labelled the canvas component instead of 'unknown'.
     refine_prompt = calls[1][1]["content"]
     assert "(canvas)" in refine_prompt
     assert "unknown" not in refine_prompt
@@ -491,7 +434,7 @@ def test_refine_timeout_keeps_best_arrangement():
     async def llm(messages):
         calls.append(messages)
         if len(calls) > 1:
-            await asyncio.sleep(0.5)  # refine pass blows the per-pass budget
+            await asyncio.sleep(0.5)
         return _IMPROVED
 
     layout = _drive(llm, timeout_s=0.2, max_rounds=3)
@@ -504,15 +447,13 @@ def test_format_retry_recovers_unusable_draft():
     layout = _drive(llm, max_rounds=3)
     assert layout is not None
     assert set(ui_designer.iter_refs(layout)) == {"wc_a", "wc_b"}
-    # The retry message carried the failure reason back to the model.
     retry_messages = calls[1]
     assert retry_messages[-1]["role"] == "user"
     assert "could not be used" in retry_messages[-1]["content"]
 
 
 def test_max_rounds_one_is_single_pass(monkeypatch):
-    # A host .env can re-leak the taskmodel flag after conftest's ambient
-    # strip (load_dotenv at import time); its pre-pass would add an LLM call.
+    # A host .env can re-leak this flag past conftest's strip
     monkeypatch.delenv("FF_UI_DESIGNER_TASKMODEL", raising=False)
     llm, calls = _scripted_llm([_DRAFT])
     layout = asyncio.run(design_round(

@@ -1,4 +1,8 @@
-"""Real PostgreSQL grant binding and original-consent transaction boundaries."""
+"""Tests for real PostgreSQL grant binding and consent transaction boundaries
+(orchestrator/offline_grant.py, session_consent.py, scheduler/store.py): capture
+atomicity, schedule/grant rollback pairing, and rebinding refusals.
+"""
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager

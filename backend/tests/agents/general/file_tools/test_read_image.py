@@ -1,4 +1,6 @@
-"""read_image: normalization, base64 envelope."""
+"""Tests for agents/general/file_tools/read_image.py: base64 PNG envelope and
+resize-to-2048 normalization.
+"""
 
 from __future__ import annotations
 
@@ -32,4 +34,4 @@ def test_read_image_resizes_to_2048(repo, upload_root):
                    payload=make_png(4000, 2000))
     out = read_image(attachment_id=aid, user_id="alice")
     assert out["width"] <= 2048 and out["height"] <= 2048
-    assert out["width"] == 2048  # largest dimension capped
+    assert out["width"] == 2048

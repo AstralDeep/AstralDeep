@@ -1,4 +1,7 @@
-"""Focused Plane-boundary tests for the Deep workspace coordinator."""
+"""Tests for the workspace coordinator's Plane boundary
+(backend/orchestrator/workspace.py, AstralPlane workspaces repository): fail-closed
+without an application runtime, and one transaction per mutation.
+"""
 
 from __future__ import annotations
 

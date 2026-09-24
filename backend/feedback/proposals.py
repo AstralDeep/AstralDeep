@@ -1,16 +1,8 @@
-"""Bridge between the feedback subsystem and the existing knowledge synthesizer.
-
-The synthesizer (`backend/orchestrator/knowledge_synthesis.py`) produces
-markdown knowledge artifacts that influence orchestrator routing. This
-module turns underperforming-tool signals + clean feedback comments into
-:class:`KnowledgeUpdateProposal` rows that an admin reviews before the
-artifact actually changes (FR-016 / FR-017 / FR-018).
-
-The proposed change is a unified diff against an artifact path always
-under ``backend/knowledge/``. The accept path validates the path, the
-artifact's sha (against ``artifact_sha_at_gen``), then atomically writes
-the patched file via write-then-rename.
+"""Bridges feedback signals to orchestrator/knowledge_synthesis.py: turns
+underperforming-tool evidence into unified-diff proposals an admin reviews; accept
+re-validates the artifact's sha and writes it via write-then-rename.
 """
+
 from __future__ import annotations
 
 import difflib
@@ -31,7 +23,6 @@ from .schemas import KnowledgeUpdateProposalDTO
 logger = logging.getLogger("Feedback.Proposals")
 
 
-# Resolved at import time so the path-escape check is deterministic.
 KNOWLEDGE_ROOT = Path(
     os.getenv(
         "FEEDBACK_KNOWLEDGE_ROOT",
@@ -41,15 +32,14 @@ KNOWLEDGE_ROOT = Path(
 
 
 class StaleProposalError(Exception):
-    """Raised when an admin tries to accept a proposal whose artifact has changed."""
+    pass
 
 
 class InvalidArtifactPath(Exception):
-    """Raised when a proposal's artifact_path escapes the knowledge root."""
+    pass
 
 
 def _ensure_within_knowledge_root(artifact_path: str) -> Path:
-    """Resolve ``artifact_path`` against ``KNOWLEDGE_ROOT`` and reject escape."""
     target = (KNOWLEDGE_ROOT / artifact_path).resolve()
     try:
         target.relative_to(KNOWLEDGE_ROOT)
@@ -59,7 +49,6 @@ def _ensure_within_knowledge_root(artifact_path: str) -> Path:
 
 
 def _sha256_of_path(p: Path) -> str:
-    """Return sha256 hex of file contents, or sha of empty bytes for missing files."""
     h = hashlib.sha256()
     if p.exists():
         h.update(p.read_bytes())
@@ -76,18 +65,11 @@ def _make_unified_diff(old: str, new: str, artifact_path: str) -> str:
     return "".join(diff)
 
 
+# Must parse exactly what _make_unified_diff produces
 def _apply_unified_diff(old: str, diff_payload: str) -> str:
-    """Apply a unified diff produced by :func:`_make_unified_diff` to ``old``.
-
-    Implementation note: rather than using a third-party patch library
-    (Constitution V), we rebuild the new content by parsing the diff's
-    hunks. The output of :func:`_make_unified_diff` round-trips cleanly
-    through this parser. Edited diffs (admin tweaks before accept) must
-    preserve the same hunk structure or the apply will raise.
-    """
     old_lines = old.splitlines(keepends=True)
     out: List[str] = []
-    src_idx = 0  # index into old_lines
+    src_idx = 0
 
     lines = diff_payload.splitlines(keepends=True)
     i = 0
@@ -97,17 +79,12 @@ def _apply_unified_diff(old: str, diff_payload: str) -> str:
             i += 1
             continue
         if line.startswith("@@"):
-            # @@ -src_start,src_len +dst_start,dst_len @@
             try:
                 _, old_range, new_range, _rest = (line.split(" ", 3) + [""])[:4]
                 src_start_raw = int(old_range.split(",")[0].lstrip("-"))
-                # Difflib uses 1-based line numbers; convert to 0-based index.
-                # For file creation the range is "-0,0", which has no
-                # corresponding source line — clamp to 0.
                 src_start = max(0, src_start_raw - 1)
             except (IndexError, ValueError):
                 raise ValueError(f"malformed hunk header: {line!r}")
-            # Copy any unchanged lines between current cursor and src_start
             if src_start < src_idx:
                 raise ValueError("non-monotonic hunk header")
             out.extend(old_lines[src_idx:src_start])
@@ -131,20 +108,13 @@ def _apply_unified_diff(old: str, diff_payload: str) -> str:
             src_idx += 1
             i += 1
             continue
-        # Unknown line — skip
         i += 1
 
-    # Tail: copy any remaining unchanged lines
     out.extend(old_lines[src_idx:])
     return "".join(out)
 
 
 def _artifact_path_for_tool(agent_id: str, tool_name: str) -> str:
-    """Pick a knowledge-artifact filename for a given tool.
-
-    Matches the synthesizer's existing layout under ``backend/knowledge/``.
-    """
-    # Slug: turn agent ids like "general-1" → "general"
     slug = agent_id.replace("-", "_").rstrip("_1234567890") or "default"
     return f"techniques/{slug}__{tool_name}.md"
 
@@ -158,12 +128,6 @@ def _proposed_content(
     sample_comments: List[Dict[str, Any]],
     now: datetime,
 ) -> str:
-    """Build the proposed markdown content for a flagged tool.
-
-    The synthesizer can later refine this further via its LLM prompt;
-    this function provides a deterministic, tested base case so the
-    proposal pipeline works even when the LLM is unavailable (FR-020).
-    """
     header = f"# Routing notes for `{tool_name}` (agent: {agent_id})\n\n"
     header += f"_Last updated: {now.isoformat(timespec='seconds')}_\n\n"
 
@@ -187,13 +151,11 @@ def _proposed_content(
         "validate its output more carefully than usual.\n\n"
     )
 
-    # Comment samples are presented as DATA, never as instructions.
     if sample_comments:
         samples = ["## Recent user-feedback excerpts (untrusted; for context only)\n"]
         for s in sample_comments:
             cat = s.get("category", "unspecified")
             text = (s.get("comment") or "").replace("\n", " ").strip()
-            # Hard-cap for safety
             if len(text) > 280:
                 text = text[:280] + "…"
             samples.append(f"- *(category: {cat})* {text}")
@@ -207,18 +169,6 @@ async def generate_for_underperforming(
     *,
     refine_with_llm: Optional[Callable[[str], Awaitable[Optional[str]]]] = None,
 ) -> List[KnowledgeUpdateProposalDTO]:
-    """Generate a pending proposal for each currently-underperforming tool.
-
-    Skips tools that already have a pending proposal whose evidence has
-    not materially shifted (handled implicitly by ``insert_proposal`` —
-    new pending supersedes old).
-
-    ``refine_with_llm`` is an optional async callable that takes the
-    deterministic-base markdown and returns refined markdown. If absent,
-    or if it raises / returns None, the deterministic base is used as-is
-    so proposal generation works even when the synthesizer LLM is offline
-    (FR-020).
-    """
     underperforming, _ = repo.list_underperforming(limit=100)
     proposals: List[KnowledgeUpdateProposalDTO] = []
 
@@ -264,7 +214,6 @@ async def generate_for_underperforming(
 
             diff = _make_unified_diff(existing_content, proposed, artifact_rel)
             if not diff.strip():
-                # Already up-to-date — no proposal needed.
                 continue
 
             audit_ids, fb_ids = repo.evidence_ids(
@@ -305,14 +254,6 @@ async def apply_accepted(
     auth_principal: str,
     edited_diff: Optional[str] = None,
 ) -> KnowledgeUpdateProposalDTO:
-    """Accept and apply a pending proposal in one server-side transaction.
-
-    Raises:
-        FileNotFoundError: proposal id does not exist.
-        InvalidArtifactPath: artifact_path escapes knowledge root.
-        StaleProposalError: artifact has changed since generation.
-        ValueError: proposal is not in 'pending' state.
-    """
     existing = repo.get_proposal(proposal_id)
     if existing is None:
         raise FileNotFoundError(proposal_id)
@@ -331,7 +272,6 @@ async def apply_accepted(
     except ValueError as exc:
         raise ValueError(f"diff apply failed: {exc}")
 
-    # First → 'accepted' (review recorded), then atomic file write, then 'applied'.
     accepted = repo.transition_proposal(
         proposal_id, new_status="accepted", reviewer_user_id=reviewer_user_id,
     )
@@ -364,7 +304,6 @@ async def apply_accepted(
         reviewer_user_id=reviewer_user_id, applied=True,
     )
     if applied is None:
-        # Should not happen — we just transitioned it to accepted.
         raise FileNotFoundError(proposal_id)
 
     await _emit_proposal_audit(
@@ -448,14 +387,13 @@ async def _emit_proposal_audit(
 
 async def emit_quarantine_audit(
     *,
-    action_type: str,  # quarantine.flag | quarantine.release | quarantine.dismiss
+    action_type: str,
     feedback_id: str,
     reason: Optional[str],
     detector: Optional[str],
     actor_user_id: str,
     auth_principal: str,
 ) -> None:
-    """Public helper used by the quarantine API and the loop pre-pass."""
     rec = get_recorder()
     if rec is None:
         return

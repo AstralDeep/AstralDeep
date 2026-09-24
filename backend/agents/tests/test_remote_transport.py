@@ -1,11 +1,7 @@
-"""Unit tests for the SSH transport boundary (feature 063, orchestrator/remote_transport.py).
-
-Covers the login-shell argv builder (FR-022 injection safety), the FR-034 verdict
-vocabulary, host-key pinning logic (FR-020), the deadline-bounded read (FR-021), and
-FakeTransport behaviour (FR-050 test seam). Stdlib-only; paramiko is imported lazily
-by ParamikoTransport, so this module imports and runs without it. The paramiko-backed
-connect/exec paths themselves are exercised by the in-container + live checklist.
+"""Tests for orchestrator/remote_transport.py: the login-shell argv builder, the verdict
+vocabulary, host-key pinning, the deadline-bounded read, and FakeTransport behavior.
 """
+
 import base64
 import hashlib
 import socket
@@ -31,8 +27,6 @@ def _target(**kw):
     return MachineTarget(**d)
 
 
-# --- argv builder (FR-022) ----------------------------------------------------
-
 def test_build_login_command_basic():
     cmd = build_login_command(["squeue", "--me", "-o", "%i|%T"])
     assert cmd == "bash -lc 'exec \"$@\"' _ squeue --me -o '%i|%T'"
@@ -55,8 +49,6 @@ def test_build_login_command_rejects_non_str():
         build_login_command(["ls", 5])  # type: ignore[list-item]
 
 
-# --- verdict vocabulary (FR-034) ---------------------------------------------
-
 def test_verdict_vocabulary_is_exact():
     expected = {
         "ok", "partial", "unreachable", "auth_failed", "host_key_mismatch",
@@ -68,12 +60,10 @@ def test_verdict_vocabulary_is_exact():
     assert {v.value for v in Verdict} == expected
 
 
-# --- host-key pinning logic (FR-020) -----------------------------------------
-
 def test_evaluate_host_key_branches():
-    assert evaluate_host_key(None, "SHA256:abc") == "record"      # first registration
+    assert evaluate_host_key(None, "SHA256:abc") == "record"
     assert evaluate_host_key("SHA256:abc", "SHA256:abc") == "match"
-    assert evaluate_host_key("SHA256:abc", "SHA256:xyz") == "mismatch"  # changed => refuse
+    assert evaluate_host_key("SHA256:abc", "SHA256:xyz") == "mismatch"
 
 
 class _FakeKey:
@@ -94,21 +84,15 @@ def test_sha256_fingerprint_matches_openssh_format():
     assert fp.startswith("SHA256:") and "=" not in fp
 
 
-# --- anti-rebinding peer check (FR-019) --------------------------------------
-
 def test_peer_in_resolved_normalises():
     assert _peer_in_resolved("10.33.77.11", ["10.33.77.11"]) is True
-    assert _peer_in_resolved("127.0.0.1", ["10.33.77.11"]) is False  # rebind to blocked addr
-    assert _peer_in_resolved("::1", ["0:0:0:0:0:0:0:1"]) is True     # textual variance normalised
-    assert _peer_in_resolved(None, ["10.0.0.1"]) is False            # unreadable peer => fail-closed
+    assert _peer_in_resolved("127.0.0.1", ["10.33.77.11"]) is False
+    assert _peer_in_resolved("::1", ["0:0:0:0:0:0:0:1"]) is True
+    assert _peer_in_resolved(None, ["10.0.0.1"]) is False
     assert _peer_in_resolved("garbage", ["10.0.0.1"]) is False
 
 
-# --- deadline-bounded read + exit (FR-021, the HIGH finding) ------------------
-
 class _FakeChan:
-    """Minimal channel double for _read_bounded/_await_exit (no paramiko)."""
-
     def __init__(self, chunks, exit_status=0, raise_timeout=False, exit_ready=True):
         self._chunks = list(chunks)
         self.exit_status = exit_status
@@ -143,7 +127,7 @@ def test_read_bounded_truncates_over_cap_and_closes():
     out, trunc = rt.ParamikoTransport()._read_bounded(chan, timeout=5)
     assert trunc is True
     assert len(out) == rt.MAX_OUTPUT_BYTES
-    assert chan.closed is True  # closed to unblock a remote stuck on write()
+    assert chan.closed is True
 
 
 def test_read_bounded_times_out_on_stall():
@@ -168,8 +152,6 @@ def test_await_exit_times_out():
     assert chan.closed is True
 
 
-# --- FakeTransport behaviour (FR-050) ----------------------------------------
-
 def test_fake_run_ok_is_non_retryable_by_default():
     ft = FakeTransport(command_stdout="JOBID|STATE\n", command_exit=0)
     r = ft.run(_target(), ["squeue", "--me"], timeout=5)
@@ -179,10 +161,9 @@ def test_fake_run_ok_is_non_retryable_by_default():
 
 
 def test_fake_run_validates_argv_before_gate():
-    # argv validation happens first in BOTH Fake and Paramiko (fail fast, parity).
     ft = FakeTransport()
     with pytest.raises(ValueError):
-        ft.run(_target(address="127.0.0.1"), [], timeout=5)  # bad argv beats the blocked addr
+        ft.run(_target(address="127.0.0.1"), [], timeout=5)
 
 
 def test_fake_blocked_address():
@@ -196,8 +177,6 @@ def test_fake_unreachable_and_auth_failed():
 
 
 def test_fake_stat_and_put_file_writes_unconditionally():
-    # The destructive if_exists decision is the confirmation gate's job (via stat),
-    # not the transport's — put_file always writes.
     ft = FakeTransport(files={"/data/x": b"old"})
     assert ft.stat(_target(), "/data/x", timeout=5).data["exists"] is True
     assert ft.stat(_target(), "/data/y", timeout=5).data["exists"] is False
@@ -229,9 +208,6 @@ def test_fake_gate_maps_resolution_failure_to_unreachable(monkeypatch):
 
 
 def test_fake_consequential_timeout_surfaces_unconfirmed():
-    # Fake mirrors production: a non-retryable deadline expiry has an UNKNOWN
-    # outcome, so verb tests see ``unconfirmed`` rather than a re-attemptable
-    # ``timeout`` (FR-036/SC-010).
     ft = FakeTransport(force_verdict=Verdict.TIMEOUT)
     assert ft.run(_target(), ["sbatch", "j.sh"], timeout=5).verdict is Verdict.UNCONFIRMED
     assert ft.run(_target(), ["squeue"], timeout=5, retryable=True).verdict is Verdict.TIMEOUT
@@ -243,7 +219,7 @@ def test_fake_stat_and_put_file_honour_the_gate():
     assert ft.stat(blocked, "/data/x", timeout=5).verdict is Verdict.BLOCKED_ADDRESS
     put = ft.put_file(blocked, b"payload", "/data/x", timeout=5)
     assert put.verdict is Verdict.BLOCKED_ADDRESS
-    assert ft.files == {}  # nothing written past a refused gate
+    assert ft.files == {}
 
 
 def test_default_transport_constructs_without_paramiko():
@@ -253,22 +229,12 @@ def test_default_transport_constructs_without_paramiko():
     rt.set_transport(None)
 
 
-# --- ParamikoTransport internals (fake client injected at the paramiko seam) ---
-#
-# paramiko is imported lazily inside the methods, so these tests opt in via the
-# ``paramiko_mod`` fixture and the module above still imports without it. The
-# client object is faked; paramiko's real exception CLASSES are used so the
-# exception->verdict mapping is exercised against production types.
-
-
 @pytest.fixture()
 def paramiko_mod():
     return pytest.importorskip("paramiko")
 
 
 class _ExecChan:
-    """Channel double for the run() path (adds stderr over _FakeChan)."""
-
     def __init__(self, chunks=(b"",), exit_status=0, stderr=b"", recv_error=None):
         self._chunks = list(chunks)
         self._stderr = bytearray(stderr)
@@ -338,8 +304,6 @@ class _FakeSFTP:
 
 
 class _FakeSSHClient:
-    """Stand-in for ``paramiko.SSHClient`` covering only what the transport calls."""
-
     def __init__(self, *, peer="10.33.77.11", connect_error=None, peer_error=False,
                  present_key=None, chan=None, exec_error=None, sftp=None):
         self.peer = peer
@@ -359,7 +323,7 @@ class _FakeSSHClient:
 
     def connect(self, **kwargs):
         self.connect_kwargs = kwargs
-        if self.present_key is not None:  # drives the pinning policy, as sshd does
+        if self.present_key is not None:
             self.policy.missing_host_key(self, kwargs["hostname"], self.present_key)
         if self.connect_error is not None:
             raise self.connect_error
@@ -400,7 +364,6 @@ def _wire(monkeypatch, paramiko_mod, client):
 
 
 def _stub_first_key_class(monkeypatch, paramiko_mod, *, result=None, error=None):
-    """Replace Ed25519Key — the first class ``_load_private_key`` tries."""
     seen = {}
 
     class _Stub:
@@ -416,8 +379,6 @@ def _stub_first_key_class(monkeypatch, paramiko_mod, *, result=None, error=None)
     return seen
 
 
-# --- private-key loading ------------------------------------------------------
-
 def test_load_private_key_returns_the_first_supported_class(monkeypatch, paramiko_mod):
     sentinel = object()
     seen = _stub_first_key_class(monkeypatch, paramiko_mod, result=sentinel)
@@ -427,8 +388,6 @@ def test_load_private_key_returns_the_first_supported_class(monkeypatch, paramik
 
 
 def test_load_private_key_propagates_password_required(monkeypatch, paramiko_mod):
-    # A missing passphrase is a CREDENTIAL problem: it must not be swallowed into
-    # the "try the next key class" loop.
     _stub_first_key_class(monkeypatch, paramiko_mod,
                           error=paramiko_mod.PasswordRequiredException("encrypted"))
     with pytest.raises(paramiko_mod.PasswordRequiredException):
@@ -439,11 +398,9 @@ def test_load_private_key_rejects_unusable_material(paramiko_mod):
     with pytest.raises(paramiko_mod.SSHException) as exc:
         rt.ParamikoTransport()._load_private_key("not-a-key-at-all", None)
     assert "unsupported or invalid private key" in str(exc.value)
-    for cls in ("Ed25519Key", "ECDSAKey", "RSAKey"):  # every class was tried
+    for cls in ("Ed25519Key", "ECDSAKey", "RSAKey"):
         assert cls in str(exc.value)
 
-
-# --- exception -> verdict mapping (FR-034) ------------------------------------
 
 def _exc(paramiko_mod, name):
     class _K:
@@ -485,7 +442,6 @@ def test_verdict_for_exception_maps_every_known_condition(paramiko_mod, name, ex
 
 
 def test_verdict_for_exception_returns_none_for_an_unknown_bug(paramiko_mod):
-    # An unmapped exception is a transport BUG, never a remote verdict.
     assert rt.ParamikoTransport()._verdict_for_exception(ValueError("bug")) is None
 
 
@@ -503,8 +459,6 @@ def test_consequential_timeout_becomes_unconfirmed(paramiko_mod):
     read = tr._result_for_exception(_target(), TimeoutError("x"), retryable=True)
     assert read.verdict is Verdict.TIMEOUT and read.retryable is True
 
-
-# --- _connect: gate, credentials, anti-rebinding ------------------------------
 
 def test_connect_password_path_never_uses_agent_or_known_hosts(monkeypatch, paramiko_mod):
     client = _wire(monkeypatch, paramiko_mod, _FakeSSHClient())
@@ -528,8 +482,6 @@ def test_connect_ssh_key_path_loads_the_pkey(monkeypatch, paramiko_mod):
 
 
 def test_connect_unloadable_key_is_auth_failed_not_unreachable(monkeypatch, paramiko_mod):
-    # Bad key material is a CREDENTIAL problem; surfacing it as ``unreachable``
-    # would send the user chasing the network instead of the credential.
     _wire(monkeypatch, paramiko_mod, _FakeSSHClient())
     res = rt.ParamikoTransport().run(
         _target(cred_type="ssh_key", secret="not-a-key"), ["true"], timeout=5)
@@ -538,13 +490,11 @@ def test_connect_unloadable_key_is_auth_failed_not_unreachable(monkeypatch, para
 
 
 def test_connect_refuses_a_peer_outside_the_vetted_set(monkeypatch, paramiko_mod):
-    # The FR-019 anti-rebinding step: paramiko re-resolved the name to an address
-    # the gate never vetted.
     client = _wire(monkeypatch, paramiko_mod, _FakeSSHClient(peer="203.0.113.9"))
     with pytest.raises(rt.net_guard.BlockedTargetError) as exc:
         rt.ParamikoTransport()._connect(_target(), timeout=5)
     assert "rebinding" in str(exc.value)
-    assert client.closed == 1  # the socket is closed, not left dangling
+    assert client.closed == 1
 
 
 def test_connect_treats_an_unreadable_peer_as_unverifiable(monkeypatch, paramiko_mod):
@@ -562,8 +512,6 @@ def test_connect_runs_the_egress_gate_before_any_socket(monkeypatch, paramiko_mo
         rt.ParamikoTransport()._connect(_target(address="169.254.169.254"), timeout=5)
 
 
-# --- run() --------------------------------------------------------------------
-
 def test_run_assembles_stdout_stderr_and_exit_status(monkeypatch, paramiko_mod):
     chan = _ExecChan(chunks=[b"JOBID|STATE\n", b""], exit_status=2, stderr=b"boom\n")
     client = _wire(monkeypatch, paramiko_mod, _FakeSSHClient(chan=chan))
@@ -573,7 +521,7 @@ def test_run_assembles_stdout_stderr_and_exit_status(monkeypatch, paramiko_mod):
     assert res.exit_status == 2 and res.data == {"truncated": False}
     assert res.retryable is True
     assert client.exec_call == (rt.build_login_command(["squeue", "--me"]), 9)
-    assert client.closed == 1  # closed in finally
+    assert client.closed == 1
 
 
 def test_run_truncated_output_drops_exit_status_and_stderr(monkeypatch, paramiko_mod):
@@ -617,8 +565,6 @@ def test_run_validates_argv_before_connecting(monkeypatch, paramiko_mod):
         rt.ParamikoTransport().run(_target(), [], timeout=5)
 
 
-# --- stat() / put_file() / probe() --------------------------------------------
-
 def test_stat_reports_existence_and_bounds_the_channel(monkeypatch, paramiko_mod):
     sftp = _FakeSFTP(existing={"/data/x"})
     _wire(monkeypatch, paramiko_mod, _FakeSSHClient(sftp=sftp))
@@ -639,7 +585,7 @@ def test_stat_maps_remote_permission_denied(monkeypatch, paramiko_mod):
     client = _wire(monkeypatch, paramiko_mod, _FakeSSHClient(sftp=sftp))
     res = rt.ParamikoTransport().stat(_target(), "/root/secret", timeout=4)
     assert res.verdict is Verdict.PERMISSION_DENIED_REMOTE and res.retryable is True
-    assert sftp.closed == 1 and client.closed == 1  # sftp + client both released
+    assert sftp.closed == 1 and client.closed == 1
 
 
 def test_put_file_writes_unconditionally(monkeypatch, paramiko_mod):
@@ -662,7 +608,7 @@ def test_put_file_maps_an_io_failure_to_unreachable(monkeypatch, paramiko_mod):
 def test_probe_returns_the_captured_host_key(monkeypatch, paramiko_mod):
     key = _FakeKey(b"first-contact-key")
     _wire(monkeypatch, paramiko_mod, _FakeSSHClient(present_key=key))
-    res = rt.ParamikoTransport().probe(_target(), timeout=5)  # no pin yet => record
+    res = rt.ParamikoTransport().probe(_target(), timeout=5)
     assert res.verdict is Verdict.OK and res.data == {"authenticated": True}
     assert res.host_key["fingerprint"] == _sha256_fingerprint(key)
     assert res.host_key["type"] == "ssh-ed25519"
@@ -675,8 +621,6 @@ def test_probe_reports_auth_failure(monkeypatch, paramiko_mod):
     assert res.verdict is Verdict.AUTH_FAILED and res.retryable is True
     assert res.host_key is None
 
-
-# --- bounded read / stderr drain edge cases (FR-021, FR-035) ------------------
 
 def test_read_bounded_raises_when_the_deadline_passes_mid_stream(monkeypatch):
     ticks = [0.0, 99.0]

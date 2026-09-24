@@ -1,18 +1,8 @@
-"""Feature 055 US4 — component_refine + component_restore handlers (T038).
-
-Exercises the real, unbound ``Orchestrator`` methods over a fake ``self``
-plus a REAL Postgres-backed ``WorkspaceManager``/``HistoryManager`` (the
-test_component_action.py harness pattern), per
-specs/055-uniform-artifacts/contracts/wire-contract.md §3 and research D10.
-
-Covers: the full gate sequence (FF_COMPONENT_REFINE off, watch carve-out,
-timeline read-only, security flags, per-user permission on the source
-agent/tool, the 054 per-user LLM gate for refine), same-type-validated
-bounded LLM edit with provenance re-stamped 'estimated', archive-before-
-overwrite into component_version, force-upsert onto the same identity with
-ui_upsert fan-out, restore without any LLM, and the audit trail
-(workspace.component_refined / component_restored / action_denied).
+"""Tests for component_refine and component_restore
+(backend/orchestrator/orchestrator.py, artifact_versions.py): the full gate sequence,
+same-type LLM edits archived before overwrite, and restore running without an LLM.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,20 +27,12 @@ from tests.helpers.voice_plane_runtime import (
 
 
 class _FakeWS:
-    """Hashable, identity-compared websocket stand-in (see
-    test_component_action.py for why SimpleNamespace doesn't work)."""
-
     def __init__(self, label: str = ""):
         self.label = label
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(autouse=True)
 def refine_flag_on(monkeypatch):
-    """US4 default posture; flag-off tests override inside the test body."""
     monkeypatch.setitem(flags._flags, "component_refine", True)
 
 
@@ -83,15 +65,12 @@ def audit_events(monkeypatch):
 
 def _make_fake(history, user_id, *, allowed=True, security_flags=None,
                llm_configured=True, llm_result=None):
-    """Fake orchestrator ``self`` carrying only what the handlers touch, with
-    the real 055 implementations bound onto it. ``llm_result`` is what the
-    faked ``_call_llm_json`` seam returns to the REAL ``_refine_component_llm``."""
     from rote.rote import ROTE
 
-    sent = []            # (ws, parsed-json) for every _safe_send
-    renders = []         # (ws, components, target) for every send_ui_render
-    llm_calls = []       # (messages, kwargs) for every _call_llm_json
-    unconfig_calls = []  # kwargs of every _record_llm_unconfigured
+    sent = []
+    renders = []
+    llm_calls = []
+    unconfig_calls = []
 
     async def _safe_send(ws, payload):
         sent.append((ws, json.loads(payload)))
@@ -194,18 +173,8 @@ def _refined_table(**extra):
     return comp
 
 
-# ---------------------------------------------------------------------------
-# Refine happy path
-# ---------------------------------------------------------------------------
-
 def test_refine_happy_path(chat_env, audit_events):
-    """FR-022/FR-024: the prior dict is archived BEFORE the overwrite, the
-    same-type LLM edit lands on the SAME identity, provenance re-stamps
-    'estimated', source attribution carries over, a ui_upsert fans out, and
-    the mutation is audited as workspace.component_refined."""
     history, user_id, chat_id = chat_env
-    # The model also tries to self-upgrade trust and mint attribution —
-    # both must be stripped (FR-026).
     fake = _make_fake(history, user_id, llm_result=_refined_table(
         provenance="grounded", _source_agent="evil-agent", id="au_hijack"))
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -216,33 +185,27 @@ def test_refine_happy_path(chat_env, audit_events):
         "instruction": "add a totals row",
     }))
 
-    # Exactly one bounded LLM call carrying the instruction + original JSON.
     assert len(fake._llm_calls) == 1
     messages, kwargs = fake._llm_calls[0]
     assert kwargs.get("feature") == "component_refine"
     assert "add a totals row" in messages[-1]["content"]
     assert "Alice" in messages[-1]["content"]
 
-    # v1 archived with the ORIGINAL content, reason 'refine'.
     v1 = av.get_version(history, chat_id, user_id, cid, 1)
     assert v1 is not None and v1["reason"] == "refine"
     assert v1["component"]["rows"] == [["Alice"]]
 
-    # Live row updated in place under the same identity, no duplicate row.
     rows = fake.workspace.live_rows(chat_id, user_id)
     assert len(rows) == 1
     data = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     assert data["rows"] == [["Alice"], ["TOTAL: 1"]]
     assert data["component_id"] == cid
-    # Trust + attribution are server-owned: estimated (no tool re-run),
-    # original source kept, model-minted id gone.
     assert data["provenance"] == "estimated"
     assert data["_source_agent"] == "agent-x"
     assert data["_source_tool"] == "list_patients"
     assert data["_source_params"] == {"page": 1}
     assert data.get("id") != "au_hijack"
 
-    # ui_upsert fan with the dual shape; final chat_status done.
     upserts = [m for _, m in fake._sent if m["type"] == "ui_upsert"]
     assert len(upserts) == 1
     op = upserts[0]["ops"][0]
@@ -252,7 +215,6 @@ def test_refine_happy_path(chat_env, audit_events):
     statuses = [m for _, m in fake._sent if m["type"] == "chat_status"]
     assert statuses and statuses[-1]["status"] == "done"
 
-    # Snapshot with the refine cause; audit row present.
     snaps = [
         snapshot
         for snapshot in fake.workspace.list_snapshots(chat_id, user_id)
@@ -266,9 +228,6 @@ def test_refine_happy_path(chat_env, audit_events):
 
 
 def test_refine_sourceless_component_skips_agent_gates(chat_env, audit_events):
-    """A model-authored artifact has no source agent/tool to gate — refine
-    still works (the LLM gate is the operative one), even when the
-    permission checker would deny everything."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, allowed=False,
                       llm_result={"type": "card", "title": "Note", "body": "edited"})
@@ -286,13 +245,7 @@ def test_refine_sourceless_component_skips_agent_gates(chat_env, audit_events):
     assert [e for e in audit_events if e.get("action") == "action_denied"] == []
 
 
-# ---------------------------------------------------------------------------
-# Refine refusal paths
-# ---------------------------------------------------------------------------
-
 def test_refine_flag_off_refused(chat_env, audit_events, monkeypatch):
-    """D12: FF_COMPONENT_REFINE off ⇒ the action refuses honestly — no LLM
-    call, no version row, no workspace change."""
     monkeypatch.setitem(flags._flags, "component_refine", False)
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_result=_refined_table())
@@ -331,8 +284,6 @@ def test_restore_flag_off_refused(chat_env, audit_events, monkeypatch):
 
 
 def test_refine_timeline_mode_refused(chat_env, audit_events):
-    """FR-023: read-only timeline views refuse refine exactly like existing
-    timeline mutations."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_result=_refined_table())
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -352,8 +303,6 @@ def test_refine_timeline_mode_refused(chat_env, audit_events):
 
 
 def test_refine_unconfigured_llm_refused_by_054_gate(chat_env, audit_events):
-    """quickstart §US4.4: an unconfigured-LLM user's refine is refused by the
-    054 gate — audited as llm_unconfigured, honest alert, nothing runs."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_configured=False,
                       llm_result=_refined_table())
@@ -372,8 +321,6 @@ def test_refine_unconfigured_llm_refused_by_054_gate(chat_env, audit_events):
 
 
 def test_refine_permission_denied(chat_env, audit_events):
-    """FR-023: the per-user permission gate on the source agent/tool applies
-    to refine exactly as it does to component_action."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, allowed=False, llm_result=_refined_table())
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -412,8 +359,6 @@ def test_refine_security_flag_block(chat_env, audit_events):
 
 
 def test_refine_watch_profile_refused(chat_env, audit_events):
-    """wire-contract §3: the watch renders no refine affordance and a raw
-    frame from one is refused honestly."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_result=_refined_table())
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -461,9 +406,6 @@ def test_refine_unknown_component_refused(chat_env):
 
 
 def test_refine_type_change_rejected(chat_env):
-    """D10: the edit is constrained to the SAME component type — a
-    type-changing result leaves the component untouched (no archive, no
-    overwrite) with an honest explanation."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id,
                       llm_result={"type": "card", "title": "Patients", "body": "nope"})
@@ -482,7 +424,6 @@ def test_refine_type_change_rejected(chat_env):
 
 
 def test_refine_unusable_llm_output_rejected(chat_env):
-    """A None/refusal from the LLM seam leaves the component untouched."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_result=None)
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -496,14 +437,7 @@ def test_refine_unusable_llm_output_rejected(chat_env):
     assert av.list_versions(history, chat_id, user_id, cid) == []
 
 
-# ---------------------------------------------------------------------------
-# Version cycle: refine → list → restore → audit
-# ---------------------------------------------------------------------------
-
 def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
-    """FR-024: refine archives v1; restore archives the refined state as v2
-    (reason 'restore') and puts v1's content back under the same identity;
-    both mutations are audited and fanned out."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_result=_refined_table())
     cid = _seed_component(fake.workspace, chat_id, user_id)
@@ -519,31 +453,26 @@ def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
         "chat_id": chat_id, "component_id": cid, "version_no": 1,
     }))
 
-    # The refined state was archived as v2 before the restore overwrite.
     listed = av.list_versions(history, chat_id, user_id, cid)
     assert [v["version_no"] for v in listed] == [2, 1]
     assert listed[0]["reason"] == "restore"
     v2 = av.get_version(history, chat_id, user_id, cid, 2)
     assert v2["component"]["rows"] == [["Alice"], ["TOTAL: 1"]]
 
-    # Live row is v1's content again, same identity, single row.
     rows = fake.workspace.live_rows(chat_id, user_id)
     assert len(rows) == 1
     data = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     assert data["rows"] == [["Alice"]]
     assert data["component_id"] == cid
 
-    # Both verbs fanned a ui_upsert onto the same identity.
     upserts = [m for _, m in fake._sent if m["type"] == "ui_upsert"]
     assert len(upserts) == 2
     assert all(u["ops"][0]["component_id"] == cid for u in upserts)
 
-    # Restore audit: workspace.component_restored with both version numbers.
     restored = [e for e in audit_events if e.get("action") == "component_restored"]
     assert len(restored) == 1
     assert restored[0]["component_id"] == cid
     assert restored[0]["detail"] == {"restored_version": 1, "archived_version": 2}
-    # Restore snapshot cause recorded too.
     snaps = [
         snapshot
         for snapshot in fake.workspace.list_snapshots(chat_id, user_id)
@@ -553,12 +482,9 @@ def test_version_cycle_refine_list_restore_audit(chat_env, audit_events):
 
 
 def test_restore_needs_no_llm(chat_env, audit_events):
-    """wire-contract §3: restore runs the same gates MINUS the LLM gate —
-    an unconfigured-LLM user can still restore."""
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id, llm_configured=False)
     cid = _seed_component(fake.workspace, chat_id, user_id)
-    # Seed an archived version directly (sync, off-loop).
     current = fake.workspace.get_by_component_id(chat_id, user_id, cid)["component_data"]
     old = dict(current)
     old["rows"] = [["Old Bob"]]

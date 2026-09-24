@@ -1,4 +1,7 @@
-"""Adversarial policy tests for Deep's one attachment publication state machine."""
+"""Adversarial tests for orchestrator/attachments/materialization.py's publication state
+machine: replay-safe begin/publish, source-pump cancellation, and abandonment across
+every interleaving of close, error, and heartbeat failure.
+"""
 
 from __future__ import annotations
 

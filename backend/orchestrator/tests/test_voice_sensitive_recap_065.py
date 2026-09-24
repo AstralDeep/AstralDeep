@@ -1,4 +1,7 @@
-"""Sensitive-result disclosure gates for Feature 065."""
+"""Tests for orchestrator/voice_recap.py's sensitive-result disclosure gate: fail-closed
+PHI detection, owner-and-result-bound one-time consent, and expiry of the memory-only
+sensitive registry.
+"""
 
 from __future__ import annotations
 

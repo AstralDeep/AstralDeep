@@ -1,8 +1,8 @@
-"""Retained fixed research continuation through actual claims and PostgreSQL.
-
-The imported fixture performs one preliminary source read. Counts explicitly
-retain it, then observe the canonical handler's own source/model boundary.
+"""Tests for persistent_agents/research_episode.py against real Postgres: the
+source/model boundary holds across a transition, an old model proof cannot finish or
+project a resumed epoch, and a new epoch cannot escape an unknown liability.
 """
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 
@@ -71,15 +71,12 @@ async def test_source_model_boundary_after_transition(research, monkeypatch, tra
     assert len(boundary) == 1 and len(op.physical) == 2 and op.model_calls == []
     source_before = boundary[0]
     if transition == "pause_resume":
-        # Explicit fixture capacity cleanup isolates action identity from a
-        # separate production pause/recovery capacity-lifecycle question.
         await asyncio.to_thread(op.executor.orch.work_admission.terminalize,
             old_executor.operation_fence, state=OperationState.CANCELLED,
             terminal_code="synthetic_owner_pause", safe_summary=None, retry_after_ms=None)
         await control(op, "resume")
         assert (await current(op)).control_epoch == initial.control_epoch + 2
     else:
-        # Same controlled expired-lease fixture as the existing recovery suite.
         expiry = datetime.now(UTC) - timedelta(seconds=1)
         with op.runtime.transaction() as tx:
             tx.execute("UPDATE persistent_assignment SET lease_expires_at=%s, "
@@ -94,7 +91,6 @@ async def test_source_model_boundary_after_transition(research, monkeypatch, tra
         assert 3 <= delay <= 5
         await asyncio.sleep(max(0, delay) + .02)
 
-    # Fresh in-memory runner/executor and genuine new claim/admission.
     runner = attach_runner(op, run_research_episode)
     executor = await fresh_executor(op, runner)
     error = None
@@ -145,7 +141,6 @@ async def test_old_model_proof_cannot_finish_or_project_a_resumed_epoch(research
     old_ledger = await actions(op)
     assert len(op.model_calls) == 1
     await control(op, "pause")
-    # Fixture cleanup of this exact old admission, not a lifecycle adapter claim.
     await asyncio.to_thread(op.executor.orch.work_admission.terminalize,
         old_executor.operation_fence, state=OperationState.CANCELLED,
         terminal_code="synthetic_owner_pause", safe_summary=None, retry_after_ms=None)
@@ -167,8 +162,6 @@ async def test_old_model_proof_cannot_finish_or_project_a_resumed_epoch(research
     assert result.research.model_action_id != old_result.research.model_action_id
     assert result.research.private.source_action_id != old_result.research.private.source_action_id
     assert (await project(op))["available"] is True
-    # Actual PG corruption witness: even authentic older settled proof/reference
-    # cannot replace the current epoch's result after a resumed completion.
     def stale(data):
         data["checkpoint"] = thaw(old_result.completion.checkpoint)
         data["operation"]["result_reference"] = old_result.research.model_action_id

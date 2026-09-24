@@ -1,11 +1,8 @@
-"""Feature 029 — product-level workspace layout behavior (T012).
-
-Real-Postgres coverage of the WorkspaceManager layout API
-(upsert/claim-stealing/live ordering/remove pruning/shared position space),
-snapshot round-trips including legacy no-layout rows, and chat-deletion
-cascades through typed AstralPlane repositories. Schema and migration
-qualification lives with the owning AstralPlane component.
+"""Tests for the workspace layout API (backend/orchestrator/workspace.py):
+upsert/claim-stealing, live ordering, ref pruning on component removal, and snapshot
+round-trips including legacy no-layout rows.
 """
+
 from __future__ import annotations
 
 import json
@@ -70,11 +67,6 @@ def _ref(cid):
     return {"type": "ref", "component_id": cid}
 
 
-# ---------------------------------------------------------------------------
-# Plane composition boundary
-# ---------------------------------------------------------------------------
-
-
 def test_plane_catalog_exposes_workspace_contracts(plane_runtime):
     workspaces = plane_runtime.repositories.workspaces
     assert workspaces.canvas is not None
@@ -93,11 +85,6 @@ def test_chat_delete_cascades_layouts(history, ws):
     assert ws.live_layouts(chat_id, user_id) == []
 
 
-# ---------------------------------------------------------------------------
-# Layout API (T012)
-# ---------------------------------------------------------------------------
-
-
 def test_layout_key_deterministic():
     assert layout_key_for("c1", "42") == layout_key_for("c1", "42")
     assert layout_key_for("c1", "42") != layout_key_for("c1", "43")
@@ -114,7 +101,6 @@ def test_upsert_layout_roundtrip_and_update_in_place(ws, chat):
     live = ws.live_layouts(chat_id, user_id)
     assert len(live) == 1 and live[0]["layout_key"] == key
     assert set(iter_layout_refs(live[0]["layout"])) == set(ids)
-    # Re-design the same round: same key updates in place, position kept.
     pos_before = live[0]["position"]
     layout_v2 = [_ref(ids[0]), _ref(ids[1]), {"type": "divider"}]
     ws.upsert_layout(chat_id, user_id, key, layout_v2)
@@ -162,11 +148,6 @@ def test_prune_layout_refs_keeps_empty_containers():
     tree = [{"type": "card", "title": "g", "content": [_ref("x")]}]
     pruned = prune_layout_refs(tree, {"x"})
     assert pruned[0]["type"] == "card" and pruned[0]["content"] == []
-
-
-# ---------------------------------------------------------------------------
-# Snapshots carry layouts (T012 / FR-025)
-# ---------------------------------------------------------------------------
 
 
 def test_snapshot_roundtrips_layouts(ws, chat):

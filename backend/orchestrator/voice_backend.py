@@ -1,9 +1,6 @@
-"""Immutable process-owned speech-backend selection for Feature 075.
-
-Clients may report eligibility for the selected backend, but this module is
-the sole place where deployment policy is interpreted.  Invalid explicit
-values are deliberately represented without retaining the raw value so status
-and logs cannot echo operator input.
+"""Parses and holds the deployment's speech-backend choice once at process start,
+without retaining raw invalid input so status and logs can't echo it; voice_api.py
+and voice_bootstrap.py treat this as the sole authority.
 """
 
 from __future__ import annotations
@@ -14,16 +11,12 @@ from typing import Mapping
 
 
 class VoiceSpeechBackend(StrEnum):
-    """The exhaustive server-owned speech backend vocabulary."""
-
     LLM_FACTORY = "llm_factory"
     CLIENT_LOCAL = "client_local"
 
 
 @dataclass(frozen=True, slots=True)
 class SpeechBackendSelection:
-    """One parse-once, non-secret deployment selection."""
-
     value: VoiceSpeechBackend | None
     valid: bool
     source: str
@@ -43,8 +36,6 @@ class SpeechBackendSelection:
         cls,
         environ: Mapping[str, str],
     ) -> "SpeechBackendSelection":
-        """Parse the exact environment value once without aliases or trimming."""
-
         if "VOICE_SPEECH_BACKEND" not in environ:
             return cls(
                 value=VoiceSpeechBackend.LLM_FACTORY,
@@ -60,8 +51,6 @@ class SpeechBackendSelection:
 
 
 def backend_value(value: object) -> VoiceSpeechBackend | None:
-    """Return one exact backend enum without accepting aliases."""
-
     if isinstance(value, VoiceSpeechBackend):
         return value
     try:

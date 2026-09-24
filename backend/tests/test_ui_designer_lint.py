@@ -1,11 +1,8 @@
-"""Feature 033 (capability C-U7) — dark-pattern / persuasion-safety lint tests.
-
-Covers the pure ``lint_arrangement`` (strips false-urgency, forced-scarcity, and
-confirmshaming language from designer GARNISH only, never from ``ref`` tool
-output) and its fail-open integration into ``design_round``.
-
-Pure Python — no DB, no network; the LLM is always a stub.
+"""Tests for the dark-pattern lint in orchestrator/ui_designer.py: lint_arrangement
+strips false-urgency, scarcity, and confirmshaming language from designer-authored
+garnish only, never from ref tool output, and fails open on error.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,8 +22,6 @@ ALLOWED = {"container", "text", "card", "grid", "tabs", "hero", "badge", "metric
            "ref", "table", "line_chart"}
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_lint_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_UI_DESIGNER_LINT", raising=False)
     assert ui_designer.lint_enabled() is True
@@ -38,19 +33,16 @@ def test_lint_flag_off_values(monkeypatch, value):
     assert ui_designer.lint_enabled() is False
 
 
-# ───────────────────────── pure linter ───────────────────────────────────────
-
 def test_lint_strips_false_urgency():
     layout = [{"type": "hero", "title": "Hurry, last chance!", "subtitle": "clean"}]
     cleaned, flags = lint_arrangement(layout)
     assert any(f["rule"] == "false_urgency" for f in flags)
     assert "hurry" not in cleaned[0]["title"].lower()
     assert "last chance" not in cleaned[0]["title"].lower()
-    assert cleaned[0]["subtitle"] == "clean"  # non-manipulative text untouched
+    assert cleaned[0]["subtitle"] == "clean"
 
 
 def test_lint_never_touches_refs():
-    # a ref's component_id is tool-owned identity — must pass through verbatim
     layout = [{"type": "ref", "component_id": "act now last chance"}]
     cleaned, flags = lint_arrangement(layout)
     assert cleaned[0] == {"type": "ref", "component_id": "act now last chance"}
@@ -82,10 +74,8 @@ def test_lint_scrubs_badges_and_nested_content():
     assert any(f["rule"] == "false_urgency" for f in flags)
     badges = cleaned[0]["content"][0]["badges"]
     assert all("act now" not in b.lower() for b in badges)
-    assert "Verified" in badges  # legitimate badge preserved
+    assert "Verified" in badges
 
-
-# ───────────────────────── driver integration ────────────────────────────────
 
 _COMPS = [
     {"type": "table", "component_id": "A", "title": "Tbl", "_source_agent": "a", "_source_tool": "t"},
@@ -129,7 +119,7 @@ async def test_driver_lint_off_preserves_garnish(monkeypatch):
         llm_call=_stub_llm([_DRAFT_URGENCY, "DONE"]), timeout_s=5, max_rounds=2,
     )
     hero = next(n for n in out if n.get("type") == "hero")
-    assert "act now" in hero["title"].lower()  # lint off → unchanged
+    assert "act now" in hero["title"].lower()
 
 
 async def test_driver_lint_failure_is_fail_open(monkeypatch):
@@ -144,5 +134,5 @@ async def test_driver_lint_failure_is_fail_open(monkeypatch):
         chat_id="d3", layout_key="lk3", allowed_types=ALLOWED,
         llm_call=_stub_llm([_DRAFT_URGENCY, "DONE"]), timeout_s=5, max_rounds=2,
     )
-    assert out is not None  # never crashes; arrangement still delivered
+    assert out is not None
     assert any(n.get("type") == "hero" for n in out)

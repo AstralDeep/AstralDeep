@@ -1,14 +1,8 @@
-"""Feature 028 — shared JWKS cache (research D8).
-
-Pre-028, ``Orchestrator.validate_token`` and ``orchestrator.auth.
-get_current_user_payload`` fetched the Keycloak JWKS document on EVERY
-validation, coupling every request's availability to the IdP and adding a
-network round-trip per call (``shared.a2a_security`` already cached; this
-gives the other two validators the same behavior).
-
-TTL-based with a kid-miss refetch escape hatch: a key rotation invalidates
-the cache early instead of failing tokens for the rest of the TTL window.
+"""TTL-cached Keycloak JWKS fetch shared by orchestrator/auth.py, mcp_authz.py, and
+shared/a2a_security.py so token validation doesn't hit the identity provider every
+request; a kid-miss triggers an immediate refetch.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +15,7 @@ import aiohttp
 logger = logging.getLogger("shared.jwks_cache")
 
 _TTL_SECONDS = 600
-_cache: Dict[str, Dict[str, Any]] = {}  # url -> {"jwks": dict, "fetched_at": float}
+_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _kids(jwks: Dict[str, Any]) -> set:
@@ -47,11 +41,6 @@ async def _fetch(jwks_url: str) -> Dict[str, Any]:
 
 
 async def get_jwks(jwks_url: str, *, token: Optional[str] = None) -> Dict[str, Any]:
-    """Return the JWKS for ``jwks_url``, cached for up to 10 minutes.
-
-    When ``token`` is supplied and its ``kid`` is absent from the cached set
-    (key rotation), the cache is refreshed immediately.
-    """
     entry = _cache.get(jwks_url)
     if entry and (time.time() - entry["fetched_at"]) < _TTL_SECONDS:
         jwks = entry["jwks"]
@@ -65,5 +54,4 @@ async def get_jwks(jwks_url: str, *, token: Optional[str] = None) -> Dict[str, A
 
 
 def clear() -> None:
-    """Test helper."""
     _cache.clear()

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Deploy and clean one fail-closed, request-scoped feature-060 staging stack."""
+"""Deploys and tears down one fail-closed, request-scoped staging stack for release
+candidates — validating fixtures and images, then writing a deployment manifest the
+trusted-builder workflow independently re-derives from the GitHub API.
+"""
 
 from __future__ import annotations
 
@@ -96,7 +99,7 @@ STAGING_RUNNING_SERVICES = STAGING_COMPOSE_SERVICES
 
 
 class StagingError(ValueError):
-    """Raised when candidate staging cannot satisfy its qualifying contract."""
+    pass
 
 
 def _strict_json(path: Path) -> dict[str, Any]:
@@ -152,8 +155,6 @@ def _assert_no_secret_values(value: Any, *, location: str = "$") -> None:
 
 
 def validate_fixtures(manifest_path: str | Path) -> dict[str, Any]:
-    """Validate the tracked synthetic 057 fixture and return public fingerprints."""
-
     manifest_path = Path(manifest_path).resolve(strict=True)
     manifest = _strict_json(manifest_path)
     root = manifest_path.parent
@@ -186,8 +187,6 @@ def validate_fixtures(manifest_path: str | Path) -> dict[str, Any]:
             raise StagingError(f"fixture manifest entry is invalid: {relative!r}")
         path = (root / relative).resolve(strict=True)
         if not path.is_file() or not path.is_relative_to(root.resolve()):
-            # A diagnostic copied manifest may point through a symlink; retain
-            # fingerprint checking but never accept it for deployment below.
             if manifest_path.parent == (
                 REPO_ROOT
                 / "backend/tests/fixtures/runtime_reliability_060/staging"
@@ -236,22 +235,6 @@ def validate_fixtures(manifest_path: str | Path) -> dict[str, Any]:
 
 
 def _require_plane_fixture_importer() -> None:
-    """Block the retired Deep-owned representative-database restore.
-
-    Feature 060 restored a raw SQL fixture with a driver-side ``psql`` call and
-    then queried schema metadata directly. AstralPlane now owns migrations,
-    database readiness, and representative pre-split replay. Its immutable
-    fixture loader is intentionally qualification-only and does not expose a
-    production arbitrary-SQL importer, so this old deploy command has no safe
-    replacement to invoke.
-
-    Keep the gate visibly closed until a future, reviewed Plane-owned staging
-    import contract exists. Plane qualification currently lives in
-    ``AstralPlane/tests/integration/test_pre_split_upgrade.py`` and
-    ``AstralPlane/provenance/checks.json``; it is evidence for the migration,
-    not permission for Deep to recreate an importer.
-    """
-
     raise StagingError(
         "candidate staging deploy is retired: the representative-057 restore "
         "has no AstralPlane-owned exact-fixture import contract. No staging "
@@ -262,8 +245,6 @@ def _require_plane_fixture_importer() -> None:
 
 
 def validate_endpoint(endpoint: str) -> str:
-    """Validate one archived non-loopback HTTPS staging endpoint."""
-
     try:
         parsed = urlsplit(endpoint)
     except ValueError as exc:
@@ -286,8 +267,6 @@ def validate_endpoint(endpoint: str) -> str:
 
 
 def validate_image_reference(reference: str) -> str:
-    """Require a registry image reference pinned by lowercase SHA-256 digest."""
-
     if not IMAGE_RE.fullmatch(reference):
         raise StagingError(f"image is not digest-qualified: {reference}")
     return reference
@@ -300,8 +279,6 @@ def _validate_sha256_input(value: str, *, option: str) -> str:
 
 
 def _voice_runtime(args: argparse.Namespace) -> dict[str, Any]:
-    """Build the public, pinned voice identity from explicit protected inputs."""
-
     voice_worker_image = validate_image_reference(args.voice_worker_image)
     livekit_image = validate_image_reference(args.livekit_image)
     if livekit_image != PINNED_LIVEKIT_IMAGE:
@@ -341,8 +318,6 @@ def _project_name(environment_id: str) -> str:
 
 
 def _run_scoped_environment_id(protected: Mapping[str, str]) -> str:
-    """Return the only staging identity that the current protected run may own."""
-
     run_id = protected["GITHUB_RUN_ID"]
     run_attempt = protected["GITHUB_RUN_ATTEMPT"]
     if not POSITIVE_DECIMAL_RE.fullmatch(run_id):
@@ -350,8 +325,6 @@ def _run_scoped_environment_id(protected: Mapping[str, str]) -> str:
     if not POSITIVE_DECIMAL_RE.fullmatch(run_attempt):
         raise StagingError("GITHUB_RUN_ATTEMPT must be one positive decimal identifier")
     environment_id = f"rr-{run_id}-{run_attempt}"
-    # This identity is deliberately canonical: no normalization or truncation
-    # may make two protected runs share a Compose namespace.
     if _project_name(environment_id) != f"astral060-{environment_id}":
         raise StagingError("protected run identity cannot form an exact Compose project")
     return environment_id
@@ -364,8 +337,6 @@ def _staging_ownership_labels(
     run_id: str,
     run_attempt: str,
 ) -> dict[str, str]:
-    """Build the non-secret ownership labels required on every staged resource."""
-
     return {
         STAGING_OWNERSHIP_LABEL_KEYS["managed"]: "true",
         STAGING_OWNERSHIP_LABEL_KEYS["project"]: project,
@@ -551,8 +522,6 @@ def _git_identity(candidate_sha: str, source_root: str | Path) -> None:
 
 
 def _strict_json_bytes(payload: bytes, *, purpose: str) -> dict[str, Any]:
-    """Parse one bounded strict JSON object without reflecting its content."""
-
     if not payload or len(payload) > MAX_JSON_BYTES:
         raise StagingError(f"{purpose} response is absent or oversized")
 
@@ -596,8 +565,6 @@ def _authenticated_json_request(
     expected_status: int,
     purpose: str,
 ) -> dict[str, Any]:
-    """Make one bounded, no-redirect authenticated staging request."""
-
     parsed, path = _endpoint_path(endpoint, suffix)
     connection = http.client.HTTPSConnection(
         parsed.hostname,
@@ -685,8 +652,6 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def _load_evidence_validator() -> Any:
-    """Import scripts/validate_release_evidence.py for trust-schema validation."""
-
     path = Path(__file__).resolve().parent / "validate_release_evidence.py"
     spec = importlib.util.spec_from_file_location(
         "candidate_staging_release_validator", path
@@ -700,8 +665,6 @@ def _load_evidence_validator() -> Any:
 
 
 def _trusted_manifest_identity(protected: Mapping[str, str]) -> dict[str, Any]:
-    """Collect fail-closed GitHub identity for the trusted stage-deploy manifest."""
-
     if protected["GITHUB_JOB"] != "stage-deploy":
         raise StagingError("trusted manifest generation requires the stage-deploy GitHub job")
     repository = os.environ.get("GITHUB_REPOSITORY", "")
@@ -743,6 +706,7 @@ def _trusted_manifest_identity(protected: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
+# Never the trust root: GitHub API identity overrides this
 def _write_trusted_manifest(
     *,
     path: Path,
@@ -756,14 +720,6 @@ def _write_trusted_manifest(
     stage_outputs_artifact_name: str,
     stage_outputs_member: str,
 ) -> None:
-    """Emit a schema-valid manifest after immutable stage-output upload.
-
-    The self-declared artifact/builder values are never a trust root: the
-    protected trusted-builder workflow reconstructs run/job/artifact identity
-    from the GitHub API for the current run and ignores producer-uploaded
-    bytes as authority (release-trust.schema.json $comment).
-    """
-
     repository = str(identity["repository"])
     run_id = protected["GITHUB_RUN_ID"]
     if not ARTIFACT_ID_RE.fullmatch(stage_outputs_artifact_id):
@@ -775,8 +731,6 @@ def _write_trusted_manifest(
         or Path(stage_outputs_member).name != stage_outputs_member
     ):
         raise StagingError("stage-outputs-member must name the exact uploaded output file")
-    # The trust deployment identity is the deploy output minus the two
-    # evidence-only fields (deployed_at, macos_personal_agent_host).
     deployment = {
         key: value
         for key, value in output.items()
@@ -846,8 +800,6 @@ def _write_trusted_manifest(
 
 
 def _write_trusted_manifest_command(args: argparse.Namespace) -> int:
-    """Write the stage manifest only after Actions returns the immutable ID."""
-
     protected = _required_environment(for_deploy=False)
     identity = _trusted_manifest_identity(protected)
     if not GIT_SHA_RE.fullmatch(args.candidate_sha):
@@ -903,8 +855,6 @@ def _assert_ownership_labels(
     resource: str,
     require_compose_project: bool = False,
 ) -> None:
-    """Reject a staged resource that is not owned by this exact protected run."""
-
     if not isinstance(labels, dict) or any(
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in labels.items()
@@ -925,8 +875,6 @@ def _assert_ownership_labels(
 def _running_compose_services(
     payload: bytes, *, expected_images: Mapping[str, str]
 ) -> set[str]:
-    """Return running service names from bounded Compose JSON/NDJSON output."""
-
     if not payload or len(payload) > COMPOSE_OUTPUT_MAX_BYTES:
         raise StagingError("Compose service identity output is absent or oversized")
     try:
@@ -993,8 +941,6 @@ def _compose_runtime_identity(
     ownership_labels: Mapping[str, str],
     staging_bind_port: str,
 ) -> dict[str, Any]:
-    """Validate the rendered public deployment model and return its safe identity."""
-
     if not payload or len(payload) > COMPOSE_OUTPUT_MAX_BYTES:
         raise StagingError("rendered Compose model is absent or oversized")
 
@@ -1211,8 +1157,6 @@ def _validate_cleanup_resource_ownership(
     project: str,
     ownership_labels: Mapping[str, str],
 ) -> int:
-    """Verify every Compose-targeted resource before destructive cleanup."""
-
     resource_commands = {
         "container": (
             ["docker", "container", "ls", "--all", "--quiet"],
@@ -1316,8 +1260,6 @@ def _cleanup(args: argparse.Namespace) -> int:
             "STAGING_ENVIRONMENT_ID": args.environment_id,
             "STAGING_RUN_ID": protected["GITHUB_RUN_ID"],
             "STAGING_RUN_ATTEMPT": protected["GITHUB_RUN_ATTEMPT"],
-            # Compose interpolates the complete model even for `down`. These
-            # bounded non-secret sentinels can never be launched by this path.
             "ASTRAL_CANDIDATE_IMAGE": cleanup_image,
             "ASTRAL_VOICE_WORKER_IMAGE": cleanup_image,
             "STAGING_POSTGRES_IMAGE": cleanup_image,
@@ -1346,7 +1288,7 @@ def _cleanup(args: argparse.Namespace) -> int:
         project=project,
         ownership_labels=ownership_labels,
     )
-    # Project scoping is mandatory: no global container, image, or volume cleanup.
+    # Project-scoped only: never a global container/volume wipe
     _run(
         _compose(
             environment,
@@ -1404,8 +1346,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Execute fixture validation, protected deploy, or exact-namespace cleanup."""
-
     args = _parser().parse_args(argv)
     try:
         if args.command == "validate-fixtures":

@@ -1,11 +1,8 @@
-"""Real integration tests for the supervisor (C-S5) and HITL (C-S11) gates
-wired into Orchestrator.execute_single_tool.
-
-These flip the feature flags ON and drive the REAL dispatch path. A blocked
-call returns the gate's own alert; a call that passes the gate falls through to
-the "No agent available" sentinel (the tool's agent isn't registered), which
-proves it got past the gate. Flags OFF ⇒ the gate never fires.
+"""Tests for the supervisor and HITL gates wired into Orchestrator.execute_single_tool:
+a blocked call returns the gate's alert, a passed call falls through to dispatch, and
+both are no-ops with their flags off.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,9 +23,7 @@ def orch(orchestrator_factory):
     o.audit_recorder = MagicMock()
     o.audit_recorder.record = AsyncMock()
     o.send_ui_render = AsyncMock()
-    # Let everything past the permission gate so our gates are reachable.
     o.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
-    # Keep the post-gate (passed) path deterministic.
     o._map_file_paths = lambda cid, a, **k: a
     o.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
     return o
@@ -58,10 +53,6 @@ def _err(resp):
     return ((resp.error or {}).get("message", "")) if resp is not None else ""
 
 
-# --------------------------------------------------------------------------- #
-# Supervisor (C-S5): destructive tool the user did not ask for is held.
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_supervisor_blocks_unrequested_destructive(orch):
     resp = await _dispatch(orch, "delete_records", request="show me my dashboard",
@@ -74,7 +65,6 @@ async def test_supervisor_allows_when_intent_present(orch):
     resp = await _dispatch(orch, "delete_records",
                            request="please delete my old records",
                            flags={"FF_RUNTIME_SUPERVISOR": True})
-    # Intent aligned → passes the gate → falls through to the no-agent sentinel.
     assert "didn't ask for" not in _err(resp)
     assert "No agent available" in _err(resp)
 
@@ -94,10 +84,6 @@ async def test_supervisor_off_is_noop(orch):
     assert "didn't ask for" not in _err(resp)
     assert "No agent available" in _err(resp)
 
-
-# --------------------------------------------------------------------------- #
-# HITL (C-S11): a risky (egress / irreversible) call is held for confirmation.
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_hitl_blocks_egress(orch):

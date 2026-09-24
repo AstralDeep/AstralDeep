@@ -1,8 +1,6 @@
-"""Feature-060 canonical frame and generation-fence contracts.
-
-These tests intentionally describe the shared Python wire API before its
-implementation.  Durable state remains server-owned; the reducer helpers here
-only decide whether a complete snapshot or transient overlay is current.
+"""Tests for the canonical runtime-reliability wire protocol (shared/protocol.py):
+ui_event, conversation-snapshot, operation-status, and agent-lifecycle round trips,
+generation fencing, and fail-closed validation.
 """
 
 from __future__ import annotations

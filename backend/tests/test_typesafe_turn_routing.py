@@ -1,12 +1,7 @@
-"""Feature 089 (T022): the routing seams inside the real turn loop.
-
-Every test drives ``handle_chat_message`` with a stubbed LLM and the
-deterministic TypeSafe fake, so the question under test is always "what did the
-orchestrator actually do", not "what would it do if the wiring were right".
-
-The invariant that governs the whole file: **a user with no key must get a
-byte-identical first round.** Several tests here exist only to hold that line,
-because the cost of breaking it is paid by every user who never opted in.
+"""Tests for TypeSafe routing seams inside handle_chat_message in
+orchestrator/typesafe_routing/runner.py: a user with no stored key gets a
+byte-identical first round, and tier decisions narrow tool_choice without leaking the
+key or tool output.
 """
 
 from __future__ import annotations
@@ -39,21 +34,6 @@ TOOL_A = "get_current_weather"
 TOOL_B = "get_daily_forecast"
 
 
-# -- harness -------------------------------------------------------------
-
-
-#: Platform meta-tools that the orchestrator injects into EVERY chat turn when
-#: their flags are on (agentic creation, chat memory, scheduling, desktop
-#: codegen). They are not part of any agent card, so a test that asserts "round
-#: one saw the full eligible list" has to account for them or pin them off.
-#:
-#: Pinning them off is what this fixture does, and it is deliberate: these tests
-#: are about what TypeSafe routing does to the tool list, not about which
-#: platform tools a given deployment enables. Without it the expectations below
-#: silently depend on deployment configuration -- which is exactly how they came
-#: to pass in CI and in the T058 suite run (whose `docker run --env-file` left
-#: the flags unparseable, hence false) while failing in any environment that
-#: reads the same `.env` through compose. See verification.md 7i.
 _PLATFORM_META_TOOL_FLAGS = (
     "agentic_creation",
     "memory_chat",
@@ -64,7 +44,6 @@ _PLATFORM_META_TOOL_FLAGS = (
 
 @pytest.fixture(autouse=True)
 def platform_meta_tools_disabled(monkeypatch):
-    """Keep the eligible tool list to the registered agent's own tools."""
     from shared.feature_flags import flags as global_flags
 
     original = global_flags.is_enabled
@@ -97,8 +76,7 @@ def orch(orchestrator_factory):
     o._send_or_replace_components = AsyncMock()
     o._emit_llm_usage_report = AsyncMock()
     o._deliver_round_components = AsyncMock(return_value=[])
-    # The credential store is durable, so a key saved by one test would still
-    # be there for the next one and quietly invalidate every "no key" test.
+    # Durable store; a leftover key would break other tests
     o._typesafe_store.clear_sync(USER)
     o._typesafe_store.invalidate(USER)
     from orchestrator.typesafe_routing.budget import UserCircuit, set_circuit
@@ -143,8 +121,6 @@ def _usage():
 
 
 class _Recorder:
-    """Captures every ``_call_llm`` invocation so round one can be inspected."""
-
     def __init__(self, reply=None):
         self.calls = []
         self._reply = reply or _msg(content="done")
@@ -164,12 +140,10 @@ class _Recorder:
 
 
 def _install_key(o, key=KEY):
-    """Give the fixture user a stored TypeSafe key."""
     o._typesafe_store.save_sync(USER, key)
 
 
 def _install_fake(o, monkeypatch, fake):
-    """Route every adapter call through the deterministic fake."""
     import orchestrator.typesafe_routing.runner as runner
 
     monkeypatch.setattr(runner, "default_adapter_client", lambda: fake)
@@ -182,9 +156,6 @@ def _install_fake(o, monkeypatch, fake):
 async def _turn(o, ws, chat_id, text="What's the weather in Lexington right now?"):
     await asyncio.to_thread(o.history.create_chat, chat_id, user_id=USER)
     await o.handle_chat_message(ws, text, chat_id, user_id=USER)
-
-
-# -- invariant 1: no key changes nothing ---------------------------------
 
 
 @pytest.mark.asyncio
@@ -200,7 +171,6 @@ async def test_no_key_makes_zero_calls_and_leaves_round_one_identical(
 
     assert fake.call_count == 0
     assert sorted(recorder.round_one_names) == sorted([TOOL_A, TOOL_B])
-    # The historical signature: no tool_choice keyword at all.
     assert "tool_choice" not in recorder.calls[0]["kwargs"]
 
 
@@ -213,8 +183,7 @@ async def test_the_kill_switch_reproduces_the_no_key_path(
     fake = _install_fake(orch, monkeypatch, FakeTypeSafeClient(default=high_confidence(AGENT, TOOL_A)))
     recorder = _Recorder()
     monkeypatch.setattr(orch, "_call_llm", recorder)
-    # Turn off only this flag. Rebuilding the whole FeatureFlags object would
-    # reset every other flag to its env default and break unrelated subsystems.
+    # Patches just this flag; rebuilding resets every flag
     from shared.feature_flags import flags as global_flags
 
     original = global_flags.is_enabled
@@ -229,9 +198,6 @@ async def test_the_kill_switch_reproduces_the_no_key_path(
     assert fake.call_count == 0
     assert sorted(recorder.round_one_names) == sorted([TOOL_A, TOOL_B])
     assert "tool_choice" not in recorder.calls[0]["kwargs"]
-
-
-# -- tier effects on round one -------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -296,7 +262,6 @@ async def test_low_tier_leaves_round_one_untouched(
 async def test_an_unsupported_provider_preset_never_forces_a_choice(
     orch, monkeypatch, user_skills_disabled
 ):
-    """A forced choice an endpoint cannot parse turns a narrowed round into a failed one."""
     _register(orch)
     _install_key(orch)
     orch._llm_store.set_sync(
@@ -322,7 +287,6 @@ async def test_an_unsupported_provider_preset_never_forces_a_choice(
 async def test_an_ineligible_tool_in_the_answer_is_ignored(
     orch, monkeypatch, user_skills_disabled
 ):
-    """A decision can only ever narrow to tools the user was already allowed."""
     _register(orch)
     _install_key(orch)
     _install_fake(
@@ -338,14 +302,10 @@ async def test_an_ineligible_tool_in_the_answer_is_ignored(
     assert sorted(recorder.round_one_names) == sorted([TOOL_A, TOOL_B])
 
 
-# -- round two and later --------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_round_two_always_sees_the_full_eligible_list(
     orch, monkeypatch, user_skills_disabled
 ):
-    """A wrong first guess costs one round, never the turn."""
     _register(orch)
     _install_key(orch)
     _install_fake(
@@ -381,18 +341,9 @@ async def test_round_two_always_sees_the_full_eligible_list(
 async def test_narrowing_also_removes_the_platform_meta_tools(
     orch, monkeypatch, user_skills_disabled
 ):
-    """With the platform meta-tools ON, round one is still only the routed tool.
-
-    Every other test in this module pins the meta-tools off so its expectations
-    say what they mean. This one deliberately turns them back on, because the
-    interaction is real product behaviour and nothing else covers it: a keyed
-    high-tier turn narrows away `remember`, `create_capability`,
-    `schedule_recurring_task` and friends along with the unrouted agent tools,
-    and round two gets all of them back. See verification.md 7i.
-    """
     from shared.feature_flags import flags as global_flags
 
-    narrowed = global_flags.is_enabled  # the autouse fixture's view
+    narrowed = global_flags.is_enabled
     monkeypatch.setattr(
         global_flags,
         "is_enabled",
@@ -426,9 +377,7 @@ async def test_narrowing_also_removes_the_platform_meta_tools(
     first = [(e.get("function") or {}).get("name") for e in (calls[0]["tools_desc"] or [])]
     second = [(e.get("function") or {}).get("name") for e in (calls[1]["tools_desc"] or [])]
 
-    # Round one: the routed tool alone -- no agent siblings, no meta-tools.
     assert first == [TOOL_A]
-    # Round two: the agent's tools back, and the meta-tools with them.
     assert {TOOL_A, TOOL_B} <= set(second)
     assert "create_capability" in second, (
         "round two should restore the platform meta-tools; if this fails the "
@@ -436,23 +385,17 @@ async def test_narrowing_also_removes_the_platform_meta_tools(
     )
 
 
-# -- turns that must not call at all --------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_an_empty_eligible_set_makes_no_call(
     orch, monkeypatch, user_skills_disabled
 ):
-    _install_key(orch)  # a key, but no agents registered
+    _install_key(orch)
     fake = _install_fake(orch, monkeypatch, FakeTypeSafeClient(default=low_confidence()))
     monkeypatch.setattr(orch, "_call_llm", _Recorder())
 
     await _turn(orch, _ws(orch), f"ts-{uuid.uuid4().hex[:8]}")
 
     assert fake.call_count == 0
-
-
-# -- failure never reaches the user ---------------------------------------
 
 
 @pytest.mark.asyncio
@@ -494,7 +437,6 @@ async def test_an_auth_failure_marks_the_key_rejected(
     monkeypatch.setattr(orch, "_call_llm", _Recorder())
 
     await _turn(orch, _ws(orch), f"ts-{uuid.uuid4().hex[:8]}")
-    # Outcome recording is fire-and-forget; let the scheduled task land.
     for _ in range(50):
         if orch._typesafe_store.status_sync(USER).name == "rejected":
             break
@@ -524,9 +466,6 @@ async def test_a_successful_turn_marks_the_key_valid(
         await asyncio.sleep(0.01)
 
     assert orch._typesafe_store.status_sync(USER).name == "active"
-
-
-# -- the request never carries what it must not ---------------------------
 
 
 @pytest.mark.asyncio
@@ -569,8 +508,6 @@ async def test_the_key_travels_only_as_the_api_key_argument(
     call = fake.calls[0]
     assert call.api_key == KEY
     assert KEY not in str(call.questions)
-    # The recorded Call dataclass hides the key from repr for the same reason
-    # the store's record does: it gets logged.
     assert KEY not in repr(call)
 
 
@@ -578,7 +515,6 @@ async def test_the_key_travels_only_as_the_api_key_argument(
 async def test_environment_typesafe_variables_are_never_consulted(
     orch, monkeypatch, user_skills_disabled
 ):
-    """FR-005 at the turn level, not just at boot."""
     monkeypatch.setenv("TYPESAFE_API_KEY", "env-key-must-not-be-used")
     monkeypatch.setenv("TYPESAFE_BASE_URL", "https://env.invalid")
     monkeypatch.setenv("TYPESAFE_DEFAULT_MODEL", "env-model")
@@ -590,11 +526,7 @@ async def test_environment_typesafe_variables_are_never_consulted(
 
     await _turn(orch, _ws(orch), f"ts-{uuid.uuid4().hex[:8]}")
 
-    # No stored key means no call, whatever the environment says.
     assert fake.call_count == 0
-
-
-# -- at most one call per turn --------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -616,7 +548,7 @@ async def test_at_most_three_attempts_and_one_decision_per_turn(
 
     await _turn(orch, _ws(orch), f"ts-{uuid.uuid4().hex[:8]}")
 
-    assert fake.call_count == 2  # one failure, one success
+    assert fake.call_count == 2
     assert recorder.round_one_names == [TOOL_A]
 
 

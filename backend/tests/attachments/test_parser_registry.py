@@ -1,8 +1,6 @@
-"""Feature 031 — parser coverage map (parser_registry).
-
-Covers the "is this type parseable today?" decision: built-in coverage for the
-feature-002 categories, global coverage via a live attachment_parser row, and
-uncovered for the data/archive categories that drive auto-creation (US2).
+"""Tests for orchestrator/parser_registry.py: built-in coverage for legacy categories,
+global coverage via a live attachment_parser row, and the uncovered data/archive
+categories that drive auto-creation.
 """
 
 from __future__ import annotations
@@ -11,8 +9,6 @@ from orchestrator import parser_registry as pr
 
 
 class _FakeParserRepo:
-    """Minimal stand-in exposing get_by_gap for global-coverage tests."""
-
     def __init__(self, rows_by_gap):
         self._rows = dict(rows_by_gap)
 
@@ -46,10 +42,8 @@ def test_gap_fingerprint_is_stable_and_format_scoped():
     fp1 = pr.gap_fingerprint("data", "parquet")
     fp2 = pr.gap_fingerprint("data", "parquet")
     assert fp1 == fp2 and len(fp1) == 32
-    # Different extension/category → different fingerprint.
     assert pr.gap_fingerprint("data", "avro") != fp1
     assert pr.gap_fingerprint("archive", "parquet") != fp1
-    # Case/whitespace-insensitive.
     assert pr.gap_fingerprint("DATA", " parquet ") == fp1
 
 

@@ -1,4 +1,8 @@
-"""Feature-065 authenticated voice session control API contract tests."""
+"""Contract tests for the authenticated voice session control API (voice_api.py,
+voice_control_binding.py): legacy v1 fails closed locally, create/takeover/update
+routes validate bindings and claims, and runtime refusals map to content-free
+responses.
+"""
 
 from __future__ import annotations
 

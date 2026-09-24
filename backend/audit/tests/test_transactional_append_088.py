@@ -1,4 +1,8 @@
-"""Real PostgreSQL atomic audit composition; no route or Recorder activation."""
+"""Tests for audit/repository.py's insert_in_transaction: audit rows join the caller's
+own transaction, roll back with it on abort or authenticator failure, and never
+commit on a DTO validation failure.
+"""
+
 from __future__ import annotations
 
 import pytest

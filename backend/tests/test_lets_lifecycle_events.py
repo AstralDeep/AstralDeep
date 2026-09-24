@@ -1,3 +1,8 @@
+"""Tests for orchestrator/lets_lifecycle.py and user_agents.py: runtime-generation
+transitions (admit, reconnect, retire, revoke) run off the event loop, never reopen a
+stale generation, and off mode makes no lookup or lifecycle call.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -190,8 +195,6 @@ def _coordinator(
 
 
 class BlockingLookupCoordinator(RecordingCoordinator):
-    """Hold the synchronous Plane lookup until the event loop advances."""
-
     def __init__(self, service: RecordingLifecycleService) -> None:
         super().__init__(service, identifier_factory=lambda: str(uuid.uuid4()))
         self.lookup_entered = threading.Event()

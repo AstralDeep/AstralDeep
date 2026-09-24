@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""Enforce Feature 089's scope guards across the five Astral repositories.
-
-Feature 089 is web-only and CI-exempt by owner directive (spec FR-039,
-SC-011). Two classes of path are therefore forbidden to change:
-
-* native client directories -- ``windows-client/``, ``android-client/`` and
-  ``apple-clients/`` in AstralProjection, and their equivalents anywhere else;
-* any ``.github/workflows/`` file in any of the five repositories.
-
-This checker diffs each repository between its recorded 089 baseline commit
-and its current ``HEAD`` and fails when a changed path matches a guard. It is
-a local diagnostic: it authorizes nothing and reads no credential.
-
-The baselines live in ``specs/089-typesafe-a8p-integration/verification.md``
-and are duplicated here as ``DEFAULT_BASELINES`` so the check is runnable
-without parsing prose. Override any of them with ``--baseline NAME=SHA``.
-
-Exit codes: ``0`` clean, ``1`` a guard was violated, ``2`` the check could not
-run (missing repository, unknown commit).
+"""Diffs each of the five Astral repositories against a recorded baseline commit and
+fails when a changed path touches a native client directory or a .github/workflows/
+file; authorizes nothing, a local diagnostic only.
 """
 
 from __future__ import annotations
@@ -30,7 +14,6 @@ import subprocess
 import sys
 from typing import Iterable, Sequence
 
-# Recorded 2026-09-17. Keep in step with verification.md section 1.
 DEFAULT_BASELINES: dict[str, str] = {
     "AstralDeep": "e92db75d95719602228b5b41f179cfcbeeadc3bd",
     "AstralPlane": "65cbaedbbda4c5f9adfcb05becf02377a29caeee",
@@ -39,13 +22,8 @@ DEFAULT_BASELINES: dict[str, str] = {
     "LETS": "f53f3f329541ad34161ec9aaaad075e80ccb01d1",
 }
 
-# Sibling checkouts of the five repositories, resolved relative to AstralDeep.
-# This file lives at <AstralDeep>/scripts/verification/, so the directory that
-# holds all five checkouts is three levels up.
 DEFAULT_REPO_PARENT = Path(__file__).resolve().parents[3]
 
-# A changed path fails when any of these names one of its components. Matching
-# on components rather than a prefix catches a nested or vendored client tree.
 CLIENT_DIRECTORIES = (
     "windows-client",
     "android-client",
@@ -57,8 +35,6 @@ WORKFLOW_PREFIX = (".github", "workflows")
 
 @dataclass
 class RepoResult:
-    """The outcome of checking one repository."""
-
     name: str
     path: Path
     baseline: str
@@ -87,7 +63,6 @@ class RepoResult:
 
 
 def _git(repo: Path, *args: str) -> str:
-    """Run a git command in ``repo`` and return its stripped stdout."""
     completed = subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True,
@@ -113,15 +88,13 @@ def _is_workflow_path(parts: Sequence[str]) -> bool:
 def check_repo(
     name: str, path: Path, baseline: str, *, include_worktree: bool
 ) -> RepoResult:
-    """Diff one repository against its baseline and classify the changes."""
     result = RepoResult(name=name, path=path, baseline=baseline)
     if not (path / ".git").exists():
         result.error = "not a git repository: " + str(path)
         return result
     try:
         result.head = _git(path, "rev-parse", "HEAD")
-        # The trailing "--" keeps a SHA that also names a file from being
-        # interpreted as a pathspec.
+        # Trailing -- stops a SHA matching a filename as a pathspec
         changed = set(
             _git(path, "diff", "--name-only", baseline + "..HEAD", "--").splitlines()
         )
@@ -131,7 +104,7 @@ def check_repo(
                 path, "status", "--porcelain", "--untracked-files=all"
             ).splitlines()
             changed |= {line[3:] for line in porcelain if len(line) > 3}
-    except RuntimeError as exc:  # unknown commit, corrupt repo, git missing
+    except RuntimeError as exc:
         result.error = str(exc)
         return result
 

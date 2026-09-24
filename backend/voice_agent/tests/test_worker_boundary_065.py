@@ -1,4 +1,7 @@
-"""Boundary tests for the Feature 065 direct-RTC worker control plane."""
+"""Tests for voice_agent/config.py, control.py, and session.py's worker control plane:
+config/profile validation, challenge-response auth, runtime import/distribution
+guards, and SessionSupervisor capacity handling.
+"""
 
 from __future__ import annotations
 
@@ -1080,7 +1083,6 @@ async def test_supervisor_validates_capacity_delivery_end_and_factory_failure() 
         await supervisor.end(binding.session_id, 1, 2, "user")
     await supervisor.end(binding.session_id, 1, 1, "user")
     assert supervisor.active_count == 0
-    # A repeated, already-fenced lifecycle callback is an idempotent no-op.
     await supervisor.end(binding.session_id, 1, 1, "user")
     with pytest.raises(ProtocolViolation, match="media_grant_revision_mismatch"):
         await supervisor.end(binding.session_id, 1, 2, "user")

@@ -1,7 +1,6 @@
-"""
-Web Research Agent package for AstralDeep system.
-
-Provides web search, egress-gated page fetching, and cited research briefs.
+"""Web Research agent package: exposes WebResearchAgent and its MCP dispatch
+server/tools for DuckDuckGo/provider search, egress-gated page fetches, and cited
+research briefs.
 """
 
 from agents.web_research.web_research_agent import WebResearchAgent

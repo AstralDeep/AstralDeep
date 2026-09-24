@@ -1,9 +1,8 @@
-"""Private notes through real bounded socket admission, caller, SQL and delivery.
-
-The existing fixture verifies signed JWTs but uses synthetic institutional
-replies and transport. Notes are saved through this same actual ingress path;
-neither a fabricated human caller nor direct delivery bypass grants access.
+"""Tests for private-notes ingress (orchestrator/human_request_authority.py,
+projection_surfaces/guidance.py, personalization/explicit_note_service.py) through
+the real bounded-socket admission and delivery path, not a fabricated caller.
 """
+
 import asyncio
 from copy import deepcopy
 import json
@@ -41,9 +40,6 @@ async def notes(metadata, runtime, monkeypatch, tmp_path):
     async def handle(ws, raw):
         await original(ws, raw)
         if json.loads(raw).get("type") == "register_ui":
-            # The fixture's real JWT registration stub advertises only Work.
-            # Add the actual new capability as part of that stub's registration
-            # result, before any notes request is captured.
             orch.ui_sessions[ws]["_client_capabilities"].append("guidance_notes_v1")
 
     orch.handle_ui_message = handle

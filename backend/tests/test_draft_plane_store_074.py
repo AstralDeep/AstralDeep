@@ -1,3 +1,8 @@
+"""Tests for PlaneDraftStore (orchestrator/draft_plane_store.py) over AstralPlane's
+drafts repository: creation, CAS updates and generation-log locking, fenced/unfenced
+compare-and-set, exact transition lookup, and owner-equality-scoped deletion.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -1003,9 +1008,6 @@ def test_delete_identity_ownership_and_policy_retirement(boundary) -> None:
 
 
 def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
-    """The legacy directory-name sweep must never widen past the literal ids:
-    ownership is filtered by equality, and the suffix-based scope inventory's
-    over-matches (``x-weather`` ends with ``weather``) are discarded."""
     store, _runtime, _work, _drafts, _identity, agents, tool_policy = boundary
 
     assert store.purge_exact_agent_ids([]) == {
@@ -1019,8 +1021,6 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
             created_at=1, updated_at=2,
         )
 
-    # Ownership is keyed by agent_id, so the sweep asks Plane for each literal
-    # id exactly (never a listing it would have to page or pattern-filter).
     ownership_rows = {
         "weather": _own("weather"),
         "weather-1": _own("weather-1"),
@@ -1031,7 +1031,7 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
     agents.remove_ownership.return_value = True
     tool_policy.list_scoped_agent_owners_for_administration.return_value = (
         SimpleNamespace(owner_id="u1", agent_id="weather"),
-        SimpleNamespace(owner_id="u2", agent_id="x-weather"),   # suffix over-match
+        SimpleNamespace(owner_id="u2", agent_id="x-weather"),
         SimpleNamespace(owner_id="u3", agent_id="weather"),
     )
     tool_policy.remove_agent_state.return_value = 2
@@ -1059,7 +1059,7 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
         (c.kwargs["owner_id"], c.kwargs["agent_id"])
         for c in tool_policy.remove_agent_state.call_args_list
     }
-    assert removed_state == {("u1", "weather"), ("u3", "weather")}  # never x-weather
+    assert removed_state == {("u1", "weather"), ("u3", "weather")}
     assert {c.kwargs["agent_id"] for c in tool_policy.prune_agent_overrides.call_args_list} == {
         "tests", "weather",
     }
@@ -1068,8 +1068,6 @@ def test_purge_exact_agent_ids_matches_by_equality_only(boundary) -> None:
         for c in tool_policy.prune_agent_overrides.call_args_list
     )
     assert removed["policy_rows"] == 2 * 2 + 1 * 2
-    # Trust: neutralised only where a row is currently safe (weather), via the
-    # plain set_trust path (not a revision reset).
     assert agents.set_trust.call_count == 1
     assert agents.set_trust.call_args.kwargs == {
         "agent_id": "weather", "is_safe": False, "marked_by": "sys",

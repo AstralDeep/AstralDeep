@@ -1,9 +1,6 @@
-"""One private, bounded HTTP attempt in a supervised first-party POSIX child.
-
-This is a transport, not an authorization or retry boundary. Callers must commit
-their permit first and reserve ``timeout_seconds + CLEANUP_SECONDS``. Terminating
-the local socket cannot establish whether a remote service completed a request.
-No request, response, credential, or upstream exception is logged or persisted.
+"""Runs one HTTP attempt in an isolated, supervised POSIX child process so no request,
+response, credential, or exception is logged or persisted; a transport only — callers
+must commit their permit first.
 """
 
 from __future__ import annotations
@@ -26,8 +23,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 if __name__ == "__main__":
-    # -I removes both the script directory and application PYTHONPATH. Only this
-    # installed first-party backend directory is needed; never load dotenv.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shared import external_http  # noqa: E402
@@ -52,16 +47,12 @@ _CODES = frozenset({
 
 
 class IsolatedHttpError(Exception):
-    """Closed, payload-free failure; never evidence of remote cancellation."""
-
     def __init__(self, code: str) -> None:
         self.code = code if code in _CODES else "child_failure"
         super().__init__(self.code)
 
 
 class IsolatedHttpCancelled(asyncio.CancelledError):
-    """Cancellation with an explicit local cleanup outcome."""
-
     def __init__(self, *, cleanup_confirmed: bool) -> None:
         self.cleanup_confirmed = cleanup_confirmed
         super().__init__("isolated HTTP cancelled")
@@ -69,8 +60,6 @@ class IsolatedHttpCancelled(asyncio.CancelledError):
 
 @dataclass(frozen=True)
 class IsolatedHttpResponse:
-    """Successful bytes remain private in memory; parsing belongs to the caller."""
-
     status_code: int
     body: bytes = field(repr=False)
     final_url: str = field(repr=False)
@@ -206,7 +195,6 @@ async def _read_reply(fd: int, maximum: int) -> IsolatedHttpResponse:
     if not 1 <= size <= MAX_REPLY_BYTES:
         raise IsolatedHttpError("ipc_failure")
     value = _json_load(await _read(fd, size))
-    # Require EOF, so extra frames or trailing bytes cannot be ignored.
     while True:
         try:
             if os.read(fd, 1):
@@ -240,7 +228,6 @@ def _close(fd: int) -> None:
 
 
 async def _settle(task: asyncio.Task, deadline: float) -> tuple[bool, bool]:
-    """Finish mandatory cleanup even under repeated caller cancellation."""
     cancelled = False
     while True:
         try:
@@ -264,12 +251,6 @@ async def request(
     max_response_bytes: int = MAX_RESPONSE_BYTES,
     timeout_seconds: float = MAX_ATTEMPT_SECONDS,
 ) -> IsolatedHttpResponse:
-    """Perform one attempt; total local budget includes five seconds of cleanup.
-
-    The closed request is frozen before the first await. Private host permission
-    is explicit; environment proxy, CA, credential and egress settings are not
-    inherited by the isolated child. Normal CA verification remains required.
-    """
     if sys.platform not in ("linux", "darwin") or os.name != "posix":
         raise IsolatedHttpError("unsupported_platform")
     if type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= MAX_ATTEMPT_SECONDS:
@@ -298,8 +279,7 @@ async def request(
     stopped = threading.Event()
 
     def spawn() -> SupervisedProcess:
-        # This thread alone owns the inherited ends, even if Popen returns after
-        # caller cancellation. Never close/reuse its descriptors in the parent.
+        # This thread alone owns these fds until spawn() finishes
         try:
             child = supervisor.spawn(
                 process_id=uuid.uuid4(), owner=ProcessOwner("private_http", "attempt"),
@@ -349,16 +329,10 @@ async def request(
         confirmed, cleanup_cancelled = await _settle(
             cleanup_task, time.monotonic() + CLEANUP_SECONDS
         )
-        # Keep the parent ends alive during supervised termination. Closing the
-        # request pipe first would race the EOF watcher's SIGKILL with the
-        # supervisor's SIGTERM (macOS can report EPERM for that dying group).
-        # On parent death the OS closes them; on unresolved cleanup we close them
-        # here too, so a late spawn still receives EOF and no private request.
+        # Order matters here: races SIGKILL against SIGTERM (macOS)
         _close(request_write)
         _close(response_read)
         cancelled = cancelled or cleanup_cancelled
-        # Retrieve any eventual exception after an OS stall; it contains no
-        # request data and must never become an unhandled event-loop log.
         cleanup_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
     if cancelled:
         raise IsolatedHttpCancelled(cleanup_confirmed=confirmed) from None
@@ -380,8 +354,6 @@ def _sync_read(fd: int, size: int) -> bytes:
 
 
 def _parent_watch(fd: int) -> None:
-    # A byte after the one request is a protocol violation, and EOF means the
-    # parent died/cancelled. Either event revokes this child's local lifetime.
     try:
         os.read(fd, 1)
     finally:
@@ -450,5 +422,4 @@ if __name__ == "__main__":
         if len(sys.argv) == 3:
             _child_main(int(sys.argv[1]), int(sys.argv[2]))
     except Exception:
-        # Diagnostics are private too, but even the child traceback is needless.
         pass

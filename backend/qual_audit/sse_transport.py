@@ -1,7 +1,6 @@
-"""Minimal SSE endpoint for academic transport benchmarking.
-
-This module exists solely to provide an empirical comparison between
-WebSocket and Server-Sent Events. It is NOT a production transport.
+"""Minimal SSE echo/broadcast endpoint built solely for academic WebSocket-vs-SSE
+benchmarking, not production transport; exercised by
+qual_audit/suites/test_transport_comparison.py.
 """
 
 import asyncio
@@ -16,16 +15,13 @@ from fastapi import APIRouter
 
 
 def create_sse_router() -> APIRouter:
-    """Create a FastAPI router with a minimal SSE endpoint."""
     router = APIRouter()
 
-    # Per-connection message queues
     _connections: Dict[str, asyncio.Queue] = {}
 
     async def _event_stream(
         queue: asyncio.Queue, conn_id: str
     ) -> AsyncGenerator[str, None]:
-        """Yield SSE-formatted events from the queue."""
         try:
             while True:
                 msg = await queue.get()
@@ -39,12 +35,10 @@ def create_sse_router() -> APIRouter:
 
     @router.get("/sse")
     async def sse_endpoint(request: Request):
-        """SSE endpoint — mirrors WebSocket message flow for benchmarking."""
         conn_id = str(uuid.uuid4())
         queue: asyncio.Queue = asyncio.Queue()
         _connections[conn_id] = queue
 
-        # Send initial connection confirmation
         await queue.put({
             "type": "connected",
             "connection_id": conn_id,
@@ -63,7 +57,6 @@ def create_sse_router() -> APIRouter:
 
     @router.post("/sse/send/{conn_id}")
     async def sse_send(conn_id: str, request: Request):
-        """Push a message to a specific SSE connection (for benchmarking)."""
         queue = _connections.get(conn_id)
         if not queue:
             return {"error": "connection not found"}
@@ -75,17 +68,12 @@ def create_sse_router() -> APIRouter:
 
     @router.post("/sse/echo")
     async def sse_echo(request: Request):
-        """Echo endpoint — returns the message with a server timestamp.
-
-        Used for latency measurement without requiring SSE connection.
-        """
         body = await request.json()
         body["server_timestamp"] = time.time()
         return body
 
     @router.post("/sse/broadcast")
     async def sse_broadcast(request: Request):
-        """Broadcast a message to all SSE connections."""
         body = await request.json()
         body["server_timestamp"] = time.time()
         body["id"] = body.get("id", str(uuid.uuid4()))
@@ -95,13 +83,11 @@ def create_sse_router() -> APIRouter:
 
     @router.delete("/sse/{conn_id}")
     async def sse_disconnect(conn_id: str):
-        """Cleanly close an SSE connection."""
         queue = _connections.get(conn_id)
         if queue:
             await queue.put(None)
         return {"status": "disconnected"}
 
-    # Expose internals for test access
     router._connections = _connections  # type: ignore[attr-defined]
 
     return router

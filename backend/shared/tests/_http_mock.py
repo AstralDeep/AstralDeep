@@ -1,9 +1,8 @@
-"""Stdlib-only mock for ``requests.request`` used by external_http tests.
-
-Avoids adding a new third-party dependency (`responses`) by stubbing the
-single call site we use. Each test installs a route table, then any matching
-request returns the configured (status, body) pair.
+"""Stdlib-only stand-in for requests.request used across agent test suites: install a
+route table and any matching request returns the configured (status, body) pair,
+avoiding the responses third-party dependency.
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -12,8 +11,6 @@ from unittest.mock import patch
 
 
 class _FakeResponse:
-    """Minimal ``requests.Response`` stand-in compatible with external_http."""
-
     def __init__(self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None) -> None:
         self.status_code = status_code
         self._content = body
@@ -46,8 +43,6 @@ class _FakeResponse:
 
 
 class HttpMock:
-    """Context manager that intercepts ``requests.request`` calls."""
-
     def __init__(self) -> None:
         self.routes: List[Tuple[str, str, _FakeResponse]] = []
         self.calls: List[Dict[str, Any]] = []
@@ -65,7 +60,6 @@ class HttpMock:
         for m, u, resp in self.routes:
             if m == method.upper() and u == url:
                 return resp
-        # Default: 404 with empty body so missing-route is obvious in tests.
         return _FakeResponse(404, b'{"detail": "no mock route registered"}')
 
     def __enter__(self) -> "HttpMock":

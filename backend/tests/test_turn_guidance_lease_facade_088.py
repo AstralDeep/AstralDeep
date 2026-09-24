@@ -1,4 +1,7 @@
-"""Durable lease observations never accept in-memory transaction authority."""
+"""Tests for orchestrator/work_admission.py: a durable lease observation refuses to
+accept in-memory transaction authority, leaving legacy behavior unaltered.
+"""
+
 import pytest
 
 from orchestrator.work_admission import AdmissionClass, StaleExecutionFenceError

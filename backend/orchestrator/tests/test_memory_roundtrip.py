@@ -1,9 +1,7 @@
-"""030 T016 — memory round-trip via the orchestrator meta-tool dispatch (US2).
-
-Real DB-backed: remember → memory_get/memory_search through
-memory_chat.handle_meta_tool, asserting persistence round-trips. (The pure-unit
-shape is covered by test_memory_chat.py; this exercises the real repository.)
+"""Real-database test for orchestrator/memory_chat.py: remember/memory_get/memory_search
+meta-tools round-trip through the actual memory repository.
 """
+
 import asyncio
 import sys
 import types
@@ -35,7 +33,6 @@ def test_remember_then_recall_roundtrip_real_db():
         orch = types.SimpleNamespace(
             personalization_service=types.SimpleNamespace(repo=svc.repo)
         )
-        # Inject a clean gate so the test doesn't depend on Presidio.
         orch._memory_tools = MemoryTools(svc.repo, phi_gate=_CleanGate())
 
         stored = asyncio.run(memory_chat.handle_meta_tool(

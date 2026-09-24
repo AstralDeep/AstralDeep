@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""ML Services Agent — A2A agent consolidating CLASSify, Forecaster, and LLM-Factory."""
+"""A2A agent consolidating CLASSify, Forecaster, and LLM-Factory behind one union tool
+registry (mcp_server.py); composes its own Plane runtime via
+orchestrator/plane_composition.py when run standalone.
+"""
 import asyncio
 import logging
 import os
@@ -16,25 +19,8 @@ logging.basicConfig(level=logging.INFO,
 
 
 class MlServicesAgent(BaseA2AAgent):
-    """Agent for the user-supplied CLASSify, Forecaster, and LLM-Factory services."""
-
     agent_id = "ml-services-1"
     service_name = "ML Services"
-    # The per-service call order that used to live in this card's description
-    # is kept here as a comment rather than shipped in it. Nothing executes from the
-    # card text: it reaches the router (truncated to 200 characters) and the
-    # agent dialog, never a tool-calling prompt, so the prose was inert there
-    # and unreadable here. Keep the note current when a workflow changes.
-    #
-    #   CLASSify:   classify_submit_dataset (returns column types)
-    #               -> set_column_types
-    #               -> propose_training_config (renders a picker whose Submit
-    #                  triggers classify_start_training_job automatically)
-    #               -> classify_start_training_job
-    #   Forecaster: forecaster_submit_dataset -> set_column_roles
-    #               -> forecaster_start_training_job
-    #   LLM-Factory: list_models, chat completions, embeddings, transcription
-    #               through an OpenAI-compatible Router deployment.
     description = (
         "Three external ML services you connect with your own keys: CLASSify "
         "trains and evaluates classifiers on tabular data, Forecaster fits and "
@@ -53,10 +39,7 @@ class MlServicesAgent(BaseA2AAgent):
     ]
     skill_tags = ["machine-learning", "classification", "timeseries", "embeddings", "transcription"]
 
-    # Feature 029 (FR-008): credentials saved while the predecessor agents
-    # were live are ECIES-encrypted to THEIR keys. BaseA2AAgent loads these
-    # ids' key files (backend/data/agent_keys/<id>.pem) as decryption
-    # fallbacks so saved credentials keep working without a re-save.
+    # Old agent ids stay: decrypts credentials saved before consolidation
     predecessor_agent_ids = ("classify-1", "forecaster-1", "llm-factory-1")
 
     card_metadata = {
@@ -107,9 +90,6 @@ class MlServicesAgent(BaseA2AAgent):
                 "type": "api_key",
             },
         ],
-        # 015-external-ai-agents — tools the orchestrator must subject to the
-        # FR-026 concurrency cap. Each acquires a slot on dispatch and releases
-        # it when the agent's JobPoller emits a terminal ToolProgress.
         "long_running_tools": ["classify_start_training_job", "forecaster_start_training_job"],
     }
 
@@ -122,11 +102,6 @@ class MlServicesAgent(BaseA2AAgent):
         plane_blobs=None,
         attachment_materialization_service=None,
     ):
-        """Start the agent over the union MCP server.
-
-        Args:
-            port: Explicit port; falls back to ``ML_SERVICES_AGENT_PORT``.
-        """
         repositories = plane_repositories or getattr(
             plane_runtime,
             "repositories",
@@ -174,8 +149,6 @@ class MlServicesAgent(BaseA2AAgent):
         self._materializer_binding_created = materializer_binding_created
 
     def close_plane_bindings(self) -> None:
-        """Idempotently release only the process bindings created by this agent."""
-
         from shared.attachment_materializer import unregister_materialization_service
         from shared.attachment_resolver import unregister_plane_runtime
 
@@ -207,8 +180,6 @@ class MlServicesAgent(BaseA2AAgent):
 
 
 def _compose_standalone_plane():
-    """Compose the one Plane runtime owned by a networked agent process."""
-
     from orchestrator.plane_composition import compose_plane_from_environment
 
     manifest = Path(__file__).resolve().parents[3] / "config" / "astral-composition.json"
@@ -216,8 +187,6 @@ def _compose_standalone_plane():
 
 
 async def _run_standalone(port: int | None) -> None:
-    """Run a networked agent and always release bindings before its Plane."""
-
     composition = _compose_standalone_plane()
     agent = None
     try:
@@ -234,13 +203,6 @@ async def _run_standalone(port: int | None) -> None:
 
 
 async def _close_standalone_plane(agent, composition) -> None:
-    """Join agent-local Plane consumers before final synchronous teardown.
-
-    Standalone agents never start the durable purge retry loop. Continuous
-    reconciliation is owned by the orchestrator process over the same Plane
-    state; this close only joins work admitted by this networked agent.
-    """
-
     from orchestrator.runtime_composition import close_blocking_component
 
     errors: list[BaseException] = []

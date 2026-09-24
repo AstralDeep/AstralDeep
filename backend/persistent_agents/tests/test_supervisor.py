@@ -1,4 +1,8 @@
-"""Supervisor lifecycle, admission, checkpoint fencing and bounded task joins."""
+"""Tests for persistent_agents/runner.py's supervisor loop: admission and checkpoint
+fencing, bounded task joins, lease renewal racing terminal commit, child-task
+cancellation on sibling failure, and activity notifications that never duplicate.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 import asyncio
 from dataclasses import replace
@@ -125,7 +129,7 @@ async def test_replacement_claim_keeps_both_generations_supervised_until_shutdow
     await runner.tick()
     assert await entered.get() == 2
     assert len(runner._active) == 2
-    await runner.tick()  # Both generations count against the local limit.
+    await runner.tick()
     await runner.stop()
     assert sorted(cancelled) == [1, 2]
     assert not runner._active

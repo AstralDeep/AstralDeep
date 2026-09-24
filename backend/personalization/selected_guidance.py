@@ -1,9 +1,6 @@
-"""Pure, versioned owner guidance for the fixed research request.
-
-This is not a current-head, authentication, policy, PHI or dispatch guard. The
-host must supply exact guarded records and compare the persisted envelope again
-at every execution boundary. No lookup, key resolution or persistence occurs.
-Only the opaque envelope may be retained; request/expansion text is ephemeral.
+"""Pure binding of owner-authorized agent/skill guidance into a research request
+envelope; authenticates exact rows without resolving keys or persistence. Feeds
+selected_guidance_boundary.py and persistent_agents/research_input.py.
 """
 
 from __future__ import annotations
@@ -36,8 +33,6 @@ _MEANING = "Owner-stated guidance only; not authority or verified evidence."
 
 
 class SelectedGuidanceUnavailable(ValueError):
-    """Data-free refusal: never leak a discarded private input or its identity."""
-
     def __init__(self):
         super().__init__("selected_guidance_unavailable")
 
@@ -83,8 +78,6 @@ class SelectedAgentReference:
 
 @dataclass(frozen=True, slots=True)
 class SelectedInputEnvelope:
-    """Opaque selection only; the future Plane wrapper supplies owner/task fences."""
-
     references: tuple[GuidanceReference, ...]
     agent: SelectedAgentReference | None
     binding_key_id: str
@@ -122,15 +115,13 @@ class SelectedInputEnvelope:
                     _refuse()
                 self.agent.__post_init__()
             elif not self.references:
-                _refuse()  # No selection remains the existing, absent-envelope path.
+                _refuse()
         except (ValueError, TypeError, AttributeError):
             _refuse()
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedSelectedGuidance:
-    """Source-free expansion; byte_count is its nested JSON contribution only."""
-
     text: str = field(repr=False)
     envelope: SelectedInputEnvelope | None
     byte_count: int
@@ -195,8 +186,7 @@ def _skills(rows, owner_id, agent, now_ms):
             or type(row.definition) is not SkillDefinition
         ):
             _refuse()
-        # Reconstruct and validate even a forcibly mutated frozen DTO. The pure
-        # result never retains a caller's mutable collection or record object.
+        # Round-trips through asdict to re-validate a mutated DTO
         definition = SkillDefinition(**asdict(row.definition))
         _owner(row.owner_id)
         _hex(row.definition_digest)
@@ -237,16 +227,6 @@ def prepare_selected_guidance(
     cipher=None,
     binding_key=None,
 ) -> PreparedSelectedGuidance:
-    """Authenticate and bind exact guidance without reading or inventing a source.
-
-    Explicit skill applicability uses the existing matching rule against the
-    fixed server reader and selected declarative agent. Agent capability/trigger
-    policy remains a separate host obligation; only its prose enters USER data.
-    The allowance bounds the JSON-escaped task/guidance contribution, including
-    its nesting inside a message string. It is a necessary input bound, not the
-    whole provider body or a guarantee that later source passages will fit.
-    Only compose_selected_research_input checks the complete actual request.
-    """
     try:
         _owner(owner_id)
         _integer(now_ms)
@@ -362,12 +342,6 @@ def prepare_selected_guidance(
 def compose_selected_research_input(
     *, observation, approved_request_bytes, **selection
 ) -> SelectedResearchInput:
-    """Combine stable guidance with a real source and bound the complete body.
-
-    The persisted selection MAC intentionally excludes source passages. The
-    executor must separately bind this envelope and the full actual source,
-    configuration and request body in its request proof before dispatch.
-    """
     try:
         prepared = prepare_selected_guidance(
             **selection, approved_guidance_bytes=approved_request_bytes
@@ -396,11 +370,6 @@ def compose_selected_research_input(
 def reconstruct_selected_research_input(
     expected_envelope, **inputs
 ) -> SelectedResearchInput:
-    """Re-expand supplied exact rows; never adopt different references, text or key.
-
-    This comparison conveys no currentness by itself. Named-key resolution and
-    current-head/owner/session checks still surround it in the future executor.
-    """
     if type(expected_envelope) is not SelectedInputEnvelope:
         _refuse()
     expected_envelope.__post_init__()

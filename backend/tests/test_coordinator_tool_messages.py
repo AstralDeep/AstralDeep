@@ -1,4 +1,7 @@
-"""Provider-compatible tool-result messages in coordinated subtasks."""
+"""Tests for orchestrator/coordinator.py and task_state.py: coordinated sub-task
+tool-result messages use a provider-compatible schema and stay safe/actionable after
+failures or mini-turn limits.
+"""
 
 from __future__ import annotations
 

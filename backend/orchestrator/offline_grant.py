@@ -1,22 +1,8 @@
-"""Encrypted offline-grant store for unattended job authorization (feature 025).
-
-SECURITY-CRITICAL — gated by task T057 (lead-dev security review) before merge.
-
-At consent time (user present, live session) we store an encrypted reference to
-the user's canonical Keycloak session credential and a hard 365-day grant cap.
-Browser and background refreshes share one durable claim/rotation sequence.
-Per run, the scheduler:
-  1. loads the grant; refuses if revoked / expired (FR-024),
-  2. exchanges the refresh token at Keycloak for a fresh short-lived access token,
-  3. (caller then) intersects the job's consented scopes with the user's CURRENT
-     scopes and performs the existing RFC 8693 delegated exchange.
-
-The grant reference uses ``OFFLINE_GRANT_ENC_KEY``; the canonical credential
-remains encrypted under the existing web-session key. Tokens are never returned
-by an API or logged. Legacy copied grants require renewed consent; current token
-equality cannot prove original issuance. Unknown refresh outcomes require fresh sign-in and renewed consent;
-potentially consumed tokens are never retried.
+"""Encrypted offline-grant store for unattended job authorization: encrypts, at consent
+time, a reference to the user's Keycloak session under a 365-day cap, for the
+scheduler to exchange later for a fresh access token. Used by scheduler/store.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,22 +33,15 @@ _GRANT_MINT_SECONDS = 20
 
 
 class OfflineGrantError(RuntimeError):
-    """Raised when a grant cannot be captured, is unavailable, or is expired/revoked."""
+    pass
 
 
 class TokenEndpointUnconfigured(OfflineGrantError):
-    """The IdP token endpoint cannot be derived from the deployment's config.
-
-    An operator problem, not a consent problem: no refresh exchange is
-    attempted and the machine turn must fail closed with a reason that names
-    the missing setting instead of blaming the user's consent.
-    """
+    pass
 
 
 @dataclass(frozen=True)
 class PreparedConsentGrant:
-    """Private immutable consent intent; database rechecks supply authority."""
-
     owner_id: str
     selected_session: ConsentSession = field(repr=False)
     grant_id: str
@@ -72,21 +51,6 @@ class PreparedConsentGrant:
 
 
 def resolve_token_endpoint() -> str:
-    """Return the Keycloak token endpoint for refresh exchanges.
-
-    Precedence:
-      1. ``KEYCLOAK_TOKEN_URL`` — explicit full-URL override.
-      2. ``KEYCLOAK_AUTHORITY`` (the realm URL every other Keycloak caller
-         uses, e.g. ``https://idp.example/realms/Astral``) +
-         ``/protocol/openid-connect/token``.
-      3. Legacy ``KEYCLOAK_URL`` + ``/realms/<KEYCLOAK_REALM>`` — only when
-         ``KEYCLOAK_URL`` is explicitly set (no silent ``'astral'`` realm
-         guess against an empty host, which used to yield
-         ``/realms/astral/...`` — a relative, unusable URL).
-
-    Raises ``TokenEndpointUnconfigured`` when nothing usable is configured.
-    """
-
     def _http_url(value: str) -> bool:
         return value.startswith("https://") or value.startswith("http://")
 
@@ -126,8 +90,6 @@ _APPLICATION_STORE = None
 
 
 def bind_offline_grant_store(store) -> None:
-    """Publish the application-scoped store for request modules without an owner object."""
-
     global _APPLICATION_STORE
     if store is None:
         raise ValueError("offline grant store binding is required")
@@ -135,8 +97,6 @@ def bind_offline_grant_store(store) -> None:
 
 
 def unbind_offline_grant_store(store) -> None:
-    """Release only the exact application-scoped offline-grant binding."""
-
     global _APPLICATION_STORE
     if _APPLICATION_STORE is None:
         return
@@ -152,12 +112,11 @@ def get_offline_grant_store():
 
 
 def _fernet():
-    """Build a Fernet from the configured key, or raise (fail closed)."""
     if not OFFLINE_GRANT_ENC_KEY:
         raise OfflineGrantError(
             "OFFLINE_GRANT_ENC_KEY is not configured; refusing to store offline grants."
         )
-    from cryptography.fernet import Fernet  # already present via python-jose[cryptography] chain
+    from cryptography.fernet import Fernet
     return Fernet(OFFLINE_GRANT_ENC_KEY.encode() if isinstance(OFFLINE_GRANT_ENC_KEY, str) else OFFLINE_GRANT_ENC_KEY)
 
 
@@ -175,8 +134,6 @@ def _reference_object(pairs):
 
 
 class OfflineGrantStore:
-    """Persistence + crypto for offline grants. Token bytes never leave this class."""
-
     def __init__(
         self,
         db=None,
@@ -201,11 +158,6 @@ class OfflineGrantStore:
 
     def capture(self, user_id: str, selected_session: ConsentSession,
                 agent_id: Optional[str] = None) -> str:
-        """Encrypt the exact server-selected session approving this grant.
-
-        Returns the new grant id. Raises OfflineGrantError if encryption is not
-        configured (fail closed — never store plaintext).
-        """
         prepared = self.prepare_capture(user_id, selected_session, agent_id)
         try:
             with self._grants.transaction() as transaction:
@@ -219,7 +171,6 @@ class OfflineGrantStore:
 
     def prepare_capture(self, user_id: str, selected_session: ConsentSession,
                         agent_id: Optional[str] = None) -> PreparedConsentGrant:
-        """Resolve and encrypt consent outside the dependent write transaction."""
         if not isinstance(selected_session, ConsentSession):
             raise OfflineGrantError("live consenting session required; re-consent required")
         cipher = _fernet()
@@ -234,12 +185,6 @@ class OfflineGrantStore:
             reference, sort_keys=True, separators=(",", ":"))).encode()
 
     def assert_current_capture(self, transaction, prepared, *, plane_runtime):
-        """Recheck original consent after every dependent write/lock wait.
-
-        The caller owns this transaction and must let a refusal roll it back.
-        Neither a prepared value nor a detached returned state is authority for
-        a later transaction. This method performs no remote work.
-        """
         try:
             if (not isinstance(prepared, PreparedConsentGrant)
                     or prepared.plane_runtime is not self._grants.plane_runtime
@@ -258,7 +203,6 @@ class OfflineGrantStore:
             raise OfflineGrantError("live consenting session required; re-consent required") from None
 
     def capture_in_transaction(self, transaction, prepared, *, plane_runtime) -> str:
-        """Insert a grant atomically with its caller's dependent domain write."""
         current = self.assert_current_capture(transaction, prepared, plane_runtime=plane_runtime)
         now = int(current.observed_at.timestamp() * 1000)
         self._grants.repository.create_grant(
@@ -291,9 +235,6 @@ class OfflineGrantStore:
         except Exception:
             raise OfflineGrantError("offline grant credential cannot be decrypted") from None
         if not plaintext.startswith(_SESSION_REFERENCE_PREFIX):
-            # Raw tokens and v1 SID/timestamp references cannot distinguish a
-            # retired issuance from today's identical replacement. Preserve the
-            # retained grant for inspection/revocation and refuse before OAuth.
             raise OfflineGrantError("legacy offline grant requires re-consent")
         try:
             reference = json.loads(plaintext[len(_SESSION_REFERENCE_PREFIX):], object_pairs_hook=_reference_object)
@@ -319,7 +260,6 @@ class OfflineGrantStore:
         )
 
     def revoke_for_user(self, user_id: str) -> int:
-        """Revoke all of a user's grants (e.g. on logout / sign-out-everywhere)."""
         return self._grants.call(
             self._grants.repository.revoke_owner,
             owner_id=user_id,
@@ -327,8 +267,6 @@ class OfflineGrantStore:
         )
 
     def is_valid(self, grant_id: str, *, user_id: str) -> bool:
-        """Check a grant only within the authenticated owner's namespace."""
-
         grant = self._grant(user_id, grant_id)
         if grant is None:
             return False
@@ -339,16 +277,6 @@ class OfflineGrantStore:
         return True
 
     def latest_valid_for(self, user_id: str, agent_id: Optional[str] = None) -> Optional[str]:
-        """Most recent unrevoked, unexpired grant id for the user.
-
-        Prefers a grant captured for ``agent_id`` when one exists, else falls
-        back to the user's newest valid grant of any agent. Returns only the
-        id — token bytes never leave this class. Used by 056's
-        ``MachineTurnAuthority`` so machine-turn classes without an explicit
-        job-linked grant (parser replay, draft self-tests) can still derive
-        authority from the user's standing consent, and skip fail-closed when
-        none exists.
-        """
         reference = self._grants.call(
             self._grants.repository.find_latest_valid,
             owner_id=user_id,
@@ -358,7 +286,6 @@ class OfflineGrantStore:
         return None if reference is None else reference.grant_id
 
     async def mint_access_token(self, grant_id: str, *, user_id: str) -> str:
-        """Bound the entire fresh-authority path, including durable acquisition."""
         try:
             async with asyncio.timeout(_GRANT_MINT_SECONDS):
                 return await self._mint_access_token(grant_id, user_id=user_id)
@@ -366,11 +293,6 @@ class OfflineGrantStore:
             raise OfflineGrantError("offline grant mint time limit exceeded") from None
 
     async def _mint_access_token(self, grant_id: str, *, user_id: str) -> str:
-        """Exchange the stored refresh token for a fresh access token at Keycloak.
-
-        Raises OfflineGrantError on revoked/expired grants or refresh failure
-        (e.g. Keycloak-side revocation) — the caller fails the run safe.
-        """
         grant = await asyncio.to_thread(self._grant, user_id, grant_id)
         if grant is None:
             raise OfflineGrantError("offline grant not found")
@@ -379,9 +301,7 @@ class OfflineGrantStore:
         if grant.expires_at <= _now_ms():
             raise OfflineGrantError("offline grant expired (365-day cap reached); re-consent required")
 
-        # Resolve the endpoint BEFORE touching the refresh token: a
-        # misconfigured deployment must fail closed without decrypting
-        # anything (and without a doomed HTTP call).
+        # Resolve endpoint first: fail closed before decrypting
         token_url = resolve_token_endpoint()
 
         reference = await asyncio.to_thread(self._resolve_reference, grant)
@@ -440,7 +360,6 @@ class OfflineGrantStore:
         if current is None or not current.active or current.expires_at <= _now_ms():
             raise OfflineGrantError("offline grant revoked or expired during refresh")
         access_token = row["access_token"]
-        # 030 FR-017: structured observability for grant mints (success path).
         logger.info("offline_grant.minted",
                     extra={"grant_id": grant_id, "user_id": grant.owner_id})
         return access_token

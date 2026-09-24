@@ -1,4 +1,7 @@
-"""Strict, bounded Watch PCM bridge tests for Feature 065."""
+"""Tests for voice_agent/watch_bridge.py and watch_ticket.py: ADVC frame parsing,
+ingress rate/sequence fencing, ticket replay bounds, and the WatchBridgeServer
+session/socket lifecycle.
+"""
 
 from __future__ import annotations
 

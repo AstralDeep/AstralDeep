@@ -1,4 +1,8 @@
-"""Owner controls delegate durable CAS/replay, never local state mutation."""
+"""Tests for persistent_agents/models.py and service.py: owner controls delegate durable
+CAS/replay to the repository rather than mutating local state, including
+stop-after-revocation and revise requiring new consent.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

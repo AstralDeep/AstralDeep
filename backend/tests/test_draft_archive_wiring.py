@@ -1,21 +1,9 @@
-"""C-N4 (033) — evolutionary draft-archive *wiring* integration tests.
-
-These drive the REAL agentic-creation lifecycle path (``_create_capability``
-and the approval handler), not the pure ``draft_archive`` functions (those are
-covered by ``test_draft_archive.py``). The assertions verify the behaviour the
-wiring promises:
-
-* flag ON + high-surrogate generated code  → the expensive behavioural
-  self-test is SKIPPED (no draft-test chat turn happens) and the draft is
-  archived as a future exemplar;
-* flag OFF                                  → the self-test runs exactly as
-  before (a draft-test chat turn happens) and nothing is archived;
-* approval of a live draft archives it (flag ON).
-
-The fake orchestrator writes a real ``mcp_tools.py`` to a temp agents dir so the
-surrogate predictor (which reads that file from disk) has something to score —
-matching how ``agent_lifecycle.generate_code`` writes the file in production.
+"""Tests for draft-archive wiring into the agentic-creation lifecycle
+(orchestrator/agentic_creation.py, chain_authority.py, draft_archive.py):
+high-surrogate drafts skip the behavioral self-test and archive, low scores still run
+it.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,8 +24,6 @@ from orchestrator import agentic_creation as ac  # noqa: E402
 from orchestrator import draft_archive as da  # noqa: E402
 
 
-# A draft that the surrogate rubric scores HIGH (>= 0.85): tool registry +
-# docstring + dict return + try/except + reasonable length.
 HIGH_SURROGATE_CODE = '''
 """A small, well-formed example agent for the archive wiring test."""
 
@@ -63,10 +49,6 @@ def do_thing(params):
         return {"_ui_components": [{"type": "text", "content": "error"}], "_data": {}}
 '''
 
-
-# ---------------------------------------------------------------------------
-# Fakes (DB-free; write a real tools file so the surrogate has code to read)
-# ---------------------------------------------------------------------------
 
 class FakeDB:
     def __init__(self):
@@ -108,8 +90,6 @@ class FakeDB:
 
 
 class FakeLifecycle:
-    """Writes a real ``<agents_dir>/<slug>/mcp_tools.py`` on generate."""
-
     def __init__(self, db, agents_dir, code=HIGH_SURROGATE_CODE):
         self.db = db
         self.draft_store = db
@@ -185,11 +165,6 @@ class FakeHistory:
 
 
 class FakeOrch:
-
-    # 056 US2: machine-turn classes derive their root authority at the
-    # orchestrator's shared seam; a stand-in must model it. No durable consent
-    # exists in these tests, so the honest answer is an AuthoritySkip (the turn
-    # runs unbound, exactly as it does in dev posture today).
     async def derive_machine_authority(self, **kwargs):
         from orchestrator.chain_authority import AuthoritySkip
         return AuthoritySkip("missing_consent", "test double")
@@ -221,8 +196,6 @@ class FakeOrch:
     async def handle_chat_message(self, websocket, message, chat_id, display_message=None,
                                   user_id=None, draft_agent_id=None, selected_tools=None,
                                   attachments=None):
-        # A real draft-test self-test turn — its presence is the signal that the
-        # expensive self-test ran (so a skip means this list stays empty).
         self.chat_calls.append((message, chat_id, draft_agent_id))
         await websocket.send_json({"type": "chat_step",
                                    "step": {"kind": "tool_call", "name": "do_thing",
@@ -238,7 +211,6 @@ def run(coro):
 
 @pytest.fixture(autouse=True)
 def _isolate_archive():
-    """Each test starts with an empty in-process archive."""
     da.reset_archive()
     yield
     da.reset_archive()
@@ -249,10 +221,6 @@ def _create_args():
             "tools_spec": [{"name": "read_pdf", "description": "extract pdf"}],
             "user_request": "read my pdf"}
 
-
-# ---------------------------------------------------------------------------
-# Flag OFF (default): self-test RUNS, nothing archived — unchanged behaviour
-# ---------------------------------------------------------------------------
 
 def test_flag_off_runs_self_test_and_does_not_archive(tmp_path, monkeypatch):
     from shared.feature_flags import flags
@@ -266,26 +234,19 @@ def test_flag_off_runs_self_test_and_does_not_archive(tmp_path, monkeypatch):
     assert res.result["status"] == "created"
     draft_id = res.result["draft_id"]
 
-    # The behavioural self-test ran (a draft-test chat turn happened).
     assert orch.chat_calls, "flag OFF must run the real self-test (chat turn)"
     assert orch.chat_calls[0][2] == draft_id
     st = json.loads(orch.db.drafts[draft_id]["self_test"])
     assert st["status"] == "passed"
     assert not st.get("self_test_skipped")
-    # Nothing archived while the flag is off.
     assert da.get_archive("u1") == []
 
-
-# ---------------------------------------------------------------------------
-# Flag ON + high surrogate score: self-test SKIPPED, draft archived
-# ---------------------------------------------------------------------------
 
 def test_flag_on_high_surrogate_skips_self_test_and_archives(tmp_path, monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
     assert da.archive_enabled() is True
-    # Sanity: the generated code really does clear the skip threshold.
     assert da.surrogate_score(HIGH_SURROGATE_CODE) >= 0.85
     assert da.should_skip_self_test(HIGH_SURROGATE_CODE, min_score=0.85) is False
 
@@ -295,34 +256,24 @@ def test_flag_on_high_surrogate_skips_self_test_and_archives(tmp_path, monkeypat
     assert res.result["status"] == "created"
     draft_id = res.result["draft_id"]
 
-    # THE SKIP ACTUALLY HAPPENED: no draft-test chat turn was executed.
     assert orch.chat_calls == [], "high-surrogate draft must skip the self-test"
     st = json.loads(orch.db.drafts[draft_id]["self_test"])
     assert st["status"] == "passed"
     assert st.get("self_test_skipped") is True
     assert st.get("surrogate_score", 0) >= 0.85
 
-    # The passing draft was archived as a future exemplar.
     archive = da.get_archive("u1")
     assert len(archive) == 1
     rec = archive[0]
     assert rec.score > 0
     assert "do_thing" in rec.code
-    # The archived fingerprint carries the capability's human terms (so the
-    # Jaccard ranker can match a later, similar gap).
     assert "pdf" in rec.fingerprint.lower()
 
 
-# A mid-range draft: registry present (+0.25) and length reward (+0.20) →
-# ~0.45, which is above the cheap-reject floor (0.25) but below the
-# high-confidence skip threshold (0.85), so it falls through to the real test.
 MID_SURROGATE_CODE = "TOOL_REGISTRY = {}\ndef f(p):\n    return p\n" + "y = 2\n" * 30
 
 
 def test_flag_on_mid_surrogate_still_runs_self_test(tmp_path, monkeypatch):
-    """A mid-range draft scores between the cheap-reject floor and the
-    high-confidence threshold, so NEITHER skip path fires even with the flag
-    on — the real behavioural self-test runs."""
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
@@ -334,40 +285,29 @@ def test_flag_on_mid_surrogate_still_runs_self_test(tmp_path, monkeypatch):
     res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
                                   user_id="u1", chat_id="c1"))
     assert res.result["status"] == "created"
-    # Self-test ran (chat turn happened) because the surrogate was mid-range.
     assert orch.chat_calls, "mid-surrogate draft must NOT skip the self-test"
 
 
 def test_flag_on_very_weak_cheap_rejects_before_self_test(tmp_path, monkeypatch):
-    """A draft the surrogate predicts will FAIL (below the reject floor) is
-    cheap-rejected: the costly self-test is skipped with a FAILING verdict
-    (no chat turn), which routes into the normal auto-refine loop."""
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
 
     weak = "a = 1\nb = 2\nc = a + b\nprint(c)\nd = c * 3\ne = d - 1\nf = e + 7\n"
-    assert da.should_skip_self_test(weak) is True  # below the reject floor
+    assert da.should_skip_self_test(weak) is True
     orch = FakeOrch(str(tmp_path), code=weak)
     res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
                                   user_id="u1", chat_id="c1"))
     assert res.result["status"] == "created"
-    # NO behavioural self-test ran on any attempt (cheap-reject skipped it).
     assert orch.chat_calls == [], "very-weak draft must be cheap-rejected (no self-test)"
     st = json.loads(orch.db.drafts[res.result["draft_id"]]["self_test"])
     assert st["status"] == "failed"
     assert st.get("self_test_skipped") is True
-    # A predicted-failure draft is NOT archived as an exemplar.
     assert da.get_archive("u1") == []
 
 
-# ---------------------------------------------------------------------------
-# Exemplar conditioning: an archived exemplar feeds the next codegen prompt
-# ---------------------------------------------------------------------------
-
 def test_archived_exemplar_conditions_next_codegen_prompt(tmp_path, monkeypatch):
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
-    # Seed the archive with a successful pdf-reader exemplar.
     draft_uuid = str(uuid.uuid4())
     da.record_archived_draft(
         "read pdf table extract",
@@ -386,9 +326,8 @@ def test_archived_exemplar_conditions_next_codegen_prompt(tmp_path, monkeypatch)
     )
     assert out.startswith(base)
     assert "## Exemplars from past successful agents" in out
-    assert "do_thing" in out  # the exemplar's code was embedded
+    assert "do_thing" in out
 
-    # Flag OFF → conditioning is inert (prompt unchanged).
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "false")
     assert da.exemplar_prompt_for(
         base,
@@ -442,14 +381,9 @@ def test_archive_is_owner_scoped_and_idempotent(monkeypatch):
     ) == "BASE"
 
 
-# ---------------------------------------------------------------------------
-# Approval archives a live draft (flag ON)
-# ---------------------------------------------------------------------------
-
 def test_approval_archives_live_draft(tmp_path, monkeypatch):
     monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
     orch = FakeOrch(str(tmp_path))
-    # Seed an already-generated, owned draft with code on disk.
     slug = "pdf_reader"
     agent_dir = tmp_path / slug
     agent_dir.mkdir()
@@ -461,7 +395,7 @@ def test_approval_archives_live_draft(tmp_path, monkeypatch):
                             "status": "testing", "gap_fingerprint": "read pdf",
                             "self_test": json.dumps({"status": "passed"})}
 
-    monkeypatch.setenv("FF_REDTEAM_SELFTEST", "false")  # skip the red-team gate
+    monkeypatch.setenv("FF_REDTEAM_SELFTEST", "false")
     run(ac.HANDLERS["draft_approve"](
         orch, object(), "u1", [], {"draft_id": draft_uuid}
     ))

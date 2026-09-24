@@ -1,4 +1,7 @@
-"""Feature 064 Phase A schema-dialect and offline-safety tests."""
+"""Tests for shared/schema_validation.py: JSON Schema dialect defaulting without
+mutating input, offline-only $ref resolution, bounded depth/size limits, and that
+invalid schemas refuse agent registration before any state mutation.
+"""
 
 from __future__ import annotations
 

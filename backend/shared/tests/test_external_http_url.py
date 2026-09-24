@@ -1,4 +1,7 @@
-"""Unit tests for shared.external_http URL normalization."""
+"""Tests for shared/external_http.py URL normalization: canonicalization, empty-URL
+rejection, and exact resource-path preservation.
+"""
+
 import pytest
 
 from shared.external_http import EgressBlockedError, normalize_url
@@ -18,9 +21,7 @@ from shared.external_http import EgressBlockedError, normalize_url
         ("https://example.com/api/", "https://example.com/api"),
         ("https://example.com/api/v2/widgets", "https://example.com/api/v2/widgets"),
         ("https://example.com/?token=x", "https://example.com?token=x"),
-        # IPv6 literal (passes through; SSRF guard catches loopback later)
         ("https://[2001:db8::1]/", "https://[2001:db8::1]"),
-        # Whitespace trimmed
         ("  https://example.com/  ", "https://example.com"),
     ],
 )

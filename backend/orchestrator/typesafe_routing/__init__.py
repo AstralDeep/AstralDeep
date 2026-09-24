@@ -1,15 +1,6 @@
-"""TypeSafe System One routing adapter (feature 089).
-
-This package is the seam between a turn and TypeSafe. Nothing outside it
-imports ``typesafe_sdk``, and nothing inside it touches the orchestrator's
-state: the orchestrator hands in a bounded request and gets back a decision,
-or ``None``.
-
-``None`` is the important case. It is returned for every reason routing did
-not happen -- no key, circuit open, flag off, SDK missing, deadline passed,
-error of any class -- and it means exactly one thing to the caller: behave as
-though the user had no TypeSafe key. That is why nothing in this package
-raises into a turn.
+"""Package boundary between the orchestrator and typesafe_sdk: only this package's
+modules import the SDK, and every public call returns None instead of raising so a
+turn behaves as if the user had no TypeSafe key.
 """
 
 from .budget import (

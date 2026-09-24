@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""
-MCP Server for Journal Review Agent — dispatches tool calls to journal review tool functions.
+"""MCP server for the Journal Review agent: routes tool/call requests from
+journal_review_agent.py to mcp_tools.py, classifying upstream errors as retryable or
+not.
 """
 import os
 import sys
@@ -13,10 +14,9 @@ from agents.journal_review.mcp_tools import TOOL_REGISTRY
 
 logger = logging.getLogger('JournalReviewMCPServer')
 
-# Exceptions that indicate a transient/network issue worth retrying
 RETRYABLE_EXCEPTIONS = (
     ConnectionError, TimeoutError, json.JSONDecodeError,
-    OSError,  # covers socket errors
+    OSError,
 )
 
 try:
@@ -27,18 +27,14 @@ try:
 except ImportError:
     pass
 
-# Exceptions that indicate bad arguments / logic errors — never retry
 NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class MCPServer:
-    """Simple MCP server that routes tool/call requests to registered journal review functions."""
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 
     def get_tool_list(self) -> list:
-        """Return list of available tools with their schemas."""
         return [
             {
                 "name": name,
@@ -50,7 +46,6 @@ class MCPServer:
 
     @staticmethod
     def _classify_error(exc: Exception) -> bool:
-        """Return True if the error is retryable (transient), False otherwise."""
         if isinstance(exc, RETRYABLE_EXCEPTIONS):
             return True
         if isinstance(exc, NON_RETRYABLE_EXCEPTIONS):
@@ -58,7 +53,6 @@ class MCPServer:
         return True
 
     def process_request(self, request: MCPRequest) -> MCPResponse:
-        """Process an MCP request and return a response."""
         if request.method == "tools/list":
             return MCPResponse(
                 request_id=request.request_id,

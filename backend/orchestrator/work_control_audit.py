@@ -1,8 +1,6 @@
-"""Required same-transaction audit for owner Work commands.
-
-The caller owns authentication and the command's repository locks. This adapter
-cannot open a transaction or grant continuation; failures roll back the caller's
-mutation and its receipt. Metadata contains identifiers and revisions only.
+"""Same-transaction audit adapter for owner Work commands, bound to the caller's
+existing repository locks; a failure rolls back the mutation with it. Used by
+work_controls.py to append identifiers-only rows, never result content.
 """
 
 from datetime import UTC, datetime
@@ -16,8 +14,6 @@ from persistent_agents.models import AssignmentError, validate_id
 
 
 class WorkControlAudit:
-    """Bind audit to the same application and Plane instance as the command."""
-
     def __init__(self, assignments):
         self.assignments = assignments
         self.store = assignments.store
@@ -27,7 +23,6 @@ class WorkControlAudit:
         self.audit = getattr(assignments.orch, "audit_repo", None)
 
     def assert_store_current(self):
-        """Bind the adapter that actually opens SQL, independently of audit."""
         if (self.assignments.store is not self.store
                 or self.store.plane_runtime is not self.runtime
                 or self.store.repository is not self.repository
@@ -37,7 +32,6 @@ class WorkControlAudit:
             raise AssignmentError("work_control_unavailable", 503)
 
     def assert_current(self):
-        """Refuse a missing or replaced audit binding before committing work."""
         self.assert_store_current()
         if (type(self.audit) is not AuditRepository
                 or getattr(self.assignments.orch, "audit_repo", None) is not self.audit
@@ -47,13 +41,6 @@ class WorkControlAudit:
 
     def append(self, transaction, *, owner_id, command, record,
                submission_id=None, action_id=None, decision=None):
-        """Append provisional identifiers before commit, never arbitrary evidence.
-
-        Wait/reconcile use their locked preparation record before the final
-        mutation. Its revisions describe the observed decision, not a new state.
-        Their submission/action IDs identify an authenticated owner attestation;
-        they do not prove an external effect or contain a recovered response.
-        """
         self.assert_current()
         if (command not in {"pause", "stop", "delete", "resume", "wake", "wait", "reconcile"}
                 or type(record) is not AssignmentRecord or record.owner_id != owner_id):
@@ -79,12 +66,6 @@ class WorkControlAudit:
 
     def append_publication(self, transaction, *, owner_id, command, record, action_id,
                            publication_id, conversation_id, submission_id=None):
-        """Append a reviewed result publication step as identifiers only.
-
-        ``result.propose`` names the proposal action and its destination;
-        ``result.save`` adds the approving submission. Neither row carries result
-        text, canvas payloads, selection digests, key names or private values.
-        """
         self.assert_current()
         if (command not in {"result.propose", "result.save"}
                 or type(record) is not AssignmentRecord or record.owner_id != owner_id):

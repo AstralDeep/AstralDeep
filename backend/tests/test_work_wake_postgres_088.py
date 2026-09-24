@@ -1,7 +1,6 @@
-"""Manual-owner wake through real IAM, Plane receipts, config and atomic audit.
-
-Only external JWKS/refresh replies are synthetic. The supervised fixture never
-dispatches, and no wake test sends a provider/tool request or activates a route.
+"""Tests for manual-owner wake (backend/orchestrator/work_submit.py): replay bypassing
+continuation checks, rollback on policy or audit failure, and refusal once liability
+is already issued.
 """
 
 import asyncio
@@ -250,8 +249,6 @@ async def test_final_receipt_recheck_precedes_stale_selected_record_cas(api, mon
 
     async def prepare(self, **kwargs):
         result = await before_prepare(self, **kwargs)
-        # Another already-authorized owner event commit wins during the await.
-        # This public-repository fixture proves receipt ordering, not host auth.
         signature = digest({"api_version": 1, "operation_id": record.assignment_id, "command": "wake",
                             **body.model_dump(exclude={"expected_revision"})})
         with api.runtime.transaction() as tx:
@@ -351,9 +348,6 @@ async def test_repeated_cancellation_during_commit_preserves_one_replayable_wake
             await task
     finally:
         release.set()
-        # AsyncPlaneRuntime deliberately shields the one real transaction.
-        # Cancellation makes its acknowledgment unknown; it must not spawn a
-        # second mutation or erase the receipt when that worker commits.
         end = time.monotonic() + 5
         while api.service.store.async_runtime.snapshot().active and time.monotonic() < end:
             await asyncio.sleep(0.01)
@@ -402,7 +396,6 @@ async def test_policy_revocation_committed_during_actual_config_wait_denies_wake
 
 
 async def issue(api, record):
-    """Mint an actual permit without a physical effect, then retain its liability."""
     work = WorkAdmissionRepository()
     configs = (
         AdmissionClassConfig(AdmissionClass.GLOBAL, None, 10, 0, 0, "wake-fixture"),
@@ -451,9 +444,6 @@ async def test_genuine_issued_liability_denies_wake_before_config_lock(api, monk
     record, body = await waiting(api, issued=True)
     assert record.usage["outstanding"]["tool_calls"] == 1
     if stale_phase:
-        # Restore a stale controller phase only. The actual issued permit,
-        # outstanding usage and held event remain untouched. Wake must inspect
-        # those facts instead of trusting an executable-looking phase label.
         with api.runtime.transaction() as tx:
             tx.execute("UPDATE persistent_assignment SET "
                        "data=jsonb_set(data,'{phase}','\"awaiting_event\"'::jsonb) WHERE id=%s",

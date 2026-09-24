@@ -1,4 +1,7 @@
-"""Production detector contract and full-observation privacy boundaries."""
+"""Tests for persistent_agents/privacy.py: reviewed URL components are preserved for the
+detector, unreviewed URLs are never rewritten, redaction has no summary truncation or
+name fallback, and injection scanning fails closed.
+"""
 
 from tests.helpers.session_consent_088 import synthetic_consent
 from types import SimpleNamespace
@@ -21,8 +24,6 @@ URL = "https://www.python.org/downloads/"
 
 
 def detector():
-    # Mirrors the observed URL LOCATION false positive, while retaining name
-    # detection and the real gate's regex checks and fail-closed behavior.
     def analyze(**kw):
         text = kw["text"]
         return [SimpleNamespace(start=text.index(value), end=text.index(value) + len(value), entity_type=kind)

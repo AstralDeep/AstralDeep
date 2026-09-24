@@ -1,11 +1,7 @@
-"""T001 (056-delegated-agent-chaining): the ``delegation`` audit event class.
-
-Hop provenance records (``delegation.hop.mint`` / ``delegation.hop.enforce``)
-ride the hash-chained audit log under a dedicated ``delegation`` event class
-so a full chain is reconstructable from the log alone (FR-026). These tests
-pin the class into ``EVENT_CLASSES`` and confirm the validator still rejects
-unknown classes.
+"""Tests for audit/schemas.py: the delegation event class (hop mint/enforce) is
+registered in EVENT_CLASSES and validates, while unknown classes are still rejected.
 """
+
 from datetime import datetime, timezone
 
 import pytest

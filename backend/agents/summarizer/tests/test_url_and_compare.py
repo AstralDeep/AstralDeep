@@ -1,4 +1,7 @@
-"""summarize_url and compare_documents tests (HTTP + LLM fully stubbed)."""
+"""Tests for agents/summarizer/mcp_tools.py: summarize_url (fetch, redirects, egress
+refusal) and compare_documents (summaries, differences table), HTTP and LLM stubbed.
+"""
+
 import json
 from unittest.mock import patch
 
@@ -24,11 +27,6 @@ PAGE_HTML = """<html><head><title>Python Facts</title>
 <body><nav>menu</nav><p>Pythons are large constricting snakes.</p></body></html>"""
 
 
-# ---------------------------------------------------------------------------
-# summarize_url
-# ---------------------------------------------------------------------------
-
-
 def test_summarize_url_happy_path(rmock: HttpMock, fake_openai) -> None:
     rmock.add("GET", "https://example.com/pythons", status=200,
               body=PAGE_HTML.encode("utf-8"),
@@ -42,7 +40,6 @@ def test_summarize_url_happy_path(rmock: HttpMock, fake_openai) -> None:
     assert tabs["type"] == "tabs"
     assert result["_data"]["url"] == "https://example.com/pythons"
     assert result["_data"]["title"] == "Python Facts"
-    # The fetched page's readable text (not raw HTML) went to the LLM.
     sent = fake_cls.calls_log[-1]["messages"][1]["content"]
     assert "Pythons are large constricting snakes." in sent
     assert "tracking()" not in sent
@@ -112,7 +109,7 @@ def test_summarize_url_follows_redirect(rmock: HttpMock, fake_openai) -> None:
               headers={"Content-Type": "text/html"})
     fake_openai(GOOD_JSON)
     result = summarize_url(url="https://redirect.example.com/old")
-    assert result["_ui_components"][0]["type"] == "text"  # source link
+    assert result["_ui_components"][0]["type"] == "text"
     assert result["_ui_components"][1]["type"] == "tabs"
     assert result["_data"]["title"] == "Python Facts"
 
@@ -142,10 +139,6 @@ def test_extract_text_non_html_passthrough() -> None:
     assert title == ""
     assert text == "plain body"
 
-
-# ---------------------------------------------------------------------------
-# compare_documents
-# ---------------------------------------------------------------------------
 
 SUMMARY_A = json.dumps({"tldr": "Doc A says X.", "key_points": ["A1"], "quotes": []})
 SUMMARY_B = json.dumps({"tldr": "Doc B says Y.", "key_points": ["B1"], "quotes": []})
@@ -177,7 +170,6 @@ def test_compare_documents_grid_and_table(fake_openai) -> None:
         ["Conclusion", "supports X", "supports Y"],
         ["Tone", "formal", "casual"],
     ]
-    # Exactly three LLM calls: two summaries + ONE comparison.
     assert len(fake_cls.calls_log) == 3
 
 

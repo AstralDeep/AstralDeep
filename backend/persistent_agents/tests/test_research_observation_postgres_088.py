@@ -1,4 +1,7 @@
-"""Real guarded dispatch/settlement for fixed-reader source facts, without a model."""
+"""Tests for persistent_agents/research_result.py's fixed-reader dispatch without a
+model: actual reader metadata binds a scoped result, bad observations still charge
+the read, and injection after a retained prefix is refused.
+"""
 
 import asyncio
 from types import SimpleNamespace

@@ -1,8 +1,6 @@
-"""Bounded exact-profile speech adapters for the isolated voice worker.
-
-The transport is injected so network policy, DNS pinning, TLS, and timeout
-enforcement remain independently testable. This module owns only fixed model
-selection, request construction, response validation, and media budgets.
+"""Fixed-profile Kokoro TTS and Whisper ASR adapters for the voice worker, plus the
+bounded FixedPhraseTTSCache; network access goes through an injected SpeechTransport,
+and voice_agent/main.py wires them into session.py's DirectRtcSession.
 """
 
 from __future__ import annotations
@@ -41,21 +39,17 @@ _LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$")
 
 
 class SpeechAdapterError(RuntimeError):
-    """A content-free speech failure safe for logs and control frames."""
-
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"speech adapter failed: {reason}")
 
 
 class SpeechPreflightError(SpeechAdapterError):
-    """The exact startup model/audio profile could not be proved."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class HttpRequest:
-    """One bounded request passed to the fixed-destination transport."""
-
     path: str
     headers: Mapping[str, str]
     body: bytes
@@ -65,27 +59,21 @@ class HttpRequest:
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
-    """Bounded response bytes returned by the fixed-destination transport."""
-
     status: int
     headers: Mapping[str, str]
     body: bytes
 
 
 class SpeechTransport(Protocol):
-    """Network boundary required by the exact speech adapters."""
-
     async def post(self, request: HttpRequest) -> HttpResponse:
-        """Send one request without redirects, proxies, or ambient credentials."""
+        pass
 
     async def get(self, request: HttpRequest) -> HttpResponse:
-        """Send one body-free inventory request to the same fixed origin."""
+        pass
 
 
 @dataclass(frozen=True, slots=True)
 class SynthesizedAudio:
-    """Validated ephemeral PCM returned by the fixed Kokoro profile."""
-
     pcm_s16le: bytes
     sample_rate: int
     channels: int
@@ -95,16 +83,12 @@ class SynthesizedAudio:
 
 @dataclass(frozen=True, slots=True)
 class Transcript:
-    """Validated text returned from one bounded, ephemeral utterance."""
-
     text: str
     language: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class SpeechPreflightResult:
-    """Credential-free evidence that the launch profile passed live probes."""
-
     asr_model: str = ASR_MODEL
     tts_model: str = KOKORO_MODEL
     voice: str = KOKORO_VOICE
@@ -112,8 +96,6 @@ class SpeechPreflightResult:
 
 
 class SpeechPreflight:
-    """Run exact inventory, real batch-ASR, and real 24-kHz WAV probes."""
-
     def __init__(self, *, transport: SpeechTransport, api_key: str) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise SpeechPreflightError("missing_credential")
@@ -123,17 +105,11 @@ class SpeechPreflight:
         self._tts = SpeachesTTS(transport=transport, api_key=api_key)
 
     async def run(self) -> SpeechPreflightResult:
-        """Complete every live probe before the worker may register."""
-
         inventory = await self._model_inventory()
         _validate_exact_inventory(inventory)
         try:
             transcript = await self._asr.transcribe_pcm16(b"\0\0" * ASR_SAMPLE_RATE)
         except SpeechAdapterError as exc:
-            # One second of deterministic silence legitimately produces an
-            # empty final.  The authenticated request still exercised model
-            # loading and bounded batch inference; all other failures are
-            # capability failures.
             if exc.reason != "empty_transcript":
                 raise SpeechPreflightError(
                     _component_failure(exc.reason, "asr_unavailable")
@@ -164,8 +140,7 @@ class SpeechPreflight:
                             _component_failure(exc.reason, "tts_unavailable")
                         ) from None
                     else:
-                        # Keep neither the fixed phrase nor synthesized PCM
-                        # beyond its bounded startup call.
+                        # Zero-retention: drop startup-probe audio immediately
                         del audio
         except TimeoutError:
             raise SpeechPreflightError("tts_unavailable") from None
@@ -213,8 +188,6 @@ class SpeechPreflight:
 
 
 class SpeachesTTS:
-    """Synthesize coordinator-approved text with the exact launch profile."""
-
     def __init__(self, *, transport: SpeechTransport, api_key: str) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise SpeechAdapterError("missing_credential")
@@ -227,17 +200,6 @@ class SpeachesTTS:
         *,
         max_duration_samples: int,
     ) -> SynthesizedAudio:
-        """Return validated 24-kHz mono PCM or fail before publication.
-
-        Args:
-            text: Exact coordinator-approved visible speech text.
-            max_duration_samples: Hard command ceiling at 24 kHz.
-
-        Raises:
-            SpeechAdapterError: If input, upstream status, WAV structure, fixed
-                profile, or command budget validation fails.
-        """
-
         if (
             not isinstance(text, str)
             or not text.strip()
@@ -294,19 +256,6 @@ class SpeachesTTS:
         return _parse_kokoro_wav(response.body, max_duration_samples)
 
 
-# Feature 066 latency: the coordinator's greeting/acknowledgement/progress/
-# waiting/terminal announcements repeat constantly and each previously cost a
-# full TTS round trip. Spec 065 FR-045 keeps synthesized audio out of "caches
-# beyond active processing"; that clause protects user content, but it is
-# written broadly, so caching is restricted to this closed SERVER-OWNED phrase
-# vocabulary by exact text match - operator-authored strings that carry no
-# user text, transcript content, or PHI. Result recaps and every other
-# coordinator-composed text never match and are synthesized fresh then
-# discarded, exactly as before. The worker's RuntimeImportGuard forbids
-# importing orchestrator code, so the vocabulary is mirrored verbatim from
-# ``orchestrator.voice_coordinator.APPROVED_PHRASE_TEXT`` (the
-# PREACCEPTANCE_REJECTION_PHRASES projections reuse those same keys) and
-# drift-pinned by ``tests/test_tts_phrase_cache_066.py``.
 SERVER_OWNED_PHRASE_TEXTS = frozenset(
     {
         "Hi! I'm ready when you are.",
@@ -342,26 +291,11 @@ SHORT_TERMINAL_PHRASE_TEXTS = (
     "Please say that again.",
     "Request cancelled.",
 )
-# Bound: every cached entry is a validated SynthesizedAudio of at most
-# MAX_QUANTUM_SAMPLES (96,000) samples at 2 bytes/sample, so the cache holds
-# at most 32 * 192,000 = 6,144,000 bytes (~5.9 MiB) worst case; the real
-# phrases above are all under 4 s of speech. The character cap additionally
-# keeps any future vocabulary growth in the short-phrase regime so
-# user-content-sized result quanta stay structurally outside the cache.
 TTS_CACHE_MAX_ENTRIES = 32
 TTS_CACHE_MAX_TEXT_CHARS = 200
 
 
 class FixedPhraseTTSCache:
-    """Serve repeated server-owned phrases from bounded worker memory.
-
-    Wraps a TTS adapter with an LRU keyed by (text, model, voice, sample
-    rate) so a launch-profile change can never replay stale audio. Only a
-    successful, fully validated synthesis of a closed-vocabulary phrase is
-    stored; a hit returns the same immutable ``SynthesizedAudio`` a fresh
-    call would, so the downstream announcement/track flow is identical.
-    """
-
     def __init__(
         self,
         inner: Any,
@@ -397,14 +331,11 @@ class FixedPhraseTTSCache:
         *,
         max_duration_samples: int,
     ) -> SynthesizedAudio:
-        """Return cached validated PCM for a known phrase, else synthesize."""
-
         key = self._cache_key(text)
         if key is not None:
             cached = self._entries.get(key)
             if cached is not None:
-                # Mirror the fresh-path input validation and command-budget
-                # outcome exactly so a hit stays behaviorally identical.
+                # Cache hit must replicate the miss path's validation
                 if (
                     isinstance(max_duration_samples, bool)
                     or not isinstance(max_duration_samples, int)
@@ -431,8 +362,6 @@ class FixedPhraseTTSCache:
 
 
 class SpeachesBatchSTT:
-    """Transcribe one Silero-ended utterance with the exact launch model."""
-
     def __init__(self, *, transport: SpeechTransport, api_key: str) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise SpeechAdapterError("missing_credential")
@@ -440,8 +369,6 @@ class SpeachesBatchSTT:
         self._api_key = api_key
 
     async def transcribe_pcm16(self, pcm_s16le: bytes) -> Transcript:
-        """Return bounded transcript text without retaining source audio."""
-
         if not isinstance(pcm_s16le, bytes) or len(pcm_s16le) % 2:
             raise SpeechAdapterError("invalid_pcm")
         if not pcm_s16le:
@@ -556,8 +483,6 @@ async def _post_speech_with_retry(
     *,
     attempts: int,
 ) -> HttpResponse:
-    """Retry one transient speech failure within the caller's total bound."""
-
     for attempt in range(attempts):
         try:
             response = await transport.post(request)
@@ -626,10 +551,7 @@ def _asr_multipart(boundary: str, wav_payload: bytes) -> bytes:
     return b"".join(
         (
             field("model", ASR_MODEL),
-            # The ordinary OpenAI-compatible JSON response contains only
-            # ``text``. Feature 065 requires a detected language on every
-            # final so output-locale policy can fail closed. Speaches exposes
-            # that field through the compatible verbose JSON representation.
+            # Needed for language field; plain json omits it
             field("response_format", "verbose_json"),
             b"--" + marker + b'\r\nContent-Disposition: form-data; name="file"; '
             b'filename="utterance.wav"\r\nContent-Type: audio/wav\r\n\r\n'
@@ -642,8 +564,6 @@ def _asr_multipart(boundary: str, wav_payload: bytes) -> bytes:
 
 
 def _parse_kokoro_wav(payload: bytes, max_duration_samples: int) -> SynthesizedAudio:
-    """Parse one bounded PCM WAV without writing audio to disk."""
-
     try:
         with wave.open(io.BytesIO(payload), "rb") as reader:
             channels = reader.getnchannels()

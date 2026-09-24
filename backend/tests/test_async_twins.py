@@ -1,10 +1,6 @@
-"""Feature 052 — every async twin runs its sync counterpart off the loop.
-
-One await per ``a*`` facade method across WorkspaceManager, WebSessionStore
-and the attachment repositories, against an isolated current Plane database.
-All rows are namespaced per-test and deleted on teardown. Sync setup happens in sync
-fixtures (no running loop), so the suite's event-loop guard stays quiet even
-in enforce mode.
+"""Tests that every async facade method (workspace.py, session_store.py, the attachment
+repositories) runs its sync counterpart off the event loop, against an isolated
+current-schema Plane database.
 """
 
 from __future__ import annotations
@@ -24,15 +20,12 @@ from tests.helpers.voice_plane_runtime import (
 
 @pytest.fixture(scope="module")
 def plane_runtime():
-    """Create one isolated current Plane runtime for the async facade proofs."""
-
     with isolated_plane_runtime("async_twins") as runtime:
         yield runtime
 
 
 @pytest.fixture()
 def chat_env(plane_runtime: PlaneTestRuntime):
-    """Real HistoryManager + unique user/chat, deleted on teardown."""
     history = history_manager(plane_runtime)
     user_id = f"twin-user-{uuid.uuid4()}"
     chat_id = history.create_chat(user_id=user_id)
@@ -87,7 +80,6 @@ async def test_workspace_async_twins_cover_the_sync_surface(chat_env):
 
 @pytest.fixture()
 def session_env(monkeypatch, plane_runtime: PlaneTestRuntime):
-    """A dev-mode WebSessionStore + namespaced ids, cleaned on teardown."""
     monkeypatch.setenv("ASTRAL_ENV", "development")
     from orchestrator.session_store import WebSessionStore
 
@@ -136,7 +128,6 @@ async def test_session_store_async_twins_cover_the_sync_surface(session_env):
 
 @pytest.fixture()
 def attachment_env(plane_runtime: PlaneTestRuntime, tmp_path):
-    """Live-DB attachment repositories + namespaced ids, cleaned on teardown."""
     user_id = f"twin-att-user-{uuid.uuid4()}"
     att_id = str(uuid.uuid4())
     blobs = create_streaming_blob_store(root=tmp_path / "attachments")
@@ -213,7 +204,6 @@ async def test_message_attachment_repo_async_twins(attachment_env):
 
 @pytest.fixture()
 def parser_env(plane_runtime: PlaneTestRuntime):
-    """Live-DB parser registry repo + namespaced gap, cleaned on teardown."""
     gap = f"twin-gap-{uuid.uuid4()}"
     yield plane_runtime, gap
     plane_runtime.execute(

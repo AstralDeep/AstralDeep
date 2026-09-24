@@ -1,4 +1,7 @@
-"""Crash-safe lifecycle convergence through Deep, Plane, and public LETS values."""
+"""Tests for orchestrator/lets_lifecycle.py and lets_reconciler.py: crash-safe
+convergence of spawn/renew/pause/reconnect/close/revoke across restarts, atomic
+parent fencing, epoch rotation, and closing pending intents on failure.
+"""
 
 from __future__ import annotations
 
@@ -88,8 +91,6 @@ class MemoryPlane:
 
 
 class MemoryAuthorityRepository:
-    """Small CAS-accurate repository fake for orchestration contract tests."""
-
     def __init__(self) -> None:
         self.bindings: dict[tuple[str, str], AgentAuthorityBinding] = {}
         self.operations: dict[tuple[str, str], AuthorityLifecycleOperation] = {}
@@ -222,8 +223,6 @@ class MemoryAuthorityRepository:
 
 
 class LifecycleClient:
-    """Deterministic LETS boundary whose state survives service restarts."""
-
     def __init__(self) -> None:
         self.grants: dict[str, LeaseGrant] = {}
         self.snapshots: dict[str, LeaseSnapshot] = {}

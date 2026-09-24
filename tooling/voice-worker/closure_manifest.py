@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Generate and verify the canonical Feature 065 voice-worker closure.
-
-The manifest binds build inputs and independently produced image/scan evidence.
-It is deliberately excluded from ``SOURCE_INPUTS`` so copying it into the image
-cannot create a self-referential image-digest cycle.
+"""Builds and verifies the canonical voice-worker closure manifest, binding build inputs
+to independently produced image/scan evidence; excluded from its own source-input set
+so packaging it can't create a self-referential digest cycle.
 """
 
 from __future__ import annotations
@@ -131,13 +129,11 @@ UNAPPROVED_APPROVAL = {
 
 
 class ClosureError(RuntimeError):
-    """The closure or one of its evidence inputs is invalid."""
+    pass
 
 
 @dataclass(frozen=True)
 class BoundArtifact:
-    """Raw evidence bytes plus their independently supplied immutable identity."""
-
     path: str
     sha256: str
     immutable_reference: str
@@ -145,8 +141,6 @@ class BoundArtifact:
 
 @dataclass(frozen=True)
 class ClosureEvidence:
-    """Immutable identities supplied by the multi-platform build and scans."""
-
     candidate_repository: str
     candidate_sha: str
     base_reference: str
@@ -457,7 +451,7 @@ def _validate_approved_sources(root: Path, blobs: Mapping[str, bytes]) -> None:
     dockerignore = blobs["Dockerfile.voice.dockerignore"].decode("utf-8")
     if "CLOSURE.json" in dockerignore:
         raise ClosureError("CLOSURE.json must not be an image input")
-    del root  # The validated root is intentionally not serialized.
+    del root
 
 
 def _source_records(root: Path) -> dict[str, dict[str, Any]]:
@@ -473,14 +467,6 @@ def _source_records(root: Path) -> dict[str, dict[str, Any]]:
 
 
 def build_unapproved_manifest(repo_root: Path) -> dict[str, Any]:
-    """Build the deterministic local snapshot used while release gates are open.
-
-    This document intentionally contains no substitutable image, signature, SBOM,
-    VEX, scan, or protected-policy evidence.  It records the exact locally
-    reviewable closure and makes every unresolved distribution gate explicit.
-    ``verify_manifest`` never accepts this schema as a final closure.
-    """
-
     root = _repo_root(repo_root)
     manifest: dict[str, Any] = {
         "approval": dict(UNAPPROVED_APPROVAL),
@@ -772,8 +758,6 @@ def _validate_evidence(evidence: ClosureEvidence) -> None:
 
 
 def _build_approval_subject(root: Path, evidence: ClosureEvidence) -> dict[str, Any]:
-    """Build the non-circular bytes that protected policy must approve."""
-
     _validate_evidence(evidence)
     images = dict(evidence.image_digests)
     scans = {
@@ -824,8 +808,6 @@ def _build_approval_subject(root: Path, evidence: ClosureEvidence) -> dict[str, 
 
 
 def approval_subject_digest(repo_root: Path, evidence: ClosureEvidence) -> str:
-    """Return the exact non-circular digest a protected owner must approve."""
-
     root = _repo_root(repo_root)
     return _digest(_canonical(_build_approval_subject(root, evidence)))
 
@@ -913,8 +895,6 @@ def _protected_approval(
 
 
 def build_manifest(repo_root: Path, evidence: ClosureEvidence) -> dict[str, Any]:
-    """Build a validated canonical final manifest without writing it."""
-
     root = _repo_root(repo_root)
     subject = _build_approval_subject(root, evidence)
     subject_digest = _digest(_canonical(subject))
@@ -1184,15 +1164,11 @@ def _write_document(root: Path, document: Mapping[str, Any]) -> str:
 
 
 def write_manifest(repo_root: Path, evidence: ClosureEvidence) -> str:
-    """Atomically write a final ``CLOSURE.json`` and return its digest."""
-
     root = _repo_root(repo_root)
     return _write_document(root, build_manifest(root, evidence))
 
 
 def write_unapproved_manifest(repo_root: Path) -> str:
-    """Atomically write the canonical distribution-blocked local snapshot."""
-
     root = _repo_root(repo_root)
     return _write_document(root, build_unapproved_manifest(root))
 
@@ -1206,8 +1182,6 @@ def verify_manifest(
     vex: Mapping[str, str] | None = None,
     protected_owner_approval: str | None = None,
 ) -> str:
-    """Verify canonical bytes, current inputs, and optional raw external evidence."""
-
     root = _repo_root(repo_root)
     manifest_data = _read_file(
         root, MANIFEST_PATH, label="closure manifest", limit=MAX_JSON_BYTES
@@ -1312,8 +1286,6 @@ def verify_manifest(
 
 
 def verify_unapproved_manifest(repo_root: Path) -> str:
-    """Verify the canonical local snapshot without granting distribution approval."""
-
     root = _repo_root(repo_root)
     data = _read_file(
         root, MANIFEST_PATH, label="closure manifest", limit=MAX_JSON_BYTES

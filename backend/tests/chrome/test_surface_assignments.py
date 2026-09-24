@@ -1,4 +1,8 @@
-"""Owner-authenticated Schedule assignment adapter and durable command contracts."""
+"""Tests for astralprojection/chrome/assignments.py: owner-authenticated Schedule
+assignment controls, durable command contracts, form/credential redaction, and
+job-policy save/stop wiring through persistent_agents/service.py.
+"""
+
 import asyncio
 import copy
 import json
@@ -53,7 +57,6 @@ def host(monkeypatch):
         decide=AsyncMock(return_value=SimpleNamespace(state="completed")),
         tool_bound=lambda identity: {"tool_calls": 1},
     )
-    # A real socket is hashable; SimpleNamespace is not.
     socket = type("Socket", (), {"closed": False})()
     claims = {"sub": "owner", "scope": "tools:read"}
     permissions = SimpleNamespace(list_disabled_agents=lambda owner: [],
@@ -137,8 +140,6 @@ def test_create_and_revision_use_shared_strict_models_and_explicit_consent(host)
 @pytest.mark.parametrize("command", ["create", "revise", "pause", "resume", "stop", "revoke", "run_now", "approval_decide"])
 def test_client_request_generation_is_transport_metadata_not_assignment_authority(host, command):
     orch, socket, _, row = host
-    # The shipped web and native clients copy their outer request generation
-    # into payload. chrome_events forwards this payload to the owner adapter.
     payload = ({"submission_id": str(uuid4())} if command == "create" else control_payload(row))
     payload["request_generation"] = str(uuid4())
     if command in ("create", "revise"):
@@ -237,8 +238,6 @@ def test_missing_llm_exception_cannot_stop_a_foreign_owners_assignment(unconfigu
     from orchestrator import chrome_events
     from persistent_agents.service import AssignmentService
     orch, socket, _, row, setup, rendered = unconfigured_chrome
-    # The real service performs owner-scoped retrieval before every control.
-    # A foreign identity is unavailable in that scope, so no mutation is issued.
     store = SimpleNamespace(call=AsyncMock(return_value=None))
     orch.persistent_assignments = AssignmentService(orch, store=store, enabled=True,
                                                     phi_gate=SimpleNamespace())
@@ -484,26 +483,6 @@ def test_transport_payload_cannot_override_form_or_add_fields(host, command, pay
     orch.persistent_assignments.revise.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# 088 T040 — schedule-tab policy Stop routes to AssignmentControl.STOP for
-# each bound ongoing agent (scheduler.store mechanics are covered by
-# backend/scheduler/tests/test_policy_allowance_088.py; this file owns the
-# assignment-service side of the wiring).
-#
-# ``_handle_job_policy_save``/``_handle_job_stop`` are exercised DIRECTLY
-# (never through ``surf.HANDLERS``): they are deliberately not registered
-# there yet (see the long comment above ``chrome_assignment_create`` in
-# personalization.py) because production wires no real ``monitoring_
-# dispatcher`` into ``JobRunner`` (orchestrator.py) — the unattended
-# scheduler can only CONTINUE an already-bound policy episode, never mint a
-# first one — and this module's HANDLERS-set is an exhaustive contract
-# elsewhere (test_surface_personalization.py::
-# test_module_contract_title_and_handlers) that this workstream's assigned
-# files do not include. Registering these two names is a coordinated
-# follow-up alongside that contract-test update and the real dispatcher.
-# ---------------------------------------------------------------------------
-
-
 class _FakeJobStore:
     def __init__(self, *, stop_result=None, stop_error=None,
                  policy_result=None, policy_error=None):
@@ -542,9 +521,6 @@ class _FakeJobStore:
 
 def test_job_stop_routes_to_assignment_control_stop_for_each_outstanding_family(host):
     orch, socket, _, row = host
-    # ``service.get`` returns the RAW record (attribute access), unlike the
-    # ``public_record``-projected dict other tests in this module compare
-    # against — a plain SimpleNamespace exercises that contract precisely.
     orch.persistent_assignments.get = AsyncMock(return_value=SimpleNamespace(
         instruction_revision=row["instruction_revision"], control_epoch=row["control_epoch"],
     ))
@@ -586,8 +562,6 @@ def test_job_stop_reports_when_a_bound_agent_cannot_be_stopped_automatically(hos
         {"job_id": "job-1", "submission_id": str(uuid4()), "expected_policy_version": 3},
     ))
 
-    # The job policy Stop itself already committed regardless of the
-    # per-assignment outcome — this is never surfaced as a failure.
     assert "stopped permanently" in notice.lower()
     assert "ongoing agents" in notice.lower()
 
@@ -706,9 +680,6 @@ def test_stop_permanently_control_is_offered_only_for_a_policy_job_and_never_twi
     assert "chrome_job_stop" in active
     assert "1 of 5 runs admitted" in active
 
-    # 088 T040 fix: a job with NO existing policy row (every job today, since
-    # nothing yet binds a first monitoring assignment) renders NOTHING here —
-    # never a "create a policy" form the scheduler could never admit.
     legacy = surf._job_policy_html("job-1", None)
     assert legacy == ""
 
@@ -734,29 +705,13 @@ def test_stop_permanently_control_native_components_mirror_the_web_form():
 
 
 def test_job_policy_actions_are_not_yet_registered_pending_a_real_dispatcher():
-    """Locks in the 088 T040 gating decision (see the comment above
-    ``chrome_assignment_create`` in personalization.py): these two names must
-    stay OUT of ``HANDLERS`` until a real ``monitoring_dispatcher`` is wired
-    at JobRunner construction (orchestrator.py) AND the exhaustive HANDLERS
-    contract test (test_surface_personalization.py::
-    test_module_contract_title_and_handlers, outside this workstream's
-    assigned files) is extended for them together. Regressing this silently
-    would either brick a first-run policy job or fail that contract test.
-    """
     assert "chrome_job_policy_save" not in surf.HANDLERS
     assert "chrome_job_stop" not in surf.HANDLERS
-    # The implementations exist and are independently tested above/below —
-    # only their registration is withheld.
     assert callable(surf._handle_job_policy_save)
     assert callable(surf._handle_job_stop)
 
 
 def test_schedule_tab_never_renders_the_policy_form_for_a_legacy_job(host):
-    """Defense in depth for the same gating decision: even a job present in
-    ``_render_schedule``/``_components_schedule`` (every real job today, since
-    nothing binds a first monitoring assignment) must show no run-policy
-    markup and no reference to the two withheld action names.
-    """
     orch, socket, _, row = host
     orch.scheduled_job_store = _FakeJobStore()
 

@@ -1,10 +1,8 @@
-"""Feature 055 US1 — identity survives ROTE degrade/collapse rebuilds.
-
-Degraded components must stay addressable: clients key canvases (and purge
-wel_ welcome components) by ``component_id ?? id``, and ui_upsert morphs
-target the same identity — a hero degraded to text on the watch, or a grid
-collapsed to a container, previously lost both fields and keyed as anon-N.
+"""Tests that ROTE degrade/collapse rebuilds preserve component identity
+(AstralProjection backend/rote/adapter.py, capabilities.py): clients key canvases by
+component_id, and morphed components keep it.
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,8 +16,6 @@ from rote.adapter import ComponentAdapter  # noqa: E402
 from rote.capabilities import DeviceProfile  # noqa: E402
 
 
-#: the 10-type native set real watch clients advertise in register_ui
-#: (Projection Apple AstralCore Dispositions.swift watchNativeComponentTypes)
 _WATCH_TYPES = ["alert", "badge", "card", "container", "divider",
                 "keyvalue", "list", "metric", "progress", "text"]
 
@@ -62,8 +58,6 @@ def test_chart_substitution_keeps_workspace_identity():
 
 
 def test_chart_to_metric_on_bare_profile_keeps_identity():
-    # No advertised supported_types: the per-type _adapt_chart rebuild
-    # (chart -> metric when supports_charts is false) must also carry identity.
     chart = _identified("line_chart", "wc_bare000000000000",
                         labels=["a"], datasets=[{"label": "s", "data": [1]}])
     out = ComponentAdapter.adapt([chart], _watch(advertise=False))

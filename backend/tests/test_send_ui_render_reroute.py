@@ -1,12 +1,8 @@
-"""Feature 044 — ``send_ui_render`` alert-only reroute.
-
-A canvas-target frame consisting entirely of alert components (ANY variant,
-not just ``error``) must reroute to the chat panel so a partial single-alert
-render never clobbers the workspace canvas on any client. Frames containing
-non-alert components keep their canvas target. DB-free: the real
-``Orchestrator.send_ui_render`` is bound onto a fake orch (same pattern as
-``test_canvas_full_render.py``).
+"""Tests that Orchestrator.send_ui_render reroutes an alert-only frame to the chat panel
+regardless of variant, while a frame with any non-alert component keeps its canvas
+target.
 """
+
 from __future__ import annotations
 
 import asyncio

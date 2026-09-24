@@ -1,15 +1,8 @@
-"""Tests for backend/shared/phi_redactor.py (feature 014, US2 / FR-009b).
-
-Covers:
-
-* Field-key heuristics across HIPAA Safe Harbor identifier categories.
-* Value-pattern detection for SSN / email / phone / IP / dates / MRN.
-* Truncation runs after redaction (so a short truncated result never reveals
-  PHI that the full value contained).
-* Structured-log emission of ``phi_redactor.redaction_applied`` whenever a
-  mask is applied, with ``kind`` propagated.
-* Defensive path: malformed input never raises.
+"""Tests for backend/shared/phi_redactor.py: field-key and value-pattern PHI masking,
+truncation after redaction, structured logging of applied redactions, and safe
+fallback on malformed input.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +16,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from shared.phi_redactor import (  # noqa: E402  -- after sys.path tweak
+from shared.phi_redactor import (  # noqa: E402
     PHI_FIELD_PATTERNS,
     TRUNCATION_LIMIT,
     redact,
@@ -42,7 +35,6 @@ class TestPassThrough:
     def test_safe_dict_unchanged(self):
         payload = {"query": "biomedical", "max_results": 10}
         out, was_truncated = redact(payload)
-        # JSON-serialised but content preserved.
         assert json.loads(out) == payload
         assert was_truncated is False
 
@@ -149,8 +141,7 @@ class TestValuePatternMasking:
         assert "04/12/1985" not in out_us
 
     def test_year_only_is_NOT_masked(self):
-        # Safe Harbor permits year-level granularity; only more-specific
-        # dates are identifying.
+        # Safe Harbor allows year-only dates — not redacted
         out, _ = redact("Cohort is from year 1985.")
         assert "1985" in out
         assert "[REDACTED:date]" not in out
@@ -181,11 +172,6 @@ class TestTruncation:
         assert out.endswith("…")
 
     def test_truncation_runs_after_redaction(self):
-        # Build a string where the SSN sits past the truncation limit. After
-        # redaction the SSN-shaped span is replaced with [REDACTED:ssn] (which
-        # is shorter), and the resulting string is then truncated. The full
-        # raw SSN MUST NEVER appear in the output, even if the post-redaction
-        # truncated string would otherwise have included it.
         prefix = "x" * 480
         raw = f"{prefix} SSN 123-45-6789 contact"
         out, _ = redact(raw)
@@ -223,12 +209,9 @@ class TestNeverRaises:
                 return "Weird()"
 
         out, _ = redact({"query": Weird()})
-        # Still returns a string, never raises.
         assert isinstance(out, str)
 
     def test_self_referential_input_does_not_raise(self):
-        # json.dumps would normally raise on cycles; the redactor must catch
-        # and return [redaction failed] rather than propagating.
         d: dict = {"safe": 1}
         d["self"] = d
         out, was_truncated = redact(d)
@@ -237,8 +220,6 @@ class TestNeverRaises:
 
 
 class TestSafeHarborCoverage:
-    """Spot-check that PHI_FIELD_PATTERNS covers each Safe Harbor category."""
-
     REQUIRED_LABELS = (
         "name",
         "address",

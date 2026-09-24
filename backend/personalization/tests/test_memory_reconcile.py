@@ -1,9 +1,8 @@
-"""Feature 033 (capability C-M1) — reconcile-don't-append memory writes.
-
-Covers the pure decision helpers, the fail-open reconcile orchestration over a
-fake repo (ADD / UPDATE / DELETE / NOOP + every fallback), and the real-DB
-supersession + retrieval-exclusion.
+"""Tests for the reconcile-don't-append memory writes in memory_tools.py: decision
+parsing, fail-open orchestration over a fake repo across ADD/UPDATE/DELETE/NOOP and
+every fallback, and a real-DB supersession/retrieval-exclusion round-trip.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -21,8 +20,6 @@ from personalization.repository import PersonalizationRepository
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
-# ───────────────────────── fakes ─────────────────────────────────────────────
-
 class _FakeGate:
     def __init__(self, phi: bool = False):
         self._phi = phi
@@ -32,8 +29,6 @@ class _FakeGate:
 
 
 class _FakeRepo:
-    """In-memory repo honoring the supersession contract (list excludes
-    superseded; supersede soft-deletes)."""
     def __init__(self):
         self.rows = []
 
@@ -53,7 +48,6 @@ class _FakeRepo:
             return rows
         return ps.filter_to_project(rows, project_id, include_global=include_global)
 
-    # C-M2 linked-note surface (links not asserted by the reconcile tests).
     def add_link(self, user_id, a_id, b_id):
         return True
 
@@ -81,8 +75,6 @@ def _mt(repo=None, phi=False):
     return MemoryTools(repo or _FakeRepo(), phi_gate=_FakeGate(phi))
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_reconcile_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_MEMORY_RECONCILE", raising=False)
     assert reconcile_enabled() is True
@@ -93,8 +85,6 @@ def test_reconcile_flag_off_values(monkeypatch, value):
     monkeypatch.setenv("FF_MEMORY_RECONCILE", value)
     assert reconcile_enabled() is False
 
-
-# ───────────────────────── parse_reconcile_decision ──────────────────────────
 
 @pytest.mark.parametrize("action", ["ADD", "UPDATE", "DELETE", "NOOP"])
 def test_parse_each_action(action):
@@ -125,8 +115,6 @@ def test_build_messages_lists_new_and_existing():
     assert "ADD" in blob and "UPDATE" in blob and "DELETE" in blob and "NOOP" in blob
 
 
-# ───────────────────────── reconcile orchestration ───────────────────────────
-
 async def test_add_keeps_both():
     repo = _FakeRepo()
     repo.create_memory("u", "preference", "Prefers dark mode")
@@ -148,7 +136,7 @@ async def test_update_supersedes_old():
     assert res["stored"] is True and res["action"] == "update"
     assert res["superseded"] == old["id"]
     live = repo.list_memory("u")
-    assert [r["value"] for r in live] == ["Lives in Seattle"]  # Portland is gone
+    assert [r["value"] for r in live] == ["Lives in Seattle"]
 
 
 async def test_delete_supersedes_without_adding():
@@ -179,7 +167,7 @@ async def test_no_candidates_appends_without_calling_llm():
     res = await mt.remember_reconciled("u", "goal", "Ship the memory feature",
                                        llm_call=_stub_llm('{"action":"NOOP"}', calls))
     assert res["stored"] is True
-    assert calls == []  # empty repo → no candidates → LLM never consulted
+    assert calls == []
 
 
 async def test_llm_none_appends():
@@ -188,7 +176,7 @@ async def test_llm_none_appends():
     res = await _mt(repo).remember_reconciled("u", "preference", "Prefers light mode",
                                               llm_call=None)
     assert res["stored"] is True
-    assert len(repo.list_memory("u")) == 2  # plain append
+    assert len(repo.list_memory("u")) == 2
 
 
 async def test_llm_error_fails_open_to_append():
@@ -209,14 +197,13 @@ async def test_flag_off_appends(monkeypatch):
     calls = []
     res = await _mt(repo).remember_reconciled("u", "preference", "Prefers light mode",
                                               llm_call=_stub_llm('{"action":"NOOP"}', calls))
-    assert res["stored"] is True and calls == []  # reconcile skipped entirely
+    assert res["stored"] is True and calls == []
 
 
 async def test_unresolvable_target_falls_back_to_add():
     repo = _FakeRepo()
     repo.create_memory("u", "preference", "Prefers dark mode")
     mt = _mt(repo)
-    # UPDATE pointing at a non-existent candidate number → safe append
     res = await mt.remember_reconciled("u", "preference", "Prefers light mode",
                                        llm_call=_stub_llm('{"action":"UPDATE","target":9}'))
     assert res["stored"] is True and res["action"] == "add"
@@ -231,14 +218,10 @@ async def test_phi_is_refused_before_any_llm():
                                        llm_call=_stub_llm('{"action":"ADD"}', calls))
     assert res["stored"] is False
     assert "protected health information" in res["reason"]
-    assert repo.rows == [] and calls == []  # nothing persisted, LLM never saw it
+    assert repo.rows == [] and calls == []
 
-
-# ───────────────────────── real-DB supersession ──────────────────────────────
 
 def test_repo_supersede_excludes_from_recall(monkeypatch):
-    """The schema migration + supersede_memory round-trip over a real DB:
-    a superseded row drops out of list_memory and carries superseded_by."""
     with isolated_plane_runtime("personalization_reconcile") as runtime:
         repo = PersonalizationRepository(
             None,
@@ -262,10 +245,8 @@ def test_repo_supersede_excludes_from_recall(monkeypatch):
         row = repo.get_memory(user, first["id"])
         assert row is not None and str(row["superseded_by"]) == second["id"]
         assert row["superseded_at"] == clock[0]
-        # Plane acknowledges an exact replay without changing the retired row.
         assert repo.supersede_memory(user, first["id"], second["id"]) is True
         assert repo.get_memory(user, first["id"]) == row
-        # A later attempted retirement cannot overwrite its original evidence.
         clock[0] += 1
         assert repo.supersede_memory(user, first["id"], second["id"]) is False
         assert repo.get_memory(user, first["id"]) == row

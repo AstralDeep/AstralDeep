@@ -1,10 +1,8 @@
-"""Pins that ``astral_sdk.tools``/``astral_sdk.models`` describe exactly the
-same operation shape as the recorded conformance fixtures under
-``backend/tests/fixtures/framework_conformance/`` (shared with
-``backend/tests/test_framework_conformance_088.py`` — see that file's module
-docstring for what "shared" means here: both suites load the SAME files,
-neither hand-copies the other's expectations).
+"""Tests for astral_sdk.tools and astral_sdk.models: they describe the same operation
+shape as the conformance fixtures shared with
+backend/tests/test_framework_conformance_088.py.
 """
+
 from __future__ import annotations
 
 import json

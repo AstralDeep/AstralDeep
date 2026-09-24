@@ -1,4 +1,6 @@
-"""read_text: UTF-8, charset fallback, JSON/YAML/XML/HTML/code."""
+"""Tests for agents/general/file_tools/read_text.py: UTF-8 and charset-fallback
+decoding, JSON/YAML/XML/HTML/code language tagging, and max-chars truncation.
+"""
 
 from __future__ import annotations
 
@@ -53,7 +55,6 @@ def test_max_chars_truncation(repo, upload_root):
 
 
 def test_charset_fallback(repo, upload_root):
-    # latin-1 with a non-ASCII byte
     payload = "café\n".encode("latin-1")
     aid = _put(repo, upload_root, name="x.txt", ext="txt", payload=payload)
     out = read_text(attachment_id=aid, user_id="alice")

@@ -1,19 +1,8 @@
-"""Feature 063 T029 — FR-047/FR-049 audit coverage for US1.
-
-Machine registration + removal, credential set + delete, re-trust, and every
-connection attempt with its verdict must land in the audit log naming the actor,
-the machine label, and the outcome. Connection attempts audit at the single
-``orchestrator.remote_machines.record_probe`` seam (the surface's probe notice
-and the remote-observe verbs both already report verdicts through it), so
-agents/** never audits. SECRETS NEVER appear in a row (FR-049) — the sweep here
-drives every operation with distinctive sentinel credential strings and asserts
-no row carries them.
-
-Hermetic: in-memory DB double, real CredentialManager (real Fernet), transport
-via ``set_transport(FakeTransport(...))``, recorder captured by patching
-``audit.recorder.get_recorder`` (same conventions as
-test_remote_no_secret_leak_063.py).
+"""Tests that every remote-machine operation (backend/orchestrator/remote_machines.py,
+credential_manager.py, projection_surfaces/remote_machines.py) audits the actor,
+machine and verdict, and that no audit row ever carries a secret.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -31,7 +20,6 @@ from tests.helpers.remote_plane_runtime import make_remote_plane_source
 USER = "user-1"
 OTHER = "user-2"
 
-# Never-legitimate strings: any one of these appearing in an audit row is a leak.
 SENTINEL_KEY = "ASTRAL063AUDITSENTINELPRIVATEKEYBYTES"
 FAKE_PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
             f"{SENTINEL_KEY}\n"
@@ -41,8 +29,6 @@ SENTINEL_PASSWORD = "astral063.audit.sentinel.password"
 SENTINELS = (SENTINEL_KEY, SENTINEL_PASSPHRASE, SENTINEL_PASSWORD)
 
 
-# ── in-memory DB double (matches the modules' exact queries) ──────────────────
-
 class _Cur:
     def __init__(self, rowcount: int = 1):
         self.rowcount = rowcount
@@ -50,8 +36,8 @@ class _Cur:
 
 class _MemDB:
     def __init__(self):
-        self.machines: dict = {}      # machine_id -> remote_machine row
-        self.credentials: dict = {}   # machine_id -> machine_credential row
+        self.machines: dict = {}
+        self.credentials: dict = {}
 
     def fetch_one(self, q, params=None):
         s = " ".join(q.split())
@@ -120,7 +106,7 @@ class _MemDB:
             r = self.machines.get(mid)
             if r and r["owner_user_id"] == uid:
                 del self.machines[mid]
-                self.credentials.pop(mid, None)  # FK cascade
+                self.credentials.pop(mid, None)
             return _Cur()
         raise AssertionError("unexpected execute: " + s)
 
@@ -137,8 +123,6 @@ class _AuditRecorder:
         self.events.append(ev)
         return ev
 
-
-# ── environment ───────────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def env(monkeypatch):
@@ -168,8 +152,6 @@ def env(monkeypatch):
 
 
 async def _register(env, *, cred_type: str = "ssh_key", label: str = "dgx"):
-    """Drive chrome_machine_add exactly as a client submit does — every credential
-    field present (legacy clients render them all), the handler reads by cred_type."""
     before = set(env.db.machines)
     fields = {"label": label, "address": "10.0.0.5", "port": "22", "username": "me",
               "os_family": "linux", "role": "cluster", "cred_type": cred_type,
@@ -185,14 +167,12 @@ def _rows(env, action_type):
 
 
 def _assert_actor_label_outcome(ev, *, label="dgx", outcome="success"):
-    assert isinstance(ev, AuditEventCreate)  # construction itself validated the row
+    assert isinstance(ev, AuditEventCreate)
     assert ev.actor_user_id == USER
     assert ev.inputs_meta.get("machine_label") == label
     assert label in ev.description
     assert ev.outcome == outcome
 
-
-# ── register / probe ──────────────────────────────────────────────────────────
 
 async def test_register_emits_registered_row_and_connection_verdict(env):
     set_transport(FakeTransport())
@@ -201,8 +181,7 @@ async def test_register_emits_registered_row_and_connection_verdict(env):
     _assert_actor_label_outcome(reg)
     assert reg.inputs_meta.get("machine_id") == mid
     assert reg.inputs_meta.get("cred_type") == "ssh_key"
-    assert reg.correlation_id == mid  # one machine's lifecycle correlates
-    # add's immediate probe is a connection attempt — it must audit its verdict
+    assert reg.correlation_id == mid
     (conn,) = _rows(env, "remote_machine.connection")
     _assert_actor_label_outcome(conn)
     assert conn.inputs_meta.get("verdict") == "ok"
@@ -221,7 +200,7 @@ async def test_probe_emits_connection_attempt_with_verdict(env):
 
 async def test_wrong_credential_probe_emits_attempt_and_failure_verdict(env):
     set_transport(FakeTransport(authenticated=False))
-    mid = await _register(env)  # add's immediate probe fails auth
+    mid = await _register(env)
     conns = _rows(env, "remote_machine.connection")
     assert len(conns) == 1
     _assert_actor_label_outcome(conns[0], outcome="failure")
@@ -234,8 +213,6 @@ async def test_wrong_credential_probe_emits_attempt_and_failure_verdict(env):
 
 
 async def test_verb_level_connections_audit_through_the_record_probe_seam(env):
-    # The remote-observe verbs report every verdict through record_probe — the
-    # seam itself must audit, so a verb connection never bypasses FR-047.
     set_transport(FakeTransport())
     mid = await _register(env)
     env.audit.events.clear()
@@ -244,8 +221,6 @@ async def test_verb_level_connections_audit_through_the_record_probe_seam(env):
     _assert_actor_label_outcome(conn, outcome="failure")
     assert conn.inputs_meta.get("verdict") == "timeout"
 
-
-# ── credential set / delete ───────────────────────────────────────────────────
 
 async def test_credential_set_emits_row_and_reprobes(env):
     set_transport(FakeTransport())
@@ -259,7 +234,6 @@ async def test_credential_set_emits_row_and_reprobes(env):
     (ev,) = _rows(env, "remote_machine.credential_set")
     _assert_actor_label_outcome(ev)
     assert ev.inputs_meta.get("cred_type") == "password"
-    # the replace really landed, and the immediate probe audited its verdict
     assert env.credmgr.get_machine_credential(mid, USER)["secret"] == SENTINEL_PASSWORD
     (conn,) = _rows(env, "remote_machine.connection")
     assert conn.inputs_meta.get("verdict") == "ok"
@@ -274,10 +248,8 @@ async def test_credential_delete_emits_row(env):
     assert "Removed the credential" in ret[2]
     (ev,) = _rows(env, "remote_machine.credential_deleted")
     _assert_actor_label_outcome(ev)
-    assert mid not in env.db.credentials  # the delete really happened
+    assert mid not in env.db.credentials
 
-
-# ── delete / re-trust ─────────────────────────────────────────────────────────
 
 async def test_machine_delete_emits_removed_row(env):
     set_transport(FakeTransport())
@@ -293,7 +265,7 @@ async def test_retrust_emits_row_and_repins_via_audited_probe(env):
     set_transport(FakeTransport())
     mid = await _register(env)
     old_fp = env.db.machines[mid]["host_key_fingerprint"]
-    assert old_fp  # first contact pinned a key
+    assert old_fp
     env.db.machines[mid]["last_verdict"] = "host_key_mismatch"
     env.audit.events.clear()
     set_transport(FakeTransport(host_key={"type": "ssh-ed25519", "blob_b64": "BBBB",
@@ -301,13 +273,10 @@ async def test_retrust_emits_row_and_repins_via_audited_probe(env):
     await surface._h_machine_retrust(env.orch, None, USER, ["user"], {"machine_id": mid})
     (ev,) = _rows(env, "remote_machine.retrusted")
     _assert_actor_label_outcome(ev)
-    # the re-probe re-recorded the NEW key and audited its own connection row
     assert env.db.machines[mid]["host_key_fingerprint"] == "SHA256:new"
     (conn,) = _rows(env, "remote_machine.connection")
     assert conn.inputs_meta.get("verdict") == "ok"
 
-
-# ── owner scoping: a foreign user's attempt neither acts nor audits success ───
 
 async def test_foreign_user_ops_refused_and_emit_no_rows(env):
     set_transport(FakeTransport())
@@ -322,18 +291,15 @@ async def test_foreign_user_ops_refused_and_emit_no_rows(env):
     ):
         ret = await handler(env.orch, None, OTHER, ["user"], payload)
         assert "not in your inventory" in ret[2]
-    assert env.audit.events == []  # nothing happened, nothing recorded
+    assert env.audit.events == []
     assert mid in env.db.machines and mid in env.db.credentials
-    # record_probe for a non-owner is a no-op (owner-scoped lookup) — no row
     remote_machines.record_probe(env.source, OTHER, mid, "ok")
     assert env.audit.events == []
 
 
-# ── FR-049: no sentinel secret bytes in any audit row ─────────────────────────
-
 async def test_no_sentinel_secret_bytes_in_any_audit_row(env):
     set_transport(FakeTransport())
-    mid = await _register(env)  # ssh_key + passphrase sentinels in play
+    mid = await _register(env)
     await surface._h_machine_probe(env.orch, None, USER, ["user"], {"machine_id": mid})
     await surface._h_credential_set(
         env.orch, None, USER, ["user"],
@@ -342,7 +308,6 @@ async def test_no_sentinel_secret_bytes_in_any_audit_row(env):
     await surface._h_machine_retrust(env.orch, None, USER, ["user"], {"machine_id": mid})
     await surface._h_credential_delete(env.orch, None, USER, ["user"], {"machine_id": mid})
     await surface._h_machine_delete(env.orch, None, USER, ["user"], {"machine_id": mid})
-    # positive control: the audited operations really ran under the sentinels
     assert _rows(env, "remote_machine.registered") and _rows(env, "remote_machine.connection")
     for ev in env.audit.events:
         dump = ev.model_dump_json()

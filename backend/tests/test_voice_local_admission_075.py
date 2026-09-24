@@ -1,4 +1,7 @@
-"""Client-local transcript admission invariants for Feature 075."""
+"""Tests for client-local voice transcript admission (voice_bootstrap.py,
+voice_control_binding.py, work_admission.py): canonicalization and digest
+verification, exact-replay dedup, and fail-closed socket/dispatch handling.
+"""
 
 from __future__ import annotations
 
@@ -100,8 +103,6 @@ def _authority(frame: VoiceLocalFinal):
 
 @pytest.mark.asyncio
 async def test_local_ready_promotes_reconnecting_session_before_authorizing() -> None:
-    """A foreground resume becomes active before local capture is authorized."""
-
     frame = VoiceLocalReady(
         device_id=_id(),
         connection_generation=_id(),
@@ -1328,7 +1329,6 @@ async def test_local_control_frames_enter_only_their_bounded_handlers() -> None:
     orchestrator._handle_voice_local_final.assert_awaited_once()
     orchestrator._handle_voice_local_playout_event.assert_awaited_once()
 
-    # Failure is content-free and releases only its already-bound turn.
     authority = _authority(final)
     release = Mock()
     reject = Mock()

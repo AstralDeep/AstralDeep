@@ -1,4 +1,7 @@
-"""Immediate client-local lifecycle cleanup and zero-retention tests."""
+"""Tests that client-local voice session cleanup (voice_control_binding.py,
+voice_coordinator.py) drops turn digests, announcements, and sequences immediately,
+retaining no audio, text, endpoint, or credential state.
+"""
 
 from __future__ import annotations
 

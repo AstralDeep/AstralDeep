@@ -1,4 +1,7 @@
-"""Runtime resource ownership checks for the composed Projection package."""
+"""Tests that AstralProjection (src/astralprojection/__init__.py) owns the shell, kiosk
+and static runtime resources, and that Deep uses its accessors without falling back
+to a legacy path.
+"""
 
 from __future__ import annotations
 

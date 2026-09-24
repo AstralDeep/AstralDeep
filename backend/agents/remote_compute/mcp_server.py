@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""MCP server for remote-compute-1 — routes tool/call over the unified registry.
-
-Identical dispatch contract to the other bundled agents: branches on the
-``_ui_components`` envelope and flags an error response when any top-level
-component has ``variant == "error"``.
+"""MCP dispatch server for the unified remote-compute agent: routes tool/call requests
+over mcp_tools.TOOL_REGISTRY and flags an error response when a top-level UI
+component has variant=='error'.
 """
 import inspect
 import json
@@ -22,8 +20,6 @@ NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class MCPServer:
-    """MCP server that routes tool/call requests to registered verb functions."""
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 

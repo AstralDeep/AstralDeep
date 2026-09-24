@@ -1,10 +1,6 @@
-"""Deep policy around Plane-owned durable attachment purge mechanics.
-
-Plane owns the tombstone repository, caller-owned transactions, streaming
-blob deletion, absence verification, and fenced retry transitions.  Deep owns
-when a user-visible attachment or account namespace is logically deleted,
-whether the resulting physical purge is complete, and the lifecycle of the
-bounded recovery loop.
+"""Deep policy — when something is logically deleted, whether physical purge is
+complete, the bounded recovery loop's lifecycle — over Plane-owned durable purge
+mechanics: tombstones, streaming blob deletion, and fenced retries.
 """
 
 from __future__ import annotations
@@ -47,16 +43,12 @@ _DEFAULT_SCHEDULE_WORKERS = 4
 
 
 class AttachmentPurgeReadinessError(RuntimeError):
-    """The composed purge boundary cannot currently prove physical convergence."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 class AccountRetirementNeedsReconciliation(RuntimeError):
-    """Work was fenced; retained tasks or effects prevent account erasure."""
-
     def __init__(self, unresolved_action_count: int, retained_assignment_count: int = 0) -> None:
         self.unresolved_action_count = unresolved_action_count
         self.retained_assignment_count = retained_assignment_count
@@ -65,8 +57,6 @@ class AccountRetirementNeedsReconciliation(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class AttachmentPurgeOutcome:
-    """One committed logical deletion and its post-commit physical result."""
-
     schedule: PurgeScheduleResult
     attempt: PurgeAttemptResult
 
@@ -84,20 +74,10 @@ class AttachmentPurgeOutcome:
 
 @dataclass(frozen=True, slots=True)
 class AttachmentPurgeAcceptance:
-    """A logical deletion whose physical cleanup is durably pending.
-
-    Request paths return this value after the owner-scoped metadata mutation
-    and purge tombstone commit.  They deliberately do not wait for filesystem
-    exclusion held by a concurrent upload, and therefore must not describe the
-    attachment as physically absent yet.
-    """
-
     schedule: PurgeScheduleResult
 
     @property
     def cleanup_id(self) -> str:
-        """Opaque, replay-stable identifier safe to return to the owner."""
-
         return str(self.schedule.tombstone.tombstone_id)
 
     @property
@@ -107,8 +87,6 @@ class AttachmentPurgeAcceptance:
 
 @dataclass(frozen=True, slots=True)
 class AttachmentPurgeStatus:
-    """Owner-safe view of one durable cleanup tombstone."""
-
     cleanup_id: str
     status: str
     requested_at: datetime
@@ -118,8 +96,6 @@ class AttachmentPurgeStatus:
 
 
 class AttachmentPurgeCoordinator:
-    """Compose atomic logical deletion with bounded physical reconciliation."""
-
     def __init__(
         self,
         *,
@@ -200,10 +176,7 @@ class AttachmentPurgeCoordinator:
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        # Request-time PostgreSQL scheduling and potentially blocking physical
-        # purge must never share the event loop's default executor with staged
-        # blob writes.  Otherwise enough delete waiters can starve the upload
-        # worker that owns the filesystem lock they are waiting to acquire.
+        # Separate pool — sharing one could starve upload workers
         self._schedule_executor = ThreadPoolExecutor(
             max_workers=schedule_workers,
             thread_name_prefix="attachment-purge-schedule",
@@ -232,8 +205,6 @@ class AttachmentPurgeCoordinator:
         return self._task is not None
 
     def assert_ready(self) -> None:
-        """Fail closed when any non-purged tombstone or recovery fault remains."""
-
         with self._state_lock:
             if self._ready:
                 return
@@ -241,14 +212,6 @@ class AttachmentPurgeCoordinator:
         raise AttachmentPurgeReadinessError(code)
 
     def assert_globally_ready(self, transaction: Any) -> None:
-        """Revalidate process-local readiness against Plane's durable aggregate.
-
-        A different process can commit a purge tombstone without changing this
-        coordinator's in-memory epoch.  Readiness probes therefore supply their
-        existing short Plane transaction here and must not rely on the cached
-        state alone.
-        """
-
         with self._state_lock:
             if not self._ready:
                 code = self._readiness_code or "purge_reconciliation_incomplete"
@@ -278,8 +241,6 @@ class AttachmentPurgeCoordinator:
         owner_id: str,
         attachment_id: str,
     ) -> AttachmentPurgeOutcome:
-        """Atomically hide one attachment and durably schedule its prefix purge."""
-
         with self._admitted_operation():
             scheduled, observed_at = self._schedule_attachment_only(
                 owner_id=owner_id,
@@ -293,14 +254,6 @@ class AttachmentPurgeCoordinator:
         owner_id: str,
         attachment_id: str,
     ) -> AttachmentPurgeAcceptance:
-        """Commit logical deletion on a dedicated lane and wake reconciliation.
-
-        This is the user-visible request contract.  It returns after the
-        tombstone commit, never after waiting for an upload's filesystem owner
-        lock.  The single bounded reconciler owns physical deletion and absence
-        proof, while readiness stays red until that proof converges.
-        """
-
         self._begin_operation()
         try:
             loop = asyncio.get_running_loop()
@@ -315,16 +268,10 @@ class AttachmentPurgeCoordinator:
             try:
                 scheduled, _observed_at = await _join_worker_through_cancellation(worker)
             except BaseException as exc:
-                # Typed validation/not-found failures prove rollback and should
-                # not let random-ID spam thrash the physical reconciler.
-                # Cancellation and transaction-exit failures may hide a
-                # committed tombstone, so they still wake fail-closed recovery.
                 if not _is_definite_schedule_rollback(exc):
                     self._wake.set()
                 raise
             else:
-                # Event semantics make a wake set immediately before the
-                # reconciler waits edge-safe rather than lossy.
                 self._wake.set()
             return AttachmentPurgeAcceptance(schedule=scheduled)
         finally:
@@ -336,19 +283,10 @@ class AttachmentPurgeCoordinator:
         owner_id: str,
         attachment_id: str,
     ) -> tuple[PurgeScheduleResult, datetime]:
-        """Commit only metadata+tombstone; never touch the filesystem."""
-
         observed_at = self._now()
         degraded_epoch: int | None = None
         try:
             with self._state_lock:
-                # Degrade before the commit-uncertain transaction begins.  If
-                # PostgreSQL commits but the connection drops before __exit__ can
-                # confirm it, the durable tombstone must never coexist with a
-                # stale green readiness state.  Release the local lock before
-                # borrowing a Plane connection: readiness probes already own a
-                # connection when they inspect this state, so holding both in
-                # the inverse order can deadlock a bounded pool.
                 self._mark_incomplete_locked("purge_reconciliation_incomplete")
                 degraded_epoch = self._state_epoch
             with self._runtime.transaction() as transaction:
@@ -370,12 +308,6 @@ class AttachmentPurgeCoordinator:
         *,
         owner_id: str,
     ) -> AttachmentPurgeOutcome:
-        """Atomically hide all owner metadata and schedule namespace deletion.
-
-        The authenticated account-retirement endpoint is its only product
-        caller.  Logout and identity-provider session events never invoke it.
-        """
-
         with self._admitted_operation():
             scheduled, observed_at = self._schedule_owner_only(owner_id=owner_id)
             return self._execute_scheduled(scheduled, observed_at=observed_at)
@@ -385,12 +317,6 @@ class AttachmentPurgeCoordinator:
         *,
         owner_id: str,
     ) -> AttachmentPurgeAcceptance:
-        """Durably accept one owner cleanup without request-time filesystem work.
-
-        This supports authenticated retirement and reserved verification
-        teardown.  It is never reachable from logout or an IAM session event.
-        """
-
         self._begin_operation()
         try:
             loop = asyncio.get_running_loop()
@@ -416,8 +342,6 @@ class AttachmentPurgeCoordinator:
         owner_id: str,
         cleanup_id: str,
     ) -> AttachmentPurgeStatus | None:
-        """Read one owner-bound cleanup without exposing blob locators."""
-
         with self._admitted_operation():
             with self._runtime.transaction() as transaction:
                 tombstone = self._repository.load(
@@ -442,8 +366,6 @@ class AttachmentPurgeCoordinator:
         owner_id: str,
         cleanup_id: str,
     ) -> AttachmentPurgeStatus | None:
-        """Read cleanup state off the request event loop."""
-
         loop = asyncio.get_running_loop()
         worker = loop.run_in_executor(
             self._schedule_executor,
@@ -460,12 +382,6 @@ class AttachmentPurgeCoordinator:
         *,
         owner_id: str,
     ) -> tuple[PurgeScheduleResult, datetime]:
-        """Fence owner assignments before scheduling physical namespace cleanup.
-
-        Unresolved actions, tasks and reservations are retained for explicit
-        reconciliation. Their stop commits before physical purge is refused.
-        """
-
         observed_at = self._now()
         degraded_epoch: int | None = None
         unresolved_action_count = 0
@@ -496,8 +412,6 @@ class AttachmentPurgeCoordinator:
                 self._restore_after_definite_rollback(degraded_epoch)
             raise
         if unresolved_action_count or retained_assignment_count:
-            # Raise only after transaction exit: rolling back would revive the
-            # very work the owner has asked to retire.
             raise AccountRetirementNeedsReconciliation(unresolved_action_count, retained_assignment_count)
         return scheduled, observed_at
 
@@ -509,14 +423,6 @@ class AttachmentPurgeCoordinator:
         lease_id: str,
         expected_lease_version: int,
     ) -> AttachmentPurgeOutcome:
-        """Fence a failed upload intent and durably purge its hidden prefix.
-
-        Callers must first stop and join any staging/publication worker and
-        abort the staged blob session.  ``BlobStagedWrite`` holds Plane's
-        per-owner exclusion until that abort completes, so attempting physical
-        purge before then would self-deadlock.
-        """
-
         with self._admitted_operation():
             scheduled, observed_at = self._abandon_pending_only(
                 owner_id=owner_id,
@@ -534,8 +440,6 @@ class AttachmentPurgeCoordinator:
         lease_id: str,
         expected_lease_version: int,
     ) -> AttachmentPurgeAcceptance:
-        """Durably abandon one failed upload without waiting for physical purge."""
-
         self._begin_operation()
         try:
             loop = asyncio.get_running_loop()
@@ -569,16 +473,10 @@ class AttachmentPurgeCoordinator:
         lease_id: str,
         expected_lease_version: int,
     ) -> tuple[PurgeScheduleResult, datetime]:
-        """Commit a pending-row tombstone without touching the filesystem."""
-
         observed_at = self._now()
         degraded_epoch: int | None = None
         try:
             with self._state_lock:
-                # Abandonment has the same commit-uncertainty boundary as a
-                # user-requested deletion.  Degrade before opening the
-                # transaction, then restore only after a typed failure proves
-                # rollback and the durable global aggregate is clean.
                 self._mark_incomplete_locked("purge_reconciliation_incomplete")
                 degraded_epoch = self._state_epoch
             with self._runtime.transaction() as transaction:
@@ -602,8 +500,6 @@ class AttachmentPurgeCoordinator:
         fail_on_incomplete: bool = False,
         limit: int | None = None,
     ) -> tuple[PurgeAttemptResult, ...]:
-        """Reconcile one bounded batch and prove no non-purged work is hidden."""
-
         with self._admitted_operation():
             return self._reconcile_once_admitted(
                 fail_on_incomplete=fail_on_incomplete,
@@ -616,8 +512,6 @@ class AttachmentPurgeCoordinator:
         fail_on_incomplete: bool = False,
         limit: int | None = None,
     ) -> tuple[PurgeAttemptResult, ...]:
-        """Run one physical reconciliation pass only on the dedicated lane."""
-
         self._begin_operation()
         try:
             loop = asyncio.get_running_loop()
@@ -639,8 +533,6 @@ class AttachmentPurgeCoordinator:
         fail_on_incomplete: bool = False,
         limit: int | None = None,
     ) -> tuple[PurgeAttemptResult, ...]:
-        """Implementation for one already-admitted reconciliation pass."""
-
         batch_limit = self._reconcile_limit if limit is None else limit
         if (
             isinstance(batch_limit, bool)
@@ -652,10 +544,6 @@ class AttachmentPurgeCoordinator:
             )
         observed_at = self._now()
         try:
-            # Convert expired hidden upload intents to deterministic prefix
-            # tombstones before discovering ready purge work.  Mark local
-            # readiness incomplete while still inside the commit-uncertain
-            # caller transaction, exactly like user-visible delete scheduling.
             with self._runtime.transaction() as transaction:
                 recovered_materializations = (
                     self._repository
@@ -664,10 +552,6 @@ class AttachmentPurgeCoordinator:
                         limit=batch_limit,
                     )
                 )
-                # Take the local lock only after the Plane transaction already
-                # owns its connection, matching readiness-probe lock order.  It
-                # still happens before transaction exit so a lost commit
-                # response cannot leave process readiness green.
                 with self._state_lock:
                     if recovered_materializations:
                         self._mark_incomplete_locked(
@@ -699,14 +583,6 @@ class AttachmentPurgeCoordinator:
         return tuple(results)
 
     def reconcile_startup(self) -> tuple[PurgeAttemptResult, ...]:
-        """Drain ready work within budgets while keeping readiness fail-closed.
-
-        Delayed, manual-review, failing, or over-budget work intentionally
-        leaves this coordinator unready.  Startup still returns so the single
-        bounded background loop can continue making progress; actual executor
-        or database exceptions still escape and abort composition.
-        """
-
         deadline = self._monotonic() + self._startup_reconcile_timeout_seconds
         remaining = self._startup_reconcile_max_items
         observed: list[PurgeAttemptResult] = []
@@ -722,8 +598,6 @@ class AttachmentPurgeCoordinator:
         return tuple(observed)
 
     def start(self) -> asyncio.Task[None]:
-        """Start the single bounded recovery loop on the active event loop."""
-
         with self._lifecycle:
             if self._lifecycle_state != "open":
                 raise RuntimeError("attachment purge coordinator is closing")
@@ -737,8 +611,6 @@ class AttachmentPurgeCoordinator:
             return self._task
 
     async def stop(self) -> None:
-        """Wake and join the recovery loop exactly once."""
-
         self._stop.set()
         self._wake.set()
         task = self._task
@@ -748,8 +620,6 @@ class AttachmentPurgeCoordinator:
                 self._task = None
 
     async def close(self) -> None:
-        """Atomically reject new work, join admitted work, and release lanes."""
-
         loop = asyncio.get_running_loop()
         with self._lifecycle:
             task = self._close_task
@@ -759,9 +629,6 @@ class AttachmentPurgeCoordinator:
                 if self._lifecycle_state != "open":
                     raise RuntimeError("attachment purge coordinator is closing")
                 self._lifecycle_state = "closing"
-                # Reject new admissions before the first await and wake any
-                # sleeping recovery pass.  Work admitted before this point is
-                # tracked and joined below.
                 self._stop.set()
                 self._wake.set()
                 task = loop.create_task(
@@ -791,8 +658,6 @@ class AttachmentPurgeCoordinator:
                 self._lifecycle.notify_all()
 
     def abort(self) -> None:
-        """Release an unstarted coordinator during composition rollback."""
-
         with self._lifecycle:
             if self._lifecycle_state == "closed":
                 return
@@ -925,16 +790,6 @@ class AttachmentPurgeCoordinator:
             self._set_ready_if_unchanged(epoch)
 
     def _restore_after_definite_rollback(self, degraded_epoch: int) -> None:
-        """Undo conservative degradation only after a durable absence proof.
-
-        Typed validation/not-found failures occur before a purge tombstone can
-        be committed and the transaction manager has already completed its
-        rollback when they escape the context.  Re-query the global aggregate
-        so random or foreign attachment IDs cannot pin process readiness red.
-        The original degradation epoch prevents that proof from overriding a
-        different thread's newly scheduled work.
-        """
-
         try:
             with self._runtime.transaction() as transaction:
                 incomplete = self._repository.has_incomplete_for_administration(
@@ -950,8 +805,6 @@ class AttachmentPurgeCoordinator:
 
 
 def purge_coordinator_from_orchestrator(orchestrator: Any) -> AttachmentPurgeCoordinator:
-    """Resolve the one composed coordinator, with explicit test injection."""
-
     injected = getattr(orchestrator, "attachment_purge_coordinator", None)
     if injected is not None:
         return injected
@@ -968,8 +821,6 @@ def _epoch_milliseconds(value: datetime) -> int:
 
 
 def _is_definite_schedule_rollback(exc: BaseException) -> bool:
-    """Return whether a typed schedule failure proves no commit occurred."""
-
     if isinstance(
         exc,
         (
@@ -984,8 +835,6 @@ def _is_definite_schedule_rollback(exc: BaseException) -> bool:
 
 
 async def _join_worker_through_cancellation(future: asyncio.Future[Any]) -> Any:
-    """Observe one executor call before propagating even repeated cancellation."""
-
     cancellation: asyncio.CancelledError | None = None
     while not future.done():
         try:

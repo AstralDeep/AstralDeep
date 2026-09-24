@@ -1,7 +1,8 @@
+"""Medical agent tools: search and generate synthetic mock patient records, and analyze
+CSV data pasted inline or uploaded as an attachment via file_tools/__init__.py's
+resolver.
 """
-MCP Tools for Medical Agent.
-Includes tools for synthetic patient data generation, data analysis, and file handling primitives.
-"""
+
 import os
 import sys
 import random
@@ -15,10 +16,6 @@ from astralprims import (
     Card, Table, Grid, MetricCard, Alert, Text,
     FileUpload, FileDownload, create_ui_response
 )
-
-# =============================================================================
-# MOCK PATIENT DATA & TOOLS
-# =============================================================================
 
 MOCK_PATIENTS = [
     {"id": "P-1024", "name": "Sarah Connor", "age": 45, "condition": "Degenerative Disc Disease - L4/L5", "status": "Severe", "blood_pressure": "142/88", "heart_rate": 78},
@@ -35,16 +32,6 @@ MOCK_PATIENTS = [
 
 
 def search_patients(min_age: int = 0, max_age: int = 200, condition: str = "", session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Search patients by age range and/or condition.
-
-    Args:
-        min_age: Minimum age filter (default: 0)
-        max_age: Maximum age filter (default: 200)
-        condition: Condition keyword to filter by (case-insensitive, partial match)
-
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
         min_age = int(min_age)
         max_age = int(max_age)
@@ -105,11 +92,6 @@ def search_patients(min_age: int = 0, max_age: int = 200, condition: str = "", s
 
 
 def generate_synthetic_patients(count: int = 50, session_id: str = "default", user_id: str = "legacy", **kwargs) -> Dict[str, Any]:
-    """Generate synthetic patient records and return a downloadable file component.
-
-    Args:
-        count: Number of patient records to generate.
-    """
     conditions = ["Hypertension", "Type 2 Diabetes", "Asthma", "Osteoarthritis", "Healthy"]
     statuses = ["Stable", "Monitoring", "Critical", "Recovered"]
     
@@ -123,7 +105,6 @@ def generate_synthetic_patients(count: int = 50, session_id: str = "default", us
             "heart_rate": random.randint(60, 100)
         })
 
-    # Save to CSV
     filename = f"synthetic_patients_{count}.csv"
     
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -136,12 +117,9 @@ def generate_synthetic_patients(count: int = 50, session_id: str = "default", us
         writer.writeheader()
         writer.writerows(patients)
 
-    # Return a preview table and a FileDownload component
     headers = ["ID", "Age", "Condition", "Status", "Heart Rate"]
     rows = [[p["id"], str(p["age"]), p["condition"], p["status"], str(p["heart_rate"])] for p in patients[:5]]
 
-    # Root-relative download URL — resolved against the serving origin by the
-    # browser (Constitution X: no hard-coded localhost; feature 030).
     download_url = f"/api/download/{session_id}/{filename}"
 
     components = [
@@ -167,8 +145,6 @@ def generate_synthetic_patients(count: int = 50, session_id: str = "default", us
 
 
 def analyze_patient_data() -> Dict[str, Any]:
-    """Analyze patient data and ask the user to upload a file if more data is needed."""
-    
     components = [
         Card(
             title="Patient Data Analysis",
@@ -198,7 +174,6 @@ def analyze_patient_data() -> Dict[str, Any]:
 
 
 def _process_csv_data(rows: List[Dict[str, str]], fieldnames: List[str], missing_strategy: str = 'ask') -> Dict[str, Any]:
-    """Internal helper to process CSV data rows and fieldnames."""
     missing_counts = {f: 0 for f in fieldnames}
     rows_with_missing = set()
     
@@ -291,13 +266,6 @@ def _process_csv_data(rows: List[Dict[str, str]], fieldnames: List[str], missing
 
 
 def analyze_generic_data(csv_data: str, missing_strategy: str = 'ask', session_id: str = "default", **kwargs) -> Dict[str, Any]:
-    """Analyze a generic CSV dataset.
-    
-    Args:
-        csv_data: Raw CSV string data.
-        missing_strategy: Strategy to handle missing data ('ask', 'drop', 'fill_synthetic').
-    """
-    # Strip markdown code fences if the LLM includes them
     csv_data = csv_data.strip()
     if csv_data.startswith("```csv"):
         csv_data = csv_data[6:].strip()
@@ -324,15 +292,6 @@ def analyze_csv_file(
     user_id: Optional[str] = None,
     **kwargs
 ) -> Dict[str, Any]:
-    """Analyze a CSV file the user uploaded via the chat composer.
-
-    Args:
-        attachment_id: AstralDeep attachment_id for the uploaded CSV.
-        missing_strategy: Strategy for missing data ('ask', 'drop', 'fill_synthetic').
-
-    The blob is located through the ownership-checked attachment resolver;
-    the tool never accepts a caller-supplied on-disk path.
-    """
     try:
         from agents.general.file_tools import read_attachment_bytes
     except ImportError as e:

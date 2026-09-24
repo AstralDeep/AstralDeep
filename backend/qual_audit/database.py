@@ -1,4 +1,7 @@
-"""AstralPlane-backed storage facade for the qualification audit trail."""
+"""AstralPlane-backed persistence facade for the qualification audit trail (runs, case
+results, evidence, verification reviews, audit-chain entries, LaTeX artifacts);
+callers inject an already-initialized Plane runtime. Used by cli.py and runner.py.
+"""
 
 from __future__ import annotations
 
@@ -40,14 +43,6 @@ def _utcnow() -> datetime:
 
 
 class AuditDatabase:
-    """Compatibility-shaped qualification API over one initialized Plane runtime.
-
-    Every caller injects its already initialized application-scoped runtime.
-    Runtime construction and reconciliation stay at the application boundary,
-    so this facade can never create a second pool or bypass Deep's product
-    reconciliation hook.
-    """
-
     def __init__(
         self,
         *,
@@ -66,8 +61,6 @@ class AuditDatabase:
             repository=repository,
             plane_runtime=plane_runtime,
         )
-
-    # -- TestRun -----------------------------------------------------------
 
     def insert_run(self, run: TestRun) -> None:
         self._context.call(
@@ -117,8 +110,6 @@ class AuditDatabase:
             owner_id=self.owner_id,
         )
         return None if record is None else _run_from_record(record)
-
-    # -- TestCaseResult ----------------------------------------------------
 
     def insert_case(self, case: TestCaseResult) -> None:
         self._context.call(
@@ -182,8 +173,6 @@ class AuditDatabase:
             )
 
     def review_case(self, entry: AuditEntry) -> Optional[AuditEntry]:
-        """Append one owner-chain review and transition its case atomically."""
-
         with self._context.transaction() as transaction:
             existing = self._context.repository.get_case(
                 transaction,
@@ -208,8 +197,6 @@ class AuditDatabase:
             if result is None
             else _audit_from_record(result.audit_entry)
         )
-
-    # -- TestEvidence ------------------------------------------------------
 
     def insert_evidence(self, evidence: TestEvidence) -> None:
         self._context.call(
@@ -243,8 +230,6 @@ class AuditDatabase:
             )
             for record in records
         ]
-
-    # -- AuditEntry -------------------------------------------------------
 
     def insert_audit(self, entry: AuditEntry) -> None:
         self._context.call(
@@ -292,8 +277,6 @@ class AuditDatabase:
         *,
         require_genesis: bool = False,
     ) -> bool:
-        """Verify the versioned Plane records without dropping authenticated fields."""
-
         records = self._context.call(
             self._context.repository.list_audits_for_run,
             owner_id=self.owner_id,
@@ -304,8 +287,6 @@ class AuditDatabase:
             records,
             require_genesis=require_genesis,
         )
-
-    # -- LatexArtifact ----------------------------------------------------
 
     def insert_artifact(self, artifact: LatexArtifact) -> None:
         self._context.call(

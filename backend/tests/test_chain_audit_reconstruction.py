@@ -1,11 +1,8 @@
-"""T019 (056-delegated-agent-chaining): two-hop chain reconstruction from the
-tamper-evident audit log ALONE (FR-026, SC-003 — closes 048's deferred T018).
-
-Drives a real two-hop chain (human → agent-a → agent-b → agent-c) through the
-mediated hop seam with a REAL Recorder over the live ``audit_events`` table,
-reconstructs the full authority path purely from stored rows, and proves
-``verify_chain`` detects a tampered record.
+"""Tests for delegation chain audit reconstruction (backend/orchestrator/delegation.py,
+audit/repository.py): a two-hop chain rebuilt from stored audit_events rows alone,
+and verify_chain catching a tampered record.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -62,9 +59,6 @@ def orch():
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    # Keep the real delegation methods and audit repository, but do not
-    # compose an unrelated application-scoped Plane graph for the method
-    # harness itself.
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}
@@ -120,7 +114,6 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
     chat = f"c-{uuid.uuid4().hex[:8]}"
     now = int(time.time())
 
-    # Root: the flat (depth-0) token the orchestrator minted for agent-a.
     root = {"sub": user, "act": {"sub": "agent:agent-a"},
             "scope": "tools:read tool:tool_b tool:tool_c",
             "iss": "mock-astral-delegation", "aud": "agent-svc",
@@ -133,26 +126,20 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
         {"user_id": user, "session_id": chat,
          "_delegation_token": dg.encode_delegation_payload(root)}, ui_ws)
 
-    # Hop 1: agent-a → agent-b.
     resp1 = await _hop(orch, parent_req="req-a", initiator="agent-a",
                        callee="agent-b", tool="tool_b", hop_id="hop-1")
     assert resp1.result == "ok"
     child1_token = orch._execute_with_retry.await_args.args[3]["_delegation_token"]
 
-    # agent-b's dispatch is now in flight; the orchestrator records it.
     orch._register_dispatch_context(
         "req-b", "agent-b",
         {"user_id": user, "session_id": chat,
          "_delegation_token": child1_token}, ui_ws)
 
-    # Hop 2: agent-b → agent-c (child minted off child1).
     resp2 = await _hop(orch, parent_req="req-b", initiator="agent-b",
                        callee="agent-c", tool="tool_c", hop_id="hop-2")
     assert resp2.result == "ok"
 
-    # Give the Recorder's off-thread inserts a moment to land. The DB reads go
-    # through asyncio.to_thread so the 052 event-loop-blocking guard (enforced
-    # in CI via LOOP_GUARD_ENFORCE=1) does not flag them.
     def _read_rows():
         return db.fetch_all(
             "SELECT * FROM audit_events WHERE actor_user_id = ? "
@@ -165,7 +152,6 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
         await asyncio.sleep(0.1)
     rows = [dict(r) for r in rows]
 
-    # ---- Reconstruction from audit_events ALONE (SC-003) ----
     hop_rows = [r for r in rows if r["event_class"] == "delegation"]
     enforce = [r for r in hop_rows if r["action_type"] == "delegation.hop.enforce"]
     assert len(enforce) == 2, f"expected 2 enforce rows, got {len(hop_rows)}"
@@ -179,12 +165,9 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
     chains = sorted((_meta(r)["actor_chain"] for r in enforce), key=len)
     assert chains[0] == ["agent:agent-b", "agent:agent-a"]
     assert chains[1] == ["agent:agent-c", "agent:agent-b", "agent:agent-a"]
-    # Full path recovered: human → a → b → c.
     path = [enforce[0]["actor_user_id"]] + list(reversed(chains[1]))
     assert path == [user, "agent:agent-a", "agent:agent-b", "agent:agent-c"]
-    # Depths recorded per hop.
     assert sorted(_meta(r)["delegation_depth"] for r in enforce) == [1, 2]
-    # Each hop's mint/enforce pair shares a correlation id with its tool pair.
     for r in enforce:
         corr = r["correlation_id"]
         pair = [x for x in rows if x["correlation_id"] == corr]
@@ -193,20 +176,14 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
         assert any(k.startswith("tool.") and k.endswith(".start") for k in kinds)
         assert any(k.startswith("tool.") and k.endswith(".end") for k in kinds)
 
-    # ---- Tamper evidence (verify_chain) ----
-    # All DB work runs off the event loop (LOOP_GUARD_ENFORCE=1 in CI).
     repo = AuditRepository(
         plane_runtime=db,
         plane_repositories=db.repositories,
     )
-    assert await asyncio.to_thread(repo.verify_chain, user) is None  # intact
+    assert await asyncio.to_thread(repo.verify_chain, user) is None
     victim = enforce[-1]["event_id"]
 
     def _tamper():
-        # audit_events is trigger-protected append-only (a DB-level UPDATE is
-        # refused outright — itself part of the tamper-evidence posture). To
-        # prove the HASH CHAIN also detects tampering, simulate an attacker with
-        # direct storage access: a raw superuser session with triggers disabled.
         with db.transaction() as transaction:
             transaction.execute("SET LOCAL session_replication_role = replica")
             transaction.execute(

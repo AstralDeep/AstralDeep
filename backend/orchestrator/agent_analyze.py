@@ -1,12 +1,8 @@
-"""Deterministic Analyze gate (feature 057).
-
-Validates a DRAFTED agent spec against the agent constitution's A–L checklist
-BEFORE any code is generated (contracts/analyze-gate.md). Distinct from the
-code-level gates (``code_security``/``agent_validator``) which run on generated
-code, post-generation. Each A–L check is a rule over declared fields (pass/fail
-decidable); the plain-language message is the only free-text part. A failing
-draft never reaches ``generate_code`` (FR-003/SC-004).
+"""Deterministic Analyze gate: checks a drafted agent spec against
+agent_constitution.py's A-L checklist before code generation runs. A failing draft
+never reaches generate_code; code_security/agent_validator gate the code afterward.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,13 +12,9 @@ from typing import Any, Dict, List, Optional
 
 from orchestrator.tool_permissions import VALID_SCOPES
 
-# This is intentionally independent from the baked constitution version. Any
-# deterministic change to the Analyze rules below must increment this positive
-# integer so already-validated user agents are rechecked on the next boot.
+# Bump on any rule change so validated agents are rechecked
 ANALYZE_POLICY_REVISION = "2"
 
-# Reserved / non-user identity prefixes and stems a user agent may not take
-# (Constitution H — non-colliding identity). Meta pseudo-agents use "__".
 _RESERVED_PREFIXES = ("__",)
 _RESERVED_STEMS = frozenset({
     "orchestrator", "scheduler", "memory", "subtasks", "desktop_codegen",
@@ -31,8 +23,6 @@ _RESERVED_STEMS = frozenset({
     "dice-roller", "dice_roller", "cresco",
 })
 
-# Red-flag markers (case-insensitive substrings) that indicate a constitution
-# violation in the drafted spec text. Kept tight to avoid false positives.
 _CROSS_USER = re.compile(
     r"\b(another|other|different|someone else'?s|all)\s+users?\b|\bother user'?s\b|\bevery user\b",
     re.I)
@@ -52,7 +42,7 @@ _URLISH = re.compile(r"^(https?://|[\w.-]+\.[a-z]{2,}(/|$)|[\w.+-]+@[\w.-]+)", r
 
 @dataclass
 class Violation:
-    principle: str            # "A".."L"
+    principle: str
     title: str
     plain_language: str
     offending_field: str
@@ -97,18 +87,7 @@ def _text_of(spec: Dict[str, Any]) -> str:
 
 def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = None,
           db=None) -> AnalyzeResult:
-    """Evaluate ``draft_spec`` against A–L. Returns an :class:`AnalyzeResult`;
-    ``passed`` is True only if no violation fires. Never raises on a normal spec.
-
-    ``draft_spec`` keys: ``display_name``, ``description``, ``agent_id`` (proposed),
-    ``owner_user_id``, ``declared_tools`` (list[str]), ``declared_scopes`` (list[str]),
-    ``declared_egress`` (list[str]|None), ``plan`` (dict; may carry ``tools_used`` and
-    ``tool_scopes``), ``clarify_answers`` (list). ``db`` enables the H collision check.
-    """
     if constitution_version is None:
-        # The policy owner validates the baked asset at import time. Propagate
-        # any loader/validation failure instead of returning a passing result
-        # without a version binding.
         from orchestrator.agent_constitution import AGENT_CONSTITUTION_VERSION
 
         constitution_version = AGENT_CONSTITUTION_VERSION
@@ -122,8 +101,6 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
     agent_id = str(draft_spec.get("agent_id") or "")
     owner = draft_spec.get("owner_user_id")
 
-    # A — owner-delegated authority only (no scope of its own; scopes must be
-    # platform scope-level claims the owner could hold).
     bad_scopes = [s for s in declared_scopes if s not in VALID_SCOPES]
     if bad_scopes:
         v.append(Violation("A", "Owner-delegated authority only",
@@ -131,7 +108,6 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                            f"grant it. It may only use the platform's standard permissions "
                            f"({', '.join(VALID_SCOPES)}).", "declared_scopes"))
 
-    # B — declared capability surface: everything the plan uses must be declared.
     used = [str(t) for t in (plan.get("tools_used") or [])]
     undeclared = [t for t in used if t not in declared_tools]
     if undeclared:
@@ -139,10 +115,6 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                            f"The plan uses tools that were not declared: {undeclared}. Declare "
                            f"every tool the agent will use.", "plan.tools_used"))
 
-    # B/C — every used capability has one valid, explicitly declared scope, and
-    # every declared scope is justified by at least one capability.  Treat a
-    # missing mapping as a denial: code generation otherwise supplies a default
-    # that the owner never approved.
     tool_scopes = plan.get("tool_scopes")
     if isinstance(tool_scopes, dict):
         missing_scope = [tool for tool in used if tool not in tool_scopes]
@@ -187,26 +159,22 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                            "Every used capability must map to one explicitly declared permission.",
                            "plan.tool_scopes"))
 
-    # D — no cross-user reach.
     if _CROSS_USER.search(text):
         v.append(Violation("D", "No cross-user reach",
                            "The agent describes reaching another user's data or identity. A personal "
                            "agent may only touch its own owner's resources.", "description"))
 
-    # E/F — untrusted-at-the-boundary / fail-closed & honest (red-flag markers).
     if _TRUST_BYPASS.search(text):
         v.append(Violation("E", "Untrusted at the boundary",
                            "The agent relies on a client-side check or tries to bypass the "
                            "orchestrator's checks. The boundary re-verifies everything; do not depend "
                            "on local trust.", "description"))
 
-    # G — bounded resource use (declared-intent red flags; runtime cap enforces the rest).
     if _UNBOUNDED.search(text):
         v.append(Violation("G", "Bounded resource use",
                            "The agent describes unbounded/looping work. Bound its work so it can't run "
                            "away.", "description"))
 
-    # H — registration & identity integrity.
     if agent_id:
         if agent_id.startswith(_RESERVED_PREFIXES) or agent_id in _RESERVED_STEMS \
                 or any(agent_id.startswith(s + "-") or agent_id == s for s in _RESERVED_STEMS):
@@ -223,13 +191,11 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
             except Exception:
                 pass
 
-    # I — no secret / internal exfiltration.
     if _SECRET_EXFIL.search(text):
         v.append(Violation("I", "No secret or internal exfiltration",
                            "The agent describes reading secrets, environment, or platform internals. "
                            "It may not exfiltrate credentials or internals.", "description"))
 
-    # J — declared, gated external egress.
     if isinstance(declared_egress, list):
         malformed = [e for e in declared_egress if not _URLISH.match(str(e).strip())]
         if malformed:
@@ -237,7 +203,6 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                                f"These declared egress targets don't look like URLs/hosts: {malformed}. "
                                f"Declare concrete destinations.", "declared_egress"))
 
-    # K — privacy by construction (no share/publish/transfer capability).
     share_tools = [t for t in declared_tools if _SHARE_TOOL.search(t)]
     if share_tools or _SHARE.search(text):
         v.append(Violation("K", "Privacy by construction",
@@ -245,6 +210,5 @@ def check(draft_spec: Dict[str, Any], *, constitution_version: Optional[str] = N
                            "private; there is no in-product way to share one.",
                            "declared_tools" if share_tools else "description"))
 
-    # L — version binding: always stamped on the result (structural).
     return AnalyzeResult(passed=(len(v) == 0), constitution_version=constitution_version,
                          violations=v)

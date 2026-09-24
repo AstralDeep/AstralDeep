@@ -1,10 +1,6 @@
-"""Legacy Re-Act task DTOs projected from durable operation state.
-
-This synchronous compatibility surface never performs PostgreSQL work from
-``handle_chat_message``.  The async operation owner admits and transitions
-work through ``WorkAdmissionCoordinator`` (off the event loop), then supplies
-the resulting authoritative projection here.  Task IDs are therefore full
-operation UUIDs, and a caller cannot invent a local lifecycle transition.
+"""Legacy synchronous Task/TaskManager DTOs projected from durable operation state owned
+by WorkAdmissionCoordinator, never performing Postgres work on the event loop itself.
+Task IDs are operation UUIDs. Used by coordinator.py and orchestrator.py.
 """
 
 from __future__ import annotations
@@ -76,12 +72,10 @@ def _validate_execution_fence(
 
 
 class TaskManagerNotBoundError(RuntimeError):
-    """Raised when coordinator state required by a task mutation is absent."""
+    pass
 
 
 class TaskAdmissionError(RuntimeError):
-    """Raised when a foreground compatibility operation cannot execute now."""
-
     def __init__(
         self, code: str, *, retryable: bool, retry_after_ms: int | None
     ) -> None:
@@ -105,8 +99,6 @@ def _project_task_state(operation: OperationProjection) -> TaskState:
 
 @dataclass
 class Task:
-    """Existing task DTO with coordinator-derived lifecycle fields."""
-
     task_id: str
     chat_id: str
     user_id: str
@@ -205,13 +197,6 @@ class Task:
             self._execution_fence = execution_fence
 
     def transition(self, new_state: TaskState, **kwargs) -> None:
-        """Apply a transition only with its coordinator-returned operation.
-
-        The additive ``operation=`` seam lets the follow-on async orchestrator
-        integration keep this de-facto public method while doing the durable
-        call via ``asyncio.to_thread`` first.  Missing authority fails closed.
-        """
-
         if self._manager is None and self._operation is None:
             old_state = self.state
             self.state = TaskState(new_state)
@@ -265,8 +250,6 @@ class Task:
 
 
 class TaskManager:
-    """Process-local index of already-authoritative operation projections."""
-
     def __init__(self, coordinator: WorkAdmissionCoordinator | None = None) -> None:
         self._coordinator = coordinator
         self._tasks: Dict[str, Task] = {}
@@ -316,14 +299,6 @@ class TaskManager:
         owner: OperationOwner | None = None,
         execution_fence: ExecutionFence | None = None,
     ) -> Task:
-        """Project supplied authority or admit one legacy foreground turn.
-
-        Managed background sockets pass their existing operation and fence so
-        the Re-Act compatibility view cannot allocate a nested operation.  A
-        foreground legacy caller may temporarily admit one interactive
-        operation until the connection dispatcher supplies its context.
-        """
-
         existing = self.get_active_task(chat_id)
         if (
             existing is not None
@@ -391,8 +366,6 @@ class TaskManager:
                 admitted.operation_id,
             )
         if claim is None:
-            # T026 owns queued execution.  Do not let a compatibility caller
-            # run ahead of durable admission or leave an unowned queue entry.
             await asyncio.to_thread(
                 coordinator.cancel,
                 owner=owner,
@@ -440,8 +413,6 @@ class TaskManager:
     async def transition_task(
         self, task: Task, new_state: TaskState, **metadata: Any
     ) -> Task:
-        """Perform one coordinator mutation off-loop and refresh ``task``."""
-
         coordinator = self._require_coordinator()
         requested = TaskState(new_state)
         if task._operation is None or task._owner is None:
@@ -533,8 +504,6 @@ class TaskManager:
         return task
 
     async def assert_current_execution(self, task: Task) -> Task:
-        """Fence-check a worker before it emits a new round of effects."""
-
         coordinator = self._require_coordinator()
         if task._execution_fence is None:
             raise TaskManagerNotBoundError("task has no current execution fence")
@@ -560,13 +529,6 @@ class TaskManager:
         owner: OperationOwner | None = None,
         execution_fence: ExecutionFence | None = None,
     ) -> Task:
-        """Project an already-admitted operation as a legacy ``Task``.
-
-        ``operation`` is intentionally required for managed work.  Allocating a
-        local ID or synchronously admitting through PostgreSQL would recreate an
-        independent authority and block the asyncio event loop.
-        """
-
         if operation is None or owner is None:
             raise TaskManagerNotBoundError(
                 "create_task requires an admitted operation and authenticated owner"
@@ -636,8 +598,6 @@ class TaskManager:
         *,
         execution_fence: ExecutionFence | None | object = _FENCE_UNSET,
     ) -> Task:
-        """Refresh one existing DTO from coordinator-returned state."""
-
         task = self._tasks.get(str(operation.operation_id))
         if task is None:
             raise OperationNotFoundError("task projection not found")
@@ -672,8 +632,6 @@ class TaskManager:
         return [task for task in self._tasks.values() if task.chat_id == chat_id]
 
     async def refresh_task(self, task_id: str) -> Optional[Task]:
-        """Query the coordinator off-loop and refresh one cached projection."""
-
         coordinator = self._require_coordinator()
         task = self._tasks.get(task_id)
         if task is None or task._owner is None:
@@ -691,8 +649,6 @@ class TaskManager:
         return self.apply_operation(operation)
 
     async def prune_missing(self) -> int:
-        """Prune only local projections after the canonical retention sweep."""
-
         removed = 0
         for task_id in tuple(self._tasks):
             if await self.refresh_task(task_id) is None:
@@ -700,21 +656,12 @@ class TaskManager:
         return removed
 
     async def purge_expired(self, *, limit: int = 100) -> PurgeResult:
-        """Delegate retention to the coordinator without blocking the loop."""
-
         coordinator = self._require_coordinator()
         result = await asyncio.to_thread(coordinator.purge_expired, limit=limit)
         await self.prune_missing()
         return result
 
     def cleanup_old_tasks(self, max_age_seconds: float = 3600):
-        """Preserve the legacy name without creating a second age authority.
-
-        Synchronous callers outside an event loop may still use this method.
-        Async integration must await ``purge_expired`` so PostgreSQL never runs
-        on the event-loop thread.
-        """
-
         if max_age_seconds != 3600:
             logger.debug(
                 "Ignoring legacy max_age_seconds=%s; operation retention is authoritative",

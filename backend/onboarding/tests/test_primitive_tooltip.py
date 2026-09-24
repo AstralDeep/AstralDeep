@@ -1,4 +1,8 @@
-"""Verify the additive `tooltip` field on the base Component primitive."""
+"""Tests for the additive tooltip field on AstralPrimitives' base Component: default
+value, subclass serialization, absence on legacy payloads, and round-trip
+persistence.
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +43,6 @@ def test_base_component_defaults_tooltip_to_none():
     ],
 )
 def test_subclasses_serialize_with_tooltip(ctor, extras):
-    """Each subclass round-trips through to_json/from_json with the new field."""
     inst = ctor(tooltip="hello", **extras)
     payload = inst.to_dict()
     assert payload.get("tooltip") == "hello"
@@ -48,7 +51,6 @@ def test_subclasses_serialize_with_tooltip(ctor, extras):
 
 
 def test_tooltip_absent_when_unset():
-    """Existing payloads without `tooltip` deserialize cleanly."""
     rebuilt = Primitive.from_dict({"type": "text", "value": "hi"})
     assert rebuilt.tooltip is None
 

@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""Feature 089 (T059, SC-007): does a TypeSafe key ever escape?
-
-A synthetic key in the **real shape** is put through every path that touches
-one — the credential store, the routing seam, the audit trail, the settings
-surface, the renderers — and then everything the system wrote is searched for
-it: logs, audit rows, durable operation records, rendered HTML and SDUI, test
-artifacts, and the container's own stdout.
-
-The canary is synthetic. It matches the committed pattern and nothing else; it
-is not derived from the owner's key and is not a prefix of it. Expect zero
-hits, including of its prefix alone — a redaction that leaves the prefix
-behind still tells an attacker which vendor to try.
-
-Usage:
-    python scripts/typesafe_canary_scan.py
-    python scripts/typesafe_canary_scan.py --container astraldeep
+"""Exercises backend/llm_config/typesafe_store.py, log_scrub.py, and
+orchestrator/typesafe_routing with a synthetic TypeSafe-shaped key, then scans logs,
+audit rows, rendered HTML, and container stdout for a leak.
 """
 
 from __future__ import annotations
@@ -35,22 +22,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "backend" / "tests"))
 
-#: The same synthetic key the hygiene tests use, in the real shape: a short
-#: lowercase prefix, an underscore, a long lowercase-alphanumeric tail with
-#: digits. Invented letters, not derived from and not a prefix of any real key.
-#: One canary in the repository rather than several, so there is one thing to
-#: allowlist and one shape to reason about.
 CANARY = "zqkfmp_" + ("0canary9notarealkey" * 6)[:101]
-#: The prefix on its own. A redaction that leaves this behind has still leaked.
 CANARY_PREFIX = "zqkfmp_"
 
-#: Directories whose contents are written by a run and are therefore evidence.
 ARTIFACT_ROOTS = ("build", "backend/tmp", "backend/data", ".pytest_cache")
 
 
 class _Capture(logging.Handler):
-    """Every log record any module emits during the exercise."""
-
     def __init__(self) -> None:
         super().__init__(level=logging.DEBUG)
         self.lines: list[str] = []
@@ -63,7 +41,6 @@ class _Capture(logging.Handler):
 
 
 async def _exercise(capture: _Capture) -> dict:
-    """Put the canary through every path that handles a key."""
     from fakes.typesafe_fake import FakeTypeSafeClient, high_confidence
     from llm_config.log_scrub import _redact_text
     from llm_config.typesafe_store import key_fingerprint
@@ -93,7 +70,6 @@ async def _exercise(capture: _Capture) -> dict:
     fingerprint = key_fingerprint(CANARY)
     produced["fingerprint"] = fingerprint
 
-    # The routing seam, the success path.
     client = FakeTypeSafeClient(
         default=high_confidence("weather-1", "weather-1__get_current_weather"))
     task = await start_routing(user_id="canary-user", request=request, api_key=CANARY,
@@ -102,7 +78,6 @@ async def _exercise(capture: _Capture) -> dict:
     outcome = await await_decision(task, user_id="canary-user")
     produced["routing_outcome"] = repr(outcome)
 
-    # The routing seam, a failure path -- the one that logs most.
     from fakes.typesafe_fake import TypeSafeAuthenticationError
     failing = FakeTypeSafeClient(default=high_confidence("weather-1", "x"),
                                  faults=[TypeSafeAuthenticationError] * 6)
@@ -111,33 +86,25 @@ async def _exercise(capture: _Capture) -> dict:
                                circuit=UserCircuit(), flags=_Enabled)
     produced["failure_outcome"] = repr(await await_decision(task, user_id="canary-user"))
 
-    # The submission screen.
     produced["screen"] = repr(await screen_instruction(
         user_id="canary-user", text="File the weekly digest.", api_key=CANARY,
         fingerprint=fingerprint, client=FakeTypeSafeClient(default=high_confidence("a", "b")),
         circuit=UserCircuit(), flags=_Enabled))
 
-    # The stored-credential value object: its repr is what lands in a traceback
-    # or a debug line, so it is exactly where a key would escape unnoticed.
     from llm_config.typesafe_store import StoredTypeSafeKey
     stored = StoredTypeSafeKey(api_key=CANARY, fingerprint=fingerprint)
     produced["stored_repr"] = repr(stored)
     produced["stored_str"] = str(stored)
     produced["stored_format"] = f"{stored}"
 
-    # The scrubber, on a line that contains the key.
     produced["scrubbed"] = _redact_text(
         f"authorization=Bearer {CANARY} model=jev-latest"
     )
 
-    # The settings surface's view of a saved key: it is serialised into SDUI
-    # and into rendered HTML, so anything it carries reaches a page.
     from llm_config.typesafe_store import TypeSafeKeyStatus
     status = TypeSafeKeyStatus(name="active")
     produced["status_repr"] = repr(status)
 
-    # A deliberate log line carrying the key, to prove the handler captures it
-    # and that the scrubber is what removes it rather than luck.
     logging.getLogger("astral.canary").info("probe api_key=%s", CANARY)
     produced["deliberate_leak_present"] = str(
         any(CANARY in line for line in capture.lines)
@@ -173,7 +140,7 @@ def _scan_files(roots: Iterable[Path]) -> list[dict]:
             try:
                 label = str(path.relative_to(ROOT))
             except ValueError:
-                label = str(path)  # a scratch artifact outside the repository
+                label = str(path)
             hits.extend(_hits_in_text(label, text))
     return hits
 
@@ -190,7 +157,6 @@ def _scan_container(container: str) -> list[dict]:
 
 
 def _run_tests(artifact_dir: Path) -> tuple[int, str]:
-    """Every TypeSafe test, with its output kept as an artifact to scan."""
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
            "tests/test_typesafe_budget.py", "tests/test_typesafe_decision.py",
            "tests/test_typesafe_turn_routing.py", "tests/test_typesafe_security.py",
@@ -202,9 +168,6 @@ def _run_tests(artifact_dir: Path) -> tuple[int, str]:
                          timeout=1800)
     output = run.stdout + run.stderr
     (artifact_dir / "typesafe-tests.log").write_text(output, encoding="utf-8")
-    # A failing suite is still scanned -- a test that fails mid-way is exactly
-    # when a value gets printed -- but it is reported, because "no hits" from a
-    # suite that never ran is not evidence of anything.
     if run.returncode != 0:
         tail = "\n".join(output.strip().splitlines()[-12:])
         sys.stderr.write(
@@ -242,25 +205,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             test_rc, test_output = _run_tests(artifact_dir)
 
         hits: list[dict] = []
-        # 1. Everything any module logged during the exercise, minus the one
-        #    line this script deliberately emitted to prove capture works.
         deliberate = f"probe api_key={CANARY}"
         for line in capture.lines:
             if deliberate in line:
                 continue
             hits.extend(_hits_in_text("captured log record", line))
-        # 2. Every value the exercise produced.
         for name, value in produced.items():
             if name == "deliberate_leak_present":
                 continue
             hits.extend(_hits_in_text(f"produced:{name}", str(value)))
-        # 3. Test output and artifacts.
         if test_output:
             hits.extend(_hits_in_text("typesafe test output", test_output))
         hits.extend(_scan_files([artifact_dir]))
-        # 4. Anything the repository wrote.
         hits.extend(_scan_files([ROOT / part for part in ARTIFACT_ROOTS]))
-        # 5. The running stack's own stdout.
         container_hits = [] if args.skip_container else _scan_container(args.container)
         unavailable = [h for h in container_hits if h["kind"] == "unavailable"]
         hits.extend([h for h in container_hits if h["kind"] != "unavailable"])

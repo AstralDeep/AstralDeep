@@ -1,15 +1,7 @@
-"""Feature-066 pins for markdown in the chat rail and in chat previews.
-
-Symptom this fixes (observed live 2026-08-03): the LIVE narrative rendered
-markdown correctly, but the moment a turn committed — and on every reload —
-the rail was replaced by the words-only conversation snapshot, whose text
-parts carry only the RAW markdown source. The user saw literal
-``**4, 5, 6**``. The recent-chats preview leaked the same markup by a
-different route.
-
-The fix keeps the semantic value authoritative and adds the web rendition on
-the SAME transport-only ``_presentation`` envelope the components path uses,
-through the SAME escape-first pipeline.
+"""Tests for backend/orchestrator/history.py and AstralProjection's
+webrender/sanitize.py: plain_md is the plain-text inverse of the renderers, and
+assistant rail text and chat previews gain a web HTML rendition without changing the
+stored value.
 """
 
 from __future__ import annotations
@@ -19,8 +11,6 @@ from webrender.sanitize import block_md, plain_md
 
 
 class TestPlainMd:
-    """``plain_md`` is the plain-text inverse of the renderers."""
-
     def test_strips_bold_and_keeps_words(self) -> None:
         assert plain_md("Rolled **6d6** -> **4, 5** (total **23**)") == (
             "Rolled 6d6 -> 4, 5 (total 23)"
@@ -54,14 +44,10 @@ class TestPlainMd:
         assert plain_md("") == ""
 
     def test_does_not_escape_the_consumer_still_does(self) -> None:
-        # Escape-first is preserved end to end: this returns RAW text and
-        # every consumer escapes at render time.
         assert plain_md("5 < 6 & 7 > 2") == "5 < 6 & 7 > 2"
 
 
 class TestSnapshotTextPresentation:
-    """Assistant rail text gains a web rendition; nothing else changes."""
-
     @staticmethod
     def _snapshot(role: str, text: str) -> dict:
         return {
@@ -78,9 +64,9 @@ class TestSnapshotTextPresentation:
 
     def test_assistant_text_gains_rendered_markdown(self) -> None:
         part = self._augment("assistant", "Rolled **6d6** for **23** pips")
-        assert part["text"] == "Rolled **6d6** for **23** pips"  # semantic intact
+        assert part["text"] == "Rolled **6d6** for **23** pips"
         env = part["_presentation"]
-        assert set(env) == {"target", "html"}  # 2-key envelope, no workspace
+        assert set(env) == {"target", "html"}
         assert env["target"] == "web"
         assert "<strong" in env["html"]
         assert "**" not in env["html"]
@@ -94,16 +80,9 @@ class TestSnapshotTextPresentation:
         html = part["_presentation"]["html"]
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
-        assert "<strong" in html  # the legitimate markdown still renders
+        assert "<strong" in html
 
     def test_matches_the_live_render_pipeline(self) -> None:
-        """Byte-identical body to the live path, in the same wrapper.
-
-        The live narrative renders through ``render_text``'s markdown branch,
-        which wraps ``block_md`` output in the ``astral-md prose`` div. The
-        rail rendition must be the SAME markup, or a committed turn would
-        look different from the turn the user just watched.
-        """
         source = "# Heading\n\n- one\n- two\n\n`code` and **bold**"
         part = self._augment("assistant", source)
         html = part["_presentation"]["html"]
@@ -127,9 +106,7 @@ class TestSnapshotTextPresentation:
             target="web",
         )
         parts = snap["transcript"][0]["parts"]
-        # The malformed entry is left untouched...
         assert parts[0] == "not-a-dict"
-        # ...and the well-formed sibling still gains its rendition.
         assert "<strong" in parts[1]["_presentation"]["html"]
 
     def test_native_targets_never_receive_the_envelope(self) -> None:
@@ -161,5 +138,4 @@ class TestSnapshotTextPresentation:
         )
         comp = snap["transcript"][0]["parts"][0]["components"][0]
         assert comp["_presentation"]["target"] == "web"
-        # The components envelope keeps its workspace key — unchanged contract.
         assert "workspace" in comp["_presentation"]

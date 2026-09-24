@@ -1,37 +1,8 @@
-"""Persisted per-user + deployment-system LLM configuration store
-(feature 054-byo-llm-setup).
-
-Replaces feature 006's per-WebSocket in-memory ``SessionCredentialStore``:
-configuration done once on any client applies to all of the user's clients
-and sessions, survives disconnect and sign-out, and is resolvable by
-``user_id`` — which is what makes the mandatory first-run gate, the watch,
-and scheduled-job turns possible at all.
-
-Storage: two Plane-owned records exposed by the typed secrets repository:
-
-* ``user_llm_config`` — one row per configured user (PK ``user_id``).
-* ``system_llm_config`` — zero-or-one admin-managed row (PK CHECK id=1),
-  used EXCLUSIVELY for system-context calls (scheduled jobs, codegen,
-  knowledge synthesis, compaction, workspace combine/condense, narration).
-  Never serves user chat, and user records never serve system calls.
-
-Security posture (spec FR-006/FR-007, carried over from 006):
-
-* ``api_key`` is Fernet-encrypted at rest under ``CREDENTIAL_ENCRYPTION_KEY``
-  (same key + dev key-file fallback as the agent credential store; the key
-  is production-boot-gated by ``assert_production_posture``).
-* The plaintext key never appears in logs (``__repr__`` elides it), audit
-  payloads (``_assert_no_api_key``), or client-bound payloads (surfaces
-  receive only ``has_key``).
-* An undecryptable row (key rotation, corruption) is treated as ABSENT:
-  audited, deleted, and the user is re-gated — never a crash (FR-010).
-
-Concurrency: repository reads/writes are synchronous caller-owned Plane
-transactions; the async wrappers run them via ``asyncio.to_thread`` so the
-event loop is never blocked (feature 052 loop-guard). A small in-process TTL
-cache fronts the reads; ``set``/``clear`` invalidate synchronously, so gate
-transitions are immediate within the process.
+"""Persisted per-user and admin-managed system LLM configuration store, encrypted at
+rest. System rows serve only system-context calls (codegen, scheduled jobs) and never
+user chat, or vice versa. Backs ws_handlers.py and client_factory.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,36 +21,28 @@ from orchestrator.work_admission import OperationState
 
 logger = logging.getLogger("LLMConfig.UserStore")
 
-# Cache TTL for read-through lookups. Set/clear invalidate synchronously in
-# this process; the TTL only bounds staleness across processes (single-
-# process deployments never observe it).
 _CACHE_TTL_SECONDS = 30.0
 
 _SYSTEM_CACHE_KEY = "__system__"
 
 
 class UserConfigCaptureUnavailable(ValueError):
-    """An opaque USER configuration cannot be captured or opened safely."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class CapturedUserLLMConfig:
-    """Exact encrypted USER row; never a cache hit or an authority assertion."""
-
     _record: EncryptedLLMConfigRecord = field(repr=False)
 
     @property
     def owner_id(self) -> str:
-        """Return the exact owner selected by the repository read."""
         return self._record.owner_id
 
     def matches(self, record: EncryptedLLMConfigRecord | None) -> bool:
-        """Compare all raw fields with a caller's current, optionally locked row."""
         return type(record) is EncryptedLLMConfigRecord and self._record == record
 
 
 def _capture_user_row(row, owner_id):
-    """Validate an immutable encrypted record without decrypting or discarding it."""
     try:
         if type(owner_id) is not str or not owner_id.strip() or len(owner_id.encode()) > 2048:
             raise ValueError
@@ -106,24 +69,17 @@ def _capture_user_row(row, owner_id):
 
 
 class LLMConfigCommitDeadlineExceeded(TimeoutError):
-    """The credential write reached its commit fence after the attempt bound."""
+    pass
 
 
 @dataclass(slots=True)
 class FencedLLMConfigCommit:
-    """Credential row and durable COMPLETED winner from one transaction."""
-
     config: "PersistedLLMConfig"
     operation: Any
 
 
 @dataclass(slots=True)
 class PersistedLLMConfig:
-    """A decrypted, usable LLM provider configuration.
-
-    The working shape handed to ``client_factory.build_llm_client``. The
-    ``api_key`` may be ``""`` for keyless local-runtime presets.
-    """
     provider: str
     base_url: str
     model: str
@@ -135,7 +91,6 @@ class PersistedLLMConfig:
         return bool(self.api_key)
 
     def __repr__(self) -> str:
-        # Elide api_key — same posture as 006's SessionCreds.__repr__.
         return (
             f"PersistedLLMConfig(provider={self.provider!r}, "
             f"base_url={self.base_url!r}, model={self.model!r}, "
@@ -143,14 +98,8 @@ class PersistedLLMConfig:
         )
 
 
+# Must match credential_manager's key resolution exactly
 def _resolve_fernet(data_dir: Optional[str] = None) -> Fernet:
-    """Resolve the at-rest encryption key.
-
-    Same resolution as ``orchestrator.credential_manager``: the
-    ``CREDENTIAL_ENCRYPTION_KEY`` env var in production (boot-gated), with
-    the auto-generated ``backend/data/.credential_key`` file as the
-    development fallback — so both stores decrypt with one key.
-    """
     env_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
     if env_key:
         return Fernet(env_key.encode())
@@ -169,8 +118,6 @@ def _resolve_fernet(data_dir: Optional[str] = None) -> Fernet:
 
 
 class UserLLMConfigStore:
-    """DB-backed store for per-user and system LLM configuration."""
-
     def __init__(
         self,
         db=None,
@@ -193,12 +140,7 @@ class UserLLMConfigStore:
             legacy_database=db,
         )
         self._fernet = _resolve_fernet(data_dir)
-        # cache key -> (expires_monotonic, PersistedLLMConfig | None)
         self._cache: Dict[str, tuple] = {}
-
-    # ------------------------------------------------------------------
-    # Cache plumbing
-    # ------------------------------------------------------------------
 
     def _cache_get(self, key: str):
         entry = self._cache.get(key)
@@ -214,12 +156,7 @@ class UserLLMConfigStore:
         self._cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, value)
 
     def invalidate(self, user_id: str) -> None:
-        """Drop the cached entry for ``user_id`` (or the system row)."""
         self._cache.pop(user_id, None)
-
-    # ------------------------------------------------------------------
-    # Crypto
-    # ------------------------------------------------------------------
 
     def _encrypt_key(self, api_key: str) -> Optional[str]:
         if not api_key:
@@ -227,22 +164,11 @@ class UserLLMConfigStore:
         return self._fernet.encrypt(api_key.encode()).decode()
 
     def _decrypt_key(self, api_key_enc: Optional[str]) -> str:
-        """Decrypt, raising :class:`InvalidToken` on an unusable ciphertext."""
         if not api_key_enc:
             return ""
         return self._fernet.decrypt(api_key_enc.encode()).decode()
 
-    # ------------------------------------------------------------------
-    # Per-user record (sync core — call via the async wrappers on the loop)
-    # ------------------------------------------------------------------
-
     def get_sync(self, user_id: str) -> Optional[PersistedLLMConfig]:
-        """Return the user's decrypted configuration, or ``None``.
-
-        An undecryptable row is audited by the caller's audit hook (see
-        :meth:`pop_discard_note`), deleted here, and reported as absent —
-        the FR-010 "treated as not configured" path.
-        """
         hit, value = self._cache_get(user_id)
         if hit:
             return value
@@ -255,14 +181,6 @@ class UserLLMConfigStore:
         return value
 
     def capture_user_sync(self, user_id: str) -> CapturedUserLLMConfig | None:
-        """Read one exact USER row without cache, key opening, deletion or audit.
-
-        This is selection only, not a lock held across awaits. Execution callers
-        must compare against Plane's locked current row in the permit transaction.
-        Plane caps each SQL lock/statement wait at 100/1000 ms (preserving stricter
-        settings). They do not bound pool checkout, connection establishment or
-        a nonresponsive network; this is not a universal physical-worker deadline.
-        """
         try:
             _capture_user_row(None, user_id)
             with self._repository.transaction() as transaction:
@@ -271,21 +189,12 @@ class UserLLMConfigStore:
                 row = self._repository.repository.get_user(transaction, owner_id=user_id)
                 return _capture_user_row(row, user_id)
         except Exception:
-            # Repository/capability failures may contain SQL or private row data.
-            # Escape the transaction first, then expose only the closed refusal.
             raise UserConfigCaptureUnavailable("user_config_capture_unavailable") from None
 
     async def capture_user(self, user_id: str) -> CapturedUserLLMConfig | None:
-        """Perform the uncached selection off the event loop."""
         return await asyncio.to_thread(self.capture_user_sync, user_id)
 
     def open_captured_user_key(self, capture: CapturedUserLLMConfig) -> str:
-        """Open only this opaque selection; corrupt rows remain untouched.
-
-        The fixed profile consumer owns the returned ephemeral key. It must never
-        enter a durable payload, log or representation, and current-row guarding
-        remains the caller's responsibility before any network attempt.
-        """
         try:
             if type(capture) is not CapturedUserLLMConfig:
                 raise ValueError
@@ -295,9 +204,6 @@ class UserLLMConfigStore:
 
     def set_sync(self, user_id: str, *, provider: str, base_url: str,
                  model: str, api_key: str) -> PersistedLLMConfig:
-        """Persist (upsert) the user's configuration. Field validation is
-        the caller's job (ws_handlers validates + probes before persisting);
-        this method only enforces non-empty structural fields."""
         provider = (provider or "").strip() or "custom"
         base_url = (base_url or "").strip().rstrip("/")
         model = (model or "").strip()
@@ -336,17 +242,6 @@ class UserLLMConfigStore:
         deadline_at_monotonic: float,
         deadline_at_utc: datetime,
     ) -> FencedLLMConfigCommit:
-        """Commit a credential update only for the current live execution.
-
-        Production writes use the PostgreSQL cursor yielded by the operation
-        coordinator, so the full generation/token check and the credential
-        upsert share one transaction.  The final DML statement also checks
-        ``clock_timestamp()`` against the attempt deadline; a provider worker
-        that returns after its coroutine was cancelled therefore cannot
-        publish a late credential.  The in-memory repository keeps the same
-        ordering under its lock for deterministic contract tests.
-        """
-
         provider = (provider or "").strip() or "custom"
         base_url = (base_url or "").strip().rstrip("/")
         model = (model or "").strip()
@@ -398,11 +293,6 @@ class UserLLMConfigStore:
                     transaction=transaction,
                 )
             else:
-                # ``fenced_transaction`` already holds the in-memory
-                # repository lock and asserted the complete execution fence.
-                # Complete first while the same lock is held, then publish the
-                # FakeDB effect. This models the production transaction's
-                # indivisible winner without requiring a second test DB API.
                 if time.monotonic() >= deadline_at_monotonic:
                     raise LLMConfigCommitDeadlineExceeded(
                         "credential save deadline elapsed before completion"
@@ -435,7 +325,6 @@ class UserLLMConfigStore:
         return FencedLLMConfigCommit(config=cfg, operation=terminal)
 
     def clear_sync(self, user_id: str) -> bool:
-        """Delete the user's configuration. Returns True iff a row existed."""
         row = self._repository.call(
             self._repository.repository.get_user,
             owner_id=user_id,
@@ -449,10 +338,6 @@ class UserLLMConfigStore:
         self.invalidate(user_id)
         self._cache_put(user_id, None)
         return row is not None
-
-    # ------------------------------------------------------------------
-    # System record (admin-managed; system-context calls only)
-    # ------------------------------------------------------------------
 
     def get_system_sync(self) -> Optional[PersistedLLMConfig]:
         hit, value = self._cache_get(_SYSTEM_CACHE_KEY)
@@ -499,10 +384,6 @@ class UserLLMConfigStore:
                 self._repository.repository.delete_system(transaction)
         self._cache_put(_SYSTEM_CACHE_KEY, None)
         return row is not None
-
-    # ------------------------------------------------------------------
-    # Async wrappers (event-loop-safe; feature 052 loop-guard)
-    # ------------------------------------------------------------------
 
     async def get(self, user_id: str) -> Optional[PersistedLLMConfig]:
         hit, value = self._cache_get(user_id)
@@ -560,10 +441,6 @@ class UserLLMConfigStore:
     async def clear_system(self) -> bool:
         return await asyncio.to_thread(self.clear_system_sync)
 
-    # ------------------------------------------------------------------
-    # Shared row handling
-    # ------------------------------------------------------------------
-
     def _row_to_config(self, row: Optional[EncryptedLLMConfigRecord], *, discard_scope: str,
                        discard_id: str) -> Optional[PersistedLLMConfig]:
         if row is None:
@@ -571,9 +448,7 @@ class UserLLMConfigStore:
         try:
             api_key = self._decrypt_key(row.api_key_ciphertext)
         except (InvalidToken, ValueError, TypeError):
-            # FR-010: undecryptable ⇒ discard + treat as absent. The deletion
-            # is immediate; the audit note is queued for the orchestrator's
-            # async audit hook (a sync store cannot await the recorder).
+            # Sync code can't await the recorder; queued for async drain
             logger.warning(
                 "Discarding undecryptable %s LLM config record (key rotation "
                 "or corruption); treated as unconfigured", discard_scope)
@@ -589,7 +464,7 @@ class UserLLMConfigStore:
                         )
             except RepositoryNotFoundError:
                 pass
-            except Exception:  # pragma: no cover — deletion is best-effort
+            except Exception:  # pragma: no cover
                 logger.exception("Failed to delete undecryptable LLM config row")
             if not hasattr(self, "_pending_discards"):
                 self._pending_discards = []
@@ -604,11 +479,6 @@ class UserLLMConfigStore:
         )
 
     def pop_discard_note(self) -> Optional[tuple]:
-        """Return one queued (scope, id) undecryptable-discard note, or None.
-
-        The orchestrator drains these after resolution attempts and emits the
-        ``llm_config_change{action:"discarded_undecryptable"}`` audit event.
-        """
         pending = getattr(self, "_pending_discards", None)
         if pending:
             return pending.pop(0)

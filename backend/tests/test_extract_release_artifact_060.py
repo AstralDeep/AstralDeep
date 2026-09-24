@@ -1,4 +1,7 @@
-"""Focused safety tests for protected release-artifact extraction."""
+"""Tests for the protected release-artifact zip extractor: path traversal/escape
+rejection, symlink and special-file refusal, size/count limits, zip-bomb and zip64
+edge cases, and the CLI's success/refusal reporting.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "extract_release_artifact.py"
-if not SCRIPT.is_file():  # repo-root tooling is absent from the product image
+if not SCRIPT.is_file():
     pytest.skip("release tooling is not part of the product image", allow_module_level=True)
 
 
@@ -208,9 +211,7 @@ def test_member_validation_covers_path_size_flags_and_directory_payloads() -> No
     with pytest.raises(extractor.ExtractionError, match="segment exceeds"):
         extractor._member_path(long_segment, limits)
 
-    # ``zipfile`` normalizes a backslash in ``filename`` when writing an
-    # archive on Windows, so drive the validator against its preserved raw
-    # member name instead of relying on a platform-dependent archive fixture.
+    # Bypasses zipfile's Windows backslash normalization
     ambiguous = zipfile.ZipInfo("safe")
     ambiguous.orig_filename = "nested\\windows.json"
     with pytest.raises(extractor.ExtractionError, match="absolute or ambiguous"):
@@ -255,8 +256,6 @@ def test_rejects_nested_target_links_special_files_and_file_ancestors(
     if mkfifo is not None:
         mkfifo(special_file)
     else:
-        # Windows has no filesystem FIFO constructor. Keep this branch as a
-        # real traversal test and substitute only the entry's file-kind probe.
         special_file.write_bytes(b"placeholder")
         path_type = type(special_file)
         original_is_file = path_type.is_file

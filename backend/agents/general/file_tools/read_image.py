@@ -1,4 +1,6 @@
-"""``read_image`` tool: deliver a normalized image to the connected vision model."""
+"""read_image tool: decodes, resizes, and base64-encodes an attachment image for the
+vision model.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +21,6 @@ def read_image(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Decode, resize, and base64-encode an image for the vision model."""
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err
@@ -39,8 +40,6 @@ def read_image(
                 img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
                 w, h = img.size
 
-            # Choose canonical encoding: PNG for lossless / images with alpha,
-            # JPEG for everything else when the original is large.
             has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
             if has_alpha or att.size_bytes <= 1_048_576 or original_format == "PNG":
                 fmt, content_type = "PNG", "image/png"

@@ -1,4 +1,7 @@
-"""Static integration guards for feature-074 build/bootstrap/CI surfaces."""
+"""Static integration tests for the composition's build/bootstrap/CI surfaces: Docker
+wheel-before-copy ordering, backend resolver isolation, and release-workflow gating
+on signed events and green CI.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ def test_docker_builds_locked_component_wheels_before_backend_copy() -> None:
     assert "scripts/install_local_components.py build" in dockerfile
     assert "scripts/install_local_components.py install" in dockerfile
     assert "scripts/install_local_components.py verify" in dockerfile
-    assert "--no-index" not in dockerfile  # enforced centrally by the installer
+    assert "--no-index" not in dockerfile
     assert "astral-component-wheels.lock.json" in dockerfile
     assert "COPY components/AstralProjection/backend/webrender/" in dockerfile
     assert "COPY components/AstralProjection/contracts/" in dockerfile
@@ -118,8 +121,6 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "submodules: false" in composition
     assert 'test "${#COMPONENT_STATUS[@]}" -eq 4' in composition
     assert "--declarations-only --require-gitlinks" in composition
-    # The UI-v2 integration lane consumes pinned public component sources;
-    # its assertions remain Deep-owned and inherit read-only credentials.
     ui_contracts = _workflow_job(workflow, "ui-v2-contracts")
     assert "submodules: recursive" in ui_contracts
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in ui_contracts
@@ -201,8 +202,6 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
 
 
 def test_store_and_signing_workflows_require_explicit_release_events() -> None:
-    """Merging the composition must never publish a client implicitly."""
-
     apple = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
         encoding="utf-8"
     )
@@ -220,20 +219,15 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     assert "workflow_dispatch:" in windows_triggers
     assert "branches:" not in windows_triggers
     assert "pull_request:" not in windows_triggers
-    # Feature 074 moved the client into the submodule; the release must build
-    # from the exact composition pin, never an empty component directory.
     windows_release = _workflow_job(windows, "build-sign-release")
     assert "submodules: recursive" in windows_release
     assert "working-directory: components/AstralProjection/windows-client" in windows_release
-    # Feature 075: the frozen exe embeds the deterministic native speech helper.
     assert 'dotnet-version: "10.0.400"' in windows_release
     assert "AstralSpeechHelper.Tests.csproj --locked-mode" in windows_release
     assert "helper publish is not byte reproducible" in windows_release
     assert windows_release.index("Publish deterministic helper") < windows_release.index(
         "pyinstaller --noconfirm --clean AstralDeep.spec"
     )
-    # A main-ref rehearsal dispatch self-verifies with its own ref identity and
-    # never publishes; the tag identity contract stays byte-identical.
     assert "release-windows.yml@refs/tags/${{ github.ref_name }}" in windows_release
     assert "release-windows.yml@${{ github.ref }}" in windows_release
     assert "if: github.event_name == 'workflow_dispatch'" in windows_release
@@ -242,7 +236,6 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
 
 
 def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
-    """The composed image reaches GHCR only from a green push run on main."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/publish-image.yml").read_text(
         encoding="utf-8"
     )
@@ -295,7 +288,6 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
 
 
 def test_android_release_workflow_is_manual_pinned_and_composition_owned() -> None:
-    """The Android store lane is dispatch-only and builds the exact submodule pin."""
     workflow = (REPOSITORY_ROOT / ".github/workflows/android-release.yml").read_text(
         encoding="utf-8"
     )

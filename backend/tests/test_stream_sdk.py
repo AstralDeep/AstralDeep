@@ -1,14 +1,8 @@
+"""Tests for shared/stream_sdk.py: the @streaming_tool decorator's async-generator
+marking and metadata, StreamComponents size validation,
+assign_stream_id_to_components, and the StreamCtx smoke behavior.
 """
-Unit tests for the streaming tool SDK (001-tool-stream-ui foundational T027).
 
-Covers:
-- @streaming_tool correctly marks the function with __streaming_tool__ and
-  __stream_metadata__.
-- inspect.isasyncgenfunction returns True for a decorated async generator.
-- StreamComponents validation rejects oversized payloads.
-- assign_stream_id_to_components overwrites a tool-author-supplied id.
-- The decorator rejects sync functions and bad fps clamps at decoration time.
-"""
 import asyncio
 import inspect
 import os
@@ -30,10 +24,6 @@ from shared.stream_sdk import (
 )
 
 
-# ---------------------------------------------------------------------------
-# @streaming_tool decorator
-# ---------------------------------------------------------------------------
-
 class TestStreamingToolDecorator:
     def test_marks_async_generator(self):
         @streaming_tool(name="t", description="d", input_schema={})
@@ -47,7 +37,6 @@ class TestStreamingToolDecorator:
         assert meta["uses_ctx"] is False
         assert meta["metadata"]["streamable"] is True
         assert meta["metadata"]["streaming_kind"] == "push"
-        # And inspect agrees this is an async generator
         assert inspect.isasyncgenfunction(my_tool)
 
     def test_marks_streamctx_form(self):
@@ -102,15 +91,11 @@ class TestStreamingToolDecorator:
                 yield StreamComponents(components=[])
 
 
-# ---------------------------------------------------------------------------
-# StreamComponents
-# ---------------------------------------------------------------------------
-
 class TestStreamComponents:
     def test_serialized_size_for_simple_payload(self):
         sc = StreamComponents(components=[{"type": "metric", "value": "12C"}])
         assert sc.serialized_size() > 0
-        assert sc.serialized_size() < 1024  # comfortably under cap
+        assert sc.serialized_size() < 1024
 
     def test_validate_chunk_size_passes_when_under_cap(self):
         sc = StreamComponents(components=[{"type": "metric", "value": "12C"}])
@@ -124,17 +109,11 @@ class TestStreamComponents:
             validate_chunk_size(big, max_chunk_bytes=65536)
 
 
-# ---------------------------------------------------------------------------
-# assign_stream_id_to_components
-# ---------------------------------------------------------------------------
-
 class TestAssignStreamId:
     def test_overwrites_authors_id(self):
-        # Tool author tries to set id manually — SDK overwrites.
         comps = [{"type": "metric", "id": "i-set-this", "value": "12"}]
         out = assign_stream_id_to_components(comps, "stream-canonical")
         assert out[0]["id"] == "stream-canonical"
-        # Original is not mutated
         assert comps[0]["id"] == "i-set-this"
 
     def test_assigns_id_when_missing(self):
@@ -156,15 +135,9 @@ class TestAssignStreamId:
             {"type": "metric", "value": "2"},
         ]
         out = assign_stream_id_to_components(comps, "s")
-        # Both top-level get the stream_id (the merge anchor finds the first
-        # one; the second gets it for symmetry).
         assert out[0]["id"] == "s"
         assert out[1]["id"] == "s"
 
-
-# ---------------------------------------------------------------------------
-# StreamCtx (lightweight smoke test)
-# ---------------------------------------------------------------------------
 
 class TestStreamCtx:
     @pytest.mark.asyncio
@@ -184,7 +157,7 @@ class TestStreamCtx:
             return "done"
 
         task = asyncio.create_task(waiter())
-        await asyncio.sleep(0)  # let waiter start
+        await asyncio.sleep(0)
         ctx._cancel()
         result = await asyncio.wait_for(task, timeout=1.0)
         assert result == "done"
@@ -193,12 +166,10 @@ class TestStreamCtx:
     async def test_emit_after_cancel_is_silent(self):
         ctx = StreamCtx(stream_id="s1")
         ctx._cancel()
-        # Should not raise
         ctx.emit(StreamComponents(components=[{"type": "metric"}]))
 
     def test_emit_rejects_non_streamcomponents(self):
-        # Explicit loop: StreamCtx defaults to get_event_loop(), which raises
-        # outside async context on Python 3.12+ when no loop has been set.
+        # get_event_loop() raises outside async context on 3.12+
         loop = asyncio.new_event_loop()
         try:
             ctx = StreamCtx(stream_id="s1", loop=loop)

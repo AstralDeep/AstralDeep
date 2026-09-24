@@ -1,13 +1,8 @@
-"""Feature 033 (capability C-U3) — interaction-archetype selection.
-
-The designer classifies a turn's archetype (compare / monitor / explore /
-summarize / decide / form) and seeds BOTH a layout-prior hint into the prompt
-AND an additive bias into the deterministic scorer, so the arrangement fits
-the shape of the task. Covers the pure classifier, the additive bonus, the
-prompt prior, and the fail-open driver integration.
-
-Pure Python — no DB, no network; the LLM is always a stub.
+"""Tests for interaction-archetype selection in orchestrator/ui_designer.py: the
+designer classifies a turn's archetype from text and component shape, then seeds both
+a prompt prior and an additive scorer bonus toward the matching layout.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,8 +32,6 @@ ALLOWED = {
 }
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_archetype_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_UI_DESIGNER_ARCHETYPE", raising=False)
     assert ui_designer.archetype_enabled() is True
@@ -49,8 +42,6 @@ def test_archetype_flag_off_values(monkeypatch, value):
     monkeypatch.setenv("FF_UI_DESIGNER_ARCHETYPE", value)
     assert ui_designer.archetype_enabled() is False
 
-
-# ───────────────────────── classifier (text) ─────────────────────────────────
 
 @pytest.mark.parametrize("request_text,expected", [
     ("Compare the Q2 and Q3 revenue side by side", "compare"),
@@ -70,8 +61,6 @@ def test_classify_none_when_no_signal():
     assert classify_archetype(None, None) is None
 
 
-# ───────────────────────── classifier (shape) ────────────────────────────────
-
 def test_shape_two_metrics_reads_as_monitor():
     comps = [{"type": "metric"}, {"type": "hero"}]
     assert classify_archetype("here you go", comps) == "monitor"
@@ -87,8 +76,6 @@ def test_shape_single_component_reads_as_summarize():
 
 
 def test_text_intent_beats_shape():
-    # A strong, unambiguous compare request wins over the monitor shape signal
-    # of two metric components.
     comps = [{"type": "metric"}, {"type": "metric"}]
     assert classify_archetype("compare A and B side by side", comps) == "compare"
 
@@ -96,8 +83,6 @@ def test_text_intent_beats_shape():
 def test_classify_is_deterministic():
     assert classify_archetype("dashboard", []) == classify_archetype("dashboard", [])
 
-
-# ───────────────────────── prior ─────────────────────────────────────────────
 
 @pytest.mark.parametrize("arch", list(ui_designer.ARCHETYPES))
 def test_prior_present_for_every_archetype(arch):
@@ -109,8 +94,6 @@ def test_prior_empty_for_none():
     assert archetype_prior(None) == ""
     assert archetype_prior("nonsense") == ""
 
-
-# ───────────────────────── additive bonus ────────────────────────────────────
 
 def test_compare_rewards_side_by_side_grid():
     grid = [{"type": "grid", "columns": 2, "children": [
@@ -155,8 +138,6 @@ def test_bonus_zero_for_none_and_degenerate():
     assert archetype_bonus("x", "compare") == 0.0
 
 
-# ───────────────────────── scorer integration ────────────────────────────────
-
 def test_score_with_none_archetype_is_base_unchanged():
     layout = [{"type": "hero", "title": "X"},
               {"type": "grid", "columns": 2, "children": [
@@ -177,8 +158,6 @@ def test_score_adds_bonus_for_archetype():
 
 
 def test_archetype_flips_the_winner_for_form():
-    # Two equally-base-scored arrangements; the FORM archetype prefers the
-    # single-column one over the multi-column grid.
     multicol = [{"type": "grid", "columns": 2, "children": [
         {"type": "ref", "component_id": "A"}, {"type": "ref", "component_id": "B"}]}]
     single = [{"type": "card", "title": "One", "content": [{"type": "ref", "component_id": "A"}]},
@@ -187,8 +166,6 @@ def test_archetype_flips_the_winner_for_form():
     assert score_arrangement(single, ref_types=rt, archetype="form") > \
         score_arrangement(multicol, ref_types=rt, archetype="form")
 
-
-# ───────────────────────── prompt prior ──────────────────────────────────────
 
 def test_design_prompt_includes_prior_when_archetype_set():
     msgs = build_design_messages("compare a and b", [{"type": "table", "component_id": "A"}],
@@ -202,8 +179,6 @@ def test_design_prompt_omits_prior_when_none():
                                  [], ALLOWED, archetype=None)
     assert "TASK SHAPE:" not in msgs[1]["content"]
 
-
-# ───────────────────────── driver integration ────────────────────────────────
 
 _COMPS = [
     {"type": "table", "component_id": "A", "title": "T", "_source_agent": "a", "_source_tool": "t"},
@@ -239,7 +214,6 @@ async def test_driver_classifies_and_seeds_prompt(monkeypatch):
         timeout_s=5, max_rounds=2,
     )
     assert out is not None
-    # The draft prompt carried the COMPARE task-shape prior.
     assert any("TASK SHAPE:" in m[-1]["content"] for m in captured)
 
 
@@ -257,7 +231,6 @@ async def test_driver_archetype_off_seeds_no_prior(monkeypatch):
 
 
 async def test_driver_classification_failure_is_fail_open(monkeypatch):
-    """A classifier that raises must never break the designer."""
     monkeypatch.setenv("FF_UI_DESIGNER_ARCHETYPE", "true")
 
     def _boom(*_a, **_k):
@@ -269,4 +242,4 @@ async def test_driver_classification_failure_is_fail_open(monkeypatch):
         chat_id="c3", layout_key="lk3", allowed_types=ALLOWED,
         llm_call=_stub_llm([_SIDE_BY_SIDE, "DONE"]), timeout_s=5, max_rounds=2,
     )
-    assert out is not None  # never crashes
+    assert out is not None

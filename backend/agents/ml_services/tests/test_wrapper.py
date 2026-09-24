@@ -1,9 +1,8 @@
-"""Tests for the shared external-service foundation ``_wrapper`` (feature 029, T024).
-
-Covers the retry-classification shim (formerly duplicated across the three
-predecessor mcp_servers), per-bundle credential resolution, the unified HTTP
-client, and the MCP server's error-branch behavior over the union registry.
+"""Tests for agents/ml_services/_wrapper.py and mcp_server.py: retry classification,
+per-bundle credential resolution, the unified HTTP client, and the union-registry MCP
+server's error handling.
 """
+
 import json
 import socket
 from unittest.mock import patch
@@ -14,11 +13,6 @@ from agents.ml_services import _wrapper
 from agents.ml_services.mcp_server import MCPServer
 from shared.protocol import MCPRequest
 from shared.tests._http_mock import HttpMock
-
-
-# ---------------------------------------------------------------------------
-# Retry shim
-# ---------------------------------------------------------------------------
 
 
 def test_retryable_exception_types() -> None:
@@ -45,14 +39,8 @@ def test_unknown_exception_defaults_to_retryable() -> None:
 
 
 def test_shim_includes_requests_exceptions() -> None:
-    """The requests-tolerant shim must be active in this environment."""
     import requests
     assert requests.exceptions.RequestException in _wrapper.RETRYABLE_EXCEPTIONS
-
-
-# ---------------------------------------------------------------------------
-# Credential bundles + resolution
-# ---------------------------------------------------------------------------
 
 
 def test_bundle_key_names_are_the_existing_ones() -> None:
@@ -130,14 +118,9 @@ def test_client_get_hits_normalized_url() -> None:
             {"CLASSIFY_URL": "https://c.example.com/", "CLASSIFY_API_KEY": "k"},
             _wrapper.CLASSIFY_BUNDLE,
         )
-        resp = client.get("reports/get-ml-opts")  # no leading slash on purpose
+        resp = client.get("reports/get-ml-opts")
         assert resp.status_code == 200
         assert m.calls[-1]["url"] == "https://c.example.com/reports/get-ml-opts"
-
-
-# ---------------------------------------------------------------------------
-# Error mapping helpers
-# ---------------------------------------------------------------------------
 
 
 def test_verdict_for_exception_mapping() -> None:
@@ -182,11 +165,6 @@ def test_render_metric_value_shapes() -> None:
     assert _wrapper.render_metric_value("x") == "x"
 
 
-# ---------------------------------------------------------------------------
-# MCP server over the union registry (retry behavior, _retryable honoring)
-# ---------------------------------------------------------------------------
-
-
 def _call(server: MCPServer, name: str, arguments=None) -> "object":
     return server.process_request(MCPRequest(
         request_id="req-1", method="tools/call",
@@ -196,7 +174,7 @@ def _call(server: MCPServer, name: str, arguments=None) -> "object":
 
 def test_server_unknown_tool_not_retryable() -> None:
     server = MCPServer()
-    resp = _call(server, "submit_dataset")  # bare collision verb gone post-029
+    resp = _call(server, "submit_dataset")
     assert resp.error is not None
     assert resp.error["code"] == -32601
     assert resp.error["retryable"] is False
@@ -220,8 +198,6 @@ def test_server_missing_required_argument_rejected_with_hint() -> None:
 
 
 def test_server_honors_tool_retryable_false_on_error_components() -> None:
-    """Tools that return a variant=error Alert with _retryable=False must not
-    be auto-retried (the classify/forecaster servers' behavior, now uniform)."""
     server = MCPServer()
     server.tools = {
         "fake_tool": {
@@ -297,8 +273,6 @@ def test_server_unwraps_ui_components_and_data() -> None:
 
 
 def test_server_filters_unknown_kwargs_for_non_var_keyword_tools() -> None:
-    """Tools without **kwargs only receive declared parameters (ported server
-    behavior — protects simple tools from orchestrator-injected kwargs)."""
     server = MCPServer()
     seen = {}
     def _strict(a=None):

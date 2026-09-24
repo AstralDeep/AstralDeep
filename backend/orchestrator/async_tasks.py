@@ -1,12 +1,6 @@
-"""Compatibility views for operation-backed asynchronous chat work.
-
-``WorkAdmissionCoordinator`` is the sole identity, admission, lifecycle, and
-retention authority.  This module keeps the legacy background-task DTO,
-captured-output, watcher, and completion-fan surfaces while projecting their
-status from the coordinator.  A process-local dispatcher retains only the
-callable needed to execute a durably accepted operation; FIFO selection,
-capacity, cancellation, execution fencing, and retention remain coordinator
-decisions.
+"""Compatibility DTO layer projecting WorkAdmissionCoordinator's durable operations onto
+the legacy background-task/watcher API; WorkAdmissionCoordinator (work_admission.py)
+remains the sole admission, lifecycle, and retention authority.
 """
 
 from __future__ import annotations
@@ -78,12 +72,10 @@ _TERMINAL_OPERATION_STATES = frozenset(
 
 
 class BackgroundTaskManagerNotBoundError(RuntimeError):
-    """Raised when lifecycle work is attempted without a coordinator."""
+    pass
 
 
 class BackgroundTaskAdmissionError(RuntimeError):
-    """Legacy exception projection for an explicit admission refusal."""
-
     def __init__(
         self, code: str, *, retryable: bool, retry_after_ms: int | None
     ) -> None:
@@ -95,8 +87,6 @@ class BackgroundTaskAdmissionError(RuntimeError):
 
 @dataclass(frozen=True)
 class RetentionSweepResult:
-    """Bounded work performed by one maintenance-admitted sweep."""
-
     operations: int
     submissions: int
     compatibility_rows: int
@@ -113,8 +103,6 @@ _SAFE_OPERATION_PROJECTION_FIELDS = tuple(
 
 @dataclass(frozen=True)
 class _BackgroundExecution:
-    """Process-local callable paired with one durable accepted operation."""
-
     coro_factory: Any
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
@@ -140,14 +128,6 @@ def _validate_execution_fence(
 
 @dataclass
 class BackgroundTask:
-    """Legacy task DTO backed by one durable operation when manager-created.
-
-    Direct construction remains supported for ``VirtualWebSocket`` adapters
-    used by internal call sites and tests; arbitrary synthetic identifiers are
-    therefore valid here.  Only ``BackgroundTaskManager.submit`` creates a
-    managed task, and managed identifiers are full operation UUIDs.
-    """
-
     task_id: str
     chat_id: str
     user_id: str
@@ -252,9 +232,6 @@ class BackgroundTask:
                 != operation.execution_lease_token
             )
         ):
-            # Owner-safe refresh/cancel records may reveal that another worker
-            # was explicitly reselected.  Never synthesize its secret fence;
-            # discard only our stale one and wait for an explicit new fence.
             self._execution_fence = None
         object.__setattr__(self, "_operation", operation)
         object.__setattr__(
@@ -263,8 +240,6 @@ class BackgroundTask:
         object.__setattr__(self, "created_at", operation.accepted_at)
         object.__setattr__(self, "completed_at", operation.terminal_at)
         if operation.state in _TERMINAL_OPERATION_STATES:
-            # The durable terminal transition already revoked this token. Keep
-            # no stale private capability in the compatibility projection.
             self._execution_fence = None
             guidance = getattr(self, "_guidance_origin", None)
             if guidance is not None:
@@ -296,8 +271,6 @@ class BackgroundTask:
 
 
 class VirtualWebSocket:
-    """Capture messages produced by a background turn."""
-
     def __init__(self, task: BackgroundTask):
         self.task = task
         self._closed = False
@@ -347,18 +320,6 @@ class VirtualWebSocket:
 
 
 class DurableUserTurnWebSocket:
-    """Memory-only execution socket for one already-admitted user turn.
-
-    The object deliberately has a distinct identity from the UI transport so
-    the orchestrator can bind a private copy of verified claims and the raw
-    delegation token for the exact task lifetime. Conversation candidate
-    frames remain private until atomic publication; only a fully correlated
-    pre-acceptance voice rejection may be forwarded directly. The durable
-    operation and committed conversation are therefore independent of the
-    originating socket surviving, without turning this adapter into a second
-    authority or content store.
-    """
-
     _FORWARDED_FRAME_TYPES = frozenset({"voice_submission_rejected"})
 
     def __init__(self, origin: Any, *, user_id: str) -> None:
@@ -412,8 +373,6 @@ class DurableUserTurnWebSocket:
         self.scrub()
 
     def scrub(self) -> None:
-        """Release task-local references without closing the real client."""
-
         self._closed = True
         self.llm_context_user_id = None
         self._origin = None
@@ -428,8 +387,6 @@ class DurableUserTurnWebSocket:
 
 
 class BackgroundTaskManager:
-    """Legacy async-task surface projected over an injected coordinator."""
-
     MAX_CONCURRENT_TASKS = 5
     _DISPATCH_POLL_SECONDS = 0.25
     _LEASE_RENEWAL_DIVISOR = 4
@@ -473,8 +430,6 @@ class BackgroundTaskManager:
         on_complete=None,
         observability=None,
     ):
-        """Additively bind operation authority and Plane-owned projections."""
-
         if coordinator is not None:
             if self._coordinator is not None and coordinator is not self._coordinator:
                 raise RuntimeError("cannot replace the bound coordinator")
@@ -594,15 +549,6 @@ class BackgroundTaskManager:
             logger.debug("background operation telemetry failed", exc_info=True)
 
     def _observe_background_latency(self, operation: OperationProjection) -> None:
-        """Record the once-per-task background latency observation.
-
-        The collector reads only coarse state and lifecycle timestamps.  Any
-        collector failure is contained with a fixed, content-free diagnostic so
-        terminal delivery, cancellation, cleanup and admission refresh remain
-        unaffected; no exception text or traceback that could carry user data is
-        logged.
-        """
-
         try:
             observe = getattr(self._observability, "observe_background_operation", None)
             if callable(observe):
@@ -611,8 +557,6 @@ class BackgroundTaskManager:
             logger.debug("background latency observation failed")
 
     async def _observe_admission(self) -> None:
-        """Request one detached, coalesced effective-admission refresh."""
-
         observability = self._observability
         if observability is None or self._draining:
             return
@@ -626,8 +570,6 @@ class BackgroundTaskManager:
         )
 
     async def _run_admission_observer(self) -> None:
-        """Refresh gauges off-loop without ever delaying lifecycle callers."""
-
         current_task = asyncio.current_task()
         try:
             while self._admission_observation_requested and not self._draining:
@@ -655,9 +597,6 @@ class BackgroundTaskManager:
                         timeout=self._OBSERVABILITY_STALL_SECONDS,
                     )
                 except TimeoutError:
-                    # Keep one coalescing owner until the already-running call
-                    # returns. This bounds thread-pool pressure without making
-                    # accepted/refused/terminal lifecycle paths await telemetry.
                     logger.warning("background admission telemetry is stalled")
                     try:
                         await refresh
@@ -747,11 +686,8 @@ class BackgroundTaskManager:
     def _lease_renewal_seconds(self) -> float:
         coordinator = self._require_coordinator()
         lease_seconds = coordinator.slot_lease.total_seconds()
-        if lease_seconds <= 0:  # pragma: no cover - coordinator validates this
+        if lease_seconds <= 0:  # pragma: no cover
             raise RuntimeError("execution slot lease must be positive")
-        # Renew before the contractual one-third boundary to leave scheduling
-        # and database latency margin rather than treating the bound as a
-        # best-effort sleep duration.
         return lease_seconds / self._LEASE_RENEWAL_DIVISOR
 
     def _wake_dispatcher(self) -> None:
@@ -776,8 +712,6 @@ class BackgroundTaskManager:
         summary: str | None = None,
         notified: bool = False,
     ) -> PlaneBackgroundTaskRecord:
-        """Build the exact Plane projection for one managed operation."""
-
         if bg_task._operation is None:
             raise RuntimeError("background projection requires operation authority")
         return PlaneBackgroundTaskRecord(
@@ -800,8 +734,6 @@ class BackgroundTaskManager:
         )
 
     def _project(self, record: PlaneBackgroundTaskRecord) -> None:
-        """Best-effort typed projection over the shared Plane runtime."""
-
         if (
             self._draining
             or self._async_plane_runtime is None
@@ -852,8 +784,6 @@ class BackgroundTaskManager:
         request_generation: uuid.UUID | None = None,
         **kwargs,
     ) -> BackgroundTask:
-        """Durably admit one background operation and project its task DTO."""
-
         coordinator = self._require_coordinator()
         operation_kind = self._safe_observability_token(
             kind,
@@ -996,8 +926,6 @@ class BackgroundTaskManager:
         return bg_task
 
     def _start_claimed_task_locked(self, bg_task: BackgroundTask, claim: Any) -> bool:
-        """Start exactly one locally retained callable for an exact claim."""
-
         descriptor = self._pending_executions.get(bg_task.task_id)
         if descriptor is None:
             return False
@@ -1023,8 +951,6 @@ class BackgroundTaskManager:
         return True
 
     async def _dispatch_pending(self) -> None:
-        """Claim retained operations in durable FIFO order until none remain."""
-
         coordinator = self._require_coordinator()
         current_task = asyncio.current_task()
         try:
@@ -1100,10 +1026,6 @@ class BackgroundTaskManager:
                             notify.append(bg_task)
                             continue
                         if operation.state is OperationState.QUEUED:
-                            # Exact claims preserve global FIFO.  If the first
-                            # local queued candidate cannot claim, no later
-                            # queued candidate can either; avoid an O(queue)
-                            # database poll while capacity is saturated.
                             break
 
                     if self._pending_executions and not made_progress:
@@ -1174,8 +1096,6 @@ class BackgroundTaskManager:
         stale: bool,
         worker: asyncio.Task | None,
     ) -> None:
-        """Revoke local output/effect authority and stop a lost execution."""
-
         coordinator = self._require_coordinator()
         fence = bg_task._execution_fence
         bg_task._lease_loss_reason = (
@@ -1299,7 +1219,7 @@ class BackgroundTaskManager:
                     retry_after_ms = 1000
                     return
                 worker = asyncio.current_task()
-                if worker is None:  # pragma: no cover - coroutine always runs in a task
+                if worker is None:  # pragma: no cover
                     raise RuntimeError("background work requires an asyncio task")
                 bg_task._lease_task = asyncio.create_task(
                     self._renew_execution_lease_loop(bg_task, vws, worker),
@@ -1393,7 +1313,7 @@ class BackgroundTaskManager:
             summary = self._summary_from_outputs(bg_task)
         elif bg_task._operation is not None:
             summary = bg_task._operation.safe_summary or "Background task failed"
-        else:  # pragma: no cover - managed notifications require an operation
+        else:  # pragma: no cover
             summary = "Background task failed"
         fanned = 0
         if self._on_complete is not None and flags.is_enabled("bg_continuity"):
@@ -1451,16 +1371,6 @@ class BackgroundTaskManager:
         bg_task: BackgroundTask,
         candidate: OperationProjection,
     ) -> OperationProjection:
-        """Keep the newest projection when coordinator calls finish out of order.
-
-        Durable cancellation and terminalization serialize at the coordinator,
-        but their results return to the event loop independently. A worker can
-        therefore apply a newer terminal record while an earlier cancellation
-        response is still in flight. The DTO's strict monotonic guard remains
-        valuable for direct callers; manager-owned reconciliation discards only
-        an authority-issued response whose revision is already known to be stale.
-        """
-
         if str(candidate.operation_id) != bg_task.task_id:
             raise RuntimeError("background task operation identity changed")
         current = bg_task._operation
@@ -1482,9 +1392,6 @@ class BackgroundTaskManager:
                     "background task operation projection changed without "
                     "advancing its revision"
                 )
-            # Owner-safe and full records are different views of the same
-            # authority. Do not downgrade, upgrade, or otherwise swap the
-            # already-applied representation at an unchanged revision.
             return current
         bg_task._apply_operation(candidate)
         return candidate
@@ -1512,8 +1419,6 @@ class BackgroundTaskManager:
         owner: OperationOwner,
         coordinator: WorkAdmissionCoordinator,
     ) -> bool:
-        """Commit cancellation and settle its process-local execution."""
-
         task_id = bg_task.task_id
         worker: asyncio.Task | None
         websocket: VirtualWebSocket | None
@@ -1538,8 +1443,6 @@ class BackgroundTaskManager:
         )
         operation = self._reconcile_operation_projection(bg_task, operation)
         async with self._lock:
-            # Terminalization may have advanced the local authority while this
-            # coroutine waited to reacquire the state lock.
             operation = self._reconcile_operation_projection(bg_task, operation)
             cancellation_effective = (
                 operation.state is OperationState.CANCELLED
@@ -1585,10 +1488,7 @@ class BackgroundTaskManager:
             if worker is not asyncio.current_task():
                 await asyncio.gather(worker, return_exceptions=True)
 
-        # Cancellation before a newly created asyncio task's first scheduling
-        # does not enter that coroutine's ``finally`` block.  Only after the
-        # wrapper is fully joined may this fallback clear the durable slot;
-        # otherwise a replacement could start while old user cleanup runs.
+        # Pre-schedule cancel skips finally() — wait for join first
         if cancellation_effective and (worker is None or worker.done()):
             if await self._refresh(bg_task):
                 if (
@@ -1624,10 +1524,6 @@ class BackgroundTaskManager:
                 return False
             owner = bg_task._owner
 
-        # Coordinator calls may block on PostgreSQL row/class locks. Never
-        # retain the process-local state lock across that I/O: worker
-        # terminalization and unrelated submissions must remain able to make
-        # progress while this request is in flight.
         if not await self._refresh(bg_task):
             async with self._lock:
                 if self._tasks.get(task_id) is bg_task:
@@ -1651,11 +1547,6 @@ class BackgroundTaskManager:
         try:
             return await asyncio.shield(cancellation_flow)
         except asyncio.CancelledError as caller_cancellation:
-            # ``asyncio.to_thread`` cannot stop its worker thread. Once the
-            # coordinator call may have committed, join the shielded flow so
-            # its response is reconciled and local execution is closed before
-            # honoring cancellation of this caller. Repeated cancellation of
-            # the caller must not strand the committed cleanup either.
             completion = asyncio.get_running_loop().create_future()
 
             def mark_completed(_task: asyncio.Task[bool]) -> None:
@@ -1665,9 +1556,6 @@ class BackgroundTaskManager:
             cancellation_flow.add_done_callback(mark_completed)
             while not cancellation_flow.done():
                 try:
-                    # Wait only for completion here. Awaiting the flow itself
-                    # could surface its ordinary exception from this loop and
-                    # bypass the stable caller-cancellation precedence below.
                     await asyncio.shield(completion)
                 except asyncio.CancelledError:
                     continue
@@ -1682,8 +1570,6 @@ class BackgroundTaskManager:
 
     @staticmethod
     def _consume_drain_helper(task: asyncio.Task) -> None:
-        """Retrieve helper failures without extending the bounded drain."""
-
         try:
             task.exception()
         except (asyncio.CancelledError, Exception):
@@ -1756,15 +1642,6 @@ class BackgroundTaskManager:
             bg_task._execution_fence = None
 
     async def drain(self, *, timeout_seconds: float = 5.0) -> int:
-        """Boundedly fence and settle all locally retained background work.
-
-        The manager remains permanently draining after this call: subsequent
-        submissions receive the explicit retryable ``service_draining``
-        refusal.  The returned integer is the count of cancellation-resistant
-        user coroutines still executing locally after their durable operation
-        and captured-output authority have both been revoked.
-        """
-
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, (int, float))
@@ -1778,9 +1655,6 @@ class BackgroundTaskManager:
         deadline = started_at + float(timeout_seconds)
         graceful_deadline = started_at + (float(timeout_seconds) * 0.7)
 
-        # Publish the irreversible service state before any lock acquisition.
-        # A submitter already waiting on coordinator I/O will observe this flag
-        # when that I/O returns and settle its just-accepted pre-handoff record.
         self._draining = True
         drain_lock_acquired = False
         state_lock_acquired = False
@@ -1822,10 +1696,6 @@ class BackgroundTaskManager:
                 await self._lock.acquire()
                 state_lock_acquired = True
 
-            # This snapshot is event-loop atomic even if a coordinator call is
-            # holding the logical state lock in another suspended coroutine.
-            # No new submitter may pass its draining checks, and every awaited
-            # submit/claim path rechecks the flag before starting user code.
             self._pending_executions.clear()
             self._wake_dispatcher()
             background_tasks = tuple(self._tasks.values())
@@ -1916,8 +1786,6 @@ class BackgroundTaskManager:
                     helper.add_done_callback(self._consume_drain_helper)
                     helper.cancel()
         except TimeoutError:
-            # A concurrent drain owns settlement. This caller still obeys its
-            # own deadline and reports the currently visible local remainder.
             background_tasks = tuple(self._tasks.values())
             workers = {
                 bg_task.asyncio_task
@@ -1937,10 +1805,6 @@ class BackgroundTaskManager:
                     helper.add_done_callback(self._consume_drain_helper)
                     helper.cancel()
             for bg_task in background_tasks:
-                # No local worker retains publication authority after the
-                # bounded deadline, including when its final database CAS is
-                # still unavailable. The durable lease may recover elsewhere,
-                # but this process can emit nothing late.
                 bg_task._execution_fence = None
                 if bg_task._lease_task in lease_tasks:
                     bg_task._lease_task = None
@@ -2013,8 +1877,6 @@ class BackgroundTaskManager:
         return None
 
     async def prune_missing(self) -> int:
-        """Drop cache entries whose durable operation was already purged."""
-
         removed = 0
         for task_id, task in tuple(self._tasks.items()):
             if not await self._refresh(task):
@@ -2027,8 +1889,6 @@ class BackgroundTaskManager:
         self,
         fence: ExecutionFence,
     ) -> float:
-        """Return the age of the oldest row currently eligible for purge."""
-
         coordinator = self._require_coordinator()
         current_time = coordinator.current_time()
         cutoff_at = current_time - coordinator.operation_retention
@@ -2060,8 +1920,6 @@ class BackgroundTaskManager:
         *,
         limit: int,
     ) -> int:
-        """Purge retained FK-null rows in the exact maintenance transaction."""
-
         coordinator = self._require_coordinator()
         repository = self._background_tasks
         if repository is None:
@@ -2100,13 +1958,6 @@ class BackgroundTaskManager:
         max_batches: int = 10,
         compatibility_limit: int = 1000,
     ) -> RetentionSweepResult | None:
-        """Run one bounded, maintenance-admitted retention operation.
-
-        ``None`` means maintenance capacity was unavailable.  The caller may
-        retry sooner, while interactive/background capacity and latency remain
-        governed by their independent child-class limits.
-        """
-
         if limit <= 0 or max_batches <= 0 or compatibility_limit <= 0:
             raise ValueError("retention sweep bounds must be positive")
         if self._draining:
@@ -2260,8 +2111,6 @@ class BackgroundTaskManager:
         retry_seconds: float = 60,
         on_sweep=None,
     ) -> asyncio.Task:
-        """Start the immediate and periodic production retention loop."""
-
         if not 0 < interval_seconds <= 3300:
             raise ValueError("retention interval must be in (0, 3300] seconds")
         if not 0 < retry_seconds <= interval_seconds:
@@ -2312,8 +2161,6 @@ class BackgroundTaskManager:
         return self._retention_task
 
     async def stop_retention_sweep(self) -> None:
-        """Cancel and await the tracked retention task during shutdown."""
-
         task = self._retention_task
         if task is None:
             return
@@ -2325,8 +2172,6 @@ class BackgroundTaskManager:
         self._retention_stop = None
 
     async def purge_expired(self, *, limit: int = 100) -> PurgeResult:
-        """Delegate retention to the coordinator, then prune missing DTOs."""
-
         coordinator = self._require_coordinator()
         result = await asyncio.to_thread(coordinator.purge_expired, limit=limit)
         await self.prune_missing()

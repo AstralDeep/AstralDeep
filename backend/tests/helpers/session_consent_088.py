@@ -1,4 +1,7 @@
-"""Synthetic consent selections; never used by product dispatch or IAM."""
+"""Synthetic consent-selection builders for tests only; never reachable from product
+dispatch or IAM.
+"""
+
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -7,7 +10,6 @@ from orchestrator.session_consent import ConsentSession
 
 
 def synthetic_consent(owner="owner", *, sid="consent-session", incarnation=None):
-    """Typed fake for service policy tests whose stores are explicit doubles."""
     now = datetime.now(timezone.utc)
     fence = SessionCredentialFence(
         owner_id=owner, session_id=sid, incarnation_id=incarnation or str(uuid4()),
@@ -18,7 +20,6 @@ def synthetic_consent(owner="owner", *, sid="consent-session", incarnation=None)
 
 
 def consent_from_store(sessions, owner, sid):
-    """Capture an explicit real test session; no owner-latest or token search."""
     state = sessions.capture_execution_reference(owner_id=owner, session_id=sid).state
     return ConsentSession(SessionConsentObservation(
         state.credential, state.observed_at,

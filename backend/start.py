@@ -1,4 +1,7 @@
-"""Start the full system under bounded child-process supervision."""
+"""Boots the backend under process_supervision: waits for the orchestrator's health
+check, then discovers and spawns each agents/ subdirectory as its own supervised
+child, or runs it in-process/remote-compute per feature flags.
+"""
 
 import time
 import sys
@@ -21,25 +24,10 @@ except ImportError:
 
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 
-#: Directories under ``agents/`` that are never agent packages. ``agents/tests``
-#: holds the feature-063 verb suites; ``test_remote_compute_agent.py`` ends in
-#: ``_agent.py``, which the old suffix match mistook for an entrypoint and
-#: Popen'd as "the tests agent" (ModuleNotFoundError: No module named 'agents'
-#: in production). ``agents/`` is bind-mounted from the host in production, so
-#: the tests dir is always present at runtime.
 _NON_AGENT_DIRS = frozenset({"tests", "__pycache__"})
 
 
 def _agent_entrypoint(agents_dir: str, item: str):
-    """Return ``<agents_dir>/<item>/<item>_agent.py`` when ``item`` is a
-    subprocess-startable agent package, else ``None``.
-
-    Mirrors the convention ``orchestrator/local_agents.py::_load_agent_class``
-    uses (``agents.<dir>.<dir>_agent``): ONLY the module named after its
-    directory is an entrypoint. Dunder / ``tests`` / ``__pycache__`` directories
-    and any ``test_*`` name are never candidates, so a test file that happens to
-    end in ``_agent.py`` can no longer be started as an agent.
-    """
     if item.startswith("__") or item.startswith("test_") or item in _NON_AGENT_DIRS:
         return None
     item_path = os.path.join(agents_dir, item)
@@ -52,8 +40,6 @@ def _agent_entrypoint(agents_dir: str, item: str):
 
 
 def _remote_compute_enabled() -> bool:
-    """Feature 063: read FF_REMOTE_COMPUTE exactly as the orchestrator does
-    (``shared.feature_flags``); fail closed if the flag module is unusable."""
     try:
         from shared.feature_flags import flags
         return bool(flags.is_enabled("remote_compute"))
@@ -63,13 +49,6 @@ def _remote_compute_enabled() -> bool:
 
 def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
                            interval_s: float = 0.5) -> bool:
-    """Poll the orchestrator's /healthz until it answers, dies, or times out.
-
-    Proceeds on the first successful response (fast path); stops early if
-    the orchestrator process exits so the supervisor loop can propagate its
-    exit code. Returns ``False`` on either failure; callers must fail closed
-    before spawning any dependent agent process.
-    """
     url = f"http://localhost:{port}/healthz"
     started = time.monotonic()
     deadline = started + timeout_s
@@ -96,13 +75,12 @@ def main(process_supervisor=None):
         if process_supervisor is not None
         else ProcessSupervisor()
     )
-    # Force UTF-8 encoding for stdout/stderr to avoid Windows cp1252 errors
     if sys.stdout.encoding.lower() != 'utf-8':
         try:
             sys.stdout.reconfigure(encoding='utf-8')
             sys.stderr.reconfigure(encoding='utf-8')
         except AttributeError:
-            pass  # older python versions might not have reconfigure
+            pass
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     orchestrator_script = os.path.join(base_dir, "orchestrator", "orchestrator.py")
@@ -115,19 +93,16 @@ def main(process_supervisor=None):
         print("=" * 60)
         print()
 
-        # Auto-discover agents created in the agents/ folder to determine how many ports to scan
         agents_dir = os.path.join(base_dir, "agents")
         valid_agents = []
         if os.path.exists(agents_dir):
             for item in os.listdir(agents_dir):
                 if _agent_entrypoint(agents_dir, item) is None:
                     continue
-                # Skip draft agents from port count
                 if os.path.exists(os.path.join(agents_dir, item, ".draft")):
                     continue
                 valid_agents.append(item)
 
-        # Set MAX_AGENTS based on what we found, defaulting to 1 if none found to avoid errors
         max_agents = max(1, len(valid_agents))
         env = os.environ.copy()
         env["MAX_AGENTS"] = str(max_agents)
@@ -146,18 +121,11 @@ def main(process_supervisor=None):
                 raise SystemExit(returncode)
             raise SystemExit(EX_UNAVAILABLE)
 
-        # Feature 040 (US1): when in-process agents are enabled (default), the
-        # orchestrator runs the bundled first-party agents itself — don't spawn
-        # a separate process/port for them. Drafts + any non-built-in agent are
-        # unaffected.
         inprocess_enabled = os.environ.get("FF_INPROCESS_AGENTS", "True").lower() in ("true", "1", "yes")
         try:
             from orchestrator.local_agents import BUILT_IN_AGENT_DIRS
         except Exception:
             BUILT_IN_AGENT_DIRS = ()
-        # Feature 063: remote_compute is registered in-process by
-        # local_agents.register_built_ins ONLY when FF_REMOTE_COMPUTE is on; it
-        # lives in _REMOTE_COMPUTE_AGENT_DIRS, not BUILT_IN_AGENT_DIRS.
         try:
             from orchestrator.local_agents import _REMOTE_COMPUTE_AGENT_DIRS
         except Exception:
@@ -170,25 +138,17 @@ def main(process_supervisor=None):
             if custom_agent_script is None:
                 continue
             item_path = os.path.dirname(custom_agent_script)
-            # Skip draft agents — they are started on-demand via the UI
             if os.path.exists(os.path.join(item_path, ".draft")):
                 print(f"Skipping draft agent: {item}")
                 continue
-            # Feature 040: bundled built-ins run in-process — no subprocess.
             if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
                 print(f"Running {item} in-process (no port)")
                 continue
             if item in _REMOTE_COMPUTE_AGENT_DIRS:
-                # Feature 063 (FR-005): flag OFF is byte-identical to pre-063 —
-                # the agent must not start at all, in-process or as a subprocess.
+                # Off must fully disable the agent — no in-process, no subprocess
                 if not remote_compute_enabled:
                     print(f"Skipping {item} (FF_REMOTE_COMPUTE is off)")
                     continue
-                # Flag ON + in-process: the orchestrator already registers
-                # remote-compute-1 itself; a subprocess would re-register the
-                # same id over WebSocket (redundant — dispatch prefers
-                # orch.local_agents). Only the in-process kill-switch falls
-                # through to the networked subprocess path.
                 if inprocess_enabled:
                     print(f"Running {item} in-process (no port)")
                     continue
@@ -224,10 +184,6 @@ def main(process_supervisor=None):
             time.sleep(1)
             if p_orch.poll() is not None:
                 print(" Orchestrator died!")
-                # Propagate the orchestrator's exit code (e.g. EX_CONFIG 78 from
-                # the fail-closed boot gate) instead of masking it as a clean
-                # supervisor exit. The finally block still runs (process cleanup)
-                # before this SystemExit propagates to the container exit code.
                 _rc = p_orch.returncode
                 if _rc:
                     raise SystemExit(_rc)

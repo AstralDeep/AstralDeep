@@ -1,10 +1,6 @@
-"""Deep policy coordination for Plane-owned generated-agent publication.
-
-AstralPlane owns the durable journal and immutable filesystem mechanics.  This
-module owns only product workflow identity and, once composed, the sequencing
-between those two Plane boundaries.  Publication identities are derived from
-the exact claimed draft generation so a process restart cannot create a second
-target for the same durable attempt.
+"""Coordinates Deep's publication workflow policy over AstralPlane's durable journal and
+immutable filesystem store for generated agents, deriving every external identity
+from the claimed draft generation; used by agent_lifecycle.py.
 """
 
 from __future__ import annotations
@@ -73,37 +69,27 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class GeneratedAgentPublicationError(RuntimeError):
-    """Base error with an explicit draft-claim ownership disposition."""
-
     claim_managed: bool = False
 
 
 class GeneratedAgentPublicationPreIntentError(GeneratedAgentPublicationError):
-    """Publication intent was not durable; the caller still owns its claim."""
+    pass
 
 
 class GeneratedAgentPublicationManagedError(GeneratedAgentPublicationError):
-    """The service durably terminalized the claim after journal begin."""
-
     claim_managed = True
 
 
 class GeneratedAgentPublicationRecoveryPendingError(GeneratedAgentPublicationError):
-    """A durable nonterminal intent owns the claim and requires recovery."""
-
     claim_managed = True
 
 
 class GeneratedAgentPublicationManagedCancellation(GeneratedAgentPublicationError):
-    """Cause marker attached to caller cancellation after journal begin."""
-
     claim_managed = True
 
 
 @dataclass(frozen=True, slots=True)
 class GeneratedAgentPublicationIdentity:
-    """Replay-stable UUID4-shaped identities for one claimed generation."""
-
     publication_id: uuid.UUID
     target_revision_id: uuid.UUID
     promotion_token: uuid.UUID
@@ -113,8 +99,6 @@ class GeneratedAgentPublicationIdentity:
 
 @dataclass(frozen=True, slots=True)
 class GeneratedAgentPublicationRequest:
-    """All immutable inputs for one journaled generated-agent publication."""
-
     owner_id: str
     draft_uuid: str
     source_state_revision: int
@@ -154,8 +138,6 @@ class GeneratedAgentPublicationRequest:
 
 @dataclass(frozen=True, slots=True)
 class GeneratedAgentPublicationResult:
-    """Exact committed journal, revision, filesystem, and report evidence."""
-
     publication: DraftPublicationRecord
     revision: AgentRevisionRecord
     published: PublishedBundle
@@ -165,8 +147,6 @@ class GeneratedAgentPublicationResult:
 
 @dataclass(frozen=True, slots=True)
 class GeneratedAgentRecoveryReport:
-    """Bounded evidence from one recovery pass."""
-
     inspected: int
     recovered: int
     failed: int
@@ -176,8 +156,6 @@ class GeneratedAgentRecoveryReport:
 
 @dataclass(frozen=True, slots=True)
 class GeneratedAgentPublicationReadiness:
-    """Readiness evidence without exposing owner or manifest contents."""
-
     ready: bool
     unresolved_count: int
     unresolved_publication_ids: tuple[str, ...]
@@ -185,22 +163,14 @@ class GeneratedAgentPublicationReadiness:
 
 
 class GenerationClaimLostError(RuntimeError):
-    """The exact draft-generation claim can no longer authorize effects."""
+    pass
 
 
 class _ExpiredClaimBecameJournaled(RuntimeError):
-    """The pre-journal reclaim raced with a durable publication intent."""
+    pass
 
 
 class GenerationClaimHeartbeat:
-    """Renew one DB-time claim and surface lease loss at workflow boundaries.
-
-    The supplied callback is synchronous because production renewal runs in a
-    caller-owned Plane transaction.  It always executes off the event loop.
-    ``close`` joins through repeated caller cancellation so a renewal worker is
-    never orphaned while its database outcome is still ambiguous.
-    """
-
     def __init__(
         self,
         renew: Callable[[], Any | None],
@@ -227,16 +197,12 @@ class GenerationClaimHeartbeat:
         self._closing = False
 
     def start(self) -> None:
-        """Start exactly one renewal loop on the current event loop."""
-
         if self._task is not None:
             raise RuntimeError("generation claim heartbeat is already started")
         self._task = asyncio.create_task(self._run(), name=self._task_name)
         self._task.add_done_callback(self._record_completion)
 
     def assert_healthy(self) -> None:
-        """Fail before the next effect when renewal lost durable authority."""
-
         failure = self._failure
         if failure is not None:
             raise GenerationClaimLostError(
@@ -251,8 +217,6 @@ class GenerationClaimHeartbeat:
             )
 
     async def close(self) -> None:
-        """Stop and join renewal before claim finalization or publication."""
-
         task = self._task
         if task is None:
             return
@@ -330,14 +294,6 @@ def generated_agent_publication_identity(
     generation_claim_id: str,
     target_agent_id: str,
 ) -> GeneratedAgentPublicationIdentity:
-    """Derive every external identity from one exact draft claim.
-
-    UUID version bits are forced to v4 because the established Plane schema and
-    path contract require UUID4 text.  Entropy remains the SHA-256 digest of a
-    canonical, domain-separated tuple; no host clock, process id, mapping order,
-    or Python hash seed enters the result.
-    """
-
     if not isinstance(owner_id, str) or not owner_id or len(owner_id) > 512:
         raise ValueError("owner_id must be non-empty and bounded")
     try:
@@ -437,13 +393,6 @@ class _PublicationAttempt:
 
 
 class GeneratedAgentPublicationService:
-    """Coordinate Deep policy over Plane's journal and immutable store.
-
-    The service never performs database or filesystem work on the event loop.
-    A small process-local lock protects only admission/current-attempt snapshots;
-    it is never held while calling Plane or waiting for worker completion.
-    """
-
     def __init__(
         self,
         *,
@@ -514,8 +463,6 @@ class GeneratedAgentPublicationService:
         self._recovery_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
-        """Start bounded recurring recovery on the current event loop."""
-
         with self._state_lock:
             if self._closing:
                 raise RuntimeError("generated-agent publication service is closing")
@@ -533,8 +480,6 @@ class GeneratedAgentPublicationService:
         self,
         request: GeneratedAgentPublicationRequest,
     ) -> GeneratedAgentPublicationResult:
-        """Publish once, joining exact in-process callers by source identity."""
-
         if not isinstance(request, GeneratedAgentPublicationRequest):
             raise TypeError("request must be GeneratedAgentPublicationRequest")
         with self._state_lock:
@@ -600,7 +545,7 @@ class GeneratedAgentPublicationService:
                 )
             attempt.waiters += 1
             task = attempt.task
-        if task is None:  # pragma: no cover - guarded by construction above.
+        if task is None:  # pragma: no cover
             raise RuntimeError("publication task was not retained")
 
         released = False
@@ -643,8 +588,6 @@ class GeneratedAgentPublicationService:
         draft_uuid: str,
         source_state_revision: int,
     ) -> GeneratedAgentPublicationResult | None:
-        """Load exact terminal bytes and persisted reports without regeneration."""
-
         def read_records() -> (
             tuple[
                 DraftPublicationRecord,
@@ -776,8 +719,6 @@ class GeneratedAgentPublicationService:
         )
 
     async def recover_once(self) -> GeneratedAgentRecoveryReport:
-        """Expire stale workers and reconcile a bounded nonterminal inventory."""
-
         with self._state_lock:
             if self._closing or self._recovery_running:
                 return GeneratedAgentRecoveryReport(0, 0, 0, 0, ())
@@ -839,8 +780,6 @@ class GeneratedAgentPublicationService:
                 self._recovery_owner_task = None
 
     async def readiness(self) -> GeneratedAgentPublicationReadiness:
-        """Fail readiness for unresolved durable rows, excluding exact live work."""
-
         await self._offload(self._admission.expire_execution_leases)
         journal_inventory = await self._offload(
             lambda: self._publication_inventory(
@@ -876,8 +815,6 @@ class GeneratedAgentPublicationService:
         )
 
     async def close(self) -> None:
-        """Stop admission, cancel active workflows, and join every retained task."""
-
         with self._state_lock:
             if (
                 self._closing
@@ -1612,7 +1549,7 @@ class GeneratedAgentPublicationService:
         except asyncio.CancelledError as cancelled:
             result = getattr(cancelled, "_joined_worker_result", None)
             if result is not None:
-                # A committed begin owns the claim even when its awaiter was cancelled.
+                # A committed claim survives even a cancelled awaiter
                 setattr(cancelled, "_generated_publication_intent", result)
             raise
 
@@ -1988,8 +1925,6 @@ class GeneratedAgentPublicationService:
         operation_retry_after_ms: int | None,
         **kwargs: Any,
     ) -> Any:
-        """Commit the journal and its Deep operation in one Plane transaction."""
-
         if attempt.deep_fence is None:
             raise GeneratedAgentPublicationRecoveryPendingError(
                 "terminal publication transition has no exact operation fence"
@@ -2032,8 +1967,6 @@ class GeneratedAgentPublicationService:
         operation_safe_summary: str | None,
         operation_retry_after_ms: int | None,
     ) -> Any:
-        """Reconcile a terminal transaction whose acknowledgement was ambiguous."""
-
         if attempt.deep_fence is None:
             raise GeneratedAgentPublicationRecoveryPendingError(
                 "terminal publication reconciliation has no exact operation fence"

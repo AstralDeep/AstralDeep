@@ -1,4 +1,7 @@
-"""Isolated PostgreSQL + AstralPlane composition for voice integration tests."""
+"""Isolated PostgreSQL-backed AstralPlane runtime builder for voice, history, and
+work-admission integration tests: creates and migrates a throwaway database and
+exposes seed/query helpers.
+"""
 
 from __future__ import annotations
 
@@ -27,8 +30,6 @@ _DATABASE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
 def build_test_database_url() -> str:
-    """Resolve the ordinary Deep PostgreSQL test target without legacy code."""
-
     configured = os.getenv("DATABASE_URL")
     if configured:
         return configured
@@ -45,17 +46,12 @@ def build_test_database_url() -> str:
 
 
 def _native_statement(statement: str) -> str:
-    """Adapt legacy test-seed placeholders to Plane's native psycopg contract."""
-
     return statement.replace("?", "%s")
 
 
 class VoicePlaneTestRuntime:
-    """Current Plane runtime/catalog plus bounded test-only seed operations."""
-
     def __init__(self, database_url: str) -> None:
-        # The five-owner capacity proof intentionally launches 15 contenders.
-        # Keep a small fixed margin without approaching the host RAM guard.
+        # Pool margin above the 15-contender capacity test's peak
         self._driver_pool = ThreadedConnectionPool(1, 20, database_url)
         self._pool = ConnectionPool(self._driver_pool)
         self._database = PlaneDatabase(self._pool)
@@ -85,8 +81,6 @@ class VoicePlaneTestRuntime:
         statement: str,
         parameters: Sequence[object] | Mapping[str, object] = (),
     ) -> Any:
-        """Seed or perturb an integration fixture in one committed transaction."""
-
         with self.transaction() as transaction:
             return transaction.execute(_native_statement(statement), parameters)
 
@@ -95,8 +89,6 @@ class VoicePlaneTestRuntime:
         statement: str,
         parameters: Sequence[object] | Mapping[str, object] = (),
     ) -> Any:
-        """Read one detached integration-fixture record."""
-
         with self.transaction() as transaction:
             return transaction.fetch_one(_native_statement(statement), parameters)
 
@@ -105,8 +97,6 @@ class VoicePlaneTestRuntime:
         statement: str,
         parameters: Sequence[object] | Mapping[str, object] = (),
     ) -> tuple[Any, ...]:
-        """Read detached integration-fixture records."""
-
         with self.transaction() as transaction:
             return transaction.fetch_all(_native_statement(statement), parameters)
 
@@ -116,8 +106,6 @@ class VoicePlaneTestRuntime:
 
 @contextmanager
 def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]:
-    """Create, migrate, and safely remove one isolated PostgreSQL database."""
-
     base_params = psycopg2.extensions.parse_dsn(build_test_database_url())
     admin_params = dict(base_params)
     admin_params["dbname"] = "postgres"
@@ -141,7 +129,7 @@ def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]
             finally:
                 admin.close()
             created = True
-        except psycopg2.Error as exc:  # pragma: no cover - environment gate
+        except psycopg2.Error as exc:  # pragma: no cover
             pytest.skip(
                 "cannot create isolated PostgreSQL database: "
                 f"{type(exc).__name__}"
@@ -176,16 +164,12 @@ def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]
 
 
 def ensure_voice_plane_runtime(runtime: VoicePlaneTestRuntime) -> VoicePlaneTestRuntime:
-    """Validate and return the already-composed application Plane runtime."""
-
     if not hasattr(runtime.repositories, "voice"):
         raise TypeError("voice repository is missing from the Plane catalog")
     return runtime
 
 
 def voice_session_repository(runtime: VoicePlaneTestRuntime, **kwargs: object) -> Any:
-    """Construct Deep's coordinator over the test-owned Plane runtime."""
-
     from orchestrator.voice_sessions import VoiceSessionRepository
 
     runtime = ensure_voice_plane_runtime(runtime)
@@ -197,8 +181,6 @@ def voice_session_repository(runtime: VoicePlaneTestRuntime, **kwargs: object) -
 
 
 def plane_work_admission_repository(runtime: VoicePlaneTestRuntime) -> Any:
-    """Construct Deep work-admission policy over the same Plane transaction seam."""
-
     from orchestrator.work_admission import PlaneWorkAdmissionRepository
 
     runtime = ensure_voice_plane_runtime(runtime)
@@ -209,8 +191,6 @@ def plane_work_admission_repository(runtime: VoicePlaneTestRuntime) -> Any:
 
 
 def history_manager(runtime: VoicePlaneTestRuntime) -> Any:
-    """Build HistoryManager over the current application Plane seam."""
-
     from orchestrator.history import HistoryManager
 
     runtime = ensure_voice_plane_runtime(runtime)

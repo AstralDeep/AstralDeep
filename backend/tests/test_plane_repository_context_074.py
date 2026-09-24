@@ -1,4 +1,7 @@
-"""Fail-closed tests for Deep's SQL-free AstralPlane context seam."""
+"""Fail-closed tests for backend/orchestrator/plane_repository_context.py: only the
+initialized Plane runtime is used, raw legacy database access is rejected, and the
+temporary carrier alias exposes only existing Plane objects.
+"""
 
 from __future__ import annotations
 

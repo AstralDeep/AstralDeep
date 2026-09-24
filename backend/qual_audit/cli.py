@@ -1,12 +1,6 @@
-"""CLI tool for the Academic Testing Suite audit trail.
-
-Usage:
-    python -m backend.qual_audit.cli run [--categories ...]
-    python -m backend.qual_audit.cli status [run_id]
-    python -m backend.qual_audit.cli review <run_id> [--category ...]
-    python -m backend.qual_audit.cli verify <case_id> --action ... [--rationale ...]
-    python -m backend.qual_audit.cli export <run_id> --output <dir>
-    python -m backend.qual_audit.cli rerun <case_id>
+"""Click CLI for the qualification audit trail — run, status, review, verify, export,
+and rerun subcommands — operated by engineers to drive qual_audit/runner.py,
+database.py, and latex_export.py.
 """
 
 import atexit
@@ -17,7 +11,6 @@ from pathlib import Path
 
 import click
 
-# Ensure backend is importable
 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
@@ -53,13 +46,12 @@ def _db() -> AuditDatabase:
     return _database
 
 
-@click.group()
+@click.group(help="Academic Testing Suite — audit trail CLI.")
 def cli():
-    """Academic Testing Suite — audit trail CLI."""
     pass
 
 
-@cli.command()
+@cli.command(help="Execute test suites and record results.")
 @click.option(
     "--categories", "-c", default=None,
     help="Comma-separated categories: tool_poisoning,prompt_injection,rote_adaptation,permission_delegation,transport_comparison,frontend",
@@ -73,7 +65,6 @@ def cli():
     help="Output directory for .tex files (used with --export).",
 )
 def run(categories, do_export, output):
-    """Execute test suites and record results."""
     db = _db()
     cats = [c.strip() for c in categories.split(",")] if categories else None
     include_frontend = cats is None or "frontend" in (cats or [])
@@ -108,10 +99,9 @@ def run(categories, do_export, output):
             click.echo(f"  {art.filename}")
 
 
-@cli.command()
+@cli.command(help="Show run status and verification progress.")
 @click.argument("run_id", required=False)
 def status(run_id):
-    """Show run status and verification progress."""
     db = _db()
     run_obj = db.get_run(run_id) if run_id else db.get_latest_run()
     if not run_obj:
@@ -126,7 +116,6 @@ def status(run_id):
 
     cases = db.get_cases_for_run(run_obj.id)
 
-    # Group by suite
     suites: dict = {}
     for c in cases:
         suites.setdefault(c.suite, []).append(c)
@@ -142,11 +131,10 @@ def status(run_id):
         click.echo(f"{suite:<30} {total:>6} {passed:>6} {failed:>6} {pct:>10}")
 
 
-@cli.command()
+@cli.command(help="Review test evidence for verification.")
 @click.argument("run_id")
 @click.option("--category", "-c", default=None, help="Filter to a single category")
 def review(run_id, category):
-    """Review test evidence for verification."""
     db = _db()
     cases = db.get_cases_for_run(run_id, suite=category)
     if not cases:
@@ -176,13 +164,12 @@ def review(run_id, category):
                 click.echo(f"      - {ev.evidence_type} (SHA: {ev.sha256[:12]}...)")
 
 
-@cli.command()
+@cli.command(help="Record human verification for a test case.")
 @click.argument("case_id")
 @click.option("--action", "-a", required=True, type=click.Choice(["verified", "disputed", "needs_rerun"]))
 @click.option("--rationale", "-r", default="", help="Rationale (required for disputed)")
 @click.option("--reviewer", default=None, help="Reviewer identifier")
 def verify(case_id, action, rationale, reviewer):
-    """Record human verification for a test case."""
     db = _db()
     case = db.get_case(case_id)
     if not case:
@@ -213,14 +200,13 @@ def verify(case_id, action, rationale, reviewer):
     click.echo(f"Case {case_id} → {action}")
 
 
-@cli.command()
+@cli.command(help="Generate LaTeX files from verified results.")
 @click.argument("run_id")
 @click.option(
     "--output", "-o", default=None,
     help="Output directory for .tex files (default: Qualifying_Exam/sources/tables/)",
 )
 def export(run_id, output):
-    """Generate LaTeX files from verified results."""
     from qual_audit.latex_export import _DEFAULT_OUTPUT, generate_all_artifacts
 
     if output is None:
@@ -232,7 +218,6 @@ def export(run_id, output):
         click.echo("No test cases found for this run.")
         sys.exit(1)
 
-    # Check all cases are verified
     unverified = [c for c in cases if c.verification_status == VerificationStatus.PENDING]
     if unverified:
         click.echo(f"ERROR: {len(unverified)} case(s) are still pending verification.")
@@ -241,7 +226,6 @@ def export(run_id, output):
             click.echo(f"  - {c.test_name} ({c.id})")
         sys.exit(2)
 
-    # Verify audit chain integrity
     all_audits = db.get_all_audits_for_run(run_id)
     if all_audits and not db.verify_audit_chain_for_run(
         run_id,
@@ -251,7 +235,6 @@ def export(run_id, output):
         click.echo("The audit trail may have been tampered with.")
         sys.exit(3)
 
-    # Generate LaTeX
     os.makedirs(output, exist_ok=True)
     artifacts = generate_all_artifacts(db, run_id, output)
     for art in artifacts:
@@ -259,10 +242,9 @@ def export(run_id, output):
     click.echo(f"\n{len(artifacts)} file(s) written to {output}")
 
 
-@cli.command()
+@cli.command(help="Re-execute a specific test case.")
 @click.argument("case_id")
 def rerun(case_id):
-    """Re-execute a specific test case."""
     db = _db()
     case = db.get_case(case_id)
     if not case:
@@ -270,7 +252,6 @@ def rerun(case_id):
         sys.exit(1)
 
     click.echo(f"Re-running: {case.test_name}")
-    # Use pytest to run just this one test
     import subprocess
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-xvs", "-k", case.test_name.split("::")[-1]],

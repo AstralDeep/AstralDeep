@@ -1,9 +1,6 @@
-"""Contract tests for the feature-060 process-local runtime registry.
-
-The registry is a cross-thread projection, not durable truth.  These tests
-therefore require copy-on-write publication: a reader keeps one coherent,
-immutable snapshot while a writer prepares and atomically publishes the next
-one.  Record revisions are compare-and-set fences against stale writers.
+"""Tests for the process-local runtime registry (orchestrator/runtime_registry.py):
+copy-on-write snapshot publication, compare-and-set revision fencing, and coherent
+concurrent register/remove/list.
 """
 
 from __future__ import annotations

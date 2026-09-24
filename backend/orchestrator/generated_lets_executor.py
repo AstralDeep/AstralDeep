@@ -1,14 +1,8 @@
-"""Fail-closed LETS protected-executor boundary for generated agent runtimes.
-
-Generated server and desktop runtimes use the same reviewed adapter.  It
-implements only Astral's small, versioned transport envelope while delegating
-receipt parsing, signature verification, clock checks, persistent replay
-defense, and rollback protection to the public LETS v1.0.11 executor API.
-
-Configuration is local operator state.  Raw receipts, operator keys, tool
-arguments, and filesystem paths are never returned in exceptions or card
-metadata.
+"""Fail-closed LETS protected-executor adapter shared by generated server/desktop
+runtimes, delegating receipt verification and replay defense to the LETS library and
+keeping receipts and keys out of errors.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -105,8 +99,6 @@ SCOPE_PROFILE_SHA256: Final = _scope_profile_sha256()
 
 
 class ProtectedExecutorError(RuntimeError):
-    """A value-free denial safe to return across the MCP boundary."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -114,7 +106,7 @@ class ProtectedExecutorError(RuntimeError):
 
 
 class ProtectedExecutorConfigurationError(ProtectedExecutorError):
-    """The local executor trust or identity posture is incomplete."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,8 +123,6 @@ class HostBinding:
 
 @dataclass(slots=True)
 class ProtectedExecutorRuntime:
-    """One process-lifetime executor verifier and its persistent authorities."""
-
     mode: str
     host: HostBinding | None = None
     verifier: ReceiptVerifier | None = field(default=None, repr=False)
@@ -172,8 +162,6 @@ class ProtectedExecutorRuntime:
         tool_id: str,
         tool_scope: str,
     ) -> None:
-        """Validate the exact host/effect binding and atomically claim once."""
-
         if self.mode != "enforce" or self.host is None or self.verifier is None:
             raise ProtectedExecutorError("protected_executor_not_enforcing")
         envelope = _parse_permit(metadata)
@@ -250,9 +238,7 @@ class ProtectedExecutorRuntime:
         if not hmac.compare_digest(arguments_digest, envelope["wire_arguments_sha256"]):
             raise ProtectedExecutorError("executor_arguments_mutated")
 
-        # No asynchronous or remote operation belongs between this durable
-        # claim and the actuator call in agent.dispatch().  The process lock
-        # also preserves per-binding order when aiohttp workers overlap.
+        # Keep this lock tight — no async/remote calls inside it
         with self._claim_lock:
             try:
                 self.verifier.verify_and_claim(receipt)
@@ -455,8 +441,6 @@ def load_protected_executor(
     *,
     agent_id: str,
 ) -> ProtectedExecutorRuntime:
-    """Build one executor from local state, or a no-op off/shadow posture."""
-
     values = os.environ if environ is None else environ
     mode = values.get("LETS_MODE", "off")
     if mode not in {"off", "shadow", "enforce"}:

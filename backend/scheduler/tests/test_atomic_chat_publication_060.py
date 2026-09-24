@@ -1,4 +1,8 @@
-"""Atomic scheduled-chat publication contracts for feature 060 (T028/T029)."""
+"""Tests that scheduler/runner.py and store.py publish scheduled chat messages
+atomically: invisible until the effect commits, rolled back on a pre-publish fault,
+fallback-chat creation, task-local history projection, and reservation/claim
+conflicts.
+"""
 
 from __future__ import annotations
 
@@ -45,8 +49,6 @@ from tests.helpers.voice_plane_runtime import (
 
 @pytest.fixture(scope="module")
 def postgres_database() -> Iterator[PlaneTestRuntime]:
-    """Create one isolated database initialized only by AstralPlane."""
-
     with isolated_plane_runtime("atomic_chat") as runtime:
         yield runtime
 
@@ -379,7 +381,6 @@ async def test_fault_before_publish_rolls_back_messages_and_reserved_replays(
         == 2
     )
 
-    # Even a direct defensive replay cannot append a second visible turn.
     await orch.run_scheduled_turn(
         user_id=user_id,
         chat_id=chat_id,

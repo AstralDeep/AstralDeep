@@ -1,4 +1,7 @@
-"""Tests for orchestrator.concurrency_cap.ConcurrencyCap (FR-026 / FR-027)."""
+"""Tests for orchestrator/concurrency_cap.py: acquire/release semantics, idempotent
+double-acquire, per-(user, agent) isolation, and behavior under concurrent acquires.
+"""
+
 import asyncio
 
 import pytest
@@ -46,7 +49,7 @@ async def test_release_frees_a_slot() -> None:
 @pytest.mark.asyncio
 async def test_release_unknown_job_is_noop() -> None:
     cap = ConcurrencyCap(max_per_user_agent=3)
-    await cap.release("u", "classify-1", "never-existed")  # must not raise
+    await cap.release("u", "classify-1", "never-existed")
     assert cap.inflight_count("u", "classify-1") == 0
 
 
@@ -55,9 +58,7 @@ async def test_distinct_user_agent_pairs_are_isolated() -> None:
     cap = ConcurrencyCap(max_per_user_agent=3)
     for jid in ("a", "b", "c"):
         await cap.acquire("alice", "classify-1", jid)
-    # Bob is unaffected.
     assert await cap.acquire("bob", "classify-1", "x") is True
-    # Alice on a different agent is unaffected.
     assert await cap.acquire("alice", "forecaster-1", "y") is True
 
 

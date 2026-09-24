@@ -1,14 +1,7 @@
-"""T076 — every verb of BOTH remote registries maps every driven failure onto a
-contracts/result-vocabulary verdict that names the machine and a next action, with
-zero generic/empty error strings (SC-011/FR-035).
-
-The sweeps iterate the TOOL_REGISTRYs themselves and coverage guards pin the
-argument tables to them, so a future verb cannot dodge this file: it fails
-collection-side until it declares its valid and malformed argument cases.
-
-Transport seam + monkeypatched machine resolution; no DB / SSH / network. Verbs
-are called directly (post-confirmation state, as in test_remote_control_verbs).
+"""Tests that every verb of remote_observe and remote_control maps every driven failure
+onto a contracts/result-vocabulary verdict naming the machine and a next action.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -23,7 +16,6 @@ from orchestrator.remote_transport import FakeTransport, MachineTarget, Verdict,
 
 USER = "user-1"
 
-# The fixed vocabulary (contracts/result-vocabulary.md); OK is the one success verdict.
 VOCABULARY = {v.value for v in Verdict} - {Verdict.OK.value}
 
 _GENERIC_FRAGMENTS = ("something went wrong", "unknown error", "unexpected error",
@@ -33,14 +25,10 @@ _MODULES = {"observe": obs, "control": ctl}
 ALL_KEYS = ([f"observe:{n}" for n in sorted(obs.TOOL_REGISTRY)]
             + [f"control:{n}" for n in sorted(ctl.TOOL_REGISTRY)])
 
-# list_machines reads only the caller's inventory — it never reaches the transport,
-# so its one failure mode is the missing-principal sweep below.
 NO_TRANSPORT = {"observe:list_machines"}
 TRANSPORT_KEYS = [k for k in ALL_KEYS if k not in NO_TRANSPORT]
-MACHINE_KEYS = TRANSPORT_KEYS  # every transport verb resolves a machine ref first
+MACHINE_KEYS = TRANSPORT_KEYS
 
-# Arguments that pass every shape guard, so the driven failure is the one under test.
-# read_job_output uses an explicit output_path so no tracked-job store is touched.
 VALID_ARGS = {
     "observe:list_machines": {},
     "observe:probe_machine": {"machine_id": "dgx"},
@@ -63,9 +51,6 @@ VALID_ARGS = {
     "control:signal_process": {"machine_id": "dgx", "pid": "123", "signal": "TERM"},
 }
 
-# One malformed-argument case per verb (list_machines takes no arguments). The
-# guard must refuse BEFORE any transport traffic. read_job_output maps a relative
-# path to not_found ("no tracked output…") — a vocabulary verdict, by design.
 MALFORMED_ARGS = {
     "observe:probe_machine": ({}, Verdict.INVALID_ARGUMENT.value),
     "observe:list_queue": ({}, Verdict.INVALID_ARGUMENT.value),
@@ -98,12 +83,8 @@ MALFORMED_ARGS = {
                                Verdict.INVALID_ARGUMENT.value),
 }
 
-# Control verbs where the remote RAN the command and refused it (non-zero exit).
-# upload_file has no exit path — its transfer failures are the transport sweeps.
 REMOTE_REJECTION = sorted(k for k in ALL_KEYS
                           if k.startswith("control:") and k != "control:upload_file")
-# manage_package's `which` probe must find a manager for the rejection to land on
-# the mutating command itself.
 _REJECTION_STDOUT = {"control:manage_package": "/usr/bin/apt-get"}
 
 
@@ -142,7 +123,6 @@ def _fn(key):
 
 
 def _setup(key, monkeypatch, tmp_path):
-    # upload_file resolves the attachment before it touches the transport.
     if key == "control:upload_file":
         monkeypatch.setattr("orchestrator.attachments.repository.AttachmentRepository.get_by_id",
                             lambda self, aid, uid: SimpleNamespace(filename="payload.bin",
@@ -170,12 +150,9 @@ def _assert_vocab_failure(key, res, expected=None):
     low = next_action.lower()
     assert not any(g in low for g in _GENERIC_FRAGMENTS), \
         f"{key}: generic error text {next_action!r}"
-    # The rendered Alert is built from the same typed fields — never a raw traceback.
     alert = str(res.get("_ui_components"))
     assert verdict in alert and "Traceback" not in alert
 
-
-# ── coverage guards: a future verb cannot dodge these sweeps ──────────────────
 
 def test_valid_args_cover_every_registry_verb():
     assert set(VALID_ARGS) == set(ALL_KEYS), \
@@ -191,17 +168,13 @@ def test_registries_have_no_colliding_verb_names():
     assert not set(obs.TOOL_REGISTRY) & set(ctl.TOOL_REGISTRY)
 
 
-# ── missing principal: the ONE failure every verb shares (incl. list_machines) ─
-
 @pytest.mark.parametrize("key", ALL_KEYS)
 def test_missing_principal_is_refused_with_vocabulary_verdict(key):
     t = _fake()
-    res = _fn(key)(**VALID_ARGS[key])  # no user_id on the call
+    res = _fn(key)(**VALID_ARGS[key])
     _assert_vocab_failure(key, res, Verdict.UNATTENDED_REFUSED.value)
     assert t.calls == [], f"{key}: refusal must precede any transport traffic"
 
-
-# ── transport failures ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("key", TRANSPORT_KEYS)
 def test_unreachable_transport_maps_to_unreachable(key, monkeypatch, tmp_path):
@@ -218,8 +191,6 @@ def test_auth_failure_maps_to_auth_failed(key, monkeypatch, tmp_path):
     res = _fn(key)(user_id=USER, **VALID_ARGS[key])
     _assert_vocab_failure(key, res, Verdict.AUTH_FAILED.value)
 
-
-# ── inventory / credential failures ───────────────────────────────────────────
 
 @pytest.mark.parametrize("key", MACHINE_KEYS)
 def test_unknown_machine_maps_to_not_found(key, monkeypatch):
@@ -242,8 +213,6 @@ def test_missing_credential_maps_to_credential_not_configured(key, monkeypatch):
     assert t.calls == []
 
 
-# ── malformed arguments: refused before any transport traffic ─────────────────
-
 @pytest.mark.parametrize("key", sorted(MALFORMED_ARGS))
 def test_malformed_args_map_to_vocabulary_without_touching_transport(key):
     kwargs, expected = MALFORMED_ARGS[key]
@@ -253,13 +222,10 @@ def test_malformed_args_map_to_vocabulary_without_touching_transport(key):
     assert t.calls == [], f"{key}: a bad argument must never reach the transport"
 
 
-# ── remote rejection: the command RAN and the machine refused it ──────────────
-
 @pytest.mark.parametrize("key", REMOTE_REJECTION)
 def test_remote_rejection_is_surfaced_not_swallowed(key):
     _fake(command_exit=1, command_stderr="sbatch: error: Permission denied",
           command_stdout=_REJECTION_STDOUT.get(key, ""))
     res = _fn(key)(user_id=USER, **VALID_ARGS[key])
     _assert_vocab_failure(key, res, Verdict.PARTIAL.value)
-    # the actionable stderr tail reaches the user, not a generic message
     assert "Permission denied" in res["_data"]["next_action"]

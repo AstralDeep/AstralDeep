@@ -1,3 +1,8 @@
+"""Tests for orchestrator/mcp_server_endpoint.py: the MCP HTTP surface's
+permission-projected tool listing, per-call rechecks, auth challenges, JSON-RPC
+parsing, CORS, and admission cancellation on disconnect.
+"""
+
 from __future__ import annotations
 
 import json

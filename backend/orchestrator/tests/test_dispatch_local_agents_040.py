@@ -1,15 +1,8 @@
-"""Regression test: `execute_single_tool` must dispatch to feature-040
-IN-PROCESS agents.
-
-The nine bundled first-party agents register with ``websocket=None`` — they
-live in ``orch.local_agents`` (and ``agent_cards``) but never in
-``orch.agents``. The availability guard in ``execute_single_tool`` predated
-feature 040 and only consulted ``agents``/``a2a_clients``, so every
-single-tool turn against a built-in short-circuited with
-"No agent available for tool ..." while ``execute_parallel_tools`` (whose
-guard was updated) succeeded. Found live driving the Windows client:
-"roll 3 dice" → plan=['roll_dice'] → generic no-agent Alert.
+"""Regression tests for orchestrator/orchestrator.py's execute_single_tool dispatching
+to in-process (websocket=None) built-in agents, which its availability guard
+previously missed while execute_parallel_tools already handled them.
 """
+
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -33,7 +26,7 @@ def _make_card(agent_id: str, tools: list) -> AgentCard:
 def _build_orch() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch.agent_cards = {"dice-roller-1": _make_card("dice-roller-1", ["roll_dice"])}
-    orch.agents = {}          # in-process agents never appear here (websocket=None)
+    orch.agents = {}
     orch.a2a_clients = {}
     orch.local_agents = {"dice-roller-1": MagicMock()}
     orch.agent_urls = {}
@@ -59,8 +52,6 @@ def _build_orch() -> Orchestrator:
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
-    # Feature 054: dispatch resolves the call context's persisted LLM
-    # config via orch._llm_store (async get/get_system); none here.
     orch._llm_store = MagicMock()
     orch._llm_store.get = AsyncMock(return_value=None)
     orch._llm_store.get_system = AsyncMock(return_value=None)
@@ -95,17 +86,12 @@ def _make_tool_call(name: str, args: dict = None):
 
 
 def _pin_gates_off(monkeypatch) -> None:
-    """Flag-gated pre-dispatch gates (supervisor/HITL/taint) read env at check
-    time; earlier test modules may leave them enabled — pin them off so this
-    test exercises exactly the availability guard."""
     for flag in ("FF_HITL_HIGHRISK", "FF_TAINT_TRACKING", "FF_RUNTIME_SUPERVISOR"):
         monkeypatch.setenv(flag, "false")
 
 
 @pytest.mark.asyncio
 async def test_single_tool_dispatch_reaches_in_process_agent(monkeypatch) -> None:
-    """A tool mapped to a local (in-process) agent must pass the availability
-    guard and reach the audited dispatch — not the generic no-agent Alert."""
     _pin_gates_off(monkeypatch)
     orch = _build_orch()
     result = await orch.execute_single_tool(
@@ -129,11 +115,9 @@ async def test_single_tool_dispatch_reaches_in_process_agent(monkeypatch) -> Non
 
 @pytest.mark.asyncio
 async def test_unknown_tool_still_gets_no_agent_alert(monkeypatch) -> None:
-    """The guard must still reject tools that resolve to no registered,
-    A2A, or local agent."""
     _pin_gates_off(monkeypatch)
     orch = _build_orch()
-    orch._find_tool_owner = MagicMock(return_value=None)  # not a disabled-tool case
+    orch._find_tool_owner = MagicMock(return_value=None)
     result = await orch.execute_single_tool(
         websocket=MagicMock(),
         tool_call=_make_tool_call("phantom_tool"),

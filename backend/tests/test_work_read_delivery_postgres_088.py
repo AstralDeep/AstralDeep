@@ -1,8 +1,8 @@
-"""Work delivery uses original normal JWT and real, uncached session state.
-
-Only external JWKS/refresh replies are synthetic. A held public read reproduces
-credential changes after authentication without changing the stored Work record.
+"""Tests that orchestrator/work_api.py's Work read delivery uses the original uncached
+JWT/session state: session or policy changes during a held read block delivery, while
+an unchanged session preserves the existing response.
 """
+
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -47,7 +47,6 @@ async def held_read(app, identity, service, monkeypatch, headers, during, *, end
     async def transaction(callback, **kwargs):
         nonlocal held
         value = await original(callback, **kwargs)
-        # Hold only the actual public operation projection, not later liveness reads.
         public = isinstance(value, dict) and value.get("id") == identity
         public |= isinstance(value, list) and any(row.get("id") == identity for row in value)
         if public and not held:
@@ -105,7 +104,6 @@ async def test_original_bearer_expires_while_read_waits(read_host, service, fixt
     expiry = int(time.time()) + 2
 
     async def expire():
-        # Release against the actual signed credential's deadline, not a guessed delay.
         await asyncio.sleep(max(0, expiry + 0.05 - time.time()))
 
     response = await held_read(app, identity, service, monkeypatch,
@@ -214,8 +212,6 @@ async def test_mutable_incoming_request_cannot_switch_private_original_credentia
 
     async def keys(*args, **kwargs):
         result = await original(*args, **kwargs)
-        # A delayed middleware still owns the original ASGI scope. It cannot
-        # rewrite the authenticated token or cookie issuance during JWT's await.
         incoming["scope"].setdefault("state", {})["delegation_subject_token"] = fixture[3](sub="other-owner")
         incoming["scope"]["headers"] = [(b"authorization", b"Bearer invalid")]
         return result
@@ -389,7 +385,7 @@ async def test_final_database_clock_caps_original_principal_even_when_host_clock
     from jose import jwt
     app, identity = read_host
     token = (await asyncio.to_thread(fixture[0].get, fixture[2]))["access_token"]
-    expiry = jwt.get_unverified_claims(token)["exp"]  # Fixture clock input, never authority.
+    expiry = jwt.get_unverified_claims(token)["exp"]
     assert time.time() < expiry
     sessions = runtime.repositories.history.sessions
     original = sessions.get_execution_state
@@ -397,8 +393,6 @@ async def test_final_database_clock_caps_original_principal_even_when_host_clock
     def observed(query, **kwargs):
         actual = original(query, **kwargs)
         assert actual is not None and actual.credential.hard_expires_at > expiry + 1
-        # Keep the actual PG identity/fence and vary only the reported clock;
-        # neither the system clock nor the database clock/config is changed.
         return replace(actual, observed_at=datetime.fromtimestamp(expiry + 1, UTC))
 
     monkeypatch.setattr(sessions, "get_execution_state", observed)

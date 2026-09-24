@@ -1,10 +1,8 @@
-"""Captured evidence + secret-safe redaction (T004).
-
-``CapturedEvidence`` holds the concrete observations a scenario produced so a
-verdict can be justified and replayed. ``redact`` scrubs any credential-shaped
-value before persistence; if a known secret value would have appeared, the run is
-flagged (FR-022 / SC-011) — fail-safe, never silent.
+"""Captured evidence and secret-safe redaction: CapturedEvidence holds a scenario's
+observations for verdict and replay; redact() scrubs credential-shaped values before
+persistence and flags any near-exposure.
 """
+
 from __future__ import annotations
 
 import re
@@ -13,16 +11,14 @@ from typing import Any, Dict, List, Tuple
 
 _MASK = "***REDACTED***"
 
-# Generic secret-shaped patterns (defence in depth, on top of known env values).
 _GENERIC_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]{8,}", re.IGNORECASE),
-    re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{6,}"),  # JWT
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),  # OpenAI-style key
+    re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{6,}"),
+    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
 )
 
 
 def _redact_text(text: str, secret_values: List[str]) -> Tuple[str, bool]:
-    """Return ``(masked_text, hit)`` masking known values and generic patterns."""
     hit = False
     for sv in secret_values:
         if sv and sv in text:
@@ -36,16 +32,6 @@ def _redact_text(text: str, secret_values: List[str]) -> Tuple[str, bool]:
 
 
 def redact(obj: Any, secret_values: List[str]) -> Tuple[Any, bool]:
-    """Recursively redact secret-shaped values from a JSON-like structure.
-
-    Args:
-        obj: Any JSON-serializable structure (dict/list/str/scalar).
-        secret_values: Live credential values to mask (from RunConfig).
-
-    Returns:
-        ``(clean_obj, near_exposure)`` — ``near_exposure`` is True if any value
-        was masked, which the caller surfaces as a run flag (FR-022).
-    """
     near = False
     if isinstance(obj, str):
         cleaned, hit = _redact_text(obj, secret_values)
@@ -69,27 +55,20 @@ def redact(obj: Any, secret_values: List[str]) -> Tuple[Any, bool]:
 
 @dataclass
 class CapturedEvidence:
-    """Concrete observations from one scenario, retained for replay + audit.
-
-    All fields are redacted before persistence; ``near_exposure`` records whether
-    any value had to be masked.
-    """
-
     evidence_id: str
     scenario_id: str
-    run_mode: str  # real_keycloak | mock_inprocess
+    run_mode: str
     messages: List[Dict[str, Any]] = field(default_factory=list)
     components: List[Dict[str, Any]] = field(default_factory=list)
     workspace_state: List[Dict[str, Any]] = field(default_factory=list)
     audit_rows: List[Dict[str, Any]] = field(default_factory=list)
-    audit_chain_ok: Any = True  # True or first-broken event_id (str)
+    audit_chain_ok: Any = True
     client_inspection: Dict[str, Any] = field(default_factory=dict)
     device_diff: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
     near_exposure: bool = False
 
     def redacted(self, secret_values: List[str]) -> "CapturedEvidence":
-        """Return a redaction-clean copy, flagging any near-exposure."""
         msgs, h1 = redact(self.messages, secret_values)
         comps, h2 = redact(self.components, secret_values)
         ws, h3 = redact(self.workspace_state, secret_values)
@@ -111,7 +90,6 @@ class CapturedEvidence:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize for the JSON run record."""
         return {
             "evidence_id": self.evidence_id,
             "scenario_id": self.scenario_id,
@@ -129,11 +107,6 @@ class CapturedEvidence:
 
 
 def flatten_components(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract delivered component dicts from captured server->client messages.
-
-    Handles both ``ui_render`` (``components: [...]``) and ``ui_upsert``
-    (``ops: [{component: {...}}]``) wire shapes.
-    """
     out: List[Dict[str, Any]] = []
     for msg in messages:
         if not isinstance(msg, dict):

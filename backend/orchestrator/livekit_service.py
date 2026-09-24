@@ -1,8 +1,6 @@
-"""Orchestrator-only LiveKit grant and room-administration boundary.
-
-Only this process receives the LiveKit API key pair. The isolated media worker
-and clients receive separate short-lived, room-scoped join grants and never an
-API credential or room-administration capability.
+"""Sole holder of the LiveKit API credential: mints least-privilege, room-scoped join
+grants for clients and the media worker, and performs bounded room administration so
+neither ever receives an API key. Used by voice_bootstrap.py and voice_media.py.
 """
 
 from __future__ import annotations
@@ -24,17 +22,15 @@ _OPAQUE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 class LiveKitConfigError(RuntimeError):
-    """Deployment configuration cannot safely expose voice media."""
+    pass
 
 
 class LiveKitUnavailable(RuntimeError):
-    """Content-free LiveKit operation failure safe for logs and clients."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class LiveKitSettings:
-    """Validated, explicit settings; credential fields are absent from repr."""
-
     internal_url: str
     public_url: str
     api_key: str = field(repr=False)
@@ -110,8 +106,6 @@ class RoomAdmin(Protocol):
 
 
 class WorkerReadiness(Protocol):
-    """Credential-free exact-profile worker-pool readiness projection."""
-
     ready: bool
     reason: str
     worker_count: int
@@ -124,8 +118,6 @@ class WorkerReadinessProvider(Protocol):
 
 
 class LiveKitTokenIssuer:
-    """Exact-version LiveKit token builder with explicit credentials only."""
-
     def __init__(self, api_key: str, api_secret: str) -> None:
         _require_livekit_api()
         self._api_key = api_key
@@ -188,8 +180,6 @@ class _LiveKitRoomAdmin:
         self._client: Any | None = None
 
     def _runtime_client(self) -> tuple[Any, Any]:
-        """Create aiohttp-backed LiveKitAPI only inside a running event loop."""
-
         if self._client is None:
             from livekit import api
 
@@ -243,8 +233,6 @@ class _LiveKitRoomAdmin:
 
 
 class LiveKitService:
-    """Mint least-privilege grants and perform bounded room operations."""
-
     def __init__(
         self,
         settings: LiveKitSettings,
@@ -275,8 +263,6 @@ class LiveKitService:
         worker_identity: str,
         issued_at: datetime,
     ) -> dict[str, Any]:
-        """Mint one client grant restricted to its assigned room."""
-
         _opaque(grant_id, "grant_id")
         _uuid4(session_id, "session_id")
         _positive(generation, "generation")
@@ -313,8 +299,6 @@ class LiveKitService:
         worker_identity: str,
         issued_at: datetime,
     ) -> dict[str, Any]:
-        """Mint a distinct memory-only direct-RTC worker grant."""
-
         _positive(revision, "revision")
         _opaque(room_name, "room_name")
         _opaque(worker_identity, "worker_identity")
@@ -369,8 +353,6 @@ class LiveKitService:
         worker_identity: str,
         issued_at: datetime,
     ) -> dict[str, Any]:
-        """Fence the prior participant before exposing the replacement grant."""
-
         await self.remove_participant(room_name, previous_identity)
         return self.mint_client_grant(
             grant_id=grant_id,
@@ -384,8 +366,6 @@ class LiveKitService:
         )
 
     async def readiness(self) -> LiveKitReadiness:
-        """Return a short-lived, coalesced, content-free room-service probe."""
-
         now = _aware(self._clock(), "clock")
         cached = self._readiness_cache
         if cached is not None and now < cached[0]:
@@ -424,8 +404,6 @@ class LiveKitService:
         )
 
     async def ensure_room(self, room_name: str) -> None:
-        """Create the bounded two-party room through admin authority only."""
-
         _opaque(room_name, "room_name")
         await self._admin_operation(
             self._admin.create_room(room_name),
@@ -451,9 +429,6 @@ class LiveKitService:
             async with asyncio.timeout(self._settings.operation_timeout_seconds):
                 await operation
         except Exception as exc:
-            # Teardown and participant fencing are retry-safe. A participant
-            # that already left, or a room already deleted by LiveKit after
-            # its last participant departed, is the requested end state.
             if ignore_not_found and _is_livekit_not_found(exc):
                 return
             raise LiveKitUnavailable(reason) from exc
@@ -467,8 +442,6 @@ class LiveKitService:
 
 
 def _is_livekit_not_found(exc: Exception) -> bool:
-    """Recognize only the pinned SDK's typed 404 response."""
-
     try:
         from livekit.api.twirp_client import ServerError
     except (ImportError, ModuleNotFoundError):
@@ -520,8 +493,6 @@ _CAPABILITY_REASONS = {
 
 @dataclass(frozen=True, slots=True)
 class VoiceCapability:
-    """Safe, exact-profile capability response with no endpoint or credential."""
-
     status: str
     reason: str
     checked_at: datetime
@@ -567,14 +538,6 @@ class VoiceCapability:
 
 
 class VoiceCapabilityService:
-    """Coalesce bounded LiveKit and preflight-gated worker readiness probes.
-
-    A worker is permitted to register only after its exact model-inventory,
-    bounded batch-ASR, Kokoro/af_heart and 24-kHz WAV startup probes pass.  The
-    worker pool therefore acts as the credential-free projection of those
-    worker-local checks; this process never receives the speech endpoint/key.
-    """
-
     def __init__(
         self,
         *,

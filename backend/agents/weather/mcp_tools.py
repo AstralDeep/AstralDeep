@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""
-MCP Tools for Weather Agent — tool functions that return UI Primitives.
-
-Includes:
-- Geocoding tools: geocode_location
-- Weather tools: get_current_weather, get_hourly_forecast, get_daily_forecast, get_weekly_forecast
-- Visualization tools: generate_weather_charts
+"""Weather agent tools: geocoding, current/extended/historical conditions, alerts,
+location comparison, and hourly/daily/weekly forecasts against Open-Meteo, rendered
+as astralprims UI components.
 """
 import asyncio
 import os
@@ -28,7 +24,6 @@ from .data_models import ExtendedWeatherData, HistoricalWeatherData, WeatherAler
 
 logger = logging.getLogger(__name__)
 
-# Weather code mapping (WMO codes)
 WEATHER_CODES = {
     0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
     45: "Foggy", 48: "Depositing rime fog",
@@ -42,21 +37,17 @@ WEATHER_CODES = {
     95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail"
 }
 
-# Open-Meteo API configuration
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1"
 GEOCODING_API_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
-# Rate limiting configuration
-RATE_LIMIT_REQUESTS = 100  # Open-Meteo free tier limit per day
-RATE_LIMIT_WINDOW = 86400  # 24 hours in seconds
+RATE_LIMIT_REQUESTS = 100
+RATE_LIMIT_WINDOW = 86400
 
-# Cache for geocoding results to reduce API calls
 _geocoding_cache = {}
 
 
 def _make_api_request(url: str, params: Dict, timeout: int = 10) -> Dict:
-    """Make HTTP request to Open-Meteo API with error handling."""
     try:
         headers = {
             "User-Agent": "AstralDeep/1.0 (Weather Agent)"
@@ -76,18 +67,6 @@ def _make_api_request(url: str, params: Dict, timeout: int = 10) -> Dict:
 
 
 def _build_weather_params(latitude: float, longitude: float, extra_current: str = "", extra_daily: str = "") -> Dict[str, Any]:
-    """
-    Build standard Open-Meteo forecast API parameters.
-    
-    Args:
-        latitude: Latitude coordinate
-        longitude: Longitude coordinate
-        extra_current: Additional current parameters to include (comma-separated)
-        extra_daily: Additional daily parameters to include (comma-separated)
-        
-    Returns:
-        Dictionary of API parameters
-    """
     current_params = "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,uv_index,pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
     daily_params = "sunrise,sunset"
     
@@ -109,20 +88,6 @@ def _build_weather_params(latitude: float, longitude: float, extra_current: str 
 
 
 def _validate_date_range(start_date: str, end_date: Optional[str] = None, max_days: int = 92) -> Tuple[datetime.date, datetime.date]:
-    """
-    Validate date range for historical weather queries.
-    
-    Args:
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format (optional, defaults to start_date)
-        max_days: Maximum allowed date range (default: 92)
-        
-    Returns:
-        Tuple of (start_date_obj, end_date_obj) as date objects
-        
-    Raises:
-        ValueError: If dates are invalid, in the future, or range too large
-    """
     from datetime import datetime, date
     today = date.today()
     
@@ -142,7 +107,6 @@ def _validate_date_range(start_date: str, end_date: Optional[str] = None, max_da
     if start > end:
         raise ValueError(f"start_date ({start_date}) cannot be after end_date ({end_date or start_date}).")
     
-    # Historical API only supports past dates (up to yesterday)
     if start > today or end > today:
         raise ValueError(f"Historical dates cannot be in the future. Today is {today}.")
     
@@ -160,17 +124,6 @@ def geocode_location(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Convert city and state names to latitude/longitude coordinates.
-    
-    Args:
-        city: City name (required)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     cache_key = f"{city},{state},{country}".lower()
     if cache_key in _geocoding_cache:
         logger.info(f"Using cached geocoding result for {cache_key}")
@@ -211,27 +164,21 @@ def geocode_location(
         }
     
     try:
-        # Build search queries with fallback strategy
         queries_to_try = []
         
-        # 1. Full query: city, state, country
         query_parts = [city]
         if state:
             query_parts.append(state)
         query_parts.append(country)
         queries_to_try.append(", ".join(query_parts))
         
-        # 2. City and country only
         queries_to_try.append(f"{city}, {country}")
         
-        # 3. City and state only (if state provided)
         if state:
             queries_to_try.append(f"{city}, {state}")
         
-        # 4. City only
         queries_to_try.append(city)
         
-        # Try each query until we get results
         data = None
         successful_query = None
         
@@ -281,7 +228,6 @@ def geocode_location(
                 )
             ])
         
-        # Use the first result (most relevant)
         result = data["results"][0]
         location_data = {
             "name": result.get("name", ""),
@@ -290,17 +236,15 @@ def geocode_location(
             "elevation": result.get("elevation", 0),
             "feature_code": result.get("feature_code", ""),
             "country": result.get("country", ""),
-            "admin1": result.get("admin1", ""),  # State/province
+            "admin1": result.get("admin1", ""),
             "timezone": result.get("timezone", ""),
             "population": result.get("population", 0)
         }
         
-        # Cache the result
         _geocoding_cache[cache_key] = location_data
         
-        # Update success message to show which query worked
         success_msg = f"Successfully geocoded {city}"
-        if successful_query != city:  # If we used a different query
+        if successful_query != city:
             success_msg += f" (using query: {successful_query})"
         
         components = [
@@ -354,8 +298,6 @@ def geocode_location(
 
 
 def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
-    """Extract latitude and longitude from arguments."""
-    # Check if latitude and longitude are provided and not None
     latitude = kwargs.get("latitude")
     longitude = kwargs.get("longitude")
     
@@ -365,7 +307,6 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
         except (TypeError, ValueError) as e:
             raise ValueError(f"Invalid coordinates: {latitude}, {longitude}. Error: {e}")
     
-    # Otherwise, geocode using city/state
     city = kwargs.get("city")
     state = kwargs.get("state")
     country = kwargs.get("country", "US")
@@ -373,7 +314,6 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
     if not city:
         raise ValueError("Either provide latitude/longitude or city name")
     
-    # Use geocoding function
     geocode_result = geocode_location(city, state, country)
     if "_data" not in geocode_result:
         raise ValueError(f"Could not geocode location: {city}, {state}")
@@ -384,17 +324,12 @@ def _get_coordinates_from_args(**kwargs) -> Tuple[float, float]:
 
 
 def _fraction(percent) -> float:
-    """A 0-100 reading as the 0-1 fraction ``Gauge`` and ``ProgressBar`` use.
-
-    Returns 0.0 for a missing or unparseable reading rather than raising: a
-    weather panel that fails because one field was absent is worse than a
-    gauge reading zero beside the number that says otherwise.
-    """
     try:
         value = float(percent)
     except (TypeError, ValueError):
         return 0.0
-    if value != value:  # NaN
+    # NaN check: NaN is the only value unequal to itself
+    if value != value:
         return 0.0
     return max(0.0, min(1.0, value / 100.0))
 
@@ -408,27 +343,12 @@ def get_current_weather(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get current weather conditions for a location.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Build API request
         params = _build_weather_params(lat, lon)
         
         logger.info(f"Fetching current weather for coordinates: {lat}, {lon}")
@@ -436,18 +356,15 @@ def get_current_weather(
         
         current = data.get("current", {})
         
-        # Map weather codes to human-readable descriptions
         weather_code = current.get("weather_code", 0)
         weather_desc = WEATHER_CODES.get(weather_code, "Unknown")
         
-        # Determine variant based on conditions
         variant = "default"
         if weather_code in [95, 96, 99, 65, 67, 75, 82, 86]:
-            variant = "error"  # Severe weather
+            variant = "error"
         elif weather_code in [61, 63, 71, 73, 80, 81, 85]:
-            variant = "warning"  # Moderate precipitation
+            variant = "warning"
         
-        # Build UI components
         location_str = f"{city or 'Unknown'}, {state or country}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
         components = [
@@ -455,10 +372,6 @@ def get_current_weather(
                 title=f"Current Weather - {location_str}",
                 id="current-weather-card",
                 content=[
-                    # Feature 089: current conditions are a set of readings,
-                    # which is what a stat group is. Non-web clients receive
-                    # the ROTE fallback -- a grid of metric tiles -- so their
-                    # rendering is unchanged.
                     StatGroup(
                         title="Current conditions",
                         columns=4,
@@ -487,8 +400,6 @@ def get_current_weather(
                             },
                         ],
                     ),
-                    # Humidity is a bounded percentage, which is the one thing
-                    # a gauge reads better than a number does.
                     Gauge(
                         label="Humidity",
                         value=_fraction(current.get("relative_humidity_2m")),
@@ -545,27 +456,12 @@ def get_extended_weather(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get extended weather data including UV index, air quality, and sunrise/sunset.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Build API request (same as get_current_weather but we already added extra parameters)
         params = _build_weather_params(lat, lon)
         
         logger.info(f"Fetching extended weather for coordinates: {lat}, {lon}")
@@ -574,13 +470,10 @@ def get_extended_weather(
         current = data.get("current", {})
         daily = data.get("daily", {})
         
-        # Create extended data model
         extended = ExtendedWeatherData.from_api_response(current, daily)
         
-        # Build UI components
         location_str = f"{city or 'Unknown'}, {state or country}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
-        # Metric cards for UV, AQI, sunrise, sunset
         metric_grid = Grid(
             columns=4,
             children=[
@@ -613,7 +506,6 @@ def get_extended_weather(
             ]
         )
         
-        # Additional air quality metrics if available
         extra_metrics = []
         if extended.pm10 is not None:
             extra_metrics.append(MetricCard(title="PM10", value=f"{extended.pm10} μg/m³", id="pm10-metric"))
@@ -673,33 +565,14 @@ def get_historical_weather(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get historical weather data for a location and date range.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        start_date: Start date in YYYY-MM-DD format (required)
-        end_date: End date in YYYY-MM-DD format (optional, defaults to start_date)
-        daily: Comma-separated daily variables (default: temperature_2m_max,precipitation_sum,weather_code)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Validate dates
         start_obj, end_obj = _validate_date_range(start_date, end_date)
         
-        # Build API request
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -728,16 +601,12 @@ def get_historical_weather(
                 )
             ])
         
-        # Create historical data model
         historical = HistoricalWeatherData.from_api_response(daily_data, start_date, end_date or start_date)
         
-        # Map weather codes to descriptions
         weather_descriptions = [WEATHER_CODES.get(code, "Unknown") for code in weather_codes]
         
-        # Build UI components
         location_str = f"{city or 'Unknown'}, {state or country}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
-        # Line chart for temperature trend
         chart_data = [{
             "x": times,
             "y": temperatures,
@@ -747,10 +616,9 @@ def get_historical_weather(
             "line": {"color": "#FF6B6B", "width": 3}
         }]
         
-        # Table data
         table_headers = ["Date", "Max Temp (°F)", "Precipitation (in)", "Conditions"]
         table_rows = []
-        for i in range(min(10, len(times))):  # Show first 10 days
+        for i in range(min(10, len(times))):
             table_rows.append([
                 times[i],
                 f"{temperatures[i]}",
@@ -758,7 +626,6 @@ def get_historical_weather(
                 weather_descriptions[i]
             ])
         
-        # Summary metrics
         avg_temp = sum(temperatures) / len(temperatures) if temperatures else 0
         total_precip = sum(precipitation) if precipitation else 0
         
@@ -838,27 +705,12 @@ def get_weather_alerts(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get severe weather alerts for a location (US only).
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates and location details
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Geocode to get state code (admin1)
         geocode_result = geocode_location(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
@@ -874,7 +726,6 @@ def get_weather_alerts(
         admin1 = location_data.get("admin1", "")
         country_code = location_data.get("country", "")
         
-        # Only US locations supported for NWS alerts
         if country_code != "US":
             return create_ui_response([
                 Alert(
@@ -883,7 +734,6 @@ def get_weather_alerts(
                 )
             ])
         
-        # Map state name to abbreviation (simple mapping for common states)
         state_abbr_map = {
             "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
             "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
@@ -911,7 +761,6 @@ def get_weather_alerts(
                 )
             ])
         
-        # Fetch alerts from NWS API
         nws_url = f"https://api.weather.gov/alerts/active?area={state_abbr}"
         headers = {"User-Agent": "AstralDeep/1.0 (Weather Agent)"}
         response = requests.get(nws_url, headers=headers, timeout=10)
@@ -927,9 +776,8 @@ def get_weather_alerts(
                 )
             ])
         
-        # Parse alerts
         alerts = []
-        for feature in features[:5]:  # Limit to 5 alerts
+        for feature in features[:5]:
             props = feature.get("properties", {})
             title = props.get("headline", "No title")
             severity = props.get("severity", "unknown").lower()
@@ -938,8 +786,6 @@ def get_weather_alerts(
             expires = props.get("expires")
             area = props.get("areaDesc", "Unknown area")
             
-            # Convert ISO datetime strings to datetime objects
-            # (datetime is imported at module level — no local import needed)
             try:
                 effective_dt = datetime.fromisoformat(effective.replace('Z', '+00:00')) if effective else datetime.now()
                 expires_dt = datetime.fromisoformat(expires.replace('Z', '+00:00')) if expires else datetime.now()
@@ -956,12 +802,10 @@ def get_weather_alerts(
                 area=area
             ))
         
-        # Build UI components
         location_str = f"{city or 'Unknown'}, {state or admin1 or country_code}" if city else f"{lat:.4f}°, {lon:.4f}°"
         
         alert_components = []
         for alert in alerts:
-            # Map severity to variant
             variant_map = {
                 "extreme": "error",
                 "severe": "error",
@@ -1032,19 +876,7 @@ def compare_locations(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Compare current weather across multiple locations (up to 3).
-    
-    Args:
-        city1, state1, country1, latitude1, longitude1: First location
-        city2, state2, country2, latitude2, longitude2: Second location (required)
-        city3, state3, country3, latitude3, longitude3: Third location (optional)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Build list of location arguments
         locations = []
         if city1 or latitude1 is not None:
             locations.append({
@@ -1079,7 +911,6 @@ def compare_locations(
                 )
             ])
         
-        # Fetch weather for each location in parallel
         def fetch_one(loc):
             try:
                 result = get_current_weather(
@@ -1092,7 +923,6 @@ def compare_locations(
                 if "_data" in result:
                     return result["_data"]
                 else:
-                    # Error case
                     return {"error": result.get("_ui_components", [])}
             except Exception as e:
                 return {"error": str(e)}
@@ -1103,7 +933,6 @@ def compare_locations(
             for future in concurrent.futures.as_completed(future_to_loc):
                 results.append(future.result())
         
-        # Check for errors
         errors = [r for r in results if "error" in r]
         if errors:
             error_messages = [e["error"] for e in errors]
@@ -1114,7 +943,6 @@ def compare_locations(
                 )
             ])
         
-        # Build comparison UI
         location_names = []
         for i, loc in enumerate(locations):
             if loc["city"]:
@@ -1123,7 +951,6 @@ def compare_locations(
                 name = f"{results[i].get('coordinates', {}).get('latitude', 'N/A')}°, {results[i].get('coordinates', {}).get('longitude', 'N/A')}°"
             location_names.append(name)
         
-        # Metric cards for each location
         metric_grids = []
         for i, (name, data) in enumerate(zip(location_names, results)):
             current = data.get("current", {})
@@ -1167,7 +994,6 @@ def compare_locations(
                 )
             )
         
-        # Bar chart comparing temperatures
         chart_data = [{
             "x": location_names,
             "y": [r.get("current", {}).get("temperature_2m", 0) for r in results],
@@ -1176,7 +1002,6 @@ def compare_locations(
             "marker": {"color": "#FF6B6B"}
         }]
         
-        # Table summary
         table_headers = ["Location", "Temp (°F)", "Humidity (%)", "Wind (mph)", "Pressure (hPa)", "Conditions"]
         table_rows = []
         for name, data in zip(location_names, results):
@@ -1254,31 +1079,14 @@ def get_hourly_forecast(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get hourly forecast for a location.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        hours: Number of hours to forecast (default: 24, max: 168)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Limit hours to API maximum
         hours = min(max(hours, 1), 168)
         
-        # Build API request
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -1305,7 +1113,6 @@ def get_hourly_forecast(
                 )
             ])
         
-        # Create line chart data
         chart_data = [{
             "x": times,
             "y": temperatures,
@@ -1315,10 +1122,9 @@ def get_hourly_forecast(
             "line": {"color": "#FF6B6B", "width": 3}
         }]
         
-        # Create table data
         table_headers = ["Time", "Temperature", "Precipitation %"]
         table_rows = []
-        for i in range(min(12, len(times))):  # Show first 12 hours in table
+        for i in range(min(12, len(times))):
             time_str = times[i].replace("T", " ")
             table_rows.append([
                 time_str,
@@ -1385,31 +1191,14 @@ def get_daily_forecast(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get daily forecast for a location.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        days: Number of days to forecast (default: 7, max: 16)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get coordinates
         lat, lon = _get_coordinates_from_args(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude
         )
         
-        # Limit days to API maximum
         days = min(max(days, 1), 16)
         
-        # Build API request
         params = {
             "latitude": lat,
             "longitude": lon,
@@ -1437,7 +1226,6 @@ def get_daily_forecast(
                 )
             ])
         
-        # Create bar chart data for temperature range
         chart_data = [
             {
                 "x": dates,
@@ -1455,7 +1243,6 @@ def get_daily_forecast(
             }
         ]
         
-        # Create table data
         table_headers = ["Date", "High", "Low", "Precipitation"]
         table_rows = []
         for i in range(len(dates)):
@@ -1526,21 +1313,7 @@ def get_weekly_forecast(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """
-    Get weekly forecast summary for a location.
-    
-    Args:
-        city: City name (optional if latitude/longitude provided)
-        state: State/province name (optional)
-        country: Country code (default: "US")
-        latitude: Latitude coordinate (optional if city provided)
-        longitude: Longitude coordinate (optional if city provided)
-        
-    Returns:
-        Dict with _ui_components and _data keys.
-    """
     try:
-        # Get 7-day forecast
         forecast_result = get_daily_forecast(
             city=city, state=state, country=country,
             latitude=latitude, longitude=longitude,
@@ -1553,7 +1326,6 @@ def get_weekly_forecast(
         data = forecast_result["_data"]
         daily_data = data.get("daily_data", {})
         
-        # Calculate weekly statistics
         max_temps = daily_data.get("max_temperatures", [])
         min_temps = daily_data.get("min_temperatures", [])
         precip_sums = daily_data.get("precipitation_sums", [])
@@ -1572,7 +1344,6 @@ def get_weekly_forecast(
         max_high = max(max_temps) if max_temps else 0
         min_low = min(min_temps) if min_temps else 0
         
-        # Determine overall weather trend
         trend = "stable"
         if len(max_temps) >= 3:
             if max_temps[-1] > max_temps[0] + 5:
@@ -1646,10 +1417,6 @@ def get_weekly_forecast(
         ])
 
 
-# =============================================================================
-# STREAMING TOOLS (001-tool-stream-ui reference implementation)
-# =============================================================================
-
 @streaming_tool(
     name="live_temperature",
     description=(
@@ -1681,14 +1448,6 @@ def get_weekly_forecast(
     min_fps=5,
 )
 async def live_temperature(args: Dict[str, Any], credentials: Dict[str, Any]) -> AsyncIterator[StreamComponents]:
-    """Yield a Metric component every ``interval_s`` seconds with the latest
-    temperature reading from Open-Meteo.
-
-    Reference implementation for the 001-tool-stream-ui feature. The
-    cleanup pattern (try/finally) is REQUIRED of every streaming tool —
-    when the orchestrator sends ToolStreamCancel, the SDK propagates
-    GeneratorExit through this generator and the finally block runs.
-    """
     interval = max(1, min(60, int(args.get("interval_s", 5))))
     lat = float(args["latitude"])
     lon = float(args["longitude"])
@@ -1697,9 +1456,6 @@ async def live_temperature(args: Dict[str, Any], credentials: Dict[str, Any]) ->
     try:
         while True:
             try:
-                # Run the blocking HTTP call in a thread so we don't stall
-                # the event loop. Open-Meteo's free tier supports the
-                # current_weather=true short form.
                 data = await asyncio.to_thread(
                     _make_api_request,
                     f"{OPEN_METEO_BASE_URL}/forecast",
@@ -1735,12 +1491,8 @@ async def live_temperature(args: Dict[str, Any], credentials: Dict[str, Any]) ->
                 )
 
             except asyncio.CancelledError:
-                # Reraise so the outer finally runs
                 raise
             except Exception as e:
-                # Surface as a transient error chunk; the orchestrator's
-                # _classify_error will route this to RECONNECTING (when US5
-                # lands) and the auto-retry kicks in.
                 logger.warning(f"live_temperature poll failed: {e}")
                 yield StreamComponents(
                     components=[],
@@ -1756,10 +1508,6 @@ async def live_temperature(args: Dict[str, Any], credentials: Dict[str, Any]) ->
     finally:
         logger.info(f"live_temperature stream stopping (lat={lat}, lon={lon})")
 
-
-# =============================================================================
-# TOOL REGISTRY
-# =============================================================================
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "live_temperature": {
@@ -1778,10 +1526,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             },
             "required": ["latitude", "longitude"],
         },
-        # 001-tool-stream-ui: marks this tool as push-streamable so the
-        # orchestrator routes stream_subscribe to StreamManager rather than
-        # the legacy poll path. validate_streaming_metadata enforces the
-        # shape at register_agent time.
         "metadata": {
             "streamable": True,
             "streaming_kind": "push",

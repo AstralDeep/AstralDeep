@@ -1,4 +1,8 @@
-"""Actual startup schedules private-note expiry and joins it before Plane closes."""
+"""Tests that real startup schedules private-note expiry after recovery and joins that
+task before AstralPlane shuts down, using backend/orchestrator/orchestrator.py,
+session_store.py and personalization/explicit_note_service.py.
+"""
+
 import asyncio
 import time
 from types import SimpleNamespace
@@ -54,7 +58,7 @@ async def test_actual_startup_owns_expiry_after_recovery_and_before_plane_shutdo
         recover_once=recover, start=lambda: history.append("publication.start"), close=AsyncMock())
 
     class ReachedFleetStartup(BaseException):
-        """Stop before the unrelated agent fleet, network and provider startup."""
+        pass
 
     def stop_at_fleet(_):
         raise ReachedFleetStartup

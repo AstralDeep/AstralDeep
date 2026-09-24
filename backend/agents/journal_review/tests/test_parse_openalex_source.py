@@ -1,9 +1,8 @@
-"""_parse_openalex_source field extraction.
-
-Covers the trust fix: OpenAlex's own ``2yr_mean_citedness`` is the metric we
-store (rounded to 2 decimals); the mathematically wrong ``approx_impact_factor``
-computation is gone for good.
+"""Tests for journal_review/mcp_tools.py's _parse_openalex_source: field extraction,
+citedness rounding, and confirmation that no impact-factor approximation survives in
+the parsed record.
 """
+
 from agents.journal_review.mcp_tools import _fmt_citedness, _parse_openalex_source
 from agents.journal_review.tests.conftest import make_source
 
@@ -23,7 +22,7 @@ def test_extracts_core_fields() -> None:
 
 def test_two_year_mean_citedness_rounded_to_two_decimals() -> None:
     j = _parse_openalex_source(make_source())
-    assert j["two_year_mean_citedness"] == 35.46  # 35.456 rounded
+    assert j["two_year_mean_citedness"] == 35.46
 
 
 def test_citedness_integer_value_is_kept() -> None:
@@ -57,7 +56,6 @@ def test_citedness_non_numeric_is_none() -> None:
 
 
 def test_no_impact_factor_key_survives() -> None:
-    """The wrong metric must be gone, not just renamed."""
     j = _parse_openalex_source(make_source())
     assert "approx_impact_factor" not in j
     assert not [k for k in j if "impact" in k.lower()]
@@ -66,4 +64,4 @@ def test_no_impact_factor_key_survives() -> None:
 def test_fmt_citedness_display() -> None:
     assert _fmt_citedness(None) == "N/A"
     assert _fmt_citedness(35.46) == "35.46"
-    assert _fmt_citedness(0.0) == "0.0"  # zero is shown, not N/A
+    assert _fmt_citedness(0.0) == "0.0"

@@ -1,4 +1,6 @@
-"""Tests for deterministic feature-074 extraction provenance."""
+"""Tests for scripts/migration/build_extraction_manifest.py: canonical ordering, digest
+stability, selection validation, and CLI output.
+"""
 
 from __future__ import annotations
 
@@ -69,7 +71,6 @@ def source_repo(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "update-index", "--chmod=+x", "backend/rote/adapter.py")
     _git(repo, "commit", "-m", "Create extraction source fixture")
 
-    # Both paths are beneath a selected root, but neither is in the commit.
     (repo / "backend/webrender/generated.cache").write_text(
         "ignored\n", encoding="utf-8"
     )

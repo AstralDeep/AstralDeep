@@ -1,8 +1,8 @@
-"""Shared checks used by more than one property (D1 — single source).
-
-``vocabulary_ok`` is referenced by both US1 (tangible UI) and US3 (backend-only
-UI); it is defined once here and imported by both modules.
+"""Shared vocabulary_ok check used by both the tangible-UI and backend-only-UI
+properties (backend/verification/checks/tangible_ui.py, thin_client.py): every
+delivered component type must be in webrender's published registry.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,7 +13,6 @@ from verification.evidence import CapturedEvidence
 
 
 def _published_types() -> set:
-    """The backend's authoritative recognized-component-type set (FR-023)."""
     from webrender import allowed_primitive_types
 
     return set(allowed_primitive_types())
@@ -40,8 +39,6 @@ def _vocabulary_run(evidence: CapturedEvidence, inputs: Dict[str, Any]) -> Check
 
 
 def _vocabulary_counter(evidence: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # Adversarial: try to find ANY delivered component whose type is not in the
-    # published registry. If found, the positive result is refuted.
     allowed = _published_types()
     bad = [t for t in _component_types(evidence.components) if t not in allowed]
     if bad:
@@ -50,7 +47,6 @@ def _vocabulary_counter(evidence: CapturedEvidence, inputs: Dict[str, Any]) -> C
 
 
 def vocabulary_check(property_name: str) -> Check:
-    """Build the shared ``vocabulary_ok`` check tagged with ``property_name``."""
     return Check(
         check_id="vocabulary_ok",
         property=property_name,

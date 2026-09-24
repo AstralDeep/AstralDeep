@@ -1,4 +1,8 @@
-"""Unit tests for shared.external_http SSRF / egress guard."""
+"""Tests for shared/external_http.py's SSRF/egress guard: rejects loopback, RFC1918,
+link-local metadata, and IPv4-in-IPv6-wrapped addresses, including 6to4 and NAT64
+encodings.
+"""
+
 import socket
 from unittest.mock import patch
 
@@ -12,7 +16,6 @@ from shared.external_http import (
 
 
 def _fake_resolve(host_to_addr):
-    """Return a stand-in for socket.getaddrinfo that maps hosts to a fixed IP."""
     def _resolver(host, *args, **kwargs):
         if host not in host_to_addr:
             raise socket.gaierror(f"unknown host: {host}")
@@ -64,7 +67,7 @@ def test_rejects_link_local_metadata() -> None:
 
 def test_allows_public_address() -> None:
     with patch("socket.getaddrinfo", _fake_resolve({"public.example.com": "8.8.8.8"})):
-        validate_egress_url("https://public.example.com/")  # should not raise
+        validate_egress_url("https://public.example.com/")
 
 
 def test_allow_list_overrides_block() -> None:
@@ -72,7 +75,7 @@ def test_allow_list_overrides_block() -> None:
         validate_egress_url(
             "http://internal.local/",
             allowed_private_hosts=["internal.local"],
-        )  # should not raise
+        )
 
 
 def test_dns_failure_blocks_egress() -> None:
@@ -88,20 +91,16 @@ def test_url_without_host_is_blocked() -> None:
         validate_egress_url("https:///path-only")
 
 
-# ---------------------------------------------------------------------------
-# IPv4-in-IPv6 wrappers (the classic SSRF-bypass class net_guard already names)
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize(
     "addr",
     [
-        "::ffff:127.0.0.1",        # IPv4-mapped loopback
-        "::ffff:169.254.169.254",  # IPv4-mapped cloud metadata
-        "::ffff:10.0.0.5",         # IPv4-mapped RFC1918
-        "2002:7f00:0001::",        # 6to4 wrapping 127.0.0.1
-        "2002:a9fe:a9fe::",        # 6to4 wrapping 169.254.169.254
-        "64:ff9b::7f00:1",         # NAT64 well-known prefix wrapping 127.0.0.1
-        "64:ff9b::a9fe:a9fe",      # NAT64 wrapping the metadata address
+        "::ffff:127.0.0.1",
+        "::ffff:169.254.169.254",
+        "::ffff:10.0.0.5",
+        "2002:7f00:0001::",
+        "2002:a9fe:a9fe::",
+        "64:ff9b::7f00:1",
+        "64:ff9b::a9fe:a9fe",
     ],
 )
 def test_rejects_ipv4_embedded_in_ipv6(addr: str) -> None:
@@ -120,11 +119,8 @@ def test_rejects_ipv4_embedded_in_ipv6(addr: str) -> None:
         ("64:ff9b::7f00:1", "127.0.0.1"),
     ],
 )
+# Must be our decode — stdlib only classifies these since 3.11.10
 def test_guard_decodes_the_embedded_ipv4_itself(addr: str, embedded: str) -> None:
-    """The block must come from OUR decode, not from the stdlib happening to
-    classify the wrapper. CPython only classifies these correctly from 3.11.10
-    (post CVE-2024-4032), so pin the decode explicitly — a base-image downgrade
-    then fails CI instead of silently reopening the bypass."""
     from shared import external_http
 
     assert str(external_http._decode_embedded_ipv4(addr)) == embedded
@@ -133,8 +129,6 @@ def test_guard_decodes_the_embedded_ipv4_itself(addr: str, embedded: str) -> Non
 
 @pytest.mark.parametrize("addr", ["64:ff9b::8.8.8.8", "2002:0808:0808::"])
 def test_decoding_never_widens_the_guard(addr: str) -> None:
-    """A wrapper around a PUBLIC IPv4 is still a non-global IPv6 literal in its
-    own right, so it stays blocked — decoding may only ever tighten."""
     assert _is_private_address(addr) is True
 
 

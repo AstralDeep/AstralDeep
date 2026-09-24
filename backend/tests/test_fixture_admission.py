@@ -1,4 +1,7 @@
-"""Verification turns use real Plane admission, leases and terminal cleanup."""
+"""Tests for verification-turn admission (orchestrator/work_admission.py,
+verification/drivers/fixture_admission.py) over real Plane: fencing, lease renewal,
+capacity refusal, and terminal cleanup on cancellation or failure.
+"""
 
 from __future__ import annotations
 
@@ -253,8 +256,6 @@ async def test_blocking_calls_keep_loop_responsive_and_settle_through_cancellati
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         task.cancel()
-        # Both the first cancellation and repeated cleanup cancellation must
-        # leave the worker joined, rather than free its graph underneath it.
         await asyncio.sleep(0.02)
         task.cancel()
         await asyncio.sleep(0.02)

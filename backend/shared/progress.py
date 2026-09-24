@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""
-Progress indication system for AstralDeep.
-
-Provides ProgressEvent, ProgressPhase, ProgressStep enums and ProgressEmitter
-for emitting structured progress events during agent generation and testing.
+"""Structured progress events (phase, step, percentage) for agent creation and testing,
+built by ProgressEmitter and serialized to dicts or SSE frames for streaming to the
+client.
 """
 
 import json
@@ -17,15 +15,12 @@ logger = logging.getLogger("ProgressSystem")
 
 
 class ProgressPhase(str, Enum):
-    """Phase of the agent creation process."""
     GENERATION = "generation"
     TESTING = "testing"
     INSTALLATION = "installation"
 
 
 class ProgressStep(str, Enum):
-    """Individual steps within each phase."""
-    # Generation steps
     PROMPT_CONSTRUCTION = "prompt_construction"
     LLM_API_CALL = "llm_api_call"
     RESPONSE_RECEIVED = "response_received"
@@ -34,7 +29,6 @@ class ProgressStep(str, Enum):
     CODE_CLEANING = "code_cleaning"
     GENERATION_COMPLETE = "generation_complete"
     
-    # Testing steps
     SAVING_FILES = "saving_files"
     STARTING_PROCESS = "starting_process"
     WAITING_FOR_BOOT = "waiting_for_boot"
@@ -46,7 +40,6 @@ class ProgressStep(str, Enum):
     INTEGRATION_READY = "integration_ready"
     TESTING_COMPLETE = "testing_complete"
     
-    # Error/status steps
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
@@ -54,10 +47,9 @@ class ProgressStep(str, Enum):
 
 @dataclass
 class ProgressEvent:
-    """Structured progress event for tracking agent creation progress."""
     phase: ProgressPhase
     step: ProgressStep
-    percentage: int  # 0-100
+    percentage: int
     message: str
     data: Optional[Dict[str, Any]] = None
     timestamp: float = None
@@ -66,13 +58,11 @@ class ProgressEvent:
         if self.timestamp is None:
             self.timestamp = time.time()
         
-        # Validate percentage
         if not 0 <= self.percentage <= 100:
             logger.warning(f"Progress percentage out of range: {self.percentage}")
             self.percentage = max(0, min(100, self.percentage))
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
         return {
             "type": "progress",
             "phase": self.phase.value,
@@ -84,12 +74,10 @@ class ProgressEvent:
         }
     
     def to_sse(self) -> str:
-        """Convert to Server-Sent Event format."""
         return f"data: {json.dumps(self.to_dict())}\n\n"
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ProgressEvent":
-        """Create ProgressEvent from dictionary."""
         return cls(
             phase=ProgressPhase(data["phase"]),
             step=ProgressStep(data["step"]),
@@ -101,8 +89,6 @@ class ProgressEvent:
 
 
 class ProgressEmitter:
-    """Utility class for emitting progress events with callbacks."""
-    
     def __init__(self, 
                  phase: ProgressPhase,
                  callback: Optional[Callable[[ProgressEvent], None]] = None):
@@ -119,23 +105,8 @@ class ProgressEmitter:
              message: str,
              data: Optional[Dict[str, Any]] = None,
              force: bool = False) -> ProgressEvent:
-        """
-        Emit a progress event.
-        
-        Args:
-            step: The current progress step
-            percentage: Completion percentage (0-100)
-            message: Human-readable message
-            data: Additional context data
-            force: Force emission even if throttled
-            
-        Returns:
-            The emitted ProgressEvent
-        """
-        # Throttle rapid emissions (min 100ms between events)
         current_time = time.time()
         if not force and current_time - self.last_emit_time < 0.1:
-            # Skip rapid emissions to avoid overwhelming the client
             return None
         
         event = ProgressEvent(
@@ -150,16 +121,13 @@ class ProgressEmitter:
         self.last_emit_time = current_time
         self.emit_count += 1
         
-        # Log for debugging
         logger.debug(f"Progress: {self.phase.value}.{step.value} ({percentage}%): {message}")
         
-        # Call callback if provided
         if self.callback:
             try:
                 self.callback(event)
             except Exception as e:
                 logger.error(f"Progress callback failed: {e}")
-                # Don't raise, continue execution
         
         return event
     
@@ -168,12 +136,6 @@ class ProgressEmitter:
                  percentage: int,
                  message: str,
                  data: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Emit and return SSE formatted string.
-        
-        Returns:
-            SSE formatted string ready for streaming
-        """
         event = self.emit(step, percentage, message, data)
         if event:
             return event.to_sse()
@@ -183,7 +145,6 @@ class ProgressEmitter:
                    message: str,
                    error: Optional[Exception] = None,
                    data: Optional[Dict[str, Any]] = None) -> ProgressEvent:
-        """Emit an error progress event."""
         error_data = {
             "error": True,
             "error_message": message,
@@ -195,16 +156,15 @@ class ProgressEmitter:
         
         return self.emit(
             step=ProgressStep.ERROR,
-            percentage=100,  # Error completes the phase
+            percentage=100,
             message=message,
             data=error_data,
-            force=True  # Always emit errors
+            force=True
         )
     
     def emit_warning(self, 
                      message: str,
                      data: Optional[Dict[str, Any]] = None) -> ProgressEvent:
-        """Emit a warning progress event."""
         warning_data = {"warning": True, "warning_message": message}
         if data:
             warning_data.update(data)
@@ -217,12 +177,9 @@ class ProgressEmitter:
         )
     
     def get_elapsed_time(self) -> float:
-        """Get elapsed time in seconds since emitter creation."""
         return time.time() - self.start_time
     
     def _get_current_percentage(self) -> int:
-        """Get current percentage based on phase and step."""
-        # Default mapping if not explicitly provided
         phase_steps = {
             ProgressPhase.GENERATION: [
                 (ProgressStep.PROMPT_CONSTRUCTION, 10),
@@ -252,17 +209,10 @@ class ProgressEmitter:
             if self.current_step == step_def:
                 return percentage
         
-        # Default to 0 if not found
         return 0
 
 
 def create_log_event(message: str, status: str = "log") -> str:
-    """
-    Create a legacy log event for backward compatibility.
-    
-    Returns:
-        SSE formatted log event
-    """
     event = {
         "status": status,
         "message": message,
@@ -274,14 +224,9 @@ def create_log_event(message: str, status: str = "log") -> str:
 def create_progress_from_log(message: str, 
                              phase: ProgressPhase,
                              step: ProgressStep) -> ProgressEvent:
-    """
-    Create a progress event from a log message.
-    
-    Useful for converting existing log messages to progress events.
-    """
     return ProgressEvent(
         phase=phase,
         step=step,
-        percentage=0,  # Unknown percentage
+        percentage=0,
         message=message
     )

@@ -1,11 +1,8 @@
-"""Feature 027 — T012: Agents & permissions surface (structural/behavioral).
-
-Runs without Postgres: a minimal fake orchestrator exposes the typed Plane
-agent-management projection, registry, tool-permission facade, credential
-manager, cards, and draft predicate used by the surface. Assertions are
-structural (key markup + handler side-effects), mirroring test_topbar.py /
-test_render_golden.py style.
+"""Tests for orchestrator/projection_surfaces/agents.py: list/detail rendering,
+tool-permission master/section gating, visibility and credential handlers, and
+destructive-tool markers, against a fake Plane agent-management repository.
 """
+
 import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -24,10 +21,6 @@ from orchestrator.projection_surfaces import agents as surface
 def run(coro):
     return asyncio.run(coro)
 
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 class FakeSkill:
     def __init__(self, sid, description, scope, name=None, metadata=None):
@@ -293,7 +286,6 @@ class FakeOrch:
 
 
 def make_orch(**kwargs):
-    """Two live agents (alpha owned by alice, beta public) + one hidden draft."""
     cards = {
         "alpha": FakeCard(
             "alpha", "Alpha Agent", "Reads and writes data for analysis pipelines.",
@@ -326,10 +318,6 @@ def make_orch(**kwargs):
     return FakeOrch(**defaults)
 
 
-# ---------------------------------------------------------------------------
-# Module contract
-# ---------------------------------------------------------------------------
-
 def test_module_contract():
     assert surface.TITLE == "Agents & permissions"
     assert not getattr(surface, "ADMIN_ONLY", False)
@@ -338,25 +326,21 @@ def test_module_contract():
         assert action in surface.HANDLERS, f"missing handler: {action}"
 
 
-# ---------------------------------------------------------------------------
-# List view
-# ---------------------------------------------------------------------------
-
 def test_list_mine_tab_shows_owned_only_and_hides_drafts():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {}))
     assert "Alpha Agent" in html
-    assert "Beta Agent" not in html  # bob's agent, not mine
-    assert "Ghost Draft" not in html  # non-live draft hidden
-    assert "Connected" in html  # status/health
-    assert "Yours" in html  # owner badge
+    assert "Beta Agent" not in html
+    assert "Ghost Draft" not in html
+    assert "Connected" in html
+    assert "Yours" in html
 
 
 def test_list_public_tab_shows_public_agents():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {"tab": "public"}))
     assert "Beta Agent" in html and "Alpha Agent" not in html
-    assert ">Public<" in html  # badge
+    assert ">Public<" in html
 
 
 def test_list_tabs_and_drafts_button():
@@ -364,7 +348,6 @@ def test_list_tabs_and_drafts_button():
     html = run(surface.render(orch, "u1", ["user"], {"tab": "mine"}))
     assert "&quot;tab&quot;: &quot;mine&quot;" in html
     assert "&quot;tab&quot;: &quot;public&quot;" in html
-    # Drafts tab opens the drafts surface (not implemented here).
     assert "&quot;surface&quot;: &quot;drafts&quot;" in html
     assert "Drafts" in html
 
@@ -372,10 +355,8 @@ def test_list_tabs_and_drafts_button():
 def test_list_row_click_through_and_enable_toggle():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {}))
-    # Click-through opens detail via chrome_open with agent_id.
     assert 'data-ui-action="chrome_open"' in html
     assert "&quot;agent_id&quot;: &quot;alpha&quot;" in html
-    # Enabled agent shows a Disable toggle sending enabled=false.
     assert 'data-ui-action="chrome_agent_enabled"' in html
     assert "&quot;enabled&quot;: false" in html
     assert ">Disable<" in html
@@ -405,40 +386,28 @@ def test_list_unknown_tab_falls_back_to_mine():
     assert 'data-tab="mine"' in html
 
 
-# ---------------------------------------------------------------------------
-# Detail view
-# ---------------------------------------------------------------------------
-
 def test_detail_sections_tool_switches_named_tool_kind_with_state():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
-    # Feature 052 (T015/T016): the per-render backfill is gone — it runs once
-    # as the _migrate_backfill_tool_kinds_052 boot migration instead.
     assert orch.tool_permissions.backfilled == []
-    # Tool switches keep the <tool>::<kind> names; enabled state from internals.
     assert 'name="get_data::tools:read" checked' in html
     assert 'name="write_data::tools:write"' in html
     assert 'name="write_data::tools:write" checked' not in html
-    # Only kinds with tools render a section (read + write here).
     assert 'data-perm-section="tools:read"' in html
     assert 'data-perm-section="tools:write"' in html
     assert 'data-perm-section="tools:search"' not in html
     assert 'data-perm-section="tools:system"' not in html
-    # Sections live in a data-ui-form and save via collect.
     assert "data-ui-form" in html
     assert 'data-ui-action="chrome_perms_save"' in html
     assert 'data-ui-collect="true"' in html
-    # Tool descriptions shown.
     assert "Fetch records" in html
 
 
 def test_detail_section_masters_reflect_state_and_gate_tools():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
-    # Read has an enabled tool -> master on; its tool switch is interactive.
     assert 'name="__scope::tools:read" checked' in html
     assert 'name="get_data::tools:read" checked disabled' not in html
-    # Write has no enabled tool and scope off -> master off; tool disabled + dimmed.
     assert 'name="__scope::tools:write" checked' not in html
     assert 'name="write_data::tools:write" disabled' in html
     assert "opacity-50" in html
@@ -450,20 +419,16 @@ def test_detail_section_master_on_from_scope_even_if_all_tools_off():
     orch.tool_permissions.scopes["tools:read"] = True
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
     assert 'name="__scope::tools:read" checked' in html
-    # Tools stay individually off but remain interactive under an on master.
     assert 'name="get_data::tools:read" checked' not in html
     assert 'name="get_data::tools:read" disabled' not in html
 
 
 def test_detail_unknown_scope_tools_listed_but_not_configurable():
-    """Tools with a non-standard scope stay visible (the old matrix listed
-    every tool) in an inert Other section instead of vanishing."""
     orch = make_orch()
     orch.tool_permissions.scope_map["weird_tool"] = "tools:custom"
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
     assert "weird_tool" in html and "Not configurable" in html
-    assert 'name="weird_tool::tools:custom"' not in html  # no switch rendered
-    # An agent exposing ONLY unknown-scope tools must not claim it has none.
+    assert 'name="weird_tool::tools:custom"' not in html
     orch.tool_permissions.scope_map = {"only_weird": "tools:custom"}
     orch.tool_permissions.per_tool = {}
     html2 = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
@@ -475,8 +440,7 @@ def test_detail_visibility_toggle_owner_only():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
     assert 'data-ui-action="chrome_visibility_set"' in html
-    assert "&quot;is_public&quot;: true" in html  # alpha is private -> offer public
-    # Non-owner (beta belongs to bob) gets no visibility section.
+    assert "&quot;is_public&quot;: true" in html
     html_beta = run(surface.render(orch, "u1", ["user"], {"agent_id": "beta"}))
     assert 'data-ui-action="chrome_visibility_set"' not in html_beta
 
@@ -532,7 +496,7 @@ def test_detail_back_link_and_enable_toggle():
     orch = make_orch()
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha", "tab": "public"}))
     assert "Back to agents" in html
-    assert "&quot;tab&quot;: &quot;public&quot;" in html  # back preserves tab
+    assert "&quot;tab&quot;: &quot;public&quot;" in html
     assert 'data-ui-action="chrome_agent_enabled"' in html
     assert "&quot;detail&quot;: true" in html
 
@@ -544,10 +508,6 @@ def test_detail_unknown_agent_renders_error_not_raise():
     assert "astral-chrome-notice" in html
     assert "Back to agents" in html
 
-
-# ---------------------------------------------------------------------------
-# chrome_perms_save
-# ---------------------------------------------------------------------------
 
 def test_perms_save_translates_fields_and_mirrors_scopes():
     orch = make_orch()
@@ -561,7 +521,6 @@ def test_perms_save_translates_fields_and_mirrors_scopes():
     assert "success" in notice or "green" in notice
     assert ("get_data", "tools:read", False) in orch.tool_permissions.set_calls
     assert ("write_data", "tools:write", True) in orch.tool_permissions.set_calls
-    # Scope mirror derived from effective per-tool state (api.py parity).
     assert orch.tool_permissions.scope_calls, "set_agent_scopes not called"
     assert orch.tool_permissions.scope_calls[-1]["tools:write"] is True
 
@@ -585,7 +544,7 @@ def test_perms_save_rejects_wrong_kind_whole_payload():
          "fields": {"get_data::tools:read": True, "get_data::tools:write": True}},
     ))
     assert "does not apply" in notice
-    assert orch.tool_permissions.set_calls == []  # no half-applied state
+    assert orch.tool_permissions.set_calls == []
 
 
 def test_perms_save_unknown_agent_and_empty_fields():
@@ -599,9 +558,6 @@ def test_perms_save_unknown_agent_and_empty_fields():
 
 
 def test_perms_save_master_off_forces_section_off():
-    """Section gate wins: a collected tool switch left on cannot survive an
-    off master, and the agent-wide scope is written off (not legacy-mirrored
-    back on)."""
     orch = make_orch()
     _, _, notice = run(surface.HANDLERS["chrome_perms_save"](
         orch, None, "u1", ["user"],
@@ -632,7 +588,6 @@ def test_perms_save_master_on_preserves_individual_tool_offs():
     ))
     assert "success" in notice or "green" in notice
     assert ("write_data", "tools:write", False) in orch.tool_permissions.set_calls
-    # Master writes the scope on even though every tool under it is off.
     assert orch.tool_permissions.scope_calls[-1]["tools:write"] is True
 
 
@@ -647,10 +602,6 @@ def test_perms_save_rejects_unknown_master_kind_without_writes():
     assert orch.tool_permissions.set_calls == []
     assert orch.tool_permissions.scope_calls == []
 
-
-# ---------------------------------------------------------------------------
-# chrome_visibility_set
-# ---------------------------------------------------------------------------
 
 def test_visibility_set_owner_succeeds():
     orch = make_orch()
@@ -676,10 +627,6 @@ def test_visibility_set_no_ownership_record():
         orch, None, "u1", ["user"], {"agent_id": "lone", "is_public": True}))
     assert "No ownership record" in notice
 
-
-# ---------------------------------------------------------------------------
-# chrome_credentials_save / chrome_credential_delete
-# ---------------------------------------------------------------------------
 
 def test_credentials_save_filters_blank_values():
     orch = make_orch()
@@ -719,7 +666,7 @@ def test_credentials_save_probe_failure_does_not_block_save():
     orch = make_orch()
     orch.agent_cards["alpha"].skills.append(
         FakeSkill("_credentials_check", "probe", "tools:read"))
-    orch.probe_response = None  # no response -> unreachable
+    orch.probe_response = None
     _, _, notice = run(surface.HANDLERS["chrome_credentials_save"](
         orch, None, "u1", ["user"], {"agent_id": "alpha", "fields": {"api_key": "x"}}))
     assert ("set_bulk", {"api_key": "x"}) in orch.credential_manager.calls
@@ -737,10 +684,6 @@ def test_credential_delete():
     assert "No credential key" in notice2
 
 
-# ---------------------------------------------------------------------------
-# chrome_agent_enabled
-# ---------------------------------------------------------------------------
-
 def test_agent_enabled_toggle_writes_inverse_disabled_flag():
     orch = make_orch()
     key, params, notice = run(surface.HANDLERS["chrome_agent_enabled"](
@@ -753,7 +696,7 @@ def test_agent_enabled_toggle_writes_inverse_disabled_flag():
         orch, None, "u1", ["user"],
         {"agent_id": "alpha", "enabled": True, "detail": True, "tab": "mine"}))
     assert ("u1", "alpha", False) in orch.tool_permissions.disabled_calls
-    assert params == {"agent_id": "alpha", "tab": "mine"}  # detail re-render
+    assert params == {"agent_id": "alpha", "tab": "mine"}
 
 
 def test_agent_enabled_unknown_agent():
@@ -764,14 +707,7 @@ def test_agent_enabled_unknown_agent():
     assert orch.history.db.calls == []
 
 
-# ---------------------------------------------------------------------------
-# Regression: dict-shaped required_credentials (real generated-agent metadata)
-# ---------------------------------------------------------------------------
-
 def test_detail_renders_with_dict_shaped_required_credentials():
-    """Generated agents declare REQUIRED_CREDENTIALS as dicts with key/label/
-    description — the surface crashed on dict.fromkeys(unhashable). The
-    detail view must render, list the declared keys, and surface labels."""
     orch = make_orch()
     orch.agent_cards["alpha"].metadata = {"required_credentials": [
         {"key": "MS_GRAPH_CLIENT_ID", "label": "Microsoft Graph Client ID",
@@ -794,13 +730,11 @@ def test_normalize_credential_entries_shapes():
          {"key": "D", "required": False}, {"x": 1}, None, 7])
     assert keys == ["A", "B", "C", "D"]
     assert labels == {"A": "Label A"}
-    assert optional == {"D"}  # only explicit required:False is optional
+    assert optional == {"D"}
     assert surface._normalize_credential_entries(None) == ([], {}, set())
 
 
 def test_credentials_optional_declaration_shows_optional_not_required():
-    """A credential declared required:False (e.g. web_research SEARCH_API_*, which
-    has a keyless fallback) must render an Optional badge, not Required."""
     cards = {"alpha": FakeCard(
         "alpha", "Alpha Agent", "Search with an optional provider.",
         skills=[FakeSkill("get_data", "Fetch records", "tools:read")],
@@ -818,11 +752,8 @@ def test_credentials_optional_declaration_shows_optional_not_required():
     orch = FakeOrch(cards=cards, db=db, perms=perms, creds=FakeCreds(keys=[]))
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
     assert "SEARCH_API_URL" in html and "MANDATORY_KEY" in html
-    assert ">Optional<" in html  # the optional cred is not mislabeled Required
-    assert ">Required<" in html  # the genuinely-required cred still shows Required
-# ---------------------------------------------------------------------------
-# 052 — pure helpers: email fallback + preferences-blob disabled set
-# ---------------------------------------------------------------------------
+    assert ">Optional<" in html
+    assert ">Required<" in html
 
 def test_email_fallback_uses_email_shaped_user_id():
     assert surface._email_fallback("", "dev@example.com") == "dev@example.com"
@@ -837,15 +768,10 @@ def test_disabled_from_preferences_tolerates_malformed_blobs():
     assert surface._disabled_from_preferences(None) == set()
 
 
-# ---------------------------------------------------------------------------
-# Feature 063 T074 (FR-025) — pre-grant destructive markers on the verb list
-# ---------------------------------------------------------------------------
-
 _ROW_MARKER = '<div class="flex items-center justify-between gap-3 py-2">'
 
 
 def _tool_row(html, tool_name):
-    """The one rendered tool row containing ``>tool_name<`` (badge scoping)."""
     chunks = [c for c in html.split(_ROW_MARKER) if f">{tool_name}<" in c]
     assert len(chunks) == 1, f"expected exactly one row for {tool_name}"
     return chunks[0]
@@ -878,15 +804,12 @@ def test_detail_marks_destructive_tools_from_skill_metadata():
     html = run(surface.render(orch, "u1", ["user"], {"agent_id": "alpha"}))
     assert ">Destructive<" in _tool_row(html, "write_data")
     assert ">Sometimes destructive<" in _tool_row(html, "upload_thing")
-    # never / no declaration → no marker of either strength.
     for clean in ("get_data", "mkdir_thing"):
         row = _tool_row(html, clean)
         assert ">Destructive<" not in row and "Sometimes destructive" not in row
 
 
 def _remote_compute_card():
-    """The REAL remote-compute-1 card, built by the REAL base-agent card
-    builder from the REAL unified TOOL_REGISTRY (no keys/sockets needed)."""
     from agents.remote_compute.mcp_tools import TOOL_REGISTRY
     from shared.base_agent import BaseA2AAgent
 
@@ -904,9 +827,6 @@ def _remote_compute_card():
 
 
 def test_remote_compute_card_skills_carry_destructive_metadata():
-    """base_agent propagates each registry entry's destructive classification
-    onto the card skill metadata — the SAME object the confirmation gate reads
-    (FR-028 no-drift), and only where the registry declares one."""
     from agents.remote_compute.mcp_tools import TOOL_REGISTRY
     from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
 
@@ -920,10 +840,6 @@ def test_remote_compute_card_skills_carry_destructive_metadata():
 
 
 def test_remote_compute_full_verb_list_visible_before_any_grant():
-    """FR-025: the agents surface shows remote-compute-1's COMPLETE verb list
-    — all 18 verbs, each with a non-empty one-line description and a
-    destructive marker on the destructive ones — with ZERO agent_scopes rows
-    for the viewing user (nothing granted, nothing enabled)."""
     from agents.remote_compute.mcp_tools import TOOL_REGISTRY
     from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
     from webrender.chrome import esc
@@ -935,7 +851,6 @@ def test_remote_compute_full_verb_list_visible_before_any_grant():
                                         "is_public": True}},
         users={"u1": {"email": "viewer@example.com"}},
     )
-    # Zero agent_scopes rows: no per-tool grants, every scope False.
     perms = FakePerms(
         scope_map={name: entry["scope"] for name, entry in TOOL_REGISTRY.items()},
         per_tool={},
@@ -945,7 +860,7 @@ def test_remote_compute_full_verb_list_visible_before_any_grant():
     html = run(surface.render(
         orch, "u1", ["user"], {"agent_id": "remote-compute-1", "tab": "public"}))
 
-    assert " checked" not in html  # truly pre-grant: nothing presents as on
+    assert " checked" not in html
     for name, entry in TOOL_REGISTRY.items():
         row = _tool_row(html, name)
         desc = entry["description"]

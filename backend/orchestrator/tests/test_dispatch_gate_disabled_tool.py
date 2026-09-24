@@ -1,12 +1,8 @@
-"""Integration test for the 5th dispatch gate added in feature 015 / DSML fix.
-
-When the model emits a structured (OpenAI) tool call for a tool that was
-filtered out at chat-time tool-list construction, `tool_to_agent.get(name)`
-returns None and the dispatcher used to fall through to the generic
-"No agent available" alert. The 5th gate now intercepts this case:
-it consults `_diagnose_disabled_tool` and emits the friendly variant
-that names the agent + tool + how to re-enable.
+"""Tests for orchestrator/orchestrator.py's 5th dispatch gate: a structured tool call
+for a tool filtered out at chat-time tool-list construction gets the friendly
+disabled-tool alert rather than the generic no-agent-available gate.
 """
+
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -33,9 +29,9 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     orch.agent_cards = {
         "general-1": _make_card("general-1", ["read_spreadsheet", "ocr"], "General"),
     }
-    orch.agents = {}  # no live agents — forces the 5th gate path
+    orch.agents = {}
     orch.a2a_clients = {}
-    orch.local_agents = {}  # feature 040: guard also consults in-process agents
+    orch.local_agents = {}
     orch.agent_urls = {}
     orch.security_flags = {}
     orch.ui_sessions = {}
@@ -65,15 +61,12 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
     )
     orch.credential_manager = MagicMock()
     orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value={})
-    # Feature 054: dispatch resolves the call context's persisted LLM
-    # config via orch._llm_store (async get/get_system); none here.
     orch._llm_store = MagicMock()
     orch._llm_store.get = AsyncMock(return_value=None)
     orch._llm_store.get_system = AsyncMock(return_value=None)
     orch.hooks = MagicMock()
     orch.hooks.emit = AsyncMock(return_value=SimpleNamespace(action=None, modified_args=None, reason=None))
 
-    # Capture rendered UI components.
     orch._rendered_ui = []
 
     async def _capture_render(websocket, components, target=None):
@@ -84,7 +77,6 @@ def _build_orch(*, disabled_agents=None, saved_selection=None,
 
 
 def _make_tool_call(name: str, args: dict = None):
-    """Build a minimal tool-call object matching OpenAI SDK's shape."""
     return SimpleNamespace(
         id="call_1",
         function=SimpleNamespace(
@@ -96,14 +88,12 @@ def _make_tool_call(name: str, args: dict = None):
 
 @pytest.mark.asyncio
 async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
-    """User has disabled `read_spreadsheet` in the picker → dispatch returns the friendly alert."""
     orch = _build_orch(
         chat_to_agent={"chat-1": "general-1"},
-        saved_selection={("alice", "general-1"): ["ocr"]},  # read_spreadsheet excluded
+        saved_selection={("alice", "general-1"): ["ocr"]},
     )
     websocket = MagicMock()
 
-    # tool_to_agent omits the filtered tool — that's the realistic chat-time state.
     tool_to_agent = {"ocr": "general-1"}
     tool_call = _make_tool_call("read_spreadsheet", {"attachment_id": "abc"})
 
@@ -115,7 +105,6 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
         user_id="alice",
     )
 
-    # Friendly alert was rendered.
     assert len(orch._rendered_ui) == 1
     rendered = orch._rendered_ui[0]
     assert rendered["target"] == "chat"
@@ -126,8 +115,6 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
     assert "read_spreadsheet" in alert["message"]
     assert "tool picker" in alert["message"]
 
-    # Dispatch did not reach upstream. The alert was rendered separately so
-    # the correlated error envelope stays unambiguous.
     assert result is not None
     assert result.error is not None
     assert "read_spreadsheet" in result.error["message"]
@@ -138,7 +125,7 @@ async def test_dispatch_blocked_when_tool_filtered_by_picker() -> None:
 async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
     orch = _build_orch(disabled_agents=["general-1"])
     websocket = MagicMock()
-    tool_to_agent = {}  # everything filtered (whole agent disabled)
+    tool_to_agent = {}
     tool_call = _make_tool_call("read_spreadsheet")
 
     result = await orch.execute_single_tool(
@@ -158,7 +145,6 @@ async def test_dispatch_blocked_when_agent_disabled_by_user() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
-    """A tool that no agent owns hits the existing 'No agent available' gate, not the 5th."""
     orch = _build_orch()
     websocket = MagicMock()
     tool_to_agent = {}
@@ -172,7 +158,6 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
         user_id="alice",
     )
 
-    # Generic "No agent available" alert (existing behavior; not the 5th-gate alert).
     alert = orch._rendered_ui[0]["components"][0]
     assert alert["type"] == "alert"
     assert "No agent available" in alert["message"]
@@ -182,18 +167,14 @@ async def test_dispatch_unknown_tool_falls_through_to_generic_gate() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_proceeds_when_tool_is_enabled_in_picker() -> None:
-    """Sanity check — when the tool is allowed, the 5th gate doesn't fire."""
     orch = _build_orch(
         chat_to_agent={"chat-1": "general-1"},
         saved_selection={("alice", "general-1"): ["read_spreadsheet"]},
     )
     websocket = MagicMock()
-    # tool IS in tool_to_agent → 5th gate's `not agent_id` precondition fails.
     tool_to_agent = {"read_spreadsheet": "general-1"}
     tool_call = _make_tool_call("read_spreadsheet")
 
-    # No agents are connected so it'll still fall to "No agent available", but
-    # NOT to the 5th-gate disabled alert.
     result = await orch.execute_single_tool(
         websocket=websocket,
         tool_call=tool_call,

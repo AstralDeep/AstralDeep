@@ -1,15 +1,8 @@
-"""Per-request runtime context injected into tool kwargs as ``_runtime``.
-
-Tools that need to do anything beyond a one-shot synchronous response —
-emit incremental progress, register a long-running upstream job for
-background polling, etc. — pull the runtime out of ``kwargs`` and use its
-methods.
-
-The runtime is constructed once per MCP request inside
-``BaseA2AAgent.handle_mcp_request`` and discarded after the tool returns.
-Existing tools that don't accept ``_runtime`` are unaffected: the MCP
-server filters kwargs by signature, so unrecognized keys are dropped.
+"""Per-request bridge from a synchronous tool back to the agent's event loop, built once
+per call by shared/base_agent.py; call_agent_tool() mediates a peer-agent hop, and
+start_long_running_job() schedules a JobPoller.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,8 +17,6 @@ logger = logging.getLogger("AgentRuntime")
 
 
 class AgentRuntime:
-    """Bridge from a synchronously-running tool back to the agent's event loop."""
-
     def __init__(
         self,
         ws: Any,
@@ -50,24 +41,6 @@ class AgentRuntime:
         *,
         timeout: float = 30.0,
     ):
-        """Request a MEDIATED hop to a peer agent's tool (056 US1, FR-001).
-
-        Returns the peer's ``MCPResponse`` or an honest error ``MCPResponse``
-        — never raises into the tool, never tears down the session (FR-028).
-        NEVER talks to a peer directly: it schedules an ``agent_hop_request``
-        control frame onto the orchestrator via the same channel the agent
-        already uses (the in-process loopback for built-ins, the agent
-        WebSocket for networked agents) and awaits the correlated response.
-        The initiating agent holds NO token and NO mint capability — the
-        orchestrator resolves authority from its OWN record of this request
-        (``parent_request_id``), mints a strictly-narrower child delegation,
-        and re-enters the full single-path gate stack for the hop.
-
-        Async by design; a synchronous tool bridges with::
-
-            asyncio.run_coroutine_threadsafe(
-                runtime.call_agent_tool(...), runtime.loop).result(timeout)
-        """
         import uuid as _uuid
         from shared.protocol import AgentHopRequest, MCPResponse
 
@@ -101,7 +74,7 @@ class AgentRuntime:
                 request_id=hop_id,
                 error={"message": f"hop to '{callee_agent_id}.{tool_name}' timed out",
                        "retryable": True})
-        except Exception as exc:  # honest error, never a raise into the tool
+        except Exception as exc:
             logger.warning("call_agent_tool failed: %s", exc)
             return MCPResponse(
                 request_id=hop_id,
@@ -116,19 +89,7 @@ class AgentRuntime:
         poll_interval: float = 5.0,
         failure_threshold: int = 5,
     ) -> None:
-        """Schedule a :class:`JobPoller` on the agent's event loop.
-
-        ``poll_fn`` is a synchronous callable invoked from a worker thread on
-        each tick; it must return a dict shaped like::
-
-            {
-                "status": "started" | "in_progress" | "succeeded" | "failed",
-                "percentage": <int|None>,
-                "message": "<human-readable>",
-                "result": <dict|None>,   # only required on succeeded/failed
-            }
-        """
-        from shared.job_poller import JobPoller  # local import to avoid cycle
+        from shared.job_poller import JobPoller
         poller = JobPoller(
             ws=self.ws,
             request_id=self.request_id,
@@ -139,5 +100,4 @@ class AgentRuntime:
             poll_interval=poll_interval,
             failure_threshold=failure_threshold,
         )
-        # Tools run in a worker thread; schedule onto the agent's event loop.
         asyncio.run_coroutine_threadsafe(poller.run(), self.loop)

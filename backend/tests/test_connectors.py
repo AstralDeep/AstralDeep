@@ -1,4 +1,7 @@
-"""US-22: Claude Connectors agent tests."""
+"""Tests for the Claude Connectors agent (backend/agents/connectors/mcp_server.py,
+mcp_tools_office.py, mcp_tools_dev.py, mcp_tools_creative.py):
+Office/Outlook/dev/creative tool handlers and the MCP dispatcher's tool list.
+"""
 
 import json
 import os
@@ -44,12 +47,8 @@ def _by_type(comps, typename):
 
 @pytest.fixture
 def session_args(monkeypatch):
-    """Replace the on-disk writer so excel/word tests stay hermetic."""
-
     def _fake_write(args, filename, contents):
         sid = args.get("session_id", "default")
-        # Mirrors the real writer: ROOT-RELATIVE so the browser resolves it
-        # against the serving origin (no hard-coded localhost — Constitution X).
         return f"/api/download/{sid}/{filename}"
 
     monkeypatch.setattr(
@@ -58,10 +57,6 @@ def session_args(monkeypatch):
     )
     return {"user_id": "u1", "session_id": "s1"}
 
-
-# ---------------------------------------------------------------------------
-# Office Tools
-# ---------------------------------------------------------------------------
 
 class TestExcel:
     def test_generates_table_and_download(self, session_args):
@@ -75,7 +70,6 @@ class TestExcel:
         assert len(_by_type(comps, "table")) == 1
         downloads = _by_type(comps, "file_download")
         assert len(downloads) == 1
-        # Filename is path-safe (spaces -> underscores).
         assert downloads[0]["filename"] == "Test_Data.csv"
 
     def test_download_url_is_relative(self, session_args):
@@ -86,13 +80,9 @@ class TestExcel:
             "rows": [["1"]],
         })
         download = _by_type(_comps(result), "file_download")[0]
-        # Root-relative: the browser resolves it against the serving origin.
-        # A hard-coded http://localhost origin breaks non-localhost deploys.
         assert download["url"] == "/api/download/s1/X.csv"
 
     def test_real_writer_returns_relative_url(self):
-        """Pin the REAL _write_download_file (not the fixture stub): it must
-        persist the file and return an origin-less /api/download/... URL."""
         import agents.connectors.mcp_tools_office as office
 
         url = office._write_download_file(
@@ -187,7 +177,6 @@ class TestOutlook:
         comps = _comps(result)
         assert len(_by_type(comps, "container")) >= 1
         alerts = _by_type(comps, "alert")
-        # Should explain that credentials are needed.
         assert any("Microsoft Graph" in (a.get("message") or "") for a in alerts)
 
     def test_cc_and_priority_rendered(self):
@@ -256,10 +245,6 @@ class TestPitchTemplates:
         texts = _by_type(_comps(result), "text")
         assert any("My Startup" in t.get("content", "") for t in texts)
 
-
-# ---------------------------------------------------------------------------
-# Dev Tools — including AST-based code review
-# ---------------------------------------------------------------------------
 
 class TestCodeReview:
     def test_detects_eval_via_ast(self):
@@ -362,10 +347,6 @@ class TestConstitutionCritique:
         assert any("No issues" in (a.get("title") or "") for a in alerts)
 
 
-# ---------------------------------------------------------------------------
-# Runtime
-# ---------------------------------------------------------------------------
-
 class TestAdaptiveRouting:
     def test_routes_weather_query(self):
         result = handle_adaptive_routing({"query": "what is the weather forecast"})
@@ -380,10 +361,6 @@ class TestAdaptiveRouting:
         alerts = _by_type(_comps(result), "alert")
         assert any("No strong matches" in (a.get("title") or "") for a in alerts)
 
-
-# ---------------------------------------------------------------------------
-# Creative
-# ---------------------------------------------------------------------------
 
 class TestBlender:
     def test_blender_explains_self_host_requirement(self):
@@ -509,14 +486,9 @@ class TestArtifactsGraphsDesign:
         assert _by_type(comps, "alert"), "accessibility callout"
 
 
-# ---------------------------------------------------------------------------
-# MCP server dispatcher — the path the orchestrator actually invokes
-# ---------------------------------------------------------------------------
-
 class TestMcpServerDispatch:
     def test_tool_count_matches_registry(self):
         server = ConnectorsMCPServer()
-        # 5 office + 1 outlook_check + 2 dev + 1 runtime + 6 creative tools + 2 cred-checks = 17
         assert len(server.get_tool_list()) == 17
         assert "outlook_credentials_check" in TOOL_REGISTRY
         assert "canva_credentials_check" in TOOL_REGISTRY

@@ -1,9 +1,8 @@
-"""Current guidance for actual derived machine and selected scheduler attempts.
-
-The existing mint boundary returns a locally signed institutional test token;
-no live issuer or model is contacted. All grant, scheduling, operation, skill
-and normal JWT checks use the real repositories and host facades.
+"""Tests for machine and scheduled guidance in orchestrator/turn_guidance_authority.py:
+derived grants are read without reminting, changed or expired sources refuse
+guidance, and expiry is checked against the database clock, not a lagging host.
 """
+
 import asyncio
 from datetime import timedelta
 import time

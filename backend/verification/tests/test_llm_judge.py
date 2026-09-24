@@ -1,4 +1,8 @@
-"""LLM-as-judge enrichment (T025 / C1). Pure — no real LLM."""
+"""Tests for LLM-as-judge enrichment (backend/verification/llm_judge.py): resolves to
+n/a without a real LLM, judge response interpretation, and that judge errors are
+swallowed rather than failing the check.
+"""
+
 from __future__ import annotations
 
 import types

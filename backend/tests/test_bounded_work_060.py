@@ -1,4 +1,7 @@
-"""Feature-060 blocking lanes are finite and isolated from the event loop."""
+"""Tests for orchestrator/bounded_work.py: the blocking executor's worker/queue budget,
+lane isolation between generation and maintenance, and context propagation without
+blocking the event loop.
+"""
 
 from __future__ import annotations
 
@@ -72,8 +75,7 @@ async def test_blocking_lane_preserves_context_without_blocking_event_loop():
 
     work = asyncio.create_task(executor.run(blocking))
     assert await asyncio.to_thread(started.wait, 5)
-    # If the callable ran on the event-loop thread, this zero-delay progress
-    # point could not execute until the worker was released.
+    # Zero-delay probe: blocked event loop couldn't reach this
     await asyncio.wait_for(asyncio.sleep(0), timeout=0.1)
     release.set()
     assert await work == "fenced-context"

@@ -1,20 +1,8 @@
-"""Coverage for the fix/code-review-audit-hardening security fixes.
-
-These tests pin the newly-added defensive branches that the original PR left
-uncovered (diff-cover gate). They bind the real Orchestrator methods onto
-minimal fakes (see ``test_inprocess_dispatch.py`` for the pattern) and drive the
-small standalone helpers directly — no Postgres, no network.
-
-Covered:
-- ``orchestrator.auth.verify_admin`` empty-principal 403 (fail closed).
-- ``Orchestrator.register_agent`` skill-scope validation (unknown + empty scope).
-- ``Orchestrator._execute_in_process`` deep-copies args + scrubs ``_credentials``.
-- The stream subscribe hard-blocks and poll loop's shared authorization refusal.
-- ``Orchestrator.validate_token`` issuer (``iss``) mismatch rejection.
-- ``ToolPermissionManager._safe_flip_allowed`` (public/private/cache/fail-closed).
-- ``web_auth._secret`` key-separation branches + ``auth_login`` pending pruning.
-- ``orchestrator.projection_surfaces.agents.handle_safe_set`` owner path + notices.
+"""Tests pinning the audit-hardening fixes across auth.py, orchestrator.py, and
+tool_permissions.py: fail-closed admin checks, credential scrubbing, stream-subscribe
+blocks, and the safe-flip permission cache.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +22,6 @@ if str(BACKEND_DIR) not in sys.path:
 
 
 def test_audit_recorder_close_joins_inflight_retry(tmp_path):
-    """Shutdown waits for a retry insert before Plane can close its pool."""
     from audit.recorder import Recorder
     from audit.schemas import AuditEventCreate
 
@@ -64,7 +51,7 @@ def test_audit_recorder_close_joins_inflight_retry(tmp_path):
     recorder = Recorder(_BlockingRepository(), retry_queue=retry_path)
 
     async def _exercise():
-        recorder._ensure_drain_task()  # noqa: SLF001 - lifecycle regression seam
+        recorder._ensure_drain_task()  # noqa: SLF001
         assert await asyncio.to_thread(entered.wait, 5)
         close_task = asyncio.create_task(recorder.close())
         await asyncio.sleep(0)
@@ -78,9 +65,6 @@ def test_audit_recorder_close_joins_inflight_retry(tmp_path):
     assert retry_path.read_text(encoding="utf-8") == ""
 
 
-# ---------------------------------------------------------------------------
-# auth.verify_admin — empty principal must 403 (fail closed)
-# ---------------------------------------------------------------------------
 async def test_verify_admin_empty_principal_denied():
     from fastapi import HTTPException
 
@@ -91,9 +75,6 @@ async def test_verify_admin_empty_principal_denied():
     assert exc.value.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# register_agent — declared-scope validation branches
-# ---------------------------------------------------------------------------
 class _NoopPerms:
     def register_tool_scopes(self, *a, **k):
         self.last = (a, k)
@@ -103,8 +84,6 @@ class _NoopPerms:
 
 
 class _RegFakeOrch:
-    """Minimal surface for binding ``Orchestrator.register_agent``."""
-
     def __init__(self):
         self.agents = {}
         self.agent_cards = {}
@@ -118,14 +97,12 @@ class _RegFakeOrch:
         )
 
     def _is_draft_agent(self, agent_id):
-        # Return True so register_agent returns before the UI broadcast loop.
         return True
 
 
 async def test_register_agent_validates_skill_scopes(monkeypatch):
-    monkeypatch.setenv("DEFAULT_AGENT_OWNER", "")  # skip auto-ownership branch
-    # Empty (not delete) so the orchestrator import's load_dotenv(override=False)
-    # cannot repopulate it — an empty key takes the keyless dev path.
+    # Empty, not deleted — delenv lets load_dotenv repopulate it
+    monkeypatch.setenv("DEFAULT_AGENT_OWNER", "")
     monkeypatch.setenv("AGENT_API_KEY", "")
     monkeypatch.setenv("ASTRAL_ENV", "development")
     from orchestrator.orchestrator import Orchestrator
@@ -134,45 +111,36 @@ async def test_register_agent_validates_skill_scopes(monkeypatch):
     fake.register_agent = types.MethodType(Orchestrator.register_agent, fake)
 
     skills = [
-        # Unknown declared scope -> warning branch (orchestrator.py:706-711).
         SimpleNamespace(id="bad_tool", description="d", input_schema={},
                         scope="tools:bogus"),
-        # Empty declared scope -> debug/default branch (orchestrator.py:712-716).
         SimpleNamespace(id="empty_tool", description="d", input_schema={},
                         scope=""),
-        # Valid scope -> neither branch.
         SimpleNamespace(id="ok_tool", description="d", input_schema={},
                         scope="tools:read"),
     ]
     card = SimpleNamespace(agent_id="cov-agent-1", name="Cov", skills=skills)
-    msg = SimpleNamespace(agent_card=card, api_key="")  # dev mode -> keyless
+    msg = SimpleNamespace(agent_card=card, api_key="")
 
     await fake.register_agent(None, msg)
 
-    # Unknown scope is still mapped verbatim; empty defaults to tools:read.
     scope_map = fake.tool_permissions.last[0][1]
     assert scope_map["bad_tool"] == "tools:bogus"
     assert scope_map["empty_tool"] == "tools:read"
     assert scope_map["ok_tool"] == "tools:read"
 
 
-# ---------------------------------------------------------------------------
-# _execute_in_process — deep-copies args and scrubs _credentials
-# ---------------------------------------------------------------------------
 class _CredScrubFakeOrch:
     def __init__(self):
         self.local_agents = {}
         self.pending_requests = {}
         self.pending_ui_sockets = {}
         self.stream_manager = None
-        # 056: dispatch-context bookkeeping surface used by _execute_in_process
         self._dispatch_context = {}
         from orchestrator.orchestrator import Orchestrator as _O
         self._register_dispatch_context = types.MethodType(
             _O._register_dispatch_context, self)
 
     async def handle_agent_message(self, websocket, message):
-        # Route the agent's loopback frame to the pending future (mirrors prod).
         from shared.protocol import MCPResponse, Message
 
         msg = Message.from_json(message)
@@ -190,10 +158,6 @@ async def test_execute_in_process_scrubs_credentials():
 
     class _Agent:
         async def handle_mcp_request(self, websocket, request):
-            # The agent decrypts credentials into its own args copy and writes a
-            # response frame back over the loopback (which the orchestrator
-            # routes to the pending future). The orchestrator must not retain
-            # that plaintext in the caller's dict.
             await websocket.send_text(
                 MCPResponse(request_id=request.request_id, result={"ok": True}).to_json())
 
@@ -203,13 +167,11 @@ async def test_execute_in_process_scrubs_credentials():
     original = {"foo": "bar", "_credentials": "TOP-SECRET"}
     resp = await fake._execute_in_process("a1", "tool", original, timeout=5.0)
 
-    # The caller's dict is untouched (deep copy isolates it).
     assert original["_credentials"] == "TOP-SECRET"
     assert resp is not None
 
 
 async def test_execute_in_process_scrub_swallows_error():
-    """The credential-scrub finally is defensive: a pop() that raises is swallowed."""
     from orchestrator.orchestrator import Orchestrator
     from shared.protocol import MCPResponse
 
@@ -224,18 +186,14 @@ async def test_execute_in_process_scrub_swallows_error():
     fake._execute_in_process = types.MethodType(Orchestrator._execute_in_process, fake)
 
     class _BadDict(dict):
-        def pop(self, *a, **k):  # deepcopy preserves the subclass type
+        def pop(self, *a, **k):
             raise RuntimeError("scrub boom")
 
-    # The scrub's pop() raises but the except/pass keeps the call from failing.
     resp = await fake._execute_in_process(
         "a1", "tool", _BadDict({"foo": "bar"}), timeout=5.0)
     assert resp is not None and resp.error is None
 
 
-# ---------------------------------------------------------------------------
-# Stream paths — hard security-flag block branches
-# ---------------------------------------------------------------------------
 class _StreamFakeOrch:
     def __init__(self, agent_id, tool_name):
         self.security_flags = {agent_id: {tool_name: {"blocked": True}}}
@@ -281,7 +239,6 @@ async def test_push_stream_subscribe_blocked():
 
 async def test_stream_subscribe_blocked():
     fake = _StreamFakeOrch("a1", "tstream")
-    # Poll-form cfg for the legacy subscribe path.
     fake._streamable_tools["tstream"]["kind"] = "poll"
     _bind_stream(fake)
     await fake._handle_stream_subscribe(object(), {"tool_name": "tstream"})
@@ -292,9 +249,6 @@ async def test_stream_subscribe_blocked():
 async def test_stream_loop_blocked_breaks():
     fake = _StreamFakeOrch("a1", "tstream")
     _bind_stream(fake)
-    # The shared authorization boundary sees the flag on the first iteration,
-    # so the poll loop sends one refusal and exits. Keep this bounded so a
-    # stale fake or swallowed authorization error cannot hang the entire suite.
     await asyncio.wait_for(
         fake._stream_loop(object(), "tstream", "a1", 1, {}),
         timeout=1.0,
@@ -311,9 +265,6 @@ def test_tool_security_blocked_helper():
     assert fake._tool_security_blocked(None, "tstream") is False
 
 
-# ---------------------------------------------------------------------------
-# validate_token — issuer (iss) mismatch rejection
-# ---------------------------------------------------------------------------
 async def test_validate_token_rejects_iss_mismatch(monkeypatch):
     import shared.jwks_cache as jwks_cache
     from orchestrator import orchestrator as orch_mod
@@ -338,9 +289,6 @@ async def test_validate_token_rejects_iss_mismatch(monkeypatch):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# tool_permissions._safe_flip_allowed — public/private/cache/fail-closed
-# ---------------------------------------------------------------------------
 class _SafeFlipAgentRepository:
     def __init__(self, get_ownership):
         self._get_ownership = get_ownership
@@ -399,8 +347,8 @@ def test_safe_flip_allowed_cache_hit():
 
     pm = _pm_with_db(SimpleNamespace(get_agent_ownership=_own))
     assert pm._safe_flip_allowed("pub") is True
-    assert pm._safe_flip_allowed("pub") is True  # served from the 30s cache
-    assert calls["n"] == 1  # second call did not re-hit the DB
+    assert pm._safe_flip_allowed("pub") is True
+    assert calls["n"] == 1
 
 
 def test_safe_flip_allowed_fails_closed_on_error():
@@ -411,9 +359,6 @@ def test_safe_flip_allowed_fails_closed_on_error():
     assert pm._safe_flip_allowed("boom") is False
 
 
-# ---------------------------------------------------------------------------
-# web_auth._secret — key separation branches
-# ---------------------------------------------------------------------------
 def test_secret_explicit_web_session_secret(monkeypatch):
     from orchestrator import web_auth
 
@@ -430,7 +375,6 @@ def test_secret_hkdf_from_enc_key(monkeypatch):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "encryption-key-only")
     monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
     derived = web_auth._secret()
-    # HKDF separates the signing key from the raw encryption key.
     assert derived != b"encryption-key-only"
     assert len(derived) == 32
 
@@ -450,9 +394,6 @@ def test_secret_hkdf_failure_falls_back(monkeypatch):
     assert web_auth._secret() == b"encryption-key-only"
 
 
-# ---------------------------------------------------------------------------
-# web_auth.auth_login — pending-auth pruning sweep
-# ---------------------------------------------------------------------------
 async def test_auth_login_prunes_pending(monkeypatch):
     import time
 
@@ -471,9 +412,7 @@ async def test_auth_login_prunes_pending(monkeypatch):
     try:
         web_auth._PENDING.clear()
         now = time.time()
-        # One stale entry (>600s) to exercise the expiry sweep (line 459)...
         web_auth._PENDING["stale"] = {"code_verifier": "x", "created_at": now - 1000}
-        # ...plus enough fresh entries to exceed the 4096 cap (lines 461-462).
         for i in range(4098):
             web_auth._PENDING[f"fresh-{i}"] = {"code_verifier": "x", "created_at": now}
 
@@ -481,19 +420,15 @@ async def test_auth_login_prunes_pending(monkeypatch):
             query_params={"next": "/"},
             base_url="http://test/",
         )
-        # query_params needs .get; dict provides it.
         resp = await web_auth.auth_login(req)
         assert resp.status_code in (302, 303, 307)
-        assert "stale" not in web_auth._PENDING  # expired entry pruned
-        assert len(web_auth._PENDING) <= 4097  # capped (4096 + the new state)
+        assert "stale" not in web_auth._PENDING
+        assert len(web_auth._PENDING) <= 4097
     finally:
         web_auth._PENDING.clear()
         web_auth._PENDING.update(saved)
 
 
-# ---------------------------------------------------------------------------
-# agents.handle_safe_set — verified-owner path + notice messages
-# ---------------------------------------------------------------------------
 class _SafeSetFakeDB:
     def __init__(self):
         self.safe = False
@@ -563,7 +498,6 @@ async def test_handle_safe_set_owner_marks_safe():
 
     db = _SafeSetFakeDB()
     orch = _safe_set_orchestrator(db)
-    # roles WITHOUT admin/owner — privilege must come from verified ownership.
     region, params, html = await agents.handle_safe_set(
         orch, object(), "owner@example.com", ["user"],
         {"agent_id": "a1", "is_safe": True})

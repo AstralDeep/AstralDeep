@@ -1,4 +1,8 @@
-"""Tests for memory tools (feature 025, T033/T035)."""
+"""Tests for personalization/memory_tools.py: clean values are stored, PHI is refused on
+remember and capture_signal, memory_search ranks by token overlap, and unknown
+categories default to context.
+"""
+
 from __future__ import annotations
 
 from personalization import project_scope as ps
@@ -38,7 +42,6 @@ class _FakeRepo:
             return rows
         return ps.filter_to_project(rows, project_id, include_global=include_global)
 
-    # C-M2 link surface (links not asserted by these legacy tests).
     def add_link(self, user_id, a_id, b_id):
         return True
 
@@ -60,7 +63,7 @@ def test_remember_refuses_phi():
     res = mt.remember("u1", "context", "patient SSN 123-45-6789")
     assert res["stored"] is False
     assert "protected health information" in res["reason"]
-    assert repo.memory == []  # nothing persisted (SC-005)
+    assert repo.memory == []
 
 
 def test_capture_signal_drops_phi():

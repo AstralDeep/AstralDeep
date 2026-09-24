@@ -1,6 +1,44 @@
 <!--
   Sync Impact Report
   ==================
+  Version change: 3.0.0 → 4.0.0 (MAJOR — Principle VI redefined: the
+    docstring and JSDoc mandates are replaced by self-documenting code)
+
+  Amendment (2026-09-23, v4.0.0) — self-documenting code:
+    IV. Code Quality — lint exceptions use the narrowest rule-specific
+        directive; the justification moves from an inline comment to
+        the PR description.
+    VI. Documentation → VI. Self-Documenting Code (REDEFINED) — every
+        source file starts with a header of at most three sentences
+        (what it does, how it connects to other files); otherwise no
+        comments or docstrings except a one-line "why" where absolutely
+        necessary; tool directives are preserved verbatim; text the
+        runtime reads is an explicit value; tests never assert on
+        comments; evidence-pinned files change only with their
+        evidence; primitives and renderers are documented in READMEs
+        and docs/. Governs all five repositories.
+    Development Workflow — reviewers reject over-commenting and check
+        headers; spec/task IDs belong in PRs, never in source.
+    Rationale: owner decision (2026-09-23) accompanying the repo-wide
+        comment cleanup of AstralDeep, AstralPlane, AstralPrimitives,
+        AstralProjection, and LETS.
+    Principles added: None
+    Principles removed: None
+    Sections added: None
+    Sections removed: None
+    Templates and guidance requiring updates:
+      [done] .specify/templates/*.md — carry no docstring, JSDoc, or
+         inline-comment requirements (no change needed)
+      [done] AGENTS.md and CLAUDE.md (manual additions) — state the
+         Principle VI rule
+      [done] AstralPrimitives/AGENTS.md — states the Principle VI rule
+      [pending] AstralPlane, AstralProjection, LETS — carry no agent
+         guidance file; they are governed through this constitution
+      [superseded] specs/052-perf-comment-hygiene Workstream B kept
+         function docstrings; Principle VI now removes them
+    Follow-up TODOs: None
+
+  Previous amendment:
   Version change: 2.9.0 → 3.0.0 (MAJOR — Principle V redefined: the lead-
     developer approval gate on new dependencies is removed; any dependency
     may be installed)
@@ -589,7 +627,10 @@ All code MUST adhere to established style standards.
   carry its standard lint configuration in version control and the
   CI lint gate MUST exercise it. A linter declared only for CI remains
   isolated from product runtime dependencies under Principles V and XI.
-- No linting exceptions without inline justification comments.
+- Linting exceptions MUST use the narrowest rule-specific directive
+  (e.g., `# noqa: E402`, `// eslint-disable-next-line no-empty`);
+  blanket suppressions are prohibited. The justification belongs
+  in the PR description, not in an inline comment (Principle VI).
 
 ### V. Dependency Management
 
@@ -606,20 +647,62 @@ required to add a library.
 - A PR that adds a dependency SHOULD name it and its purpose in
   the description.
 
-### VI. Documentation
+### VI. Self-Documenting Code
 
-All public APIs and complex functions MUST be documented.
+The code documents itself. Names, types, and structure carry the
+meaning; prose inside source files is the exception. This
+principle governs AstralDeep and every component repository:
+AstralPlane, AstralPrimitives, AstralProjection, and LETS.
 
-- Python functions MUST have docstrings following Google or
-  NumPy style.
-- Any client-side TypeScript/JavaScript exports MUST have JSDoc
-  comments.
+- Every source file MUST begin with a short header, at most three
+  sentences, stating what the file does and how it connects to
+  other files. Python uses a module docstring; other languages use
+  their comment syntax. The header follows any shebang or tool
+  directive that must come first.
+- No other comments or docstrings are permitted, except a very
+  short, single-line comment where one is absolutely necessary to
+  explain a non-obvious *why*: an ordering, locking, or race
+  constraint; a security reason; an external quirk or workaround;
+  an invariant enforced elsewhere; a surprising constant; or an
+  intentionally empty block. Such a comment states the reason,
+  never what the code does.
+- Function, method, and class docstrings; JSDoc, KDoc, and DocC
+  blocks; narrating comments; section banners; commented-out code;
+  TODO/FIXME notes; spec, task, and requirement IDs; feature
+  numbers; and change history MUST NOT appear in source.
+  Outstanding work is tracked as issues or tasks; rationale and
+  history live in specs, pull requests, and `docs/`.
+- Tool directives are not comments and MUST be preserved verbatim:
+  shebangs, encoding lines, `# noqa`, `# type: ignore`,
+  `# pragma: no cover`, `# nosec`, formatter and linter directives
+  (ruff, eslint, ktlint, swiftlint, swift-format),
+  `swift-tools-version`, Dockerfile parser directives, `make help`
+  target text, and generator markers such as
+  `// BEGIN GENERATED PUBLIC ASSETS`.
+- Text the runtime reads MUST be an explicit value, not a
+  docstring: CLI help (click `help=`, an explicit argparse usage
+  string), OpenAPI summaries and descriptions, LLM tool
+  descriptions, and schema descriptions (e.g., Pydantic
+  `Field(description=...)`). A module header MAY double as an
+  argparse `description=__doc__`.
+- Tests MUST verify behavior and MUST NOT assert on the presence
+  or wording of comments or docstrings.
+- Files whose exact bytes are pinned by recorded evidence or
+  fixtures (digest-bound model checkers, formal specifications,
+  fingerprinted test fixtures) change only together with a
+  regeneration of that evidence.
 - Every `astralprims` primitive MUST be documented — its data
-  shape and serialization — before use. Each orchestrator
-  renderer MUST document the client targets it supports and its
-  rendering behavior.
+  shape and serialization — in the package README or `docs/`
+  before use. Each orchestrator renderer's supported client
+  targets and rendering behavior MUST be documented in `docs/`.
 - Backend APIs MUST expose interactive documentation at the
   `/docs` URL (e.g., via FastAPI's built-in Swagger UI).
+
+**Rationale**: Comments drift from the code they describe, while
+names and types are checked by tools. Dense commenting also buried
+the rare warning that mattered. A short file header keeps
+navigation fast, and a one-line *why* keeps a genuine hazard
+visible.
 
 ### VII. Security
 
@@ -1175,8 +1258,12 @@ an ungoverned back channel for unverified claims.
   with the built-in short-lived token; repository-scoped GitHub Apps or custom
   token brokers MUST NOT be introduced.
 - Constitution compliance MUST be verified during code review.
+- Reviewers MUST reject changes that add comments or docstrings
+  beyond Principle VI (a file header plus rare one-line *why*
+  comments) and MUST confirm that every new source file carries
+  its header.
 - Each PR MUST reference relevant spec/task IDs when
-  applicable.
+  applicable; those IDs belong in the PR, never in source.
 
 ## Governance
 
@@ -1195,4 +1282,4 @@ guidance when conflicts arise.
   adherence to these principles. Violations MUST be resolved
   before merge.
 
-**Version**: 3.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-17
+**Version**: 4.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-23

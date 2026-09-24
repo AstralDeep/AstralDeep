@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""Validate retained Apple build artifacts and required raw test observations.
-
-This is diagnostic collection, not release authorization. The protected copy
-validates the archive and candidate source closure without executing candidate
-code. Credentials are never command arguments or diagnostic output; platform
-report contents are not inputs to this helper.
-
-These are separate source/artifact and test-lane checks, not proof that xccov
-counters came from the retained executable. Xcode 26's exported coverage archive
-does not expose executable UUIDs or an LLVM profile; retained Darwin profiles
-can also have no binary IDs. Candidate-asserted UUIDs cannot close that existing
-coverage-to-binary linkage limitation. Protected release qualification must not
-treat these diagnostic checks as that proof.
+"""Validates retained Apple build artifacts and raw Xcode test observations for release
+evidence; this is diagnostic collection only, never authorization, and is exercised
+by test_apple_coverage_artifacts_088.py.
 """
 
 from __future__ import annotations
@@ -56,22 +46,19 @@ STAGING_CASE = "ReleaseEvidenceUITests/testReleaseEvidenceProducesPlatformReport
 
 
 class ArtifactError(ValueError):
-    """Closed refusal: never include source, environment or credential values."""
+    pass
 
 
 def require(value):
-    """Refuse a failed invariant using one data-free error code."""
     if not value:
         raise ArtifactError("apple_coverage_artifact_invalid")
 
 
 def digest(raw):
-    """Hash exact retained bytes with SHA-256."""
     return hashlib.sha256(raw).hexdigest()
 
 
 def read(path):
-    """Read a bounded regular file without following a final symlink."""
     require(path.is_file() and not path.is_symlink())
     require(0 <= path.stat().st_size <= MAX_BYTES)
     raw = path.read_bytes()
@@ -80,13 +67,10 @@ def read(path):
 
 
 def document(path):
-    """Parse bounded JSON while refusing duplicate keys and nonfinite values."""
     return json_document(read(path))
 
 
 def json_document(raw):
-    """Decode JSON bytes without duplicate keys or nonfinite numeric values."""
-
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -102,7 +86,6 @@ def json_document(raw):
 
 
 def git(root, *args):
-    """Run a bounded read-only Git query without emitting its output."""
     result = subprocess.run(
         ["git", "-C", str(root), *args], check=True, capture_output=True, timeout=30
     )
@@ -111,7 +94,6 @@ def git(root, *args):
 
 
 def source_closure(repo):
-    """Bind maintained Apple inputs and committed link targets to exact Git HEADs."""
     component = repo / COMPONENT
     candidate = git(repo, "rev-parse", "HEAD").decode().strip()
     projection = git(component, "rev-parse", "HEAD").decode().strip()
@@ -129,8 +111,6 @@ def source_closure(repo):
     require(inventory.endswith(b"\0"))
     paths = inventory.decode().rstrip("\0").split("\0")
     require(paths and len(paths) <= MAX_FILES and len(paths) == len(set(paths)))
-    # Do not label dirty tracked bytes, staged additions/deletions, executable
-    # modes or untracked compile inputs with HEAD's identity.
     scope = (
         "apple-clients",
         "contracts",
@@ -156,8 +136,6 @@ def source_closure(repo):
             if any(name == prefix or name.startswith(prefix + "/") for prefix in scope)
         }
     )
-    # Include only exact committed targets of the app's file/directory links.
-    # A fixture-directory link and the public Plotly file are real build inputs.
     pending = list(paths)
     selected = set(paths)
     while pending:
@@ -218,7 +196,6 @@ def source_closure(repo):
 
 
 def tree(root):
-    """Inventory bounded regular files and contained, non-dangling symbolic links."""
     require(root.is_dir() and not root.is_symlink())
     entries = {}
     total = 0
@@ -242,7 +219,6 @@ def tree(root):
 
 
 def app_info(info, platform):
-    """Require the shipping application identity for the selected test platform."""
     require(isinstance(info, dict))
     require(info.get("CFBundleIdentifier") == "com.personalailabs.astraldeep")
     require(info.get("CFBundleExecutable") == "AstralDeep")
@@ -254,7 +230,6 @@ def app_info(info, platform):
 
 
 def shipping_app(products, platform):
-    """Select the exact shipping bundle and a regular executable, never a runner."""
     folder = "Debug-iphonesimulator" if platform == "ios" else "Debug"
     app = products / folder / "AstralDeep.app"
     inside = "Contents/" if platform == "macos" else ""
@@ -270,7 +245,6 @@ def shipping_app(products, platform):
 
 
 def test_binding(records, read_product, platform, *, core=False):
-    """Validate the actual Xcode 26 test-root/host substitutions without execution."""
     folder = "Debug-iphonesimulator" if platform == "ios" else "Debug"
     app = folder + "/AstralDeep.app"
     plugins = "/Contents/PlugIns/" if platform == "macos" else "/PlugIns/"
@@ -358,8 +332,7 @@ def test_binding(records, read_product, platform, *, core=False):
             == ui_host + plugins + "AstralAppUITests.xctest"
         )
         coverage_name = "AstralDeep.app"
-    # Xcode's emitted instrumented-product inventory must include this lane's
-    # real shipping/Core binary. A test-time flag cannot repair an uninstrumented build.
+    # Can't fix an uninstrumented build with a test-time flag
     matches = [
         entry
         for entry in coverage
@@ -399,7 +372,6 @@ def test_binding(records, read_product, platform, *, core=False):
 
 
 def snapshot(repo, derived, core, platform):
-    """Bind source, complete Products trees, test targets and the shipping bundle."""
     require(platform in {"ios", "macos"})
     products = derived / "Build/Products"
     within(repo, products)
@@ -429,7 +401,6 @@ def snapshot(repo, derived, core, platform):
 
 
 def write_new(path, raw):
-    """Write a create-only receipt without overwriting an earlier attempt."""
     require(not path.exists() and not path.is_symlink())
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:
@@ -437,7 +408,6 @@ def write_new(path, raw):
 
 
 def within(repo, path):
-    """Require a repository-contained path with no symbolic-link ancestors."""
     require(path.resolve().is_relative_to(repo.resolve()))
     current = path.absolute()
     while current != repo.absolute():
@@ -446,7 +416,6 @@ def within(repo, path):
 
 
 def archive_tree(root, entries, archive):
-    """Archive exact inventoried bytes once, retaining file modes and links."""
     require(not archive.exists() and not archive.is_symlink())
     archive.parent.mkdir(parents=True, exist_ok=True)
     with (
@@ -466,7 +435,6 @@ def archive_tree(root, entries, archive):
 
 
 def archive_records(archive, root):
-    """Validate an archive without extracting or following its supplied paths."""
     records = {}
     links = {}
     total = 0
@@ -496,9 +464,7 @@ def archive_records(archive, root):
                 require(destination != ".." and not destination.startswith("../"))
                 links[key] = target
             records[key] = {"mode": mode, "sha256": digest(raw), "size": len(raw)}
-    # A real tree cannot have a regular file or a retained symlink as the
-    # physical parent of another stored entry. Linked directory contents are
-    # inventoried at their real path, never duplicated under the link alias.
+    # A file/symlink can't be another entry's physical parent
     for key in records:
         require(
             all(
@@ -542,7 +508,6 @@ def archive_records(archive, root):
 
 
 def prepare(repo, derived, core, platform, output):
-    """Retain prepared binaries and their source-bound receipt before testing."""
     for path in (output, derived, *([core] if core else [])):
         within(repo, path)
     state, app = snapshot(repo, derived, core, platform)
@@ -575,7 +540,6 @@ def prepare(repo, derived, core, platform, output):
 
 
 def validate(repo, platform, output):
-    """Independently revalidate retained archive contents and test-host bindings."""
     within(repo, output)
     manifest = output / "coverage/raw" / f"apple-{platform}-artifacts.json"
     state = document(manifest)
@@ -655,7 +619,6 @@ def validate(repo, platform, output):
 
 @contextmanager
 def result_query_copy(result, *, deadline):
-    """Let Xcode cache queries in an exact private copy, never the raw evidence."""
     require(time.monotonic() < deadline)
     before = tree(result)
     require(all(stat.S_ISREG(entry["mode"]) for entry in before.values()))
@@ -680,7 +643,6 @@ def result_query_copy(result, *, deadline):
 
 
 def xcresult_json(result, operation, *, deadline):
-    """Read Xcode metadata with the fixed sibling policy's bounded subprocess IO."""
     path = Path(__file__).resolve().with_name("export_xccov_line_coverage.py")
     require(path.is_file() and not path.is_symlink())
     spec = importlib.util.spec_from_file_location("_apple_observation_io", path)
@@ -713,7 +675,6 @@ def xcresult_json(result, operation, *, deadline):
 
 
 def observation_cases(summary, tests, lane):
-    """Require the successful Xcode 0.1.0 target/suite/case tree for one iOS lane."""
     require(lane in {"core", "unit", "ui", "staging"})
     require(isinstance(summary, dict) and isinstance(tests, dict))
     require(summary.get("result") == "Passed" and summary.get("testFailures") == [])
@@ -791,12 +752,6 @@ def observation_cases(summary, tests, lane):
 
 
 def validate_observations(repo, platform, output):
-    """Validate four distinct raw iOS test lanes after artifact validation.
-
-    This inspects result data with Apple tools; it never executes candidate
-    tests/binaries. It proves lane identity and status, not executable UUID or
-    raw-profile provenance. Build-time prepare/verify intentionally do not call it.
-    """
     require(platform == "ios")
     validate(repo, platform, output)
     roots, digests, observations, snapshots = set(), set(), {}, {}
@@ -837,7 +792,6 @@ def validate_observations(repo, platform, output):
 
 
 def _native_policy(name):
-    """Load only an allowlisted sibling of this protected artifact helper."""
     require(name in {"native_xccov_domain", "export_xccov_line_coverage", "merge_xccov_line_coverage"})
     path = Path(__file__).resolve().with_name(name + ".py")
     require(path.is_file() and not path.is_symlink())
@@ -848,13 +802,8 @@ def _native_policy(name):
     return policy
 
 
+# Candidate cannot choose or supply the coverage domain
 def native_domain(repo, output, lane, archive_root):
-    """Independently derive an iOS lane domain from validated retained Products.
-
-    The raw candidate cannot supply a domain, choose another mapping object, or
-    substitute a different architecture. The tested-source/artifact closure and
-    native test identities are required before reading compiler geometry.
-    """
     require(lane in {"core", "unit", "ui", "staging"})
     state = validate(repo, "ios", output)
     policy = _native_policy("native_xccov_domain")
@@ -865,8 +814,6 @@ def native_domain(repo, output, lane, archive_root):
     require(name in state[kind] and stat.S_ISREG(state[kind][name]["mode"]))
     archive_member = f"coverage/raw/apple-ios-{kind}.zip"
     archive = output / archive_member
-    # validate() already checked every archive entry, test-host binding and
-    # exact Products/app subtree. Read just this fixed regular binary member.
     with zipfile.ZipFile(archive) as bundle:
         raw = bundle.read(member)
     require(digest(raw) == state[kind][name]["sha256"])
@@ -907,18 +854,11 @@ def native_domain(repo, output, lane, archive_root):
             ),
             summary=summary, tests=tests,
         )
-    # Recheck immutable archive/source identities after bounded native reads.
     require(validate(repo, "ios", output) == state)
     return domain
 
 
 def verify_native_domains(repo, output, report, archive_root):
-    """Reconstruct all native rows/domains before protected publication of evidence.
-
-    A structurally plausible self-asserted domain is not proof. Only exact
-    equality with fresh protected reads of raw xcresults and retained binaries
-    is accepted here. This still does not prove profile-to-executable UUIDs.
-    """
     within(repo, report)
     policy = _native_policy("native_xccov_domain")
     actual = policy.parse_native_report(document(report))
@@ -943,7 +883,6 @@ def verify_native_domains(repo, output, report, archive_root):
 
 
 def main(argv=None):
-    """Run collection or protected validation with closed diagnostic failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation", choices=("prepare", "verify", "validate", "validate-observations", "native-domain", "verify-native-domains")

@@ -1,4 +1,7 @@
-"""Reusable real-boundary fixtures for Feature 074 LETS conformance tests."""
+"""Reusable real-boundary fixtures (signed envelopes, a recording coordinator, signing
+warden, and binding repository) for the LETS conformance test suite, built over
+governed_dispatch.py and lets.executor.
+"""
 
 from __future__ import annotations
 

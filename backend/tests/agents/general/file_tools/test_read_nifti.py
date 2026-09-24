@@ -1,4 +1,6 @@
-"""read_nifti: shape, affine, orthogonal thumbnails."""
+"""Tests for agents/general/file_tools/medical/read_nifti.py: orthogonal thumbnail
+generation and gzipped-NIfTI handling.
+"""
 
 from __future__ import annotations
 

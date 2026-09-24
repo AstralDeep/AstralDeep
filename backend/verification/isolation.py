@@ -1,11 +1,8 @@
-"""Namespaced principals + teardown (T007 / FR-031 / D14).
-
-Every harness identity, chat, attachment, and draft is namespaced under a
-``__verif__`` prefix so runs never collide with — or pollute — real user data.
-Qualification teardown delegates the fixed deletion manifest and SQL to
-AstralPlane using the composed application's transaction. ``audit_events`` are
-append-only by design and remain, but only under namespaced principals.
+"""Namespaced verification principals and teardown (AstralPlane harness_cleanup
+repository): every harness identity, chat, attachment, and draft is prefixed so runs
+never collide with or pollute real user data.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,8 +15,6 @@ NAMESPACE_PREFIX = "__verif__"
 
 @dataclass
 class Principal:
-    """A namespaced authenticated identity used by the harness."""
-
     user_id: str
     roles: List[str] = field(default_factory=lambda: ["user"])
 
@@ -28,7 +23,6 @@ class Principal:
         return "admin" in self.roles
 
     def claims(self) -> dict:
-        """JWT-shaped claims for in-process session registration."""
         return {
             "sub": self.user_id,
             "preferred_username": self.user_id,
@@ -39,7 +33,6 @@ class Principal:
 
 
 def principal_id(run_id: str, persona: str, role: str = "primary") -> str:
-    """Deterministic namespaced user id for ``(run, persona, role)``."""
     safe_run = run_id.replace(NAMESPACE_PREFIX, "")
     return f"{NAMESPACE_PREFIX}{safe_run}_{persona}_{role}"
 
@@ -53,23 +46,13 @@ def is_harness_principal(user_id: str) -> bool:
     return bool(user_id) and user_id.startswith(NAMESPACE_PREFIX)
 
 
+# No fallback path — missing deps must fail, never leave state behind.
 def teardown(
     *,
     plane_runtime: Any,
     plane_repositories: Any,
     run_id: str,
 ) -> int:
-    """Atomically purge every namespaced principal for ``run_id``.
-
-    This qualification boundary accepts only the application's composed Plane
-    runtime and catalog. It intentionally has no ``Database``/driver fallback:
-    missing dependencies, invalid identities, schema drift, or cleanup failure
-    must fail the verification run rather than leave state behind silently.
-    Returns the number of rows AstralPlane reports deleted.
-    """
-
-    # External/API-only verification can still construct principals without a
-    # local data-plane package; only in-process cleanup needs this typed enum.
     from astralplane.repositories.harness_cleanup import HarnessCleanupProfile
 
     if not callable(getattr(plane_runtime, "transaction", None)):

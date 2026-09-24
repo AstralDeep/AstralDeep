@@ -1,9 +1,8 @@
-"""030 T023 — onboarding → personalization round-trip integration (US3).
-
-Full slice: start onboarding → submit the personalization ParamPicker (via the
-orchestrator submit interpreter) → profile persists → mark completed → returning
-user is not re-onboarded and their preferences are in effect.
+"""Integration test for the onboarding-to-personalization round trip: start onboarding,
+submit the personalization ParamPicker via orchestrator.onboarding_submit, and
+confirm the profile persists and the user isn't re-onboarded.
 """
+
 import asyncio
 import sys
 import types
@@ -42,7 +41,6 @@ def test_onboarding_personalization_roundtrip(monkeypatch, database):
     from personalization import api as papi
     from personalization.service import PersonalizationService
 
-    # Clean PHI gate so the submit interpreter doesn't depend on Presidio.
     import personalization.phi_gate as pg
     monkeypatch.setattr(pg, "get_phi_gate", lambda: _CleanGate())
 
@@ -77,32 +75,26 @@ def test_onboarding_personalization_roundtrip(monkeypatch, database):
     tc = TestClient(app)
 
     try:
-        # 1. New user — onboarding not yet completed.
         r = tc.get("/api/onboarding/state")
         assert r.status_code == 200
         assert r.json()["status"] != "completed"
 
-        # 2. Start onboarding.
         assert tc.put("/api/onboarding/state", json={"status": "in_progress"}).status_code == 200
 
-        # 3. Submit the personalization ParamPicker (orchestrator submit path).
         handled = asyncio.run(onboarding_submit.handle_submit(
             orch, object(), user,
             "Save my personalization profile — profession: Researcher; goals: grants, papers",
             "c1"))
         assert handled is True
 
-        # 4. Complete onboarding.
         r = tc.put("/api/onboarding/state", json={"status": "completed"})
         assert r.status_code == 200
         assert r.json().get("completed_at") is not None
 
-        # 5. Profile persisted and reflected via the personalization API.
         prof = tc.get("/api/personalization/profile").json()
         assert prof["profession"] == "Researcher"
         assert "grants" in prof["goals"]
 
-        # 6. Returning user is not re-onboarded.
         assert tc.get("/api/onboarding/state").json()["status"] == "completed"
     finally:
         with database.transaction() as transaction:

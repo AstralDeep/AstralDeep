@@ -1,0 +1,128 @@
+# Executable protected phase producer. Missing acceptance collectors stay
+# explicit and fail this job; diagnostic phase receipts are never attested as
+# a complete qualifying evidence set. Native release artifacts are not inputs.
+name: backend-web-qualification-protected
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact reviewed backend/web candidate
+        required: true
+        type: string
+      ci_run_id:
+        description: Exact completed candidate CI run containing backend-image
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protected-backend-web-isolated-host
+  cancel-in-progress: false
+
+jobs:
+  qualify-backend-web:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    name: qualify-backend-web
+    runs-on: [self-hosted, astral-backend-web-qualification]
+    environment: release-backend-web
+    timeout-minutes: 720
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      SOURCE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+      BACKEND_WEB_PRODUCER_SHA: ${{ vars.BACKEND_WEB_PRODUCER_SHA }}
+      BACKEND_WEB_PRODUCER_RUNNER: ${{ vars.BACKEND_WEB_PRODUCER_RUNNER }}
+      MATERIALIZER_IMAGE: ${{ vars.BACKEND_WEB_MATERIALIZER_IMAGE }}
+      LETS_IMAGE: ${{ vars.BACKEND_WEB_LETS_IMAGE }}
+      QUALIFICATION_PORT: ${{ vars.BACKEND_WEB_QUALIFICATION_PORT }}
+      VOICE_IMAGE: ${{ vars.BACKEND_WEB_VOICE_IMAGE }}
+      VOICE_CLOSURE_SHA256: ${{ vars.BACKEND_WEB_VOICE_CLOSURE_SHA256 }}
+      SPEECH_RUNTIME_ENV: ${{ vars.BACKEND_WEB_SPEECH_RUNTIME_ENV }}
+    steps:
+      - name: Verify installed policy, runner and exact successful candidate CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          def require(value):
+              if not value:
+                  raise SystemExit("protected producer policy, runner or CI identity is invalid")
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["BACKEND_WEB_PRODUCER_SHA"]))
+          require(os.environ["GITHUB_WORKFLOW_SHA"] == os.environ["BACKEND_WEB_PRODUCER_SHA"])
+          require(os.environ["RUNNER_NAME"] == os.environ["BACKEND_WEB_PRODUCER_RUNNER"])
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["CANDIDATE_SHA"]))
+          require(re.fullmatch(r"[1-9][0-9]*", os.environ["SOURCE_CI_RUN_ID"]))
+          run = json.loads(subprocess.check_output(["gh", "api", "repos/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["SOURCE_CI_RUN_ID"]]))
+          require(run.get("path") == ".github/workflows/ci.yml" and run.get("name") == "CI")
+          require(run.get("status") == "completed" and run.get("conclusion") == "success")
+          require(run.get("head_sha") == os.environ["CANDIDATE_SHA"])
+          require(run.get("head_repository", {}).get("full_name") == os.environ["GITHUB_REPOSITORY"])
+          require(run.get("event") in {"pull_request", "push"})
+          PY
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.BACKEND_WEB_PRODUCER_SHA }}
+          path: policy
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          repository: AstralDeep/AstralPlane
+          ref: 4a07d59a448c1960ce2ae3f35e605f4d78c4a3f9
+          path: baseline-plane
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: candidate-image
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Load the exact candidate artifact without rebuilding
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(cat candidate-image/image-id.txt)"
+          [[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker load --input candidate-image/image.tar.gz
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$CANDIDATE_SHA"
+          printf 'CANDIDATE_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
+      - name: Execute fixed isolated gates, service provisioning, migration recovery and real authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          voice_arguments=()
+          if [[ -n "$VOICE_IMAGE$VOICE_CLOSURE_SHA256$SPEECH_RUNTIME_ENV" ]]; then
+            test -n "$VOICE_IMAGE" && test -n "$VOICE_CLOSURE_SHA256" && test -n "$SPEECH_RUNTIME_ENV"
+            voice_arguments=(--voice-image "$VOICE_IMAGE" --voice-closure-sha256 "$VOICE_CLOSURE_SHA256" --speech-runtime-env "$SPEECH_RUNTIME_ENV")
+          fi
+          python3 -I policy/scripts/produce_backend_web_qualification.py --protected \
+            --policy-commit "$BACKEND_WEB_PRODUCER_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-image "$CANDIDATE_IMAGE" --source "$GITHUB_WORKSPACE/candidate" \
+            --baseline-plane-source "$GITHUB_WORKSPACE/baseline-plane" \
+            --private-root "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-private" \
+            --output "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-evidence" \
+            --materializer-image "$MATERIALIZER_IMAGE" --lets-image "$LETS_IMAGE" \
+            --port "$QUALIFICATION_PORT" "${voice_arguments[@]}"
+      - name: Retain honest phase status even when qualification is incomplete
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-web-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwq-${{ github.run_id }}-${{ github.run_attempt }}-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30

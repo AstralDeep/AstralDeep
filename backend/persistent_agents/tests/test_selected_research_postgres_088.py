@@ -1,7 +1,7 @@
-"""Explicit selection through real HTTP, governed dispatch and PostgreSQL.
-
-Only institutional replies and physical source/provider replies are synthetic.
-Private guidance must reach the fixed request without becoming retained evidence.
+"""Tests for persistent_agents/research_input.py and
+personalization/explicit_note_service.py through real HTTP and Postgres: selected
+skills and notes reach the fixed request as a private proof without becoming retained
+evidence.
 """
 
 import asyncio
@@ -507,8 +507,6 @@ async def test_selected_note_expiry_during_real_config_row_wait_denies_model(sel
         nonlocal armed
         if armed:
             armed = False
-            # Controlled pre-query delay positions the real <=100 ms row wait
-            # across the immutable note deadline; no clock or SQL cap is changed.
             while True:
                 now = tx.fetch_one("SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now")["now"]
                 if expiry - now <= 35:

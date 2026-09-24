@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""
-Summarizer Agent — A2A-compliant specialist for digesting and comparing text.
-
-Provides tools for:
-- Summarizing provided text into TL;DR / key points / notable quotes
-- Summarizing a URL after an egress-gated fetch
-- Comparing two documents side by side with a key-differences table
+"""A2A specialist agent for summarizing and comparing text/URLs: wraps
+mcp_server.MCPServer to serve summarize_text, summarize_url, and compare_documents.
 """
 import asyncio
 import logging
@@ -24,8 +19,6 @@ PORT_ENV_VAR = "SUMMARIZER_AGENT_PORT"
 
 
 class SummarizerAgent(BaseA2AAgent):
-    """Specialist agent for summarizing and comparing text and web pages."""
-
     agent_id = "summarizer-1"
     service_name = "Summarizer"
     description = (

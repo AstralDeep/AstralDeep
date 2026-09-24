@@ -1,4 +1,7 @@
-"""Contract tests for the feature-065 LiveKit/voice Compose topology."""
+"""Contract tests for the voice/LiveKit Compose topology across local, staging, and
+integration profiles: secret-free configs, worker-local speech credentials, published
+RTC ports, and the operator guide's drain/rollback documentation.
+"""
 
 from __future__ import annotations
 
@@ -145,15 +148,10 @@ def test_compose_pins_livekit_and_keeps_speech_inputs_worker_local(
     assert ":7890" in worker
     assert "127.0.0.1:" in worker
 
-    # The existing whole-file env_file remains for the main service, so explicit
-    # blank overrides are mandatory to keep deployment speech inputs inert there.
     assert 'OPENAI_BASE_URL: ""' in orchestrator
     assert 'OPENAI_API_KEY: ""' in orchestrator
     assert 'VOICE_SPEECH_BASE_URL: ""' in orchestrator
     assert 'VOICE_SPEECH_API_KEY: ""' in orchestrator
-    # Env-overridable with the local plaintext default: production must point
-    # this at the LiveKit TLS vhost (https → derived wss) or every session
-    # start fails closed with invalid_livekit_url.
     assert (
         "LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:-http://livekit:7880}"
         in orchestrator
@@ -169,9 +167,7 @@ def test_local_compose_projects_strict_speech_selector_only_to_orchestrator() ->
     orchestrator = _service(document, "astraldeep")
     worker = _service(document, "voice-worker")
 
-    # Compose's single-hyphen form defaults only an absent value. An explicit
-    # blank or malformed value reaches the strict server parser and fails
-    # voice closed instead of silently becoming the remote default.
+    # Compose `-` only defaults when unset, not when blank
     assert "VOICE_SPEECH_BACKEND: ${VOICE_SPEECH_BACKEND-llm_factory}" in orchestrator
     assert "${VOICE_SPEECH_BACKEND:-llm_factory}" not in orchestrator
     assert document.count("VOICE_SPEECH_BACKEND:") == 1
@@ -235,8 +231,6 @@ def test_rendered_compose_blanks_env_file_speech_credentials_for_orchestrator(
         text=True,
     )
     services = json.loads(completed.stdout)["services"]
-    # Every candidate port advertised by the local RTC config must actually
-    # be published. Otherwise call setup can pass while media fails randomly.
     local_config = (LIVEKIT_ROOT / "livekit.local.yaml").read_text(encoding="utf-8")
     rtc_start = int(re.search(r"port_range_start: (\d+)", local_config).group(1))
     rtc_end = int(re.search(r"port_range_end: (\d+)", local_config).group(1))
@@ -244,7 +238,6 @@ def test_rendered_compose_blanks_env_file_speech_credentials_for_orchestrator(
     for entry in services["livekit"]["ports"]:
         if entry["protocol"] != "udp":
             continue
-        # Compose versions may expand ranges to individual mappings.
         ranges = []
         for field in ("target", "published"):
             start, _, end = str(entry[field]).partition("-")
@@ -316,8 +309,6 @@ def test_staging_requires_candidate_bound_worker_and_no_literal_credentials() ->
         "com.astraldeep.staging.run-attempt",
     ):
         assert label in document
-    # Six services, two named volumes, and the explicit default network all
-    # inherit the same protected-run ownership map.
     assert document.count("labels: *staging-ownership") == 9
 
     for compose_path in (LOCAL_COMPOSE, STAGING_COMPOSE):
@@ -391,16 +382,12 @@ def test_explicit_livekit_integration_lane_is_isolated_and_ephemeral() -> None:
     assert '"--pull",\n                "never"' in runner_main
     assert "build-placeholder-worker-token" in runner_main
 
-    # The ordinary unit profile remains independently networkless even after
-    # the opt-in integration lane is added.
     ordinary_worker = _service(LOCAL_COMPOSE.read_text(encoding="utf-8"), "voice-worker-test")
     assert "network_mode: none" in ordinary_worker
     assert "VOICE_INTEGRATION" not in ordinary_worker
 
 
 def test_livekit_1135_external_tls_keeps_public_443_and_plaintext_5349_distinct() -> None:
-    """Guard the pinned server's advertised-port/listener-port distinction."""
-
     for name in ("livekit.staging.yaml", "livekit.production.yaml"):
         config = (LIVEKIT_ROOT / name).read_text(encoding="utf-8")
         assert "LiveKit v1.13.5 advertises turns:<domain>:443" in config

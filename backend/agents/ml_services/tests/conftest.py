@@ -1,10 +1,8 @@
-"""Shared bounded-reader fixture for the ML Services tool suites.
-
-Production resolves an attachment identity through Plane and yields metadata
-plus a bounded reader. These isolated HTTP-wrapper tests use existing temporary
-files as synthetic identities and patch only the imported reader seam; resolver
-ownership and integrity behavior have their own focused integration tests.
+"""Tests for the ML Services agent's HTTP-wrapper tool suites: a
+scoped_attachment_blob_reader fixture that patches the reader seam with local temp
+files instead of Plane.
 """
+
 from contextlib import contextmanager
 import os
 from types import SimpleNamespace

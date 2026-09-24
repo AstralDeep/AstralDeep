@@ -1,4 +1,7 @@
-"""Guidance schemas are exact static tuples, never executable input."""
+"""Tests that guidance schemas are exact static tuples: digest pinning, import binding,
+and refusal to execute candidate statements.
+"""
+
 import hashlib
 import json
 from types import SimpleNamespace

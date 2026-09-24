@@ -1,18 +1,8 @@
-"""Driver contract (spec 047 FR-001).
-
-A *driver* executes one ``BenchmarkCase`` under one ``EnvelopeConfig`` and
-returns a ``CaseTrace``. Two drivers share this contract:
-
- - ``synthetic`` — deterministic, scripted; runs anywhere (CI without a DB).
-   The scripted model is maximally gullible on injected cases (worst case for
-   the defender), so any ASR reduction is attributable to the envelope, not to
-   model reticence. Control cases exercise the NOT_ATTEMPTED path.
- - ``in_process`` — drives the REAL orchestrator through the LLM client-factory
-   seam so every real gate runs (token exchange, scope check, PHI gate,
-   red-team verdict, audit chaining). The CI-gating default when a DB is present.
-
-The driver observes and drives only; it never modifies enforcement (FR-011).
+"""Contract for a driver that executes one BenchmarkCase under one EnvelopeConfig and
+returns a CaseTrace; synthetic.py models enforcement deterministically while
+inprocess.py and chained.py drive the real gates.
 """
+
 from __future__ import annotations
 
 import abc
@@ -28,7 +18,7 @@ class Driver(abc.ABC):
     def run_case(self, case: BenchmarkCase, envelope: EnvelopeConfig) -> CaseTrace:
         raise NotImplementedError
 
-    def setup(self) -> None:  # optional lifecycle hooks
+    def setup(self) -> None:
         pass
 
     def teardown(self) -> None:

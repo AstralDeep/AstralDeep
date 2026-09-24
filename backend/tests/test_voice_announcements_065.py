@@ -1,4 +1,7 @@
-"""Integrated, content-isolated announcement behavior for Feature 065."""
+"""Tests for voice_coordinator.py's announcement runner: truthful and bounded
+terminal/rejection phrases, once-only waiting notices, serialized concurrent results,
+and dropping stale audio across a terminal fence or mute.
+"""
 
 from __future__ import annotations
 
@@ -199,8 +202,6 @@ async def test_concurrent_results_are_serialized_and_audibly_attributed() -> Non
             set(call) == {"turn_id", "kind", "text", "announcement_id"}
             for call in media.calls
         )
-        # The announcement runner has no history/chat publication seam. Its
-        # fake repository records only durable voice state and idle flags.
         assert set(repository.__dict__) == {"turns", "idle_updates"}
     finally:
         if runner is not None:

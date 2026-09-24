@@ -1,21 +1,8 @@
-"""H4: generated code is gated for nefarious activity BEFORE it executes.
-
-Codegen stays available to every user — the change is not a role check. What
-changed is the severity floor and the ORDERING:
-
-* the gate blocks HIGH as well as CRITICAL (``blocks_execution``). ``os.environ``
-  access parses as an attribute, not a call, so it was classified HIGH and
-  sailed past a CRITICAL-only gate straight into ``validator.validate()``,
-  which imports the module and calls every tool IN the secret-holding
-  orchestrator process;
-* the auto-fix loop re-analyzes its refined bytes (it used to syntax-check
-  them only, so a second-round payload reached the same exec seam);
-* ``approve_agent`` decides on the security report BEFORE running the
-  validator, not after;
-* the revision path returns ``validation=None`` when the gate refuses, so the
-  validator never executes refused code, and it now validates the STAGED
-  slug rather than re-importing the unmodified live agent.
+"""Tests for the generated-code execution gate (backend/orchestrator/code_security.py,
+agent_lifecycle.py): HIGH-severity findings block execution, the auto-fix loop is
+re-gated, and refused code never reaches the validator.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,8 +20,6 @@ from orchestrator.code_security import (
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
-# Reads a secret straight out of the orchestrator's environment. Classified
-# HIGH (BLOCKED_ATTRIBUTE), which a CRITICAL-only gate let through.
 ENV_EXFIL_TOOLS = '''"""Helper tools."""
 import os
 
@@ -83,7 +68,6 @@ def test_env_access_is_a_blocking_severity():
     report = CodeSecurityAnalyzer().analyze(ENV_EXFIL_TOOLS)
     assert report.max_severity == Severity.HIGH
     assert report.passed is False
-    # The floor — not just "not passed" — is what the lifecycle gates on.
     assert blocks_execution(report) is True
 
 
@@ -93,8 +77,6 @@ def test_clean_generated_code_still_passes_the_floor():
 
 
 def test_medium_findings_do_not_block_execution():
-    # open()/getattr are MEDIUM: a parser that reads its input file must still
-    # be generatable by an ordinary user.
     report = CodeSecurityAnalyzer().analyze(
         "def read(path='x', **kwargs):\n"
         "    with open(path) as handle:\n"
@@ -107,11 +89,6 @@ def test_medium_findings_do_not_block_execution():
 
 
 def test_binary_magic_bytes_are_not_mistaken_for_obfuscation():
-    """Auto-generated parsers are the main thing that writes byte literals.
-    Once HIGH became execution-blocking, the old three-escapes-per-line
-    obfuscation heuristic would have refused every correct binary-format
-    parser — a legitimate magic-number check must survive the floor.
-    """
     png_parser = (
         'def read_png(path="x", **kwargs):\n'
         '    with open(path, "rb") as handle:\n'
@@ -125,13 +102,6 @@ def test_binary_magic_bytes_are_not_mistaken_for_obfuscation():
 
 
 def test_eight_escape_ole2_signature_clears_the_floor():
-    """The OLE2/CFB magic is EIGHT bytes — the .doc/.xls family an attachment
-    parser must sniff. At the old floor of eight it was refused on every
-    generate and every auto-refine, so the format could never be covered.
-
-    Pins the floor from the permissive side; the nine-escape tests below pin it
-    from the strict side, so a revert to {8,} fails here and a slide to {10,}
-    fails there."""
     ole2_parser = (
         'def read_xls(path="x", **kwargs):\n'
         '    with open(path, "rb") as handle:\n'
@@ -145,9 +115,6 @@ def test_eight_escape_ole2_signature_clears_the_floor():
 
 
 def test_two_four_byte_magics_on_one_line_clear_the_floor():
-    """A tuple of two 4-byte magics is ordinary parser code, but the separator
-    between the literals is short enough for the pattern's bridge to chain them
-    into eight — so this must clear the floor too."""
     magics = 'MAGIC = (b"\\x89\\x50\\x4e\\x47", b"\\xff\\xd8\\xff\\xe0")\n'
     report = CodeSecurityAnalyzer().analyze(magics)
     assert blocks_execution(report) is False
@@ -172,15 +139,12 @@ def test_hex_obfuscation_split_across_concatenation_is_still_blocked():
 
 
 def test_codegen_prompt_and_the_execution_floor_never_disagree():
-    """A refusal the model cannot avoid would be a dead end, so the prompt has
-    to name what the analyzer now blocks."""
     from orchestrator.agent_generator import security_rules_block
 
     for self_contained in (False, True):
         rules = security_rules_block(self_contained=self_contained)
         assert "os.environ" in rules and "os.getenv" in rules
         assert "globals()" in rules
-        # And it must say the consequence, not merely discourage.
         assert "REFUSED" in rules or "refused" in rules
 
 
@@ -243,7 +207,6 @@ async def test_flagged_code_never_reaches_the_in_process_validator(lifecycle):
     assert state["status"] == "error"
     report = json.loads(state["security_report"])
     assert report["max_severity"] == "high"
-    # And nothing was written into the agent tree for a subprocess to pick up.
     tools_file = os.path.join(
         lifecycle._agents_dir, state["agent_slug"], "mcp_tools.py"
     )
@@ -252,8 +215,6 @@ async def test_flagged_code_never_reaches_the_in_process_validator(lifecycle):
 
 @pytest.mark.asyncio
 async def test_clean_code_still_generates_for_an_ordinary_user(lifecycle):
-    # The posture change must not make codegen unavailable — only nefarious
-    # output is refused.
     state = await _generate(lifecycle, CLEAN_TOOLS, name="Gate Clean")
     assert state["status"] == "generated", state.get("error_message")
     assert json.loads(state["validation_report"])["passed"] is True
@@ -261,9 +222,6 @@ async def test_clean_code_still_generates_for_an_ordinary_user(lifecycle):
 
 @pytest.mark.asyncio
 async def test_auto_fix_payload_is_re_gated_before_it_executes(lifecycle):
-    # Round 1 is clean but fails spec validation; the "fix" smuggles in the
-    # env read. The refined bytes used to be syntax-checked only and then fed
-    # straight back into validator.validate().
     executed: list[str] = []
     real_validate = lifecycle.validator.validate
 
@@ -278,8 +236,6 @@ async def test_auto_fix_payload_is_re_gated_before_it_executes(lifecycle):
     lifecycle.validator.validate = _tracking_validate
 
     async def _first(**kwargs):
-        # Registry with a tool whose return shape is wrong → validation fails
-        # → auto-fix loop runs.
         return (
             "def broken(**kwargs):\n"
             "    return 'not a dict'\n"
@@ -305,8 +261,6 @@ async def test_auto_fix_payload_is_re_gated_before_it_executes(lifecycle):
 
 @pytest.mark.asyncio
 async def test_approve_decides_on_security_before_running_the_validator(lifecycle):
-    # approve_agent re-reads the on-disk file. Plant flagged code there and
-    # assert the verdict lands without the validator executing it.
     state = await _generate(lifecycle, CLEAN_TOOLS, name="Gate Approve")
     assert state["status"] == "generated"
 

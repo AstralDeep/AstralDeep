@@ -1,4 +1,7 @@
-"""Feature 074 T171: exact flag-off behavior and evidence parity."""
+"""Tests for orchestrator/governed_dispatch.py and lets_config.py: with the LETS flag
+off, behavior and output are byte-identical to pre-LETS and dormant invalid settings
+are ignored.
+"""
 
 from __future__ import annotations
 

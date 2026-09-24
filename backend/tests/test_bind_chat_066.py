@@ -1,12 +1,6 @@
-"""Feature-066 regression pins for ``WorkAdmission.bind_chat``.
-
-The first message of a new chat is admitted BEFORE its conversation exists
-(``chat_id=None`` at ingress); the turn then creates the chat. ``bind_chat``
-performs that single legitimate None→chat adoption durably so every
-downstream publication fence keeps strict identity semantics. These tests pin
-the contract: adopt-on-None, idempotent re-bind, cross-conversation refusal,
-and fence checking. (Regression: before 066 every first-message-of-a-new-chat
-failed ``conversation operation chat identity changed`` at publication.)
+"""Tests for work_admission.py's WorkAdmission.bind_chat: adopting a None chat_id on the
+first message of a new chat, idempotent re-bind, and refusing cross-conversation
+rebinds.
 """
 
 from __future__ import annotations
@@ -121,7 +115,6 @@ def test_bind_chat_is_idempotent_for_the_same_chat() -> None:
 
     assert first.chat_id == "chat-a"
     assert second.chat_id == "chat-a"
-    # The no-op re-bind must not spin the record's revision forward.
     assert second.state_revision == first.state_revision
 
 
@@ -144,7 +137,6 @@ def test_bind_chat_refuses_when_admitted_with_a_conversation() -> None:
 
     with pytest.raises(ValueError):
         coordinator.bind_chat(claim.fence, "chat-other")
-    # Same-chat "re-bind" of an already-scoped operation is a no-op success.
     unchanged = coordinator.bind_chat(claim.fence, "chat-original")
     assert unchanged.chat_id == "chat-original"
 

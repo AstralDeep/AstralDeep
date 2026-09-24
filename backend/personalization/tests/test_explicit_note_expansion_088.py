@@ -1,4 +1,8 @@
-"""Exact current-head selection with real Fernet/HMAC and explicit byte budgets."""
+"""Tests for personalization/explicit_note_expansion.py: real Fernet/HMAC selection
+expansion, exact byte-budget enforcement, key rotation, revision limits, and refusal
+of stale, malformed, or oversized selections.
+"""
+
 from dataclasses import replace
 import hashlib
 import json
@@ -117,7 +121,6 @@ def test_instruction_shaped_note_is_json_data_never_a_new_role(bundle):
     decoded = json.loads(result.text)
     assert set(decoded) == {"format", "meaning", "guidance"}
     assert decoded["guidance"] == [{"category": "preference", "value": value}]
-    # Framing is not a claim of model-level prompt-injection resistance.
 
 
 @pytest.mark.parametrize("changes", [{"key_id": "BAD"}, {"key_id": None}, {"binding": "x"},

@@ -1,14 +1,8 @@
+"""AST- and regex-based static analyzer that scores generated agent code for dangerous
+imports, calls, and obfuscation before it can be written or executed; used by
+agent_lifecycle.py and agentic_creation.py to gate codegen.
 """
-Code Security Analyzer for AstralDeep Agent Creation.
 
-Performs AST-based static analysis on generated Python code to detect
-dangerous patterns before code is written to disk or executed.
-
-Layers:
-1. AST analysis — detect dangerous function calls, imports, patterns
-2. Import analysis — blocklist of dangerous modules
-3. Regex pattern matching — detect obfuscated/encoded attacks
-"""
 import ast
 import re
 import logging
@@ -20,15 +14,14 @@ logger = logging.getLogger("CodeSecurity")
 
 
 class Severity(str, Enum):
-    CRITICAL = "critical"   # auto-reject
-    HIGH = "high"           # requires admin review
-    MEDIUM = "medium"       # warning, auto-approve
-    LOW = "low"             # informational
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 @dataclass
 class SecurityFinding:
-    """A security issue found in generated code."""
     severity: Severity
     category: str
     message: str
@@ -47,7 +40,6 @@ class SecurityFinding:
 
 @dataclass
 class SecurityReport:
-    """Result of a security analysis."""
     passed: bool
     findings: List[SecurityFinding]
     max_severity: Optional[Severity] = None
@@ -62,23 +54,13 @@ class SecurityReport:
         }
 
 
-# Severity floor for the pre-execution gate (H4 remediation): generated code
-# whose report reaches ANY of these severities is refused BEFORE it may be
-# imported, called, validated in-process, or Popen'd. HIGH covers os.environ
-# attribute access, globals()/setattr tricks, and obfuscation — the "requires
-# admin review" happens before execution, never after. Codegen itself stays
-# available to every user; only nefarious output is refused.
 EXECUTION_BLOCKING_SEVERITIES = (Severity.CRITICAL, Severity.HIGH)
 
 
 def blocks_execution(report: SecurityReport) -> bool:
-    """True when generated code must be refused before any execution."""
     return report.max_severity in EXECUTION_BLOCKING_SEVERITIES
 
 
-# ─── Blocklists ──────────────────────────────────────────────────────────
-
-# Modules that are always blocked (critical)
 BLOCKED_MODULES = {
     "subprocess", "shlex", "ctypes", "cffi", "code", "codeop",
     "compileall", "py_compile", "importlib", "runpy",
@@ -86,7 +68,6 @@ BLOCKED_MODULES = {
     "multiprocessing", "concurrent.futures",
 }
 
-# Partially blocked — specific submodules/functions are ok
 PARTIAL_MODULES = {
     "os": {
         "allowed": {"os.path", "os.sep", "os.linesep", "os.getcwd", "os.path.join",
@@ -105,7 +86,6 @@ PARTIAL_MODULES = {
     },
 }
 
-# Dangerous built-in function calls
 DANGEROUS_CALLS = {
     "eval": Severity.CRITICAL,
     "exec": Severity.CRITICAL,
@@ -113,29 +93,19 @@ DANGEROUS_CALLS = {
     "__import__": Severity.CRITICAL,
     "globals": Severity.HIGH,
     "locals": Severity.HIGH,
-    "getattr": Severity.MEDIUM,  # context-dependent
+    "getattr": Severity.MEDIUM,
     "setattr": Severity.HIGH,
     "delattr": Severity.HIGH,
-    "open": Severity.MEDIUM,      # file I/O — flagged as medium
+    "open": Severity.MEDIUM,
     "input": Severity.MEDIUM,
 }
 
-# Regex patterns for obfuscated attacks
 OBFUSCATION_PATTERNS = [
     (r"base64\.\s*b64decode\s*\(.*?\)\s*\)\s*$", Severity.CRITICAL,
      "Base64-decoded execution detected"),
     (r"chr\s*\(\s*\d+\s*\)\s*\+\s*chr", Severity.HIGH,
      "Character code concatenation — possible obfuscation"),
-    # Nine or more hex escapes on one line (separators allowed, so
-    # "\x69" + "\x6d" + ... is still caught). Three was too tight once HIGH
-    # became execution-blocking: a binary-format parser checking a magic
-    # number is ordinary, correct code, and auto-generated parsers are the
-    # main thing that writes it. Eight (the old floor) still refused two real
-    # cases: an 8-byte OLE2/CFB signature (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-    # — the .doc/.xls family) and a tuple of two 4-byte magics on one line,
-    # whose "…", b"…" separator the bridge chains into eight. Nine clears both
-    # while still catching genuine obfuscated payloads, which encode whole
-    # statements and run to dozens.
+    # 9+ hex escapes only — 8 false-flagged real binary parsers
     (r"(?:\\x[0-9a-fA-F]{2}[^\n]{0,6}?){9,}", Severity.HIGH,
      "Hex-encoded string — possible obfuscation"),
     (r"(?:socket\.(?:bind|listen|connect))", Severity.CRITICAL,
@@ -154,8 +124,6 @@ OBFUSCATION_PATTERNS = [
 
 
 class CodeSecurityAnalyzer:
-    """Performs static security analysis on generated Python code."""
-
     def __init__(self):
         self._compiled_patterns = [
             (re.compile(pat, re.IGNORECASE | re.MULTILINE), sev, msg)
@@ -163,13 +131,8 @@ class CodeSecurityAnalyzer:
         ]
 
     def analyze(self, code: str, filename: str = "mcp_tools.py") -> SecurityReport:
-        """Analyze Python source code for security issues.
-
-        Returns a SecurityReport with findings and pass/fail verdict.
-        """
         findings: List[SecurityFinding] = []
 
-        # Layer 1: AST analysis
         try:
             tree = ast.parse(code)
             findings.extend(self._analyze_ast(tree, code))
@@ -181,13 +144,10 @@ class CodeSecurityAnalyzer:
                 line=e.lineno,
             ))
 
-        # Layer 2: Import analysis
         findings.extend(self._analyze_imports(code))
 
-        # Layer 3: Regex pattern matching
         findings.extend(self._analyze_patterns(code))
 
-        # Determine max severity and verdict
         max_severity = None
         for f in findings:
             if max_severity is None or self._severity_rank(f.severity) > self._severity_rank(max_severity):
@@ -224,12 +184,10 @@ class CodeSecurityAnalyzer:
         return {Severity.LOW: 1, Severity.MEDIUM: 2, Severity.HIGH: 3, Severity.CRITICAL: 4}[severity]
 
     def _analyze_ast(self, tree: ast.AST, source: str) -> List[SecurityFinding]:
-        """Walk AST to find dangerous patterns."""
         findings = []
         source_lines = source.split("\n")
 
         for node in ast.walk(tree):
-            # Check function calls
             if isinstance(node, ast.Call):
                 func_name = self._get_call_name(node)
                 if func_name in DANGEROUS_CALLS:
@@ -243,7 +201,6 @@ class CodeSecurityAnalyzer:
                         code_snippet=snippet,
                     ))
 
-                # Check for os.system, os.popen, etc.
                 if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
                     module = node.func.value.id
                     attr = node.func.attr
@@ -259,7 +216,6 @@ class CodeSecurityAnalyzer:
                                 code_snippet=snippet,
                             ))
 
-            # Check for attribute access on blocked modules (e.g., os.environ)
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                 module = node.value.id
                 attr = node.attr
@@ -278,12 +234,11 @@ class CodeSecurityAnalyzer:
         return findings
 
     def _analyze_imports(self, code: str) -> List[SecurityFinding]:
-        """Analyze import statements for blocked modules."""
         findings = []
         try:
             tree = ast.parse(code)
         except SyntaxError:
-            return findings  # Already caught in AST analysis
+            return findings
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -310,7 +265,6 @@ class CodeSecurityAnalyzer:
                         ))
                     elif root_module in PARTIAL_MODULES:
                         allowed = PARTIAL_MODULES[root_module].get("allowed", set())
-                        # Check each imported name
                         for alias in node.names:
                             full_path = f"{full_module}.{alias.name}"
                             if full_path not in allowed and full_module not in allowed:
@@ -325,11 +279,9 @@ class CodeSecurityAnalyzer:
         return findings
 
     def _analyze_patterns(self, code: str) -> List[SecurityFinding]:
-        """Regex-based pattern detection for obfuscation and attacks."""
         findings = []
         for regex, severity, message in self._compiled_patterns:
             for match in regex.finditer(code):
-                # Find line number
                 line_num = code[:match.start()].count('\n') + 1
                 findings.append(SecurityFinding(
                     severity=severity,
@@ -341,17 +293,6 @@ class CodeSecurityAnalyzer:
         return findings
 
     def _get_call_name(self, node: ast.Call) -> str:
-        """The name a Call is checked against :data:`DANGEROUS_CALLS` under.
-
-        Those are the dangerous BUILTINS. A bare name (``eval(...)``) is one;
-        so is a reach through the builtins module (``builtins.eval``,
-        ``__builtins__.exec``, and the ``getattr(builtins, ...)`` family the
-        obfuscation patterns cover). A method of some other object is NOT:
-        ``re.compile(...)``, ``pattern.compile``, ``parser.eval`` and
-        ``file.open`` are ordinary library calls, and flagging them refused
-        every generated agent that parsed text with a regular expression
-        (feature 077 live finding). Blocked module functions (``os.system``
-        …) are matched separately against :data:`PARTIAL_MODULES`."""
         if isinstance(node.func, ast.Name):
             return node.func.id
         if isinstance(node.func, ast.Attribute):

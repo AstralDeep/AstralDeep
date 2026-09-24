@@ -1,9 +1,6 @@
-"""Unregistered source-less one-shot chat turn and its private result proof.
-
-One owner instruction becomes exactly one fixed USER model action: no source
-read, no tool, no selected guidance. The answer is retained in the action ledger
-under the same keyed receipt binding as research, checked again inside the
-transaction that retires the execution leases, and never attributed to a source.
+"""One fixed, source-less USER chat turn per owner instruction: no tool, source or
+guidance. Answer is retained under research's keyed receipt binding; invoked by
+persistent_agents/runner.py, consumed via orchestrator/work_chat_result.py.
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from persistent_agents.runtime_values import canonical, digest, thaw
 
 CHAT_PROFILE = "openai-chat-turn/v1"
 CHAT_KEY_PREFIX = "chat-v1-"
-# Plane bounds a settled result at 8 KiB canonical; leave room for the envelope.
+# 8 KiB Plane result bound minus envelope overhead
 MAX_ANSWER_BYTES = 6144
 _SYSTEM = (
     "Answer the owner's request directly from your own knowledge. No source "
@@ -31,7 +28,6 @@ _SYSTEM = (
 
 
 def chat_action_key(record) -> str:
-    """One stable model identity per revision/epoch, independent of claims."""
     chat_definition(record)
     for value in (record.instruction_revision, record.control_epoch):
         if type(value) is not int or not 1 <= value <= 2**53 - 1:
@@ -40,7 +36,6 @@ def chat_action_key(record) -> str:
 
 
 def build_chat_request(instruction: str) -> ResearchRequest:
-    """Build the entire fixed text-only body from the owner's instruction alone."""
     profile._text(instruction, 32768)
     try:
         body = profile._canonical({
@@ -58,7 +53,6 @@ def build_chat_request(instruction: str) -> ResearchRequest:
 
 
 def chat_result_value(text) -> dict:
-    """The only retained result shape; the answer text is bounded and scanned."""
     if type(text) is not str or not text.strip() or "\x00" in text:
         raise ValueError("chat answer unavailable")
     if len(text.encode("utf-8")) > MAX_ANSWER_BYTES:
@@ -68,8 +62,6 @@ def chat_result_value(text) -> dict:
 
 @dataclass(frozen=True, slots=True)
 class ChatResponse:
-    """Usage survives an unusable answer; no raw provider text is retained here."""
-
     usage: ResearchUsage | None
     text: str | None
     disposition: str
@@ -92,7 +84,6 @@ def _answer(content) -> str:
 
 
 def parse_chat_response(body: bytes, *, status_code: int) -> ChatResponse:
-    """Parse the whole reply and usage before validating the answer shape."""
     try:
         if type(status_code) is not int or status_code != 200:
             profile._refuse()
@@ -139,12 +130,6 @@ def parse_chat_response(body: bytes, *, status_code: int) -> ChatResponse:
 
 
 def chat_execution_checks(service, owner_id, claims, record, *, authority) -> dict:
-    """The one-shot authority policy for a turn with no tools and no source.
-
-    This mirrors the existing shared execution fence exactly for its owner,
-    feature, version and original-incarnation checks; only the tool/source
-    consent steps have nothing to check. Digests are stable per revision/epoch.
-    """
     from orchestrator.session_authority import OperationExecutionAuthority
     from persistent_agents.models import AssignmentError
 
@@ -185,13 +170,10 @@ def _matching_checks(action, checks):
 
 @dataclass(frozen=True, slots=True)
 class ChatCompletion:
-    """Closed in-memory binding to one settled, authenticated chat answer."""
-
     private: ResearchInput = field(repr=False)
     model_action_id: str
 
     def rebuild(self, executor, tx, repository, current, checks):
-        """Called only inside the executor's guarded config transaction."""
         if self.private.kind != "chat":
             raise DispatchDenied("assignment_research_binding_changed")
         repository.assert_current_assignment_execution(tx, fence=executor.claim.fence,
@@ -224,7 +206,6 @@ class ChatCompletion:
 
 
 async def run_chat_episode(executor):
-    """One fixed model action for the owner's instruction, never recurrence."""
     from persistent_agents.runner import OneShotEpisodeResult
 
     chat_definition(executor.record)

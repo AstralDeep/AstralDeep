@@ -1,4 +1,6 @@
-"""Declarative checks for AstralDeep's exact local-component contract."""
+"""Tests that the root pyproject.toml component contract matches installed package
+metadata for AstralDeep's local components.
+"""
 
 from __future__ import annotations
 

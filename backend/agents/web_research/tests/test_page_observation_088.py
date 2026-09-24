@@ -1,4 +1,7 @@
-"""Actual fixed-reader facts; external responses are deterministic and synthetic."""
+"""Tests that fetch_page's page-observation metadata reflects only the actual
+fixed-reader response, never invented transport facts, using deterministic synthetic
+responses.
+"""
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -63,7 +66,7 @@ def test_partial_body_and_excerpt_are_distinct_from_completed_extractor(rmock):
     assert value["body_complete"] is False
     assert (
         value["extraction_complete"] is True
-    )  # completed the supported text extraction
+    )
     assert value["excerpt_complete"] is False and value["redacted"] is False
     assert len(value["text"]) == mcp_tools.PAGE_TEXT_CAP
     old = {
@@ -80,6 +83,6 @@ def test_missing_actual_transport_url_is_not_invented(rmock):
     rmock.add("GET", url, body=b"Visible", headers={"Content-Type": "text/plain"})
     result = mcp_tools.fetch_page(url)
     assert result["_data"]["page_observation"]["final_url"] is None
-    assert result["_ui_components"]  # existing UI remains available
+    assert result["_ui_components"]
     with pytest.raises(ValueError, match="^assignment_source_observation_invalid$"):
         read_page_observation(SimpleNamespace(result=result), requested_url=url)

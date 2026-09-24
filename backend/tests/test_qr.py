@@ -1,11 +1,8 @@
-"""051 — first-party QR encoder (`shared/qr.py`).
-
-Known-answer matrices below were frozen after dev-time cross-verification:
-(a) round-trip decoded with an independent decoder (zxing-cpp) and (b) found
-byte-identical to the `qrcode` reference encoder across all 8 forced masks for
-every probe payload (research D2). Neither tool is a repo dependency; these
-tests pin the verified behavior with stdlib only. Pure Python, DB-free.
+"""Tests for backend/shared/qr.py's first-party QR encoder: known-answer matrices,
+version/capacity selection, matrix structural invariants, format/version bit vectors,
+every ECC level, and well-formed PNG output.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -36,7 +33,6 @@ def _matrix_hash(matrix) -> str:
     ).hexdigest()
 
 
-# (size, sha256) frozen from the verified implementation — see module docstring.
 KNOWN_ANSWERS = {
     "https://iam.ai.uky.edu/realms/astral/device?user_code=WDJB-MJHT":
         (37, "c6d93abd19be3ee2ddc7b27dbe85e3afc4e621a664f56f2e1900436a3754a887"),
@@ -57,11 +53,11 @@ def test_known_answer_matrices():
 
 
 def test_version_selection_and_capacity():
-    assert min_version_for(14) == 1          # v1-M byte capacity
+    assert min_version_for(14) == 1
     assert min_version_for(15) == 2
     assert min_version_for(62) == 4
     assert min_version_for(63) == 5
-    assert min_version_for(213) == 10        # v10-M edge (16-bit count)
+    assert min_version_for(213) == 10
     with pytest.raises(QRError):
         min_version_for(214)
     with pytest.raises(QRError):
@@ -85,19 +81,16 @@ def test_matrix_structural_invariants():
         return True
 
     assert finder_ok(0, 0) and finder_ok(0, size - 7) and finder_ok(size - 7, 0)
-    # Timing patterns alternate between the finders.
     for i in range(8, size - 8):
         assert m[6][i] == (1 if i % 2 == 0 else 0)
         assert m[i][6] == (1 if i % 2 == 0 else 0)
-    # Dark module.
     assert m[size - 8][8] == 1
 
 
 def test_format_and_version_bit_vectors():
-    # ISO 18004 worked examples.
     assert _format_bits("L", 0) == 0b111011111000100
     assert _format_bits("M", 0) == 0b101010000010010
-    assert _version_bits(7) == 0b000111110010010100  # 0x07C94
+    assert _version_bits(7) == 0b000111110010010100
 
 
 def test_all_ecc_levels_encode():
@@ -114,17 +107,14 @@ def test_png_is_wellformed():
     png = qr_png(payload, scale=scale, border=border)
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert png.endswith(struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND")))
-    # IHDR: dimensions = (modules + 2*border) * scale, 8-bit grayscale.
     w, h, depth, ctype = struct.unpack(">IIBB", png[16:26])
     size = len(encode_matrix(payload))
     assert w == h == (size + 2 * border) * scale
     assert depth == 8 and ctype == 0
-    # IDAT inflates to exactly (1 filter byte + w) per row.
     idat_start = png.index(b"IDAT") + 4
     idat_len = struct.unpack(">I", png[png.index(b"IDAT") - 4:png.index(b"IDAT")])[0]
     raw = zlib.decompress(png[idat_start:idat_start + idat_len])
     assert len(raw) == h * (1 + w)
-    # Quiet zone is light; a finder core pixel is dark.
     first_row = raw[1:1 + w]
     assert set(first_row) == {255}
     center_of_finder = raw[(border * scale + 3 * scale) * (1 + w) + 1 + border * scale + 3 * scale]

@@ -1,8 +1,8 @@
-"""Explicit non-retention through HTTP, real supervision and governed dispatch.
-
-External IAM/source/model responses are synthetic; no provider receives data.
-The actual runtime, PostgreSQL, encrypted selection, action ledger and audit run.
+"""Tests for work retention over HTTP (backend/persistent_agents/runtime_values.py):
+explicit non-retention completes without durable source or model text, and invalid
+retention shapes refuse before dispatch.
 """
+
 import asyncio
 import json
 from types import SimpleNamespace

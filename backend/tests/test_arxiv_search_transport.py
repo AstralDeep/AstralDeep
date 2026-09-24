@@ -1,4 +1,8 @@
-"""Exercise the installed arxiv Client parser through the approved HTTP seam."""
+"""Tests for agents/general/mcp_tools.py's arxiv search: the installed Client's Atom
+parsing through shared/external_http.py's approved transport, result bounding,
+private-destination refusal, and error handling.
+"""
+
 import json
 import socket
 from urllib.parse import parse_qs, urlparse

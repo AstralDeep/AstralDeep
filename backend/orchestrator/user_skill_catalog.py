@@ -1,11 +1,8 @@
-"""The sole current owner-skill authority, backed by Plane revisions.
-
-Legacy files are read only for an unmarked owner. All application consumers use
-this facade; after cutover the retained files are recovery evidence, never a
-second current catalog. The owner SQL fence linearizes application mutations;
-file descriptor/fingerprint rechecks detect ordinary concurrent edits, but do
-not claim a distributed transaction with an external filesystem editor.
+"""Sole current authority for a user's authored skills, backed by Plane revisions;
+legacy Markdown files are read only to materialize an unmarked owner once, never as a
+second live catalog. Used by user_skills.py and work_submit.py.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
@@ -26,7 +23,7 @@ from persistent_agents.models import AssignmentError
 
 
 class SkillCatalogError(AssignmentError):
-    """A data-free conflict or refusal; authored values never enter diagnostics."""
+    pass
 
 
 @dataclass(frozen=True, repr=False)
@@ -54,12 +51,6 @@ class _LegacyCapture:
 
 
 def capture_legacy_files(knowledge_dir, owner_id):
-    """Bounded no-follow capture, including exact missing-directory evidence.
-
-    A component observed present may never become an empty catalog on open
-    failure. Absence is accepted only beneath a stable, open existing parent;
-    both captures must retain the same directory identities and absent suffix.
-    """
     descriptors = []
     identities = []
     links = []
@@ -128,8 +119,6 @@ def capture_legacy_files(knowledge_dir, owner_id):
 
 
 class UserSkillFacade:
-    """Current human mutations and explicitly admitted, read-only turn guidance."""
-
     def __init__(self, orchestrator, knowledge_dir):
         from astralplane.repositories.guidance import SkillsRepository
         self.orch, self.knowledge_dir = orchestrator, os.fspath(knowledge_dir)
@@ -140,8 +129,6 @@ class UserSkillFacade:
         self.audit = getattr(orchestrator, 'audit_repo', None)
         if type(self.repository) is not SkillsRepository or type(self.audit) is not AuditRepository:
             raise SkillCatalogError('skill_unavailable', 503)
-        # SQL owner locking spans processes. This bounded local fence also keeps
-        # this facade's filesystem captures together through marker insertion.
         self._capture_lock = threading.Lock()
 
     def _current(self, caller, *, read_only=False):
@@ -162,7 +149,6 @@ class UserSkillFacade:
             raise SkillCatalogError('skill_unavailable', 503)
 
     def _catalog(self, tx, caller, *, read_only=False):
-        """Called only inside the original caller's bounded transaction."""
         from astralplane.repositories.guidance_models import LegacySkillEntry, SkillDefinition
         from orchestrator.slash_commands import reserved_names
         marker = self.repository.get_materialization(tx, owner_id=caller.owner_id)
@@ -177,8 +163,7 @@ class UserSkillFacade:
             entries = tuple(LegacySkillEntry(str(uuid4()), e.slug,
                 SkillDefinition(**asdict(e.definition)), e.markdown, e.format, e.legacy_updated_at)
                 for e in prepared.entries)
-            # materialize takes owner 79 before inspecting the marker. A second
-            # exact capture after that wait prevents adopting changed file input.
+            # Re-captures after the lock — avoids acting on stale file content
             result = self.repository.materialize_legacy_skills(tx, owner_id=caller.owner_id,
                 entries=entries, manifest_digest=prepared.manifest_digest)
             if not result.replayed:
@@ -300,7 +285,6 @@ class UserSkillFacade:
             if not prepared.replayed:
                 self._audit(tx, caller, prepared)
             result = self.repository.apply_change(tx, command=command)
-            # A final failure aborts the outer transaction including audit.
             if result.replayed != prepared.replayed:
                 raise SkillCatalogError('skill_conflict', 409)
             return result
@@ -318,7 +302,6 @@ class UserSkillFacade:
             if alias in reserved_names():
                 raise ValueError
             applies = legacy._normalise_applies(applies_to)
-            # Do not silently truncate a newly submitted applicability selection.
             if type(applies_to) not in (str, list, tuple):
                 raise ValueError
             if type(applies_to) in (list, tuple) and len(applies_to) > legacy.MAX_APPLIES_TO:

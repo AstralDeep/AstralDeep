@@ -1,14 +1,6 @@
-"""Eager, safe auto-creation of a backend parser for an uncovered file type.
-
-Feature 031-attachment-upload-parsing (User Story 2). When an accepted file
-type has no built-in or globally-promoted parser, uploading one *eagerly*
-drafts a parser by reusing the feature-027 agentic-creation lifecycle
-(draft -> security gate -> isolated VirtualWebSocket self-test -> ADMIN
-approval -> global promotion). This module is the programmatic, format-seeded
-entry point — it does NOT rely on the LLM deciding to call ``create_capability``
-during a chat turn.
-
-Lifecycle contract: specs/031-attachment-upload-parsing/contracts/parser-autocreate.md
+"""Eagerly drafts a backend parser for an uploaded file type with no coverage, reusing
+agentic_creation.py's draft, security-gate, self-test, and admin-approval lifecycle
+without waiting on the chat LLM to call create_capability.
 """
 
 from __future__ import annotations
@@ -87,24 +79,16 @@ def _store_self_test(
 
 
 class CoverageStatus(TypedDict):
-    status: str  # "covered" | "preparing" | "pending_admin_approval" | "unavailable"
+    status: str
     gap_fingerprint: Optional[str]
 
 
 def _tool_name_for(extension: Optional[str]) -> str:
-    """Deterministic, identifier-safe parser tool name for *extension*."""
     ext = re.sub(r"[^a-z0-9]+", "_", (extension or "file").lower()).strip("_") or "file"
     return f"parse_{ext}"
 
 
 def coverage_status(orch, *, extension: Optional[str], category: str) -> CoverageStatus:
-    """Resolve the parser-coverage status for a type without side effects.
-
-    Used by the upload endpoint to decide the ``parser_status`` it returns and
-    whether to enqueue a background ``start``. Honors the feature flag and the
-    existing registry (dedup): a ``live`` row ⇒ covered, a ``pending`` row ⇒
-    awaiting admin (no new draft).
-    """
     from orchestrator import parser_registry
     from orchestrator.attachments.parser_repo import AttachmentParserRepository
     from shared.feature_flags import flags
@@ -122,16 +106,10 @@ def coverage_status(orch, *, extension: Optional[str], category: str) -> Coverag
             return {"status": "covered", "gap_fingerprint": fp}
         if existing["status"] == "pending":
             return {"status": "pending_admin_approval", "gap_fingerprint": fp}
-        # failed / discarded → a later upload may re-attempt.
     return {"status": "preparing", "gap_fingerprint": fp}
 
 
 async def _notify_user(orch, user_id: str, message: str, chat_id: Optional[str] = None) -> None:
-    """Best-effort status toast to all of *user_id*'s connected UI sockets.
-
-    The upload is chat-agnostic, so absent a chat_id we notify every socket the
-    user has open. Never raises.
-    """
     try:
         clients = list(getattr(orch, "ui_clients", []) or [])
     except Exception:
@@ -155,14 +133,6 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
                                       source_attachment_id: Optional[str],
                                       extension: Optional[str],
                                       category: Optional[str]) -> bool:
-    """031 T031 — auto-continue the originating turn once the parser is live.
-
-    Recovers the uploader's ORIGINAL request (history stores the un-augmented
-    user text) for the turn that carried ``source_attachment_id`` and replays it
-    in-process via a ``VirtualWebSocket`` so the parsed result persists into the
-    original chat (seen on next open). Best-effort; returns True if a replay was
-    dispatched, False otherwise. Never raises.
-    """
     if not (requested_by and source_chat_id and source_attachment_id):
         return False
     try:
@@ -212,19 +182,10 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
         if not isinstance(original, str) or not original.strip():
             return False
 
-        # Replay the original turn in-process; the parser is now live so the
-        # attachment block resolves to ``covered`` and the reader tool runs.
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         bg = BackgroundTask(task_id=f"autocont-{source_attachment_id[:8]}",
                             chat_id=source_chat_id, user_id=requested_by)
         vws = VirtualWebSocket(bg)
-        # 056 US2 (FR-012): the replay is a machine turn — derive its authority
-        # at the SAME shared seam scheduled runs use, so a real-agent reader
-        # tool dispatches delegated under the uploader's standing consent in
-        # production instead of being refused fail-closed. No derivable
-        # authority is NOT fatal here: the replay still runs (dev posture and
-        # non-agent paths are unchanged), and production simply refuses its
-        # real-agent dispatches exactly as it does today.
         from orchestrator.chain_authority import AuthoritySkip
         authority = await orch.derive_machine_authority(
             user_id=requested_by, agent_id=None, turn_class="parser_replay")
@@ -241,7 +202,7 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
             orch._unbind_machine_turn(vws)
             try:
                 await vws.close()
-            except Exception:  # pragma: no cover - close is best-effort
+            except Exception:  # pragma: no cover
                 pass
         logger.info("autoparse.auto_continued",
                     extra={"user_id": requested_by, "chat_id": source_chat_id,
@@ -254,13 +215,6 @@ async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
 
 
 async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None) -> CoverageStatus:
-    """Eagerly draft a parser for an uncovered uploaded *attachment*.
-
-    Reuses the 027 lifecycle primitives directly (no LLM "should I" decision):
-    register intent (dedup-safe), create+generate+self-test a draft parser
-    against the uploaded file, leave it ``pending`` for ADMIN approval. Returns
-    the resulting ``parser_status``. Never raises into the caller.
-    """
     from orchestrator import agentic_creation, parser_registry
     from orchestrator.attachments.parser_repo import (
         AttachmentParserRepository, STATUS_FAILED,
@@ -274,7 +228,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
     plane = _plane(orch)
     parser_repo = AttachmentParserRepository.from_plane_source(plane)
 
-    # Dedup (FR-018): a pending/live row for this gap means no new draft.
     existing = parser_repo.get_by_gap(fp)
     if existing and existing["status"] in ("pending", "live"):
         return {"status": "pending_admin_approval" if existing["status"] == "pending" else "covered",
@@ -304,7 +257,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
         return {"status": "unavailable", "gap_fingerprint": fp}
     draft_id = draft["id"]
 
-    # Record provenance + register the (dedup-keyed) registry row.
     try:
         if not isinstance(attachment_id, str) or not attachment_id:
             raise ValueError("autoparse attachment identity is unavailable")
@@ -337,7 +289,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
                      "trigger": "upload", "draft_id": draft_id},
     )
 
-    # Generate → start → self-test against THE UPLOADED FILE (≤1 auto-refine).
     user_request = (
         f"Use the {tool_name} tool to read the attached .{extension} file and "
         f"summarize what it contains."
@@ -395,9 +346,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
             outcome="success" if self_test.get("status") == "passed" else "failure",
             chat_id=chat_id, inputs_meta={"draft_id": draft_id})
     except Exception as exc:
-        # Feature 054 (FR-020): codegen runs on the admin system credential;
-        # its absence is an expected, honest degradation — log it by name so
-        # operators can distinguish "configure the System LLM" from a bug.
         if "LLM not configured" in str(exc):
             logger.warning(
                 "system_llm_unconfigured: autoparse skipped for .%s — "

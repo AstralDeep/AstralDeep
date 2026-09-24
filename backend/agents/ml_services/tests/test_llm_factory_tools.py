@@ -1,10 +1,7 @@
-"""Unit tests for the ML Services agent's LLM-Factory tool slice.
-
-Ported from ``agents/llm_factory/tests/test_credentials_check.py`` (feature
-029 consolidation). No tool names changed for this slice. The agent wraps an
-LLM-Factory Router (OpenAI-compatible reverse proxy); the legacy ``/models/``
-and ``/datasets/list`` fallbacks are gone.
+"""Tests for ml_services/llm_factory_tools.py: credential checks, base-URL /v1
+normalization, list_models, chat_with_model, create_embedding, and transcribe_audio.
 """
+
 import socket
 from unittest.mock import patch
 
@@ -35,9 +32,6 @@ def stub_dns():
         yield
 
 
-# -- _credentials_check (LLM-Factory bundle probe) ------------------------------
-
-
 def test_credentials_check_v1_models_ok(rmock: HttpMock) -> None:
     rmock.add("GET", f"{BASE_URL}/v1/models", status=200, json={"data": [{"id": "gpt-4"}]})
     result = mcp_tools._credentials_check(_credentials=GOOD_CREDS)
@@ -63,7 +57,6 @@ def test_credentials_check_missing_creds() -> None:
 
 
 def test_base_url_with_v1_suffix_is_stripped(rmock: HttpMock) -> None:
-    """Users who paste their OpenAI-style base URL (with /v1) shouldn't double-prefix."""
     creds_with_v1 = {
         "LLM_FACTORY_URL": f"{BASE_URL}/v1",
         "LLM_FACTORY_API_KEY": "sentinel",
@@ -74,12 +67,8 @@ def test_base_url_with_v1_suffix_is_stripped(rmock: HttpMock) -> None:
 
 
 def test_build_client_stale_credentials_message() -> None:
-    """When ECIES decryption silently dropped all credentials, surface a re-save prompt."""
     with pytest.raises(ValueError, match="could not be decrypted"):
         mcp_tools._build_client({"_credentials": {}, "_credentials_stale": True})
-
-
-# -- list_models --------------------------------------------------------------
 
 
 def test_list_models(rmock: HttpMock) -> None:
@@ -90,7 +79,6 @@ def test_list_models(rmock: HttpMock) -> None:
 
 
 def test_list_models_surfaces_router2_metadata(rmock: HttpMock) -> None:
-    """Router-2 returns richer fields per model — the rendered card should show them."""
     rmock.add("GET", f"{BASE_URL}/v1/models", status=200, json={
         "data": [
             {"id": "llama-3-8b", "owned_by": "vllm", "max_model_len": 8192},
@@ -108,9 +96,6 @@ def test_list_models_auth_failed_renders_alert(rmock: HttpMock) -> None:
     rmock.add("GET", f"{BASE_URL}/v1/models", status=401, body=b"{}")
     result = mcp_tools.list_models(_credentials=GOOD_CREDS)
     assert result["_ui_components"][0]["variant"] == "error"
-
-
-# -- chat_with_model ----------------------------------------------------------
 
 
 def test_chat_with_model_extracts_content(rmock: HttpMock) -> None:
@@ -140,9 +125,6 @@ def test_chat_with_model_auth_failed(rmock: HttpMock) -> None:
         _credentials=GOOD_CREDS,
     )
     assert result["_ui_components"][0]["variant"] == "error"
-
-
-# -- create_embedding ---------------------------------------------------------
 
 
 def test_create_embedding_string_input(rmock: HttpMock) -> None:
@@ -204,16 +186,12 @@ def test_create_embedding_rejects_empty_input() -> None:
         input="",
         _credentials=GOOD_CREDS,
     )
-    # ValueError surfaced as a user-facing alert (no upstream call needed).
     assert result["_ui_components"][0]["variant"] == "error"
-
-
-# -- transcribe_audio ---------------------------------------------------------
 
 
 def test_transcribe_audio_happy_path(rmock: HttpMock, tmp_path) -> None:
     audio = tmp_path / "voice.wav"
-    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")  # not a real WAV; mock doesn't care
+    audio.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
     rmock.add(
         "POST",
         f"{BASE_URL}/v1/audio/transcriptions",
@@ -238,7 +216,6 @@ def test_transcribe_audio_with_language_hint(rmock: HttpMock, tmp_path) -> None:
 
     def _capture(method, url, **kwargs):
         captured.update(kwargs)
-        # Fall through to the mock's default 404 behavior, which we override:
         from shared.tests._http_mock import _FakeResponse
         return _FakeResponse(200, b'{"text":"Bonjour"}')
 
@@ -251,7 +228,6 @@ def test_transcribe_audio_with_language_hint(rmock: HttpMock, tmp_path) -> None:
             user_id="alice",
         )
     assert result["_data"]["text"] == "Bonjour"
-    # Verify the language hint reached the upstream form data.
     assert captured["data"]["language"] == "fr"
     assert captured["data"]["model"] == "whisper-1"
 
@@ -276,12 +252,8 @@ def test_transcribe_audio_requires_user_id(tmp_path) -> None:
         model_id="whisper-1",
         file_handle=str(audio),
         _credentials=GOOD_CREDS,
-        # user_id deliberately omitted
     )
     assert result["_ui_components"][0]["variant"] == "error"
-
-
-# -- registry / shape regressions (LLM-Factory slice) --------------------------
 
 
 def test_long_running_tools_set_is_empty() -> None:
@@ -299,7 +271,6 @@ def test_tool_registry_has_required_entries() -> None:
 
 
 def test_no_api_key_in_response_data(rmock: HttpMock) -> None:
-    """SC-006 — API key never reaches a rendered response payload."""
     rmock.add("GET", f"{BASE_URL}/v1/models", status=200, json={"data": [{"id": "x"}]})
     result = mcp_tools.list_models(_credentials=GOOD_CREDS)
     assert "sentinel-api-key" not in str(result)

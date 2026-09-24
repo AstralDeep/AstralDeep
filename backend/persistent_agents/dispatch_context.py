@@ -1,8 +1,6 @@
-"""A single action's private context at the ordinary dispatch boundary.
-
-The runner supplies durable admission/reservation/observation callbacks. Neither
-model arguments nor socket messages can construct this capability. A physical
-attempt consumes it once, including retries, fallback transports and nested calls.
+"""One-time-use dispatch capability binding a physical attempt to runner-supplied
+admission/reservation callbacks; unconstructable from model output or sockets. Used
+throughout execution.py, chat_episode.py, and orchestrator dispatch.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from typing import Any
 
 
 class DispatchDenied(PermissionError):
-    """Bounded safe reason; no source text or credentials in exception values."""
+    pass
 
 
 _CURRENT: ContextVar[PersistentDispatchContext | None] = ContextVar(
@@ -85,12 +83,6 @@ class PersistentDispatchContext:
         return self._consumed
 
     def validate_final_tool_arguments(self, arguments: dict[str, Any] | None) -> None:
-        """Bind the new reader's final public request before any physical permit.
-
-        Existing contexts retain their established behavior. These exact private
-        fields are injected by the ordinary gate stack for transport; arbitrary
-        underscore fields are not exempted from the canonical request binding.
-        """
         if not self.strict_final_arguments:
             return
         if self.kind != "tool" or not isinstance(arguments, dict):
@@ -145,8 +137,6 @@ class PersistentDispatchContext:
         if self.research_input is not None:
             self.research_input.assert_body(self.owner_id, kwargs)
             return await self._invoke(invoke, final_arguments=kwargs)
-        # UTF-8 bytes plus framing are a conservative upper bound for text-only
-        # input tokens. Images/audio and unknown provider extensions are denied.
         messages = kwargs.get("messages", [])
         if (len(canonical(messages).encode("utf-8")) > self.max_input_bytes
                 or any(not isinstance(m, dict) or not isinstance(m.get("content"), str)
@@ -162,12 +152,6 @@ class PersistentDispatchContext:
             self.validate_final_tool_arguments(arguments)
 
     async def _observe_research_once(self, permit, outcome, result):
-        """Own exactly one observer through repeated caller cancellation.
-
-        Never restart an uncertain settlement after an acknowledgement is lost.
-        The durable authentic permit remains the recovery identity if this one
-        observer itself fails. Consume its exception before returning cancellation.
-        """
         observer = asyncio.create_task(self.observe(permit, outcome, result))
         cancelled = False
         while not observer.done():
@@ -187,28 +171,20 @@ class PersistentDispatchContext:
                       final_arguments: dict[str, Any] | None = None) -> Any:
         if self._consumed:
             raise DispatchDenied("assignment_attempt_already_started")
-        # Set before awaiting: inherited concurrent/nested dispatches cannot race
-        # this one-time capability. A refused attempt is recreated only from the
-        # durable ledger, never by resetting an in-memory boolean.
+        # Set before await: blocks nested dispatch from reusing this
         self._consumed = True
         self._validate_final(final_arguments)
         await self.authorize()
         self._validate_final(final_arguments)
         permit = await self.start()
         try:
-            # Both prior operations can wait. A changed request after issuance
-            # is never sent, but its authentic permit still settles once.
             self._validate_final(final_arguments)
             if self.research_input is not None:
-                # The isolated helper owns its physical60s + mandatory5s cleanup;
-                # an outer timeout must not abandon that cleanup or its observer.
                 result = await invoke()
             else:
                 async with asyncio.timeout(self.timeout_seconds):
                     result = await invoke()
         except BaseException:
-            # A cancelled thread/remote request can still finish. Keep its full
-            # reservation and immutable uncertain receipt; never infer no-send.
             if self.research_input is not None:
                 await self._observe_research_once(permit, "uncertain", None)
             else:

@@ -1,4 +1,6 @@
-"""read_volume_itk: NRRD / MHA via SimpleITK."""
+"""Tests for agents/general/file_tools/medical/read_volume_itk.py: NRRD and MHA volume
+reading via SimpleITK.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ def test_read_nrrd_volume(repo, upload_root):
     )
     out = read_volume_itk(attachment_id=aid, user_id="alice")
     assert "error" not in out
-    # SimpleITK size is (x, y, z); our input (z, y, x)=(8,10,12) → size=(12,10,8).
     assert out["size"] == [12, 10, 8]
     assert len(out["spacing"]) == 3
     assert "thumbnail_png_base64" in out

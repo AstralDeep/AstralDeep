@@ -1,16 +1,8 @@
-"""055 — cross-device background-task continuity (FF_BG_CONTINUITY).
-
-A long-running job started on ONE device surfaces on every other connected
-device, pushed as it happens: task_started/task_completed fan to all the
-user's sockets (completion works with the originator gone), a background
-(VirtualWebSocket) turn's chat-rail narrative + terminal chat_status mirror
-to real sockets on the chat, register_ui with a session_id resumes the chat
-context and replays task state, completed-but-unnotified tasks replay once,
-and the scheduled fallback chat is created before the turn so its output is
-not silently dropped. Flag off restores originator-only frames
-byte-identically. Requires the docker-compose Postgres; skipped where
-unreachable.
+"""Tests for cross-device background-task continuity (FF_BG_CONTINUITY) in
+orchestrator.py and async_tasks.py: task start/completion fan-out to every socket,
+chat-rail mirroring for background turns, and register_ui replay.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +56,6 @@ async def orch(bg_flag, monkeypatch):
 
 @pytest.fixture
 def signed_background(orch):
-    """Keep synthetic IAM alive until the detached task's actual completion."""
     from verification.drivers.fixture_identity import FixtureIdentity
 
     identity = FixtureIdentity("__verif__background_fixture")
@@ -77,12 +68,6 @@ def signed_background(orch):
 
 
 class _CaptureSocket:
-    """Frame-capture device double. Deliberately NOT a VirtualWebSocket: the
-    production fan skips vws instances (they are background turns, not
-    devices — a turn's own vws counting as "notified" would suppress the
-    register_ui catch-up replay). Exposes the same .task.outputs read surface
-    the assertions use."""
-
     def __init__(self):
         from types import SimpleNamespace
         self.task = SimpleNamespace(outputs=[])
@@ -136,7 +121,6 @@ async def _await_manager_tasks(orch):
 
 
 async def _handle_ui_message_and_join_background(orch, websocket, message):
-    """Join register_ui's deliberately off-critical-path profile/audit writes."""
     spawned = []
     create_task = asyncio.create_task
 
@@ -207,7 +191,6 @@ async def _create_completed_background_task(
 
 
 async def _clear_owner_task_replays(orch, user_id):
-    """Retire replay eligibility; durable task history stays retention-owned."""
     from astralplane.repositories.background_tasks import BackgroundTaskStatus
 
     source = plane_source_from_orchestrator(orch)
@@ -266,10 +249,6 @@ async def _cleanup(orch, user_id, chat_ids=()):
             pass
 
 
-# ---------------------------------------------------------------------------
-# Items 1+2 — task frames fan to all the user's sockets
-# ---------------------------------------------------------------------------
-
 async def test_task_started_fans_to_second_socket(orch, signed_background):
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
     ws1, ws2 = _capture_socket(orch, user_id), _capture_socket(orch, user_id)
@@ -287,8 +266,6 @@ async def test_task_started_fans_to_second_socket(orch, signed_background):
         assert len(started) == 1, f"task_started missing on {ws}"
         assert started[0]["payload"]["chat_id"] == chat_id
         assert started[0]["payload"]["title"] == message[:60]
-    # processing_async stays originator-only (other devices key off
-    # task_started; a bare chat_status has no chat_id to scope it).
     assert _frames(ws1, "chat_status")
     assert not _frames(ws2, "chat_status")
 
@@ -304,7 +281,6 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_bac
 
     async def fake_handle(websocket, message, chat_id, *args, **kwargs):
         await hold.wait()
-        # The narrative the turn would have produced (drives the summary).
         await websocket.send_text(json.dumps({
             "type": "ui_render", "target": "chat",
             "components": [{"type": "text", "content": "Report finished."}],
@@ -313,7 +289,6 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_bac
     orch.handle_chat_message = fake_handle
     await registered_chat(orch, ws1, "run the report", chat_id, user_id=user_id, dispatch=orch._dispatch_async_chat)
 
-    # The originator disconnects; a NEW device connects after start.
     del orch.ui_sessions[ws1]
     orch.ui_clients.remove(ws1)
     ws3 = _capture_socket(orch, user_id)
@@ -341,10 +316,6 @@ async def test_completion_fan_reaches_socket_joined_after_start(orch, signed_bac
     await _cleanup(orch, user_id, [chat_id])
 
 
-# ---------------------------------------------------------------------------
-# Item 3 — VirtualWebSocket turns fan narrative + terminal status
-# ---------------------------------------------------------------------------
-
 async def test_vws_narrative_and_done_reach_chat_socket(orch):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
@@ -361,7 +332,6 @@ async def test_vws_narrative_and_done_reach_chat_socket(orch):
     assert len(chat_renders) == 1, "chat narrative must mirror to the real socket"
     assert chat_renders[0]["components"][0]["content"] == "All done, here is the answer."
 
-    # Canvas renders do NOT fan here (the workspace upsert path owns those).
     await orch.send_ui_render(
         vws, [{"type": "metric", "title": "M", "value": 1}], target="canvas")
     assert [f for f in _frames(ws2, "ui_render") if f.get("target") != "chat"] == []
@@ -369,16 +339,11 @@ async def test_vws_narrative_and_done_reach_chat_socket(orch):
     await orch._send_chat_status(vws, "done")
     done = [f for f in _frames(ws2, "chat_status") if f.get("status") == "done"]
     assert len(done) == 1, "terminal chat_status must mirror to the real socket"
-    # The vws itself still captured its own copy (originator delivery intact).
     assert [f for f in vws.task.outputs
             if f.get("type") == "chat_status" and f.get("status") == "done"]
 
     await _cleanup(orch, user_id, [chat_id])
 
-
-# ---------------------------------------------------------------------------
-# Item 4 — register_ui session resume (+ item 5 in-flight replay)
-# ---------------------------------------------------------------------------
 
 async def test_register_ui_session_resume_replays_in_flight_task(orch):
     user_id, token = _isolated_mock_identity()
@@ -408,7 +373,6 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
     assert replays and replays[0]["payload"]["replay"] is True
     assert replays[0]["payload"]["title"] == "slow analysis"
 
-    # Foreign/invalid session_id: ignored silently, registration succeeds.
     other_user = f"someone-else-{uuid.uuid4().hex[:6]}"
     other_chat = await asyncio.to_thread(
         orch.history.create_chat, user_id=other_user)
@@ -425,10 +389,6 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
     await _cleanup(orch, user_id, [chat_id])
     await _cleanup(orch, other_user, [other_chat])
 
-
-# ---------------------------------------------------------------------------
-# Item 5 — completed-but-unnotified replay marks notified
-# ---------------------------------------------------------------------------
 
 async def test_completed_unnotified_replay_marks_notified(orch):
     user_id, token = _isolated_mock_identity()
@@ -466,7 +426,6 @@ async def test_completed_unnotified_replay_marks_notified(orch):
     )
     assert row is not None and row.notified is True
 
-    # A second registration replays nothing (notified sticks).
     ws2 = _capture_socket(orch, user_id)
     orch._registered_events[id(ws2)] = asyncio.Event()
     await _handle_ui_message_and_join_background(
@@ -482,13 +441,9 @@ async def test_completed_unnotified_replay_marks_notified(orch):
     await _cleanup(orch, user_id)
 
 
-# ---------------------------------------------------------------------------
-# Kill switch — flag off restores originator-only frames byte-identically
-# ---------------------------------------------------------------------------
-
 async def test_flag_off_all_new_sends_absent(orch, signed_background):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-    flags._flags["bg_continuity"] = False  # bg_flag fixture restores it
+    flags._flags["bg_continuity"] = False
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
     ws1, ws2 = _capture_socket(orch, user_id), _capture_socket(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
@@ -501,7 +456,6 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
     await registered_chat(orch, ws1, "legacy behavior", chat_id, user_id=user_id, dispatch=orch._dispatch_async_chat)
     await _await_manager_tasks(orch)
 
-    # Originator frames: pre-055 shapes exactly (no title, no summary).
     started = _frames(ws1, "task_started")
     assert len(started) == 1
     assert list(started[0]["payload"].keys()) == ["task_id", "chat_id", "status"]
@@ -510,10 +464,8 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
     assert list(completed[0]["payload"].keys()) == [
         "task_id", "chat_id", "status", "completed_at"]
 
-    # The second socket sees nothing at all.
     assert ws2.task.outputs == []
 
-    # No durable record with the flag off.
     row = await _background_task_record(
         orch,
         user_id=user_id,
@@ -521,7 +473,6 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
     )
     assert row is None
 
-    # VirtualWebSocket turn frames stay captured-only.
     vws = VirtualWebSocket(BackgroundTask(
         task_id="bgoff01", chat_id=chat_id, user_id=user_id))
     await orch.send_ui_render(vws, [{"type": "text", "content": "hi"}], target="chat")
@@ -531,7 +482,6 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
             if f.get("type") == "chat_status" and f.get("status") == "done"] == \
         [{"type": "chat_status", "status": "done", "message": ""}]
 
-    # register_ui ignores session_id with the flag off.
     auth_user, token = _isolated_mock_identity()
     ws3 = _capture_socket(orch, auth_user)
     orch._registered_events[id(ws3)] = asyncio.Event()
@@ -542,10 +492,6 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
 
     await _cleanup(orch, user_id, [chat_id])
 
-
-# ---------------------------------------------------------------------------
-# Item 6 — scheduled fallback chat exists before the turn runs
-# ---------------------------------------------------------------------------
 
 async def test_scheduled_fallback_chat_created(orch, monkeypatch):
     user_id = f"bgc-sched-{uuid.uuid4().hex[:8]}"
@@ -569,7 +515,6 @@ async def test_scheduled_fallback_chat_created(orch, monkeypatch):
     )
     assert row is not None, "fallback chat must exist so history writes persist"
 
-    # Flag off: pre-055 behavior (no chat created).
     flags._flags["bg_continuity"] = False
     off_user = f"bgc-sched-{uuid.uuid4().hex[:8]}"
     await orch.run_scheduled_turn(
@@ -586,9 +531,6 @@ async def test_scheduled_fallback_chat_created(orch, monkeypatch):
 
 
 async def test_completion_with_no_real_sockets_stays_unnotified(orch):
-    """The turn's own VirtualWebSocket must not count as a notified device —
-    else the register_ui catch-up replay never fires for a user who started a
-    task and closed every client before it finished (found live)."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     user_id = f"bgc-{uuid.uuid4().hex[:8]}"
     task = BackgroundTask(task_id=uuid.uuid4().hex[:8], chat_id="c", user_id=user_id)

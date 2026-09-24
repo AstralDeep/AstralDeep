@@ -1,12 +1,8 @@
-"""Feature 063 US7 — FF_REMOTE_COMPUTE off is byte-identical to pre-063 (SC-013).
-
-With the flag off the remote-compute agent must never register in-process, so
-no verb can be listed or invoked (both are derived purely from registration),
-and the remote-machines surface + its settings-menu item must be absent. Each
-scenario also runs flag-ON as a contrast, proving the absence is the flag's
-doing rather than a missing directory/module. Hermetic: the flag helper is
-monkeypatched on the singleton; no DB, no network, no agent instantiation.
+"""Tests that FF_REMOTE_COMPUTE off is byte-identical to pre-flag behavior
+(orchestrator/local_agents.py, start.py, shared/feature_flags.py): the remote agent
+never registers, its surface is absent, and no process is spawned.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -21,9 +17,6 @@ from orchestrator.projection_surfaces import remote_machines as surface
 
 
 def _set_flag(monkeypatch, enabled: bool) -> None:
-    """Pin the singleton's remote_compute answer (every 063 entry point resolves
-    through ``flags.is_enabled``); all other flags read as off, which none of
-    the code under test consults."""
     from shared.feature_flags import flags
     monkeypatch.setattr(
         flags, "is_enabled", lambda name: enabled and name == "remote_compute")
@@ -87,8 +80,6 @@ class _FakeRemoteAgent:
 
 @pytest.fixture
 def registration(monkeypatch):
-    """Isolate register_built_ins to the 063 branch: no bundled dirs discovered,
-    and loading a class records the attempt instead of instantiating an agent."""
     attempted: list[str] = []
     monkeypatch.setattr(local_agents, "discover_built_in_agent_dirs",
                         lambda *a, **k: [])
@@ -135,15 +126,13 @@ def registration(monkeypatch):
     return orch, attempted, registered, bindings, plane
 
 
-# ── neither agent registers, so no verb is listed or invocable ────────────────
-
 async def test_flag_off_remote_agent_never_loads_or_registers(monkeypatch, registration):
     _set_flag(monkeypatch, False)
     orch, attempted, registered, bindings, plane = registration
     assert await local_agents.register_built_ins(orch) == []
-    assert attempted == []          # the module is never even imported
-    assert registered == []         # nothing enters the fleet
-    assert orch.local_agents == {}  # so no verb can be listed or dispatched
+    assert attempted == []
+    assert registered == []
+    assert orch.local_agents == {}
     assert bindings == [
         ("resolver", plane.runtime, plane.repositories, plane.blobs),
         ("materializer", plane.attachment_materializer),
@@ -183,8 +172,6 @@ async def test_registration_refuses_missing_application_plane(monkeypatch):
     assert await local_agents.register_built_ins(orch) == []
 
 
-# ── the settings-menu item is absent ─────────────────────────────────────────
-
 def _menu_item_keys(model):
     return [item.key for group in model.menu for item in group.items]
 
@@ -202,8 +189,6 @@ def test_flag_on_contrast_menu_carries_remote_machines_item(monkeypatch):
         build_menu_model(["user"], **projection_chrome_availability())
     )
 
-
-# ── the remote-machines surface is absent (disabled notice, no form) ─────────
 
 def _run(coro):
     import asyncio
@@ -229,15 +214,7 @@ def test_flag_off_surface_components_is_disabled(monkeypatch):
     components = _run(surface.components(_tripwired_orch(), "u1", ["user"], {}))
     flat = str(components).lower()
     assert "disabled" in flat
-    assert "cred_type" not in flat  # no add-machine form is offered
-
-
-# ── the boot supervisor (start.py) never starts the agent either ─────────────
-#
-# register_built_ins is the in-process path; start.py is the subprocess path.
-# Flag-off must be byte-identical on BOTH: the old supervisor only consulted
-# BUILT_IN_AGENT_DIRS, so it Popen'd remote_compute on a port regardless of the
-# flag (and, flag-on, a second copy of remote-compute-1 registered over WS).
+    assert "cred_type" not in flat
 
 
 def _supervised_agents(monkeypatch, tmp_path, *, inprocess: bool):
@@ -294,8 +271,6 @@ def test_flag_off_supervisor_never_spawns_remote_compute(monkeypatch, tmp_path):
 def test_flag_on_contrast_supervisor_defers_to_in_process_registration(
         monkeypatch, tmp_path):
     _set_flag(monkeypatch, True)
-    # In-process on: register_built_ins owns remote-compute-1 — no second copy.
     assert _supervised_agents(monkeypatch, tmp_path, inprocess=True) == []
-    # In-process kill-switch: the networked subprocess path carries it.
     assert sorted(_supervised_agents(monkeypatch, tmp_path, inprocess=False)) == [
         "remote_compute", "weather"]

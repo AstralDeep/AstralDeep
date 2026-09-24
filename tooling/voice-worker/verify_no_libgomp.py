@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Fail closed when a shipped ELF object declares a libgomp dependency."""
+"""Scans shipped ELF objects for a libgomp dependency by parsing DT_NEEDED entries
+directly and fails the build closed if one is found.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ DT_STRSZ = 10
 
 
 class AuditError(RuntimeError):
-    """An ELF object or audit root could not be validated safely."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -87,8 +89,6 @@ def _elf_layout(path: Path, data: bytes) -> tuple[str, int, int, int, str, int]:
 
 
 def needed_libraries(path: Path) -> tuple[str, ...]:
-    """Return the DT_NEEDED values from one ELF file, rejecting malformed data."""
-
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -212,8 +212,6 @@ def _regular_files(root: Path) -> Iterable[Path]:
 
 
 def audit_roots(roots: Sequence[Path]) -> tuple[int, tuple[tuple[Path, str], ...]]:
-    """Scan roots and return the ELF count plus any libgomp dependencies."""
-
     scanned = 0
     offenders: list[tuple[Path, str]] = []
     for root in roots:

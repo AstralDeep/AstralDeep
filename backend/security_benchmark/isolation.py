@@ -1,11 +1,8 @@
-"""Namespaced harness principals + teardown (spec 047 FR-008, SC-007).
-
-Every identity/chat/memory row the harness creates via the product path is
-namespaced under ``__bench__`` so an adversarial corpus can never pollute — or
-be confused with — real user data. Non-synthetic qualification runs purge their
-namespace through AstralPlane's fixed-manifest cleanup repository and the
-caller's application-scoped transaction. Synthetic mode creates no rows.
+"""Namespaces every identity/chat/memory row the harness creates under __bench__ so an
+adversarial corpus can't pollute real user data; non-synthetic runs are purged
+through AstralPlane's harness_cleanup repository.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,8 +15,6 @@ NAMESPACE_PREFIX = "__bench__"
 
 @dataclass
 class Principal:
-    """A namespaced authenticated identity used by the harness."""
-
     user_id: str
     roles: List[str] = field(default_factory=lambda: ["user"])
 
@@ -43,7 +38,6 @@ def principal_id(run_id: str, benchmark: str, role: str = "primary") -> str:
 
 
 def assert_namespaced(user_id: str) -> None:
-    """Guard: refuse to operate on a non-namespaced principal (never touch real users)."""
     if NAMESPACE_PREFIX not in user_id:
         raise ValueError(
             f"refusing to operate on non-namespaced principal {user_id!r}: "
@@ -51,23 +45,13 @@ def assert_namespaced(user_id: str) -> None:
         )
 
 
+# Failures must propagate, never hide leftover test data
 def teardown(
     *,
     plane_runtime: Any,
     plane_repositories: Any,
     run_id: str,
 ) -> int:
-    """Atomically purge this qualification run through AstralPlane.
-
-    The benchmark harness never borrows a driver connection or owns a second
-    pool. Both the runtime and repository catalog must come from the composed
-    application. Missing dependencies, invalid run identities, schema drift,
-    and cleanup failures propagate so qualification cannot report success while
-    leaving adversarial state behind. ``audit_events`` remain append-only.
-    """
-
-    # Keep corpus-only/synthetic benchmark runs independent of the data plane;
-    # only the live cleanup boundary needs Plane's typed profile contract.
     from astralplane.repositories.harness_cleanup import HarnessCleanupProfile
 
     if not callable(getattr(plane_runtime, "transaction", None)):

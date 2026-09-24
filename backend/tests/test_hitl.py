@@ -1,10 +1,8 @@
-"""Feature 033 (capability C-S11) — runtime human-in-the-loop for high-risk actions.
-
-Covers the feature flag, typed-risk classification (egress by name + by prefix,
-irreversible by prefix, cross_principal only when both principals are set and
-differ, untrusted-tainted by trust), the confirmation predicates, the
-provenance-bearing confirmation card, and the escalation (warm-handoff) signal.
+"""Tests for runtime human-in-the-loop risk assessment (orchestrator/hitl.py): the
+enabling flag, egress/irreversible/cross-principal/tainted risk classification,
+confirmation cards with provenance, and escalation thresholds.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -32,8 +30,6 @@ from orchestrator.hitl import (  # noqa: E402
 )
 
 
-# ───────────────────────── flag ──────────────────────────────────────────────
-
 def test_hitl_default_off(monkeypatch):
     monkeypatch.delenv("FF_HITL_HIGHRISK", raising=False)
     assert hitl.hitl_enabled() is False
@@ -51,8 +47,6 @@ def test_hitl_off_values(monkeypatch, v):
     assert hitl.hitl_enabled() is False
 
 
-# ───────────────────────── assess_risk: egress ───────────────────────────────
-
 @pytest.mark.parametrize("tool", [
     "send_email", "send_message", "fetch_page", "http_get", "http_post", "webhook",
 ])
@@ -67,8 +61,6 @@ def test_assess_egress_by_prefix(tool):
     assert EGRESS in assess_risk(tool)
 
 
-# ───────────────────────── assess_risk: irreversible ─────────────────────────
-
 @pytest.mark.parametrize("tool", [
     "delete_user", "drop_table", "wipe_disk", "purge_cache",
     "transfer_funds", "pay_invoice", "deploy_release",
@@ -76,8 +68,6 @@ def test_assess_egress_by_prefix(tool):
 def test_assess_irreversible_by_prefix(tool):
     assert IRREVERSIBLE in assess_risk(tool)
 
-
-# ───────────────────────── assess_risk: cross_principal ───────────────────────
 
 def test_assess_cross_principal_when_both_set_and_differ():
     risks = assess_risk("read_data", actor_principal="alice", target_principal="bob")
@@ -97,8 +87,6 @@ def test_assess_no_cross_principal_when_either_missing(actor, target):
     assert CROSS_PRINCIPAL not in risks
 
 
-# ───────────────────────── assess_risk: untrusted_tainted ─────────────────────
-
 def test_assess_untrusted_tainted():
     assert assess_risk("read_data", trust="untrusted") == [UNTRUSTED_TAINTED]
 
@@ -107,10 +95,7 @@ def test_assess_trusted_default_is_clean():
     assert assess_risk("read_data") == []
 
 
-# ───────────────────────── assess_risk: combos + determinism ──────────────────
-
 def test_assess_combo_is_sorted():
-    # egress (send_message) + cross_principal + untrusted ⇒ sorted codes
     risks = assess_risk(
         "send_message",
         actor_principal="alice",
@@ -118,11 +103,10 @@ def test_assess_combo_is_sorted():
         trust="untrusted",
     )
     assert risks == sorted([EGRESS, CROSS_PRINCIPAL, UNTRUSTED_TAINTED])
-    assert risks == [CROSS_PRINCIPAL, EGRESS, UNTRUSTED_TAINTED]  # alphabetical
+    assert risks == [CROSS_PRINCIPAL, EGRESS, UNTRUSTED_TAINTED]
 
 
 def test_assess_transfer_is_irreversible_only():
-    # transfer_ is an irreversible prefix; it is NOT an egress prefix
     risks = assess_risk("transfer_funds")
     assert risks == [IRREVERSIBLE]
 
@@ -133,8 +117,6 @@ def test_assess_is_deterministic():
     assert a == b
 
 
-# ───────────────────────── requires_confirmation ─────────────────────────────
-
 def test_requires_confirmation_empty():
     assert requires_confirmation([]) is False
 
@@ -142,8 +124,6 @@ def test_requires_confirmation_empty():
 def test_requires_confirmation_nonempty():
     assert requires_confirmation([EGRESS]) is True
 
-
-# ───────────────────────── is_high_risk ──────────────────────────────────────
 
 def test_is_high_risk_irreversible_alone():
     assert is_high_risk([IRREVERSIBLE]) is True
@@ -169,14 +149,11 @@ def test_is_high_risk_empty_is_false():
     assert is_high_risk([]) is False
 
 
-# ───────────────────────── confirmation_request ──────────────────────────────
-
 def test_confirmation_request_summary_mentions_phrases():
     req = confirmation_request("send_email", [EGRESS, IRREVERSIBLE])
     assert isinstance(req, ConfirmationRequest)
     assert req.tool == "send_email"
     assert req.risks == (EGRESS, IRREVERSIBLE)
-    # human phrases for each risk code appear in the summary sentence
     assert "send data off this system" in req.summary
     assert "make an irreversible change" in req.summary
     assert req.summary.endswith("confirm?")
@@ -186,7 +163,6 @@ def test_confirmation_request_carries_provenance():
     prov = {"source": "web-research-1", "tool": "fetch_page"}
     req = confirmation_request("send_email", [EGRESS], provenance=prov)
     assert req.provenance == prov
-    # provenance is copied, not aliased
     assert req.provenance is not prov
 
 
@@ -213,8 +189,6 @@ def test_confirmation_request_all_phrases_render():
         assert phrase in req.summary
 
 
-# ───────────────────────── escalation_needed ─────────────────────────────────
-
 def test_escalation_high_risk_at_threshold():
     assert escalation_needed([IRREVERSIBLE], denied_attempts=2, denial_threshold=2) is True
 
@@ -228,7 +202,6 @@ def test_escalation_high_risk_below_threshold():
 
 
 def test_escalation_low_risk_never_escalates():
-    # single egress is not high-risk, so no escalation regardless of attempts
     assert escalation_needed([EGRESS], denied_attempts=10) is False
 
 

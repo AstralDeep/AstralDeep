@@ -1,4 +1,8 @@
-"""030 — per-user recurring dreaming job registration (US4 / T028-T029)."""
+"""Tests for dreaming/scheduling.py: ensure_dreaming_job is idempotent and reactivates a
+paused job rather than duplicating it, and remove_dreaming_job pauses without
+deleting.
+"""
+
 import sys
 import uuid
 from pathlib import Path
@@ -39,7 +43,6 @@ def test_ensure_creates_then_is_idempotent(db):
     job = ensure_dreaming_job(source, user)
     assert job["agent_id"] == DREAMING_AGENT_ID
     assert job["schedule_kind"] == "cron"
-    # idempotent: a second call returns the same active job (no duplicate)
     again = ensure_dreaming_job(source, user)
     assert again["id"] == job["id"]
     actives = [j for j in store.list_jobs(user)
@@ -62,7 +65,6 @@ def test_remove_then_resume(db):
     actives = [j for j in store.list_jobs(user)
                if j["agent_id"] == DREAMING_AGENT_ID and j["status"] == "active"]
     assert actives == []
-    # re-enable reactivates the SAME job rather than creating a duplicate
     resumed = ensure_dreaming_job(source, user)
     assert resumed["id"] == created["id"]
     assert resumed["status"] == "active"
@@ -72,8 +74,6 @@ def test_set_offline_grant(db):
     import time
 
     runtime, user = db
-    # A real grant must exist — scheduled_job.offline_grant_id is FK-constrained.
-    # Insert a minimal user_offline_grant row directly (avoids crypto/env setup).
     grant_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
     with runtime.transaction() as transaction:

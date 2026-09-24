@@ -1,4 +1,7 @@
-"""Feature 065 kill-switch and content-free telemetry boundary tests."""
+"""Tests for voice observability in runtime_observability.py: the conversational-voice
+kill switch, a content-free reviewed metric-dimension vocabulary, and the single
+exposed production-readiness snapshot.
+"""
 
 from __future__ import annotations
 
@@ -123,8 +126,6 @@ async def test_production_readiness_reaches_single_exposed_runtime_snapshot() ->
         "voice_reason": "ready",
     }
 
-    # A future shared collector must not cause the same exact series to be
-    # exported or counted twice.
     primary_metrics.record_voice_event("readiness", "ready", reason="ready")
     snapshot = _runtime_metric_snapshot(orchestrator)
     assert sum(sample.name == "voice_readiness_total" for sample in snapshot) == 1

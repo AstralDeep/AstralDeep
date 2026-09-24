@@ -1,1 +1,3 @@
-"""Tests for backend.llm_config (feature 006-user-llm-config)."""
+"""Marks backend/llm_config/tests as a package for the bring-your-own-LLM configuration
+test suite.
+"""

@@ -1,4 +1,7 @@
-"""Operator-rooted authentication for the LETS signed trust manifest."""
+"""Authenticates the LETS signed trust manifest against operator-mounted Ed25519 anchors
+read from a bounded regular file. Supplies the manifest authenticator that
+lets_config.py requires before an active configuration can become ready.
+"""
 
 from __future__ import annotations
 
@@ -52,8 +55,6 @@ def _strict_object(raw: bytes) -> dict[str, Any]:
 
 
 def load_operator_trust_bundle(path: Path) -> tuple[dict[str, bytes], int]:
-    """Load exact Ed25519 operator anchors from a bounded regular file."""
-
     try:
         metadata = path.stat()
         if (
@@ -111,8 +112,6 @@ def load_operator_trust_bundle(path: Path) -> tuple[dict[str, bytes], int]:
 def build_manifest_authenticator(
     environ: Mapping[str, str] | None = None,
 ) -> Callable[[bytes, Mapping[str, Any]], bool] | None:
-    """Return an authenticator rooted only in the operator-mounted key file."""
-
     values = os.environ if environ is None else environ
     raw_path = values.get(OPERATOR_TRUST_ENV)
     if not isinstance(raw_path, str) or not raw_path.strip():

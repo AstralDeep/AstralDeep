@@ -1,1 +1,3 @@
-"""Feature 076 — computer-use-1: drive the user's own desktop from any client."""
+"""Package marker for the computer-use agent, which drives the user's own desktop from
+any of their clients; see computer_use_agent.py.
+"""

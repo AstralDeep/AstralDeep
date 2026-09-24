@@ -1,10 +1,8 @@
-"""US1 — tangible, server-driven UI checks (T015 / T017 / T017a).
-
-Deterministic, replayable assertions that file-upload queries yield interactive,
-file-derived, persisted, re-executable components. The verdict gate is structural
-(FR-010/011/012/013/023). Each positive check carries an adversarial counter that
-tries to falsify a pass (FR-003).
+"""Tangible, server-driven UI checks (backend/verification/checks/base.py, common.py):
+component presence, file-derived provenance, persistence, re-executability, and
+reader dispatch, each with an adversarial counter.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -17,7 +15,6 @@ _NON_INTERACTIVE = {"alert", "divider", "text"}
 
 
 def _rich_components(components: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Components that count as 'interactive/tangible' (not bare prose/alerts)."""
     return [
         c for c in components
         if isinstance(c, dict) and c.get("type") and c.get("type") not in _NON_INTERACTIVE
@@ -28,11 +25,8 @@ def _identity(c: Dict[str, Any]) -> str:
     return str(c.get("component_id") or "")
 
 
-# --- component_present ------------------------------------------------------
-
 def _present_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     if not inputs.get("warrants_ui", True):
-        # Prose is acceptable here (FR-015); presence is not required.
         return ok("us1.component_present", "prose acceptable for this query", warranted=False)
     rich = _rich_components(ev.components)
     if rich:
@@ -43,21 +37,17 @@ def _present_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
 
 
 def _present_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # Refute if the only "components" are error alerts (a failure masquerading as UI).
     comps = [c for c in ev.components if isinstance(c, dict)]
     if comps and all(c.get("type") == "alert" for c in comps):
         return ok("us1.component_present.counter", "all delivered components are alerts")
     return no("us1.component_present.counter", "genuine non-alert components present")
 
 
-# --- component_from_file ----------------------------------------------------
-
 def _from_file_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     if not inputs.get("warrants_ui", True):
         return ok("us1.component_from_file", "not applicable (prose answer)")
     markers: List[str] = inputs.get("known_markers", []) or []
     if not markers:
-        # Image/binary persona: provenance asserted structurally elsewhere.
         return unsure("us1.component_from_file", "no text markers for this fixture")
     blob = json_blob(ev.components)
     found = [m for m in markers if m in blob]
@@ -68,8 +58,6 @@ def _from_file_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
 
 
 def _from_file_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # Refute if a 'found' marker also appears verbatim in the user's query — it
-    # could be echoed from the prompt rather than derived from the file.
     markers: List[str] = inputs.get("known_markers", []) or []
     query: str = inputs.get("query", "") or ""
     blob = json_blob(ev.components)
@@ -82,8 +70,6 @@ def _from_file_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckRes
                   f"only query-echoed markers present: {echoed}")
     return no("us1.component_from_file.counter", "no markers to doubt")
 
-
-# --- persisted_with_identity ------------------------------------------------
 
 def _persisted_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     if not inputs.get("warrants_ui", True):
@@ -100,13 +86,10 @@ def _persisted_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
 
 
 def _persisted_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # Refute if components were delivered but the workspace is empty.
     if _rich_components(ev.components) and not ev.workspace_state:
         return ok("us1.persisted_with_identity.counter", "delivered but workspace empty")
     return no("us1.persisted_with_identity.counter", "workspace reflects delivered components")
 
-
-# --- re_executable ----------------------------------------------------------
 
 def _reexec_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     if not inputs.get("warrants_ui", True):
@@ -132,11 +115,7 @@ def _reexec_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult
     return no("us1.re_executable.counter", "a re-executable source is present")
 
 
-# --- survives_reload --------------------------------------------------------
-
 def _reload_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # workspace_state is a fresh DB read (live_components) taken AFTER the turn —
-    # i.e. exactly what a reload re-hydrates. Non-empty + identity == survives.
     if not inputs.get("warrants_ui", True):
         return ok("us1.survives_reload", "not applicable for prose")
     if any(_identity(c).startswith(("wc_", "au_")) for c in ev.workspace_state):
@@ -145,8 +124,6 @@ def _reload_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
         return unsure("us1.survives_reload", "no rich component to persist")
     return no("us1.survives_reload", "workspace re-read does not return the components")
 
-
-# --- reader_dispatched (real tool ran, even when the answer is prose) --------
 
 def _reader_dispatched_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     succeeded = [
@@ -166,8 +143,6 @@ def _reader_dispatched_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> 
     return no("us1.reader_dispatched.counter", "tool dispatch is audited")
 
 
-# --- unsupported-type observation (T017) ------------------------------------
-
 def _autoparse_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     status = (ev.extra or {}).get("parser_status")
     expected = {"pending_admin_approval", "preparing", "unavailable", "covered"}
@@ -177,13 +152,7 @@ def _autoparse_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     return no("us1.autoparse_safe", f"unexpected coverage outcome: {status!r}")
 
 
-# --- medical health-data protection (T017a) ---------------------------------
-
 def _phi_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # The medical persona uses ONLY synthetic data; assert the scenario completed
-    # without requiring real PHI and that delivered components are in-vocabulary.
-    # (Deeper PHI-gate engagement is asserted in external mode against the live
-    # PHI module; here we confirm the synthetic-only invariant held.)
     if (ev.extra or {}).get("synthetic_only") is False:
         return no("us1.health_data_synthetic_only", "non-synthetic medical input detected")
     return ok("us1.health_data_synthetic_only",
@@ -191,7 +160,6 @@ def _phi_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
 
 
 def build_us1_checks() -> List[Check]:
-    """Construct and register the US1 check set (idempotent)."""
     checks = [
         Check("us1.component_present", "tangible_ui", _present_run, _present_counter),
         Check("us1.component_from_file", "tangible_ui", _from_file_run, _from_file_counter),
@@ -207,7 +175,6 @@ def build_us1_checks() -> List[Check]:
     return checks
 
 
-# Standalone checks (driven directly by their dedicated scenarios/tests).
 AUTOPARSE_CHECK = Check("us1.autoparse_safe", "tangible_ui", _autoparse_run, None)
 PHI_CHECK = Check("us1.health_data_synthetic_only", "tangible_ui", _phi_run, None)
 register(AUTOPARSE_CHECK)

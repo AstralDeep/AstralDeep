@@ -1,18 +1,8 @@
-"""033 Wave-0 — live wiring of C-N16 (context engineering) and C-S4
-(spotlighting/datamarking) through the REAL ``handle_chat_message`` ReAct loop.
-
-The pure helpers are unit-tested in ``test_context_engineering.py`` /
-``test_datamarking.py``; these tests flip the feature flags ON and drive the
-actual orchestrator loop (stubbed LLM + tool execution, real history) to prove
-the seams are wired correctly:
-
-* the per-turn spotlight addendum lands in the system prompt,
-* untrusted (non-digest) tool output is wrapped in the per-turn sentinel,
-* a C-N15 ``_model_digest`` result is left UNwrapped (trusted),
-* stale tool outputs are tombstoned across a long loop.
-
-Mirrors the fixture style of ``test_chat_text_only.py``.
+"""Tests that context_engineering.py's spotlighting and context-editing are wired into
+the real chat ReAct loop: untrusted tool output is spotlighted, a trusted digest
+result is not, and stale tool output is tombstoned across a long loop.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +18,9 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
 @pytest.fixture
 def orchestrator(orchestrator_factory):
     orch = orchestrator_factory()
-    # Feature 054: chat turns pre-flight the acting user's PERSISTED LLM
-    # config (env vars are inert) — seed the fixture user so turns proceed.
     orch._llm_store.set_sync("wave0-user", provider="custom",
                              base_url="http://test.invalid/v1",
                              model="test-model", api_key="test-key")
@@ -51,14 +35,12 @@ def orchestrator(orchestrator_factory):
     orch._start_heartbeat = AsyncMock(return_value=fake_hb)
     orch._send_or_replace_components = AsyncMock()
     orch._emit_llm_usage_report = AsyncMock()
-    # Don't run the adaptive designer / workspace push in these unit-loop tests.
     orch._deliver_round_components = AsyncMock(return_value=[])
     return orch
 
 
 @pytest.fixture
 def wave0_flags():
-    """Turn both Wave-0 flags ON for the duration of a test, then restore."""
     from shared.feature_flags import flags
     saved = dict(flags._flags)
     flags._flags["context_engineering"] = True
@@ -91,8 +73,6 @@ def _tool_call(call_id="call1", name="search_tool"):
 
 
 def _msg(content=None, tool_calls=None):
-    # Real OpenAI assistant messages carry role="assistant"; edit_context relies
-    # on it to advance tool rounds, so the stub must include it.
     return SimpleNamespace(role="assistant", content=content,
                            tool_calls=tool_calls, reasoning_content=None)
 
@@ -107,14 +87,6 @@ def _usage():
 
 
 def _system_text(messages):
-    """All system content, in order.
-
-    The spotlight addendum deliberately rides a TRAILING system message rather
-    than the leading one: it carries a per-turn random sentinel, and keeping it
-    out of the leading block leaves the cacheable prompt prefix (system + tool
-    definitions) byte-identical across turns. What matters here is that some
-    system message defines the sentinel, not which one.
-    """
     return "\n\n".join(
         m["content"] for m in messages
         if isinstance(m, dict) and m.get("role") == "system"
@@ -125,10 +97,6 @@ def _system_text(messages):
 def _tool_messages(messages):
     return [m for m in messages if isinstance(m, dict) and m.get("role") == "tool"]
 
-
-# ---------------------------------------------------------------------------
-# C-S4 — datamarking wraps untrusted tool output, trusts digests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags, user_skills_disabled):
@@ -158,21 +126,18 @@ async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags, u
     await orchestrator.handle_chat_message(ws, "fetch the page", chat_id,
                                            user_id="wave0-user")
 
-    # The system prompt carries the per-turn spotlight addendum + a sentinel.
     sys_text = _system_text(captured[-1])
     assert "UNTRUSTED-CONTENT HANDLING" in sys_text
     m = re.search(r"<<UNTRUSTED ([0-9a-f]{32})>>", sys_text)
     assert m, "system prompt must define the per-turn sentinel marker"
     sentinel = m.group(1)
 
-    # The tool message that fed the model is wrapped in THAT sentinel, and the
-    # injection text is quarantined inside the markers (not free-floating).
     tool_msgs = _tool_messages(captured[-1])
     assert tool_msgs, "second LLM call must see the tool output"
     content = tool_msgs[-1]["content"]
     assert content.startswith(f"<<UNTRUSTED {sentinel}>>")
     assert content.rstrip().endswith(f"<<END_UNTRUSTED {sentinel}>>")
-    assert injection in content  # quarantined, not removed (delimiting default)
+    assert injection in content
 
     await asyncio.to_thread(
         orchestrator.history.delete_chat, chat_id, user_id="wave0-user")
@@ -180,7 +145,6 @@ async def test_untrusted_tool_output_is_spotlighted(orchestrator, wave0_flags, u
 
 @pytest.mark.asyncio
 async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags, user_skills_disabled):
-    """C-N15 + C-S4 composition: a tool-authored digest is trusted → unwrapped."""
     _register_tool_agent(orchestrator)
     ws = _fake_ws(orchestrator)
     chat_id = f"w0-{uuid.uuid4().hex[:8]}"
@@ -209,8 +173,6 @@ async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags, user_
 
     tool_msgs = _tool_messages(captured[-1])
     content = tool_msgs[-1]["content"]
-    # digest is the model-facing text, NOT wrapped, and the render-only raw
-    # injection never reaches the model at all (C-N15).
     assert content == "Fetched an article about gardening."
     assert "UNTRUSTED" not in content
     assert "IGNORE ALL PREVIOUS" not in content
@@ -218,10 +180,6 @@ async def test_digest_output_is_not_spotlighted(orchestrator, wave0_flags, user_
     await asyncio.to_thread(
         orchestrator.history.delete_chat, chat_id, user_id="wave0-user")
 
-
-# ---------------------------------------------------------------------------
-# C-N16 — in-loop context editing tombstones stale tool output
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_flags, user_skills_disabled):
@@ -232,8 +190,6 @@ async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_fl
     await asyncio.to_thread(
         orchestrator.history.create_chat, chat_id, user_id="wave0-user")
 
-    # Each tool round returns a large payload so it clears the tombstone
-    # char threshold.
     big = "DATA " + "x" * 1000
     orchestrator.execute_single_tool = AsyncMock(
         return_value=_tool_result({"raw_page": big})
@@ -255,8 +211,6 @@ async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_fl
     await orchestrator.handle_chat_message(ws, "keep fetching", chat_id,
                                            user_id="wave0-user")
 
-    # On the final LLM call, the earliest tool outputs are tombstoned while the
-    # most recent (within keep window) remain as spotlighted untrusted content.
     final = captured[-1]
     tool_msgs = _tool_messages(final)
     assert len(tool_msgs) == ROUNDS
@@ -264,8 +218,6 @@ async def test_context_editing_tombstones_old_tool_output(orchestrator, wave0_fl
     assert contents.count(TOMBSTONE) >= 1, "stale tool output should be tombstoned"
     assert contents[0] == TOMBSTONE, "the oldest round must be tombstoned"
     assert "<<UNTRUSTED" in contents[-1], "the most recent round stays in full"
-    # Tombstoning preserves the tool/assistant pairing the API requires.
-    # Tool-result messages must stay within the provider's supported schema.
     for m in tool_msgs:
         assert m.get("tool_call_id")
         assert "name" not in m

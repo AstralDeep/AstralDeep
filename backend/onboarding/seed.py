@@ -1,4 +1,6 @@
-"""Idempotent product-content seed for the canonical tutorial flow."""
+"""Idempotent seed for the canonical onboarding tutorial-step content: creates missing
+default steps via Plane without overwriting admin edits. Run at orchestrator startup.
+"""
 
 from __future__ import annotations
 
@@ -114,8 +116,6 @@ def seed_tutorial_steps(
     plane_repositories=None,
     tutorial_repository=None,
 ) -> int:
-    """Create missing defaults through Plane without overwriting admin edits."""
-
     repository, runtime = repository_from(
         "tutorials",
         plane_runtime=plane_runtime,

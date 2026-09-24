@@ -1,4 +1,8 @@
-"""A scheduled read consent remains a read ceiling when user grants grow."""
+"""Tests for orchestrator/chain_authority.py: a machine binding's consented scope stays
+a ceiling even as a user's live grants grow, malformed or invalid bindings deny every
+tool, and the shared gate denies before credentials or dispatch.
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -23,7 +27,6 @@ def _authority(scopes=None):
 
 
 def _orchestrator():
-    # The real dispatch methods, without opening a database or a live transport.
     from orchestrator.orchestrator import Orchestrator
 
     orch = Orchestrator.__new__(Orchestrator)

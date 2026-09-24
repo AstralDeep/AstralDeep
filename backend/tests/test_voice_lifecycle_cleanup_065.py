@@ -1,4 +1,7 @@
-"""Feature-065 lifecycle wiring at chat and authentication boundaries."""
+"""Tests that logout, session expiry, and chat deletion each end a user's voice session
+through voice_sessions.py exactly once, alongside their own boundary such as token
+revocation or auth expiry.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,6 @@
-"""Tests for the feature-074 primitive-vocabulary decision gate."""
+"""Tests for the primitive-vocabulary decision gate: existing-vocabulary reuse, semver
+floor/prerelease precedence, manifest validation, and CLI exit-code behavior.
+"""
 
 from __future__ import annotations
 

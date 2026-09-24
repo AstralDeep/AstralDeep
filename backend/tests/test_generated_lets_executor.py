@@ -1,3 +1,8 @@
+"""Tests for the generated LETS executor and its v3 adapter
+(orchestrator/generated_lets_executor.py, agent_generator.py): manifest tamper
+detection, receipt/lease enforcement, replay-state anchoring, and off-mode parity.
+"""
+
 from __future__ import annotations
 
 import hashlib

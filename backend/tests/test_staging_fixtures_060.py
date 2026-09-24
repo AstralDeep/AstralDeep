@@ -1,4 +1,8 @@
-"""Sanitized deterministic candidate-staging fixtures for feature 060 (T002)."""
+"""Tests that the sanitized candidate-staging fixture corpus is exact, deterministic,
+and free of secrets: the manifest contract, legacy agent bundle binding,
+representative SQL, and the Keycloak realm's PKCE-only shape.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -200,8 +204,6 @@ def test_legacy_server_agent_bundle_is_exact_and_unambiguously_bound(
     sql = sql_bytes.decode("utf-8")
     assert binding["server_agent_id"] in sql
     assert binding["draft_id"] in sql
-    # The host-only fixture deliberately shares the slug. Migration code must
-    # use the host/server binding, never the presentation-derived path alone.
     assert sql.count(binding["agent_slug"]) == 2
     assert "fixture-host-agent" in sql
     assert "fixture-desktop-host" in sql

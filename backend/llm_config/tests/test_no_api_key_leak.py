@@ -1,14 +1,8 @@
-"""T061 (006) + 054 — defense-in-depth API-key leak sweep.
-
-Drives every audit-event helper through every documented action (incl.
-the 054 additions: scope="system", action="discarded_undecryptable",
-credential_source=SYSTEM) with obviously-secret-looking API keys, plus
-the full persisted-store save path (``handle_llm_config_set`` over
-``UserLLMConfigStore``), then greps every recorded audit payload, every
-client-bound frame, and the at-rest DB state for the keys. This is the
-FR-006 invariant: 0 user API keys in audit logs, client payloads, or
-plaintext storage, ever.
+"""Tests for llm_config/audit_events.py and the persisted-save path: sentinel API keys
+are smeared through every helper, action, and scope, then every captured audit
+payload, client frame, and at-rest DB row is swept for leakage.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,10 +18,6 @@ from llm_config.audit_events import (
 from llm_config.types import CredentialSource, ResolvedConfig
 from llm_config.ws_handlers import handle_llm_config_set
 
-# Obviously-secret-looking keys smeared through every flow. If any
-# survives into a recorded payload, the test fails. Feature 054 adds the
-# Google (AIza) and Anthropic (sk-ant-) shapes now that both providers
-# are in the catalog.
 SENTINEL_KEYS = [
     "sk-sentinel-key-abcdef1234567890abcdef",
     "sk-ant-sentinel-key-abcdef1234567890abcdef",
@@ -38,8 +28,6 @@ SENTINEL_KEYS = [
     "AIzaSentinel-key-abcdef1234567890abcdef",
 ]
 
-# The same regex set the audit_events module uses for its
-# defense-in-depth guard. We assert NO match on any captured payload.
 KEY_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"\bgsk_[A-Za-z0-9_\-]{20,}\b"),
@@ -76,11 +64,6 @@ def _assert_clean(blob: str, context: str) -> None:
 
 @pytest.mark.asyncio
 async def test_no_api_key_in_any_audit_payload(fake_recorder):
-    """Smear every sentinel key through every helper, action, and scope,
-    then sweep all captured payloads for any API-key-shaped string."""
-    # ------------------------------------------------------------------
-    # llm_config_change: every action × both scopes
-    # ------------------------------------------------------------------
     for scope in ("user", "system"):
         await record_llm_config_change(
             fake_recorder, actor_user_id="u", auth_principal="u",
@@ -108,17 +91,10 @@ async def test_no_api_key_in_any_audit_payload(fake_recorder):
             transport="rest", result="failure", error_class="auth_failed",
             scope=scope)
 
-    # ------------------------------------------------------------------
-    # llm_unconfigured
-    # ------------------------------------------------------------------
     await record_llm_unconfigured(
         fake_recorder, actor_user_id="u", auth_principal="u",
         feature="tool_dispatch")
 
-    # ------------------------------------------------------------------
-    # llm_call: success and failure for both LIVE credential sources
-    # (operator_default is retired for new rows — feature 054)
-    # ------------------------------------------------------------------
     for source in (CredentialSource.USER, CredentialSource.SYSTEM):
         await record_llm_call(
             fake_recorder, actor_user_id="u", auth_principal="u",
@@ -138,10 +114,6 @@ async def test_no_api_key_in_any_audit_payload(fake_recorder):
 @pytest.mark.asyncio
 async def test_persisted_save_path_never_leaks_the_key(
         store, fake_db, fake_recorder, safe_send, monkeypatch):
-    """Drive the REAL save path (validate → probe → persist → audit →
-    ack) with a sentinel key and sweep every observable surface: recorded
-    audit events, every client-bound frame, the at-rest DB state, and the
-    store record's repr."""
     async def _probe(**kwargs):
         return (True, None, None)
 
@@ -160,25 +132,17 @@ async def test_persisted_save_path_never_leaks_the_key(
             recorder=fake_recorder,
         ) is True
 
-    # 1. Audit events.
     _assert_clean(_serialize_all(captured(fake_recorder)), "audit payload")
-    # 2. Every client-bound frame (errors + acks).
     frames = "\n".join(c.args[1] for c in safe_send.await_args_list)
     _assert_clean(frames, "client-bound frame")
-    # 3. At-rest storage: ciphertext only — the verbatim key never appears.
     at_rest = json.dumps(fake_db.users, default=str)
     for sentinel in SENTINEL_KEYS:
         assert sentinel not in at_rest, (
             f"Sentinel key {sentinel!r} stored in plaintext")
-    # 4. The store record's repr elides the key.
     for i, sentinel in enumerate(SENTINEL_KEYS):
         assert sentinel not in repr(store.get_sync(f"user-{i}"))
 
 
 @pytest.mark.asyncio
 async def test_assert_no_api_key_guard_rejects_attempt_to_pass_key_in_payload():
-    """Defense in depth: the guard behaviour itself (literal api_key
-    field, key-shaped substrings incl. AIza) is covered in
-    test_audit_events.py::TestAssertNoApiKey; this file's job is the
-    corpus sweep above. Kept as a documentation anchor."""
     assert True

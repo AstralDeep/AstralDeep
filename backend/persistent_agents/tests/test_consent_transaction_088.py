@@ -1,4 +1,8 @@
-"""Real private PostgreSQL: consent and its assignment commit or roll back together."""
+"""Tests for persistent_agents/service.py and store.py against real Postgres: consent
+and its assignment commit or roll back together across creation, revision, CAS
+conflicts, lost-ack retries and concurrent duplicate submissions.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -214,8 +218,6 @@ async def test_future_cas_becoming_current_cannot_apply_without_new_consent(fixt
     async def concurrent_revision(owner, identity, submission, digest, command):
         result = await original_receipt(owner, identity, submission, digest, command)
         if submission == unconsented.submission_id and not accepted:
-            # The caller already read revision1 and no receipt. A separately
-            # consented revision now makes its future CAS numbers current.
             accepted.append((await revise(fixture, first, revision(first))).assignment)
         return result
 
@@ -290,8 +292,6 @@ async def test_receipt_committed_before_capture_rolls_back_losing_grant(
 
     def capture(transaction, prepared, **kwargs):
         if not pending:
-            # Deep has already read an absent receipt, but has acquired no
-            # consent/assignment owner lock. Let the matching request win now.
             pending.update(thread=threading.get_ident(), grant=prepared.grant_id)
             before_lock.set()
             assert release.wait(timeout=5)
@@ -299,9 +299,6 @@ async def test_receipt_committed_before_capture_rolls_back_losing_grant(
 
     def apply(transaction, **kwargs):
         if return_accepted_receipt and threading.get_ident() == pending["thread"]:
-            # Current Plane raises409 because its signature includes the grant.
-            # This controlled response instead returns the real retained receipt
-            # to verify Deep's additional defensive rollback boundary.
             accepted = repository.get_submission_receipt(transaction,
                 owner_id=kwargs["owner_id"], assignment_id=kwargs["assignment_id"],
                 submission_id=kwargs["submission_id"], submission_digest=kwargs["submission_digest"],
@@ -407,8 +404,6 @@ async def test_locked_receipt_read_refuses_before_blocker_is_released(fixture, r
     first = await create(fixture) if phase == "revision_record" else None
     existing = retained(fixture)
     if phase == "transaction_receipt":
-        # Let the ordinary validation and immutable preparation reach the
-        # transaction's own replay read while the table remains locked.
         monkeypatch.setattr(fixture.service, "_receipt", AsyncMock(return_value=None))
     started = time.monotonic()
     with runtime.transaction() as blocker:
@@ -418,8 +413,6 @@ async def test_locked_receipt_read_refuses_before_blocker_is_released(fixture, r
             await asyncio.wait_for(request, timeout=3)
         assert refused.value.status_code == 503
         assert time.monotonic() - started < 2
-        # The blocking transaction still owns its lock; refusal did not depend
-        # on cleanup releasing it, and the failed worker returned its lease.
         assert blocker.fetch_one("SELECT 1 AS alive")["alive"] == 1
         assert len(fixture.prepared) == (phase in {"transaction_receipt", "revision_record"})
     assert retained(fixture) == existing

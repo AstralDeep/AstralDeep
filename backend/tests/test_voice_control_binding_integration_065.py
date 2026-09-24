@@ -1,4 +1,7 @@
-"""Authenticated register/teardown integration for Feature-065 bindings."""
+"""Tests for orchestrator/voice_control_binding.py's authenticated register/teardown
+flow: local-ready fencing to the current socket, bearer rotation without scope
+change, displacement handling, and REST validation of the exact current binding.
+"""
 
 from __future__ import annotations
 

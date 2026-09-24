@@ -1,4 +1,8 @@
-"""External driver (T026 / C1). Pure — mocked httpx/websockets transports."""
+"""Tests for the external driver (backend/verification/drivers/external.py) with mocked
+httpx/websockets transports: auth-mode degradation, WS message parsing, and a
+scenario run against the mocked transport.
+"""
+
 from __future__ import annotations
 
 from verification.config import RunConfig
@@ -67,7 +71,7 @@ def test_run_scenario_with_mocked_transport(monkeypatch):
     run_async(driver.setup())
     scenario = build_scenarios("__verif__ext", driver.auth_mode, ["everyday"])[0]
     ev = run_async(driver.run_scenario(scenario))
-    assert ev.run_mode == "mock_inprocess"  # no creds -> degraded
+    assert ev.run_mode == "mock_inprocess"
     assert any(c.get("type") == "table" for c in ev.components)
     assert ev.extra["attachment_id"] == "att-123"
     assert any(u.endswith("/api/upload") for _m, u, _t in http_calls)

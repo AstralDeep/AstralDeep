@@ -1,10 +1,6 @@
-"""In-memory staging for one atomically published scheduled chat turn.
-
-Scheduled LLM execution may take seconds, so it must not hold a PostgreSQL
-transaction open while the model runs.  This module captures only the chat
-history mutations produced by that turn.  The scheduler store later publishes
-the frozen batch together with its effect-ledger transition in one short,
-fenced transaction.
+"""In-memory staging for one scheduled chat turn's history mutations, so a long-running
+scheduled LLM call never holds a PostgreSQL transaction open; scheduler/store.py
+later publishes the frozen batch with its effect-ledger transition atomically.
 """
 
 from __future__ import annotations
@@ -19,13 +15,11 @@ from typing import Any, Iterator
 
 
 class ScheduledPublicationEscapeError(RuntimeError):
-    """A scheduled turn attempted a history write outside its owned target."""
+    pass
 
 
 @dataclass(frozen=True)
 class StagedHistoryMessage:
-    """One normalized message insert awaiting atomic publication."""
-
     role: str
     content: str
     title_source: str
@@ -34,8 +28,6 @@ class StagedHistoryMessage:
 
 @dataclass(frozen=True)
 class ScheduledHistoryBatch:
-    """Immutable history mutations produced by one scheduled handler run."""
-
     chat_id: str
     user_id: str
     create_chat_if_missing: bool
@@ -50,8 +42,6 @@ class ScheduledHistoryBatch:
 
 
 class ScheduledHistoryStage:
-    """Mutable task-local stage that becomes immutable when execution exits."""
-
     def __init__(
         self,
         *,
@@ -73,8 +63,6 @@ class ScheduledHistoryStage:
         self._sealed = False
 
     def matches(self, history: Any, chat_id: str, user_id: str) -> bool:
-        """Return whether a read belongs to this exact staged target."""
-
         return (
             history is self._history
             and str(chat_id) == self.chat_id
@@ -102,8 +90,6 @@ class ScheduledHistoryStage:
         role: str,
         content: Any,
     ) -> None:
-        """Normalize and stage one message without touching PostgreSQL."""
-
         self._assert_write_target(history, chat_id, user_id)
         content_string = content if isinstance(content, str) else json.dumps(content)
         title_source = str(content)
@@ -127,20 +113,14 @@ class ScheduledHistoryStage:
         user_id: str,
         title: str,
     ) -> None:
-        """Stage an explicit title update for the atomic publication."""
-
         self._assert_write_target(history, chat_id, user_id)
         self.requested_title = str(title)
 
     @property
     def messages(self) -> tuple[StagedHistoryMessage, ...]:
-        """Return the current read-only task-local message projection."""
-
         return tuple(self._messages)
 
     def seal(self) -> None:
-        """Reject any late writes inherited by fire-and-forget tasks."""
-
         self._sealed = True
 
     def batch(
@@ -152,8 +132,6 @@ class ScheduledHistoryStage:
         committed_render_revision: int | None = None,
         canvas_layouts: list[dict[str, Any]] | None = None,
     ) -> ScheduledHistoryBatch:
-        """Return the immutable publication input after handler exit."""
-
         if not self._sealed:
             raise RuntimeError("scheduled history stage must be sealed first")
         return ScheduledHistoryBatch(
@@ -177,8 +155,6 @@ _ACTIVE_STAGE: contextvars.ContextVar[ScheduledHistoryStage | None] = (
 
 
 def current_scheduled_history_stage() -> ScheduledHistoryStage | None:
-    """Return the task-local scheduled history stage, when present."""
-
     return _ACTIVE_STAGE.get()
 
 
@@ -191,8 +167,6 @@ def stage_scheduled_history(
     create_chat_if_missing: bool,
     agent_id: str | None,
 ) -> Iterator[ScheduledHistoryStage]:
-    """Activate one exclusive scheduled history stage for handler execution."""
-
     if _ACTIVE_STAGE.get() is not None:
         raise RuntimeError("nested scheduled history stages are not supported")
     stage = ScheduledHistoryStage(

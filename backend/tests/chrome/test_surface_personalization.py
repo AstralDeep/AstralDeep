@@ -1,10 +1,8 @@
-"""Feature 027 — T014: personalization surface (tabs, forms, handlers).
-
-Structural/behavioral tests against a minimal fake orchestrator — no
-Postgres required. The PHI gate singleton is replaced with a deterministic
-fake (clean analyzer; the pure-Python prefilter still applies) so PHI
-rejections are exercised via obvious identifiers (SSN pattern).
+"""Tests for orchestrator/projection_surfaces/personalization.py: soul, memory, skills,
+schedule, and dreaming tabs plus PHI-gated saves and their handlers, against fake
+repositories and a deterministic PHI analyzer.
 """
+
 import asyncio
 import html as html_module
 import json
@@ -20,20 +18,13 @@ from shared.feature_flags import flags
 from orchestrator.projection_surfaces import personalization as surf
 
 
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
-
 class _CleanAnalyzer:
-    """Presidio stand-in that reports no entities (prefilter still active)."""
-
     def analyze(self, text, language, entities, score_threshold):
         return []
 
 
 @pytest.fixture(autouse=True)
 def _fake_phi_gate():
-    """Install a deterministic PHI gate; restore the previous one after."""
     prev = pg._GATE
     pg.set_phi_gate(pg.PHIGate(analyzer=_CleanAnalyzer(), build_if_missing=False))
     yield
@@ -41,8 +32,6 @@ def _fake_phi_gate():
 
 
 class FakeRepo:
-    """PersonalizationRepository stand-in (profile, memory, sweeps, signals)."""
-
     def __init__(self):
         self.profile = {
             "user_id": "u1",
@@ -111,8 +100,6 @@ class FakeRepo:
 
 
 class FakeToolPermissions:
-    """ToolPermissionManager stand-in with one authorized + one denied scope."""
-
     def __init__(self):
         self._tool_scope_map = {
             "helper": {"search_docs": "tools:read", "wipe_disk": "tools:system"},
@@ -142,8 +129,6 @@ class FakeToolPermissions:
         self.override_calls.append((user_id, agent_id, dict(overrides)))
 
     def set_skill_enabled(self, user_id, agent_id, tool_name, enabled):
-        # 027 fix: the handler now writes the winning per-(tool, kind) row
-        # through this method instead of the outranked NULL-kind row.
         self.skill_calls = getattr(self, "skill_calls", [])
         self.skill_calls.append((user_id, agent_id, tool_name, enabled))
 
@@ -154,8 +139,6 @@ class _Cursor:
 
 
 class FakeDB:
-    """Database stand-in for ScheduledJobStore's SQL (jobs + runs)."""
-
     def __init__(self, jobs=None, runs=None):
         self.jobs = jobs or []
         self.runs = runs or []
@@ -188,8 +171,6 @@ class FakeDB:
 
 
 class FakeScheduleActionStore:
-    """Action-aware store fake; direct SQL remains observable on ``db``."""
-
     def __init__(self, db):
         self.db = db
         self.run_now_calls = []
@@ -334,10 +315,6 @@ def _sdui_action_payloads(value, action):
     return found
 
 
-# ---------------------------------------------------------------------------
-# Render — tabs and escaping
-# ---------------------------------------------------------------------------
-
 def test_render_defaults_to_soul_tab_with_form_and_precedence_note():
     html = render(make_orch())
     for label in ("Soul", "Memory", "Skills", "Schedule", "Dreaming"):
@@ -347,9 +324,7 @@ def test_render_defaults_to_soul_tab_with_form_and_precedence_note():
         assert f'name="{name}"' in html
     assert 'data-ui-action="chrome_profile_save"' in html
     assert 'data-ui-collect="true"' in html
-    # 025 precedence note: personality is style-only.
     assert "tone and voice only" in html
-    # Profile values are prefilled.
     assert 'value="researcher"' in html
     assert "write more" in html
     assert "be brief" in html
@@ -384,7 +359,7 @@ def test_memory_tab_lists_items_with_edit_and_delete_actions():
     assert 'data-ui-action="chrome_memory_update"' in html
     assert 'data-ui-action="chrome_memory_delete"' in html
     assert "&quot;id&quot;: &quot;m1&quot;" in html
-    assert "2023" in html  # created timestamp rendered
+    assert "2023" in html
 
 
 def test_memory_tab_escapes_values():
@@ -397,11 +372,9 @@ def test_memory_tab_escapes_values():
 
 def test_skills_tab_renders_toggle_and_unavailable_reason():
     html = render(make_orch(), {"tab": "skills"})
-    # Authorized + enabled skill gets exactly one toggle (to disable it).
     assert html.count('data-ui-action="chrome_skill_toggle"') == 1
     assert "&quot;tool_name&quot;: &quot;search_docs&quot;" in html
     assert "&quot;enabled&quot;: false" in html
-    # Unauthorized skill renders the reason, not a toggle.
     assert "tools:system" in html
     assert "Agents &amp; permissions" in html
 
@@ -415,13 +388,13 @@ def test_schedule_tab_lists_jobs_with_actions_history_and_chat_hint(monkeypatch)
              "summary": "all good", "correlation_id": "c1"}]
     html = render(make_orch(jobs=jobs, runs=runs), {"tab": "schedule"})
     assert "Daily digest" in html and "Weekly report" in html
-    assert "Ghost job" not in html  # soft-deleted jobs hidden
+    assert "Ghost job" not in html
     assert 'data-ui-action="chrome_job_pause"' in html
     assert 'data-ui-action="chrome_job_run_now"' in html
     assert 'data-ui-action="chrome_job_resume"' in html
     assert 'data-ui-action="chrome_job_delete"' in html
-    assert "created in chat" in html  # creation hint (jobs created in chat)
-    assert "all good" in html and "success" in html  # inline run history
+    assert "created in chat" in html
+    assert "all good" in html and "success" in html
 
 
 def test_schedule_run_now_html_payload_has_one_stable_client_uuid(monkeypatch):
@@ -478,7 +451,7 @@ def test_schedule_flag_off_omits_run_now_in_html_and_sdui(monkeypatch):
 def test_dreaming_tab_renders_toggle_trigger_and_sweeps():
     html = render(make_orch(), {"tab": "dreaming"})
     assert 'data-ui-action="chrome_dreaming_toggle"' in html
-    assert "&quot;enabled&quot;: false" in html  # currently on → toggle turns it off
+    assert "&quot;enabled&quot;: false" in html
     assert 'data-ui-action="chrome_dreaming_trigger"' in html
     assert "Reviewed 3 recent signal(s)." in html
     assert "considered 3, promoted 1" in html
@@ -491,10 +464,6 @@ def test_missing_subsystem_renders_error_notice_not_exception():
     assert "not available" in html
 
 
-# ---------------------------------------------------------------------------
-# Handlers — soul
-# ---------------------------------------------------------------------------
-
 def test_profile_save_success_parses_goals_and_returns_success_notice():
     orch = make_orch()
     repo = orch.personalization_service.repo
@@ -505,7 +474,6 @@ def test_profile_save_success_parses_goals_and_returns_success_notice():
     assert "Profile saved." in notice
     assert repo.upsert_calls[0]["goals"] == ["ship it", "learn rust"]
     assert repo.upsert_calls[0]["profession"] == "data engineer"
-    # Notes unchanged vs existing profile → personality untouched (None).
     assert repo.upsert_calls[0]["personality"] is None
 
 
@@ -573,7 +541,7 @@ def test_profile_save_changed_notes_merge_existing_personality():
     assert "Profile saved." in notice
     personality = repo.upsert_calls[0]["personality"]
     assert personality["notes"] == "be playful"
-    assert personality["tone"] == "warm"  # chat-set trait preserved
+    assert personality["tone"] == "warm"
 
 
 def test_profile_save_phi_rejected_preserves_draft_and_skips_persist():
@@ -585,7 +553,6 @@ def test_profile_save_phi_rejected_preserves_draft_and_skips_persist():
     assert "protected health information" in notice
     assert repo.upsert_calls == []
     assert params["draft"]["profession"] == "123-45-6789"
-    # The failed-save re-render prefills the submitted values (FR-016).
     html = render(orch, params)
     assert 'value="123-45-6789"' in html
 
@@ -605,10 +572,6 @@ def test_profile_save_validation_error_is_an_error_notice():
     assert orch.personalization_service.repo.upsert_calls == []
     assert "draft" in params
 
-
-# ---------------------------------------------------------------------------
-# Handlers — memory
-# ---------------------------------------------------------------------------
 
 def test_memory_update_success_and_not_found():
     orch = make_orch()
@@ -641,10 +604,6 @@ def test_memory_delete_success_then_not_found():
     assert "not found" in notice
 
 
-# ---------------------------------------------------------------------------
-# Handlers — skills
-# ---------------------------------------------------------------------------
-
 def test_skill_toggle_enable_beyond_scope_is_denied():
     orch = make_orch()
     _, params, notice = call(
@@ -661,15 +620,9 @@ def test_skill_toggle_disable_succeeds_and_records_override():
         surf._handle_skill_toggle, orch,
         {"agent_id": "helper", "tool_name": "search_docs", "enabled": False})
     assert "Disabled" in notice
-    # 027 fix: must route through set_skill_enabled (per-kind row), NOT the
-    # legacy NULL-kind set_tool_overrides path that per-kind rows outrank.
     assert orch.tool_permissions.skill_calls == [("u1", "helper", "search_docs", False)]
     assert orch.tool_permissions.override_calls == []
 
-
-# ---------------------------------------------------------------------------
-# Handlers — schedule
-# ---------------------------------------------------------------------------
 
 def test_job_pause_delete_cancel_unstarted_and_resume_stays_definition_only(
     monkeypatch,
@@ -771,10 +724,6 @@ def test_job_run_now_requires_client_submission_uuid(monkeypatch):
     assert orch.history.db.executed == []
 
 
-# ---------------------------------------------------------------------------
-# Handlers — dreaming
-# ---------------------------------------------------------------------------
-
 def test_dreaming_toggle_persists_flag():
     orch = make_orch()
     _, params, notice = call(surf._handle_dreaming_toggle, orch, {"enabled": False})
@@ -797,10 +746,6 @@ def test_dreaming_trigger_runs_sweep_and_reports_counts():
     assert repo.sweeps[0]["trigger"] == "manual"
 
 
-# ---------------------------------------------------------------------------
-# Module contract
-# ---------------------------------------------------------------------------
-
 def test_module_contract_title_and_handlers():
     assert surf.TITLE == "Personalization"
     expected = {
@@ -814,9 +759,6 @@ def test_module_contract_title_and_handlers():
     }
     assert set(surf.HANDLERS) == expected
     assert not getattr(surf, "ADMIN_ONLY", False)
-# ---------------------------------------------------------------------------
-# 052 -- PHI reject-field labels + SDUI components() schedule tab
-# ---------------------------------------------------------------------------
 
 def test_phi_reject_field_labels_each_field(monkeypatch):
     class _Gate:

@@ -1,10 +1,6 @@
-"""Feature-066 pins for ``KnowledgeSynthesizer._refresh_client``.
-
-The synthesizer is a cross-user system flow: every cycle re-resolves the
-admin-managed system LLM credential (054). No resolver or no stored record
-means the cycle skips honestly; a resolved config builds an OpenAI-compatible
-client through the shared ``openai_auth_kwargs`` seam (keyless sentinel and
-real bearer alike) without any network contact.
+"""Tests for orchestrator/knowledge_synthesis.py's KnowledgeSynthesizer._refresh_client:
+skips cleanly without a resolver or stored system config, and builds its client
+through the shared openai_auth_kwargs seam.
 """
 
 from __future__ import annotations
@@ -32,7 +28,6 @@ def _synthesizer(tmp_path, config_resolver) -> KnowledgeSynthesizer:
         config_resolver=config_resolver,
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
-        # Client-refresh tests do not create or claim maintenance units.
         maintenance_repository=object(),
     )
 
@@ -61,6 +56,5 @@ def test_refresh_client_builds_the_client_from_the_system_config(tmp_path) -> No
     assert synth._refresh_client() is True
     assert synth.model == "glm-test"
     assert synth.client is not None
-    # The real key rode the shared auth seam onto the constructed client.
     assert synth.client.api_key == "sk-test-066"
     assert str(synth.client.base_url).startswith("http://system-llm.test/v1")

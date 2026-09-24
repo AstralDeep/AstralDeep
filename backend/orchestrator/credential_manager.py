@@ -1,14 +1,8 @@
+"""Per-user, per-agent encrypted credential store backed by Postgres, using Fernet for
+orchestrator-readable OAuth secrets and ECIES for end-to-end agent-only secrets; used
+throughout remote_compute and remote_control agents.
 """
-Credential Manager — Per-user, per-agent encrypted credential storage.
 
-Supports two encryption modes:
-- **Fernet** (legacy/OAuth): Symmetric encryption where the orchestrator holds the key.
-  Used for credentials the orchestrator itself needs to read (e.g., OAuth flows).
-- **ECIES** (E2E): Asymmetric encryption using the agent's EC P-256 public key.
-  The orchestrator encrypts but cannot decrypt — only the target agent can.
-
-Mirrors the ToolPermissionManager pattern for consistency.
-"""
 import os
 import time
 import logging
@@ -28,28 +22,14 @@ logger = logging.getLogger("CredentialManager")
 
 
 class CredentialNotConfigured(Exception):
-    """No credential row exists for the given machine (feature 063 FR-016)."""
+    pass
 
 
 class CredentialUndecryptable(Exception):
-    """A stored credential row exists but cannot be decrypted (e.g. the encryption
-    key rotated). Distinct from 'not configured' — feature 063 FR-016."""
+    pass
 
 
 class CredentialManager:
-    """Manages per-user, per-agent encrypted credentials backed by PostgreSQL.
-
-    Structure (logical):
-        {
-            "<user_id>": {
-                "<agent_id>": {
-                    "CREDENTIAL_KEY": "encrypted_value",
-                    ...
-                }
-            }
-        }
-    """
-
     def __init__(
         self,
         db=None,
@@ -83,11 +63,9 @@ class CredentialManager:
             legacy_database=db,
         )
 
-        # Agent public keys for ECIES encryption (agent_id -> JWK dict)
         self._agent_public_keys: Dict[str, dict] = {}
 
     def _init_encryption(self) -> Fernet:
-        """Initialize Fernet encryption using env var or auto-generated key file."""
         env_key = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
         if env_key:
             return Fernet(env_key.encode())
@@ -107,34 +85,14 @@ class CredentialManager:
 
         return Fernet(key)
 
-    # ------------------------------------------------------------------
-    # Agent Public Key Registry (for ECIES)
-    # ------------------------------------------------------------------
-
     def register_agent_public_key(self, agent_id: str, jwk: dict):
-        """Store an agent's ECIES public key (JWK) for E2E credential encryption."""
         self._agent_public_keys[agent_id] = jwk
         logger.info(f"Registered ECIES public key for agent '{agent_id}'")
 
     def has_agent_public_key(self, agent_id: str) -> bool:
-        """Check if an agent has a registered ECIES public key."""
         return agent_id in self._agent_public_keys
 
-    # ------------------------------------------------------------------
-    # Credential Storage
-    # ------------------------------------------------------------------
-
     def set_credential(self, user_id: str, agent_id: str, key: str, value: str, e2e: bool = True):
-        """Encrypt and store a credential.
-
-        Args:
-            user_id: The user who owns the credential.
-            agent_id: The agent this credential is for.
-            key: Credential key name (e.g., "CLASSIFY_API_KEY").
-            value: Plaintext credential value.
-            e2e: If True and the agent has a registered public key, use ECIES.
-                 If False, always use Fernet (for OAuth credentials the orchestrator needs).
-        """
         if e2e and agent_id in self._agent_public_keys:
             agent_pub = ec_public_key_from_jwk(self._agent_public_keys[agent_id])
             encrypted = encrypt_for_agent(value, agent_pub)
@@ -154,11 +112,6 @@ class CredentialManager:
         logger.info(f"Credential set ({mode}): user={user_id} agent={agent_id} key={key}")
 
     def get_credential(self, user_id: str, agent_id: str, key: str) -> Optional[str]:
-        """Decrypt and return a single Fernet-encrypted credential, or None.
-
-        Only works for Fernet-encrypted values (OAuth credentials).
-        E2E-encrypted values cannot be decrypted by the orchestrator.
-        """
         row = self._credentials.call(
             self._credentials.repository.get_credential,
             owner_id=user_id,
@@ -178,12 +131,6 @@ class CredentialManager:
             return None
 
     def get_agent_credentials(self, user_id: str, agent_id: str) -> Dict[str, str]:
-        """Decrypt and return all Fernet-encrypted credentials for a user+agent.
-
-        Only returns Fernet-encrypted values (OAuth credentials the orchestrator needs).
-        Internal keys (starting with '_') are excluded.
-        E2E-encrypted values are skipped.
-        """
         rows = self._credentials.call(
             self._credentials.repository.list_credentials,
             owner_id=user_id,
@@ -197,7 +144,7 @@ class CredentialManager:
                 continue
             value = row.encrypted_value
             if is_e2e_encrypted(value):
-                continue  # Skip E2E — orchestrator can't decrypt these
+                continue
             try:
                 result[key] = self._fernet.decrypt(value.encode()).decode()
             except Exception as e:
@@ -205,13 +152,6 @@ class CredentialManager:
         return result
 
     def get_agent_credentials_encrypted(self, user_id: str, agent_id: str) -> Dict[str, str]:
-        """Return raw encrypted credential values for passing to agents.
-
-        Returns ciphertext as-is (both Fernet and ECIES blobs).
-        The agent will decrypt E2E values; Fernet values pass through for
-        backward compatibility during migration.
-        Internal keys (starting with '_') are excluded.
-        """
         rows = self._credentials.call(
             self._credentials.repository.list_credentials,
             owner_id=user_id,
@@ -227,7 +167,6 @@ class CredentialManager:
         return result
 
     def delete_credential(self, user_id: str, agent_id: str, key: str):
-        """Remove a single credential."""
         self._credentials.call(
             self._credentials.repository.delete_credential,
             owner_id=user_id,
@@ -237,7 +176,6 @@ class CredentialManager:
         logger.info(f"Credential deleted: user={user_id} agent={agent_id} key={key}")
 
     def list_credential_keys(self, user_id: str, agent_id: str) -> List[str]:
-        """List stored credential keys (without values) for a user+agent."""
         rows = self._credentials.call(
             self._credentials.repository.list_credential_keys,
             owner_id=user_id,
@@ -247,12 +185,10 @@ class CredentialManager:
         return list(rows)
 
     def set_bulk_credentials(self, user_id: str, agent_id: str, credentials: Dict[str, str], e2e: bool = True):
-        """Set multiple credentials at once."""
         for key, value in credentials.items():
             self.set_credential(user_id, agent_id, key, value, e2e=e2e)
 
     def remove_agent_credentials(self, user_id: str, agent_id: str):
-        """Remove all credentials for a specific agent under a user."""
         self._credentials.call(
             self._credentials.repository.delete_agent_credentials,
             owner_id=user_id,
@@ -260,16 +196,8 @@ class CredentialManager:
         )
         logger.info(f"All credentials removed: user={user_id} agent={agent_id}")
 
-    # ------------------------------------------------------------------
-    # Feature 063: per-machine credentials (remote-compute agents)
-    # Fernet-only (the in-process transport must decrypt to authenticate); stored
-    # in the machine_credential table, keyed by machine_id, 1:1 with a machine.
-    # FR-014: encryption at rest + per-user isolation, NOT process isolation.
-    # ------------------------------------------------------------------
-
     def set_machine_credential(self, machine_id: str, owner_user_id: str, cred_type: str,
                                secret: str, passphrase: Optional[str] = None):
-        """Encrypt and store an owner-scoped credential for one machine."""
         enc_secret = self._fernet.encrypt(secret.encode()).decode()
         enc_pass = self._fernet.encrypt(passphrase.encode()).decode() if passphrase else None
         now = int(time.time() * 1000)
@@ -308,10 +236,6 @@ class CredentialManager:
         machine_id: str,
         owner_user_id: str,
     ) -> Optional[Dict[str, Optional[str]]]:
-        """Return {'cred_type','secret','passphrase'} decrypted, or None if not configured.
-
-        Raises CredentialUndecryptable if a row exists but cannot be decrypted (FR-016).
-        """
         row = self._credentials.call(
             self._credentials.repository.get_machine_credential,
             owner_id=owner_user_id,
@@ -335,7 +259,6 @@ class CredentialManager:
         }
 
     def delete_machine_credential(self, machine_id: str, owner_user_id: str):
-        """Destroy one owner-scoped stored credential (FR-015)."""
         self._credentials.call(
             self._credentials.repository.delete_machine_credential,
             owner_id=owner_user_id,
@@ -344,8 +267,6 @@ class CredentialManager:
         logger.info(f"Machine credential deleted: machine={machine_id}")
 
     def remove_machine_credentials_for_user(self, owner_user_id: str) -> int:
-        """Destroy every machine credential owned by a user (account removal / logout, FR-015).
-        Returns the number of rows destroyed (unknown row counts normalize to 0)."""
         removed = self._credentials.call(
             self._credentials.repository.delete_owner_machine_credentials,
             owner_id=owner_user_id,
@@ -353,16 +274,7 @@ class CredentialManager:
         logger.info(f"Machine credentials removed for user={owner_user_id}: {removed}")
         return removed
 
-    # ------------------------------------------------------------------
-    # Migration: Re-encrypt Fernet credentials to ECIES
-    # ------------------------------------------------------------------
-
     def migrate_to_e2e(self, agent_id: str) -> int:
-        """Re-encrypt all Fernet credentials for an agent using ECIES.
-
-        Requires the agent's public key to be registered.
-        Returns the number of credentials migrated.
-        """
         if agent_id not in self._agent_public_keys:
             logger.error(f"Cannot migrate: no public key for agent '{agent_id}'")
             return 0

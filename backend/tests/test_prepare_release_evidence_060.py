@@ -1,4 +1,7 @@
-"""Deterministic local pre-push evidence command contracts (T107)."""
+"""Tests for the local pre-push release-evidence assembly command: argument parsing,
+deterministic evidence assembly, coverage-matrix binding across native partitions,
+and rejection of incomplete or mutated inputs.
+"""
 
 from __future__ import annotations
 
@@ -21,12 +24,12 @@ MATRIX_TEST_PATH = REPO_ROOT / "backend" / "tests" / "test_release_evidence_vali
 
 if not (
     (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "specs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
     )
-BASE_SHA = "b" * 40  # Differs from the contract examples' GIT_SHA ("a" * 40).
+BASE_SHA = "b" * 40
 NOW = "2026-07-16T12:00:00Z"
 
 
@@ -61,8 +64,6 @@ def _write_matrix(
     *,
     candidate_sha: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Write one passing per-platform report file per required target."""
-
     evidence_dir.mkdir(parents=True, exist_ok=True)
     targets = ["backend", "web", "windows", "android", "macos", "ios", "watchos", "docs"]
     reports = []
@@ -181,8 +182,6 @@ def _cobertura_many(
 
 
 def _native_coverage_report(prepare: Any, root: Path, slot: str) -> Path:
-    """Write one minimal parseable report with a useful slot-scoped observation."""
-
     producer = prepare.COVERAGE_INPUT_SLOTS[slot]
     if slot == "backend":
         return _cobertura(root / "backend.xml", "backend/service.py", hits=1)
@@ -444,7 +443,6 @@ def test_passing_matrix_emits_the_diagnostic_contract(
 ) -> None:
     evidence_dir = tmp_path / "evidence"
     reports = _write_matrix(evidence_dir, contract_examples, matrix_helpers)
-    # A stray non-evidence JSON file (e.g. an earlier diagnostic) is ignored.
     (evidence_dir / "local-diagnostic.json").write_text(
         '{"decision": "stale"}', encoding="utf-8"
     )
@@ -502,7 +500,6 @@ def test_assembly_is_deterministic_for_the_same_now(
     assert _run(prepare, contract_examples, evidence_dir, second) == 0
     assert first.read_bytes() == second.read_bytes()
 
-    # The assembled identity is content-derived, not time-derived.
     third = tmp_path / "third.json"
     assert (
         _run(
@@ -831,9 +828,6 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
     )
     capsys.readouterr()
 
-    # The tracked host shim is owned by the generic backend producer. The
-    # worker report's same runtime filename is attributed to backend/shared and
-    # therefore cannot mask an omitted changed shim.
     _cobertura_many(
         tmp_path / "backend.xml",
         {
@@ -874,9 +868,6 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
         },
     )
 
-    # The isolated worker renames the shared source at image build time. Its
-    # runtime-path line 1 must not let backend's line 2 mask the worker's missing
-    # observation after producer-specific source attribution.
     _cobertura_many(
         tmp_path / "voice-worker.xml",
         {
@@ -991,8 +982,6 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
     assert "producer_scope_mismatch" in capsys.readouterr().err
     _native_coverage_report(prepare, tmp_path, "ios")
 
-    # A tracked path alone is not a candidate witness: its executable line must
-    # exist in the immutable candidate blob rather than only in report metadata.
     _cobertura(
         tmp_path / "tooling.xml",
         "scripts/release.py",
@@ -1023,9 +1012,6 @@ def test_supplied_coverage_inputs_run_the_diagnostic_combined_gate(
     )
     assert "unproductive_report" in capsys.readouterr().err
 
-    # Even though the immutable diff only changes backend voice code, strict mode
-    # parses and requires a useful tooling contribution rather than accepting a
-    # syntactically valid dummy report for the unchanged target.
     _cobertura(tmp_path / "tooling.xml", "scripts/generated.py", hits=1)
     assert (
         prepare.main(
@@ -1204,8 +1190,6 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
     assert prepare.main(common) == 0
     capsys.readouterr()
 
-    # The iOS archive may legitimately omit AstralCore. The macOS archive must
-    # then map the changed Core file and all of its changed physical lines.
     (tmp_path / "macos.json").write_text(
         json.dumps(
                 {
@@ -1239,9 +1223,6 @@ def test_strict_apple_producers_cannot_mask_changed_physical_lines(
 
     (tmp_path / "macos.json").write_text(json.dumps(macos), encoding="utf-8")
 
-    # macOS still has a tracked executable App contribution, but omits the
-    # changed physical line that iOS observes and covers. Strict per-slot Apple
-    # mapping must reject it without requiring the macOS line to have any hits.
     (tmp_path / "macos.json").write_text(
         json.dumps(
             {

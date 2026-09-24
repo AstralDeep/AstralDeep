@@ -1,4 +1,8 @@
-"""Only named owner surfaces may carry independent response generations."""
+"""Tests for the guidance chrome protocol (shared/protocol.py): only named owner
+surfaces may carry independent response generations, and correlation cannot be
+borrowed by other surfaces.
+"""
+
 import json
 from uuid import uuid4
 

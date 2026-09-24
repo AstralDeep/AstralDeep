@@ -1,8 +1,8 @@
-"""Hash-chain integrity tests for ``AuditRepository``.
-
-These tests integrate against an isolated PostgreSQL database initialized by
-AstralPlane; each test uses a unique ``actor_user_id`` so the chain is isolated.
+"""Tests for audit/repository.py's hash chain: the genesis row's zero prev_hash, chain
+linkage, tamper detection via verify_chain, and serialization of concurrent inserts
+for one user.
 """
+
 from __future__ import annotations
 
 import threading
@@ -13,7 +13,6 @@ def test_genesis_row_uses_zero_prev_hash(repo, make_event, unique_user, database
     dto = repo.insert(ev)
     assert dto.event_id
 
-    # The internal column should equal 32 zero bytes
     with database.transaction() as transaction:
         row = transaction.fetch_one(
             "SELECT prev_hash FROM audit_events WHERE event_id = %s",
@@ -54,7 +53,6 @@ def test_verify_chain_flags_tampered_row(repo, make_event, unique_user, database
     ))
     repo.insert(make_event(actor_user_id=unique_user, auth_principal=unique_user, action_type="auth.third"))
 
-    # Mutate the description directly (bypass the trigger via the GUC)
     with database.transaction() as transaction:
         transaction.execute("SET LOCAL audit.allow_purge = 'true'")
         transaction.execute(
@@ -67,7 +65,6 @@ def test_verify_chain_flags_tampered_row(repo, make_event, unique_user, database
 
 
 def test_concurrent_inserts_serialize_through_for_update(repo, make_event, unique_user):
-    """Two threads inserting for the same user must produce a linear chain."""
     barrier = threading.Barrier(2)
     results = []
 
@@ -85,5 +82,4 @@ def test_concurrent_inserts_serialize_through_for_update(repo, make_event, uniqu
     t2.join()
 
     assert len(results) == 2
-    # Chain integrity: verify the user's chain is still well-formed
     assert repo.verify_chain(unique_user) is None

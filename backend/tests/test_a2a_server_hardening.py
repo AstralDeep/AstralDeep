@@ -1,21 +1,8 @@
-"""Hardening of the orchestrator's OWN inbound A2A server (FF_A2A_SERVER).
-
-Four audit findings, each pinned here:
-
-1. Cross-caller task disclosure — the SDK's default call context is an
-   ``UnauthenticatedUser`` and ``InMemoryTaskStore`` keys tasks by that owner,
-   while ``tasks/list``/``tasks/get``/``tasks/cancel`` are served BEFORE the
-   executor's bearer check. Now: bearer gate before dispatch, tasks scoped to
-   the verified subject, anonymous scope empty.
-2. Anonymous enumeration — the public card and an empty ``message/send``
-   listed EVERY registered agent's tools. Now: the card names only public,
-   owner-safe built-ins; listing requires a bearer and is projected per user
-   through the same predicate chat and /mcp use.
-3. Weak token validation — no issuer check, ``azp`` optional,
-   ``KEYCLOAK_ALLOWED_AZP`` ignored, delegation tokens accepted, JWKS cached
-   forever. Now: at least as strict as the web entry gate.
-4. Stale posture comments (checked by reading them, not here).
+"""Tests for the orchestrator's inbound A2A server (a2a_orchestrator_executor.py,
+a2a_security.py): bearer gating before dispatch, per-caller task scoping, public-card
+projection, and Keycloak token validation.
 """
+
 from __future__ import annotations
 
 import base64
@@ -35,9 +22,6 @@ from shared.protocol import MCPResponse  # noqa: E402
 
 ALICE = "alice-sub"
 BOB = "bob-sub"
-
-
-# ----------------------------------------------------------------- helpers
 
 
 def _jwt(claims: dict) -> str:
@@ -81,8 +65,6 @@ def _card(agent_id: str, name: str, skills):
 
 
 class _Permissions:
-    """Per-user tool permissions: Bob may not use the weather tool."""
-
     def __init__(self, safe_ids):
         self._safe = set(safe_ids)
 
@@ -99,7 +81,6 @@ class _Permissions:
 
 
 def _orchestrator():
-    """Three agents: a safe public built-in, an unsafe built-in, a private draft."""
     orch = SimpleNamespace()
     orch.agent_cards = {
         "weather-1": _card("weather-1", "Weather", [_skill("get_weather")]),
@@ -161,7 +142,6 @@ def _rpc(client, headers, method, params, rpc_id="9"):
 
 
 def _task(body: dict) -> dict:
-    """v1.0 SendMessage wraps the Task as ``result.task``."""
     result = body["result"]
     return result.get("task", result)
 
@@ -183,18 +163,14 @@ def _tool_names(body: dict) -> set:
     return {t["name"] for t in _data_part(body).get("tools", [])}
 
 
-# ----------------------------------------------------- (2) anonymous card
-
-
 def test_public_card_names_only_safe_public_builtins(client):
     resp = client.get("/a2a/.well-known/agent-card.json")
     assert resp.status_code == 200
     card = resp.json()
     ids = {s["id"] for s in card["skills"]}
-    assert "weather-1" in ids                 # public + safe + connected
-    assert "web-research-1" not in ids        # public but NOT safe-marked
-    assert "draft-secret-9" not in ids        # not a public built-in
-    # Generic per-agent skills, never the per-tool inventory.
+    assert "weather-1" in ids
+    assert "web-research-1" not in ids
+    assert "draft-secret-9" not in ids
     assert not ids & {"get_weather", "web_search", "exfiltrate"}
     assert "chat" in ids
     blob = json.dumps(card)
@@ -208,9 +184,6 @@ def test_public_card_prefers_public_base_url(mock_env, monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://sandbox.example/")
     card = build_orchestrator_a2a_card(_orchestrator())
     assert card.supported_interfaces[0].url == "https://sandbox.example/a2a"
-
-
-# -------------------------------------------------- (1) bearer before dispatch
 
 
 @pytest.mark.parametrize("method,params", [
@@ -243,23 +216,19 @@ def test_delegation_token_is_refused_inbound(client):
 
 
 def test_undecodable_mock_token_does_not_become_test_user(client):
-    """The mock fallback to a permissive default principal is closed at the gate."""
     assert _rpc(client, {"Authorization": "Bearer garbage"}, "tasks/list", {}).status_code == 401
 
 
 def test_caller_cannot_see_or_cancel_another_callers_task(client):
-    # Alice creates a task (an authenticated discovery turn).
     created = _send(client, _auth(ALICE), [{"text": ""}], rpc_id="a1")
     assert created.status_code == 200, created.text
     task_id = _task(created.json())["id"]
 
-    # Alice sees her own task.
     mine = _rpc(client, _auth(ALICE), "GetTask", {"id": task_id})
     assert mine.status_code == 200 and mine.json()["result"]["id"] == task_id
     listed = _rpc(client, _auth(ALICE), "ListTasks", {})
     assert task_id in {t["id"] for t in listed.json()["result"].get("tasks", [])}
 
-    # Bob — valid principal, different subject — sees nothing of it.
     bob_get = _rpc(client, _auth(BOB), "GetTask", {"id": task_id})
     assert "error" in bob_get.json(), bob_get.text
     bob_list = _rpc(client, _auth(BOB), "ListTasks", {})
@@ -267,7 +236,6 @@ def test_caller_cannot_see_or_cancel_another_callers_task(client):
     bob_cancel = _rpc(client, _auth(BOB), "CancelTask", {"id": task_id})
     assert "error" in bob_cancel.json(), bob_cancel.text
 
-    # Anonymous sees nothing at all (v1.0 and v0.3 method names alike).
     for method in ("GetTask", "tasks/get"):
         assert _rpc(client, {}, method, {"id": task_id}).status_code == 401
     for method in ("ListTasks", "tasks/list"):
@@ -275,7 +243,6 @@ def test_caller_cannot_see_or_cancel_another_callers_task(client):
 
 
 def test_anonymous_task_scope_is_empty_and_unshared():
-    """Store-level backstop: an unauthenticated context never lands in a shared bucket."""
     from a2a.auth.user import UnauthenticatedUser
     from a2a.server.context import ServerCallContext
     from orchestrator.a2a_orchestrator_executor import A2APrincipal, a2a_task_owner
@@ -288,9 +255,6 @@ def test_anonymous_task_scope_is_empty_and_unshared():
     assert a2a_task_owner(ServerCallContext(user=principal)) == a2a_task_owner(
         ServerCallContext(user=A2APrincipal({"sub": ALICE}, "other-tok"))
     )
-
-
-# ------------------------------------------ (2) per-user projected listing
 
 
 def test_tools_list_data_part_returns_callers_projected_tools(client):
@@ -310,13 +274,9 @@ def test_empty_and_text_messages_list_per_user(client):
 
 
 def test_listing_mirrors_chat_visibility_gates(client):
-    """A draft that chat hides is hidden here too (same predicate)."""
     client.orch._is_draft_agent = lambda agent_id: agent_id == "draft-secret-9"
     resp = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="v1")
     assert "exfiltrate" not in _tool_names(resp.json())
-
-
-# ------------------------------------------------ tools/call through gates
 
 
 def test_tools_call_resolves_through_projection_and_authorized_dispatch(client):
@@ -354,9 +314,6 @@ def test_tools_call_hidden_tool_is_non_disclosing_and_never_dispatched(client):
     )
     assert _task(unknown.json())["status"]["state"] == "TASK_STATE_FAILED"
     client.orch.execute_authorized_tool.assert_not_awaited()
-
-
-# ------------------------------------------- (3) Keycloak token validation
 
 
 @pytest.fixture
@@ -411,12 +368,12 @@ async def test_strict_refuses_weak_tokens(keycloak_env, monkeypatch, mutation):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", [
-    {"azp": "astral-desktop"},            # KEYCLOAK_ALLOWED_AZP honored
-    {"azp": "astral-agent-service"},      # agent-service client
-    {"aud": "account"},                   # Keycloak default audience
-    {"aud": "astral-frontend"},           # our client id
-    {"aud": None},                        # no audience → azp decides
-    {"iss": "https://iam.example/realms/astral/"},  # trailing slash tolerated
+    {"azp": "astral-desktop"},
+    {"azp": "astral-agent-service"},
+    {"aud": "account"},
+    {"aud": "astral-frontend"},
+    {"aud": None},
+    {"iss": "https://iam.example/realms/astral/"},
     {"realm_access": {"roles": []}, "resource_access": {"astral-frontend": {"roles": ["admin"]}}},
 ])
 async def test_strict_accepts_web_gate_equivalents(keycloak_env, monkeypatch, mutation):
@@ -432,12 +389,10 @@ async def test_strict_accepts_web_gate_equivalents(keycloak_env, monkeypatch, mu
 
 @pytest.mark.asyncio
 async def test_agent_posture_still_accepts_delegation_tokens(keycloak_env, monkeypatch):
-    """An AGENT's /a2a is dialled by the orchestrator with an RFC 8693 token."""
     claims = _user_claims(ALICE, act={"sub": "agent:weather-1"}, delegation=True)
     claims.pop("realm_access")
     v = _validator(monkeypatch, claims, strict=False)
     assert (await v.validate_token("t"))["sub"] == ALICE
-    # ...but never one from another realm, and KEYCLOAK_ALLOWED_AZP is honored.
     assert await _validator(
         monkeypatch, _user_claims(ALICE, iss="https://other.example"), strict=False
     ).validate_token("t") is None
@@ -471,12 +426,12 @@ async def test_jwks_uses_shared_ttl_cache_with_kid_miss_refetch(keycloak_env, mo
 
     await v._get_jwks(token_with_kid("k1"))
     await v._get_jwks(token_with_kid("k1"))
-    assert len(fetches) == 1                      # cached, not refetched per call
+    assert len(fetches) == 1
     await v._get_jwks(token_with_kid("k2"))
-    assert len(fetches) == 2                      # kid miss → refetch (rotation)
+    assert len(fetches) == 2
     jwks_cache._cache[fetches[0]]["fetched_at"] -= jwks_cache._TTL_SECONDS + 1
     await v._get_jwks(token_with_kid("k1"))
-    assert len(fetches) == 3                      # TTL expiry → refetch
+    assert len(fetches) == 3
     jwks_cache.clear()
 
 
@@ -490,11 +445,7 @@ async def test_unconfigured_keycloak_refuses(monkeypatch):
     assert await A2ASecurityValidator(require_first_party_user=True).validate_token("t") is None
 
 
-# --------------------------------------------------------------- flag off
-
-
 def test_flag_off_mounts_nothing(monkeypatch):
-    """Flag-off stays byte-identical: no /a2a route exists unless enabled."""
     from shared.feature_flags import FeatureFlags
 
     monkeypatch.delenv("FF_A2A_SERVER", raising=False)

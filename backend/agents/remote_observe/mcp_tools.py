@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Read-only remote-compute verb library (feature 063) — unioned into remote-compute-1.
-
-Structured, typed fields only (FR-038); every remote string bounded + control/ANSI
-sanitised (FR-040/FR-041); no shell strings (FR-022 — the transport uses the argv
-login-shell wrapper); every outcome mapped to the result vocabulary (FR-034). These
-verbs cannot change remote state (US2 acceptance 4).
+"""The 9 read-only remote-compute verbs (list_machines, probe_machine, list_queue,
+host_facts, job_status/history, list_directory/processes, read_job_output) run over
+orchestrator/remote_transport.py and remote_jobs.py.
 """
 from __future__ import annotations
 
@@ -19,24 +16,21 @@ from orchestrator.credential_manager import CredentialNotConfigured, CredentialU
 from orchestrator.remote_machines import MachineNotFound
 from orchestrator.remote_transport import RemoteResult, Verdict, get_transport
 
-# Dependencies wired by RemoteObserveAgent.__init__ (in-process pattern).
 _DB = None
 _CREDMGR = None
 
-_MAX_FIELD = 256   # per remote string field bound (FR-040)
-_MAX_ROWS = 200    # listing bound
-_MAX_FACT_ROWS = 50  # disk/GPU inventory bound (hundreds of autofs mounts stay bounded)
+_MAX_FIELD = 256
+_MAX_ROWS = 200
+_MAX_FACT_ROWS = 50
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x1b]")
 
 
 def register_deps(db, credmgr) -> None:
-    """Wire the shared Database + CredentialManager used by the verbs."""
     global _DB, _CREDMGR
     _DB, _CREDMGR = db, credmgr
 
 
 def _sanitize(value: Any, limit: int = _MAX_FIELD) -> str:
-    """Strip control/ANSI chars and bound length — remote strings are DATA (FR-041)."""
     if value is None:
         return ""
     text = _CTRL.sub("", str(value))
@@ -50,9 +44,6 @@ def _ui(components: List[Any], data: Optional[Dict] = None) -> Dict[str, Any]:
 
 
 def _ok(title: str, components: List[Any], data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Wrap success output in a titled Card so the canvas renders it as a proper
-    workspace component (matches the working bundled-agent pattern, e.g. dice_roller —
-    a bare Text/Table with no container leaks as stray canvas text)."""
     return {"_ui_components": [Card(title=title, content=components).to_dict()], "_data": data}
 
 
@@ -64,8 +55,6 @@ def _fail(verdict: Any, machine: str, next_action: str = "") -> Dict[str, Any]:
 
 
 def _resolve(user_id: Optional[str], ref: Optional[str]):
-    # No principal on the call → the vocabulary's no-live-human verdict (a bare
-    # "permission_denied" is not in contracts/result-vocabulary.md — SC-011).
     if not user_id:
         return None, _fail(Verdict.UNATTENDED_REFUSED, ref or "?", "sign in to use remote machines")
     if not ref:
@@ -86,8 +75,6 @@ def _resolve(user_id: Optional[str], ref: Optional[str]):
 def _result_fail(res: RemoteResult) -> Dict[str, Any]:
     return _fail(res.verdict, res.machine, res.next_action)
 
-
-# ── list_machines ────────────────────────────────────────────────────────────
 
 def list_machines(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -111,8 +98,6 @@ def list_machines(**kwargs) -> Dict[str, Any]:
                     "last_verdict": r.get("last_verdict")} for r in rows]})
 
 
-# ── probe_machine ────────────────────────────────────────────────────────────
-
 def probe_machine(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
@@ -133,8 +118,6 @@ def probe_machine(**kwargs) -> Dict[str, Any]:
                [Table(headers=["Fact", "Value"], rows=rows)],
                {"verdict": "ok", "authenticated": True})
 
-
-# ── list_queue (Slurm) ───────────────────────────────────────────────────────
 
 def _num(v, default=None):
     if isinstance(v, dict):
@@ -163,10 +146,6 @@ def _parse_squeue_json(text: str) -> Optional[List[Dict]]:
     return jobs
 
 
-# Delimited fallback for a scheduler too old for --json (research.md R4). Positional
-# fields: %i id, %P partition, %T state, %M used, %L left, %D nodes, %C cpus, %m mem,
-# %b gres, %R reason — mapped onto the SAME typed shape as the JSON path (the pinned
-# format carries no name column, so `name` degrades to "").
 _SQUEUE_FALLBACK_FMT = "%i|%P|%T|%M|%L|%D|%C|%m|%b|%R"
 
 
@@ -188,9 +167,6 @@ def _parse_squeue_delim(text: str) -> List[Dict]:
 
 
 def _squeue_jobs(transport, target, selector: List[str]):
-    """``squeue <selector> --json`` first; a pre---json scheduler (non-zero exit or
-    non-JSON output) gets one delimited ``-o`` retry mapped onto the same typed job
-    dicts. Returns ``(jobs, error_response)`` — exactly one is None."""
     res = transport.run(target, ["squeue", *selector, "--json"], timeout=30.0, retryable=True)
     if not res.ok:
         return None, _result_fail(res)
@@ -202,8 +178,6 @@ def _squeue_jobs(transport, target, selector: List[str]):
     if not fb.ok:
         return None, _result_fail(fb)
     jobs = _parse_squeue_delim(fb.stdout) if fb.exit_status in (0, None) else []
-    # An empty parse of NON-empty (or failed) output is a parse failure, not an
-    # empty queue — surfacing it keeps SC-011's no-silent-failure promise.
     if not jobs and (fb.exit_status not in (0, None) or (fb.stdout or "").strip()):
         return None, _fail(Verdict.PARTIAL, target.label, "could not parse the scheduler response")
     return jobs, None
@@ -231,8 +205,6 @@ def list_queue(**kwargs) -> Dict[str, Any]:
         comps.append(Text(content=f"Showing {_MAX_ROWS} of {len(jobs)} jobs.", variant="caption"))
     return _ok(f"Queue — {_sanitize(target.label, 60)} ({len(jobs)} job(s))", comps, {"jobs": len(jobs)})
 
-
-# ── host_facts ───────────────────────────────────────────────────────────────
 
 def _fmt_uptime(seconds: float) -> str:
     days, rem = divmod(int(seconds), 86400)
@@ -289,10 +261,6 @@ def _mem_kb(line: str) -> Optional[int]:
 
 
 def _parse_df(text: str) -> List[Dict]:
-    """``df -B1 --output=target,size,used,avail`` → typed disk rows. Mount is the
-    FIRST column so a name with spaces re-joins from the left; the header row
-    ("Mounted on  1B-blocks …") and malformed lines fail the int parse and are
-    skipped — never guessed at."""
     disks = []
     for ln in (text or "").splitlines():
         parts = ln.split()
@@ -308,15 +276,10 @@ def _parse_df(text: str) -> List[Dict]:
     return disks
 
 
-# gres tokens: gpu:8 / gpu:a100:4 (an optional type between the fixed prefix and
-# the trailing count). Socket-affinity suffixes like "(S:0-1)" are stripped first.
 _GRES_GPU = re.compile(r"^gpu(?::([A-Za-z0-9_.+-]+))?:(\d+)$")
 
 
 def _parse_sinfo_gres(text: str) -> List[Dict]:
-    """``sinfo --noheader -o %P|%G`` → typed GPU rows. Non-gpu GRES ("(null)",
-    shard:…) and malformed tokens are skipped; the default-partition ``*`` marker
-    is dropped from the name."""
     gpus = []
     for ln in (text or "").splitlines():
         parts = ln.split("|")
@@ -334,9 +297,6 @@ def _parse_sinfo_gres(text: str) -> List[Dict]:
 
 
 def _machine_role(user_id: Optional[str], ref: Optional[str]) -> str:
-    """The inventory row's declared role decides the Slurm-GRES GPU leg — the
-    contract sources GPU facts from ``sinfo`` on 'cluster' machines ONLY, never
-    ``nvidia-smi`` on the queried host (verbs.md host_facts row)."""
     try:
         row = remote_machines.resolve_machine(_DB, user_id, ref)
         return (row or {}).get("role") or ""
@@ -360,9 +320,6 @@ def host_facts(**kwargs) -> Dict[str, Any]:
     if ncpu.ok:
         facts["cpus"] = _sanitize((ncpu.stdout or "").strip(), 16)
     omitted: List[str] = []
-    # Disk facts (contract verbs.md). A dead df (no GNU --output, hung NFS mount →
-    # transport timeout, garbage output) degrades to a NOTED omission, never a hard
-    # failure — the facts gathered above still stand (FR-034 honest partials).
     dfres = transport.run(target, ["df", "-B1", "--output=target,size,used,avail"],
                           timeout=15.0, retryable=True)
     disks = _parse_df(dfres.stdout) if dfres.ok else []
@@ -378,8 +335,6 @@ def host_facts(**kwargs) -> Dict[str, Any]:
         sres = transport.run(target, ["sinfo", "--noheader", "-o", "%P|%G"],
                              timeout=15.0, retryable=True)
         if sres.ok and sres.exit_status in (0, None):
-            # exit 0 with zero gpu tokens is a REAL "no GPUs" (all-(null) GRES),
-            # distinct from the sinfo-failed omission below.
             gpus = _parse_sinfo_gres(sres.stdout)
             facts["gpus"] = gpus[:_MAX_FACT_ROWS]
         else:
@@ -408,8 +363,6 @@ def host_facts(**kwargs) -> Dict[str, Any]:
                           variant="caption"))
     return _ok(f"Host facts — {_sanitize(target.label, 60)}", comps, facts)
 
-
-# ── job_status / job_history (Slurm squeue/sacct --json) ──────────────────────
 
 def _num_field(container: Dict, *keys) -> str:
     for k in keys:
@@ -466,7 +419,6 @@ def job_status(**kwargs) -> Dict[str, Any]:
                 ["Reason", _sanitize(j["reason"], 60)]]
         return _ok(f"Job {job_id} — {_sanitize(target.label, 60)}",
                    [Table(headers=["Field", "Value"], rows=rows)], {"job_id": job_id, "state": j["state"]})
-    # Not in the live queue → it may have finished; ask the accounting DB.
     hist = transport.run(target, ["sacct", "-j", job_id, "--json", "-X"], timeout=30.0, retryable=True)
     if not hist.ok:
         return _result_fail(hist)
@@ -514,8 +466,6 @@ def job_history(**kwargs) -> Dict[str, Any]:
     return _ok(f"Job history — {_sanitize(target.label, 60)} ({len(jobs)} in {days}d)", comps,
                {"jobs": len(jobs), "days": days})
 
-
-# ── list_directory / list_processes ───────────────────────────────────────────
 
 def _parse_find(text: str) -> List[Dict]:
     entries = []
@@ -614,13 +564,7 @@ def list_processes(**kwargs) -> Dict[str, Any]:
                {"processes": len(procs), "own_only": own_only})
 
 
-# ── read_job_output (US4 — bounded, sanitized tail of a tracked job's output) ──
-
 def read_job_output(**kwargs) -> Dict[str, Any]:
-    """Read the recent output (tail) of one of the user's own tracked jobs. Surfaces
-    the job's OWN stdout — bounded (tail -n) + control-char-sanitized + length-clipped.
-    Reads only; resolves the output file from the tracked_job row (or an explicit
-    absolute output_path)."""
     user_id = kwargs.get("user_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
     job_id = str(kwargs.get("job_id") or "").strip()
@@ -653,13 +597,7 @@ def read_job_output(**kwargs) -> Dict[str, Any]:
     if not text.strip():
         return _ok(title, [Text(content="(no output yet)", variant="body")],
                    {"job_id": job_id, "bytes": 0})
-    # CodeBlock (<pre>) preserves newlines + monospace so terminal output stays
-    # readable; a plain Text would collapse the whole thing onto one line.
-    # `tail` must ride `_data`: the LLM sees ONLY `_data` (the orchestrator's
-    # two-tier rule), and this verb's purpose is for the model to read the
-    # output it was asked about. Already bounded + sanitized (FR-040/FR-041);
-    # with no `_model_digest` it still flows through the untrusted-content
-    # datamark, so the taint posture is unchanged.
+    # tail must ride _data — that's the only part the LLM sees
     return _ok(title, [CodeBlock(code=text, language="")],
                {"job_id": job_id, "bytes": len(res.stdout or ""), "tail": text})
 
@@ -668,8 +606,6 @@ _M = {"machine_id": {"type": "string", "description": "The machine's label, addr
 
 
 def _read_entry(fn, description, properties, required, timeout):
-    """A read verb entry. All read verbs are idempotent → ``retryable=True``; each
-    declares its timeout so the FR-051 contract test can assert it uniformly."""
     return {
         "function": fn,
         "description": description,

@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""
-MCP Tools for the Summarizer agent — tool functions that return UI Primitives.
-
-Includes:
-- summarize_text: structured TL;DR / key points / notable quotes Tabs
-- summarize_url: egress-gated fetch (1 MB / 15 s) then the summarize_text path
-- compare_documents: side-by-side summary Grid plus a key-differences Table
-
-LLM access uses the per-session OpenAI-compatible client pattern (same
-credential resolution as the general agent). All outbound HTTP goes through
-``shared.external_http``. Inputs are capped at ``INPUT_CAP`` characters with
-an explicit truncation notice when the cap applies. The small HTML→text
-extraction helper is intentionally duplicated from the web_research agent —
-agent packages never cross-import each other.
+"""Summarizes text/URLs and compares documents via one LLM call each, resolving
+credentials like the general agent; summarize_url can hop to web_research's
+fetch_page instead of fetching locally.
 """
 import json
 import logging
@@ -48,12 +37,8 @@ from shared.web_readability import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Bounds (FR-014: explicit truncation notices when inputs exceed limits)
-# ---------------------------------------------------------------------------
-
-INPUT_CAP = 24_000              # chars of input text per document
-FETCH_MAX_BYTES = 1024 * 1024   # 1 MB hard cap per fetch
+INPUT_CAP = 24_000
+FETCH_MAX_BYTES = 1024 * 1024
 FETCH_TIMEOUT_S = 15
 MAX_REDIRECT_HOPS = 3
 USER_AGENT = (
@@ -65,23 +50,10 @@ DEFAULT_LABELS = ("Document A", "Document B")
 
 
 class LlmUnavailableError(Exception):
-    """No LLM credentials could be resolved for this call."""
-
-
-# ---------------------------------------------------------------------------
-# Per-session LLM client resolution (mirrors agents/general/mcp_tools.py)
-# ---------------------------------------------------------------------------
+    pass
 
 
 def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
-    """Resolve the OpenAI-compatible client exactly like the general agent.
-
-    Feature 054: the per-turn credentials the orchestrator injects
-    (``_session_llm_credentials`` — the caller's persisted record, or the
-    admin system record on system-context turns) are preferred, then the
-    agent's own credential bundle. There is NO env fallback — the
-    operator-default path was removed.
-    """
     session_llm = kwargs.get("_session_llm_credentials") or {}
     creds = kwargs.get("_credentials", {}) or {}
     api_key = (
@@ -101,21 +73,13 @@ def _resolve_llm_client(kwargs: Dict[str, Any]) -> Tuple[Optional[OpenAI], str]:
     return OpenAI(api_key=api_key, base_url=base_url), model
 
 
-# ---------------------------------------------------------------------------
-# Defensive JSON parsing of LLM output
-# ---------------------------------------------------------------------------
-
-
 def _strip_fences(text: str) -> str:
-    """Remove a surrounding markdown code fence (```json … ```), if present."""
     stripped = (text or "").strip()
     match = re.match(r"^```[a-zA-Z0-9_-]*\s*\n(.*?)\n?\s*```\s*$", stripped, re.DOTALL)
     return match.group(1).strip() if match else stripped
 
 
 def _parse_llm_json(raw: str) -> Optional[Dict[str, Any]]:
-    """Parse LLM output into a dict: fence-strip + json.loads, then a regex
-    fallback that extracts the first ``{…}`` block. Returns None on failure."""
     cleaned = _strip_fences(strip_reasoning_markup(raw or "").strip())
     try:
         parsed = json.loads(cleaned)
@@ -143,7 +107,6 @@ def _as_str_list(value: Any) -> List[str]:
 
 
 def _normalize_summary(parsed: Dict[str, Any], raw_fallback: str = "") -> Dict[str, Any]:
-    """Coerce a parsed summary payload into {tldr: str, key_points: [], quotes: []}."""
     tldr = str(parsed.get("tldr") or "").strip()
     return {
         "tldr": tldr or raw_fallback or "(no summary returned)",
@@ -152,14 +115,8 @@ def _normalize_summary(parsed: Dict[str, Any], raw_fallback: str = "") -> Dict[s
     }
 
 
-# ---------------------------------------------------------------------------
-# LLM calls
-# ---------------------------------------------------------------------------
-
-
 def _call_summary_llm(text: str, focus: Optional[str],
                       kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """ONE LLM call returning strict JSON {tldr, key_points, quotes}."""
     client, model = _resolve_llm_client(kwargs)
     if client is None:
         raise LlmUnavailableError(
@@ -186,7 +143,6 @@ def _call_summary_llm(text: str, focus: Optional[str],
     raw = response.choices[0].message.content or ""
     parsed = _parse_llm_json(raw)
     if parsed is None:
-        # Malformed output: fall back to using the cleaned text as the TL;DR.
         cleaned = _strip_fences(strip_reasoning_markup(raw).strip())
         return _normalize_summary({}, raw_fallback=cleaned)
     return _normalize_summary(parsed)
@@ -194,7 +150,6 @@ def _call_summary_llm(text: str, focus: Optional[str],
 
 def _call_comparison_llm(doc_a: Tuple[str, str], doc_b: Tuple[str, str],
                          kwargs: Dict[str, Any]) -> List[Dict[str, str]]:
-    """ONE LLM call returning strict JSON {differences: [{aspect, a, b}]}."""
     client, model = _resolve_llm_client(kwargs)
     if client is None:
         raise LlmUnavailableError(
@@ -239,14 +194,7 @@ def _call_comparison_llm(doc_a: Tuple[str, str], doc_b: Tuple[str, str],
     return differences
 
 
-# ---------------------------------------------------------------------------
-# Egress-gated fetch + small HTML→text extraction helper (deliberately
-# duplicated from web_research: agent packages do not cross-import)
-# ---------------------------------------------------------------------------
-
-
 def _fetch_url(url: str):
-    """Egress-gated GET with bounded size/timeout and manual redirect follow."""
     current = external_http.normalize_url(url)
     for _hop in range(MAX_REDIRECT_HOPS + 1):
         resp = external_http.request(
@@ -279,8 +227,6 @@ _BLOCK_TAGS = frozenset({
 
 
 class _HtmlTextExtractor(HTMLParser):
-    """Compact readable-text extractor: skips page chrome, keeps paragraphs."""
-
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title = ""
@@ -304,8 +250,6 @@ class _HtmlTextExtractor(HTMLParser):
         if tag == "title" and not self.title:
             self._in_title = True
             return
-        # Inside a subtree skipped by class/id/role: count depth on non-void
-        # tags only (void tags have no end tag, so counting them never unwinds).
         if self._attr_skip > 0:
             if tag not in VOID_TAGS:
                 self._attr_skip += 1
@@ -351,7 +295,6 @@ class _HtmlTextExtractor(HTMLParser):
 
 
 def _extract_text(resp) -> Tuple[str, str]:
-    """Return (title, readable text) for a fetched response."""
     body = resp.text or ""
     content_type = str((resp.headers or {}).get("Content-Type") or "").lower()
     head = body[:2048].lower()
@@ -363,11 +306,6 @@ def _extract_text(resp) -> Tuple[str, str]:
     parser.feed(body)
     parser.close()
     return re.sub(r"\s+", " ", parser.title).strip(), clean_page_text(parser.text())
-
-
-# ---------------------------------------------------------------------------
-# Component builders
-# ---------------------------------------------------------------------------
 
 
 def _truncation_alert(label: str, original_length: int) -> Alert:
@@ -400,13 +338,7 @@ def _summary_card(label: str, summary: Dict[str, Any]) -> Card:
     )
 
 
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
-
-
 def _tool_failure(code: str, message: str, title: str) -> Dict[str, Any]:
-    """Return a terminal, fixed public error without upstream response details."""
     return {
         **create_ui_response([Alert(variant="error", title=title, message=message)]),
         "_error": {"code": code, "message": message, "retryable": False},
@@ -414,7 +346,6 @@ def _tool_failure(code: str, message: str, title: str) -> Dict[str, Any]:
 
 
 def summarize_text(text: str = "", focus: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-    """Summarize text into TL;DR / key points / notable quotes Tabs."""
     text = str(text or "")
     if not text.strip():
         return create_ui_response([
@@ -456,29 +387,12 @@ def summarize_text(text: str = "", focus: Optional[str] = None, **kwargs) -> Dic
 
 
 def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-    """Fetch a page by a MEDIATED hop to web_research's fetch_page (056 US1).
-
-    web_research owns the product's page-retrieval capability (egress policy,
-    redirect re-validation, readability extraction). Rather than maintaining a
-    second copy of it, the summarizer asks for that capability by name — the
-    orchestrator mediates the hop under a strictly-narrower child delegation
-    and the same gate stack a direct call would face.
-
-    Returns ``(title, text)`` on success, or ``None`` when chaining is
-    unavailable or the hop is refused — the caller then falls back to its own
-    local fetch, so behavior with ``FF_RECURSIVE_DELEGATION`` off (or for a
-    user without web_research permission) is exactly what it is today.
-    """
     import asyncio
 
     runtime = kwargs.get("_runtime")
     if runtime is None or not hasattr(runtime, "call_agent_tool"):
         return None
-    # Peer reuse is optional: the summarizer already has its own authorized,
-    # egress-gated reader. Do not request a hop that cannot inherit read
-    # authority and flash its refusal before successfully fetching locally.
-    # These claims only let us SKIP an optimization; they never authorize a
-    # hop. The orchestrator still verifies and attenuates its stored parent.
+    # Unverified — only skips an optimization, never grants access
     from jose import jwt
 
     token = kwargs.get("_delegation_token")
@@ -496,8 +410,6 @@ def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str
     if any(value.startswith("tool:") for value in scopes) and "tool:fetch_page" not in scopes:
         return None
     try:
-        # Tools run in a worker thread (mcp_server dispatches via to_thread);
-        # bridge to the agent's event loop the same way long-running jobs do.
         future = asyncio.run_coroutine_threadsafe(
             runtime.call_agent_tool(
                 "web-research-1", "fetch_page", {"url": url}, timeout=30.0),
@@ -512,7 +424,6 @@ def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str
     data = resp.result if isinstance(resp.result, dict) else {}
     text = ""
     for comp in (resp.ui_components or []):
-        # fetch_page returns a Card whose second Text child is the page text.
         if isinstance(comp, dict) and comp.get("type") == "card":
             children = comp.get("content") or []
             texts = [c.get("content", "") for c in children
@@ -526,14 +437,6 @@ def _fetch_via_peer(url: str, kwargs: Dict[str, Any]) -> Optional[Tuple[str, str
 
 
 def summarize_url(url: str = "", **kwargs) -> Dict[str, Any]:
-    """Fetch a URL (egress-gated, 1 MB / 15 s) and summarize its readable text.
-
-    056 US1: the fetch is delegated to web_research's ``fetch_page`` through an
-    orchestrator-mediated hop when chaining is available, so the product has
-    ONE page-retrieval capability rather than two. Falls back to the local
-    fetch when the hop is unavailable or refused (fail-open — flag-off behavior
-    is unchanged).
-    """
     url = str(url or "").strip()
     if not url:
         return create_ui_response([
@@ -572,7 +475,6 @@ def summarize_url(url: str = "", **kwargs) -> Dict[str, Any]:
 
 def _summarize_fetched(url: str, title: str, text: str,
                        kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Summarize page text retrieved for ``url`` (by hop or local fetch)."""
     if not text.strip():
         return create_ui_response([
             Alert(variant="error", title="Summarization failed",
@@ -591,7 +493,6 @@ def _summarize_fetched(url: str, title: str, text: str,
 
 def compare_documents(text_a: str = "", text_b: str = "",
                       labels: Optional[List[str]] = None, **kwargs) -> Dict[str, Any]:
-    """Compare two documents: side-by-side summaries + a key-differences table."""
     text_a = str(text_a or "")
     text_b = str(text_b or "")
     if not text_a.strip() or not text_b.strip():
@@ -617,7 +518,6 @@ def compare_documents(text_a: str = "", text_b: str = "",
         docs.append((label, text))
 
     try:
-        # Two summary calls + ONE comparison call.
         summary_a = _call_summary_llm(docs[0][1], None, kwargs)
         summary_b = _call_summary_llm(docs[1][1], None, kwargs)
         differences = _call_comparison_llm(docs[0], docs[1], kwargs)
@@ -652,11 +552,6 @@ def compare_documents(text_a: str = "", text_b: str = "",
             "differences": differences,
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# Tool registry
-# ---------------------------------------------------------------------------
 
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {

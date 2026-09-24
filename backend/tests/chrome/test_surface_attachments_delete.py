@@ -1,7 +1,6 @@
-"""Feature 031 US3 — attachment deletion via the library surface (T044).
-
-Deleting removes the attachment from the list and makes it unreferenceable;
-a non-owner delete is refused. Covers FR-022.
+"""Tests for orchestrator/projection_surfaces/attachments.py's delete handler: removes
+and unreferences the caller's attachment, refuses foreign deletes, and stays visible
+after a blob-cleanup failure.
 """
 
 from __future__ import annotations
@@ -74,8 +73,7 @@ async def test_delete_removes_attachment_and_unreferenceable():
     orch = _orch(repo)
 
     result = await surface._h_attachment_delete(orch, object(), "u1", [], {"attachment_id": "a1"})
-    assert result[0] == "attachments"  # re-render the surface
-    # Gone from the owner's view, and no longer resolvable.
+    assert result[0] == "attachments"
     assert repo.get_by_id("a1", "u1") is None
     html = await surface.render(orch, "u1", [], {})
     assert "a1.pdf" not in html
@@ -87,11 +85,9 @@ async def test_delete_foreign_attachment_is_refused():
     repo = _repo(db)
     _seed(repo, user_id="owner", attachment_id="a1")
     orch = _orch(repo)
-    # A different user cannot delete it.
     result = await surface._h_attachment_delete(orch, object(), "mallory", [], {"attachment_id": "a1"})
     assert result[0] == "attachments"
     assert "not found" in result[2].lower()
-    # Still present for the real owner.
     assert repo.get_by_id("a1", "owner") is not None
 
 

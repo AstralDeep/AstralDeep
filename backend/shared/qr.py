@@ -1,22 +1,8 @@
-"""First-party QR code encoder (feature 051, FR-021 / research D2).
-
-QR Model 2, byte mode, error-correction level M, versions 1-10 — ample for the
-device-login ``verification_uri_complete`` payloads (~60-120 chars). Pure
-standard library (``zlib``/``struct`` for the PNG writer); Constitution V
-forbids a third-party QR dependency.
-
-Correctness posture: the mask-evaluation, format/version BCH, Reed-Solomon and
-placement logic follow ISO/IEC 18004 Model 2. The repo test suite pins frozen
-known-answer matrices (cross-verified at development time against a reference
-encoder AND round-trip decoded with an independent decoder — neither is
-imported here or in CI) plus structural invariants that hold for any valid
-symbol.
-
-Public API:
-    encode_matrix(data, ecc="M")      -> list[list[int]] (1=dark, 0=light)
-    qr_png(data, scale=8, border=4)   -> bytes (grayscale PNG)
-    qr_png_base64(data, ...)          -> str
+"""First-party ISO/IEC 18004 QR encoder (Model 2, byte mode, ECC levels L-H, versions
+1-10) built on stdlib zlib/struct only, avoiding a third-party dependency. Used by
+orchestrator/device_login.py to render the device-login verification QR.
 """
+
 from __future__ import annotations
 
 import base64
@@ -28,14 +14,8 @@ __all__ = ["QRError", "encode_matrix", "qr_png", "qr_png_base64", "min_version_f
 
 
 class QRError(ValueError):
-    """Payload cannot be encoded within the supported version range."""
+    pass
 
-
-# --------------------------------------------------------------------------
-# Tables — ISO/IEC 18004, byte mode, versions 1-10.
-# Per version: total codewords, and per ECC level the RS block structure as
-# (ecc_codewords_per_block, [data_codewords_per_block, ...]).
-# --------------------------------------------------------------------------
 
 _TOTAL_CODEWORDS = {1: 26, 2: 44, 3: 70, 4: 100, 5: 134, 6: 172, 7: 196, 8: 242, 9: 292, 10: 346}
 
@@ -67,20 +47,14 @@ _ECC_BLOCKS = {
     },
 }
 
-# Alignment pattern center coordinates per version.
 _ALIGNMENT = {
     1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34],
     7: [6, 22, 38], 8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50],
 }
 
-# ECC level indicator bits (format info), per ISO 18004.
 _ECC_BITS = {"L": 0b01, "M": 0b00, "Q": 0b11, "H": 0b10}
 
 _MAX_VERSION = 10
-
-# --------------------------------------------------------------------------
-# GF(256) arithmetic (primitive polynomial 0x11D) + Reed-Solomon.
-# --------------------------------------------------------------------------
 
 _GF_EXP = [0] * 512
 _GF_LOG = [0] * 256
@@ -104,10 +78,9 @@ def _gf_mul(a: int, b: int) -> int:
 def _rs_generator(degree: int) -> List[int]:
     poly = [1]
     for i in range(degree):
-        # multiply by (x - alpha^i)
         nxt = [0] * (len(poly) + 1)
         for j, c in enumerate(poly):
-            nxt[j] ^= _gf_mul(c, 1)          # x * c  (shift)
+            nxt[j] ^= _gf_mul(c, 1)
             nxt[j + 1] ^= _gf_mul(c, _GF_EXP[i])
         poly = nxt
     return poly
@@ -125,12 +98,7 @@ def _rs_ecc(data: Sequence[int], degree: int) -> List[int]:
     return rem
 
 
-# --------------------------------------------------------------------------
-# Bit assembly.
-# --------------------------------------------------------------------------
-
 def min_version_for(payload_len: int, ecc: str = "M") -> int:
-    """Smallest supported version whose byte-mode capacity fits ``payload_len``."""
     for version in range(1, _MAX_VERSION + 1):
         ecc_per_block, data_blocks = _ECC_BLOCKS[ecc][version]
         data_bits = sum(data_blocks) * 8
@@ -153,12 +121,11 @@ def _data_codewords(payload: bytes, version: int, ecc: str) -> List[int]:
         for i in range(length - 1, -1, -1):
             bits.append((value >> i) & 1)
 
-    put(0b0100, 4)                      # byte mode
+    put(0b0100, 4)
     put(len(payload), count_bits)
     for byte in payload:
         put(byte, 8)
 
-    # Terminator (up to 4 zero bits), pad to byte boundary, then pad codewords.
     bits.extend([0] * min(4, capacity_bits - len(bits)))
     if len(bits) % 8:
         bits.extend([0] * (8 - len(bits) % 8))
@@ -194,12 +161,7 @@ def _interleave(codewords: List[int], version: int, ecc: str) -> List[int]:
     return out
 
 
-# --------------------------------------------------------------------------
-# Matrix construction.
-# --------------------------------------------------------------------------
-
 def _bch(value: int, poly: int, poly_bits: int) -> int:
-    """Append the (poly_bits-1)-bit BCH remainder of ``value`` to ``value``."""
     shift = poly_bits - 1
     rem = value << shift
     while rem.bit_length() >= poly_bits:
@@ -218,8 +180,8 @@ def _version_bits(version: int) -> int:
 
 def _make_matrix(version: int):
     size = 17 + 4 * version
-    matrix = [[0] * size for _ in range(size)]      # module values
-    reserved = [[False] * size for _ in range(size)]  # function-module map
+    matrix = [[0] * size for _ in range(size)]
+    reserved = [[False] * size for _ in range(size)]
 
     def set_module(r: int, c: int, val: int) -> None:
         matrix[r][c] = val
@@ -240,7 +202,6 @@ def _make_matrix(version: int):
     finder(0, size - 7)
     finder(size - 7, 0)
 
-    # Alignment patterns (skip any overlapping a finder).
     centers = _ALIGNMENT[version]
     for r in centers:
         for c in centers:
@@ -251,14 +212,12 @@ def _make_matrix(version: int):
                     dark = max(abs(dr), abs(dc)) != 1
                     set_module(r + dr, c + dc, 1 if dark else 0)
 
-    # Timing patterns.
     for i in range(8, size - 8):
         if not reserved[6][i]:
             set_module(6, i, 1 if i % 2 == 0 else 0)
         if not reserved[i][6]:
             set_module(i, 6, 1 if i % 2 == 0 else 0)
 
-    # Dark module + format-info reservations.
     set_module(size - 8, 8, 1)
     for i in range(9):
         if not reserved[8][i]:
@@ -271,7 +230,6 @@ def _make_matrix(version: int):
         if not reserved[size - 1 - i][8]:
             set_module(size - 1 - i, 8, 0)
 
-    # Version info (v7+): two 6x3 blocks.
     if version >= 7:
         vbits = _version_bits(version)
         for i in range(18):
@@ -288,7 +246,7 @@ def _place_data(matrix, reserved, bits: List[int]) -> None:
     col = size - 1
     upward = True
     while col > 0:
-        if col == 6:                    # skip the vertical timing column
+        if col == 6:
             col -= 1
         rows = range(size - 1, -1, -1) if upward else range(size)
         for r in rows:
@@ -327,12 +285,10 @@ def _draw_format(matrix, reserved, ecc: str, mask: int) -> None:
     size = len(matrix)
     fbits = _format_bits(ecc, mask)
     bit = [(fbits >> (14 - i)) & 1 for i in range(15)]
-    # Around the top-left finder.
     coords_a = [
         (8, 0), (8, 1), (8, 2), (8, 3), (8, 4), (8, 5), (8, 7), (8, 8),
         (7, 8), (5, 8), (4, 8), (3, 8), (2, 8), (1, 8), (0, 8),
     ]
-    # Split: below top-right finder + right of bottom-left finder.
     coords_b = [
         (size - 1, 8), (size - 2, 8), (size - 3, 8), (size - 4, 8),
         (size - 5, 8), (size - 6, 8), (size - 7, 8),
@@ -348,7 +304,6 @@ def _draw_format(matrix, reserved, ecc: str, mask: int) -> None:
 def _penalty(matrix) -> int:
     size = len(matrix)
     score = 0
-    # N1: runs of 5+ same-colored modules (rows and columns).
     for lines in (matrix, list(zip(*matrix))):
         for line in lines:
             run = 1
@@ -361,12 +316,10 @@ def _penalty(matrix) -> int:
                     run = 1
             if run >= 5:
                 score += 3 + run - 5
-    # N2: 2x2 blocks of same color.
     for r in range(size - 1):
         for c in range(size - 1):
             if matrix[r][c] == matrix[r][c + 1] == matrix[r + 1][c] == matrix[r + 1][c + 1]:
                 score += 3
-    # N3: finder-like pattern 1011101 with 4 light modules on either side.
     pat_a = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0]
     pat_b = pat_a[::-1]
     for lines in (matrix, list(zip(*matrix))):
@@ -376,19 +329,13 @@ def _penalty(matrix) -> int:
                 window = line[i:i + 11]
                 if window == pat_a or window == pat_b:
                     score += 40
-    # N4: dark-module proportion.
     dark = sum(sum(row) for row in matrix)
     percent = dark * 100 / (size * size)
     score += int(abs(percent - 50) // 5) * 10
     return score
 
 
-# --------------------------------------------------------------------------
-# Public API.
-# --------------------------------------------------------------------------
-
 def encode_matrix(data: Union[str, bytes], ecc: str = "M") -> List[List[int]]:
-    """Encode ``data`` as a QR module matrix (list of rows; 1=dark)."""
     if ecc not in _ECC_BLOCKS:
         raise QRError(f"unsupported ECC level {ecc!r}")
     payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
@@ -417,7 +364,6 @@ def encode_matrix(data: Union[str, bytes], ecc: str = "M") -> List[List[int]]:
 
 
 def qr_png(data: Union[str, bytes], *, scale: int = 8, border: int = 4, ecc: str = "M") -> bytes:
-    """Render ``data`` as a grayscale PNG (dark=0x00, light=0xFF) via stdlib zlib."""
     if scale < 1 or border < 0:
         raise QRError("scale must be >=1 and border >=0")
     matrix = encode_matrix(data, ecc=ecc)
@@ -425,11 +371,11 @@ def qr_png(data: Union[str, bytes], *, scale: int = 8, border: int = 4, ecc: str
     dim = (size + 2 * border) * scale
 
     rows = bytearray()
-    blank = bytes([0]) + bytes([255]) * dim          # filter byte + light row
+    blank = bytes([0]) + bytes([255]) * dim
     for _ in range(border * scale):
         rows += blank
     for row in matrix:
-        line = bytearray([0])                        # filter type 0
+        line = bytearray([0])
         line += bytes([255]) * (border * scale)
         for module in row:
             line += bytes([0 if module else 255]) * scale
@@ -445,7 +391,7 @@ def qr_png(data: Union[str, bytes], *, scale: int = 8, border: int = 4, ecc: str
             + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
         )
 
-    ihdr = struct.pack(">IIBBBBB", dim, dim, 8, 0, 0, 0, 0)  # 8-bit grayscale
+    ihdr = struct.pack(">IIBBBBB", dim, dim, 8, 0, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)

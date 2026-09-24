@@ -1,8 +1,8 @@
-"""Benchmark adapter registry (spec 047 US3).
-
-New benchmarks register here; the core (adjudicator, report, runner) never
-changes to add one.
+"""Benchmark adapter registry mapping a name to its BenchmarkAdapter (agentdojo, asb,
+chained, injecagent); runner.py resolves adapters via get_adapter() so adding a
+benchmark never touches the core.
 """
+
 from __future__ import annotations
 
 from typing import Dict, Type

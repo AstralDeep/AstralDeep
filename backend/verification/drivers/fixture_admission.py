@@ -1,8 +1,6 @@
-"""Real durable connection admission for explicitly registered verification turns.
-
-This helper supplies the same operation/fence handoff as socket ingress. It does
-not configure capacity, replace repositories, grant caller authority or bypass
-the ordinary chat dispatcher. The caller owns its captured human request.
+"""Durable connection admission for registered verification turns
+(backend/orchestrator/work_admission.py): supplies the same operation/fence handoff
+as socket ingress without granting caller authority or replacing repositories.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from orchestrator.work_admission import (
 
 
 class FixtureAdmissionError(RuntimeError):
-    """The verification turn could not retain ordinary durable admission."""
+    pass
 
 
 def _generation(value: object) -> UUID:
@@ -39,7 +37,6 @@ def _generation(value: object) -> UUID:
 
 
 async def _settle_call(callback: Any, *args: Any, **kwargs: Any) -> tuple[Any, asyncio.CancelledError | None]:
-    """Join blocking work and retain cancellation until its durable result is known."""
     task = asyncio.create_task(asyncio.to_thread(callback, *args, **kwargs))
     cancellation = None
     while not task.done():
@@ -88,12 +85,6 @@ async def admitted_registered_turn(
     frame: dict[str, Any],
     human_request: object,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Yield an exact CONNECTION operation context and settle it on every exit.
-
-    Blocking Plane work runs in joined worker threads. Cancellation is retained
-    until admission has a known durable result and exact-fence cleanup finishes.
-    Capacity refusal and queued work are never fake-admitted.
-    """
     coordinator = getattr(orch, "work_admission", None)
     if (type(coordinator) is not WorkAdmissionCoordinator
             or type(coordinator.repository) is not PlaneWorkAdmissionRepository):
@@ -170,8 +161,6 @@ async def admitted_registered_turn(
     finally:
         stopped.set()
         renewal.cancel()
-        # A retained renewal thread must finish before terminalization, including
-        # when the caller is cancelled again while cleanup is already in flight.
         renewal_join = asyncio.create_task(_join_renewal(renewal))
         cleanup_cancellation = None
         while not renewal_join.done():
@@ -191,8 +180,7 @@ async def admitted_registered_turn(
             if renewal_failure:
                 parent.uncancel()
         if renewal_failure:
-            # Convert only the cancellation this renewal task issued into its
-            # explicit admission failure; unrelated caller cancellations remain.
+            # Counts only this renewal's own cancellations, not the caller's.
             if parent.cancelling() > initial_cancellations:
                 raise asyncio.CancelledError() from renewal_failure[0]
             raise FixtureAdmissionError("registered turn execution lease was lost") from renewal_failure[0]

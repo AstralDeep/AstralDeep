@@ -1,4 +1,7 @@
-"""Host-test import shim for the worker-copied shared watch ticket contract."""
+"""Host-tree re-export of backend/shared/watch_ticket.py's ticket contract, imported by
+watch_bridge.py and its tests so both trees share one canonical ticket
+implementation.
+"""
 
 from shared.watch_ticket import (
     WatchTicketClaims,

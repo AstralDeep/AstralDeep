@@ -1,6 +1,8 @@
-"""Feature 026 — T018: the UI render protocol carries server-rendered `html`
-alongside the structured `components`, and round-trips over the wire.
+"""Tests for the UI render protocol (backend/shared/protocol.py, AstralPrimitives,
+AstralProjection webrender): server-rendered html carried alongside structured
+components, round-tripping over the wire.
 """
+
 import json
 
 import astralprims as ap
@@ -16,9 +18,8 @@ def test_uirender_carries_html_and_components():
     data = json.loads(wire)
     assert data["type"] == "ui_render"
     assert data["target"] == "canvas"
-    assert data["components"] == comps          # structured form preserved (FR-018)
+    assert data["components"] == comps
     assert data["html"].startswith("<div class=\"dynamic-renderer")
-    # round-trips back into a UIRender via the protocol parser
     parsed = Message.from_json(wire)
     assert isinstance(parsed, UIRender) and parsed.html == html
 
@@ -31,7 +32,6 @@ def test_uiupdate_carries_html():
 
 
 def test_stream_chunk_wire_shape():
-    # mirrors stream_manager._send_chunk_to_subscribers wire_msg
     comps = [ap.Text(content="chunk").to_dict()]
     wire = {
         "type": "ui_stream_data", "stream_id": "s1", "session_id": "c1", "seq": 3,
@@ -44,8 +44,7 @@ def test_stream_chunk_wire_shape():
 
 
 def test_html_absent_consumer_still_has_components():
-    # a programmatic/non-web consumer ignores html and reads components (FR-018)
     comps = [ap.Table(headers=["A"], rows=[["1"]]).to_dict()]
-    msg = UIRender(components=comps)  # no html
+    msg = UIRender(components=comps)
     data = json.loads(msg.to_json())
     assert data["html"] is None and data["components"] == comps

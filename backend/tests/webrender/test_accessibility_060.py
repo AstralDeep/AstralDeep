@@ -1,4 +1,7 @@
-"""Spec 060 browser role/name/state/focus contracts for changed controls."""
+"""Tests for role/name/state/focus contracts of changed browser controls
+(backend/orchestrator/projection_surfaces/agents.py, authoring.py, AstralProjection
+resources): live-region status, focus behavior, and stable naming.
+"""
 
 from __future__ import annotations
 

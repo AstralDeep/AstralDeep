@@ -1,12 +1,8 @@
-"""Feature 052 — the orchestrator's off-loop inner seams execute for real.
-
-Drives the ``get_history``/``load_chat`` WS actions, legacy canvas identity
-canonicalization, and the delegation scope-read through a live
-Orchestrator so the ``asyncio.to_thread`` inner functions introduced by the
-perf pass (``_hydrate_loaded_chat``, ``_stamp_and_snapshot``,
-``_scope_reads``) run end-to-end instead of being replicated in test code.
-Requires the docker-compose Postgres; skipped where unreachable.
+"""Tests driving backend/orchestrator/orchestrator.py's off-loop get_history/load_chat
+actions and delegation scope-read through a live Orchestrator over Postgres, so their
+asyncio.to_thread inner functions run end-to-end.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +30,6 @@ USER_ID = "test_user"
 
 
 def _fresh_socket():
-    """A VirtualWebSocket capturing every frame the handlers send."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
     return VirtualWebSocket(task)
@@ -42,13 +37,6 @@ def _fresh_socket():
 
 @pytest.fixture()
 async def orch():
-    """One real Orchestrator (mock auth) shared by the module's tests.
-
-    Mock auth must be forced under BOTH env names AFTER imports: the
-    ``shared`` package normalizes ``USE_MOCK_AUTH``/``USE_MOCK_AUTH``
-    at import time and a container-exported ``USE_MOCK_AUTH=false`` would
-    otherwise win over a module-level assignment.
-    """
     saved = {name: os.environ.get(name)
              for name in ("USE_MOCK_AUTH", "USE_MOCK_AUTH")}
     os.environ["USE_MOCK_AUTH"] = "true"
@@ -75,7 +63,6 @@ async def orch():
 
 @pytest.fixture()
 async def registered_ws(orch):
-    """A VirtualWebSocket that completed the register_ui handshake."""
     ws = _fresh_socket()
     orch._registered_events[id(ws)] = asyncio.Event()
     await orch.handle_ui_message(ws, json.dumps(
@@ -86,7 +73,6 @@ async def registered_ws(orch):
 
 @pytest.fixture()
 async def chat_env(orch):
-    """A real chat owned by the mock-auth user; deleted on teardown."""
     chat_id = await asyncio.to_thread(
         orch.history.create_chat,
         user_id=USER_ID,
@@ -115,18 +101,12 @@ async def test_get_history_pushes_skeleton_then_list(orch, registered_ws):
 
 
 async def test_ui_event_before_auth_is_dropped_silently(orch):
-    """A ui_event on an unauthenticated socket (register_ui not yet succeeded)
-    must NOT paint a dead-end 'Unauthorized' alert. On a cold boot register_ui
-    can transiently fail and send the recoverable auth_required frame; a
-    concurrently-gated get_history reaching this branch would otherwise render
-    a stale error the instant re-auth succeeds. It is dropped silently.
-    """
     ws = _fresh_socket()
     assert ws not in orch.ui_sessions
     await orch.handle_ui_message(ws, json.dumps(
         {"type": "ui_event", "action": "get_history", "payload": {}}))
     assert "Unauthorized" not in json.dumps(ws.task.outputs)
-    assert _frames(ws, "history_list") == []  # dropped, not processed
+    assert _frames(ws, "history_list") == []
 
 
 async def test_load_chat_hydrates_transcript_html_off_loop(
@@ -196,12 +176,6 @@ async def test_load_chat_rehydrates_attachment_chips(
 
 async def test_load_chat_rehydrates_attachment_chips_real_row(
         orch, registered_ws, chat_env):
-    """Regression for the int-vs-text message_id bug: a real
-    message_attachment row (written through the repo, keyed on the integer
-    messages.id) must re-hydrate on load_chat. A monkeypatched repo hides
-    this because the actual WHERE message_id = <int> never runs; here it does,
-    against real Postgres, so a `text = integer` mismatch would fail the test.
-    """
     from orchestrator.attachments.message_attachment_repo import (
         MessageAttachmentRepository,
     )

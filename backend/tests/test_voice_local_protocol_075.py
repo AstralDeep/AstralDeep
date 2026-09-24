@@ -1,4 +1,7 @@
-"""Strict schema-v2 client-local WebSocket parser tests."""
+"""Tests for shared/protocol.py's strict client-local WebSocket schema-v2 parser: exact
+runtime types per frame, rejection of unknown or missing keys, binding/locale/digest
+bounds, and the unchanged remote-v1 playout parser.
+"""
 
 from __future__ import annotations
 

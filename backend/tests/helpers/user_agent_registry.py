@@ -1,4 +1,6 @@
-"""In-memory Plane repository fixture for Deep user-agent policy tests."""
+"""In-memory AstralPlane agent-repository fixture backing orchestrator/user_agents.py's
+UserAgentRegistry, used by agent-authoring and BYO-agent policy tests.
+"""
 
 from __future__ import annotations
 
@@ -155,10 +157,7 @@ class InMemoryAgentRepository:
 class _Runtime:
     def __init__(self, repository: InMemoryAgentRepository) -> None:
         self.repositories = SimpleNamespace(agents=repository)
-        # Every test owner currently shares one transaction lock. This mirrors
-        # the production registry's owner lock: the read plus revision-CAS (or
-        # tombstone) is one serializable unit, while callers may still race to
-        # acquire it from separate threads.
+        # Serializes read+CAS here, matching prod's own owner lock
         self._transaction_lock = threading.RLock()
 
     @contextmanager

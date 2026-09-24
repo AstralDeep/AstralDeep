@@ -1,4 +1,8 @@
-"""Completion capacity remains metered and immutable across runner upgrades."""
+"""Tests for persistent_agents/runner.py's model dispatch: wider evidence reaches the
+real provider with full reservation, nested JSON-escape overflow falls back before
+dispatch, and receipt reuse preserves the original cap across runner upgrades.
+"""
+
 import asyncio
 import json
 from dataclasses import replace

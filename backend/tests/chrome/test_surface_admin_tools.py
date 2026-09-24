@@ -1,10 +1,8 @@
-"""Feature 027 — T028: Admin tools surface (structure + handler behavior).
-
-Runs without Postgres: a minimal fake orchestrator exposes only
-``feedback_repo`` / ``onboarding_repo`` duck-typed fakes built on the
-real DTO classes. Assertions are structural (markers, actions, escaping)
-in the style of ``test_topbar.py`` / ``test_render_golden.py``.
+"""Tests for orchestrator/projection_surfaces/admin_tools.py: admin-gated
+quality/tutorial/diagnostics tabs, proposal accept/reject handlers, and step
+save/archive/restore, using fake feedback/onboarding/observability repos.
 """
+
 import asyncio
 from datetime import datetime, timezone
 
@@ -20,10 +18,6 @@ T1 = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
 def run(coro):
     return asyncio.run(coro)
 
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 def make_signal(tool_name="search_tool", agent_id="grants"):
     return ToolQualitySignalDTO(
@@ -161,8 +155,6 @@ class FakeOnboardingRepo:
 
 
 class FakeObservability:
-    """Stands in for ``RuntimeObservability``; ``fail`` raises on snapshot."""
-
     def __init__(self, samples=(), fail=False):
         self.samples = tuple(samples)
         self.fail = fail
@@ -193,10 +185,6 @@ def admin_orch(**kw):
     return FakeOrch(**kw)
 
 
-# ---------------------------------------------------------------------------
-# Module contract
-# ---------------------------------------------------------------------------
-
 def test_module_contract():
     assert admin_tools.TITLE == "Admin tools"
     assert admin_tools.ADMIN_ONLY is True
@@ -210,14 +198,6 @@ def test_registered_in_surface_registry():
     assert SURFACE_MODULES["admin_tools"] == "orchestrator.projection_surfaces.admin_tools"
     assert get_surface("admin_tools") is admin_tools
 
-
-# ---------------------------------------------------------------------------
-# Render — admin gate
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Render — runtime diagnostics tab (T052)
-# ---------------------------------------------------------------------------
 
 def _samples():
     from orchestrator.runtime_observability import RuntimeMetricSample
@@ -238,7 +218,6 @@ def test_diagnostics_tab_renders_the_runtime_snapshot_read_only():
     assert "Runtime diagnostics" in html
     assert "astral_admission_active" in html and "admission_class=background" in html
     assert collector.calls == 1
-    # Observation only: the view offers no action of any kind.
     assert "data-ui-action" not in html.split('data-admin-tab="diagnostics"', 1)[1]
 
 
@@ -258,7 +237,6 @@ def test_diagnostics_tab_denies_non_admin_and_reads_no_sample():
 
 
 def test_diagnostics_builder_refuses_a_non_admin_caller_directly():
-    """Defense in depth: the builder is unreachable with an unauthorized snapshot."""
     collector = FakeObservability(_samples())
     html = admin_tools._render_diagnostics(diagnostics_orch(
         runtime_observability=collector), ["user"])
@@ -272,7 +250,6 @@ def test_diagnostics_tab_reports_an_unwired_or_failing_collector_honestly():
     failing = diagnostics_orch(runtime_observability=FakeObservability(fail=True))
     broken = run(admin_tools.render(failing, "admin1", ["admin"], {"tab": "diagnostics"}))
     assert "Runtime diagnostics are unavailable" in broken
-    # An unavailable collector is never rendered as an idle deployment.
     assert "No runtime samples" not in absent and "No runtime samples" not in broken
 
 
@@ -286,7 +263,6 @@ def test_render_denies_non_admin():
     html = run(admin_tools.render(admin_orch(), "u1", ["user"], {}))
     assert "astral-chrome-error" in html
     assert "Admin role required" in html
-    # No admin data leaks past the gate.
     assert "search_tool" not in html and "Tutorial steps" not in html
 
 
@@ -295,30 +271,21 @@ def test_render_denies_empty_roles():
     assert "astral-chrome-error" in html
 
 
-# ---------------------------------------------------------------------------
-# Render — quality tab (default)
-# ---------------------------------------------------------------------------
-
 def test_quality_tab_is_default_and_lists_signals_and_proposals():
     html = run(admin_tools.render(admin_orch(), "admin1", ["admin"], {}))
     assert 'data-admin-tab="quality"' in html
-    # Flagged tool card with stats + category breakdown + pending badge.
     assert "Underperforming tools" in html
     assert "search_tool" in html and "grants" in html
     assert "25.0%" in html and "12.5%" in html
     assert "wrong-data" in html and "too-slow" in html
     assert "proposal pending" in html
-    # Pending proposals with decide actions (router exposes accept/reject).
     assert "Pending knowledge-update proposals" in html
     assert 'data-ui-action="chrome_admin_proposal_decide"' in html
     assert "&quot;decision&quot;: &quot;accept&quot;" in html
     assert "&quot;decision&quot;: &quot;reject&quot;" in html
-    # Reject collects the rationale field from its data-ui-form container.
     assert "data-ui-form" in html and 'data-ui-collect="true"' in html
     assert 'name="rationale"' in html
-    # Diff payload is escaped, never raw.
     assert "<script>" not in html and "&lt;script&gt;" in html
-    # Tab bar present.
     assert "Tool quality" in html and "Tutorial admin" in html
 
 
@@ -335,19 +302,13 @@ def test_quality_tab_missing_subsystem():
     assert "Feedback subsystem not initialized" in html
 
 
-# ---------------------------------------------------------------------------
-# Render — tutorial tab
-# ---------------------------------------------------------------------------
-
 def test_tutorial_tab_lists_steps_including_archived():
     orch = admin_orch()
     html = run(admin_tools.render(orch, "admin1", ["admin"], {"tab": "tutorial"}))
     assert 'data-admin-tab="tutorial"' in html
-    # include_archived=True — the GET /api/admin/tutorial/steps internals.
     assert orch.onboarding_repo.list_calls == [True]
     assert "welcome" in html and "archived-step" in html
     assert "Archived" in html
-    # Active step gets Archive, archived step gets Restore.
     assert 'data-ui-action="chrome_admin_step_archive"' in html
     assert 'data-ui-action="chrome_admin_step_restore"' in html
     assert "New step" in html
@@ -361,7 +322,6 @@ def test_tutorial_edit_form_prefills_step_values():
     assert 'data-ui-collect="true"' in html
     assert "&quot;step_id&quot;: 1" in html
     assert 'value="Title 1"' in html and "Body 1" in html
-    # Slug is stable on edit: shown but not collectable.
     assert 'name="slug"' not in html
 
 
@@ -372,13 +332,8 @@ def test_tutorial_new_form_has_slug_field_and_draft_prefill():
         {"tab": "tutorial", "step_id": "new", "draft": draft}))
     assert 'data-step-form="new"' in html
     assert 'name="slug"' in html and 'value="draft-slug"' in html
-    # Draft values are escaped on re-render.
     assert "<b>Draft</b>" not in html and "&lt;b&gt;Draft&lt;/b&gt;" in html
 
-
-# ---------------------------------------------------------------------------
-# Handlers — admin gate (defense in depth; required by T028)
-# ---------------------------------------------------------------------------
 
 def test_every_handler_rejects_non_admin():
     orch = admin_orch()
@@ -388,16 +343,11 @@ def test_every_handler_rejects_non_admin():
         surface, params, notice = result
         assert surface == "admin_tools"
         assert "Admin role required" in notice
-        assert "text-red-400" in notice  # error-styled notice block
-    # Nothing mutated.
+        assert "text-red-400" in notice
     assert orch.feedback_repo.transitions == []
     assert orch.onboarding_repo.created == []
     assert orch.onboarding_repo.archived == []
 
-
-# ---------------------------------------------------------------------------
-# Handlers — proposal decide
-# ---------------------------------------------------------------------------
 
 def test_proposal_reject_uses_router_internals():
     orch = admin_orch()
@@ -441,10 +391,6 @@ def test_proposal_reject_non_pending_is_error_not_exception():
     assert "Invalid input" in result[2]
 
 
-# ---------------------------------------------------------------------------
-# Handlers — step save / archive / restore
-# ---------------------------------------------------------------------------
-
 def _create_fields(**over):
     fields = {
         "slug": "new-step", "audience": "user", "display_order": 3,
@@ -478,13 +424,11 @@ def test_step_save_create_validation_error_preserves_draft():
 
 def test_step_save_create_target_consistency_enforced():
     orch = admin_orch()
-    # target_kind none + non-empty key → same rejection the POST body gives.
     result = run(admin_tools.HANDLERS["chrome_admin_step_save"](
         orch, None, "admin1", ["admin"],
         {"fields": _create_fields(target_kind="none", target_key="x")}))
     assert "target" in result[2].lower()
     assert orch.onboarding_repo.created == []
-    # target_kind none + empty key normalizes to NULL and succeeds.
     ok = run(admin_tools.HANDLERS["chrome_admin_step_save"](
         orch, None, "admin1", ["admin"],
         {"fields": _create_fields(target_kind="none", target_key="")}))
@@ -506,7 +450,7 @@ def test_step_save_updates_with_step_id_and_excludes_slug():
     assert "saved" in result[2]
     (step_id, editor, patch), = orch.onboarding_repo.updated
     assert step_id == 1 and editor == "admin1"
-    assert "slug" not in patch  # slugs are stable (PUT contract)
+    assert "slug" not in patch
     assert patch["title"] == "Renamed"
 
 

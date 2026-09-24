@@ -1,13 +1,6 @@
-"""Feature 089 (T045): bundled agents use the new types where their data fits.
-
-The rule for adoption is narrow on purpose: a new type is used only where the
-agent already had the data for it. The weather agent's current conditions are a
-set of readings (a stat group) and humidity is a bounded percentage (a gauge).
-Nothing was invented to justify a component.
-
-What these tests protect is the promise that adoption is safe: the payload is
-unchanged for the reader, and non-web clients see exactly the shape they saw
-before.
+"""Tests for the weather agent's adoption of astralprims stat-group and gauge components
+(mcp_tools.py, rote/adapter.py): payload preservation and the non-web degrade path
+through rote/capabilities.py.
 """
 
 from __future__ import annotations
@@ -22,16 +15,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from agents.weather.mcp_tools import _fraction  # noqa: E402
 
 
-# -- the bounded-fraction helper -----------------------------------------
-
-
 @pytest.mark.parametrize(
     "reading,expected",
     [
         (0, 0.0), (62, 0.62), (100, 1.0),
         ("62", 0.62), (62.5, 0.625),
-        (150, 1.0), (-5, 0.0),          # clamped, not rejected
-        (None, 0.0), ("N/A", 0.0), ("", 0.0),   # absent reading
+        (150, 1.0), (-5, 0.0),
+        (None, 0.0), ("N/A", 0.0), ("", 0.0),
         (float("nan"), 0.0),
     ],
 )
@@ -40,21 +30,11 @@ def test_a_percentage_becomes_a_bounded_fraction(reading, expected) -> None:
 
 
 def test_a_missing_reading_never_raises() -> None:
-    """A weather panel that fails because one field was absent is worse than a
-    gauge reading zero beside the number that says otherwise."""
     for reading in (None, "N/A", object(), [], {}):
         assert _fraction(reading) == 0.0
 
 
-# -- the adopted components ----------------------------------------------
-
-
 def _current_conditions_components():
-    """Build the components the weather agent emits for current conditions.
-
-    The tool itself makes a network call, so this exercises the component
-    construction directly with the same field names the tool uses.
-    """
     from astralprims import Gauge, StatGroup
 
     current = {
@@ -93,7 +73,6 @@ def _current_conditions_components():
 
 
 def test_the_readings_are_preserved_in_the_new_shape() -> None:
-    """Nothing a reader could see before is missing now."""
     stats, gauge = _current_conditions_components()
     rendered = str(stats) + str(gauge)
     for reading in ("68°F", "66°F", "8 mph", "210°", "1014 hPa", "62%"):
@@ -101,15 +80,12 @@ def test_the_readings_are_preserved_in_the_new_shape() -> None:
 
 
 def test_the_gauge_value_matches_its_display_value() -> None:
-    """A dial that disagrees with the number beside it is worse than no dial."""
     _stats, gauge = _current_conditions_components()
     assert gauge["value"] == pytest.approx(0.62)
     assert gauge["display_value"] == "62%"
 
 
 def test_the_gauge_thresholds_ascend() -> None:
-    """The renderer takes the highest threshold at or below the value, so an
-    out-of-order list would silently pick the wrong role."""
     _stats, gauge = _current_conditions_components()
     ats = [t["at"] for t in gauge["thresholds"]]
     assert ats == sorted(ats)
@@ -122,12 +98,7 @@ def test_neither_component_carries_a_color() -> None:
     assert "rgb" not in rendered
 
 
-# -- non-web clients see the shape they saw before ------------------------
-
-
 def test_the_stat_group_degrades_to_the_grid_of_metrics_it_replaced() -> None:
-    """The pre-089 rendering was a grid of metric tiles. That is exactly the
-    fallback, so a native client's output is unchanged."""
     pytest.importorskip("rote.adapter")
     from rote.adapter import ComponentAdapter
     from rote.capabilities import DeviceProfile

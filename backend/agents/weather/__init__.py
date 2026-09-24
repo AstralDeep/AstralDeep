@@ -1,7 +1,6 @@
-"""
-Weather Agent package for AstralDeep system.
-
-Provides weather data and forecast tools using Open-Meteo API.
+"""Weather agent package: exposes WeatherAgent (weather_agent.py) and its MCP dispatch
+server/tools (mcp_server.py, mcp_tools.py) for Open-Meteo current/historical/forecast
+data.
 """
 
 from agents.weather.weather_agent import WeatherAgent

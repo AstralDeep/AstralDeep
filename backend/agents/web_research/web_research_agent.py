@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-"""
-Web Research Agent — A2A-compliant specialist for searching the web, fetching
-pages, and synthesizing cited research briefs.
-
-Provides tools for:
-- Web search (keyless DuckDuckGo HTML path, or an optional operator/user
-  configured Tavily-compatible search provider)
-- Egress-gated page fetching with readable-text extraction
-- Research briefs that cite only the sources actually fetched
+"""A2A specialist agent for web research: wraps mcp_server.MCPServer to serve
+web_search, fetch_page, and research_brief tools.
 """
 import asyncio
 import logging
@@ -26,8 +19,6 @@ PORT_ENV_VAR = "WEB_RESEARCH_AGENT_PORT"
 
 
 class WebResearchAgent(BaseA2AAgent):
-    """Specialist agent for web search, page fetching, and research briefs."""
-
     agent_id = "web-research-1"
     service_name = "Web Research"
     description = (

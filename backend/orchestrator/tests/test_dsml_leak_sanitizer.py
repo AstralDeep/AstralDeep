@@ -1,10 +1,8 @@
-"""End-to-end tests for the leak-detection + alert-injection pipeline.
-
-Exercises the same chain the chat-message handler uses:
-    raw_content
-        → orch._diagnose_leaked_tool_calls(...) → list of Alert dicts
-        → _sanitize_text_response(raw_content) → cleaned text
+"""Tests for orchestrator/orchestrator.py's leak-detection and alert pipeline:
+_diagnose_leaked_tool_calls producing Alert dicts and _sanitize_text_response
+stripping DSML markup from assistant text.
 """
+
 from unittest.mock import MagicMock
 
 
@@ -59,7 +57,6 @@ DSML_BLOB = (
 
 
 def test_dsml_pattern_matches() -> None:
-    """Regex regression — the new DSML pattern must fire on real markup."""
     matched = any(p.search(DSML_BLOB) for p in _LEAKED_TOOL_CALL_PATTERNS)
     assert matched, "DSML markup must be matched by at least one leak pattern"
 
@@ -72,11 +69,10 @@ def test_dsml_stripped_from_assistant_text() -> None:
 
 
 def test_diagnose_returns_alert_for_disabled_picker() -> None:
-    """The user has disabled `read_spreadsheet` in the picker → warning alert."""
     orch = _orch_with(
         tool_to_agent={"read_spreadsheet": "general-1", "ocr": "general-1"},
         chat_to_agent={"chat-1": "general-1"},
-        saved_selection={("alice", "general-1"): ["ocr"]},  # read_spreadsheet excluded
+        saved_selection={("alice", "general-1"): ["ocr"]},
     )
     alerts = orch._diagnose_leaked_tool_calls(DSML_BLOB, "alice", "chat-1")
     assert len(alerts) == 1
@@ -88,7 +84,6 @@ def test_diagnose_returns_alert_for_disabled_picker() -> None:
 
 
 def test_diagnose_returns_alert_for_unknown_tool() -> None:
-    """Tool name extracted but no agent owns it → error alert (unknown tool)."""
     orch = _orch_with(tool_to_agent={"ocr": "general-1"})
     alerts = orch._diagnose_leaked_tool_calls(DSML_BLOB, "alice", "chat-1")
     assert len(alerts) == 1
@@ -97,7 +92,6 @@ def test_diagnose_returns_alert_for_unknown_tool() -> None:
 
 
 def test_diagnose_info_alert_when_tool_is_actually_enabled() -> None:
-    """If the tool exists and is enabled, the user is told their model emitted bad markup."""
     orch = _orch_with(
         tool_to_agent={"read_spreadsheet": "general-1"},
     )
@@ -114,12 +108,9 @@ def test_diagnose_returns_empty_when_no_leak() -> None:
 
 
 def test_diagnose_returns_empty_when_leak_but_no_extractable_name() -> None:
-    """A bare leak token with no name → no alert (silent strip preserved)."""
     orch = _orch_with(tool_to_agent={"foo": "general-1"})
-    blob = "<|tool_call|>"  # dangling open tag, no JSON, no name
-    # Sanitizer still strips it.
+    blob = "<|tool_call|>"
     assert "tool_call" not in _sanitize_text_response(blob)
-    # Diagnostic returns no alerts since no name was extractable.
     assert orch._diagnose_leaked_tool_calls(blob, "alice", "chat-1") == []
 
 
@@ -131,11 +122,9 @@ def test_diagnose_dedupes_multiple_invokes_of_same_tool() -> None:
     orch = _orch_with(
         tool_to_agent={"read_spreadsheet": "general-1"},
         chat_to_agent={"chat-1": "general-1"},
-        saved_selection={("alice", "general-1"): []},  # empty selection — does NOT filter
+        saved_selection={("alice", "general-1"): []},
     )
     alerts = orch._diagnose_leaked_tool_calls(blob, "alice", "chat-1")
-    # An empty saved selection means "default", not "filter to nothing" — so the
-    # tool is enabled; we expect ONE info alert (deduped from two invokes).
     assert len(alerts) == 1
 
 
@@ -147,7 +136,6 @@ def test_diagnose_emits_distinct_alerts_for_distinct_tools() -> None:
     orch = _orch_with(
         tool_to_agent={"read_spreadsheet": "general-1", "ocr": "general-1"},
         chat_to_agent={"chat-1": "general-1"},
-        # User disabled both tools in their picker.
         saved_selection={("alice", "general-1"): ["something_else"]},
     )
     alerts = orch._diagnose_leaked_tool_calls(blob, "alice", "chat-1")

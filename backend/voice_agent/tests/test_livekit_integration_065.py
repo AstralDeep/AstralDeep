@@ -1,9 +1,6 @@
-"""Locked-image, real-LiveKit integration proof for Feature 065.
-
-This test is intentionally dormant in the default networkless worker suite.
-The dedicated runner supplies an isolated Docker network and ephemeral test
-credentials. Audio and transcript bytes remain in memory and are cleared on
-every exit path.
+"""Dormant real-LiveKit integration test for voice_agent/session.py, run only by a
+dedicated isolated-network runner outside the default suite; uses
+fake_speech_service.py.
 """
 
 from __future__ import annotations
@@ -60,8 +57,6 @@ def _uuid(value: int) -> str:
 
 
 def _grant_claims(token: str) -> dict[str, Any]:
-    """Decode only for claim assertions; the real server verifies the HMAC."""
-
     parts = token.split(".")
     assert len(parts) == 3
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
@@ -71,8 +66,6 @@ def _grant_claims(token: str) -> dict[str, Any]:
 
 
 class _DeterministicVad:
-    """Exercise session endpointing deterministically after real RTC decoding."""
-
     def __init__(self) -> None:
         self._probabilities = deque([0.9] * 4 + [0.0] * 64)
         self.frames = 0

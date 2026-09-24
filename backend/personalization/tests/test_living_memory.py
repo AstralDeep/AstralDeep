@@ -1,4 +1,8 @@
-"""Feature 033 (C-M6/M7/M8/M9) — living memory deterministic cores."""
+"""Tests for personalization/living_memory.py: temporal validity,
+contradiction/abstention, Ebbinghaus retention and reinforcement, keep-best persona
+evolution, feedback, and provenance/unlearn classification.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -15,8 +19,6 @@ from personalization import living_memory as lm  # noqa: E402
 DAY = 24 * 3600 * 1000
 
 
-# ───────────────────────── flags ─────────────────────────────────────────────
-
 @pytest.mark.parametrize("fn,env", [
     (lm.temporal_enabled, "FF_MEMORY_TEMPORAL"),
     (lm.forgetting_enabled, "FF_MEMORY_FORGETTING"),
@@ -29,18 +31,16 @@ def test_flags_default_off(monkeypatch, fn, env):
     assert fn() is True
 
 
-# ───────────────────────── C-M6 temporal ─────────────────────────────────────
-
 def test_is_valid_at_bounds():
     m = {"valid_from": 100, "valid_to": 200}
     assert lm.is_valid_at(m, 150) is True
-    assert lm.is_valid_at(m, 200) is False  # half-open
+    assert lm.is_valid_at(m, 200) is False
     assert lm.is_valid_at(m, 50) is False
 
 
 def test_open_bounds_and_no_columns_always_valid():
     assert lm.is_valid_at({"valid_from": None, "valid_to": None}, 999) is True
-    assert lm.is_valid_at({}, 12345) is True  # legacy row → always valid
+    assert lm.is_valid_at({}, 12345) is True
 
 
 def test_as_of_filters():
@@ -68,8 +68,6 @@ def test_should_abstain_on_conflict_or_low_salience():
     assert lm.should_abstain([]) is False
 
 
-# ───────────────────────── C-M7 forgetting ───────────────────────────────────
-
 def test_retention_decays_with_age():
     fresh = {"created_at": 0, "recall_count": 0}
     assert lm.retention_strength(fresh, 0) == pytest.approx(1.0)
@@ -92,7 +90,6 @@ def test_reinforce_deltas():
 def test_should_forget_floor_and_exemptions():
     decayed = {"created_at": 0, "recall_count": 0, "source": "promoted"}
     assert lm.should_forget(decayed, 365 * DAY) is True
-    # explicit + pinned memories never auto-forget
     assert lm.should_forget({**decayed, "source": "explicit"}, 365 * DAY) is False
     assert lm.should_forget({**decayed, "pinned": True}, 365 * DAY) is False
 
@@ -107,8 +104,6 @@ def test_safety_forget_fails_closed():
     assert lm.safety_forget({"value": "x"}, phi_check=boom) is True
 
 
-# ───────────────────────── C-M8 persona ──────────────────────────────────────
-
 def test_persona_score_rewards_coverage_penalizes_length():
     assert lm.persona_score("likes dark mode and short replies",
                             ["dark mode", "short replies"]) == pytest.approx(1.0, abs=0.05)
@@ -118,9 +113,8 @@ def test_persona_score_rewards_coverage_penalizes_length():
 def test_evolve_persona_never_regresses():
     cur = "likes dark mode"
     out = lm.evolve_persona(cur, ["dark mode", "terse"])
-    assert "terse" in out.text.lower()           # uncovered signal appended
+    assert "terse" in out.text.lower()
     assert out.score >= lm.persona_score(cur, ["dark mode", "terse"])
-    # a worse proposal is rejected (keep-best)
     keep = lm.evolve_persona("likes dark mode and terse", ["dark mode", "terse"],
                              proposal="")
     assert keep.text == "likes dark mode and terse"
@@ -131,13 +125,11 @@ def test_apply_feedback():
     assert "Avoid: charts." in lm.apply_feedback("", "charts", "down")
 
 
-# ───────────────────────── C-M9 provenance / unlearn ─────────────────────────
-
 def test_provenance_of():
     p = lm.provenance_of({"source": "promoted", "category": "goal",
                           "created_at": 5, "signature": "abc"})
     assert p["source"] == "promoted" and p["signed"] is True
-    assert p["ingested_at"] == 5  # falls back to created_at
+    assert p["ingested_at"] == 5
 
 
 @pytest.mark.parametrize("req,kind", [

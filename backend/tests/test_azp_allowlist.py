@@ -1,6 +1,8 @@
-"""azp allow-list (shared/auth_clients) — the desktop client's tokens carry
-azp=astral-desktop, which the orchestrator accepts only when listed in
-KEYCLOAK_ALLOWED_AZP. Empty list ⇒ web client only (backwards compatible)."""
+"""Tests for shared/auth_clients.py: the desktop client's azp claim is accepted only
+when listed in KEYCLOAK_ALLOWED_AZP, while tokens omitting azp entirely are still
+tolerated.
+"""
+
 from __future__ import annotations
 
 from shared import auth_clients
@@ -16,7 +18,6 @@ def test_only_primary_when_no_allowlist(monkeypatch):
 
 
 def test_missing_azp_is_tolerated(monkeypatch):
-    # Some token flows omit azp; the historical check allowed that.
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
     assert auth_clients.is_azp_allowed("")

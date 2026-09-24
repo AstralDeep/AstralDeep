@@ -1,4 +1,7 @@
-"""Exact v3 personal-agent executor-authority contract tests."""
+"""Tests for byo_authority.py's v3 personal-agent executor authority: exact cross-client
+audience vectors, binding projection, admission caching, degraded-shadow handling,
+and fenced renewal/retirement.
+"""
 
 from __future__ import annotations
 

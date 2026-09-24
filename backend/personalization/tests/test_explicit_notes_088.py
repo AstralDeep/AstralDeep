@@ -1,4 +1,8 @@
-"""Pure encrypted-current-note tests; no storage or automatic-memory substitute."""
+"""Tests for personalization/explicit_notes.py: encrypted current-note roundtrips,
+authenticated metadata, value limits, revision/expiry handling, tamper and wrong-key
+refusal, and minimal tombstone shape.
+"""
+
 from dataclasses import asdict, replace
 import json
 import uuid

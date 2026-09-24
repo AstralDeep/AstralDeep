@@ -1,8 +1,6 @@
-"""Canonical, content-free evidence for LETS-protected tool effects.
-
-Raw post-rewrite arguments remain local. They are guarded by a per-context keyed
-mutation snapshot, while LETS-bound evidence is derived only from a reviewed,
-content-free authorization projection.
+"""Builds content-free LETS evidence for protected tool effects: a per-context HMAC
+snapshot detects local mutation, while only reviewed non-content fields are
+canonicalized into the digest consumed by lets_gateway.py and governed_dispatch.py.
 """
 
 from __future__ import annotations
@@ -76,8 +74,7 @@ _AUTHORIZED_CLASSIFICATIONS: Final = MappingProxyType(
 _AUTHORIZED_BOOLEANS: Final = frozenset(
     {"writes_state", "network_effect", "external_actuator"}
 )
-# These digests bind reviewed, non-content identities. Callers must never hash
-# prompts, PHI, credential values, or arbitrary user input into these fields.
+# Digests only: never hash prompts, PHI, or credentials here
 _AUTHORIZED_BINDING_DIGESTS: Final = frozenset(
     {"target_binding_sha256", "executor_binding_sha256"}
 )
@@ -90,7 +87,7 @@ AUTHORIZED_EFFECT_FIELDS: Final = frozenset(
 
 
 class ProtectedDispatchError(ValueError):
-    """A protected effect cannot be represented without ambiguity or disclosure."""
+    pass
 
 
 def _canonical_string(
@@ -270,7 +267,7 @@ def _authorized_effect_digest(value: object, *, expected_effect_class: str) -> s
                     f"authorized effect {key} must be one lowercase non-content SHA-256"
                 )
             checked[key] = item
-        else:  # Defensive if the reviewed field sets ever drift apart.
+        else:
             raise ProtectedDispatchError(
                 "authorized effect field has no reviewed validator"
             )
@@ -282,8 +279,6 @@ def _effect_digest(document: Mapping[str, object]) -> str:
 
 
 class _LocalArgumentSnapshot:
-    """Non-exportable, per-context HMAC for local mutation detection only."""
-
     __slots__ = ("__key", "__mac")
 
     def __init__(self, key: bytes, canonical_arguments: bytes) -> None:
@@ -311,8 +306,6 @@ class _LocalArgumentSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ProtectedDispatchContext:
-    """Immutable host binding and content-free LETS evidence for one effect attempt."""
-
     operation_id: str
     agent_id: str
     runtime_id: str
@@ -328,16 +321,10 @@ class ProtectedDispatchContext:
     nonce: str
     authorized_effect_sha256: str
     effect_sha256: str
-    # Executor-only mutation fence.  This value is transported only alongside
-    # the arguments to the actuator; it is deliberately excluded from
-    # ``lets_evidence`` so user content, PHI, and credential-derived bytes are
-    # never disclosed to the warden.
     wire_arguments_sha256: str
     _local_arguments: _LocalArgumentSnapshot = field(repr=False, compare=False)
 
     def lets_evidence(self) -> Mapping[str, str | int]:
-        """Return immutable LETS evidence containing no arguments or raw descriptors."""
-
         return MappingProxyType(
             {
                 "type": EVIDENCE_TYPE,
@@ -364,8 +351,6 @@ class ProtectedDispatchContext:
         final_arguments: Mapping[str, object],
         authorized_effect: Mapping[str, object],
     ) -> None:
-        """Fail closed if mutable arguments or the safe projection changed after snapshot."""
-
         if type(final_arguments) is not dict:
             raise ProtectedDispatchError(
                 "final arguments must be one canonical mapping snapshot"
@@ -399,8 +384,6 @@ def build_protected_dispatch_context(
     authorized_effect: Mapping[str, object],
     nonce: str | None = None,
 ) -> ProtectedDispatchContext:
-    """Snapshot one rewritten effect and return strictly content-free LETS evidence."""
-
     operation = _identifier(operation_id, "operation ID")
     agent = _identifier(agent_id, "agent ID")
     runtime = _identifier(runtime_id, "runtime ID")
@@ -483,13 +466,6 @@ def build_protected_dispatch_context(
 
 
 def canonical_wire_arguments_sha256(final_arguments: Mapping[str, object]) -> str:
-    """Return the executor-local digest for the exact transported arguments.
-
-    The digest is not LETS evidence and must not be logged or sent to the
-    warden.  It exists so a remote protected executor can recompute the same
-    mutation fence immediately before invoking its actuator.
-    """
-
     if type(final_arguments) is not dict:
         raise ProtectedDispatchError(
             "final arguments must be one canonical mapping snapshot"
@@ -503,14 +479,6 @@ def recompute_effect_sha256_from_evidence(
     expected_sequence: int,
     nonce: str,
 ) -> str:
-    """Recompute the protected-context digest at a remote executor.
-
-    ``lets_evidence`` intentionally omits the receipt nonce and expected
-    sequence because LETS receives those as first-class authorization fields.
-    The permit transport supplies them separately so the executor can bind the
-    signed receipt back to the exact canonical context.
-    """
-
     if not isinstance(evidence, Mapping):
         raise ProtectedDispatchError("protected evidence must be a mapping")
     dimension = evidence.get("resource_dimension")

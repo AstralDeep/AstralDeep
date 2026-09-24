@@ -1,15 +1,8 @@
-"""User-agent registry accessors (feature 057).
-
-The durable ``user_agent`` table — one row per user-authored, client-hosted
-agent. Canonical owner key is ``owner_user_id`` (the OIDC ``sub``); the boundary
-binds to it and never to a card field or email. ``status`` is the durable
-lifecycle (authoring|validated|live|disabled); running/offline is DERIVED from
-socket presence and is never stored here.
-
-Also home to ``can_user_use_agent`` — the owner-isolation predicate the boundary
-enforces in three places (grant endpoint, dispatch gate, tool-list build) so a
-private user agent is invisible/unusable to non-owners (FR-016/019).
+"""Durable registry and BYO runtime lifecycle for user-authored agents, keyed by
+owner_user_id. can_user_use_agent enforces owner isolation at the grant endpoint,
+dispatch gate, and tool-list build.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -73,12 +66,10 @@ _MAX_GENERATION = (1 << 63) - 1
 
 
 class PersonalAgentRuntimeError(RuntimeError):
-    """Base class for safe personal-agent runtime repository failures."""
+    pass
 
 
 class HostRegistrationRefused(PersonalAgentRuntimeError):
-    """Structured, non-sensitive host-registration refusal."""
-
     def __init__(self, code: str, details: Mapping[str, Any]) -> None:
         self.code = code
         self.details = MappingProxyType(dict(details))
@@ -86,31 +77,27 @@ class HostRegistrationRefused(PersonalAgentRuntimeError):
 
 
 class PersonalAgentNotFoundError(PersonalAgentRuntimeError):
-    """The owner-scoped personal agent or runtime identity does not exist."""
+    pass
 
 
 class UserAgentOwnershipConflict(PersonalAgentRuntimeError):
-    """An immutable agent ID is already bound to a different owner."""
+    pass
 
 
 class AgentDeletedError(PersonalAgentRuntimeError):
-    """The durable agent tombstone prevents the requested mutation."""
+    pass
 
 
 class AgentOfflineError(PersonalAgentRuntimeError):
-    """No exact current online authoritative runtime can accept the request."""
+    pass
 
 
 class StaleRuntimeGenerationError(PersonalAgentRuntimeError):
-    """One or more immutable runtime/request fence fields are stale."""
-
     code = "stale_runtime_generation"
 
 
 @dataclass(frozen=True)
 class RuntimeCompatibilityPolicy:
-    """Injected candidate-owned BYO runtime compatibility policy."""
-
     runtime_contract_version: int
     runtime_lock_sha256: str
 
@@ -201,10 +188,6 @@ class RuntimeInstanceRecord:
     last_liveness_at: Any
     terminal_at: Any
     failure_code: Optional[str]
-    # Reconnect/client lifecycle projection context.  Ordinary transition
-    # methods may return a row without these joined user-agent pointers; the
-    # latest-runtime hydration query includes them so host-facing ``ready`` can
-    # never be mistaken for invocable public ``online``.
     active_revision_id: Optional[str] = field(default=None, compare=False)
     authoritative_instance_id: Optional[str] = field(default=None, compare=False)
 
@@ -240,8 +223,6 @@ class HostSelection:
 
 @dataclass(frozen=True)
 class SelectedSessionRevision:
-    """The exact selected host and active immutable revision for one agent."""
-
     host: HostSessionRecord
     revision: AgentRevisionRecord
     lifecycle_generation: int
@@ -322,15 +303,6 @@ class AgentTombstoneCleanup:
 
 @dataclass(frozen=True)
 class GovernedByoAgentLifecycle:
-    """Owner-scoped LETS event adapter for durable BYO runtime fences.
-
-    ``PersonalAgentRuntimeRepository`` remains a synchronous neutral data-plane
-    repository. The asynchronous host boundary invokes this adapter only after
-    its Astral transaction commits and before it publishes routing authority.
-    This keeps network lifecycle convergence out of Plane transactions while
-    still ensuring that a runtime is never advertised online first.
-    """
-
     coordinator: GovernedLifecycleCoordinator
 
     def __post_init__(self) -> None:
@@ -449,8 +421,6 @@ def _canonical_text_tuple(
     *,
     maximum: int = 512,
 ) -> tuple[str, ...]:
-    """Normalize one ordered declaration exactly as Plane persists it."""
-
     if values is None:
         return ()
     if isinstance(values, (str, bytes, bytearray)):
@@ -478,8 +448,6 @@ def _safe_code(value: Any, field_name: str = "failure_code") -> str:
 
 
 def _plain_json(value: Any) -> Any:
-    """Detach immutable JSON containers without weakening type validation."""
-
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             raise ValueError("JSON object keys must be strings")
@@ -500,8 +468,6 @@ def _frozen_json(value: Any) -> Any:
 
 
 def _agent_dict(record: PlaneUserAgentRecord) -> Dict[str, Any]:
-    """Preserve the established Deep projection over a detached Plane row."""
-
     return {
         "agent_id": record.agent_id,
         "owner_user_id": record.owner_id,
@@ -536,8 +502,6 @@ def _agent_dict(record: PlaneUserAgentRecord) -> Dict[str, Any]:
 
 
 class UserAgentRegistry:
-    """Deep lifecycle policy over Plane's typed user-agent registry."""
-
     def __init__(
         self,
         *,
@@ -643,14 +607,6 @@ class UserAgentRegistry:
         declared_scopes: Optional[Sequence[str]] = None,
         declared_egress: Optional[Sequence[str]] = None,
     ) -> PlaneUserAgentRecord:
-        """Admit an immutable authoring target without rewriting an incumbent.
-
-        A revision is identified by the persisted ``revises_agent_id`` and may
-        reuse only that exact, owner-bound, non-deleted row.  A new target is
-        inserted only when absent.  Its retries are read-only exact-semantic
-        replays, including the post-promotion ``live`` replay case.
-        """
-
         agent_id = _required_text(agent_id, "agent_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         display_name = _required_text(
@@ -734,9 +690,6 @@ class UserAgentRegistry:
                     observed_at=now,
                 )
             except RepositoryConflictError as exc:
-                # A different owner lock can race for the globally unique ID.
-                # Plane's INSERT uses ON CONFLICT, so this transaction remains
-                # usable for exact classification of the winning row.
                 existing = repository.get_agent_for_administration(
                     transaction,
                     agent_id=agent_id,
@@ -1009,8 +962,6 @@ def create_user_agent(registry, **kwargs) -> None:
 
 
 def admit_authoring_target(registry, **kwargs) -> PlaneUserAgentRecord:
-    """Atomically admit a new or revision authoring target."""
-
     return _registry_from(registry).admit_authoring_target(**kwargs)
 
 
@@ -1024,8 +975,6 @@ def is_user_agent(registry, agent_id: str) -> bool:
 
 
 def list_user_agents(registry, owner_user_id: str) -> List[Dict[str, Any]]:
-    """The owner's agents, most-recent first, excluding soft-deleted rows."""
-
     return [
         _agent_dict(record)
         for record in _registry_from(registry).list_for_owner(owner_user_id)
@@ -1078,22 +1027,11 @@ def soft_delete(registry, agent_id: str) -> None:
     _registry_from(registry).soft_delete(agent_id)
 
 
-#: Reserved id prefixes/stems a user agent may never register as (Constitution H).
 _RESERVED_PREFIXES = ("__",)
 
 
 def authorize_registration(db, owner_sub: str, agent_id: str, *,
                            reserved_ids: Optional[frozenset] = None):
-    """Owner-binding decision for a user-agent tunnel registration (058 T002,
-    FR-002/FR-015). Returns ``(ok, reason)``, fail-closed.
-
-    The owner is the authenticated session ``sub`` (never a card field). A
-    registration is admitted ONLY when the ``user_agent`` row exists, is owned by
-    ``owner_sub``, is in a runnable ``status`` (``validated``/``live``), and is not
-    flagged ``revalidation_required``. Reserved/colliding ids are refused
-    (Constitution H). This is the single security decision the tunnel registration
-    path depends on; it derives authority solely from the orchestrator's own
-    record."""
     if not owner_sub or not agent_id:
         return False, "missing owner or agent id"
     if agent_id.startswith(_RESERVED_PREFIXES):
@@ -1118,42 +1056,21 @@ def authorize_registration(db, owner_sub: str, agent_id: str, *,
 
 
 def can_user_use_agent(db, user_id: str, agent_id: str) -> bool:
-    """User-agent owner-isolation predicate.
-
-    A **user agent** (feature 057 — private, client-hosted, owner-scoped) is
-    usable/manageable ONLY by its owner (``user_agent.owner_user_id``). For any
-    **non-user-agent** (built-in agents, the public catalog, drafts) this returns
-    ``True`` and the normal per-user permission gate governs access — this
-    predicate is NOT a general access check, it only enforces user-agent owner
-    isolation, so it never blocks a user from managing their own permissions on a
-    shared/built-in agent (including private built-ins usable via the safe-agent
-    baseline). Enforced at the grant endpoint, the dispatch gate, and tool-list
-    build (FR-016/019). Fail-closed: an unreadable owner on a known user agent
-    denies non-owners."""
     if not user_id or not agent_id:
         return False
     try:
         ua = get_user_agent(db, agent_id)
     except Exception:
-        # Fail closed only for a definite user-agent id; an errored lookup on an
-        # unknown id must not lock out built-ins, so treat unknown as allowed.
+        # Errored lookup fails open here — unknown id must not lock out built-ins
         return True
     if ua is None:
-        return True   # not a user agent → existing gates apply
+        return True
     if ua.get("deleted_at") is not None:
         return False
     return ua.get("owner_user_id") == user_id
 
 
 class PersonalAgentRuntimeRepository:
-    """Deep lifecycle policy over the application-scoped Plane authorities.
-
-    Every state transition uses one caller-owned Plane transaction. Owner locks,
-    exact immutable fences, and the shared WorkAdmission repository are composed
-    together; no mutable process-local map is an authority for selection,
-    liveness, or settlement.
-    """
-
     def __init__(
         self,
         database: Any | None = None,
@@ -1411,8 +1328,6 @@ class PersonalAgentRuntimeRepository:
         supported_runtime_contract_versions: Sequence[int],
         runtime_lock_sha256: str,
     ) -> HostSessionRecord:
-        """Validate first, then allocate and persist one server-owned session."""
-
         (
             owner_user_id,
             connection_scope_id,
@@ -1514,9 +1429,6 @@ class PersonalAgentRuntimeRepository:
                     "host registration generation is stale"
                 ) from exc
 
-            # Superseding the same stable host is a host-loss boundary for its
-            # old sessions. Settle those exact runtimes before rebinding sticky
-            # agent pointers to the new, inventory-pending server session.
             if prior_session_ids:
                 self._terminalize_session_instances_plane(
                     transaction,
@@ -1622,16 +1534,6 @@ class PersonalAgentRuntimeRepository:
             Mapping[tuple[str, str], ExecutionFence]
         ] = None,
     ) -> HostInventoryReconciliation:
-        """Validate, decide, allocate selected deliveries, and commit as one unit.
-
-        A start action is possible only for an exact retained active revision on
-        this selected server-issued session.  Its running delivery operation
-        must be supplied under the same ``(agent_id, revision_id)`` key.  Any
-        malformed entry, missing/extra operation fence, stale pointer, or failed
-        allocation rolls the whole transaction back and leaves inventory
-        pending, so the host cannot start a partial response.
-        """
-
         inventory_id = _uuid4_text(inventory_id, "inventory_id")
         validated_entries = self._inventory_entries(entries)
         supplied_operations = dict(delivery_operation_fences or {})
@@ -1677,10 +1579,6 @@ class PersonalAgentRuntimeRepository:
                     for_update=True,
                 )
                 if agent is not None:
-                    # A retained bundle of a live agent whose host went away
-                    # follows the same sticky selection delivery used, so the
-                    # restarted desktop gets a start action instead of
-                    # keep_stopped/host_not_selected forever.
                     agents[agent_id] = self._ensure_host_selection(transaction, agent)
 
             revisions: dict[str, PlaneAgentRevisionRecord] = {}
@@ -1794,7 +1692,7 @@ class PersonalAgentRuntimeRepository:
                     actions.append(action)
                     continue
                 agent = agents[entry.agent_id]
-                if revision is None:  # pragma: no cover - decision invariant
+                if revision is None:  # pragma: no cover
                     raise RuntimeError("start action has no revision")
                 instance = self._create_prelaunch_instance_plane(
                     transaction,
@@ -1853,8 +1751,6 @@ class PersonalAgentRuntimeRepository:
     def mark_inventory_reconciled(
         self, fence: HostSessionFence
     ) -> HostSessionRecord:
-        """Commit an explicitly empty inventory (compatibility convenience)."""
-
         result = self.reconcile_host_inventory(
             fence,
             inventory_id=self._new_uuid("inventory_id"),
@@ -1940,21 +1836,10 @@ class PersonalAgentRuntimeRepository:
             lifecycle_generation=lifecycle_generation,
         )
 
+    # Without this, a restarted host's agent never reconnects
     def _ensure_host_selection(
         self, transaction: Any, agent: PlaneUserAgentRecord
     ) -> PlaneUserAgentRecord:
-        """Re-select a host for a live agent whose selected session is gone.
-
-        The selection is made at delivery and cleared when that host session
-        is lost; nothing re-made it, so a personal agent never came back after
-        its desktop client restarted — inventory reconciliation answered
-        ``host_not_selected`` for every retained bundle, forever (feature 077
-        live finding). This applies the same sticky rule delivery uses
-        (:meth:`_select_host_plane`: the same ``host_id``'s new session first,
-        else the longest-connected host) whenever the agent is live with an
-        active revision and its selected session is absent or not connected.
-        Returns the re-read agent record.
-        """
         if agent.deleted_at is not None or agent.active_revision_id is None:
             return agent
         repository = self._agents.repository
@@ -2004,14 +1889,6 @@ class PersonalAgentRuntimeRepository:
         *,
         agent_id: str,
     ) -> SelectedSessionRevision:
-        """Return the active revision only when ``fence`` is the exact selection.
-
-        This lookup intentionally permits either pending or reconciled inventory
-        so the host-frame adapter can determine which retained entries need
-        delivery-operation fences before committing one inventory transaction.
-        It never makes the session delivery eligible by itself.
-        """
-
         agent_id = _required_text(agent_id, "agent_id", maximum=255)
         with self._agents.transaction() as transaction:
             repository = self._agents.repository
@@ -2101,8 +1978,6 @@ class PersonalAgentRuntimeRepository:
         release_lock_digest: str,
         parent_revision_id: Optional[str] = None,
     ) -> AgentRevisionRecord:
-        """Insert one immutable compatible revision under the owner/agent lock."""
-
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         agent_id = _required_text(agent_id, "agent_id", maximum=255)
         artifact_digest = _sha256(artifact_digest, "artifact_digest")
@@ -2202,15 +2077,6 @@ class PersonalAgentRuntimeRepository:
         PlaneHostSessionRecord,
         PlaneAgentRevisionRecord,
     ]:
-        """Lock and validate the typed rows behind one immutable runtime fence.
-
-        ``allow_unbound_process_read`` admits a fence that carries the process
-        the host just spawned while the durable instance is still pre-launch
-        (``process_id`` unbound): that is exactly the host's first ``starting``
-        frame, whose metadata read precedes the process binding. Read-only
-        callers only — a mutation still needs the exact fence.
-        """
-
         fence.validate(allow_prelaunch=allow_prelaunch)
         repository = self._agents.repository
         unresolved = repository.get_runtime_instance_for_administration(
@@ -2473,15 +2339,6 @@ class PersonalAgentRuntimeRepository:
         agent_id: str,
         operation_fence: ExecutionFence,
     ) -> SelectedRecoveryDelivery:
-        """Allocate one fresh recovery runtime for the durable selected standby.
-
-        This is the post-disconnect/failover seam. It resolves the current
-        selected reconciled host and already-active revision under the same
-        owner transaction that allocates the delivery/runtime generation. A
-        current authority or another non-terminal recovery makes the request
-        stale, preventing duplicate starts from concurrent disconnect handlers.
-        """
-
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         agent_id = _required_text(agent_id, "agent_id", maximum=255)
         if not isinstance(operation_fence, ExecutionFence):
@@ -2570,8 +2427,6 @@ class PersonalAgentRuntimeRepository:
         process_id: str,
         expected_state_revision: int,
     ) -> RuntimeInstanceRecord:
-        """Bind the host's logical process UUID exactly once on ``starting``."""
-
         if fence.process_id is not None:
             raise ValueError("prelaunch fence process_id must be null")
         fence.validate(allow_prelaunch=True)
@@ -2634,8 +2489,6 @@ class PersonalAgentRuntimeRepository:
         runtime_contract_version: int,
         bundle_sha256: str,
     ) -> RuntimeInstanceRecord:
-        """Durably accept the exact bound child's first registration frame."""
-
         fence.validate(allow_prelaunch=False)
         bundle_sha256 = _sha256(bundle_sha256, "bundle_sha256")
         with self._agents.transaction() as transaction:
@@ -2682,8 +2535,6 @@ class PersonalAgentRuntimeRepository:
         *,
         heartbeat_sequence: int,
     ) -> RuntimeInstanceRecord:
-        """Advance durable liveness only for a strictly larger sequence."""
-
         fence.validate(allow_prelaunch=False)
         if (
             type(heartbeat_sequence) is not int
@@ -2727,8 +2578,6 @@ class PersonalAgentRuntimeRepository:
         return self._runtime_from_plane(updated, agent=agent)
 
     def mark_runtime_ready(self, fence: RuntimeFence) -> RuntimeInstanceRecord:
-        """Accept ready only after durable registration and liveness proof."""
-
         fence.validate(allow_prelaunch=False)
         with self._agents.transaction() as transaction:
             row, agent, _host, _revision = self._locked_plane_runtime(
@@ -2765,15 +2614,6 @@ class PersonalAgentRuntimeRepository:
     def promote_recovered_runtime(
         self, fence: RuntimeFence
     ) -> RuntimeInstanceRecord:
-        """Atomically restore authority for a retained already-active revision.
-
-        Inventory recovery creates a fresh fenced runtime for the immutable
-        revision already named by ``active_revision_id``.  Once that child has
-        registered, proved liveness, and reached ready, this transition installs
-        only the new runtime/lifecycle authority.  It deliberately does not
-        mutate revision state or the last-known-good revision pointer.
-        """
-
         fence.validate(allow_prelaunch=False)
         with self._agents.transaction() as transaction:
             row, agent, host, revision = self._locked_plane_runtime(
@@ -2789,10 +2629,6 @@ class PersonalAgentRuntimeRepository:
                 and agent.lifecycle_generation == fence.lifecycle_generation
             )
             if already_authoritative:
-                # New promotions settle atomically below. Repair a runtime
-                # promoted by an older build only when its exact delivery
-                # operation is still current; an already-terminal operation is
-                # the normal idempotent replay path.
                 try:
                     replay_operation = self._assert_runtime_operation_plane(
                         transaction, row
@@ -2890,13 +2726,6 @@ class PersonalAgentRuntimeRepository:
         *,
         failure_code: str,
     ) -> RuntimeInstanceRecord:
-        """Revoke runtime authority without claiming its process has exited.
-
-        A host ``failed``/``offline`` state frame precedes process-tree cleanup.
-        Persist ``stopping`` first so promotion/routing cannot race that report;
-        the exact later exit frame remains the physical-stop commit boundary.
-        """
-
         fence.validate(allow_prelaunch=False)
         failure_code = _safe_code(failure_code)
         with self._agents.transaction() as transaction:
@@ -2946,15 +2775,8 @@ class PersonalAgentRuntimeRepository:
         return self._runtime_from_plane(staged, agent=updated_agent)
 
     def get_runtime_revision(self, fence: RuntimeFence) -> AgentRevisionRecord:
-        """Resolve immutable revision metadata under the exact runtime fence."""
-
         fence.validate(allow_prelaunch=fence.process_id is None)
         with self._agents.transaction() as transaction:
-            # The host's first ``starting`` frame already names the process it
-            # spawned while the instance is still pre-launch on this side; the
-            # binding itself happens right after this read (and re-checks the
-            # exact pre-launch fence). Feature 077 live finding: without this
-            # every real first start was refused as 'runtime fence is stale'.
             _runtime, _agent, _host, revision = self._locked_plane_runtime(
                 transaction,
                 fence,
@@ -2967,13 +2789,6 @@ class PersonalAgentRuntimeRepository:
     def list_latest_runtime_instances(
         self, *, owner_user_id: str
     ) -> tuple[RuntimeInstanceRecord, ...]:
-        """Return the newest durable runtime generation for each live agent.
-
-        This is the reconnect/hydration source for ``agent_lifecycle``.  Socket
-        maps are intentionally excluded: a client that was absent for a child
-        exit or host loss must still receive the committed terminal state.
-        """
-
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         with self._agents.transaction() as transaction:
             runtimes = self._agents.repository.list_latest_runtime_instances(
@@ -3000,13 +2815,6 @@ class PersonalAgentRuntimeRepository:
         liveness_timeout_seconds: float,
         limit: int = 1000,
     ) -> tuple[Any, ...]:
-        """Discover a bounded cross-owner expiry set using PostgreSQL time.
-
-        Returned rows are advisory only.  The terminalization methods repeat
-        the exact owner/state/deadline predicate under a row lock in the same
-        transaction as settlement.
-        """
-
         return self._agents.call(
             self._agents.repository.list_expired_runtime_candidates_for_administration,
             startup_timeout_seconds=startup_timeout_seconds,
@@ -3017,16 +2825,6 @@ class PersonalAgentRuntimeRepository:
     def get_current_online_authority_if_present(
         self, *, owner_user_id: str, agent_id: str
     ) -> RuntimeInstanceRecord | None:
-        """Resolve exact authority, distinguishing clean absence from damage.
-
-        Every owner, selected-session, active-revision, lifecycle, compatibility,
-        and online-authority relation is checked in the same transaction.  The
-        later request assignment repeats these checks under row locks before a
-        frame is sent; this lookup never turns a process-local cache into an
-        authority. ``None`` is returned only for a known, non-deleted agent with
-        no authoritative runtime pointer.
-        """
-
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         agent_id = _required_text(agent_id, "agent_id", maximum=255)
         with self._agents.transaction() as transaction:
@@ -3100,8 +2898,6 @@ class PersonalAgentRuntimeRepository:
     def get_current_online_authority(
         self, *, owner_user_id: str, agent_id: str
     ) -> RuntimeInstanceRecord:
-        """Resolve the one exact routable runtime or raise when it is absent."""
-
         runtime = self.get_current_online_authority_if_present(
             owner_user_id=owner_user_id,
             agent_id=agent_id,
@@ -3117,8 +2913,6 @@ class PersonalAgentRuntimeRepository:
         operation_fence: ExecutionFence,
         request_generation: Optional[str] = None,
     ) -> RuntimeRequestRecord:
-        """Persist a call against the exact current online authority before send."""
-
         runtime_fence.validate(allow_prelaunch=False)
         if not isinstance(operation_fence, ExecutionFence):
             raise TypeError("operation_fence must be ExecutionFence")
@@ -3242,8 +3036,6 @@ class PersonalAgentRuntimeRepository:
         terminal_code: Optional[str] = None,
         result_digest: Optional[str] = None,
     ) -> RuntimeRequestRecord:
-        """Settle one result and its operation atomically under the full fence."""
-
         if state not in _REQUEST_TERMINAL_STATES:
             raise ValueError("request terminal state is invalid")
         _uuid4_text(fence.request_id, "request_id")
@@ -3566,8 +3358,6 @@ class PersonalAgentRuntimeRepository:
     def terminalize_runtime(
         self, fence: RuntimeFence, *, failure_code: str
     ) -> RuntimeSettlement:
-        """Atomically fence one known failed instance and all assigned calls."""
-
         fence.validate(allow_prelaunch=fence.process_id is None)
         failure_code = _safe_code(failure_code)
         with self._agents.transaction() as transaction:
@@ -3599,18 +3389,6 @@ class PersonalAgentRuntimeRepository:
         *,
         proof_code: str,
     ) -> RuntimeSettlement:
-        """Persist exact process-exit proof under the full runtime fence.
-
-        Revision activation owns the delivery operation disposition while it
-        stages a candidate failure, retires a prior runtime, or resets a
-        RETRYABLE attempt, so a staged/terminal runtime retains that operation
-        outcome.  For an otherwise-live runtime, the exact host exit frame is
-        also its failure boundary and settles any still-running delivery
-        operation retryably. Tombstoned agents retain ``agent_deleted`` as the
-        semantic request/operation disposition while the runtime row records
-        the orthogonal physical-exit proof.
-        """
-
         fence.validate(allow_prelaunch=False)
         proof_code = _safe_code(proof_code, "proof_code")
         if proof_code not in {"child_exited", "agent_offline"}:
@@ -3628,10 +3406,6 @@ class PersonalAgentRuntimeRepository:
             semantic_code = (
                 "agent_deleted" if agent.deleted_at is not None else proof_code
             )
-            # This helper is itself first-terminal-wins and only mutates a
-            # still-RUNNING delivery operation. Permanent FAILED, RETRYABLE,
-            # CANCELLED, and COMPLETED lifecycle dispositions remain intact,
-            # while a state-only ``stopping`` row cannot strand RUNNING work.
             self._terminalize_runtime_operation_plane(
                 transaction,
                 row,
@@ -3727,15 +3501,6 @@ class PersonalAgentRuntimeRepository:
         *,
         timeout_seconds: float,
     ) -> RuntimeSettlement:
-        """Atomically fail one still-starting runtime after its DB-time deadline.
-
-        This covers both a pre-launch ``delivering`` recovery that never binds a
-        process and a bound ``starting`` child that never becomes ready. The
-        state/deadline recheck and runtime/delivery-operation settlement share
-        one transaction, so a concurrent ready transition wins cleanly instead
-        of being killed from a stale process-local timer.
-        """
-
         fence.validate(allow_prelaunch=fence.process_id is None)
         if (
             isinstance(timeout_seconds, bool)
@@ -3786,8 +3551,6 @@ class PersonalAgentRuntimeRepository:
         *,
         timeout_seconds: float = 5.0,
     ) -> RuntimeSettlement:
-        """Atomically apply the DB-receipt-time child-hang boundary."""
-
         fence.validate(allow_prelaunch=False)
         if (
             isinstance(timeout_seconds, bool)
@@ -3876,11 +3639,6 @@ class PersonalAgentRuntimeRepository:
                     )
                 runtime_failure_code = failure_code
                 if runtime.state == "stopping" and runtime.failure_code is not None:
-                    # Revision activation already persisted the authoritative
-                    # candidate disposition before requesting a physical stop.
-                    # A concurrent host disconnect must prove the process gone,
-                    # but must not rewrite that permanent failure as host_lost or
-                    # turn its exact FAILED delivery operation into a retry.
                     runtime_failure_code = _safe_code(runtime.failure_code)
                 settlements.append(
                     self._terminalize_instance_plane(
@@ -3898,8 +3656,6 @@ class PersonalAgentRuntimeRepository:
         *,
         failure_code: str = "host_lost",
     ) -> HostDisconnectResult:
-        """Persist host loss, settle its exact calls, then select standbys."""
-
         failure_code = _safe_code(failure_code)
         with self._agents.transaction() as transaction:
             repository = self._agents.repository
@@ -3982,8 +3738,6 @@ class PersonalAgentRuntimeRepository:
         agent_id: str,
         expected_state_revision: Optional[int] = None,
     ) -> AgentTombstone:
-        """Commit the deletion generation and clear pointers before cleanup."""
-
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         agent_id = _required_text(agent_id, "agent_id", maximum=255)
         if expected_state_revision is not None and (
@@ -4045,7 +3799,7 @@ class PersonalAgentRuntimeRepository:
                 raise StaleRuntimeGenerationError(
                     "agent tombstone CAS is stale"
                 ) from exc
-            if updated.deleted_at is None:  # pragma: no cover - repository invariant
+            if updated.deleted_at is None:  # pragma: no cover
                 raise RuntimeError("agent tombstone did not persist deletion time")
             return AgentTombstone(
                 agent_id=agent_id,
@@ -4058,14 +3812,6 @@ class PersonalAgentRuntimeRepository:
     def cleanup_tombstoned_agent(
         self, tombstone: AgentTombstone
     ) -> AgentTombstoneCleanup:
-        """Settle every older runtime only after the exact tombstone committed.
-
-        The tombstone generation/state revision/deletion timestamp and cleared
-        pointers are rechecked before touching runtimes. This preserves the
-        required delete-first ordering while avoiding ``_locked_runtime``'s
-        intentional rejection of frames arriving after deletion.
-        """
-
         if not isinstance(tombstone, AgentTombstone):
             raise TypeError("tombstone must be an AgentTombstone")
         owner_user_id = _required_text(

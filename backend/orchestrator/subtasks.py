@@ -1,37 +1,8 @@
-"""Planner decomposition into bounded, isolated sub-tasks (feature 056 US4).
-
-The second orchestrator-mediated chaining seam. Where
-``AgentRuntime.call_agent_tool`` lets ONE agent request ONE peer tool
-deterministically (US1), this lets the PLANNER split a broad request into
-several sub-tasks that run concurrently in fresh, isolated contexts and return
-bounded, provenance-tagged digests — so the orchestrator is no longer the sole
-step-by-step planner of every turn.
-
-Every guarantee the direct path has is preserved, because a sub-task is just a
-normal turn on the existing ``BackgroundTask``/``VirtualWebSocket`` substrate:
-
-* **Isolated** — a fresh chat context per sub-task; no parent transcript, so a
-  poisoned sub-task cannot rewrite the parent's history.
-* **Narrower authority than the parent** — a sub-task may use only tools the
-  parent turn itself offered (never a superset), and every dispatch inside it
-  re-enters the full single-path gate stack keyed to the SAME human principal.
-  Agent-to-agent hops started inside a sub-task mint attenuated children off
-  the dispatch's parent authority exactly as they do anywhere else (US1).
-* **Bounded** — each sub-task holds a slice of the turn's global ``ChainBudget``
-  whose charges also debit the parent, so depth × breadth × wall clock cannot
-  exceed the turn ceiling however the tree is shaped.
-* **Digest return** — the parent receives a capped, provenance-tagged summary
-  (which sub-task, which agent, under whose authority), never a raw transcript.
-* **Scanned** — every digest passes the multi-agent-defense scan before it can
-  enter the planner's context; a flagged digest is quarantined with an audited
-  reason and an honest error (never silently delivered).
-* **Never orphaned** — if the parent turn ends, its socket goes away, or the
-  budget is exhausted, in-flight sub-tasks are cancelled and audited, and their
-  partial output is discarded rather than attached to a later turn.
-
-Gated by ``FF_RECURSIVE_DELEGATION`` (default off) — with the flag off the
-meta-tool is not injected and behavior is byte-identical to today.
+"""Lets the planner decompose a request into bounded, concurrent sub-tasks that run in
+fresh isolated chat contexts and return provenance-tagged digests, never raw
+transcripts. Wired into orchestrator.py under the turn's chain budget.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,13 +19,9 @@ logger = logging.getLogger("Orchestrator.Subtasks")
 
 META_AGENT_ID = "__subtasks__"
 
-#: Hard bounds on a decomposition (independent of the chain budget, which also
-#: applies): a planner cannot spawn an unbounded fan-out in one call.
 MAX_SUBTASKS = 5
 MIN_SUBTASKS = 2
-#: Characters of digest returned per sub-task (bounded context growth, FR-020).
 DIGEST_CAP = 1200
-#: Wall clock for one sub-task; the turn's ChainBudget bounds the tree overall.
 SUBTASK_TIMEOUT_S = 90.0
 
 SYSTEM_PROMPT_ADDENDUM = """
@@ -69,7 +36,6 @@ directly. Never use it to retry the same work.
 
 
 def should_inject(draft_agent_id: Optional[str]) -> bool:
-    """Inject the decomposition meta-tool? (flag-gated; never for draft tests)."""
     if draft_agent_id:
         return False
     return bool(flags.is_enabled("recursive_delegation"))
@@ -110,8 +76,6 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
 
 
 class SubtaskResult:
-    """One sub-task's bounded, provenance-tagged outcome."""
-
     __slots__ = ("title", "digest", "agents", "status", "detail")
 
     def __init__(self, title: str, digest: str = "", agents: Optional[List[str]] = None,
@@ -119,7 +83,7 @@ class SubtaskResult:
         self.title = title
         self.digest = digest
         self.agents = agents or []
-        self.status = status          # ok | quarantined | cancelled | failed | timeout
+        self.status = status
         self.detail = detail
 
     def as_dict(self) -> Dict[str, Any]:
@@ -129,8 +93,6 @@ class SubtaskResult:
 
 
 def _digest_from_outputs(outputs: List[Any]) -> tuple[str, List[str]]:
-    """Distil a sub-task's captured frames into a bounded digest + the agents
-    that acted. Never returns a raw transcript (FR-020)."""
     parts: List[str] = []
     agents: List[str] = []
     for out in outputs or []:
@@ -155,7 +117,6 @@ def _digest_from_outputs(outputs: List[Any]) -> tuple[str, List[str]]:
 async def _audit_subtask(orch, *, user_id: str, chat_id: Optional[str],
                          correlation_id: str, action: str, outcome: str,
                          title: str, detail: str = "") -> None:
-    """Record a sub-task lifecycle event on the hash chain (FR-023)."""
     try:
         from audit.recorder import get_recorder, now_utc
         from audit.schemas import AuditEventCreate
@@ -183,7 +144,6 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
                    parent_chat_id: Optional[str], parent_ws,
                    allowed_tools: Optional[List[str]], budget,
                    correlation_id: str, guidance_parent=None) -> SubtaskResult:
-    """Run ONE sub-task in a fresh isolated context under a budget slice."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     from orchestrator import user_skills
     from orchestrator.turn_guidance_authority import inherit_turn_guidance, use_turn_guidance
@@ -195,7 +155,6 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
     if user_skills.enabled() and (guidance_parent is None or guidance_parent.origin.owner_id != user_id):
         return SubtaskResult(title, status="failed", detail="guidance_read_unavailable")
 
-    # A sub-task hop counts against the turn's global ceiling like any other.
     reason = budget.charge(1)
     if reason is not None:
         await _audit_subtask(orch, user_id=user_id, chat_id=parent_chat_id,
@@ -208,24 +167,10 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
     task = BackgroundTask(task_id=f"sub-{uuid.uuid4().hex[:8]}",
                           chat_id=sub_chat, user_id=user_id)
     vws = VirtualWebSocket(task)
-    # A sub-task is FOREGROUND work the user is waiting on: resolve its LLM
-    # (ReAct planning + agent-side LLM tools) to the requesting user, not the
-    # admin SYSTEM account a bare VirtualWebSocket would default to (054
-    # FR-019). Without this a fully-configured user whose deployment has no
-    # system credential gets every decomposition failing.
     vws.llm_context_user_id = user_id
-    # The sub-task inherits the parent's session authority (same human
-    # principal, same gates) but may use only the tools the parent turn itself
-    # offered — never a superset (FR-020). Binding the parent's claims onto the
-    # isolated socket is what lets its dispatches mint delegated tokens at all.
     parent_claims = orch.ui_sessions.get(parent_ws) if parent_ws is not None else None
     if isinstance(parent_claims, dict):
         orch.ui_sessions[vws] = dict(parent_claims)
-    # Bind this sub-task's budget slice as the sub-chat's chain budget so hops
-    # started INSIDE the sub-task charge the slice — whose ``charge`` also
-    # debits the parent turn's global ceiling — rather than a fresh parentless
-    # budget keyed on the sub-chat. handle_chat_message's turn-reset preserves
-    # a pre-bound slice (a budget with a parent); we remove it in ``finally``.
     orch._chain_budgets[sub_chat] = budget
 
     try:
@@ -244,7 +189,7 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
         await asyncio.wait_for(child(), timeout=min(SUBTASK_TIMEOUT_S,
                                                    max(budget.wall_clock_s - budget.elapsed_s(), 1.0)))
     except asyncio.CancelledError:
-        task.outputs.clear()  # orphaned partials are DISCARDED (FR-023)
+        task.outputs.clear()
         await _audit_subtask(orch, user_id=user_id, chat_id=parent_chat_id,
                              correlation_id=correlation_id, action="cancelled",
                              outcome="interrupted", title=title)
@@ -267,19 +212,17 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
         orch._chain_budgets.pop(sub_chat, None)
         try:
             await vws.close()
-        except Exception:  # pragma: no cover — close is best-effort
+        except Exception:  # pragma: no cover
             pass
 
     digest, agents = _digest_from_outputs(task.outputs)
 
-    # FR-007/D11: every inter-agent payload is scanned BEFORE it can enter the
-    # planner's context. A finding quarantines it — not delivered, audited,
-    # honest error.
+    # Must scan before payload reaches planner context
     from orchestrator import mas_defense
     findings = []
     try:
         findings = mas_defense.scan_message(digest)
-    except Exception:  # pragma: no cover — scanner is pure/stdlib
+    except Exception:  # pragma: no cover
         logger.debug("subtask digest scan failed", exc_info=True)
     if findings:
         markers = sorted({f.marker for f in findings})
@@ -302,8 +245,6 @@ async def _run_one(orch, spec: Dict[str, Any], *, user_id: str,
 
 
 async def _progress(orch, websocket, message: str) -> None:
-    """Hierarchical sub-task progress over the EXISTING chat_status frame
-    (FR-022) — no new frame type, so every client renders it unchanged."""
     if websocket is None:
         return
     try:
@@ -312,14 +253,13 @@ async def _progress(orch, websocket, message: str) -> None:
             "type": "chat_status", "status": "thinking",
             "message": message,
         }))
-    except Exception:  # pragma: no cover — progress is best-effort
+    except Exception:  # pragma: no cover
         logger.debug("subtask progress send failed", exc_info=True)
 
 
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: Optional[str], chat_id: Optional[str],
                            websocket=None):
-    """``delegate_subtasks`` — spawn bounded, isolated sub-tasks concurrently."""
     from shared.protocol import MCPResponse
 
     if tool_name != "delegate_subtasks":
@@ -350,12 +290,9 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
             return MCPResponse(error={"message": "guidance_read_unavailable", "retryable": False})
     correlation_id = make_correlation_id()
     budget = orch._chain_budget_for(chat_id)
-    # Each sub-task gets a slice of the turn's global budget; the slice debits
-    # the parent, so the tree can never exceed the turn ceiling (FR-021).
     slices = [budget.slice(max_hops=max(budget.max_hops // len(specs), 1))
               for _ in specs]
 
-    # A sub-task may use only the tools the parent turn itself offered.
     allowed_tools = args.get("_parent_tools") if isinstance(args.get("_parent_tools"), list) else None
 
     logger.info("subtasks.spawn count=%d chat=%s user=%s corr=%s",
@@ -371,8 +308,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
     try:
         results: List[SubtaskResult] = list(await asyncio.gather(*tasks))
     except asyncio.CancelledError:
-        # The parent turn ended / its socket went away: cancel every in-flight
-        # sub-task and discard partial output (FR-023) — never attach it later.
         for t in tasks:
             if not t.done():
                 t.cancel()
@@ -390,8 +325,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                 correlation_id, len(delivered), len(results), elapsed,
                 budget.spent_hops)
 
-    # The planner receives bounded, provenance-tagged digests — never raw
-    # transcripts, and never a quarantined payload.
     lines = []
     for r in results:
         who = f" (via {', '.join(r.agents)})" if r.agents else ""

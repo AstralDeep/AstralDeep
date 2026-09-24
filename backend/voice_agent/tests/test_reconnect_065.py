@@ -1,4 +1,6 @@
-"""Direct-RTC reconnect, publisher, and replay-window guards for Feature 065."""
+"""Tests for voice_agent/session.py's direct-RTC reconnect handling: SID reconciliation,
+stale publisher rejection, and the bounded final-replay window.
+"""
 
 from __future__ import annotations
 

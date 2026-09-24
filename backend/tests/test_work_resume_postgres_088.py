@@ -1,4 +1,8 @@
-"""Original-session resume through real IAM, current research policy and Plane."""
+"""Tests for work resume (backend/orchestrator/work_control_authority.py,
+work_controls.py): original-session binding, replay without reauth, retirement
+rollback, and audit atomicity through real IAM and Plane.
+"""
+
 import importlib
 from uuid import uuid4
 
@@ -113,8 +117,6 @@ async def test_retirement_at_final_policy_boundary_rolls_back_resume_and_audit(a
     def policy(*args, **kwargs):
         result = original(*args, **kwargs)
         checked.append(True)
-        # The actual locked policy check succeeds; then its caller must still
-        # observe local readiness/key retirement before committing the command.
         if retirement == "runner":
             api.runner._stopping = True
         else:
@@ -130,7 +132,6 @@ async def test_retirement_at_final_policy_boundary_rolls_back_resume_and_audit(a
 
 
 async def test_resume_snapshots_validated_body_before_awaiting_config(api, monkeypatch):
-    """A retained model reference cannot rewrite the accepted receipt identity."""
     from persistent_agents.runtime_values import digest
     record = await paused(api)
     request_body = body(record)

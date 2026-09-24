@@ -1,4 +1,7 @@
-"""Authorization and isolation tests for Deep's Projection controllers."""
+"""Tests for backend/orchestrator/projection_controllers.py and component_ports.py:
+surface registry completeness and immutability, query/command authorization and
+owner-scoping, and redaction on every failure path.
+"""
 
 from __future__ import annotations
 

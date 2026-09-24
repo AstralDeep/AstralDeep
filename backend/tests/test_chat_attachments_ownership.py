@@ -1,8 +1,6 @@
-"""Feature 031 — attachment ownership enforcement on the chat turn (T022).
-
-A reference to an attachment the sender does not own is dropped (and never
-appears in the LLM-facing block or as a message_attachment link), and the user
-is told some attachments were skipped. Covers FR-007 / SC-004.
+"""Tests for chat attachment ownership enforcement
+(backend/orchestrator/attachments/repository.py): a turn drops references the sender
+doesn't own, tells the user, and audits the denial.
 """
 
 from __future__ import annotations
@@ -58,7 +56,7 @@ def _fake_self(db):
 async def test_foreign_attachment_is_dropped_and_user_notified():
     db = FakeDB()
     _seed(db, user_id="u1", attachment_id="mine")
-    _seed(db, user_id="u2", attachment_id="theirs")  # owned by someone else
+    _seed(db, user_id="u2", attachment_id="theirs")
     me = _fake_self(db)
     payload = [
         {"attachment_id": "mine", "filename": "mine.pdf", "category": "document"},
@@ -66,21 +64,14 @@ async def test_foreign_attachment_is_dropped_and_user_notified():
     ]
     out = await Orchestrator._attach_turn_attachments(me, object(), "read these", "c1", "u1", "m1", payload)
 
-    # Only the owned attachment is surfaced + linked.
     assert "id=mine" in out
     assert "theirs" not in out
     assert {r.attachment_id for r in db.message_attachment} == {"mine"}
-    # The user is told something was skipped.
     assert any("skipped" in s for s in me._sent)
 
 
 @pytest.mark.asyncio
 async def test_foreign_attachment_denial_is_audited(monkeypatch):
-    """Regression: a dropped cross-user reference MUST be recorded in the audit
-    trail. ``_audit_drop`` previously built an AuditEventCreate without the
-    required ``correlation_id``/``started_at`` fields, so construction raised and
-    the bare except swallowed it — the denial was never audited.
-    """
     from audit import recorder as recorder_mod
 
     captured = []
@@ -94,7 +85,7 @@ async def test_foreign_attachment_denial_is_audited(monkeypatch):
     try:
         db = FakeDB()
         _seed(db, user_id="u1", attachment_id="mine")
-        _seed(db, user_id="u2", attachment_id="theirs")  # owned by someone else
+        _seed(db, user_id="u2", attachment_id="theirs")
         me = _fake_self(db)
         payload = [
             {"attachment_id": "mine", "filename": "mine.pdf", "category": "document"},

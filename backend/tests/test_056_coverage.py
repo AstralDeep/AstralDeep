@@ -1,10 +1,8 @@
-"""056 coverage: exercise the product branches the story tests reach only via
-live verification (which doesn't feed coverage.xml) — the summarizer peer-fetch
-hop, the offline-grant/session-store lookups, the base-agent hop-response
-resolver, the protocol frame decode, and the delegation encode/decode helpers.
-
-These are unit-level pins on real branches, not new behavior.
+"""Unit-level coverage for branches the story tests reach only via live verification:
+summarizer's peer-fetch hop, offline-grant and session-store lookups, base-agent
+hop-response resolution, and protocol/delegation codecs.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,12 +55,7 @@ class _SessionRepository:
         return self.record
 
 
-# --------------------------------------------------------------------------- #
-# summarizer._fetch_via_peer / _summarize_fetched (US1 first call site)
-# --------------------------------------------------------------------------- #
-
 def _peer_runtime(resp):
-    """A runtime whose call_agent_tool resolves to ``resp`` on the caller loop."""
     loop = asyncio.new_event_loop()
 
     async def _call(callee, tool, args, *, timeout=30.0):
@@ -86,8 +79,6 @@ def _run_with_loop(fn, loop):
 def _peer_kwargs(runtime, scope="tools:read tool:fetch_page"):
     from jose import jwt
 
-    # Only an optimization eligibility hint; the real hop still verifies its
-    # stored parent authority. No credential or production signing key here.
     token = jwt.encode({"scope": scope}, "test-only-scope-hint", algorithm="HS256")
     return {"_runtime": runtime, "_delegation_token": token}
 
@@ -182,10 +173,6 @@ def test_summarize_fetched_empty_text_errors():
     assert any(c.get("variant") == "error" for c in out["_ui_components"])
 
 
-# --------------------------------------------------------------------------- #
-# OfflineGrantStore.latest_valid_for
-# --------------------------------------------------------------------------- #
-
 def test_latest_valid_for_prefers_agent_grant():
     from orchestrator.offline_grant import OfflineGrantStore
 
@@ -231,10 +218,6 @@ def test_latest_valid_for_none_when_absent():
     assert repository.calls[0]["agent_id"] is None
 
 
-# --------------------------------------------------------------------------- #
-# WebSessionStore.latest_refresh_token_for
-# --------------------------------------------------------------------------- #
-
 def test_latest_refresh_token_for_reads_live_session(monkeypatch):
     from orchestrator import session_store
 
@@ -277,10 +260,6 @@ def test_latest_refresh_token_for_none_without_session(monkeypatch):
     assert store.latest_refresh_token_for("u1") is None
 
 
-# --------------------------------------------------------------------------- #
-# BaseA2AAgent._resolve_hop_response
-# --------------------------------------------------------------------------- #
-
 def test_resolve_hop_response_sets_future():
     from shared.base_agent import BaseA2AAgent
     from shared.protocol import AgentHopResponse
@@ -308,10 +287,6 @@ def test_resolve_hop_response_unknown_id_is_dropped():
     agent._logger.warning.assert_called_once()
 
 
-# --------------------------------------------------------------------------- #
-# protocol.Message.from_json — the hop frames
-# --------------------------------------------------------------------------- #
-
 def test_from_json_decodes_hop_frames():
     from shared.protocol import AgentHopRequest, AgentHopResponse, Message
 
@@ -323,10 +298,6 @@ def test_from_json_decodes_hop_frames():
         request_id="h1", response={"result": "ok"}).to_json())
     assert isinstance(resp, AgentHopResponse) and resp.response == {"result": "ok"}
 
-
-# --------------------------------------------------------------------------- #
-# delegation encode/decode helpers
-# --------------------------------------------------------------------------- #
 
 def test_encode_decode_roundtrip():
     from orchestrator import delegation as dg
@@ -343,7 +314,7 @@ def test_decode_rejects_malformed():
 
     assert dg.decode_token_payload("") is None
     assert dg.decode_token_payload("not-a-token") is None
-    assert dg.decode_token_payload("a.b") is None  # wrong segment count
+    assert dg.decode_token_payload("a.b") is None
 
 
 def test_child_signing_key_prefers_env(monkeypatch):
@@ -357,10 +328,6 @@ def test_child_signing_key_prefers_env(monkeypatch):
     monkeypatch.delenv("MEMORY_HMAC_KEY")
     assert dg._child_signing_key() == b"mock-delegation-secret"
 
-
-# --------------------------------------------------------------------------- #
-# Orchestrator._deliver_hop_response — the NETWORKED-initiator path
-# --------------------------------------------------------------------------- #
 
 @pytest.fixture
 def orch():
@@ -385,8 +352,6 @@ def orch():
 
 @pytest.mark.asyncio
 async def test_deliver_hop_response_networked_sends_frame(orch):
-    """A networked initiator (a `send`, no matching future) gets an
-    agent_hop_response frame."""
     from shared.protocol import MCPResponse
 
     sent = {}
@@ -408,7 +373,6 @@ async def test_deliver_hop_response_networked_sends_frame(orch):
 @pytest.mark.asyncio
 async def test_deliver_hop_response_no_route_logs(orch):
     from shared.protocol import MCPResponse
-    # No _hop_futures, no send — nothing to deliver to; must not raise.
     await orch._deliver_hop_response(
         SimpleNamespace(), "hop-1", MCPResponse(result="x"))
 
@@ -421,14 +385,11 @@ async def test_deliver_hop_response_send_failure_swallowed(orch):
         async def send(self, text):
             raise RuntimeError("socket dead")
 
-    # Must swallow the delivery error (best-effort), not raise.
     await orch._deliver_hop_response(_BadWS(), "hop-1", MCPResponse(result="x"))
 
 
 @pytest.mark.asyncio
 async def test_subtasks_dispatch_from_parallel_batch(orch, monkeypatch):
-    """The __subtasks__ meta-tool dispatches from a parallel batch, computing
-    _parent_tools from the turn's real-agent tools."""
     import json
 
     from shared.feature_flags import flags

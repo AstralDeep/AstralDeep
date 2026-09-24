@@ -1,9 +1,7 @@
+"""Developer connector tools: AST-based Python code review (with a regex fallback for
+other languages) and markdown-section-aware constitution critique.
 """
-Developer tools for the Claude Connectors Agent — US-22.
 
-Code review (AST-based for Python, regex-based for other languages) and
-constitution critique (markdown-section-aware) for spec-driven development.
-"""
 import ast
 import logging
 import re
@@ -16,10 +14,6 @@ from astralprims import (
 
 logger = logging.getLogger("Connectors.Dev")
 
-
-# ---------------------------------------------------------------------------
-# Code Review
-# ---------------------------------------------------------------------------
 
 _CODE_REVIEW_METADATA = {
     "name": "code_review",
@@ -41,13 +35,6 @@ _ADVISORY_PY_IMPORTS = {"pickle", "marshal", "subprocess", "shelve"}
 
 
 class _PyAuditor(ast.NodeVisitor):
-    """Walk a Python AST and collect structured findings.
-
-    Generates concrete, line-anchored signal that the previous regex pass
-    couldn't see — call expressions vs. tokens in strings, bare ``except:``
-    clauses, function size, advisory imports.
-    """
-
     def __init__(self):
         self.security: List[str] = []
         self.issues: List[str] = []
@@ -167,7 +154,6 @@ def handle_code_review(args: Dict[str, Any]) -> Dict[str, Any]:
         except SyntaxError as e:
             issues.append(f"Python parse error: {e.msg} (line {e.lineno})")
 
-    # De-duplicate while preserving order.
     def _dedupe(items: List[str]) -> List[str]:
         seen, out = set(), []
         for item in items:
@@ -210,10 +196,6 @@ def handle_code_review(args: Dict[str, Any]) -> Dict[str, Any]:
     return create_ui_response(components)
 
 
-# ---------------------------------------------------------------------------
-# Constitution Critique (markdown-section-aware)
-# ---------------------------------------------------------------------------
-
 _CONSTITUTION_METADATA = {
     "name": "constitution_critique",
     "description": "Review a specification document against constitution principles for spec-driven development.",
@@ -245,13 +227,6 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _split_sections(spec: str) -> Dict[str, str]:
-    """Return a {heading_text_lower: body_text_lower} map.
-
-    A section's body is everything between its heading and the next
-    heading of equal-or-shallower depth. Headings themselves are excluded
-    from the body — fixes false positives like "tests" appearing inside a
-    "Why this won't need tests" heading.
-    """
     headings = list(_HEADING_RE.finditer(spec))
     if not headings:
         return {"_full_": spec.lower()}
@@ -266,7 +241,6 @@ def _split_sections(spec: str) -> Dict[str, str]:
 
 
 def _spec_mentions(sections: Dict[str, str], *needles: str) -> bool:
-    """Return True if any needle appears in any section body OR in a heading."""
     for heading, body in sections.items():
         if any(n in heading for n in needles):
             return True
@@ -323,10 +297,6 @@ def handle_constitution_critique(args: Dict[str, Any]) -> Dict[str, Any]:
 
     return create_ui_response(components)
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 DEV_TOOL_REGISTRY = {
     "code_review": {"function": handle_code_review, **_CODE_REVIEW_METADATA},

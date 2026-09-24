@@ -1,8 +1,6 @@
-"""Real private PostgreSQL/public Plane recovery with Deep's encrypted grants.
-
-No application process is restarted here and no institutional OAuth is performed.
-The isolated database is the only retirement target; operational closure and
-paired production backup verification remain separate qualification.
+"""Tests for session recovery from a restored PostgreSQL snapshot
+(orchestrator/offline_grant.py) with encrypted grants: a retired snapshot cannot
+reuse its original consent, and each restore needs its own retirement.
 """
 
 import asyncio
@@ -56,9 +54,6 @@ def test_retired_restore_cannot_reuse_original_consent_or_encrypted_grant(
     result = retire(runtime)
     assert result.retired_sessions == 1
     assert get_session_record(runtime, sid) is None
-    # This old process deliberately remains present in the test. Its private
-    # cache cannot revive durable grant authority; operators must still discard
-    # every process before reopening ordinary cookie authentication.
     if recreate:
         with runtime.transaction() as transaction:
             replacement = runtime.repositories.history.sessions.put(
@@ -92,8 +87,6 @@ def test_each_restored_snapshot_requires_a_new_retirement(fixture, runtime):
     original_session = get_session_record(runtime, sid)
     assert retire(runtime).retired_sessions == 1
     assert retire(runtime).retired_sessions == 0
-    # A qualification-only snapshot replay preserves original UUID/ciphertext,
-    # unlike ordinary session issuance. Never expose this SQL as an operator tool.
     runtime.execute(
         """INSERT INTO web_session
            (sid,user_id,access_token_enc,refresh_token_enc,interactive_anchor,

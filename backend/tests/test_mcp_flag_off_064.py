@@ -1,3 +1,8 @@
+"""Tests for orchestrator/mcp_server_endpoint.py: FF_MCP_SERVER defaults off, Phase B
+modules are not imported while it is absent, and a recreated flag-off app carries no
+residual MCP surface or server record.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -86,9 +91,6 @@ def test_recreated_flag_off_app_has_no_residual_surface_or_server_record(monkeyp
     enabled = TestClient(enabled_app)
     assert enabled.get("/.well-known/oauth-protected-resource/mcp").status_code == 200
 
-    # Feature flags are startup state. A recreated process with the flag off
-    # never calls install_mcp_server, so the old app/router is unreachable and
-    # no endpoint-owned session/advertisement record exists to tear down.
     disabled_app = FastAPI()
     disabled_paths = {
         route.path for route in disabled_app.routes if hasattr(route, "path")

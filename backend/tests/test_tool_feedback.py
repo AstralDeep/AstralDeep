@@ -1,4 +1,8 @@
-"""Tool failures stay brief and private on both real dispatch paths."""
+"""Tests for orchestrator/tool_feedback.py: tool failures stay brief and never surface
+provider text or diagnostics to chat, notices are shared across parallel calls within
+a turn but not across turns, and pending cards drop replay arguments.
+"""
+
 from __future__ import annotations
 
 import asyncio

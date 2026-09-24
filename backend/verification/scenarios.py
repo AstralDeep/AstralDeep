@@ -1,9 +1,8 @@
-"""Scenario catalogue (T009 / T016).
-
-A ``Scenario`` is one persona-conditioned flow: a file, a query, the acting
-principal, the run mode, and the properties expected to hold. It is the atomic
-unit the runner plans, drives, and verifies.
+"""Scenario catalogue (backend/verification/isolation.py, personas.py): a Scenario is
+one persona-conditioned flow — file, query, acting principal, run mode, and expected
+properties — the atomic unit the runner drives and verifies.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,7 +11,6 @@ from typing import List, Optional
 from verification.isolation import Principal, make_principal
 from verification.personas import Persona, all_personas
 
-# Property keys (match Check.property).
 TANGIBLE_UI = "tangible_ui"
 DELEGATED_AUTHORITY = "delegated_authority"
 BACKEND_ONLY_UI = "backend_only_ui"
@@ -20,12 +18,10 @@ BACKEND_ONLY_UI = "backend_only_ui"
 
 @dataclass
 class Scenario:
-    """One persona-conditioned verification flow."""
-
     scenario_id: str
     persona: Persona
     principal: Principal
-    auth_mode: str  # real_keycloak | mock_inprocess
+    auth_mode: str
     expected_properties: List[str] = field(default_factory=list)
     warrants_ui: bool = True
 
@@ -40,14 +36,6 @@ def build_scenarios(
     persona_keys: Optional[List[str]] = None,
     properties: Optional[List[str]] = None,
 ) -> List[Scenario]:
-    """Build one scenario per persona (US1's per-persona coverage).
-
-    Args:
-        run_id: Run namespace (for principal ids).
-        auth_mode: ``real_keycloak`` or ``mock_inprocess``.
-        persona_keys: Restrict to these personas (None = all).
-        properties: Properties expected to hold (default: all three).
-    """
     props = properties or [TANGIBLE_UI, BACKEND_ONLY_UI]
     out: List[Scenario] = []
     for persona in all_personas(persona_keys):

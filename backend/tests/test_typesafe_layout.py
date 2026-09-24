@@ -1,14 +1,6 @@
-"""Feature 089 (T042): the deterministic layout composer.
-
-The composer replaces a model call, so the bar is higher than "looks
-reasonable": it must be exactly as trustworthy as the designer it stands in
-for. Three properties carry that weight, and most of this file is about them.
-
-* Every delivered component is placed **exactly once**. Losing a tool's output
-  is worse than an unarranged stack.
-* Nothing is invented. Only ``ref`` nodes and structural containers appear.
-* Anything the composer cannot arrange returns ``None`` and the turn falls
-  back to the designer, unchanged.
+"""Tests for orchestrator/typesafe_routing/layout.py's deterministic layout composer:
+every delivered component is placed exactly once, only ref and structural nodes
+appear, and anything unarrangeable returns None to defer to the designer.
 """
 
 from __future__ import annotations
@@ -40,7 +32,6 @@ def _round(*types: str) -> list:
 
 
 def _refs(node) -> list:
-    """Every component id the layout references, in order."""
     out: list = []
     if isinstance(node, list):
         for item in node:
@@ -75,9 +66,6 @@ def _node_types(node) -> list:
     return out
 
 
-# -- classification -------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "wire_type,expected",
     [
@@ -98,11 +86,7 @@ def test_the_class_map_matches_the_contract(wire_type: str, expected: str) -> No
     assert class_of({"type": wire_type}) == expected
 
 
-# -- the deferral cases ---------------------------------------------------
-
-
 def test_as_delivered_defers_to_the_designer() -> None:
-    """"Do not rearrange" is a decision, not a gap."""
     assert compose("as_delivered", _round("metric", "table")) is None
 
 
@@ -110,7 +94,7 @@ def test_as_delivered_defers_to_the_designer() -> None:
 def test_an_unknown_style_defers(style) -> None:
     result = compose(style, _round("metric", "table"))
     if style == "DASHBOARD ":
-        assert result is not None  # case and whitespace are normalized
+        assert result is not None
     else:
         assert result is None
 
@@ -122,7 +106,6 @@ def test_fewer_than_two_components_defers() -> None:
 
 
 def test_a_component_without_an_id_defers() -> None:
-    """An arrangement that cannot reference something cannot place it."""
     components = [{"type": "metric"}, {"type": "table", "component_id": "c1"}]
     assert compose("dashboard", components) is None
 
@@ -130,9 +113,6 @@ def test_a_component_without_an_id_defers() -> None:
 def test_an_id_field_is_accepted_as_well_as_component_id() -> None:
     components = [{"type": "metric", "id": "a"}, {"type": "table", "id": "b"}]
     assert compose("dashboard", components) is not None
-
-
-# -- the exactly-once property -------------------------------------------
 
 
 @pytest.mark.parametrize("style", SUPPORTED_STYLES)
@@ -173,12 +153,8 @@ def test_exactly_once_holds_across_shapes(style: str, types: tuple) -> None:
     assert sorted(_refs(layout)) == sorted(c["component_id"] for c in components)
 
 
-# -- nothing is invented --------------------------------------------------
-
-
 @pytest.mark.parametrize("style", SUPPORTED_STYLES)
 def test_only_refs_and_structural_containers_appear(style: str) -> None:
-    """FR-029: components are placed, never copied, rewritten or summarized."""
     components = _round("hero", "metric", "bar_chart", "table", "text")
     layout = compose(style, components)
     for node_type in _node_types(layout):
@@ -206,23 +182,19 @@ def test_compose_does_not_mutate_its_input(style: str) -> None:
 
 
 def test_compose_is_deterministic() -> None:
-    """The whole reason to prefer this over a model call."""
     components = _round("hero", "metric", "gauge", "bar_chart", "table", "text")
     first = compose("dashboard", components)
     for _ in range(5):
         assert compose("dashboard", components) == first
 
 
-# -- the arrangements themselves -----------------------------------------
-
-
 def test_dashboard_leads_with_the_headline_then_a_kpi_grid() -> None:
     components = _round("hero", "metric", "gauge", "bar_chart", "table", "text")
     layout = compose("dashboard", components)
-    assert layout[0] == {"type": "ref", "component_id": "c0"}  # hero
+    assert layout[0] == {"type": "ref", "component_id": "c0"}
     grid = layout[1]
     assert grid["type"] == "grid"
-    assert _refs(grid) == ["c1", "c2"]  # metric, gauge
+    assert _refs(grid) == ["c1", "c2"]
     assert grid["columns"] == 2
 
 
@@ -238,9 +210,8 @@ def test_dashboard_does_not_grid_a_single_chart() -> None:
 
 
 def test_detailed_table_puts_the_records_first() -> None:
-    """Someone who asked for rows wants the rows above the fold."""
     layout = compose("detailed_table", _round("metric", "bar_chart", "table"))
-    assert _refs(layout)[0] == "c2"  # the table
+    assert _refs(layout)[0] == "c2"
 
 
 def test_detailed_table_folds_the_charts_away() -> None:
@@ -267,12 +238,8 @@ def test_alert_focused_with_nothing_to_fold_is_just_the_alerts() -> None:
 
 def test_conversational_leads_with_prose_and_stacks_full_width() -> None:
     layout = compose("conversational", _round("metric", "text", "table"))
-    assert _refs(layout)[0] == "c1"  # the text
-    # Nothing side by side: a phone should not get two columns of tiles.
+    assert _refs(layout)[0] == "c1"
     assert not [n for n in _node_types(layout) if n == "grid"]
-
-
-# -- ordering within a class ---------------------------------------------
 
 
 @pytest.mark.parametrize("style", SUPPORTED_STYLES)

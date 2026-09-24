@@ -1,16 +1,6 @@
-"""Retry semantics for LETS-governed physical effects.
-
-The existing orchestrator retry loop predates protected-executor receipts.  A
-single receipt is authority for one possible physical effect, so it must never
-be reused for a second invocation.  This module deliberately separates:
-
-* transport retries while obtaining one authorization (same operation id,
-  nonce, and canonical request); and
-* physical retries after an actuator returned a known retryable result (new
-  operation id, nonce, and receipt).
-
-An actuator whose non-idempotent result may have been lost is not retried.  It
-is reported as ``outcome_uncertain`` for reconciliation or compensation.
+"""Receipt-safe bounded retry for LETS-governed physical effects: transport retries
+reuse one authorization, while a retry after a known-retryable actuator result mints
+a new operation id/nonce/receipt. governed_dispatch.py is the sole caller.
 """
 
 from __future__ import annotations
@@ -30,16 +20,12 @@ P = TypeVar("P")
 
 
 class EffectSemantics(StrEnum):
-    """Recovery posture declared by the host for one tool effect."""
-
     IDEMPOTENT = "idempotent"
     RECONCILABLE = "reconcilable"
     NON_IDEMPOTENT = "non_idempotent"
 
 
 class ProtectedRetryError(RuntimeError):
-    """Stable, content-free base error for the protected retry boundary."""
-
     code = "protected_retry_failed"
 
     def __init__(self, code: str | None = None) -> None:
@@ -48,21 +34,15 @@ class ProtectedRetryError(RuntimeError):
 
 
 class PreResponseTransportError(ProtectedRetryError):
-    """The authorization transport failed before a response was known."""
-
     code = "authorization_transport_unavailable"
 
 
 class EffectResultLostError(ProtectedRetryError):
-    """The actuator may have run, but its result is not known."""
-
     code = "effect_result_lost"
 
 
 @dataclass(frozen=True, slots=True)
 class PhysicalAttempt:
-    """Stable identity for exactly one possible physical invocation."""
-
     operation_id: str
     nonce: str
     ordinal: int
@@ -80,8 +60,6 @@ class PhysicalAttempt:
 
 @dataclass(frozen=True, slots=True)
 class ActuatorResult(Generic[T]):
-    """Known response from one physical attempt."""
-
     value: T | None = None
     error_code: str | None = None
     retryable: bool = False
@@ -107,8 +85,6 @@ class ProtectedOutcomeStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ProtectedOutcome(Generic[T]):
-    """Terminal result of the bounded protected retry operation."""
-
     status: ProtectedOutcomeStatus
     attempt: PhysicalAttempt
     value: T | None = None
@@ -127,8 +103,6 @@ async def _resolve(value: T | Awaitable[T]) -> T:
 
 
 class ProtectedToolRetrier(Generic[P, T]):
-    """Run one governed effect with receipt-safe bounded retry semantics."""
-
     def __init__(
         self,
         *,
@@ -162,8 +136,6 @@ class ProtectedToolRetrier(Generic[P, T]):
         invoke: Invoke[P, T],
         observe: Observe | None = None,
     ) -> ProtectedOutcome[T]:
-        """Authorize and invoke, never reusing a permit across actuations."""
-
         if not isinstance(semantics, EffectSemantics):
             raise TypeError("effect semantics must be declared")
 
@@ -187,8 +159,6 @@ class ProtectedToolRetrier(Generic[P, T]):
                 if observe is not None:
                     await _resolve(observe("outcome_uncertain", attempt))
                 if semantics is EffectSemantics.IDEMPOTENT and ordinal < self._physical_attempts:
-                    # Idempotency is a domain assertion.  The next possible
-                    # invocation still receives new external authority.
                     await self._wait(ordinal)
                     continue
                 return ProtectedOutcome(
@@ -219,7 +189,7 @@ class ProtectedToolRetrier(Generic[P, T]):
                 return last
             await self._wait(ordinal)
 
-        if last is None:  # Defensive: constructor prevents a zero-attempt loop.
+        if last is None:
             raise ProtectedRetryError("protected_retry_exhausted")
         return last
 
@@ -230,8 +200,6 @@ class ProtectedToolRetrier(Generic[P, T]):
         authorize: Authorize[P],
         observe: Observe | None,
     ) -> P:
-        """Retry a no-response authorization with byte-equivalent identity."""
-
         for transport_ordinal in range(1, self._transport_attempts + 1):
             try:
                 return await _resolve(authorize(attempt))

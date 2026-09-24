@@ -1,4 +1,6 @@
-"""Feature 066 latency: trailing-silence trim and the tunable endpoint."""
+"""Tests for voice_agent/session.py's trailing-silence trim and the
+VOICE_ENDPOINT_SILENCE_MS clamp.
+"""
 
 from __future__ import annotations
 
@@ -34,8 +36,6 @@ _SILENCE_PCM = b"\x00\x00" * AUDIO_FRAME_SAMPLES
 
 @pytest.mark.asyncio
 async def test_trailing_endpoint_silence_trims_to_tail_with_speech_intact() -> None:
-    """The ASR POST carries the speech bytes untouched plus a 128-ms tail."""
-
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
@@ -64,8 +64,6 @@ async def test_trailing_endpoint_silence_trims_to_tail_with_speech_intact() -> N
 
 @pytest.mark.asyncio
 async def test_internal_clause_pause_is_never_trimmed() -> None:
-    """Only the trailing run is trimmed; bridged mid-utterance pauses stay."""
-
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
@@ -83,7 +81,6 @@ async def test_internal_clause_pause_is_never_trimmed() -> None:
     session.deliver(_set_capture(True))
     await _wait_for(lambda: session.capture_open)
 
-    # Fed in two batches so the bounded RTC event queue is never overrun.
     for _ in range(4):
         factory.streams[0].feed(_SPEECH_PCM)
     for _ in range(pause_frames):
@@ -107,8 +104,6 @@ async def test_internal_clause_pause_is_never_trimmed() -> None:
 
 
 def test_short_silence_run_is_not_over_trimmed() -> None:
-    """A run at or under the retained tail (max-length finalize) trims zero."""
-
     factory = FakeRtcFactory(FakeRoom([FakeParticipant("client-a", [])]))
     session = _session(factory)
     untouched = _SPEECH_PCM * 6 + _SILENCE_PCM * 2
@@ -136,8 +131,6 @@ def test_trim_keeps_exactly_the_context_tail() -> None:
 
 
 def test_trim_fails_closed_rather_than_emptying_the_buffer() -> None:
-    """An inconsistent counter larger than the buffer must trim nothing."""
-
     factory = FakeRtcFactory(FakeRoom([FakeParticipant("client-a", [])]))
     session = _session(factory)
     session._utterance.extend(_SILENCE_PCM * 2)
@@ -149,17 +142,17 @@ def test_trim_fails_closed_rather_than_emptying_the_buffer() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected_frames"),
     (
-        (None, 30),  # unset -> 960 ms default (30 x 32 ms frames)
-        ("", 30),  # compose passes empty when the operator sets nothing
-        ("garbage", 30),  # invalid -> default, never a crash
-        ("1.5", 30),  # non-integer -> default
+        (None, 30),
+        ("", 30),
+        ("garbage", 30),
+        ("1.5", 30),
         ("960", 30),
-        ("1000", 31),  # rounded to whole 32 ms frames
-        ("320", 10),  # floor of the sane range
-        ("100", 10),  # clamped up to 320 ms
+        ("1000", 31),
+        ("320", 10),
+        ("100", 10),
         ("-5000", 10),
-        ("2560", 80),  # ceiling of the sane range
-        ("999999", 80),  # clamped down to 2560 ms
+        ("2560", 80),
+        ("999999", 80),
     ),
 )
 def test_endpoint_silence_env_parsing_and_clamping(
@@ -169,6 +162,4 @@ def test_endpoint_silence_env_parsing_and_clamping(
 
 
 def test_endpoint_default_is_within_the_clamp_range() -> None:
-    """The import-time constant always lands inside [320, 2560] ms."""
-
     assert 10 <= VAD_END_SILENCE_FRAMES <= 80

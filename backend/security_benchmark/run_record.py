@@ -1,10 +1,8 @@
-"""Run record — the reproducibility unit (spec 047 FR-005, FR-007, SC-006).
-
-Every reported number is tied to a (model, benchmark version, harness version,
-seed) tuple plus the full per-case outcome list, so any figure can be
-reproduced and audited. Records are written to a gitignored, per-run-namespaced
-artifacts directory (FR-007).
+"""The reproducibility unit for a benchmark run: RunKey ties every number to (model,
+benchmark version, harness version, seed); RunRecord holds per-envelope
+adjudications, written as artifacts for report.py.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,8 +17,6 @@ from security_benchmark.adjudicator import Adjudication
 
 @dataclass(frozen=True)
 class RunKey:
-    """The tuple within which ASR is comparable (FR-005, clarification Q4)."""
-
     model: str
     benchmark: str
     benchmark_version: str
@@ -44,12 +40,9 @@ class RunKey:
 
 @dataclass
 class RunRecord:
-    """All adjudications for one benchmark run across the ablation matrix."""
-
     key: RunKey
     run_id: str
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    # adjudications keyed by envelope label → list of per-case Adjudication
     adjudications: Dict[str, List[Adjudication]] = field(default_factory=dict)
     mode: str = "synthetic"
     notes: str = ""
@@ -71,7 +64,6 @@ class RunRecord:
         }
 
     def write_json(self, artifacts_root: str) -> str:
-        """Write the machine-readable per-case record; return the path (FR-007)."""
         run_dir = os.path.join(artifacts_root, self.run_id)
         os.makedirs(run_dir, exist_ok=True)
         path = os.path.join(run_dir, f"{self.key.slug}.record.json")

@@ -1,4 +1,8 @@
-"""Only explicit authenticated owner text can trigger chat lifecycle controls."""
+"""Tests for persistent_agents/chat_tools.py: only authenticated owner text can trigger
+chat controls, the schema hides consent/caller identity, and source text, malformed
+input or delegated turns cannot control assignments.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 from unittest.mock import AsyncMock, Mock
 

@@ -1,15 +1,8 @@
-"""Feature 027 — T011: the account row + the settings menu, and their gating.
-
-Structural invariants (not byte-exact): menu groups/entries per
-contracts/settings-surfaces.md, admin DOM-absence (SC-005), sign-out plain
-link, and modal/notice escaping.
-
-The menu moved. It used to be a dropdown the top-bar renderer emitted; it is
-now the settings dialog's left rail, built from the same model by
-``render_settings_nav``. So the inventory assertions live against the rail
-and the account-row assertions stay here — one menu, one builder, two
-renderers.
+"""Tests for the top bar and settings rail (AstralProjection webrender/chrome/topbar.py
+and menu_model.py): account row, gear/rail navigation parity, admin gating, and
+canvas action visibility.
 """
+
 import pytest
 
 from webrender.chrome import (
@@ -23,27 +16,20 @@ from webrender.chrome.menu_model import build_menu_model
 
 
 def _nav(roles=None, **availability):
-    """The rail a session with these roles and host flags would see."""
     return render_settings_nav(build_menu_model(roles, **availability))
 
 
 @pytest.fixture(autouse=True)
 def _pulse_off_by_default(monkeypatch):
-    """Keep the host flag off; Projection receives availability explicitly."""
     monkeypatch.delenv("FF_PULSE_DIGEST", raising=False)
 
 
 def test_topbar_has_status_and_settings_trigger():
     html = render_topbar(roles=["user"])
-    # Feature 089: the brand is the sidebar's own #astral-brand block (see
-    # test_brand_lives_in_the_sidebar_exactly_once), so this renderer emits
-    # only the control cluster.
     assert 'src="/static/img/AstralDeep.png"' not in html
     assert 'data-tour-target="topbar.brand"' not in html
     assert 'id="astral-status"' in html
     assert 'id="astral-settings-btn"' in html
-    # The gear opens the settings dialog; it is not a popover toggle, and no
-    # menu is rendered into the shell for it to toggle.
     assert 'aria-haspopup="dialog"' in html
     assert 'data-ui-action="chrome_open"' in html
     assert 'id="astral-settings-menu"' not in html
@@ -51,17 +37,10 @@ def test_topbar_has_status_and_settings_trigger():
 
 
 def test_brand_lives_in_the_sidebar_exactly_once():
-    """Feature 089: one logo, one tour target, and it returns to the landing.
-
-    Two brand blocks would give the tour two targets to choose between and a
-    reader two things that look like the same control.
-    """
     from astralprojection.resources import template_path
 
     shell = template_path("shell.html").read_text(encoding="utf-8")
     assert shell.count('data-tour-target="topbar.brand"') == 1
-    # The reference carries its content-hash token, like every other
-    # static reference in the shell.
     assert shell.count('/static/img/AstralDeep.png?v=%%ASTRAL_V:') == 1
     assert 'id="astral-brand"' in shell
     brand = shell[shell.index('id="astral-brand"'):]
@@ -87,7 +66,6 @@ def test_menu_entries_carry_chrome_open_actions():
 
 
 def test_the_gear_opens_the_rails_own_first_entry():
-    """The gear and the rail cannot disagree about where settings start."""
     from webrender.chrome.topbar import settings_entry_surface
 
     model = build_menu_model(["user"])
@@ -97,7 +75,6 @@ def test_the_gear_opens_the_rails_own_first_entry():
 
 
 def test_the_rail_marks_where_you_are():
-    """An entry for the surface on screen is the current one, and only it."""
     html = render_settings_nav(build_menu_model(["user"]), "theme")
     assert html.count('aria-current="true"') == 1
     marked = html[html.index('aria-current="true"'):]
@@ -105,19 +82,14 @@ def test_the_rail_marks_where_you_are():
 
 
 def test_workspace_timeline_is_not_in_settings_rail():
-    """The workspace timeline has moved out of the settings rail to the composer bar options menu.
-    The MODEL is unchanged, so native clients still receive it as a top-bar control."""
     nav = _nav(["user"])
     assert 'data-menu-key="timeline"' not in nav
     assert "Workspace timeline" not in nav
     assert 'id="astral-timeline-btn"' not in render_topbar(roles=["user"])
-    # The model still carries it for every other client.
     assert any(c.key == "timeline" for c in build_menu_model(["user"]).topbar)
 
 
 def test_account_row_carries_gear_alone_and_no_action_icons():
-    """Action icons (pulse, timeline, recent work) do not render in the
-    account row — they live in the composer menu instead."""
     for roles in (["user"], ["admin", "user"], None):
         html = render_topbar(roles=roles)
         assert 'id="astral-settings-btn"' in html
@@ -128,48 +100,34 @@ def test_account_row_carries_gear_alone_and_no_action_icons():
 def test_sign_out_is_plain_link_outside_js():
     html = _nav(["user"])
     assert 'href="/auth/logout"' in html
-    # Last in the rail, and visibly distinct, exactly as it was in the menu.
     assert html.rindex("Sign out") > html.rindex("User guide")
     assert "is-danger" in html
 
 
 def test_new_chat_button_in_topbar_for_every_role():
-    """The New-chat button is core chrome on every client (Windows ＋ New,
-    Android RootScaffold onNewChat) — the web top bar carries its twin,
-    labelled, tour-targetable, and OUTSIDE (before) the Settings dropdown.
-    Client-local behavior (reset + `new_chat` event) lives in client.js."""
     for roles in (["user"], ["admin", "user"], None):
         html = render_topbar(roles=roles)
         assert 'id="astral-newchat-btn"' in html
         assert 'aria-label="New chat"' in html
         assert 'data-tour-target="topbar.new-chat"' in html
         assert html.index('id="astral-newchat-btn"') < html.index('id="astral-settings-btn"')
-        # NOT a chrome_open surface — no settings-menu entry for it.
         assert 'data-menu-key="new-chat"' not in html
 
 
 def test_canvas_page_actions_live_in_the_topbar_hidden_by_default():
-    """Export page / Share page moved out of a sticky bar above the canvas and
-    into the top bar (066). Two things must hold together: they ship HIDDEN, so
-    an empty or unflagged canvas shows no chrome at all and client.js is the
-    only thing that reveals them; and they keep the class names the delegated
-    click handlers dispatch on, so the move changed placement, not behavior."""
     for roles in (["user"], ["admin", "user"], None):
         html = render_topbar(roles=roles, export_enabled=True, share_enabled=True)
         for btn_id in ('id="astral-export-page-btn"', 'id="astral-share-page-btn"'):
             assert btn_id in html
             assert html.index(btn_id) < html.index('id="astral-settings-btn"')
-        # The handler hooks: export by class, share by class + canvas scope.
         assert "astral-export-canvas" in html
         assert 'data-share-scope="canvas"' in html
-        # Both are hidden at render time — nothing reveals itself server-side.
         assert html.count("hidden") >= 2
         assert 'aria-label="Export page"' in html
         assert 'aria-label="Share page"' in html
 
 
 def test_conversation_restore_control_is_in_the_floating_panel():
-    """Restoring the sidebar stays available beside the floating transcript."""
     from astralprojection.resources import template_path
 
     shell = template_path("shell.html").read_text(encoding="utf-8")
@@ -181,10 +139,7 @@ def test_conversation_restore_control_is_in_the_floating_panel():
         assert 'id="astral-topbar-chat-btn"' not in html
 
 
-# ── Feature 033 (C-U8) — Pulse digest (moved to composer menu) ──────────────
-
 def test_pulse_absent_from_settings_rail():
-    """Pulse digest is moved out of the settings rail to the composer bar options menu."""
     assert "Pulse digest" not in _nav(["user"], pulse_enabled=False)
     assert "Pulse digest" not in _nav(["user"], pulse_enabled=True)
     assert "Pulse digest" not in _nav(None, pulse_enabled=True)
@@ -201,7 +156,6 @@ def test_admin_group_present_for_admin():
 
 
 def test_admin_group_dom_absent_for_non_admin():
-    """SC-005: zero admin references in a non-admin's rendered output."""
     for html in (_nav(["user"]), render_topbar(roles=["user"])):
         for marker in ("Admin tools", "Tool quality", "Tutorial admin", "admin_tools"):
             assert marker not in html, f"admin marker leaked to non-admin DOM: {marker}"
@@ -216,7 +170,7 @@ def test_modal_shell_escapes_title():
     html = render_modal_shell("<script>alert(1)</script>", "<p>body</p>", "agents")
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
-    assert "<p>body</p>" in html  # body is trusted, pre-rendered chrome output
+    assert "<p>body</p>" in html
     assert 'role="dialog"' in html and 'aria-modal="true"' in html
     assert "astral-modal-close" in html
 
@@ -224,7 +178,7 @@ def test_modal_shell_escapes_title():
 def test_error_and_notice_blocks_escape_and_mark_roles():
     err = chrome_error_block("boom <img onerror=x>", retry_surface="agents")
     assert "<img" not in err and "&lt;img" in err
-    assert 'data-ui-action="chrome_open"' in err  # retry affordance
+    assert 'data-ui-action="chrome_open"' in err
     ok = notice_block("success", "saved <b>!</b>")
     assert "<b>" not in ok and "&lt;b&gt;" in ok
     assert 'role="status"' in ok

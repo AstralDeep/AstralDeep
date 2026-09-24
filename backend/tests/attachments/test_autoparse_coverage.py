@@ -1,9 +1,6 @@
-"""Feature 031 US2 — autoparse coverage_status decisions (T033/T036/T037).
-
-The upload endpoint uses coverage_status to set parser_status and decide whether
-to enqueue a background parser draft. Covered/built-in or globally-live → no
-draft; pending → dedup (awaiting admin); flag off → unavailable; otherwise
-preparing.
+"""Tests for orchestrator/attachment_autoparse.py's coverage_status decisions: built-in
+or globally live types report covered, pending registry rows dedup, flag-off reports
+unavailable, and uncovered types report preparing.
 """
 
 from __future__ import annotations
@@ -92,7 +89,7 @@ def test_failed_registry_row_allows_reattempt(monkeypatch):
     fp = parser_registry.gap_fingerprint("data", "orc")
     _bind_repository(monkeypatch, {fp: {"status": "failed"}})
     out = attachment_autoparse.coverage_status(_orch(), extension="orc", category="data")
-    assert out["status"] == "preparing"  # a later upload may re-attempt
+    assert out["status"] == "preparing"
 
 
 def test_tool_name_is_identifier_safe():

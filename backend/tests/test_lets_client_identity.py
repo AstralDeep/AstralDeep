@@ -1,4 +1,7 @@
-"""Per-request minted EdDSA service identity for the LETS warden client."""
+"""Tests for orchestrator/lets_client.py's minted-identity path (LETS/src/lets/auth.py
+EdDSA signing): per-request bearer minting and verification, and that concurrent
+callers or client recreation never leak or share a bearer.
+"""
 
 from __future__ import annotations
 
@@ -133,9 +136,6 @@ def _authenticator(tmp_path: Path, **changes: Any) -> Ed25519JWTAuthenticator:
     return Ed25519JWTAuthenticator(**values)
 
 
-# --- minter ---------------------------------------------------------------
-
-
 def test_minted_token_has_exact_header_claims_and_verifies_against_seed() -> None:
     minter = _minter()
     now = 1_800_000_000
@@ -231,9 +231,6 @@ def test_minter_representation_and_errors_carry_no_material() -> None:
     assert not hasattr(minter, "__dict__")
 
 
-# --- MintingLETSClient ----------------------------------------------------
-
-
 def _recording_transport(seen: list[str | None], *, status: int = 200) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.headers.get("authorization"))
@@ -284,7 +281,7 @@ def test_minting_client_header_survives_deadline_client_recreation() -> None:
         original = client._client
         factory = client._client_factory
         assert factory is not None
-        client._client = factory()  # same path as the watchdog-fired recreation
+        client._client = factory()
         assert client._client is not original
         assert "authorization" not in client._client.headers
         client.info()
@@ -295,8 +292,6 @@ def test_minting_client_header_survives_deadline_client_recreation() -> None:
 
 
 def _verified_jti(bearer: str | None) -> str:
-    """Return the jti of a bearer after proving its signature and audience."""
-
     assert bearer is not None and bearer.startswith("Bearer ")
     header, claims, signature, signing_input = _decode(bearer.removeprefix("Bearer "))
     VerifyKey(bytes(SigningKey(SEED).verify_key)).verify(
@@ -331,12 +326,6 @@ def test_minting_client_never_writes_a_bearer_onto_shared_client_headers() -> No
 
 
 def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> None:
-    """Thread A's total deadline recreates the client while B waits on the lock.
-
-    Pre-fix, B had stamped its bearer on the OLD client's shared headers and
-    then sent on the NEW (header-less) client: a spurious 401 in enforce.
-    """
-
     seen: list[tuple[int, str | None]] = []
     entered = threading.Event()
     release = threading.Event()
@@ -361,7 +350,7 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
     def run(name: str) -> None:
         try:
             outcomes[name] = client.info()
-        except BaseException as error:  # noqa: BLE001 - recorded for assertion
+        except BaseException as error:  # noqa: BLE001
             outcomes[name] = error
 
     try:
@@ -370,8 +359,8 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
         thread_b = threading.Thread(target=run, args=("b",))
         thread_a.start()
         assert entered.wait(5.0)
-        thread_b.start()  # queues on _request_lock behind A
-        time.sleep(0.6)  # A's 0.3 s total deadline fires while B is queued
+        thread_b.start()
+        time.sleep(0.6)
         release.set()
         thread_a.join(5.0)
         thread_b.join(5.0)
@@ -382,7 +371,7 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
 
     assert isinstance(outcomes["a"], httpx.TimeoutException)
     assert outcomes["b"] == {"tenant_id": TENANT}
-    assert client._client is not original  # the deadline recreated the client
+    assert client._client is not original
     assert len(seen) == 2
     assert seen[0][0] != seen[1][0]
     assert len({_verified_jti(bearer) for _, bearer in seen}) == 2
@@ -432,7 +421,7 @@ def test_concurrent_callers_each_send_the_bearer_they_minted() -> None:
             gate.wait(5.0)
             for _ in range(5):
                 assert client.info() == {"tenant_id": TENANT}
-        except BaseException as error:  # noqa: BLE001 - recorded for assertion
+        except BaseException as error:  # noqa: BLE001
             errors.append(error)
 
     threads = [threading.Thread(target=run) for _ in range(8)]
@@ -463,9 +452,6 @@ def test_minting_client_refuses_a_static_token() -> None:
 
 def test_minting_client_is_a_lets_client() -> None:
     assert issubclass(MintingLETSClient, LETSClient)
-
-
-# --- create_lets_warden_client -------------------------------------------
 
 
 class CapturingFactory:

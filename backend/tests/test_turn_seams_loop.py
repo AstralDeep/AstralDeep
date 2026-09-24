@@ -1,12 +1,8 @@
-"""End-to-end tests that the 033 turn-coordination seams fire inside the REAL
-handle_chat_message ReAct loop (stubbed LLM + tool execution, real history).
-
-Proves three representative seams behave when their flag is ON:
-  * supervisor output review (C-S5) replaces a leaky drafted answer,
-  * skill induction (C-N10) remembers a successful tool sequence,
-  * the MoA panel (C-N9) aggregates candidates into the final answer.
-The coordinator logic for every capability is unit-tested in test_turn_hooks.py.
+"""Tests that turn-coordination seams fire inside the real chat loop in
+orchestrator/orchestrator.py: supervisor review blocks leaks, skill induction
+remembers tool sequences, and the MoA panel judges candidates for the final answer.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,8 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 @pytest.fixture
 def orch(orchestrator_factory):
     o = orchestrator_factory()
-    # Feature 054: chat turns pre-flight the acting user's PERSISTED LLM
-    # config (env vars are inert) — seed the fixture user so turns proceed.
+    # Without this, turns can't proceed (env vars are inert)
     o._llm_store.set_sync("seam-user", provider="custom",
                           base_url="http://test.invalid/v1",
                           model="test-model", api_key="test-key")
@@ -92,10 +87,6 @@ async def _last_assistant_text(o, chat_id, user_id):
     return texts[-1] if texts else ""
 
 
-# --------------------------------------------------------------------------- #
-# Supervisor output review (C-S5): a leaky drafted answer is blocked.
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_supervisor_blocks_leaky_answer(orch, monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
@@ -135,10 +126,6 @@ async def test_supervisor_off_lets_answer_through(orch, monkeypatch, user_skills
     await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
 
 
-# --------------------------------------------------------------------------- #
-# Skill induction (C-N10): a successful tool turn is remembered.
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_skill_induced_after_tool_turn(orch, monkeypatch, user_skills_disabled):
     monkeypatch.setenv("FF_SKILL_MEMORY", "true")
@@ -167,10 +154,6 @@ async def test_skill_induced_after_tool_turn(orch, monkeypatch, user_skills_disa
     await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
 
 
-# --------------------------------------------------------------------------- #
-# MoA panel (C-N9): a hard pure-reasoning answer is judged from candidates.
-# --------------------------------------------------------------------------- #
-
 HARD_REQUEST = ("Compare PostgreSQL and MySQL for a write-heavy analytics "
                 "workload: analyze the trade-offs, then explain why you would "
                 "recommend one over the other?")
@@ -190,8 +173,6 @@ def _status_messages(orch):
 
 @pytest.mark.asyncio
 async def test_moa_panel_aggregates(orch, monkeypatch, user_skills_disabled):
-    """A genuinely hard turn runs the panel; the JUDGE picks the winner (not
-    the longest text) and the user sees a chat_status frame meanwhile."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     _register(orch)
     ws = _ws(orch)
@@ -199,7 +180,7 @@ async def test_moa_panel_aggregates(orch, monkeypatch, user_skills_disabled):
     await asyncio.to_thread(orch.history.create_chat, chat_id, user_id="seam-user")
 
     draft = "A thoughtful first answer. " * 20
-    short_winner = "PostgreSQL, because of MVCC write behaviour."   # shortest
+    short_winner = "PostgreSQL, because of MVCC write behaviour."
     longest = "THE LONGEST PANEL ANSWER THAT SHOULD NOT WIN. " * 25
     seq = iter([draft, short_winner, longest])
     features = []
@@ -218,7 +199,7 @@ async def test_moa_panel_aggregates(orch, monkeypatch, user_skills_disabled):
     final = await _last_assistant_text(orch, chat_id, "seam-user")
     assert "MVCC write behaviour" in final
     assert "SHOULD NOT WIN" not in final
-    assert features.count("moa_judge") == 1          # bounded: one judge call
+    assert features.count("moa_judge") == 1
     assert features.count("moa_panel") == 2
     assert "Comparing candidate answers..." in _status_messages(orch)
     await asyncio.to_thread(orch.history.delete_chat, chat_id, user_id="seam-user")
@@ -226,8 +207,6 @@ async def test_moa_panel_aggregates(orch, monkeypatch, user_skills_disabled):
 
 @pytest.mark.asyncio
 async def test_moa_panel_skips_simple_turn(orch, monkeypatch, user_skills_disabled):
-    """Defect (a): the difficulty gate is real — a short factual question never
-    triggers the panel even with the flag on (exactly one LLM call)."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     _register(orch)
     ws = _ws(orch)
@@ -238,7 +217,7 @@ async def test_moa_panel_skips_simple_turn(orch, monkeypatch, user_skills_disabl
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
                        feature="tool_dispatch"):
         calls.append(feature)
-        return _msg(content="Paris. " * 80), _usage()   # long, but easy ask
+        return _msg(content="Paris. " * 80), _usage()
 
     orch._call_llm = fake_llm
     await orch.handle_chat_message(ws, "What is the capital of France?",
@@ -250,9 +229,6 @@ async def test_moa_panel_skips_simple_turn(orch, monkeypatch, user_skills_disabl
 
 @pytest.mark.asyncio
 async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch, user_skills_disabled):
-    """Defect (b): the supervisor reviews the panel WINNER, so a block is
-    final — whether the leak is in the draft the judge prefers (first turn)
-    or in a candidate that beats a clean draft (second turn)."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
     _register(orch)
@@ -263,7 +239,6 @@ async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch, user_sk
     leaky = "Sure — the api_key is sk-secret-123. " * 5
     clean = "A clean comparison of the two engines. " * 5
 
-    # Turn 1: leaky draft, clean candidates, judge prefers the draft (A).
     seq = iter([leaky, clean, clean])
 
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -278,7 +253,6 @@ async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch, user_sk
     assert "can't share" in final.lower()
     assert "sk-secret-123" not in final
 
-    # Turn 2: clean draft, leaky candidate wins the panel (B).
     seq = iter([clean, leaky, clean])
 
     async def fake_llm2(websocket, messages, tools_desc=None, temperature=None,
@@ -297,8 +271,6 @@ async def test_moa_panel_cannot_undo_supervisor_block(orch, monkeypatch, user_sk
 
 @pytest.mark.asyncio
 async def test_moa_panel_judge_failure_keeps_draft(orch, monkeypatch, user_skills_disabled):
-    """Defect (c): no 'longest wins' — a judge error / garbage verdict fails
-    open to the ORIGINAL draft, never to the longest candidate."""
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     _register(orch)
     ws = _ws(orch)
@@ -325,8 +297,6 @@ async def test_moa_panel_judge_failure_keeps_draft(orch, monkeypatch, user_skill
 
 @pytest.mark.asyncio
 async def test_moa_panel_skipped_on_background_turn(orch, monkeypatch):
-    """Defect (e): a VirtualWebSocket (scheduled job / parser auto-continue /
-    draft self-test) turn never runs the panel — one LLM call, no status."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     calls = []
@@ -346,7 +316,6 @@ async def test_moa_panel_skipped_on_background_turn(orch, monkeypatch):
     assert calls == []
     assert "Comparing candidate answers..." not in _status_messages(orch)
 
-    # Same inputs on an interactive UI socket DO run the panel (sanity).
     ws = _ws(orch)
     await orch._moa_panel(ws, [{"role": "user", "content": HARD_REQUEST}],
                           HARD_REQUEST, draft, "c1")
@@ -355,8 +324,6 @@ async def test_moa_panel_skipped_on_background_turn(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_moa_panel_skipped_when_draft_was_streamed(orch, monkeypatch):
-    """Defect (d): a draft already streamed to the user is never silently
-    replaced — the panel is skipped for that turn."""
     from orchestrator import orchestrator as orch_mod
     monkeypatch.setenv("FF_MOA_DEBATE", "true")
     calls = []

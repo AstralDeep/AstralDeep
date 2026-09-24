@@ -1,4 +1,7 @@
-"""``compute_volume_statistics`` tool: histogram + projections for a volume."""
+"""compute_volume_statistics tool: returns an intensity histogram and per-axis MIP
+thumbnails for a volumetric attachment, built on extract_volume_slice.py and
+_common.py.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +25,6 @@ def compute_volume_statistics(
     bins: int = 64,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return an intensity histogram and per-axis MIP thumbnails for a volume."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -64,8 +66,6 @@ def compute_volume_statistics(
 
     if arr.ndim == 3:
         try:
-            # Max-intensity projection along each axis — good for the LLM to
-            # see structure at a glance.
             result["mip_axial"] = _common.thumbnail_field(arr.max(axis=0))
             result["mip_coronal"] = _common.thumbnail_field(arr.max(axis=1))
             result["mip_sagittal"] = _common.thumbnail_field(arr.max(axis=2))

@@ -1,40 +1,17 @@
-"""Feature 055 (US5) — revocable snapshot share grants (research.md D11).
-
-Store layer only: the REST routes (``POST/GET/DELETE /api/share``, public
-``GET /share/{token}``) live in ``api.py`` behind ``FF_ARTIFACT_SHARING``
-(default OFF, fail-closed). A grant is an immutable rendition captured at
-mint — the public route serves ``snapshot_html`` verbatim and never reads
-live workspace rows, so later edits or chat deletion cannot change what a
-link shows.
-
-Guarantees:
-
-- **Raw tokens are never stored.** :meth:`ShareGrantStore.mint` returns the
-  256-bit urlsafe token exactly once and persists only its SHA-256 hex digest
-  (``share_grant.token_sha256``, unique-indexed — lookup is a single indexed
-  probe on the digest, no timing oracle beyond it).
-- **PHI gate fail-closed at mint** (data-model.md, contracts/rest-endpoints.md):
-  the snapshot's component JSON is screened by the feature-025 Presidio gate
-  (``personalization.phi_gate``). A hit — or an unavailable/erroring
-  analyzer — refuses the mint with an audited ``share.refused_phi``; nothing
-  is written on refusal.
-- **Revocation is immediate.** :meth:`ShareGrantStore.resolve` filters on
-  ``revoked_at IS NULL`` per request, so a revoked grant can never serve
-  again. ``snapshot_*`` columns have no UPDATE path (immutable after mint).
-- Audit: ``share.minted`` / ``share.opened`` / ``share.revoked`` /
-  ``share.refused_phi`` (class ``conversation``), no token material in rows.
-
-All public methods are async and keep every DB / analyzer call off the event
-loop (feature-052 loop guard).
+"""Store layer for revocable snapshot share links: mints and SHA-256-hashes tokens,
+screens content via personalization.phi_gate.py at mint, and backs api.py's /share
+routes behind FF_ARTIFACT_SHARING.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
+import re
 import secrets
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
 from audit.hooks import record_share_event
@@ -49,30 +26,151 @@ logger = logging.getLogger("orchestrator.artifact_share")
 
 VALID_SCOPES = ("component", "canvas")
 
+_SHARE_METADATA = frozenset({
+    "component_id", "id", "css", "style", "provenance", "source_agent", "source_tool",
+    "agent_id", "tool_id", "versions", "render_revision", "schema_version",
+})
+
+
+def _record_labels(labels):
+    clinical = any(re.fullmatch(
+        r"diagnosis|diagnoses|condition|treatment|medication|mrn|dob|date of birth|patient(?: name| id)?",
+        str(label).strip(), re.IGNORECASE,
+    ) for label in labels)
+    return ["Patient name" if clinical and str(label).strip().lower() in {"name", "full name"}
+            else str(label) for label in labels]
+
+
+class _ShareMarkup(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.text = []
+        self.attributes = []
+        self.in_style = False
+        self.tables = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "iframe", "object", "embed"}:
+            raise ValueError("share_screen_unsupported_markup")
+        if tag == "style":
+            self.in_style = True
+        if tag in {"div", "p", "li", "tr", "section", "article", "br", "h1", "h2", "h3"}:
+            self.text.append("\n")
+        if tag in {"td", "th"}:
+            self.text.append(" ")
+        if tag == "table":
+            self.tables.append({"headers": [], "row": [], "cell": None})
+        elif self.tables:
+            if tag == "tr":
+                self.tables[-1]["row"] = []
+            elif tag in {"td", "th"}:
+                self.tables[-1]["cell"] = [tag, []]
+        for key, value in attrs:
+            if not value:
+                continue
+            if key == "style":
+                self.attributes.extend(re.findall(r"url\s*\(([^)]+)\)", value, re.IGNORECASE))
+            elif key not in {"class", "id", "width", "height", "role", "colspan", "rowspan",
+                             "data-component-id", "data-astral-export", "data-astral-share"}:
+                self.attributes.append(value)
+
+    def handle_endtag(self, tag):
+        if tag == "style":
+            self.in_style = False
+        if tag in {"div", "p", "li", "tr", "section", "article", "h1", "h2", "h3"}:
+            self.text.append("\n")
+        if self.tables:
+            table = self.tables[-1]
+            if tag in {"td", "th"} and table["cell"] is not None:
+                kind, values = table["cell"]
+                table["row"].append((kind, "".join(values)))
+                table["cell"] = None
+            elif tag == "tr" and table["row"]:
+                if all(kind == "th" for kind, _ in table["row"]):
+                    table["headers"] = [value for _, value in table["row"]]
+                else:
+                    labels = _record_labels(table["headers"])
+                    self.text.extend(label + ": " + value + "\n"
+                                     for label, (_, value) in zip(labels, table["row"]))
+            elif tag == "table":
+                self.tables.pop()
+
+    def handle_data(self, data):
+        if self.in_style:
+            self.attributes.extend(re.findall(r"url\s*\(([^)]+)\)", data, re.IGNORECASE))
+        else:
+            self.text.append(data)
+            if self.tables and self.tables[-1]["cell"] is not None:
+                self.tables[-1]["cell"][1].append(data)
+
+
+def _share_screen_text(snapshot_json: Any, snapshot_html: str) -> str:
+    parts = []
+    budget = [50_000]
+
+    def markup(value):
+        parser = _ShareMarkup()
+        parser.feed(value)
+        parser.close()
+        if parser.in_style:
+            raise ValueError("share_screen_invalid_markup")
+        return "".join(parser.text) + "\n" + "\n".join(parser.attributes)
+
+    def visit(value, label="", depth=0):
+        budget[0] -= 1
+        if depth > 32 or budget[0] < 0:
+            raise ValueError("share_screen_limit")
+        if isinstance(value, dict):
+            component = isinstance(value.get("type"), str)
+            labels = _record_labels(value.keys())
+            headers = value.get("headers") or value.get("columns")
+            rows = value.get("rows")
+            if value.get("type") == "table" and isinstance(headers, (list, tuple)) and isinstance(rows, (list, tuple)):
+                row_labels = _record_labels(headers)
+                for row in rows:
+                    if isinstance(row, (list, tuple)):
+                        for header, cell in zip(row_labels, row):
+                            visit(cell, header, depth + 1)
+            for (key, child), child_label in zip(value.items(), labels):
+                if not isinstance(key, str):
+                    raise ValueError("share_screen_invalid")
+                if component and (key.startswith("_") or key in _SHARE_METADATA):
+                    continue
+                visit(child, child_label, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, label, depth + 1)
+        elif isinstance(value, str):
+            parts.append(label + ": " + (markup(value) if "<" in value else value))
+        elif value is not None and type(value) in (int, float, bool):
+            parts.append(label + ": " + str(value))
+        elif value is not None:
+            raise ValueError("share_screen_invalid")
+
+    if not isinstance(snapshot_html, str) or len(snapshot_html.encode("utf-8")) > 8 * 1024 * 1024:
+        raise ValueError("share_screen_limit")
+    visit(snapshot_json)
+    parts.append(markup(snapshot_html))
+    return "\n".join(parts)
+
 
 class ShareError(Exception):
-    """Base for share-grant refusals (routes map subclasses to HTTP codes)."""
+    pass
 
 
 class SharingDisabledError(ShareError):
-    """FF_ARTIFACT_SHARING is off — mint refused (routes 404 when off)."""
+    pass
 
 
 class SharePHIRefusedError(ShareError):
-    """Snapshot flagged as PHI, or the PHI engine is unavailable (fail-closed).
-
-    Routes map this to 403 ``{error: "phi_blocked"}``.
-    """
+    pass
 
 
 def hash_token(token: str) -> str:
-    """SHA-256 hex digest of a share token — the only form ever persisted."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
 class ShareGrantStore:
-    """Product policy over AstralPlane's typed ``share_grant`` repository."""
-
     def __init__(
         self,
         db=None,
@@ -95,20 +193,11 @@ class ShareGrantStore:
             legacy_database=db,
         )
 
-    # ── mint ─────────────────────────────────────────────────────────────
     async def mint(
         self, *, user_id: str, chat_id: str, scope: str,
         snapshot_html: str, snapshot_json: Any,
         component_id: Optional[str] = None, expires_at=None,
     ) -> Dict[str, Any]:
-        """Create a grant; returns ``{id, token, share_url, created_at, expires_at}``.
-
-        The returned ``token`` is shown exactly once — it cannot be recovered
-        from storage. Raises :class:`SharingDisabledError`,
-        :class:`SharePHIRefusedError`, or ``ValueError`` on bad arguments.
-        """
-        # Defense in depth behind the route-level 404: the store itself
-        # refuses to mint while the fail-closed flag is off.
         if not flags.is_enabled("artifact_sharing"):
             logger.info("share.refused_disabled user=%s chat=%s scope=%s",
                         user_id, chat_id, scope)
@@ -120,10 +209,11 @@ class ShareGrantStore:
         if not user_id or not chat_id or not snapshot_html or snapshot_json is None:
             raise ValueError("mint requires user_id, chat_id and a non-empty snapshot")
 
-        # The HTML is rendered from these dicts, so gating the JSON covers
-        # every piece of user data the link would expose (research D11).
-        gate_text = json.dumps(snapshot_json, default=str)
-        phi_hit = await asyncio.to_thread(get_phi_gate().contains_phi, gate_text)
+        try:
+            gate_text = _share_screen_text(snapshot_json, snapshot_html)
+            phi_hit = await asyncio.to_thread(get_phi_gate().contains_phi_for_sharing, gate_text)
+        except Exception:
+            phi_hit = True
         if phi_hit:
             logger.warning("share.refused_phi user=%s chat=%s scope=%s component=%s",
                            user_id, chat_id, scope, component_id)
@@ -168,9 +258,7 @@ class ShareGrantStore:
             "expires_at": record.expires_at,
         }
 
-    # ── owner views ──────────────────────────────────────────────────────
     async def list_grants(self, user_id: str) -> List[Dict[str, Any]]:
-        """Owner's grants, newest first — metadata only, never token/snapshot."""
         records = await self._grants.call_async(
             self._grants.repository.list_grants,
             owner_id=user_id,
@@ -191,11 +279,6 @@ class ShareGrantStore:
         ]
 
     async def revoke(self, user_id: str, share_id: int) -> bool:
-        """Owner-scoped, idempotent revoke. False only when no such grant.
-
-        Audits ``share.revoked`` on the live→revoked transition only, so a
-        repeated DELETE stays idempotent in the log too.
-        """
         state = await asyncio.to_thread(self._revoke_sync, user_id, share_id)
         if state == "revoked":
             await record_share_event(
@@ -213,13 +296,7 @@ class ShareGrantStore:
         )
         return state.value
 
-    # ── public serving ───────────────────────────────────────────────────
     async def resolve(self, token: str) -> Optional[Dict[str, Any]]:
-        """Grant row for a raw token, or None when unknown/revoked/expired.
-
-        The three refusal causes are indistinguishable to the caller (uniform
-        404 per contracts/rest-endpoints.md).
-        """
         if not token:
             return None
         record = await self._grants.call_async(
@@ -244,11 +321,6 @@ class ShareGrantStore:
         }
 
     async def record_open(self, grant: Dict[str, Any]) -> bool:
-        """Bump ``open_count`` and audit a public open of a resolved grant.
-
-        ``share.opened``: actor = share owner, principal ``share:<id>`` (the
-        anonymous visitor has no identity of their own).
-        """
         record = await self._grants.call_async(
             self._grants.repository.record_open,
             share_id=grant["id"],
@@ -265,21 +337,15 @@ class ShareGrantStore:
         return True
 
 
-# ---------------------------------------------------------------------------
-# Process-wide singleton (route layer entry point)
-# ---------------------------------------------------------------------------
-
 _STORE: Optional[ShareGrantStore] = None
 
 
 def get_share_store() -> ShareGrantStore:
-    """Return the application-bound process-wide store or fail closed."""
     if _STORE is None:
         raise RuntimeError("share persistence has not been bound to AstralPlane")
     return _STORE
 
 
 def set_share_store(store: Optional[ShareGrantStore]) -> None:
-    """Override the singleton (used by tests)."""
     global _STORE
     _STORE = store

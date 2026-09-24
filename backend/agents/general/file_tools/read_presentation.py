@@ -1,4 +1,4 @@
-"""``read_presentation`` tool: PPTX and ODP."""
+"""read_presentation tool: extracts slide text from PPTX and ODP attachments."""
 
 from __future__ import annotations
 
@@ -92,7 +92,6 @@ def read_presentation(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Read a presentation attachment (PPTX or ODP) and return slide text."""
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err

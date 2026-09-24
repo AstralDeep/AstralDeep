@@ -1,4 +1,7 @@
-"""web_search tests: DDG path, Tavily-compatible provider path, failure paths."""
+"""Tests for agents/web_research/mcp_tools.py's web_search: the keyless DuckDuckGo path
+(including bot-challenge detection) and the Tavily-compatible provider path.
+"""
+
 from unittest.mock import patch
 
 import requests
@@ -18,8 +21,6 @@ from shared.tests._http_mock import HttpMock
 PROVIDER_URL = "https://search.example.com/api"
 PROVIDER_CREDS = {"SEARCH_API_URL": PROVIDER_URL, "SEARCH_API_KEY": "sk-sentinel"}
 
-# Trimmed from the live 202 "bots use DuckDuckGo too" puzzle page DuckDuckGo
-# serves to non-browser traffic from datacenter addresses: no result anchors.
 CHALLENGE_HTML = """<!DOCTYPE html>
 <html lang="en"><head><title>DuckDuckGo</title></head><body>
 <div class="anomaly-modal__mask">
@@ -34,9 +35,6 @@ CHALLENGE_HTML = """<!DOCTYPE html>
 </div>
 </body></html>"""
 
-# Trimmed but structurally faithful lite.duckduckgo.com/lite page: a results
-# table with a sponsored row (whose "more info" anchor is ALSO a result-link),
-# then organic uddg-wrapped rows with their snippet rows.
 LITE_HTML = """<!DOCTYPE html>
 <html lang="en"><head><title>python tutorial at DuckDuckGo</title></head><body>
 <table border="0">
@@ -84,16 +82,10 @@ LITE_HTML = """<!DOCTYPE html>
 </table>
 </body></html>"""
 
-# A well-formed lite page with no results at all (no challenge markers).
 LITE_EMPTY_HTML = """<!DOCTYPE html>
 <html lang="en"><head><title>zxqv at DuckDuckGo</title></head><body>
 <table border="0"><tr><td>No results.</td></tr></table>
 </body></html>"""
-
-
-# ---------------------------------------------------------------------------
-# Keyless DuckDuckGo path
-# ---------------------------------------------------------------------------
 
 
 def test_ddg_search_renders_card_with_detailed_list(rmock: HttpMock) -> None:
@@ -140,11 +132,6 @@ def test_ddg_unreachable_names_backend_and_remedy() -> None:
     assert "API key in agent settings" in alert["message"]
 
 
-# ---------------------------------------------------------------------------
-# DuckDuckGo bot challenge (HTTP 202) -> bounded refusal without retry
-# ---------------------------------------------------------------------------
-
-
 def _ddg_calls(rmock: HttpMock):
     return [c["url"] for c in rmock.calls if c["method"] == "GET"]
 
@@ -159,11 +146,10 @@ def test_ddg_202_challenge_stops_without_trying_other_endpoints(rmock: HttpMock)
         "Keyless search is blocked. Add a search provider API key in agent settings "
         "for reliable/higher-limit search."
     )
-    assert result["_data"] is None  # no fabricated results
+    assert result["_data"] is None
 
 
 def test_ddg_200_challenge_body_without_anchors_is_treated_as_challenge(rmock: HttpMock) -> None:
-    """A 200 that is really the puzzle page (markers, zero anchors) is not 'no results'."""
     rmock.add("GET", DDG_HTML_URL, status=200, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=200, body=LITE_HTML.encode("utf-8"))
     result = web_search(query="python tutorial")
@@ -199,7 +185,6 @@ def test_ddg_202_then_lite_transport_failure_is_actionable_error(rmock: HttpMock
 
 
 def test_ddg_challenge_surfaces_in_research_brief_as_challenge_error(rmock: HttpMock) -> None:
-    """research_brief must not report the challenge as 'returned no results'."""
     rmock.add("GET", DDG_HTML_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=202, body=CHALLENGE_HTML.encode("utf-8"))
     result = research_brief(topic="python tutorial")
@@ -211,7 +196,6 @@ def test_ddg_challenge_surfaces_in_research_brief_as_challenge_error(rmock: Http
 
 
 def test_ddg_genuine_empty_page_is_still_no_results_without_lite_retry(rmock: HttpMock) -> None:
-    """A well-formed 200 page with zero results is an honest empty set, not a challenge."""
     rmock.add("GET", DDG_HTML_URL, status=200, body=EMPTY_HTML.encode("utf-8"))
     rmock.add("GET", DDG_LITE_URL, status=200, body=LITE_HTML.encode("utf-8"))
     result = web_search(query="zxqv-nothing")
@@ -223,7 +207,6 @@ def test_ddg_genuine_empty_page_is_still_no_results_without_lite_retry(rmock: Ht
 
 
 def test_ddg_empty_page_echoing_challenge_words_in_query_is_no_results(rmock: HttpMock) -> None:
-    """The bare words anomaly/challenge/bots are not markers: the query is echoed on the page."""
     body = EMPTY_HTML.replace(
         "<body>", '<body><input name="q" value="anomaly detection challenge bots">')
     rmock.add("GET", DDG_HTML_URL, status=200, body=body.encode("utf-8"))
@@ -270,11 +253,6 @@ def test_lite_parser_respects_max_results_and_tolerates_garbage() -> None:
     assert len(_parse_ddg_html(LITE_HTML, max_results=1, parser_cls=DDGLiteResultParser)) == 1
     assert _parse_ddg_html("<<<<not html", max_results=5, parser_cls=DDGLiteResultParser) == []
     assert _parse_ddg_html(CHALLENGE_HTML, max_results=5, parser_cls=DDGLiteResultParser) == []
-
-
-# ---------------------------------------------------------------------------
-# Configured provider (Tavily-compatible) path
-# ---------------------------------------------------------------------------
 
 
 def test_provider_path_posts_tavily_compatible_json(rmock: HttpMock) -> None:
@@ -345,18 +323,12 @@ def test_provider_auth_failure_is_error_alert(rmock: HttpMock) -> None:
 
 
 def test_provider_on_private_host_is_refused() -> None:
-    """Egress gate: a provider URL resolving into RFC1918 space is blocked."""
     creds = {"SEARCH_API_URL": "https://internal.example.com/api",
              "SEARCH_API_KEY": "sk"}
     result = web_search(query="python", _credentials=creds)
     alert = result["_ui_components"][0]
     assert alert["variant"] == "error"
     assert "blocked by network policy" in alert["message"]
-
-
-# ---------------------------------------------------------------------------
-# Input validation + credentials check
-# ---------------------------------------------------------------------------
 
 
 def test_empty_query_is_error() -> None:
@@ -401,7 +373,6 @@ def test_credentials_check_unexpected_error() -> None:
 
 
 def test_web_search_unexpected_error_is_error_alert() -> None:
-    """Non-HTTP exceptions also surface as actionable error Alerts."""
     with patch("requests.request", side_effect=RuntimeError("surprise")):
         result = web_search(query="python")
     alert = result["_ui_components"][0]

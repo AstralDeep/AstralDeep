@@ -1,12 +1,8 @@
-"""Feature 052 (T027) — register_ui handshake pipeline against the live DB.
-
-Drives a real register_ui through Orchestrator.handle_ui_message on an
-in-process VirtualWebSocket (mock-auth dev token): the welcome canvas and
-dashboard both arrive, rote_config still precedes the dashboard frame, and
-the off-critical-path writes (profile save, the two login audit events in
-order) still complete (FR-012 — reads parallelized, writes backgrounded,
-audit completeness preserved).
+"""Tests for the register_ui handshake against a live database
+(backend/orchestrator/orchestrator.py, async_tasks.py): welcome canvas and dashboard
+delivery ordering, and off-critical-path profile save and audit events completing.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,15 +28,6 @@ from orchestrator.plane_repository_context import (  # noqa: E402
 
 @pytest.fixture()
 def isolated_mock_identity():
-    """Return a per-test mock-auth subject and JWT-like bearer.
-
-    ``test_user`` is also the interactive development identity when
-    ``USE_MOCK_AUTH=true``.  A live-DB test must therefore never seed its
-    persisted LLM record: doing so replaces the provider configured through
-    the running web client.  The mock validator accepts a decoded JWT payload,
-    which lets this suite exercise the real mock-auth branch with an isolated
-    owner instead.
-    """
     user_id = f"pytest-register-ui-{uuid.uuid4().hex}"
     claims = {
         "sub": user_id,
@@ -58,14 +45,12 @@ def isolated_mock_identity():
 
 
 def _fresh_socket():
-    """A VirtualWebSocket capturing every frame the handshake sends."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
     return VirtualWebSocket(task)
 
 
 async def _register_and_observe(orch, identity, payload):
-    """Run register_ui and observe its two fire-and-forget writes durably."""
     ws = _fresh_socket()
     orch._registered_events[id(ws)] = asyncio.Event()
     await orch.handle_ui_message(ws, json.dumps(payload))
@@ -113,20 +98,12 @@ async def _register_and_observe(orch, identity, payload):
 
 @pytest.fixture()
 async def orch(monkeypatch, isolated_mock_identity):
-    """A real Orchestrator under mock auth with an isolated DB owner."""
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.orchestrator import Orchestrator
     try:
         o = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
-    # Feature 054: an UNCONFIGURED user's register pushes the mandatory
-    # provider-setup dialog and SUPPRESSES the welcome canvas. These tests
-    # cover the configured-user handshake, so seed only this test's unique
-    # mock-auth owner and remove only its deletable LLM record at teardown.
-    # Identity observations and their append-only audit evidence deliberately
-    # remain: Plane exposes no ordinary identity hard-delete API, and every
-    # test uses a unique owner inside the disposable CI database.
     user_id = isolated_mock_identity["user_id"]
     try:
         await o._llm_store.set(
@@ -159,7 +136,6 @@ async def orch(monkeypatch, isolated_mock_identity):
 async def test_register_ui_delivers_welcome_and_dashboard(
     orch, isolated_mock_identity
 ):
-    """The handshake still delivers rote_config, system_config and welcome."""
     ws, _profile, _actions = await _register_and_observe(
         orch,
         isolated_mock_identity,
@@ -179,13 +155,8 @@ async def test_register_ui_delivers_welcome_and_dashboard(
     assert orch._registered_events[id(ws)].is_set()
     assert orch._ws_welcome.get(id(ws)) is True
 
-    # rote_config still precedes the dashboard payload — native clients learn
-    # their device profile before any adapted content lands.
     assert frame_types.index("rote_config") < frame_types.index("system_config")
 
-    # The frame keeps its shape: device_profile plus the boolean
-    # speech_server_available hint, now derived from the voice runtime rather
-    # than a retired ambient speech-server URL.
     rote_frame = next(f for f in ws.task.outputs if f.get("type") == "rote_config")
     assert set(rote_frame) == {"type", "device_profile", "speech_server_available"}
     assert isinstance(rote_frame["speech_server_available"], bool)
@@ -195,7 +166,6 @@ async def test_register_ui_delivers_welcome_and_dashboard(
 async def test_register_ui_audit_events_recorded_in_order(
     orch, isolated_mock_identity
 ):
-    """ws_register then login_interactive/session_resumed, off-path but complete."""
     _ws, _profile, actions = await _register_and_observe(
         orch,
         isolated_mock_identity,
@@ -211,7 +181,6 @@ async def test_register_ui_audit_events_recorded_in_order(
 
 
 async def test_register_ui_persists_user_profile(orch, isolated_mock_identity):
-    """The backgrounded profile save still upserts the JWT user row."""
     _ws, profile, _actions = await _register_and_observe(
         orch,
         isolated_mock_identity,

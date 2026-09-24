@@ -1,8 +1,8 @@
-"""Filter & cursor pagination tests for ``AuditRepository.list_for_user``.
-
-Backs the contract obligations in
-``specs/003-agent-audit-log/contracts/rest-audit-api.md``.
+"""Tests for audit/repository.py's list_for_user: ordering, event-class/outcome/keyword
+filters, cursor pagination, invalid-cursor handling, and purge_older_than's per-owner
+retention.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -21,7 +21,6 @@ def _seed(repo, make_event, user, count, **overrides):
 def test_list_returns_most_recent_first(repo, make_event, unique_user):
     events = _seed(repo, make_event, unique_user, 4)
     items, _ = repo.list_for_user(unique_user, limit=10)
-    # The first item should be the most recently inserted
     assert items[0].action_type == events[-1].action_type
 
 
@@ -62,10 +61,9 @@ def test_cursor_pagination_yields_disjoint_pages(repo, make_event, unique_user):
     page2, cursor2 = repo.list_for_user(unique_user, limit=3, cursor=cursor)
     assert len(page2) == 3
     seen = {e.event_id for e in page1} | {e.event_id for e in page2}
-    assert len(seen) == 6  # disjoint
+    assert len(seen) == 6
     page3, cursor3 = repo.list_for_user(unique_user, limit=3, cursor=cursor2)
     assert len(page3) >= 1
-    # last page: cursor3 may or may not be set depending on exact count
 
 
 def test_invalid_cursor_raises(repo, unique_user):
@@ -75,8 +73,6 @@ def test_invalid_cursor_raises(repo, unique_user):
 
 
 def test_purge_older_than_only_drops_old_rows(repo, make_event, unique_user, database):
-    # Retention keeps one authenticated boundary row and prunes only the named
-    # owner's expired prefix.
     expired = repo.insert(
         make_event(actor_user_id=unique_user, auth_principal=unique_user)
     )

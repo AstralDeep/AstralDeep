@@ -1,4 +1,7 @@
-"""Closed source facts and exact extractive result construction, without a model."""
+"""Tests for persistent_agents/research_result.py: legacy metadata removal preserves
+exact output, empty selection is explicit insufficient evidence, canonical byte
+bounds and passage splitting, and retention requires typed redaction.
+"""
 
 from copy import deepcopy
 from types import SimpleNamespace
@@ -94,9 +97,7 @@ def test_empty_selection_is_explicit_insufficient_evidence():
     assert result["passages"] == []
 
 
-# Short ids: the generated bodies are tens of thousands of characters and pytest
-# exports the full test id in PYTEST_CURRENT_TEST, which overflows the Windows
-# 32767-character environment-block limit.
+# Windows env var 32767-char cap; keep parametrize ids short
 @pytest.mark.parametrize("text", ["é" * 15000, 'a\\"\n' * 4000, "paragraph\n\n" * 1500],
                          ids=["multibyte", "escapes", "paragraphs"])
 def test_canonical_byte_bound_and_exact_passages(text):

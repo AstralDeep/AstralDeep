@@ -1,20 +1,8 @@
-"""Feature 028 — workspace identity EDGE cases (FR-019 / FR-037).
-
-Companion to test_workspace_manager.py, focused on the boundaries of
-``WorkspaceManager.upsert`` identity resolution in
-backend/orchestrator/workspace.py:
-
-* FR-019 — an explicit author id is authoritative: a NEW explicit identity
-  from the same (agent, tool) APPENDS and never steals (supersedes) the
-  existing fingerprint-identity component's place.
-* FR-019 — an author ECHOING an existing workspace identity (``wc_…`` or
-  ``au_…``) updates that exact component in place.
-* Regression — the id-less single-source supersede (docstring rule 3)
-  still updates in place when params change.
-* FR-037 — a stale/absent ``force_component_id`` target degrades gracefully:
-  the result is INSERTED under that identity (created=True, no exception).
-* FR-019 — two distinct explicit identities from the same tool coexist.
+"""Tests for workspace component identity resolution (backend/orchestrator/workspace.py
+upsert): explicit-id append vs. supersede, family slot reassignment on refresh, and
+force_component_id fallback to append.
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,11 +24,6 @@ from orchestrator.workspace import (  # noqa: E402
     iter_layout_refs,
 )
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
-
-
-# ----------------------------------------------------------------------
-# Fixtures (mirroring test_workspace_manager.py)
-# ----------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +49,6 @@ def ws(history):
 
 @pytest.fixture
 def chat(history):
-    """A fresh chat with a unique user per test; CASCADE cleans children."""
     user_id = f"pytest-wsid-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     yield chat_id, user_id
@@ -84,14 +66,7 @@ def _comp(agent, tool, params, **extra):
     return c
 
 
-# ----------------------------------------------------------------------
-# FR-019: explicit author id never supersedes a fingerprint identity
-# ----------------------------------------------------------------------
-
-
 def test_explicit_id_from_same_source_appends_never_supersedes(ws, chat):
-    """028 FR-019: a NEW explicit id from the same (agent, tool) appends; the
-    existing fingerprint-identity component is left completely untouched."""
     chat_id, user_id = chat
 
     ops1 = ws.upsert(
@@ -106,7 +81,7 @@ def test_explicit_id_from_same_source_appends_never_supersedes(ws, chat):
     assert len(before) == 1
     orig = before[0]
 
-    time.sleep(0.05)  # so updated_at would visibly change if (wrongly) touched
+    time.sleep(0.05)
     ops2 = ws.upsert(
         chat_id, user_id,
         [_comp("agentA", "tool1", {"q": 2}, id="au_other", title="New", body="explicit")],
@@ -120,7 +95,6 @@ def test_explicit_id_from_same_source_appends_never_supersedes(ws, chat):
     assert [r["component_id"] for r in rows] == [fp_cid, "au_other"]
     assert [r["position"] for r in rows] == [1, 2]
 
-    # The original fingerprint-identity row is byte-for-byte unchanged.
     after_orig = rows[0]
     assert after_orig["id"] == orig["id"]
     assert after_orig["component_id"] == fp_cid
@@ -131,14 +105,7 @@ def test_explicit_id_from_same_source_appends_never_supersedes(ws, chat):
     assert after_orig["position"] == 1
 
 
-# ----------------------------------------------------------------------
-# FR-019: echoed workspace identity updates that exact row in place
-# ----------------------------------------------------------------------
-
-
 def test_echoed_wc_identity_updates_in_place(ws, chat):
-    """028 FR-019: a component whose 'id' echoes an existing row's wc_
-    component_id updates THAT row in place (one row, new content)."""
     chat_id, user_id = chat
 
     ops1 = ws.upsert(chat_id, user_id, [_comp("agentA", "tool1", {"q": 1}, body="v1")])
@@ -146,7 +113,6 @@ def test_echoed_wc_identity_updates_in_place(ws, chat):
     assert wc_cid.startswith("wc_")
     row_id = ws.live_rows(chat_id, user_id)[0]["id"]
 
-    # Echo the workspace identity back as the author 'id' — different params.
     echo = _comp("agentA", "tool1", {"q": 99}, id=wc_cid, body="v2-echoed")
     ops2 = ws.upsert(chat_id, user_id, [echo])
     assert len(ops2) == 1
@@ -161,7 +127,6 @@ def test_echoed_wc_identity_updates_in_place(ws, chat):
 
 
 def test_echoed_au_identity_updates_in_place(ws, chat):
-    """028 FR-019: same echo contract for an au_-namespaced explicit identity."""
     chat_id, user_id = chat
 
     ops1 = ws.upsert(
@@ -180,14 +145,7 @@ def test_echoed_au_identity_updates_in_place(ws, chat):
     assert rows[0]["component_data"]["body"] == "v2"
 
 
-# ----------------------------------------------------------------------
-# Regression: rule-3 single-source supersede unaffected by the id guards
-# ----------------------------------------------------------------------
-
-
 def test_idless_single_source_supersede_still_updates_in_place(ws, chat):
-    """028 FR-019 rule 3 (regression): a lone id-less same-(agent, tool)
-    re-call with different params still updates the existing row in place."""
     chat_id, user_id = chat
 
     ops1 = ws.upsert(chat_id, user_id, [_comp("agentA", "tool1", {"q": 1}, body="old")])
@@ -205,16 +163,7 @@ def test_idless_single_source_supersede_still_updates_in_place(ws, chat):
     assert rows[0]["component_data"]["_source_params"] == {"q": 2}
 
 
-# ----------------------------------------------------------------------
-# Multi-component tool results: ordinal identities, no sibling supersede
-# ----------------------------------------------------------------------
-
-
 def test_multicomponent_batch_keeps_every_component(ws, chat):
-    """A single tool result carrying many id-less components must persist
-    them ALL — without ordinal identities they share one fingerprint and
-    supersede each other down to a single surviving row (the bug that
-    collapsed dashboard tool output to its last caption)."""
     chat_id, user_id = chat
     batch = [_comp("agentA", "dash", {"q": 1}, type=t, body=f"w{n}")
              for n, t in enumerate(["hero", "metric", "table", "text"])]
@@ -230,9 +179,6 @@ def test_multicomponent_batch_keeps_every_component(ws, chat):
 
 
 def test_duplicate_explicit_ids_in_one_batch_coexist(ws, chat):
-    """Parallel calls of a tool that hardcodes an author id (the general
-    agent's chart-card) land in one round — they must all survive, not
-    supersede each other onto au_<id>."""
     chat_id, user_id = chat
     batch = [_comp("general-1", "generate_dynamic_chart", {"q": n},
                    id="chart-card", body=f"chart{n}") for n in range(3)]
@@ -245,13 +191,6 @@ def test_duplicate_explicit_ids_in_one_batch_coexist(ws, chat):
 
 
 def test_family_member_refresh_reassigns_slot_for_slot(ws, chat):
-    """Regression (verified corruption): a component_action refresh on a
-    NON-base member of a multi-component family re-executes the source tool,
-    which returns ALL members. Pinning only batch index 0 onto the clicked id
-    while the siblings ran the zero-based ordinal enumeration shifted every
-    output one slot and double-targeted the clicked id (the hero vanished,
-    the family was permanently corrupted). The fix re-assigns the batch
-    slot-for-slot onto the family's ordinal identities."""
     chat_id, user_id = chat
     types = ["hero", "line_chart", "metric", "metric", "timeline", "text"]
 
@@ -264,7 +203,6 @@ def test_family_member_refresh_reassigns_slot_for_slot(ws, chat):
     assert family == [base] + [f"{base}~{n}" for n in range(1, 6)]
     assert len(ws.live_rows(chat_id, user_id)) == 6
 
-    # User clicked the SECOND member (~1) — fresh dicts, like a re-executed tool.
     refresh = ws.upsert(
         chat_id, user_id,
         [_comp("agentA", "dash", {"q": 1}, type=t, body=f"new-{n}-{t}")
@@ -280,15 +218,12 @@ def test_family_member_refresh_reassigns_slot_for_slot(ws, chat):
     assert len(rows) == 6, "row count unchanged — no phantom appends"
     assert [r["component_id"] for r in rows] == family
     assert [r["position"] for r in rows] == [1, 2, 3, 4, 5, 6]
-    # Slot-for-slot content: hero stays at base, line_chart at ~1, etc.
     for n, (row, t) in enumerate(zip(rows, types)):
         assert row["component_data"]["type"] == t
         assert row["component_data"]["body"] == f"new-{n}-{t}"
 
 
 def test_family_base_refresh_also_reassigns_slot_for_slot(ws, chat):
-    """Same contract when the clicked member IS the family base (no ~N
-    suffix to strip) — pre-fix this case double-targeted the base id."""
     chat_id, user_id = chat
     types = ["hero", "metric", "text"]
     seed = ws.upsert(chat_id, user_id, [
@@ -313,14 +248,9 @@ def test_family_base_refresh_also_reassigns_slot_for_slot(ws, chat):
 
 
 def test_duplicate_target_guard_appends_never_overwrites(ws, chat, caplog):
-    """Within ONE batch the same resolved identity must never be written
-    twice: the collision falls back to appending under a free ordinal
-    identity with a structured warning (never a silent overwrite)."""
     chat_id, user_id = chat
     fp = fingerprint("agentA", "dash", {"q": 1})
 
-    # comp1 arrives pre-stamped with the ~1 family identity; comp2/comp3 are
-    # id-less siblings whose ordinal enumeration would ALSO produce fp~1.
     comp1 = _comp("agentA", "dash", {"q": 1}, component_id=f"{fp}~1", body="stamped")
     comp2 = _comp("agentA", "dash", {"q": 1}, body="sibling-0")
     comp3 = _comp("agentA", "dash", {"q": 1}, body="sibling-1")
@@ -360,10 +290,6 @@ def test_multicomponent_rerun_supersedes_slot_for_slot(ws, chat):
     assert sorted(r["component_data"]["body"] for r in rows) == ["new-hero", "new-metric"]
 
 
-# ----------------------------------------------------------------------
-# Rule 4 (030, S7 regression): slot-matched family supersede
-# ----------------------------------------------------------------------
-
 S7_TYPES = ["hero", "line_chart", "metric", "metric", "timeline", "text"]
 
 
@@ -373,10 +299,6 @@ def _family_batch(params, types=S7_TYPES, tag="old", agent="agentA", tool="dash"
 
 
 def test_s7_param_change_supersedes_family_slot_for_slot(ws, chat, caplog):
-    """S7 walkthrough regression: 'update the dashboard for week 17' re-runs
-    the SAME (agent, tool) with changed params. The new fingerprint family
-    must re-use the prior family's identities slot-for-slot — updating the
-    dashboard in place — instead of appending 6 duplicates above stale data."""
     chat_id, user_id = chat
 
     seed = ws.upsert(chat_id, user_id, _family_batch({"week": 16}, tag="old"))
@@ -403,7 +325,6 @@ def test_s7_param_change_supersedes_family_slot_for_slot(ws, chat, caplog):
 
 
 def test_family_supersede_divergent_count_appends(ws, chat):
-    """5 incoming vs 6 live: shape divergence means no guessing — append."""
     chat_id, user_id = chat
     seed = ws.upsert(chat_id, user_id, _family_batch({"week": 16}, tag="old"))
     assert len(seed) == 6
@@ -415,19 +336,17 @@ def test_family_supersede_divergent_count_appends(ws, chat):
 
     rows = ws.live_rows(chat_id, user_id)
     assert len(rows) == 11
-    # The original family is untouched.
     by_id = {r["component_id"]: r["component_data"] for r in rows}
     for op in seed:
         assert by_id[op["component_id"]]["_source_params"] == {"week": 16}
 
 
 def test_family_supersede_divergent_ordered_types_appends(ws, chat):
-    """Same count but different ordered types: not the same dashboard — append."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, _family_batch({"week": 16}, tag="old"))
 
     swapped = list(S7_TYPES)
-    swapped[1], swapped[4] = swapped[4], swapped[1]  # line_chart <-> timeline
+    swapped[1], swapped[4] = swapped[4], swapped[1]
     rerun = ws.upsert(
         chat_id, user_id, _family_batch({"week": 17}, types=swapped, tag="new"))
     assert all(op["created"] is True for op in rerun), "type divergence ⇒ append"
@@ -435,17 +354,14 @@ def test_family_supersede_divergent_ordered_types_appends(ws, chat):
 
 
 def test_family_supersede_two_prior_families_appends(ws, chat):
-    """TWO live families from the same (agent, tool): ambiguous — append."""
     chat_id, user_id = chat
     fam1 = ws.upsert(chat_id, user_id,
                      _family_batch({"q": 1}, types=["hero", "metric"], tag="f1"))
-    # Different ordered types, so this second family APPENDS (and stays).
     fam2 = ws.upsert(chat_id, user_id,
                      _family_batch({"q": 2}, types=["table", "text"], tag="f2"))
     assert all(op["created"] for op in fam1 + fam2)
     assert len(ws.live_rows(chat_id, user_id)) == 4
 
-    # 4 live rows from (agentA, dash) but TWO distinct family bases ⇒ append.
     third = ws.upsert(chat_id, user_id, _family_batch(
         {"q": 3}, types=["hero", "metric", "table", "text"], tag="f3"))
     assert all(op["created"] is True for op in third), "two prior families ⇒ append"
@@ -453,8 +369,6 @@ def test_family_supersede_two_prior_families_appends(ws, chat):
 
 
 def test_family_supersede_never_touches_explicit_id_batches(ws, chat):
-    """A batch carrying explicit author ids never steals the live family's
-    identities (FR-019: an explicit id never supersedes a different identity)."""
     chat_id, user_id = chat
     seed = ws.upsert(chat_id, user_id,
                      _family_batch({"q": 1}, types=["hero", "metric"], tag="old"))
@@ -475,8 +389,6 @@ def test_family_supersede_never_touches_explicit_id_batches(ws, chat):
 
 
 def test_family_supersede_never_steals_explicit_id_rows(ws, chat):
-    """A live 'family' built from explicit au_ ids is never superseded by an
-    id-less fingerprint-new batch — wc_* identities only."""
     chat_id, user_id = chat
     seeded = _family_batch({"q": 1}, types=["hero", "metric"], tag="old")
     for n, c in enumerate(seeded):
@@ -497,9 +409,6 @@ def test_family_supersede_never_steals_explicit_id_rows(ws, chat):
 
 
 def test_layout_refs_survive_family_supersede(ws, chat):
-    """029 arrangements reference components by id. Because family supersede
-    REUSES the prior ids, a designed layout's refs stay valid and now resolve
-    to the fresh data — no pruning, no dangling refs."""
     chat_id, user_id = chat
     seed = ws.upsert(chat_id, user_id, _family_batch({"week": 16}, tag="old"))
     family = [op["component_id"] for op in seed]
@@ -526,15 +435,7 @@ def test_layout_refs_survive_family_supersede(ws, chat):
             "the arrangement now shows the fresh (week 17) data"
 
 
-# ----------------------------------------------------------------------
-# FR-037: stale force_component_id target degrades to a graceful append
-# ----------------------------------------------------------------------
-
-
 def test_force_component_id_absent_target_inserts_new_row(ws, chat):
-    """028 FR-037: pinning onto an identity ABSENT from the workspace (e.g. a
-    component-action target removed mid-flight) inserts a new row under that
-    identity — created=True, no exception (graceful-append contract)."""
     chat_id, user_id = chat
 
     ws.upsert(chat_id, user_id, [_comp("agentA", "tool1", {"q": 1}, body="bystander")])
@@ -550,18 +451,10 @@ def test_force_component_id_absent_target_inserts_new_row(ws, chat):
     assert rows[1]["component_id"] == "wc_deadbeef"
     assert rows[1]["component_data"]["body"] == "acted"
     assert rows[1]["position"] == 2
-    # bystander untouched
     assert rows[0]["component_data"]["body"] == "bystander"
 
 
-# ----------------------------------------------------------------------
-# FR-019: distinct explicit identities from the same tool coexist
-# ----------------------------------------------------------------------
-
-
 def test_two_explicit_ids_same_tool_coexist(ws, chat):
-    """028 FR-019: two components from the same (agent, tool) carrying
-    distinct explicit ids land as two rows (no supersede between them)."""
     chat_id, user_id = chat
 
     ops1 = ws.upsert(

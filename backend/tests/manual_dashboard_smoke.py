@@ -1,10 +1,8 @@
-"""Manual smoke (not collected by pytest): dog-grooming dashboard through the
-full pipeline — upgraded interactive_artifacts -> multi-round design_round
-(scripted LLM) -> materialize -> webrender. Dumps /tmp/dashboard_smoke.html.
-
-Run inside the container:
-    python tests/manual_dashboard_smoke.py
+"""Manual smoke script, not collected by pytest: drives a dashboard request through
+interactive_artifacts, design_round, materialize, and webrender, dumping the rendered
+HTML for inspection.
 """
+
 import asyncio
 import json
 import sys
@@ -45,7 +43,6 @@ result = handle_artifacts({
 components = result["_ui_components"]
 print(f"tool emitted {len(components)} components: {[c['type'] for c in components]}")
 
-# Assign workspace-style identities the way upsert would.
 for i, comp in enumerate(components):
     comp["component_id"] = f"wc_smoke{i:02d}"
 
@@ -53,23 +50,23 @@ ids = [c["component_id"] for c in components]
 
 _DRAFT = json.dumps({"layout": [{"type": "ref", "component_id": cid} for cid in ids]})
 _REFINED = json.dumps({"layout": [
-    {"type": "ref", "component_id": ids[0]},                      # hero
+    {"type": "ref", "component_id": ids[0]},
     {"type": "grid", "columns": 3, "children": [
-        {"type": "ref", "component_id": ids[1]},                  # bookings metric
-        {"type": "ref", "component_id": ids[2]},                  # revenue metric
+        {"type": "ref", "component_id": ids[1]},
+        {"type": "ref", "component_id": ids[2]},
         {"type": "rating", "value": 4.8, "label": "Customer satisfaction",
          "subtitle": "128 reviews"},
     ]},
     {"type": "grid", "columns": 2, "children": [
-        {"type": "ref", "component_id": ids[3]},                  # line chart
-        {"type": "ref", "component_id": ids[4]},                  # pie chart
+        {"type": "ref", "component_id": ids[3]},
+        {"type": "ref", "component_id": ids[4]},
     ]},
     {"type": "grid", "columns": 2, "children": [
-        {"type": "ref", "component_id": ids[5]},                  # schedule table
-        {"type": "ref", "component_id": ids[6]},                  # timeline
+        {"type": "ref", "component_id": ids[5]},
+        {"type": "ref", "component_id": ids[6]},
     ]},
     {"type": "collapsible", "title": "Notes", "content": [
-        {"type": "ref", "component_id": ids[7]},                  # sample-data caption
+        {"type": "ref", "component_id": ids[7]},
     ]},
 ]})
 

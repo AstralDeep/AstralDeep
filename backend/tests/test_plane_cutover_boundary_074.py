@@ -1,4 +1,7 @@
-"""Fail-closed inventory for the feature-074 AstralPlane cutover boundary."""
+"""Fail-closed inventory tests for the AstralPlane cutover boundary: composition owns no
+storage implementation, catalog admission matches exact metadata, and Plane runtime
+construction, pooling and purge sequencing behave as declared.
+"""
 
 from __future__ import annotations
 
@@ -267,10 +270,6 @@ def test_gap_inventory_is_exact_for_the_observed_deep_tree() -> None:
     qualification_commit = FEATURE_074_QUALIFICATION_PLANE_COMMIT
     assert _embedded_plane_is_ancestor(evidence_commit, qualification_commit)
     assert _embedded_plane_is_ancestor(qualification_commit, embedded_commit)
-    # The retained migration receipt predates the final owner-CI qualification
-    # commits. Bind the historic evidence-to-074-boundary delta exactly, then
-    # separately require that immutable boundary to be an ancestor of today's
-    # composed Plane. Feature-075 descendants cannot rewrite the 074 inventory.
     assert _embedded_plane_changed_paths(evidence_commit, qualification_commit) == (
         ".github/workflows/ci.yml",
         "README.md",
@@ -564,8 +563,6 @@ def test_deep_runtime_factory_builds_real_plane_reconciliation_plan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Exercise Plane's real constructor so an empty hook regression cannot hide."""
-
     from astralplane import create_plane_runtime
 
     captured: dict[str, object] = {}
@@ -573,7 +570,7 @@ def test_deep_runtime_factory_builds_real_plane_reconciliation_plan(
     class DriverPool:
         closed = False
 
-        def getconn(self):  # pragma: no cover - initialization is isolated below
+        def getconn(self):  # pragma: no cover
             raise AssertionError(
                 "constructor test must not borrow a database connection"
             )
@@ -620,7 +617,7 @@ def test_deep_runtime_factory_builds_real_plane_reconciliation_plan(
             expected_contract_version=str(values["expected_contract_version"]),
             observed_schema_revision=str(values["observed_schema_revision"]),
         )
-        plan = runtime._reconciler.plan(  # noqa: SLF001 - constructor contract proof
+        plan = runtime._reconciler.plan(  # noqa: SLF001
             schema_revision=SCHEMA_REVISION
         )
         captured["hooks"] = plan.hooks

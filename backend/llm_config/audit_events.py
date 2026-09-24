@@ -1,25 +1,8 @@
-"""Audit-event emission helpers for feature 006-user-llm-config.
-
-Three event classes are emitted via the existing feature-003
-:class:`backend.audit.recorder.Recorder`:
-
-* ``llm_config_change`` — user creates / updates / clears / tests their
-  personal LLM configuration. Payload carries ``action``, ``base_url``,
-  ``model``, and (for ``tested``) ``result`` / ``error_class``.
-* ``llm_unconfigured`` — an LLM-dependent feature was invoked but
-  neither the user's personal credentials nor the operator's ``.env``
-  default were usable. Payload carries the call-site ``feature``.
-* ``llm_call`` — every LLM-dependent call (success or failure, user or
-  operator-default credentials). Payload carries ``feature``,
-  ``credential_source``, ``base_url``, ``model``, ``total_tokens``
-  (or ``None``), and ``upstream_error_class`` on failure.
-
-Critical invariant: the user's API key MUST NEVER appear in any audit
-payload, in any field, under any action. The :func:`_assert_no_api_key`
-guard is invoked on every payload before recording; an internal
-``ValueError`` is raised on detection (loud failure on the programmer
-error of leaking a key, rather than silent recording).
+"""Audit-event emission for llm_config: llm_config_change, llm_unconfigured, and
+llm_call, each built so the user's API key can never enter a payload since
+_assert_no_api_key runs on every emit. Wraps audit/recorder.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,32 +20,17 @@ from .types import CredentialSource, ResolvedConfig
 logger = logging.getLogger("LLMConfig.AuditEvents")
 
 
-# Forbidden substrings — common API-key prefixes. If any of these appears
-# in any payload value the helper raises rather than recording. This is
-# defence-in-depth on top of the application-layer rule "never put
-# api_key in a payload field."
 _KEY_PREFIX_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),  # OpenAI-style (also sk-ant-/sk-or-/sk-proj-)
-    re.compile(r"\bgsk_[A-Za-z0-9_\-]{20,}\b"),  # Groq-style
-    re.compile(r"\bxai-[A-Za-z0-9_\-]{20,}\b"),  # xAI-style
-    re.compile(r"\bor-[A-Za-z0-9_\-]{20,}\b"),  # OpenRouter-style
-    re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}\b"),  # Google API-key-style (Gemini)
-    TYPESAFE_KEY_PATTERN,  # TypeSafe System One (feature 089)
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\bgsk_[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\bxai-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\bor-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}\b"),
+    TYPESAFE_KEY_PATTERN,
 )
 
 
 def _assert_no_api_key(payload: Dict[str, Any]) -> None:
-    """Defence-in-depth check: raise if any payload value contains an
-    API-key-shaped substring, or any field name that ends in ``api_key``.
-
-    Feature 089 widened the field test from equality to a suffix match, so
-    ``typesafe_api_key`` is refused by the same rule that refuses ``api_key``
-    rather than needing its own.
-
-    This is intentionally conservative — false positives here are
-    preferable to a leaked key. Callers MUST pass already-redacted
-    payloads.
-    """
     offending = [key for key in payload if _is_api_key_field(key)]
     if offending:
         raise ValueError(
@@ -102,22 +70,6 @@ async def record_llm_config_change(
     correlation_id: Optional[str] = None,
     scope: str = "user",
 ) -> None:
-    """Emit an ``llm_config_change`` audit event.
-
-    Args:
-        action: One of ``"created"``, ``"updated"``, ``"cleared"``,
-            ``"tested"``, or ``"discarded_undecryptable"`` (feature 054:
-            an at-rest record could not be decrypted — key rotation or
-            corruption — and was deleted, re-gating the user).
-        base_url / model: Non-sensitive descriptors. ``None`` permitted
-            for ``cleared`` (the caller may not have the prior values).
-        transport: ``"ws"`` or ``"rest"`` — which channel the change came in on.
-        result: ``"success"`` or ``"failure"`` — only for ``action="tested"``.
-        error_class: Only set when ``result == "failure"``; one of the
-            taxonomy values from contracts/rest-llm-test.md.
-        scope: ``"user"`` (a user's own record) or ``"system"`` (the
-            admin-managed deployment credential — feature 054).
-    """
     if action not in ("created", "updated", "cleared", "tested",
                       "discarded_undecryptable"):
         raise ValueError(f"unknown action: {action!r}")
@@ -170,8 +122,6 @@ def _describe_config_change(
     action: str, model: Optional[str], result: Optional[str],
     scope: str = "user",
 ) -> str:
-    # scope="system" describes the admin-managed deployment credential
-    # (feature 054); scope="user" describes a user's personal record.
     who, what = (("Admin", "the system LLM credential") if scope == "system"
                  else ("User", "their personal LLM configuration"))
     if action == "cleared":
@@ -198,10 +148,6 @@ async def record_llm_unconfigured(
     feature: str,
     correlation_id: Optional[str] = None,
 ) -> None:
-    """Emit an ``llm_unconfigured`` audit event when both credential
-    sources are absent and an LLM-dependent feature could not proceed
-    (FR-007).
-    """
     inputs_meta = {"feature": feature, "reason": "no_user_config_no_env_default"}
     _assert_no_api_key(inputs_meta)
     started = _now()
@@ -235,24 +181,6 @@ async def record_llm_call(
     correlation_id: Optional[str] = None,
     routed_model: Optional[str] = None,
 ) -> None:
-    """Emit an ``llm_call`` audit event for every LLM-dependent invocation
-    (FR-007a). The ``credential_source`` field is the cornerstone of
-    SC-006 — operators use it to answer "for whom did the operator's
-    account pay?".
-
-    Args:
-        credential_source: Which credential set served the call.
-        resolved: The non-sensitive descriptors from the factory.
-        total_tokens: From the upstream response's ``usage.total_tokens``,
-            or ``None`` if the upstream omitted ``usage``.
-        outcome: ``"success"`` or ``"failure"``.
-        upstream_error_class: Only set on failure.
-        routed_model: The model the request was ACTUALLY issued with when the
-            model router (``FF_MODEL_ROUTER``) re-tiered a SYSTEM call. When
-            given, ``model`` records it and ``configured_model`` keeps the
-            record's default so the row names what was called, not merely
-            what was configured.
-    """
     if outcome not in ("success", "failure"):
         raise ValueError(f"unknown outcome: {outcome!r}")
 

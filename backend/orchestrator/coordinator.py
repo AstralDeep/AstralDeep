@@ -1,18 +1,8 @@
+"""Coordinator/worker pattern that decomposes a complex chat request into sub-tasks run
+in parallel or sequential waves and synthesizes their results, mirroring Claude
+Code's coordinator mode.
 """
-Coordinator/Worker Pattern — Decompose complex requests into sub-tasks.
 
-When the LLM detects a complex multi-step request, the coordinator can
-break it into independent sub-tasks (workers), execute them in parallel
-or sequentially, and synthesize the results.
-
-Inspired by Claude Code's coordinator mode where one agent manages workers
-via SendMessage, and workers operate independently.
-
-Usage:
-    coordinator = Coordinator(orchestrator)
-    plan = await coordinator.create_plan(message, tools_desc, tool_to_agent)
-    results = await coordinator.execute_plan(websocket, plan, chat_id, user_id)
-"""
 import asyncio
 import json
 import logging
@@ -27,18 +17,17 @@ logger = logging.getLogger("Orchestrator.Coordinator")
 
 
 class SubTaskType(str, Enum):
-    PARALLEL = "parallel"    # Can run concurrently with other subtasks
-    SEQUENTIAL = "sequential"  # Must wait for previous subtasks to complete
+    PARALLEL = "parallel"
+    SEQUENTIAL = "sequential"
 
 
 @dataclass
 class SubTask:
-    """A single unit of work within a coordinated plan."""
     subtask_id: str
     description: str
     task_type: SubTaskType = SubTaskType.PARALLEL
-    tool_hints: List[str] = field(default_factory=list)  # Suggested tools
-    depends_on: List[str] = field(default_factory=list)  # subtask_ids this depends on
+    tool_hints: List[str] = field(default_factory=list)
+    depends_on: List[str] = field(default_factory=list)
     result: Optional[Any] = None
     error: Optional[str] = None
     state: TaskState = TaskState.PENDING
@@ -46,17 +35,11 @@ class SubTask:
 
 @dataclass
 class CoordinatorPlan:
-    """A decomposed plan for a complex request."""
     original_message: str
     subtasks: List[SubTask] = field(default_factory=list)
-    synthesis_prompt: str = ""  # How to combine results into final response
+    synthesis_prompt: str = ""
 
     def get_parallel_groups(self) -> List[List[SubTask]]:
-        """Return subtasks grouped into execution waves.
-
-        Within each wave, all subtasks can run in parallel.
-        Between waves, ordering is preserved (sequential dependencies).
-        """
         completed_ids = set()
         waves = []
         remaining = list(self.subtasks)
@@ -71,7 +54,6 @@ class CoordinatorPlan:
                 else:
                     still_remaining.append(st)
             if not wave:
-                # Circular dependency or unresolvable — just run everything
                 waves.append(still_remaining)
                 break
             waves.append(wave)
@@ -82,9 +64,6 @@ class CoordinatorPlan:
 
 
 class Coordinator:
-    """Orchestrates multi-step task decomposition and execution."""
-
-    # System prompt for the planning LLM call
     PLANNING_PROMPT = """You are a task planner. Given a user request and available tools,
 decompose it into independent sub-tasks that can be executed in parallel where possible.
 
@@ -121,11 +100,6 @@ Rules:
         self.orchestrator = orchestrator
 
     async def should_coordinate(self, message: str, tools_desc: List[Dict]) -> bool:
-        """Determine if a message is complex enough to warrant coordination.
-
-        Simple heuristic: if the message contains multiple distinct requests
-        (conjunctions, lists, or multi-step phrasing), use coordination.
-        """
         complexity_signals = [
             " and then ",
             " after that ",
@@ -137,7 +111,6 @@ Rules:
         ]
         signal_count = sum(1 for s in complexity_signals if s in message.lower())
 
-        # Also check for numbered lists
         import re
         numbered = len(re.findall(r'\d+[\.\)]\s', message))
 
@@ -150,7 +123,6 @@ Rules:
         tools_desc: List[Dict],
         tool_to_agent: Dict[str, str],
     ) -> Optional[CoordinatorPlan]:
-        """Ask the LLM to decompose a complex request into a plan."""
         tool_summary = "\n".join(
             f"- {t['function']['name']}: {t['function']['description']}"
             for t in tools_desc
@@ -166,9 +138,7 @@ Rules:
             if not response or not response.content:
                 return None
 
-            # Parse the JSON plan
             content = response.content.strip()
-            # Handle markdown code blocks
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
@@ -204,20 +174,13 @@ Rules:
         tools_desc: List[Dict],
         tool_to_agent: Dict[str, str],
     ) -> List[SubTask]:
-        """Execute a coordinated plan wave by wave.
-
-        Each wave is a group of subtasks that can run in parallel.
-        Between waves, results from previous subtasks are available.
-        """
         waves = plan.get_parallel_groups()
         all_results: Dict[str, SubTask] = {}
 
         for wave_idx, wave in enumerate(waves):
             logger.info(f"Coordinator wave {wave_idx + 1}/{len(waves)}: {len(wave)} subtasks")
 
-            # Build per-subtask context including results from dependencies
             async def execute_subtask(subtask: SubTask) -> SubTask:
-                # Build context from dependent results
                 dep_context = ""
                 for dep_id in subtask.depends_on:
                     dep = all_results.get(dep_id)
@@ -228,15 +191,13 @@ Rules:
                 if dep_context:
                     sub_message = f"{subtask.description}\n\nContext from previous steps:{dep_context}"
 
-                # Filter tools to just the hinted ones (if hints provided)
                 if subtask.tool_hints:
                     sub_tools = [t for t in tools_desc if t["function"]["name"] in subtask.tool_hints]
                     if not sub_tools:
-                        sub_tools = tools_desc  # Fallback to all tools
+                        sub_tools = tools_desc
                 else:
                     sub_tools = tools_desc
 
-                # Execute a mini Re-Act loop for this subtask (max 3 turns)
                 subtask.state = TaskState.RUNNING
                 messages = [
                     {"role": "system", "content": "You are executing a single subtask. Complete it and return the result."},
@@ -272,7 +233,6 @@ Rules:
                                 if res and res.error else res.result if res else None
                             )
                     else:
-                        # Final response from this subtask
                         subtask.result = {"summary": llm_msg.content}
                         subtask.state = TaskState.COMPLETED
                         return subtask
@@ -280,7 +240,6 @@ Rules:
                 subtask.state = TaskState.COMPLETED
                 return subtask
 
-            # Execute wave in parallel
             if len(wave) == 1:
                 result = await execute_subtask(wave[0])
                 all_results[result.subtask_id] = result
@@ -305,7 +264,6 @@ Rules:
         plan: CoordinatorPlan,
         completed_subtasks: List[SubTask],
     ) -> str:
-        """Generate a final synthesis from all subtask results."""
         results_summary = []
         for st in completed_subtasks:
             status = "completed" if st.state == TaskState.COMPLETED else "failed"

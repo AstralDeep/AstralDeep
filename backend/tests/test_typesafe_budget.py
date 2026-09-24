@@ -1,9 +1,6 @@
-"""Feature 089 (T011): the attempt schedule, the deadline, and the circuit.
-
-Everything here runs on a fake clock. A timing test that sleeps is a timing
-test that is flaky on a loaded machine, and the property being checked --
-"the total can never exceed the budget" -- is about arithmetic, not about
-wall clock.
+"""Tests for orchestrator/typesafe_routing/budget.py on a fake clock: error
+classification, Retry-After bounding, the deadline countdown, backoff scheduling, and
+the per-user circuit breaker's open/half-open/close cycle.
 """
 
 from __future__ import annotations
@@ -44,8 +41,6 @@ OTHER_FINGERPRINT = "ba9876543210"
 
 
 class Clock:
-    """A monotonic clock the test advances by hand."""
-
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
 
@@ -54,9 +49,6 @@ class Clock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
-
-
-# -- error classification ------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -92,8 +84,6 @@ def test_non_transient_errors_are_not_retried(error: BaseException) -> None:
 
 
 def test_an_unrecognized_error_is_treated_as_non_transient() -> None:
-    """Retrying something we do not understand spends the user's latency on a guess."""
-
     class Mystery(Exception):
         pass
 
@@ -115,12 +105,8 @@ def test_other_failures_are_not_auth_failures(error: BaseException) -> None:
 
 
 def test_classification_never_reads_the_message() -> None:
-    """A message can contain the user's request; the policy must not depend on it."""
     benign = TypeSafeAPIError("timeout connection rate limit", status_code=400)
     assert is_transient(benign) is False
-
-
-# -- Retry-After ---------------------------------------------------------
 
 
 def test_a_short_retry_after_is_honored() -> None:
@@ -128,7 +114,6 @@ def test_a_short_retry_after_is_honored() -> None:
 
 
 def test_a_long_retry_after_is_ignored_rather_than_clamped() -> None:
-    """A server asking for 30 seconds is telling us to fall back, not to wait."""
     assert retry_after_seconds(TypeSafeRateLimitError(retry_after=30.0)) is None
 
 
@@ -139,9 +124,6 @@ def test_a_missing_or_nonsense_retry_after_is_ignored(value: object) -> None:
 
 def test_the_retry_after_bound_is_inside_the_turn_budget() -> None:
     assert MAX_HONORED_RETRY_AFTER_SECONDS < TURN_BUDGET_SECONDS
-
-
-# -- deadline ------------------------------------------------------------
 
 
 def test_the_deadline_counts_down_monotonically() -> None:
@@ -162,7 +144,6 @@ def test_an_attempt_timeout_is_clipped_to_the_remaining_budget() -> None:
     deadline = Deadline(total=1.5, clock=clock)
     assert attempt_timeout(deadline, 600) == pytest.approx(0.6)
     clock.advance(1.3)
-    # Only 0.2s left: the per-attempt cap does not get to exceed it.
     assert attempt_timeout(deadline, 600) == pytest.approx(0.2)
     clock.advance(0.5)
     assert attempt_timeout(deadline, 600) == 0.0
@@ -181,9 +162,6 @@ def test_a_slow_first_attempt_cannot_buy_the_third_extra_time() -> None:
         spent += delay
     assert spent <= TURN_BUDGET_SECONDS + 1e-9
     assert deadline.remaining() == 0.0
-
-
-# -- backoff -------------------------------------------------------------
 
 
 def test_the_first_attempt_has_no_backoff() -> None:
@@ -219,9 +197,6 @@ def test_backoff_is_clipped_to_the_remaining_budget() -> None:
 def test_a_bounded_retry_after_overrides_the_schedule() -> None:
     deadline = Deadline(clock=Clock())
     assert backoff_delay(2, deadline, retry_after=0.4) == pytest.approx(0.4)
-
-
-# -- circuit -------------------------------------------------------------
 
 
 def test_a_fresh_circuit_allows_routing() -> None:
@@ -260,7 +235,6 @@ def test_the_circuit_half_opens_after_the_cooldown() -> None:
     clock.advance(CIRCUIT_COOLDOWN_SECONDS)
     assert circuit.allows("u1") is True
     assert circuit.state_of("u1") is CircuitState.HALF_OPEN
-    # Only one trial per cool-down.
     assert circuit.allows("u1") is False
 
 
@@ -307,7 +281,6 @@ def test_an_auth_failure_blocks_until_the_fingerprint_changes() -> None:
     circuit.record_auth_failure("u1", FINGERPRINT)
 
     assert circuit.allows("u1", fingerprint=FINGERPRINT) is False
-    # A cool-down does not help: the key itself is rejected.
     clock.advance(CIRCUIT_COOLDOWN_SECONDS * 10)
     assert circuit.allows("u1", fingerprint=FINGERPRINT) is False
 
@@ -338,19 +311,17 @@ def test_idle_users_are_evicted() -> None:
     assert len(circuit) == 1
     clock.advance(61.0)
     circuit.allows("u2")
-    assert "u1" not in circuit._entries  # noqa: SLF001 - eviction is the subject
+    assert "u1" not in circuit._entries  # noqa: SLF001
 
 
 def test_circuit_entries_hold_no_key_material() -> None:
     circuit = UserCircuit(clock=Clock())
     circuit.record_auth_failure("u1", FINGERPRINT)
-    rendered = repr(circuit._entries["u1"])  # noqa: SLF001 - the subject
-    # The fingerprint is not key material, but nothing else may be there.
+    rendered = repr(circuit._entries["u1"])  # noqa: SLF001
     assert "ts_" not in rendered
     assert "api_key" not in rendered
 
 
 def test_every_outcome_label_is_a_plain_identifier() -> None:
-    """Outcomes become metric labels, so they must carry no content."""
     for outcome in Outcome:
         assert outcome.value.replace("_", "").isalnum()

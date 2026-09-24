@@ -1,4 +1,8 @@
-"""summarize_text + defensive LLM-JSON parsing tests (all LLM calls stubbed)."""
+"""Tests for agents/summarizer/mcp_tools.py: defensive LLM-JSON parsing and
+summarize_text's prompt capping, credential resolution, and error paths (LLM calls
+stubbed).
+"""
+
 import json
 
 from agents.summarizer import mcp_tools
@@ -15,11 +19,6 @@ GOOD_JSON = json.dumps({
     "key_points": ["Snakes are reptiles", "Some are venomous"],
     "quotes": ["A snake in the grass."],
 })
-
-
-# ---------------------------------------------------------------------------
-# Defensive JSON parsing
-# ---------------------------------------------------------------------------
 
 
 def test_strip_fences_json_fence() -> None:
@@ -79,11 +78,6 @@ def test_normalize_summary_empty_uses_fallback() -> None:
     assert summary["key_points"] == []
 
 
-# ---------------------------------------------------------------------------
-# summarize_text
-# ---------------------------------------------------------------------------
-
-
 def test_summarize_text_renders_three_tabs(fake_openai) -> None:
     fake_openai(GOOD_JSON)
     result = summarize_text(text="Snakes are long reptiles.")
@@ -132,7 +126,7 @@ def test_summarize_text_truncation_notice_and_capped_prompt(fake_openai) -> None
     assert result["_data"]["truncated"] is True
     assert result["_data"]["input_characters"] == INPUT_CAP + 5_000
     sent = fake_cls.calls_log[-1]["messages"][1]["content"]
-    assert len(sent) <= INPUT_CAP + 200  # capped text + small prompt preamble
+    assert len(sent) <= INPUT_CAP + 200
 
 
 def test_summarize_text_focus_lands_in_prompt(fake_openai) -> None:
@@ -170,7 +164,6 @@ def test_summarize_text_llm_exception_is_error(fake_openai) -> None:
 
 
 def test_summarize_text_prefers_session_credentials(fake_openai) -> None:
-    """Per-session credential resolution mirrors the general agent (006)."""
     fake_cls = fake_openai(GOOD_JSON)
     summarize_text(
         text="Snakes.",
@@ -187,15 +180,8 @@ def test_summarize_text_prefers_session_credentials(fake_openai) -> None:
 
 
 def test_encrypted_agent_credentials_are_ignored(fake_openai, monkeypatch) -> None:
-    """With _credentials_encrypted, the bundle must not be read for LLM creds.
-
-    Feature 054 removed the env fallback that used to catch this case, so an
-    encrypted bundle with no session credentials now lands on the honest
-    'LLM not configured' error path — and no client is ever built from the
-    still-encrypted bundle key (or from the now-inert env var).
-    """
     fake_cls = fake_openai(GOOD_JSON)
-    monkeypatch.setenv("OPENAI_API_KEY", "env-key")  # must stay inert (054)
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     result = summarize_text(
         text="Snakes.",
         _credentials={"OPENAI_API_KEY": "bundle-key"},

@@ -1,9 +1,8 @@
+"""MCP server for the Connectors agent: routes tools/list and tools/call across
+mcp_tools_office.py, mcp_tools_dev.py, mcp_tools_runtime.py, and
+mcp_tools_creative.py.
 """
-MCP Server for the Claude Connectors Agent — US-22.
 
-Registers all connector tools across office, dev, runtime, and creative domains
-and dispatches ``tools/list`` / ``tools/call`` MCP requests against them.
-"""
 import json
 import logging
 import os
@@ -38,13 +37,6 @@ NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class ConnectorsMCPServer:
-    """Routes ``tools/list`` and ``tools/call`` MCP requests to TOOL_REGISTRY.
-
-    Handlers accept a single dict positional argument (``args``) — the
-    orchestrator-injected ``_credentials``, ``_runtime``, ``user_id``,
-    ``session_id`` etc. all live inside that dict.
-    """
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 

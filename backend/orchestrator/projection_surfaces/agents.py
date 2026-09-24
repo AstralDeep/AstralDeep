@@ -1,19 +1,8 @@
-"""Deep-owned host adapter for the Agents Projection surface.
-
-List view (tabs ``mine`` | ``public`` + a Drafts tab that opens the
-``drafts`` surface) and per-agent detail view (per-tool permission matrix,
-visibility toggle, credentials, per-user enable/disable). Render + handlers
-call the SAME internals the REST routes in ``backend/orchestrator/api.py``
-use (``GET /api/agents``, ``GET/PUT /api/agents/{id}/permissions``,
-``PUT /api/agents/{id}/visibility``, the credentials routes and
-``PUT /api/users/me/agent-enabled``) — never HTTP-to-self.
-
-Tab semantics follow Feature 013 (``agentTabFilters``): *mine* = agents whose
-``owner_email`` equals the user's email; *public* = ``is_public`` agents;
-owned-and-public agents appear in both tabs.
-
-Every dynamic interpolation goes through ``esc()`` (escape-by-default).
+"""Renders the Agents surface: list view (mine/public tabs) and per-agent detail
+(permission matrix, visibility, credentials, per-user enable/disable). Handlers call
+the same internals as the REST routes in orchestrator/api.py.
 """
+
 import asyncio
 import json
 import logging
@@ -30,9 +19,6 @@ logger = logging.getLogger("Orchestrator.Chrome.Agents")
 
 TITLE = "Agents & permissions"
 
-# Permission-kind columns of the matrix — mirrors
-# ``orchestrator.tool_permissions.VALID_SCOPES`` (kept literal so the render
-# layer does not import orchestrator modules at import time).
 PERMISSION_KINDS = ("tools:read", "tools:write", "tools:search", "tools:system", "tools:files")
 _KIND_LABELS = {
     "tools:read": "Read",
@@ -48,8 +34,6 @@ _KIND_DESCRIPTIONS = {
     "tools:system": "Access system resources such as CPU, memory, and disk.",
     "tools:files": "Read uploaded files, documents, and volumes.",
 }
-# Form-field prefix for a section's master switch (``__scope::<kind>``); the
-# ``__`` sentinel can never collide with a tool name field (``<tool>::<kind>``).
 SCOPE_FIELD_PREFIX = "__scope::"
 
 _BTN_PRIMARY = (
@@ -71,17 +55,11 @@ _INPUT_CLS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _payload(data) -> str:
-    """JSON-encode an action payload and escape it for an HTML attribute."""
     return esc(json.dumps(data))
 
 
 def _email_fallback(email, user_id) -> str:
-    """Apply the mock-auth fallback: an email-shaped user_id stands in."""
     email = email or ""
     if not email and "@" in str(user_id or ""):
         email = str(user_id)
@@ -89,12 +67,6 @@ def _email_fallback(email, user_id) -> str:
 
 
 def _disabled_from_preferences(raw) -> set:
-    """Disabled agent-id set from a raw ``user_preferences.preferences`` value.
-
-    Mirrors ``Database.get_user_disabled_agents`` (empty set on missing or
-    malformed JSON) so the consolidated context query resolves the per-user
-    disabled state without a second round trip.
-    """
     try:
         prefs = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
@@ -106,7 +78,6 @@ def _disabled_from_preferences(raw) -> set:
 
 
 def _snippet(text, limit: int = 110) -> str:
-    """Single-line description snippet, ellipsised past ``limit`` chars."""
     flat = " ".join(str(text or "").split())
     if len(flat) <= limit:
         return flat
@@ -125,7 +96,6 @@ def _management_context(orch) -> PlaneRepositoryContext:
 
 
 async def _list_context(orch, user_id):
-    """``(user_email, ownership_map, disabled_set)`` in ≤2 Plane statements."""
     context = _management_context(orch)
     record = await context.call_async(
         context.repository.get_list_context,
@@ -147,11 +117,10 @@ async def _list_context(orch, user_id):
 
 
 def _agent_rows(orch, ownership_map, disabled_set):
-    """Agent dicts mirroring ``GET /api/agents`` (api.py ``list_agents``)."""
     rows = []
     for agent_id, card in orch.agent_cards.items():
         if orch._is_draft_agent(agent_id):
-            continue  # hide non-live drafts (same rule as list_agents)
+            continue
         ownership = ownership_map.get(agent_id, {})
         rows.append({
             "id": agent_id,
@@ -173,7 +142,6 @@ def _back_button(tab: str) -> str:
 
 
 def _enable_button(agent_id: str, enabled: bool, extra: dict) -> str:
-    """Per-user enable/disable toggle → ``chrome_agent_enabled``."""
     data = {"agent_id": agent_id, "enabled": not enabled}
     data.update(extra)
     label = "Disable" if enabled else "Enable"
@@ -185,14 +153,8 @@ def _enable_button(agent_id: str, enabled: bool, extra: dict) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Render — list view
-# ---------------------------------------------------------------------------
-
 def _render_tabs(tab: str) -> str:
     parts = ['<div class="flex items-center gap-1.5" role="tablist">']
-    # 077: "Owned by me" — "My agents" is the name of the personal-agent
-    # surface in the settings menu, and this tab was the second thing so named.
     for key, label in (("mine", "Owned by me"), ("public", "Public")):
         active = key == tab
         cls = _BTN_PRIMARY if active else _BTN_GHOST
@@ -252,7 +214,6 @@ def _render_agent_row(agent: dict, tab: str, user_email: str) -> str:
 
 
 async def _render_list(orch, user_id, tab: str) -> str:
-    """Render the agent list body for one tab (≤2 DB round trips)."""
     user_email, ownership_map, disabled_set = await _list_context(orch, user_id)
     rows = await asyncio.to_thread(_agent_rows, orch, ownership_map, disabled_set)
     if tab == "public":
@@ -275,12 +236,7 @@ async def _render_list(orch, user_id, tab: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Render — detail view
-# ---------------------------------------------------------------------------
-
 def _switch(name: str, checked: bool, extra_cls: str, aria: str, disabled: bool = False) -> str:
-    """Toggle-switch checkbox (styled by ``.astral-switch`` in astral.css)."""
     return (
         f'<label class="astral-switch">'
         f'<input type="checkbox" name="{esc(name)}"{" checked" if checked else ""}'
@@ -290,19 +246,12 @@ def _switch(name: str, checked: bool, extra_cls: str, aria: str, disabled: bool 
 
 
 def _destructive_badge(classification) -> str:
-    """Feature 063 (FR-025): pre-grant destructive marker for one verb.
-
-    The classification rides the card skill metadata straight from the agent's
-    ``TOOL_REGISTRY`` ("never" | "always" | "if_exists" | {"by_action": [...]});
-    anything other than never/absent renders a marker — unconditional red,
-    input-dependent amber. Display only; the confirmation gate enforces.
-    """
     if not classification or classification == "never":
         return ""
     if classification == "always":
         label = "Destructive"
         cls = "bg-red-500/10 text-red-400 border-red-500/20"
-    else:  # "if_exists" or {"by_action": [...]} — destructive on some inputs
+    else:
         label = "Sometimes destructive"
         cls = "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
     return (
@@ -314,16 +263,6 @@ def _destructive_badge(classification) -> str:
 def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
                           tool_descriptions, tab: str = "mine",
                           tool_destructive=None) -> str:
-    """Per-kind permission sections: one master switch per permission kind,
-    individual tool switches beneath it.
-
-    The master is named ``__scope::<kind>``; tool switches keep the
-    ``<tool>::<kind>`` names from the matrix so the save handler validates
-    against the same PUT-permissions rules. A section renders only when the
-    agent exposes tools of that kind. When the master is off, the tool
-    switches render disabled (the client mirrors this on toggle) and the
-    save handler forces the whole section off regardless of collected values.
-    """
     tool_destructive = tool_destructive or {}
     sections = []
     sectioned = set()
@@ -336,9 +275,6 @@ def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
         enabled_count = sum(
             1 for t in tools if bool(per_tool.get(t, {}).get(kind, False))
         )
-        # Effective per-tool rows win over the scope at resolution time, so a
-        # section with any enabled tool must present as "on" even if the
-        # agent-wide scope row is stale/false.
         master_on = bool(scope_state.get(kind, False)) or enabled_count > 0
         rows = []
         for tool_name in tools:
@@ -370,8 +306,6 @@ def _render_perm_sections(agent_id: str, tool_scope_map, per_tool, scope_state,
             f'<div class="astral-perm-tools divide-y divide-white/5 px-3{dim}">{"".join(rows)}</div>'
             f"</div>"
         )
-    # Tools whose required scope is not a known permission kind stay visible
-    # (the old matrix listed every tool) but are not user-configurable here.
     others = sorted(set(tool_scope_map) - sectioned)
     if others:
         rows = []
@@ -436,11 +370,6 @@ def _render_visibility(agent_id: str, is_public: bool, tab: str = "mine") -> str
 
 
 def _render_safe(agent_id: str, is_safe: bool, tab: str = "mine") -> str:
-    """Feature 040 (US2): owner/admin control to mark an agent 'safe'.
-
-    The handler (``handle_safe_set`` → ``agent_trust.mark_safe``) enforces the
-    admin/owner gate server-side; this just renders the toggle + current state.
-    """
     state = "owner-approved safe" if is_safe else "not marked safe"
     action_label = "Unmark safe" if is_safe else "Mark safe"
     pl = _payload({"agent_id": agent_id, "is_safe": not is_safe, "tab": tab})
@@ -457,16 +386,6 @@ def _render_safe(agent_id: str, is_safe: bool, tab: str = "mine") -> str:
 
 
 def _normalize_credential_entries(raw) -> "tuple[list, dict]":
-    """Normalize ``required_credentials`` declarations to (keys, labels, optional).
-
-    Agents declare them either as plain strings or as dicts like
-    ``{"key": "MS_GRAPH_CLIENT_ID", "label": ..., "description": ...,
-    "required": bool, "type": ...}`` (the generated-agent shape). Anything
-    unrecognizable is skipped rather than crashing the surface. ``optional`` is
-    the set of keys a declaration explicitly marks ``"required": False`` (e.g.
-    web_research's SEARCH_API_* — there is a keyless fallback) so the UI can
-    label them Optional instead of Required.
-    """
     keys, labels, optional = [], {}, set()
     for entry in raw or []:
         if isinstance(entry, dict):
@@ -485,7 +404,6 @@ def _normalize_credential_entries(raw) -> "tuple[list, dict]":
 
 
 def _render_credentials(keys, agent_id: str, card, tab: str = "mine") -> str:
-    """Render the credentials section from already-fetched stored ``keys``."""
     metadata = getattr(card, "metadata", None) or {}
     declared, req_labels, optional_creds = _normalize_credential_entries(
         metadata.get("required_credentials"))
@@ -594,7 +512,6 @@ def _render_external_identity(external_identity_links, agent_id: str, card) -> s
 
 
 async def _detail_context(orch, user_id, agent_id) -> dict:
-    """All non-permission detail reads in ≤3 typed Plane statements."""
     context = _management_context(orch)
     record = await context.call_async(
         context.repository.get_detail_context,
@@ -622,7 +539,6 @@ async def _detail_context(orch, user_id, agent_id) -> dict:
 
 
 def _effective_permissions(tool_scope_map, user_id, agent_id, ctx):
-    """Use the runtime permission resolver for both web and native settings."""
     from orchestrator.tool_permissions import resolve_effective_tool_permissions
     from shared.feature_flags import flags
 
@@ -638,7 +554,6 @@ def _effective_permissions(tool_scope_map, user_id, agent_id, ctx):
 
 
 def _permission_snapshot(tool_scope_map, per_tool, scope_state, card):
-    """Project section masters and tool overrides using the existing form names."""
     descriptions = {skill.id: skill.description for skill in card.skills}
     destructive = {
         skill.id: (getattr(skill, "metadata", None) or {}).get("destructive")
@@ -677,7 +592,6 @@ def _permission_snapshot(tool_scope_map, per_tool, scope_state, card):
 
 
 def _credential_snapshot(keys, card):
-    """Expose credential declarations and stored-key presence, never values."""
     declared, labels, optional = _normalize_credential_entries(
         (getattr(card, "metadata", None) or {}).get("required_credentials"))
     stored = set(keys)
@@ -689,7 +603,6 @@ def _credential_snapshot(keys, card):
 
 
 def _external_identity_snapshot(links, agent_id, card):
-    """Include only an already verified identity for this agent/provider."""
     metadata = getattr(card, "metadata", None) or {}
     declaration = metadata.get("external_identity") if isinstance(metadata, dict) else None
     if not isinstance(declaration, dict) or declaration.get("provider") != "orcid":
@@ -699,14 +612,10 @@ def _external_identity_snapshot(links, agent_id, card):
                    if link.agent_id == agent_id and link.provider == "orcid"), None)
     if linked:
         identity["subject"] = linked.subject
-    # The existing ORCID start route requires a web cookie session. A native
-    # bearer session cannot authorize a browser link; the builder names the
-    # web-client handoff until that flow is qualified.
     return identity
 
 
 async def components(orch, user_id, roles, params):
-    """Build native agent settings from the web surface's owner-scoped reads."""
     from astralprojection.chrome.agents import build_agents_view
 
     params = params if isinstance(params, dict) else {}
@@ -750,7 +659,6 @@ async def components(orch, user_id, roles, params):
 
 
 async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
-    """Render the per-agent detail body (≤3 DB round trips total)."""
     card = orch.agent_cards.get(agent_id)
     if not card:
         return (
@@ -761,14 +669,8 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
     tool_scope_map = tp.get_tool_scope_map(agent_id)
     ctx = await _detail_context(orch, user_id, agent_id)
     scope_state = ctx["scope_state"]
-    # Feature 040: a safe + public agent's tools default ALLOW at runtime, so the
-    # picker must show them ON rather than contradict the gate. is_safe/is_public
-    # come from _detail_context (no extra query); pass the flip in to stay within
-    # the detail render's DB round-trip budget.
     per_tool = _effective_permissions(tool_scope_map, user_id, agent_id, ctx)
     tool_descriptions = {s.id: s.description for s in card.skills}
-    # Feature 063 (FR-025): destructive classification propagated from the
-    # agent's TOOL_REGISTRY via the card skill metadata (base_agent).
     tool_destructive = {
         s.id: (getattr(s, "metadata", None) or {}).get("destructive")
         for s in card.skills
@@ -792,7 +694,6 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
         tool_destructive)]
     if is_owner:
         sections.append(_render_visibility(agent_id, ctx["is_public"], tab))
-    # Feature 040 (US2): owner/admin safe-marking control.
     if is_owner or "admin" in (roles or []):
         if ctx["safe_known"]:
             sections.append(_render_safe(agent_id, ctx["is_safe"], tab))
@@ -812,17 +713,6 @@ async def _render_detail(orch, user_id, roles, agent_id: str, tab: str) -> str:
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Render the Agents & permissions surface body (list or detail view).
-
-    Args:
-        orch: The orchestrator instance (service internals).
-        user_id: The requesting user's id.
-        roles: The session roles (unused — surface is available to all users).
-        params: ``{tab?: "mine"|"public", agent_id?: str}``.
-
-    Returns:
-        Body HTML for the chrome modal (escape-by-default).
-    """
     params = params or {}
     tab = str(params.get("tab") or "mine")
     if tab not in ("mine", "public"):
@@ -832,10 +722,6 @@ async def render(orch, user_id, roles, params) -> str:
         return await _render_detail(orch, user_id, roles, str(agent_id), tab)
     return await _render_list(orch, user_id, tab)
 
-
-# ---------------------------------------------------------------------------
-# Handlers (explicit save → re-render with notice; FR-016)
-# ---------------------------------------------------------------------------
 
 def _detail_params(agent_id: str, payload) -> dict:
     tab = str((payload or {}).get("tab") or "mine")
@@ -853,18 +739,10 @@ def _list_params(payload) -> dict:
 
 def _apply_perm_writes(tp, user_id, agent_id, masters, per_tool_permissions,
                        tool_scope_map) -> None:
-    """Persist a validated permission-save payload (runs off the event loop).
-
-    Writes the per-tool rows (an off master forces its whole section off,
-    including tools missing from the submitted fields), then mirrors the
-    result up to the ``agent_scopes`` layer so the legacy filter path stays
-    coherent — masters write straight through, kinds without a master keep
-    the any-enabled-tool → scope-true mirror.
-    """
     for tool_name, kind_map in per_tool_permissions.items():
         for kind, enabled in kind_map.items():
             if masters.get(kind) is False:
-                enabled = False  # section gate wins
+                enabled = False
             tp.set_tool_permission(user_id, agent_id, tool_name, kind, bool(enabled))
     for kind, master_on in masters.items():
         if master_on:
@@ -885,18 +763,6 @@ def _apply_perm_writes(tp, user_id, agent_id, masters, per_tool_permissions,
 
 
 async def handle_perms_save(orch, websocket, user_id, roles, payload):
-    """``chrome_perms_save {agent_id, fields}`` → PUT-permissions internals.
-
-    ``fields`` arrive from the sectioned form as ``{"__scope::<kind>": bool}``
-    masters plus ``{"<tool>::<kind>": bool}`` tool switches, translated to the
-    ``per_tool_permissions`` shape (``{tool: {kind: bool}}``) the REST route
-    builds, with the same validate-whole-payload-then-write semantics (FR-014:
-    any mismatch rejects everything so no half-applied state). A master that
-    is off forces every tool of that kind off — the section gate wins over the
-    individual switches collected under it. Masters write straight through to
-    the ``agent_scopes`` layer; kinds without a master keep the legacy mirror
-    (scope goes true when any of its tools is enabled).
-    """
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     card = orch.agent_cards.get(agent_id)
@@ -918,7 +784,6 @@ async def handle_perms_save(orch, websocket, user_id, roles, payload):
         return ("agents", params, notice_block("error", "No permission changes submitted."))
 
     tool_scope_map = orch.tool_permissions.get_tool_scope_map(agent_id)
-    # Validate the whole payload before writing anything (api.py rules).
     for kind in masters:
         if kind not in PERMISSION_KINDS:
             return ("agents", params, notice_block(
@@ -950,7 +815,6 @@ async def handle_perms_save(orch, websocket, user_id, roles, payload):
 
 
 async def handle_visibility_set(orch, websocket, user_id, roles, payload):
-    """``chrome_visibility_set {agent_id, is_public}`` — owner-only toggle."""
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     params = _detail_params(agent_id, payload)
@@ -979,21 +843,11 @@ async def handle_visibility_set(orch, websocket, user_id, roles, payload):
 
 
 async def handle_safe_set(orch, websocket, user_id, roles, payload):
-    """``chrome_safe_set {agent_id, is_safe}`` — admin/owner-gated safe toggle (feature 040).
-
-    Delegates the gate + audit to ``agent_trust.mark_safe``. The agent's own
-    owner may toggle their agent; admins may toggle any. The marker flips the
-    permission baseline (deny→allow) for the agent at check time — runtime
-    per-call security is unaffected.
-    """
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     params = _detail_params(agent_id, payload)
     from orchestrator import agent_trust
-    # Never trust a literal "owner" role from the token — the safe-marking
-    # "owner" privilege must derive ONLY from verified ownership of THIS agent
-    # (otherwise a Keycloak realm role literally named "owner" would grant
-    # blanket safe-marking of any agent).
+    # Never trust a literal 'owner' role claim for safe-marking
     eff_roles = [r for r in (roles or []) if r != "owner"]
     context = await _detail_context(orch, user_id, agent_id)
     user_email = context["user_email"]
@@ -1020,13 +874,6 @@ async def handle_safe_set(orch, websocket, user_id, roles, payload):
 
 
 async def handle_credentials_save(orch, websocket, user_id, roles, payload):
-    """``chrome_credentials_save {agent_id, fields}`` → credentials internals.
-
-    Blank fields are skipped (passwords render empty; an empty submit must
-    not wipe stored values). After saving, runs the same save-time
-    ``_credentials_check`` probe as the PUT-credentials route when the agent
-    exposes one, and reports the verdict in the notice (FR-008 semantics).
-    """
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     card = orch.agent_cards.get(agent_id)
@@ -1044,7 +891,6 @@ async def handle_credentials_save(orch, websocket, user_id, roles, payload):
     await asyncio.to_thread(
         orch.credential_manager.set_bulk_credentials, user_id, agent_id, credentials)
 
-    # Save-time credential probe (FR-008) — mirrors set_agent_credentials.
     verdict_note = ""
     kind = "success"
     skill_names = {getattr(s, "name", None) for s in getattr(card, "skills", [])}
@@ -1070,7 +916,6 @@ async def handle_credentials_save(orch, websocket, user_id, roles, payload):
                 verdict = mcp_resp.result.get("credential_test", "unexpected")
                 detail = mcp_resp.result.get("detail")
         except Exception as e:
-            # A failed probe must not block the credential save.
             verdict, detail = "unreachable", f"Credential probe failed: {e}"
         verdict_note = f" Connection test: {verdict}."
         if detail:
@@ -1085,7 +930,6 @@ async def handle_credentials_save(orch, websocket, user_id, roles, payload):
 
 
 async def handle_credential_delete(orch, websocket, user_id, roles, payload):
-    """``chrome_credential_delete {agent_id, key}`` → delete-credential internals."""
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     card = orch.agent_cards.get(agent_id)
@@ -1103,7 +947,6 @@ async def handle_credential_delete(orch, websocket, user_id, roles, payload):
 
 
 async def handle_agent_enabled(orch, websocket, user_id, roles, payload):
-    """``chrome_agent_enabled {agent_id, enabled}`` → per-user enable internals."""
     payload = payload or {}
     agent_id = str(payload.get("agent_id") or "")
     if agent_id not in orch.agent_cards:

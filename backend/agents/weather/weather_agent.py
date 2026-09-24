@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-"""
-Weather Agent — A2A-compliant specialist agent for weather data and forecasts.
-
-Provides tools for:
-- Geocoding (city/state to coordinates)
-- Current weather conditions
-- Hourly, daily, and weekly forecasts
-- Weather data visualization
+"""A2A specialist agent for weather data: wraps mcp_server.MCPServer to serve geocoding,
+current/historical/forecast, and location-comparison tools.
 """
 import asyncio
 import os
@@ -23,8 +17,6 @@ logging.basicConfig(level=logging.INFO,
 
 
 class WeatherAgent(BaseA2AAgent):
-    """Specialist agent for weather data and forecasts."""
-
     agent_id = "weather-1"
     service_name = "Weather Agent"
     description = (

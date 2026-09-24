@@ -1,4 +1,8 @@
-"""Original turn guidance currentness over actual IAM and PostgreSQL skills."""
+"""Tests for orchestrator/turn_guidance_authority.py currentness over auth.py's IAM and
+Postgres-backed skills: original guidance stays read-only, retires with its exact
+turn, and never adopts a later owner's state after identity loss.
+"""
+
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone

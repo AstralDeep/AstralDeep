@@ -1,0 +1,89 @@
+# Protected consumer only. The separately installed producer executes the
+# immutable candidate in an isolated real-service namespace and attests raw
+# evidence. Native clients are explicitly paused and are not producer inputs.
+name: backend-web-readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact backend/web candidate commit
+        required: true
+        type: string
+      base_sha:
+        description: Exact reviewed changed-coverage base
+        required: true
+        type: string
+      candidate_image:
+        description: Immutable tested backend image with its pinned browser client
+        required: true
+        type: string
+      source_run_id:
+        description: Completed installed backend/web qualification producer run
+        required: true
+        type: string
+      artifact_id:
+        description: Exact provider artifact ID from that run and attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  protected-backend-web-decision:
+    # Candidate refs must never reach an environment or an OIDC-enabled job.
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    name: protected-backend-web-decision
+    runs-on: ubuntu-24.04
+    environment: release-backend-web
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BACKEND_WEB_POLICY_SHA: ${{ vars.BACKEND_WEB_POLICY_SHA }}
+      BACKEND_WEB_PRODUCER_SHA: ${{ vars.BACKEND_WEB_PRODUCER_SHA }}
+      BACKEND_WEB_PRODUCER_RUNNER: ${{ vars.BACKEND_WEB_PRODUCER_RUNNER }}
+      BACKEND_WEB_PRODUCER_IDENTITY: ${{ vars.BACKEND_WEB_PRODUCER_IDENTITY }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
+      CANDIDATE_IMAGE: ${{ inputs.candidate_image }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      ARTIFACT_ID: ${{ inputs.artifact_id }}
+    steps:
+      - name: Require the installed protected policy commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BACKEND_WEB_POLICY_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_WORKFLOW_SHA" = "$BACKEND_WEB_POLICY_SHA"
+          [[ "$BACKEND_WEB_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$BACKEND_WEB_PRODUCER_RUNNER"
+          test -n "$BACKEND_WEB_PRODUCER_IDENTITY"
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.BACKEND_WEB_POLICY_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Reconstruct provider identity and verify complete attested raw evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/validate_backend_web_evidence.py --protected \
+            --candidate-sha "$CANDIDATE_SHA" --base-sha "$BASE_SHA" \
+            --candidate-image "$CANDIDATE_IMAGE" --source-run-id "$SOURCE_RUN_ID" \
+            --artifact-id "$ARTIFACT_ID" --output build/backend-web/trusted-decision.json
+      - name: Attest the exact qualified decision
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: build/backend-web/trusted-decision.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-web-decision-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/backend-web/trusted-decision.json
+          if-no-files-found: error
+          retention-days: 30

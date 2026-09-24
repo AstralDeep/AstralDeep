@@ -1,10 +1,8 @@
-"""Feature 063 (T020/T025) — remote-machines settings surface: web render() +
-native components() parity, and a multi-line PEM surviving a round trip through
-the surface into the per-machine credential store.
-
-Hermetic: a minimal fake orch; the DB listing + the connect-probe are
-monkeypatched so no Postgres / SSH is touched.
+"""Tests for orchestrator/projection_surfaces/remote_machines.py: web/native render
+parity, credential storage via credential_manager, connect-probe notices, and
+owner-scoped machine handlers.
 """
+
 import asyncio
 from types import SimpleNamespace
 
@@ -15,8 +13,6 @@ from orchestrator.remote_transport import MachineTarget, RemoteResult, Verdict
 from orchestrator.projection_surfaces import get_surface
 from orchestrator.projection_surfaces import remote_machines as rm
 
-# Captured at import — the _no_db fixture patches rm._enabled to a constant, so
-# the flag-reading original is only reachable from a reference taken beforehand.
 _REAL_ENABLED = rm._enabled
 
 PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
@@ -30,8 +26,6 @@ def run(coro):
 
 
 class FakeCM:
-    """Records set_machine_credential so we can assert the stored secret."""
-
     def __init__(self):
         self.creds = {}
 
@@ -47,10 +41,7 @@ def _orch(cm=None):
 
 @pytest.fixture(autouse=True)
 def _no_db(monkeypatch):
-    # render()/components() list machines — stub to empty (no Postgres).
     monkeypatch.setattr(rm.remote_machines, "list_machines", lambda db, uid: [])
-    # CI runs with FF_REMOTE_COMPUTE unset; these tests exercise the ENABLED
-    # surface (the disabled posture is test_remote_flag_off_063.py's job).
     monkeypatch.setattr(rm, "_enabled", lambda: True)
 
 
@@ -67,8 +58,6 @@ def _field(picker, name):
     return None
 
 
-# ── registry + handler contract ───────────────────────────────────────────────
-
 def test_registry_resolves_surface():
     mod = get_surface("remote_machines")
     assert mod is rm
@@ -76,9 +65,6 @@ def test_registry_resolves_surface():
 
 
 def test_handlers_cover_the_machine_actions():
-    # T026 extended the set with the machine-scoped credential + re-trust
-    # actions (machine-namespaced: the flat chrome action map already gives
-    # plain chrome_credential_delete to the agents surface).
     assert set(rm.HANDLERS) == {"chrome_machine_add", "chrome_machine_probe",
                                 "chrome_machine_delete",
                                 "chrome_machine_credential_set",
@@ -88,8 +74,6 @@ def test_handlers_cover_the_machine_actions():
         assert asyncio.iscoroutinefunction(fn)
 
 
-# ── web render() ───────────────────────────────────────────────────────────────
-
 def test_render_has_private_key_textarea_and_add_action():
     html = run(rm.render(_orch(), "u1", ["user"], {}))
     assert '<textarea name="private_key"' in html
@@ -97,20 +81,16 @@ def test_render_has_private_key_textarea_and_add_action():
     assert 'data-ui-action="chrome_machine_add"' in html
 
 
-# ── native components() ─────────────────────────────────────────────────────────
-
 def test_components_form_has_all_fields_and_submit_action():
     comps = run(rm.components(_orch(), "u1", ["user"], {}))
     picker = _picker(comps)
     names = {f["name"] for f in picker["fields"]}
     assert {"label", "address", "port", "username", "os_family", "role",
             "cred_type", "private_key", "passphrase", "password"} <= names
-    # the private key is a textarea (multi-line PEM); the secrets are password kind
     assert _field(picker, "private_key")["kind"] == "textarea"
     assert _field(picker, "passphrase")["kind"] == "password"
     assert _field(picker, "password")["kind"] == "password"
     assert _field(picker, "cred_type")["kind"] == "select"
-    # submit binds to the SAME handler the web form uses
     assert picker.get("submit_action") == "chrome_machine_add"
 
 
@@ -123,7 +103,6 @@ def test_components_lists_existing_machines_with_probe_and_delete(monkeypatch):
     assert "dgx" in flat
     actions = {c.get("action") for c in _iter_dicts(comps)}
     assert {"chrome_machine_probe", "chrome_machine_delete"} <= actions
-    # each per-machine action carries the machine_id payload
     payloads = [c.get("payload") for c in _iter_dicts(comps)
                 if c.get("action") in ("chrome_machine_probe", "chrome_machine_delete")]
     assert all(p.get("machine_id") == "m1" for p in payloads)
@@ -139,8 +118,6 @@ def _iter_dicts(obj):
             yield from _iter_dicts(v)
 
 
-# ── the round trip: a multi-line PEM survives into the credential store ────────
-
 def test_multiline_pem_round_trips_through_add_handler(monkeypatch):
     cm = FakeCM()
     monkeypatch.setattr(rm.remote_machines, "create_machine", lambda *a, **k: "mid1")
@@ -153,11 +130,10 @@ def test_multiline_pem_round_trips_through_add_handler(monkeypatch):
     assert surface == "remote_machines"
     stored = cm.creds["mid1"]
     assert stored["cred_type"] == "ssh_key"
-    # newlines preserved: same line count as the input (handler appends a trailing \n)
     assert stored["secret"].startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
     assert stored["secret"].rstrip("\n").endswith("-----END OPENSSH PRIVATE KEY-----")
     assert stored["secret"].count("\n") >= PEM.count("\n")
-    assert "b3BlbnNzaC1rZXktdjEA" in stored["secret"]  # interior line intact
+    assert "b3BlbnNzaC1rZXktdjEA" in stored["secret"]
 
 
 def test_add_missing_required_fields_is_rejected_without_credential(monkeypatch):
@@ -185,13 +161,9 @@ def test_add_password_cred_ignores_private_key(monkeypatch):
     assert stored["passphrase"] is None
 
 
-# ── pure helpers: submitted-field parsing + credential validation ──────────────
-
 def test_fields_drops_non_dict_payloads_and_structured_values():
     assert rm._fields(None) == {}
     assert rm._fields({"fields": "not-a-dict"}) == {}
-    # scalars are stringified + trimmed; dict/list/None values and non-string keys
-    # are dropped (a form post is flat text, so anything else is a crafted payload)
     assert rm._fields({"fields": {"label": "  dgx  ", "port": 22, "nested": {"a": 1},
                                   "listy": [1], "nothing": None}}) == {"label": "dgx",
                                                                        "port": "22"}
@@ -208,7 +180,7 @@ def test_credential_from_fields_defaults_to_ssh_key_and_terminates_the_pem():
     cred_type, secret, passphrase = rm._credential_from_fields(
         {"cred_type": "not-a-type", "private_key": PEM, "password": "ignored"})
     assert cred_type == "ssh_key" and passphrase is None
-    assert secret == PEM + "\n"  # PEMs want a trailing newline
+    assert secret == PEM + "\n"
 
 
 def test_credential_from_fields_password_ignores_the_key_fields():
@@ -217,22 +189,15 @@ def test_credential_from_fields_password_ignores_the_key_fields():
          "private_key": PEM, "passphrase": "pp"}) == ("password", "s3cret", None)
 
 
-# ── FF_REMOTE_COMPUTE re-check reads the real flag ────────────────────────────
-
 @pytest.mark.parametrize("on", [True, False])
 def test_enabled_delegates_to_the_remote_compute_flag(monkeypatch, on):
-    # _REAL_ENABLED is captured at import, before _no_db patches _enabled to True.
     from shared import feature_flags
     monkeypatch.setattr(feature_flags.flags, "is_enabled",
                         lambda name: on if name == "remote_compute" else False)
     assert _REAL_ENABLED() is on
 
 
-# ── _probe_notice: honest verdict, and failures that must not raise ────────────
-
 class _ProbeTransport:
-    """Only ``probe`` is reached from _probe_notice."""
-
     def __init__(self, result):
         self.result = result
         self.probes = 0
@@ -287,7 +252,6 @@ def test_probe_notice_failure_shows_the_verdict_and_next_action(monkeypatch):
 
 
 def test_probe_notice_survives_a_failed_verdict_write(monkeypatch):
-    # record_probe is best-effort: a write failure must not lose the honest verdict.
     def _boom(*a, **k):
         raise RuntimeError("db down")
     _wire_probe(monkeypatch, RemoteResult(verdict=Verdict.OK, machine="dgx"), record=_boom)
@@ -312,11 +276,7 @@ def test_probe_notice_unloadable_machine_is_reported_not_raised(monkeypatch):
         _orch(), "u1", "m1", "dgx")
 
 
-# ── handler refusals: bad payloads and machines you do not own ─────────────────
-
 class TrackingCM(FakeCM):
-    """FakeCM that also records (or fails) per-machine credential destroys."""
-
     def __init__(self, *, delete_raises: bool = False):
         super().__init__()
         self.deleted = []
@@ -352,8 +312,6 @@ def test_machine_scoped_handlers_require_a_machine_id(monkeypatch, action):
 
 @pytest.mark.parametrize("action", [a for a in _MACHINE_SCOPED if a != "chrome_machine_delete"])
 def test_machine_scoped_handlers_refuse_a_machine_you_do_not_own(monkeypatch, action):
-    # get_machine is owner-scoped: a foreign/unknown id reads as absent, and the
-    # handler must stop there — never reaching the machine_id-keyed credential ops.
     monkeypatch.setattr(rm.remote_machines, "get_machine", lambda db, uid, mid: None)
     _tripwires(monkeypatch, "retrust_host_key", "audit_machine_event")
     _no_probe(monkeypatch)
@@ -366,8 +324,6 @@ def test_machine_scoped_handlers_refuse_a_machine_you_do_not_own(monkeypatch, ac
 
 
 def test_delete_refused_for_a_foreign_machine_leaves_its_credential(monkeypatch):
-    # delete_machine is itself owner-scoped; the credential destroy is keyed by
-    # machine_id ALONE, so a refused delete must not reach it.
     monkeypatch.setattr(rm.remote_machines, "get_machine", lambda db, uid, mid: None)
     monkeypatch.setattr(rm.remote_machines, "delete_machine", lambda db, uid, mid: False)
     _tripwires(monkeypatch, "audit_machine_event")
@@ -377,8 +333,6 @@ def test_delete_refused_for_a_foreign_machine_leaves_its_credential(monkeypatch)
     assert "not in your inventory" in notice
     assert cm.deleted == []
 
-
-# ── add: port + credential validation refuse before anything is created ────────
 
 def _no_create(monkeypatch):
     monkeypatch.setattr(rm.remote_machines, "create_machine",
@@ -428,8 +382,6 @@ def test_add_defaults_unknown_os_role_and_port(monkeypatch):
     assert events == [("remote_machine.registered", "password")]
     assert notice == "<probed>"
 
-
-# ── per-machine credential replace / remove / re-trust (owner-scoped) ──────────
 
 def _owned(monkeypatch, label="dgx"):
     monkeypatch.setattr(rm.remote_machines, "get_machine",
@@ -505,8 +457,6 @@ def test_delete_destroys_the_credential_and_audits_the_removal(monkeypatch):
 
 
 def test_delete_completes_when_the_credential_destroy_fails(monkeypatch):
-    # The FK cascade already removes the row; a vault hiccup must not leave the
-    # machine half-deleted or raise out of the handler.
     _owned(monkeypatch)
     monkeypatch.setattr(rm.remote_machines, "delete_machine", lambda db, uid, mid: True)
     events = _audit_sink(monkeypatch)

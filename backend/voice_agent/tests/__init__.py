@@ -1,1 +1,1 @@
-"""Test-only helpers for the isolated conversational voice worker."""
+"""Empty package marker for voice_agent's test suite; no shared fixtures live here."""

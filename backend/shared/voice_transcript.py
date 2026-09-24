@@ -1,9 +1,6 @@
-"""Canonical, short-lived transcript proofs for conversational voice.
-
-The worker and orchestrator derive a per-session key from the worker-control
-secret.  The proof authenticates immutable recognition/turn bindings and the
-canonical text digest; neither key, proof, nor digest is durable conversation
-content.
+"""Short-lived HMAC-signed proofs binding a canonicalized voice transcript to its
+session, derived from a per-session key shared by the worker and orchestrator. Used
+by orchestrator/voice_sessions.py and voice_agent/voice_transcript.py.
 """
 
 from __future__ import annotations
@@ -29,8 +26,6 @@ _MAX_PROOF_LIFETIME = timedelta(minutes=2)
 
 
 class TranscriptProofError(RuntimeError):
-    """Content-free transcript refusal safe for logs and client errors."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -38,8 +33,6 @@ class TranscriptProofError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class TranscriptSessionScope:
-    """Immutable worker assignment scope used to derive one session key."""
-
     session_id: str
     generation: int
     assignment_id: str
@@ -101,8 +94,6 @@ class TranscriptProofBinding:
 
     @property
     def session_scope(self) -> TranscriptSessionScope:
-        """Return the assignment-only scope without transcript identifiers."""
-
         return TranscriptSessionScope(
             session_id=self.session_id,
             generation=self.generation,
@@ -127,8 +118,6 @@ class IssuedTranscriptProof:
 
 
 def canonical_transcript(text: object) -> str:
-    """Normalize ASR text exactly and reject control/surrogate ambiguity."""
-
     if not isinstance(text, str):
         raise TranscriptProofError("invalid_transcript_text")
     normalized = unicodedata.normalize("NFC", text.replace("\r\n", "\n")).strip()
@@ -155,8 +144,6 @@ def derive_session_proof_key(
     worker_control_secret: bytes,
     binding: TranscriptProofBinding | TranscriptSessionScope,
 ) -> bytes:
-    """Derive one non-exported key bound to the exact worker assignment."""
-
     secret = _secret(worker_control_secret)
     scope = _lines(
         "ADVSK1",
@@ -176,8 +163,6 @@ def issue_transcript_proof_with_key(
     now: datetime,
     lifetime_seconds: int = 120,
 ) -> IssuedTranscriptProof:
-    """Issue a proof from an already derived, memory-only session key."""
-
     if (
         isinstance(lifetime_seconds, bool)
         or not isinstance(lifetime_seconds, int)
@@ -206,8 +191,6 @@ def issue_transcript_proof(
     now: datetime,
     lifetime_seconds: int = 120,
 ) -> IssuedTranscriptProof:
-    """Canonicalize and sign one final transcript for at most two minutes."""
-
     return issue_transcript_proof_with_key(
         derive_session_proof_key(worker_control_secret, binding),
         binding,
@@ -227,8 +210,6 @@ def verify_transcript_proof_with_key(
     proof_expires_at: object,
     now: datetime,
 ) -> str:
-    """Verify one proof from an already derived session key."""
-
     checked_now = _aware(now, "invalid_transcript_proof_clock")
     canonical = canonical_transcript(text)
     if canonical != text:
@@ -276,8 +257,6 @@ def verify_transcript_proof(
     proof_expires_at: object,
     now: datetime,
 ) -> str:
-    """Verify canonical text, digest, expiry, and HMAC in constant time."""
-
     return verify_transcript_proof_with_key(
         derive_session_proof_key(worker_control_secret, binding),
         binding,

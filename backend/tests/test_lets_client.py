@@ -1,4 +1,7 @@
-"""Pinned LETS v1.0.11 public-client boundary and redaction tests."""
+"""Tests for orchestrator/lets_client.py against LETS/src/lets/client.py: the
+public-client boundary's factory, lifecycle and revoke contracts, strict response
+parsing, host-binding mismatch denial, and redaction of errors.
+"""
 
 from __future__ import annotations
 

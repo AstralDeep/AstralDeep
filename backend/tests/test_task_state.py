@@ -1,4 +1,7 @@
-"""Feature-060 compatibility tests for coordinator-backed Re-Act task state."""
+"""Tests for orchestrator/task_state.py's coordinator-backed Re-Act task: the legacy
+Task dataclass stays a coordinator projection, admission and phase transitions are
+validated against work_admission.py, and sync surfaces make zero coordinator calls.
+"""
 
 from __future__ import annotations
 

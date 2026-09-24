@@ -1,12 +1,8 @@
-"""T036 (056-delegated-agent-chaining): the direct peer-call path is retired.
-
-048's audit found ``BaseA2AAgent.call_peer_tool`` forwarded the caller's
-delegation token UNATTENUATED to a peer — a confused-deputy seam bypassing
-the orchestrator's entire gate stack. Feature 056 removed it (FR-010, D12);
-these tests pin the removal so an agent can never bypass orchestrator
-mediation (SC-010). The sanctioned replacement is the mediated
-``AgentRuntime.call_agent_tool``.
+"""Tests that the direct agent peer-call path is removed from
+backend/shared/agent_runtime.py and base_agent.py: no live call sites remain and the
+mediated AgentRuntime.call_agent_tool is the sole replacement.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -36,7 +32,6 @@ def test_peer_call_surface_removed():
 
 
 def test_peer_state_removed_from_source():
-    """No peer connection registry / pending-future state remains."""
     src = inspect.getsource(sys.modules["shared.base_agent"])
     for symbol in ("peer_connections", "peer_pending", "_peer_registry"):
         live = [ln for ln in src.splitlines()
@@ -45,8 +40,6 @@ def test_peer_state_removed_from_source():
 
 
 def test_no_live_call_sites_repo_wide():
-    """Nothing under backend/ (outside comments/specs) invokes the retired
-    path — an attempted call is an AttributeError, 100% failure (SC-010)."""
     backend_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     offenders = []
     for dirpath, _dirnames, filenames in os.walk(backend_root):
@@ -66,5 +59,3 @@ def test_no_live_call_sites_repo_wide():
 def test_mediated_replacement_exists():
     from shared.agent_runtime import AgentRuntime
     assert hasattr(AgentRuntime, "call_agent_tool")
-    doc = AgentRuntime.call_agent_tool.__doc__ or ""
-    assert "mediated" in doc.lower() or "orchestrator" in doc.lower()

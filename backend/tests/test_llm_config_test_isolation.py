@@ -1,4 +1,8 @@
-"""Regression guard for the interactive mock user's persisted LLM config."""
+"""Tests that no DB-backed suite mutates the interactive mock user's (test_user)
+persisted LLM config, since that write would silently replace the provider the
+interactive client saved; scans source for direct and helper-wrapped store writes.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -43,13 +47,6 @@ def _resolved_string(node: ast.AST, constants: dict[str, str]) -> str | None:
 
 
 def test_db_backed_suites_never_mutate_interactive_mock_user_llm_config():
-    """Live-DB tests must use disposable owners, never ``test_user``.
-
-    In development, mock-auth browser sessions resolve to ``test_user``.  A
-    test that seeds ``Orchestrator._llm_store`` for that owner silently
-    replaces the provider saved by the interactive client.  Check both direct
-    calls and helpers such as ``await _t(store.set_sync, user_id, ...)``.
-    """
     offenders: list[str] = []
     for path in sorted(BACKEND_ROOT.rglob("test_*.py")):
         if "tests" not in path.relative_to(BACKEND_ROOT).parts:

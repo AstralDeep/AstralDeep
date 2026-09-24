@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Decide whether an extracted UI vocabulary needs AstralPrimitives changes.
-
-The check reads source and contract metadata only; it does not import the
-package under review. Every UI-protocol type must be either a public primitive
-in the requested AstralPrimitives release or an explicitly bounded,
-Projection-owned system component.
+"""Checks that every UI-protocol type extracted from source is either a public
+AstralPrimitives primitive at the required version or an explicitly bounded
+Projection-owned system component, from metadata only.
 """
 
 from __future__ import annotations
@@ -21,8 +18,6 @@ from pathlib import Path
 CONTRACT = "astral.primitive-coverage/v1"
 MINIMUM_VERSION = "0.3.0"
 
-# These are not agent-authored AstralPrimitives. They are deterministic,
-# Projection-owned system/chrome states with separate render/adaptation tests.
 PROJECTION_LOCAL_TYPES = {
     "download_card": "Projection-owned verified desktop-release chrome",
     "generative": "Projection-owned bounded grammar; never raw model HTML",
@@ -31,7 +26,7 @@ PROJECTION_LOCAL_TYPES = {
 
 
 class CoverageError(RuntimeError):
-    """The vocabulary decision could not be made safely."""
+    pass
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -91,8 +86,6 @@ def _version_key(
                 identifiers.append((0, int(identifier)))
             else:
                 identifiers.append((1, identifier))
-    # Releases sort after prereleases. Build metadata is intentionally omitted
-    # because SemVer declares it irrelevant to precedence.
     release_precedence = 1 if prerelease is None else 0
     return (
         int(match.group("major")),

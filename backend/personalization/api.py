@@ -1,10 +1,8 @@
-"""REST routers for personalization, skills catalog, and memory (feature 025).
-
-The routers are defined here and registered by the orchestrator app. Profile/
-personality routes (US1/US3) live here; skills (US2) and memory (US4) routes
-are added in their phases. All routes are strictly user-scoped (actor is the
-JWT subject), PHI-gate free-text values, and emit audit events.
+"""Owner-scoped REST routes for personalization profile, memory and the skills catalog;
+PHI-gates every free-text value before persistence and audits changes. Registered by
+orchestrator/orchestrator.py, backed by phi_gate.py and schemas.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,7 +27,6 @@ memory_router = APIRouter(prefix="/api/memory", tags=["Memory"])
 
 
 def _service(request: Request):
-    """Resolve the orchestrator's PersonalizationService (mirrors onboarding._repo)."""
     orch = getattr(request.app.state, "orchestrator", None)
     if orch is None:
         root_app = getattr(request.app, "_root_app", None) or request.app
@@ -75,7 +72,6 @@ async def put_profile(
     svc = _service(request)
     gate = get_phi_gate()
 
-    # PHI gate on every free-text value before anything is persisted (FR-017).
     if body.profession and gate.contains_phi(body.profession):
         return _phi_reject("profession")
     if body.goals:
@@ -96,7 +92,6 @@ async def put_profile(
         dreaming_enabled=body.dreaming_enabled,
     )
 
-    # Audit: distinguish personality-only edits from profile edits.
     changed_personality = personality_dict is not None
     await record_generic(
         claims=payload,
@@ -127,8 +122,6 @@ async def delete_profile(
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-
-# ── Memory (US4) ──────────────────────────────────────────────────────────
 
 class MemoryUpdateRequest(BaseModel):
     value: str
@@ -170,8 +163,6 @@ async def delete_memory(mem_id: str, request: Request,
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# ── Skills catalog (US2) ──────────────────────────────────────────────────
-
 class SkillToggleRequest(BaseModel):
     agent_id: str
     tool_name: str
@@ -191,7 +182,6 @@ def _tool_permissions(request: Request):
 
 @skills_router.get("")
 async def list_skills(request: Request, user_id: str = Depends(require_user_id)):
-    """Catalog of skills (= agent tools) with required scope + availability (FR-009)."""
     tp = _tool_permissions(request)
     catalog: List[Dict[str, Any]] = []
     for agent_id in list(getattr(tp, "_tool_scope_map", {}).keys()):
@@ -213,14 +203,11 @@ async def toggle_skill(body: SkillToggleRequest, request: Request,
                        payload: dict = Depends(get_current_user_payload)):
     tp = _tool_permissions(request)
     required_scope = tp.get_tool_scope(body.agent_id, body.tool_name)
-    # FR-011: enabling a skill can never exceed the user's granted scope.
     if body.enabled and not tp.is_skill_authorized(user_id, body.agent_id, body.tool_name):
         raise HTTPException(
             status_code=403,
             detail=f"This skill needs the '{required_scope}' permission, which you haven't been granted.",
         )
-    # 027 fix: per-(tool, kind) row — the legacy NULL-kind row written before
-    # was silently outranked whenever a kind row existed (see set_skill_enabled).
     tp.set_skill_enabled(user_id, body.agent_id, body.tool_name, body.enabled)
     await record_generic(
         claims=payload, event_class="skill",

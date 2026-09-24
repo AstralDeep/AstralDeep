@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
-"""Timeseries Forecaster tools for the ML Services agent (ported from ``agents/forecaster``).
-
-Wraps the user-supplied Forecaster deployment (e.g. ``forecaster.ai.uky.edu``)
-following its documented API contract:
-
-- ``forecaster_submit_dataset``     — POST /dataset/submit             (returns uuid + columns)
-- ``set_column_roles``              — POST /dataset/save-columns       (maps columns to one of 7 roles)
-- ``forecaster_start_training_job`` — POST /dataset/start-training-job (LONG-RUNNING)
-- ``forecaster_get_job_status``     — GET  /dataset/get-job-status     (sync status probe)
-- ``forecaster_get_results``        — GET  /results/get-metrics        (metrics + output_log)
-- ``forecaster_delete_dataset``     — POST /dataset/delete             (cleanup)
-- ``_credentials_check``            — GET  /dataset/get-job-status (no params; internal auth
-                                      probe dispatched per-bundle by the union registry)
-
-The five verbs Forecaster shared with CLASSify carry the ``forecaster_``
-prefix in the consolidated registry; behavior, input schemas, scopes, and
-output components are unchanged from the originals. The training pipeline is
-split into three steps (submit → set-roles → start) so the chat LLM can
-converse with the user between steps before kicking off the long-running job.
+"""Forecaster tool slice for the ML Services agent:
+submit/configure/train/poll/fetch-results/delete against a user's Forecaster
+deployment via _wrapper.py's ExternalServiceClient; merged into the union registry by
+mcp_tools.py.
 """
 import json
 import logging
@@ -44,9 +29,6 @@ logger = logging.getLogger("MlServicesForecasterTools")
 
 LONG_RUNNING_TOOLS: Set[str] = {"forecaster_start_training_job"}
 
-# Roles the Forecaster service requires for column categorization (see
-# forecaster-api-docs.md). Any column not assigned to one of these falls into
-# `not-included` by default.
 COLUMN_ROLES: List[str] = [
     "not-included",
     "time-component",
@@ -57,10 +39,6 @@ COLUMN_ROLES: List[str] = [
     "static-covariates",
 ]
 
-# Documented defaults from forecaster-api-docs.md. The agent sends *only* the
-# caller's overrides (sparse dict); the upstream uses its own defaults for any
-# key not present. This dict is here for documentation + as a fallback so the
-# LLM/UI can show users what the defaults are if they ask.
 DEFAULT_TRAINING_OPTIONS: Dict[str, Any] = {
     "test-size": 0.2,
     "expanding-window": False,
@@ -88,67 +66,18 @@ DEFAULT_TRAINING_OPTIONS: Dict[str, Any] = {
 
 
 def make_client(credentials: Dict[str, str]) -> _wrapper.ExternalServiceClient:
-    """Build an HTTP client scoped to the Forecaster credential bundle.
-
-    Args:
-        credentials: Decrypted credential map containing ``FORECASTER_URL``
-            and ``FORECASTER_API_KEY``.
-
-    Returns:
-        An (unvalidated) :class:`~agents.ml_services._wrapper.ExternalServiceClient`.
-    """
     return _wrapper.ExternalServiceClient(credentials, BUNDLE)
 
 
 def _build_client(kwargs: Dict[str, Any]) -> _wrapper.ExternalServiceClient:
-    """Resolve and validate the Forecaster client from tool kwargs.
-
-    Args:
-        kwargs: The tool call's ``**kwargs`` carrying ``_credentials``.
-
-    Returns:
-        A validated client.
-
-    Raises:
-        ValueError: When credentials are absent, stale, or incomplete.
-    """
     return _wrapper.build_client(kwargs, BUNDLE)
 
 
 def _user_facing_error(exc: Exception, service: str = "Forecaster") -> str:
-    """Map an HTTP-egress exception to the user-facing chat-rendered string.
-
-    Args:
-        exc: The exception raised by the upstream call.
-        service: Service label for the message; defaults to ``"Forecaster"``.
-
-    Returns:
-        A one-line actionable error message.
-    """
     return _wrapper.user_facing_error(exc, service)
 
 
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
-
-
 def _credentials_check(**kwargs) -> Dict[str, Any]:
-    """Cheap GET to confirm the saved Forecaster URL and API key work.
-
-    Calls ``GET /dataset/get-job-status`` with **no parameters**. The live
-    forecaster.ai.uky.edu service returns 200 with ``{success: false,
-    "message": "A UUID must be provded"}`` in that case — authentication has
-    already been verified by then (a bogus key returns 401 before any body
-    handling). Sending no uuid avoids the upstream's "500 on bad uuid lookup"
-    bug exhibited when you pass a sentinel uuid.
-
-    Args:
-        **kwargs: Tool kwargs carrying ``_credentials``.
-
-    Returns:
-        A ``{"credential_test": ...}`` verdict dict.
-    """
     try:
         client = _build_client(kwargs)
     except ValueError as e:
@@ -157,7 +86,6 @@ def _credentials_check(**kwargs) -> Dict[str, Any]:
         client.get("/dataset/get-job-status")
         return {"credential_test": "ok"}
     except BadRequestError:
-        # 4xx-non-auth: route is reachable, auth was accepted.
         return {"credential_test": "ok"}
     except ExternalHttpError as e:
         return _wrapper.verdict_for_exception(e)
@@ -166,25 +94,6 @@ def _credentials_check(**kwargs) -> Dict[str, Any]:
 def forecaster_submit_dataset(file_handle: Optional[str] = None,
                               inline_data: Optional[str] = None,
                               **kwargs):
-    """Upload a CSV dataset to the Forecaster service.
-
-    Returns the upstream ``uuid`` plus the list of column names. The chat
-    LLM uses the returned columns to converse with the user about which
-    column is the time component, which is the target, and which (if any)
-    are past/future/static covariates before calling ``set_column_roles``.
-
-    Args:
-        file_handle: Attachment handle of a CSV uploaded via AstralDeep.
-        inline_data: Raw CSV text the user pasted in chat. Used only when
-            ``file_handle`` is absent: materialized into a real attachment
-            owned by the authenticated user (the orchestrator-injected
-            ``user_id`` kwarg — never model-supplied), then processed
-            exactly as if that handle had been passed.
-        **kwargs: Tool kwargs (``_credentials``, ``user_id``).
-
-    Returns:
-        An MCP UI response dict with a Card (column Table) and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         user_id = kwargs.get("user_id")
@@ -240,23 +149,6 @@ def forecaster_submit_dataset(file_handle: Optional[str] = None,
 
 
 def _build_categorized_string(column_roles: Dict[str, str]) -> Dict[str, List[str]]:
-    """Convert ``{column_name: role}`` to the role-keyed shape Forecaster wants.
-
-    The upstream API expects ``categorizedString`` as a JSON-encoded dict keyed
-    by role, with each value being the list of columns assigned to that role.
-    The LLM-facing tool accepts the much friendlier inverse (one entry per
-    column) and we convert here.
-
-    Args:
-        column_roles: Map of ``column_name → role``.
-
-    Returns:
-        A role-keyed dict covering every documented role (possibly empty lists).
-
-    Raises:
-        ValueError: On an empty/non-dict input or an unknown role, so the LLM
-            gets a targeted error instead of a 4xx from upstream.
-    """
     if not isinstance(column_roles, dict) or not column_roles:
         raise ValueError(
             "column_roles must be a non-empty dict of {column_name: role}."
@@ -273,24 +165,6 @@ def _build_categorized_string(column_roles: Dict[str, str]) -> Dict[str, List[st
 
 
 def set_column_roles(uuid: str, column_roles: Dict[str, str], **kwargs):
-    """Assign each column to one of the seven roles Forecaster understands.
-
-    ``column_roles`` is a friendly ``{column_name: role}`` dict; the agent
-    internally converts it to the role-keyed JSON shape required by
-    ``POST /dataset/save-columns``. Columns omitted from ``column_roles``
-    fall into ``not-included`` by upstream default.
-
-    Allowed roles: ``not-included``, ``time-component``, ``grouping``,
-    ``target``, ``past-covariates``, ``future-covariates``, ``static-covariates``.
-
-    Args:
-        uuid: Dataset UUID returned by ``forecaster_submit_dataset``.
-        column_roles: Map of ``column_name → role``.
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a role-summary Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         categorized = _build_categorized_string(column_roles)
@@ -302,8 +176,6 @@ def set_column_roles(uuid: str, column_roles: Dict[str, str], **kwargs):
             },
         )
         payload = _safe_json(resp)
-        # Summarize for the chat: list every role that has at least one
-        # column assigned, biggest first.
         nonempty = {role: cols for role, cols in categorized.items() if cols}
         rows = [[role, ", ".join(cols)] for role, cols in nonempty.items()]
         summary_table = Table(headers=["Role", "Columns"], rows=rows)
@@ -326,21 +198,6 @@ def set_column_roles(uuid: str, column_roles: Dict[str, str], **kwargs):
 
 
 def _make_status_poll(client: "_wrapper.ExternalServiceClient", uuid: str):
-    """Build a sync callable that probes ``/dataset/get-job-status`` for one job.
-
-    Normalizes the upstream status string into the JobPoller's vocabulary:
-        "Completed"           → succeeded (+ fetches /results/get-metrics)
-        contains "Training"   → in_progress
-        any other non-empty   → in_progress (defensive — covers "Initializing"/"Queued"/etc.)
-        empty / missing       → failed
-
-    Args:
-        client: A validated Forecaster HTTP client.
-        uuid: The job's dataset UUID.
-
-    Returns:
-        A zero-arg callable returning the normalized status dict.
-    """
     def _poll():
         resp = client.get("/dataset/get-job-status", params={"uuid": uuid})
         payload = _safe_json(resp)
@@ -371,26 +228,6 @@ def _make_status_poll(client: "_wrapper.ExternalServiceClient", uuid: str):
 
 
 def forecaster_start_training_job(uuid: str, options: Optional[Dict[str, Any]] = None, **kwargs):
-    """Start a Forecaster training job and register the JobPoller.
-
-    Returns immediately with the ``uuid`` and ``status: "started"``. The
-    agent's JobPoller posts ``tool_progress`` messages into the chat as the
-    job runs and a terminal message with metrics on completion.
-
-    ``options`` is a sparse dict of overrides over the upstream defaults
-    (which are documented in ``DEFAULT_TRAINING_OPTIONS``). The agent passes
-    the dict through unchanged; the upstream applies its own defaults for any
-    unspecified key. To run a fast smoke test, pass e.g.
-    ``{"models": ["linear-regression"], "epochs": 1}``.
-
-    Args:
-        uuid: Dataset UUID from ``forecaster_submit_dataset``.
-        options: Sparse override dict (upstream defaults apply otherwise).
-        **kwargs: Tool kwargs (``_credentials``, ``_runtime``).
-
-    Returns:
-        An MCP UI response dict with a started-confirmation Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         body_data: Dict[str, Any] = {"uuid": uuid}
@@ -426,15 +263,6 @@ def forecaster_start_training_job(uuid: str, options: Optional[Dict[str, Any]] =
 
 
 def forecaster_get_job_status(uuid: str, **kwargs):
-    """Synchronously probe the status of a Forecaster job by UUID.
-
-    Args:
-        uuid: The job's dataset UUID.
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a status Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         poll = _make_status_poll(client, uuid)
@@ -455,32 +283,12 @@ def forecaster_get_job_status(uuid: str, **kwargs):
 
 
 def forecaster_get_results(uuid: str, **kwargs):
-    """Fetch the final metrics + output_log for a completed Forecaster job.
-
-    Per the Forecaster API docs, ``/results/get-metrics`` returns:
-        { "output_log": "...", "file_contents": <metrics JSON> }
-
-    Shape-aware rendering of file_contents:
-        * ``{model: {metric: value, ...}, ...}`` → one row per model, columns = metric names
-        * ``{metric: value, ...}`` (flat)        → two-column Metric | Value table
-        * anything else (text, mixed nesting)   → fall back to truncated JSON Text block
-
-    Args:
-        uuid: The job's dataset UUID.
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with results Card(s) and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         resp = client.get("/results/get-metrics", params={"uuid": uuid})
         payload = _safe_json(resp)
         output_log = payload.get("output_log", "") if isinstance(payload, dict) else ""
         metrics = payload.get("file_contents") if isinstance(payload, dict) else None
-        # The live service encodes file_contents as a JSON *string*, not an
-        # object. Parse it so per-model rendering works; if it's already a
-        # dict (or doesn't parse), leave it alone.
         if isinstance(metrics, str):
             try:
                 metrics = json.loads(metrics)
@@ -550,15 +358,6 @@ def forecaster_get_results(uuid: str, **kwargs):
 
 
 def forecaster_delete_dataset(uuid: str, **kwargs):
-    """Delete a Forecaster dataset and all of its associated models / artifacts.
-
-    Args:
-        uuid: The dataset UUID to delete.
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a confirmation Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         resp = client.post("/dataset/delete", data={"uuid": uuid})
@@ -572,11 +371,6 @@ def forecaster_delete_dataset(uuid: str, **kwargs):
         )
     except (ExternalHttpError, ValueError) as e:
         return _ui([Alert(message=_user_facing_error(e), variant="error")], retryable=False)
-
-
-# ---------------------------------------------------------------------------
-# Tool registry (Forecaster slice — merged into the union by mcp_tools)
-# ---------------------------------------------------------------------------
 
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {

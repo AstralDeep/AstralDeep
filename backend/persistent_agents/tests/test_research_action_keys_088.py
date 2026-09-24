@@ -1,4 +1,7 @@
-"""Stable, nonaliasing fixed research identities, independent of lease recovery."""
+"""Tests for persistent_agents/research_episode.py: key domains and integer pairs do not
+alias or follow claims, and an invalid generation cannot select an action.
+"""
+
 from types import SimpleNamespace
 
 import pytest

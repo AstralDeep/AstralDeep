@@ -1,6 +1,5 @@
-"""Pydantic models for the Attachment domain.
-
-See ``specs/002-file-uploads/data-model.md`` for the authoritative shape.
+"""Pydantic models for the attachment domain: Attachment, the lightweight AttachmentRef
+embedded in chat messages, and the cursor-paginated AttachmentList response.
 """
 
 from __future__ import annotations
@@ -12,15 +11,11 @@ from pydantic import BaseModel, Field
 
 AttachmentCategory = Literal[
     "document", "spreadsheet", "presentation", "text", "image", "medical",
-    # Feature 031: broadened categories. "data"/"archive" are accepted but have
-    # no built-in reader — they drive the safe auto-parser-creation flow (US2).
     "data", "archive",
 ]
 
 
 class Attachment(BaseModel):
-    """A user-owned uploaded file."""
-
     attachment_id: str = Field(..., description="UUIDv4")
     user_id: str = Field(..., description="Keycloak sub of the owning user")
     filename: str
@@ -35,21 +30,12 @@ class Attachment(BaseModel):
 
 
 class AttachmentRef(BaseModel):
-    """Lightweight pointer embedded in a chat message.
-
-    Kept intentionally tiny so message rendering does not require joining
-    the attachment table, and so historical chats stay readable even if the
-    underlying Attachment is later deleted.
-    """
-
     attachment_id: str
     filename: str
     category: AttachmentCategory
 
 
 class AttachmentList(BaseModel):
-    """Cursor-paginated listing response."""
-
     attachments: List[Attachment]
     next_cursor: Optional[str] = None
 

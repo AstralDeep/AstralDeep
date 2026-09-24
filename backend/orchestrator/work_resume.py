@@ -1,4 +1,8 @@
-"""Owner resume with original-session proof; never a worker execution permit."""
+"""Resumes one owner's paused work using its original session proof and the current
+research profile; grants no execution permit by itself. Composes
+work_control_authority.py and work_controls.py for work_api.py.
+"""
+
 from __future__ import annotations
 
 from astralplane.repositories.assignment_models import AssignmentRecord
@@ -17,14 +21,6 @@ from persistent_agents.runtime_values import digest, thaw
 
 
 class WorkResumeService(WorkControlService):
-    """Resume only the selected original issuance and current fixed research profile.
-
-    The caller's receipt is checked before new continuation prerequisites. A
-    fresh original-session observation can advance only that captured caller
-    credential, and never changes the original request token or its deadline.
-    All future effects still require the runner's normal execution gates.
-    """
-
     async def resume(self, identity, body: WorkControlRequest, *, caller):
         if type(caller) is not WorkCallerAuthority:
             raise AssignmentError("work_authentication_required", 401)
@@ -33,7 +29,6 @@ class WorkResumeService(WorkControlService):
         if type(body) is not WorkControlRequest:
             raise AssignmentError("work_control_invalid", 422)
         try:
-            # Bind the receipt identity and revision before any external wait.
             body = WorkControlRequest.model_validate(body.model_dump())
         except ValidationError:
             raise AssignmentError("work_control_invalid", 422) from None
@@ -103,8 +98,6 @@ class WorkResumeService(WorkControlService):
                     expected_control_epoch=selected.control_epoch,
                     expected_state_version=body.expected_revision,
                     submission_id=body.submission_id, submission_digest=signature, control="resume")
-                # apply_control locks/invalidate actions before the USER config
-                # lock, matching execution's assignment→actions→config order.
                 preflight.assert_current(tx, runtime=self.store.plane_runtime,
                                          owner_id=owner, prepared=prepared)
                 updated = _owned_operation(tx, repository, owner, identity)
@@ -114,8 +107,6 @@ class WorkResumeService(WorkControlService):
                 preflight.assert_key(prepared)
                 preflight.assert_policy(tx, runtime=self.store.plane_runtime,
                     orchestrator=self.assignments.orch, owner_id=owner, claims=authority.claims)
-                # Policy I/O must not leave an unchecked local capability/key
-                # retirement before the outer caller guard and commit.
                 composition.new_admission()
                 preflight.assert_key(prepared)
                 return {"operation": _public(updated, owner), "applied": result.applied}

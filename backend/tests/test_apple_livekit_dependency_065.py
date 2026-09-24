@@ -1,4 +1,7 @@
-"""Supply-chain and target-boundary guards for feature 065's Apple SDK pin."""
+"""Tests for the Apple SDK/LiveKit dependency pin: exact target attachment, protection
+against a project team-override, the resolved dependency graph and checksums,
+sandboxed RTC socket binding, and renderer teardown ordering.
+"""
 
 from __future__ import annotations
 

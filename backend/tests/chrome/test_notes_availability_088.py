@@ -1,8 +1,8 @@
-"""Private notes are advertised only on channels with response correlation.
-
-The registration branch fixture executes the real delivery code; institutional
-registration authentication and notes access are independently ingress-tested.
+"""Tests that private notes are advertised only on channels with response correlation:
+hidden on unnegotiated native sockets, not required on web, and present once a native
+socket registers.
 """
+
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -33,7 +33,6 @@ def test_web_notes_do_not_require_a_model_or_work_feature(monkeypatch):
     values = chrome_availability.projection_chrome_availability()
     html = render_settings_nav(build_menu_model(["user"], **values))
     assert "Private notes" in html and values["work_enabled"] is False
-    # …and nowhere else: the account row carries the gear alone.
     assert "Private notes" not in render_topbar(roles=["user"], **values)
 
 

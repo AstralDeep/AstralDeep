@@ -1,14 +1,6 @@
-"""The cacheable prompt prefix must repeat byte-for-byte across turns.
-
-The deployment's LLM is a vLLM-family OpenAI-compatible server, whose automatic
-prefix caching is server-side and hash-based: it needs no client opt-in, only a
-token prefix that actually repeats. The leading system message plus the tool
-definitions is the large majority of a prompt (~16k of ~20k tokens is tool
-schemas alone), so anything per-turn and random placed in front of that block
-throws the reuse away on every call.
-
-Datamarking's per-turn sentinel used to be appended to the leading system
-message and did exactly that. It now rides a trailing system message.
+"""Tests that the cacheable leading system-message prefix repeats byte-for-byte across
+turns, reusing the orch fixture from test_wave0_live_wiring.py; the vLLM server's
+prefix caching depends on this staying stable.
 """
 
 import asyncio
@@ -23,7 +15,6 @@ from tests.test_wave0_live_wiring import _fake_ws, _msg, _register_tool_agent, _
 
 @pytest.fixture
 def orch(orchestrator_factory):
-    """A chat-loop orchestrator with delivery and heartbeat stubbed out."""
     orch = orchestrator_factory()
     orch._llm_store.set_sync("wave0-user", provider="custom",
                              base_url="http://test.invalid/v1",
@@ -45,8 +36,6 @@ def orch(orchestrator_factory):
 
 @pytest.mark.asyncio
 async def test_leading_system_message_is_identical_across_turns(orch):
-    """Two turns in one chat must present the same leading system block."""
-
     _register_tool_agent(orch)
     ws = _fake_ws(orch)
     chat_id = f"prefix-{uuid.uuid4().hex[:8]}"

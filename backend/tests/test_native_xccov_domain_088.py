@@ -1,8 +1,6 @@
-"""Pure security tests for native compiler-domain metadata, never native hit evidence.
-
-Synthetic Mach-O headers and zero-count LLVM regions exercise parsing only. Real
-App/Core binary probes and original xccov arrays are retained separately; none of
-these fixture rows or identities may be used to qualify native product coverage.
+"""Tests for scripts/native_xccov_domain.py: Mach-O header and LLVM coverage-region
+metadata parsing using synthetic fixtures only, covering domain union, geometry
+bounds, and witness/mapping validation.
 """
 
 from __future__ import annotations
@@ -107,7 +105,6 @@ def _rows():
 
 
 def _metadata(lane="ui"):
-    # Field names and nesting match retained Xcode26.6 Core213/App198/UI22 JSON.
     device = {
         "deviceId": "fixture-device",
         "architecture": "arm64",
@@ -622,9 +619,6 @@ def test_collector_rejects_path_identity_mismatch_and_midread_replacement(
         )
 
 
-# Complete23-region CanvasExportPolicy geometry from Apple LLVM21 actual iOS
-# Core binary c28d39e8..., plus real metadata-only Mach-O load-command prefixes.
-# Empty-profile counts stay zero and are never interpreted as executed coverage.
 _ACTUAL_CORE_FUNCTIONS = [
     {
         "branches": [],

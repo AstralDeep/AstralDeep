@@ -1,23 +1,8 @@
-"""Authorized Work read presentation through the shared Projection builder.
-
-This registered adapter owns its complete render-and-send lifetime. Generic
-surface callbacks must not deliver its snapshots after the caller guard exits.
-Only closed read navigation is accepted; no command, token or owner comes from
-params. Reads remain available without a configured model provider.
-
-Feature 088 T043/T044 adds the one WS-driven mutation, ``chrome_work_result_save``
-(``rote.work.SAVE_ACTION``): the review ("propose") and exact Save steps behind
-the Projection Save-result button. Both route through the SAME
-``orchestrator.work_publication.WorkPublicationService`` the HTTP
-``/api/work/v1/operations/{id}/result/proposals[...]`` routes use, and the
-SAME exact-approval boundary those routes enforce (FR-005) -- this module adds
-no new authority, it only sources ``WorkCallerAuthority`` from the socket's own
-already-registered IAM (bearer token + signed cookie) instead of an HTTP
-``Request``, mirroring ``authenticate_work_control_request`` the same way
-``chrome_note_*``'s ``_HumanSocketRequest`` mirrors POST semantics for its own
-domain, including the WS_WRITE Origin recheck a browser does not itself
-enforce on outgoing WebSocket frames (see ``_ws_publication_caller``).
+"""Delivers authorized Work-surface reads through the shared Projection builder and
+handles the WS-driven Save-result mutation, both bound by the same
+WorkCallerAuthority/WorkPublicationService boundary the HTTP work routes enforce.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +41,6 @@ def _params(value):
 
 
 async def _conversation_title(orch, owner_id, conversation_id):
-    """Best-effort current title of one of the owner's own chats, or None."""
     if not conversation_id:
         return None
 
@@ -72,12 +56,6 @@ async def _conversation_title(orch, owner_id, conversation_id):
 
 
 async def _save_bindings(orch, websocket, owner_id, row):
-    """Server-issued propose bindings for the socket's currently active chat.
-
-    Read-only: a fresh submission/publication identity plus the exact current
-    workspace head, so the client's Save button carries only bindings Deep
-    itself re-verifies at propose time. No active chat means no Save offer.
-    """
     chat_id = (getattr(orch, "_ws_active_chat", None) or {}).get(id(websocket), "")
     if not chat_id:
         return None
@@ -102,7 +80,6 @@ async def _save_bindings(orch, websocket, owner_id, row):
 
 
 async def _augmented_result_state(service, orch, websocket, owner_id, claims, operation_id):
-    """The result view plus, when a result is available, fresh Save bindings."""
     state = {"mode": "result", "status": "ready"}
     state.update(await service.result_view(owner_id, claims, operation_id))
     if ((state.get("result") or {}).get("result") or {}).get("available") is True:
@@ -125,7 +102,6 @@ async def _state(read, params):
 
 
 async def deliver(orch, websocket, user_id, params, request_generation, *, work_read=None):
-    """Deliver one correlated Work read, refusing a changed caller or navigation."""
     from astralprojection.chrome import render_html
     from astralprojection.chrome.work import build_work_view
     from astralprojection.models import LayoutView
@@ -163,8 +139,7 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
                 frame = ChromeSurface(surface_key="work", title=view.title, components=components,
                                       request_generation=request_generation).to_json()
             await read.verify()
-            # No await separates this final registration/composition check from
-            # starting delivery. Clients also reject old request generations.
+            # No await before send, so this check can't go stale
             read.assert_current()
             _note_open_surface(orch, websocket, "work")
             return bool(await orch._safe_send(websocket, frame))
@@ -176,21 +151,7 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
             read.close()
 
 
-# ---------------------------------------------------------------------------
-# Feature 088 T043 — the one WS-driven mutation, chrome_work_result_save.
-# ---------------------------------------------------------------------------
-
 class _WsPublicationBinding:
-    """Minimal ``WorkCallerAuthority._binding`` sourced from the socket itself.
-
-    Exposes exactly the attributes ``WorkCallerAuthority`` and
-    ``WorkPublicationService`` read off ``_binding`` (``runtime``,
-    ``assignments``, ``store``, ``sessions``, and its own
-    ``assert_current(assignments)`` recheck) without the HTTP-request/ASGI
-    ``app`` wiring check ``work_control_authority._Composition`` performs —
-    there is no ``fastapi.Request`` here, only the socket's own registration.
-    """
-
     __slots__ = ("orch", "assignments", "store", "runtime", "sessions")
 
     def __init__(self, orch, assignments):
@@ -210,16 +171,6 @@ class _WsPublicationBinding:
 
 
 async def _ws_publication_caller(orch, websocket, user_id):
-    """Build one real ``WorkCallerAuthority`` from the socket's own IAM.
-
-    Save is a genuine Work write bound by the same exact-approval boundary
-    (FR-005) the HTTP routes enforce; this adds no shortcut around it, it only
-    sources the caller from the socket's already-registered bearer token and
-    signed cookie the way ``WorkSurfaceRead`` already does for reads, plus the
-    WS_WRITE Origin recheck ``_HumanSocketRequest`` applies for its own
-    domain (a browser does not itself enforce same-origin on an outgoing
-    WebSocket frame, so the server must).
-    """
     import json
 
     from orchestrator import auth
@@ -279,13 +230,6 @@ async def _ws_publication_caller(orch, websocket, user_id):
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Render pre-built state from this module's own handler responses only.
-
-    Reachable ONLY through ``HANDLERS`` return tuples (the generic
-    ``chrome_open``/surface="work" path always calls ``deliver`` instead — see
-    ``chrome_events._handle_chrome_event``), so ``params`` here is
-    server-built state from ``_handle_result_save``, never client input.
-    """
     from astralprojection.chrome import render_html
     from astralprojection.chrome.work import build_work_view
 
@@ -294,7 +238,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def components(orch, user_id, roles, params):
-    """Native counterpart of :func:`render` — same server-built state only."""
     from astralprojection.chrome.work import build_work_view
 
     state = params if isinstance(params, dict) else {"mode": "list", "status": "unavailable"}
@@ -302,13 +245,6 @@ async def components(orch, user_id, roles, params):
 
 
 async def _handle_result_save(orch, websocket, user_id, roles, payload):
-    """``chrome_work_result_save`` — the propose/save steps behind Save result.
-
-    Both commands run through the exact same
-    ``orchestrator.work_publication.WorkPublicationService`` the HTTP routes
-    use, gated by the same exact-approval boundary; this handler only differs
-    in how it sources the caller (see ``_ws_publication_caller``).
-    """
     from rote.work import validate_work_save_command
     from webrender.chrome import notice_block
 

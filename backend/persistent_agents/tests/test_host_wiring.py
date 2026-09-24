@@ -1,4 +1,8 @@
-"""Exercise the host's real lifecycle and refusal methods at external seams."""
+"""Tests for the orchestrator host's real lifecycle wiring: the assignment runner starts
+only when explicitly enabled and stops before HTTP serving, dispatch cannot fan out
+or publish uncheckpointed UI, and narrow chat still offers owner controls.
+"""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -18,7 +22,7 @@ hop_host = shared_hop_host
 
 
 class StartupObserved(Exception):
-    """Stop before HTTP serving, after real background-owner wiring."""
+    pass
 
 
 @pytest.mark.asyncio
@@ -29,8 +33,6 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     monkeypatch.setattr(session_store, "assert_production_posture", Mock())
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
     created_service = SimpleNamespace(approval_executor=None)
-    # The runner is composed with an explicit one-shot lifecycle and must report
-    # its server-owned research composition ready before it is published.
     created_runner = SimpleNamespace(start=Mock(), fixed_research_ready=Mock(return_value=True))
     factory = Mock(return_value=created_service)
     runner_factory = Mock(return_value=created_runner)
@@ -50,8 +52,6 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
         _track_startup_background_task=background, _jwks_warm_loop=AsyncMock(),
         _personal_agent_watchdog_task=SimpleNamespace(done=lambda: False),
         _start_phi_warm=Mock(), _monitor_agents=AsyncMock(), web_sessions=object(),
-        # Production always constructs the note service in __init__; startup
-        # schedules its expiry loop as a tracked background task.
         explicit_notes=SimpleNamespace(expiry_loop=AsyncMock()),
         lifecycle_manager=SimpleNamespace(reconcile_orphaned_draft_permissions=Mock(return_value=0),
             reconcile_legacy_directory_ownership=Mock()))
@@ -120,7 +120,6 @@ async def test_dispatch_cannot_retry_fan_out_or_publish_uncheckpointed_ui():
         await hub._execute_with_retry(None, "reader", "read", {})
         with pytest.raises(DispatchDenied, match="unreserved_parallel"):
             await hub.execute_parallel_tools(None, [], {})
-        # An uninitialized renderer would raise if any transient frame reached it.
         assert await hub.send_ui_render(None, [{"type": "text", "text": "uncommitted"}]) is None
     hub.execute_tool_and_wait.assert_awaited_once()
 

@@ -1,22 +1,16 @@
+"""Tests for DelegationService (orchestrator/delegation.py): RFC 8693 token exchange,
+mock token creation, scope filtering and extraction, and the guard against sending
+Keycloak an empty scope.
 """
-Tests for DelegationService — RFC 8693 Token Exchange.
 
-Verifies:
-1. Mock delegation token creation with act claim
-2. Token scope filtering (only allowed tools)
-3. Delegation info extraction from decoded payload
-4. is_tool_in_scope checks
-"""
 import os
 import sys
 import json
 import base64
 import pytest
 
-# Ensure backend is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Force mock auth for testing
 os.environ["USE_MOCK_AUTH"] = "true"
 
 from orchestrator.delegation import DelegationService
@@ -32,7 +26,6 @@ TOOLS = ["get_system_status", "modify_data", "search_wikipedia"]
 
 class TestMockDelegationToken:
     def test_creates_token(self, service):
-        """Mock mode creates a valid JWT-like token."""
         result = service._create_mock_delegation_token(
             agent_id="general-1",
             allowed_tools=TOOLS,
@@ -44,14 +37,12 @@ class TestMockDelegationToken:
         assert result["agent_id"] == "general-1"
 
     def test_token_has_act_claim(self, service):
-        """Delegation token includes RFC 8693 act claim."""
         result = service._create_mock_delegation_token(
             agent_id="general-1",
             allowed_tools=TOOLS,
             user_id="test-user"
         )
         token = result["access_token"]
-        # Decode the JWT payload
         parts = token.split(".")
         assert len(parts) == 3
         payload_b64 = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
@@ -62,7 +53,6 @@ class TestMockDelegationToken:
         assert payload["act"]["sub"] == "agent:general-1"
 
     def test_token_scope_contains_tools(self, service):
-        """Token scope lists allowed tools."""
         result = service._create_mock_delegation_token(
             agent_id="general-1",
             allowed_tools=TOOLS,
@@ -73,7 +63,6 @@ class TestMockDelegationToken:
             assert f"tool:{tool}" in scope
 
     def test_token_scope_limited(self, service):
-        """Token scope only contains specified tools."""
         result = service._create_mock_delegation_token(
             agent_id="general-1",
             allowed_tools=["get_system_status"],
@@ -83,7 +72,6 @@ class TestMockDelegationToken:
         assert "tool:modify_data" not in result["scope"]
 
     def test_delegation_flag(self, service):
-        """Mock token includes custom delegation flag."""
         result = service._create_mock_delegation_token(
             agent_id="general-1",
             allowed_tools=TOOLS,
@@ -98,7 +86,6 @@ class TestMockDelegationToken:
 
 class TestDelegationInfoExtraction:
     def test_extract_from_delegation_token(self):
-        """Extract actor and scopes from delegation payload."""
         payload = {
             "sub": "user-123",
             "act": {"sub": "agent:general-1"},
@@ -113,7 +100,6 @@ class TestDelegationInfoExtraction:
         assert info["is_delegation"] is True
 
     def test_extract_from_regular_token(self):
-        """Regular token (no act claim) returns None."""
         payload = {
             "sub": "user-123",
             "scope": "openid profile"
@@ -137,8 +123,6 @@ class _FakeResp:
 
 
 class _FakeSession:
-    """Captures the token-endpoint POST instead of hitting the network."""
-
     captured = None
 
     async def __aenter__(self):
@@ -158,13 +142,8 @@ class _FakeSession:
         })
 
 
+# Empty scope param 400s at Keycloak like a realm misconfig
 class TestExchangeGuards:
-    """The exchange must never send Keycloak an empty ``scope`` form field —
-    a present-but-empty param fails 400 invalid_scope ('Invalid scopes: '),
-    which reads like a realm misconfiguration (the safe-agent empty-scope
-    production regression). The guard sits above the mock/real branch so dev
-    stacks fail the same way production does."""
-
     def _real_service(self, monkeypatch):
         monkeypatch.setenv("USE_MOCK_AUTH", "false")
         monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://kc.example/realms/T")
@@ -189,9 +168,6 @@ class TestExchangeGuards:
 
     @pytest.mark.asyncio
     async def test_empty_scope_refused_in_mock_mode_too(self, monkeypatch):
-        """Mock mode must not mint where production refuses — otherwise a
-        permission regression is green on every dev stack and fail-closes
-        only in production (how the original defect escaped)."""
         monkeypatch.setenv("USE_MOCK_AUTH", "true")
         service = DelegationService()
         result = await service.exchange_token_for_agent(
@@ -228,7 +204,6 @@ class TestToolScopeCheck:
         assert DelegationService.is_tool_in_scope("modify_data", scopes) is False
 
     def test_no_tool_scopes_allows_all(self):
-        """When no tool-specific scopes exist, all tools are allowed."""
         scopes = ["openid", "profile"]
         assert DelegationService.is_tool_in_scope("modify_data", scopes) is True
         assert DelegationService.is_tool_in_scope("anything", scopes) is True

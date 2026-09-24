@@ -1,4 +1,7 @@
-"""Public offline assets use the real static serving class, never shell auth."""
+"""Tests that public offline assets are served by AstralProjection's real static-serving
+class, never shell auth: worker scope, request-identity headers, font MIME, and exact
+served type/size/digest per asset.
+"""
 
 from __future__ import annotations
 
@@ -95,7 +98,6 @@ def test_every_worker_asset_matches_actual_deep_served_type_size_and_digest(clie
     match = re.search(r"const PUBLIC_ASSETS = (\[[\s\S]*?\]);", worker.text)
     assert match
     assets = json.loads(match[1])
-    # Six since 089: the offline bundle carries one font file rather than two.
     assert len(assets) == 6
     for asset in assets:
         response = client.get(asset["path"])

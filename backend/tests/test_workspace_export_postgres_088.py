@@ -1,4 +1,8 @@
-"""Portable presentation HTTP reads the real isolated owner/revision repository."""
+"""Tests for portable presentation export reads
+(backend/orchestrator/workspace_export.py) against the isolated owner/revision
+repository: committed data is never replaced or delivered mid-delete.
+"""
+
 import asyncio
 from types import SimpleNamespace
 

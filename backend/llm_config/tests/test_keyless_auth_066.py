@@ -1,10 +1,6 @@
-"""Feature-066 regression pins for keyless OpenAI-compatible endpoints.
-
-Keyless servers (vLLM/sglang, local runtimes, the UK LLM factory) accept a
-MISSING Authorization header while rejecting an arbitrary wrong bearer with
-401/403 — so the SDK's ``Bearer not-needed`` placeholder must never reach the
-wire. ``openai_auth_kwargs`` selects either a real-key pass-through or the
-shared keyless transport whose request hook strips the header.
+"""Tests for llm_config/client_factory.py's keyless transport: a real key passes through
+untouched, and an empty or sentinel key gets a fresh per-call httpx client whose hook
+strips the Authorization header before it reaches the wire.
 """
 
 from __future__ import annotations
@@ -34,20 +30,12 @@ def test_sentinel_key_is_treated_as_keyless() -> None:
 
 
 def test_keyless_http_client_is_per_call() -> None:
-    """Never share the transport across calls.
-
-    The OpenAI SDK closes an injected ``http_client`` when its (short-lived)
-    client instance is finalized; a shared client would therefore be closed
-    by the first completed call, and every later keyless call would fail
-    instantly with ``APIConnectionError``. Regression pin for that defect,
-    observed live on 2026-08-03.
-    """
     a = openai_auth_kwargs("")["http_client"]
     b = openai_auth_kwargs("")["http_client"]
     assert a is not b
     assert not a.is_closed
     a.close()
-    assert not b.is_closed  # closing one must never disable another call
+    assert not b.is_closed
 
 
 def test_keyless_hook_strips_the_authorization_header() -> None:
@@ -64,7 +52,6 @@ def test_keyless_hook_strips_the_authorization_header() -> None:
 
 
 def test_no_authorization_header_reaches_the_wire_keyless() -> None:
-    """End-to-end through httpx: the hook runs before the transport."""
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

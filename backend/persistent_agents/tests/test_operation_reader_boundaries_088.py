@@ -1,4 +1,8 @@
-"""Closed adapter contracts, alongside actual PostgreSQL dispatch journeys."""
+"""Tests for persistent_agents/dispatch_context.py's strict final-argument context:
+unbound metadata and missing argument objects are refused, and a cached read rechecks
+its guard after content instead of before.
+"""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 

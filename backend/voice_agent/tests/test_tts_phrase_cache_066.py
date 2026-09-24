@@ -1,4 +1,7 @@
-"""Feature 066: bounded fixed-phrase TTS cache guards."""
+"""Tests for speech_adapters.py's FixedPhraseTTSCache: cache hits/eviction/LRU recency,
+cache-miss fallback for non-vocabulary or long text, and the coordinator
+phrase-vocabulary drift pin.
+"""
 
 from __future__ import annotations
 
@@ -120,7 +123,7 @@ async def test_non_phrase_text_bypasses_cache_and_always_synthesizes() -> None:
 
 @pytest.mark.asyncio
 async def test_user_content_length_text_bypasses_even_when_listed() -> None:
-    long_text = "word " * 60  # 300 chars, beyond the short-phrase regime
+    long_text = "word " * 60
     assert len(long_text) > TTS_CACHE_MAX_TEXT_CHARS
     transport = CountingTransport()
     tts = FixedPhraseTTSCache(
@@ -144,7 +147,6 @@ async def test_cache_evicts_oldest_beyond_the_entry_bound() -> None:
         await tts.synthesize(phrase, max_duration_samples=96_000)
 
     assert len(tts._entries) == TTS_CACHE_MAX_ENTRIES
-    # The newest entry is cached; the oldest was evicted and re-synthesizes.
     await tts.synthesize(phrases[-1], max_duration_samples=96_000)
     assert inner.calls.count(phrases[-1]) == 1
     await tts.synthesize(phrases[0], max_duration_samples=96_000)
@@ -159,7 +161,6 @@ async def test_cache_hit_refreshes_lru_recency() -> None:
 
     for phrase in phrases[:TTS_CACHE_MAX_ENTRIES]:
         await tts.synthesize(phrase, max_duration_samples=96_000)
-    # Touch the oldest so the next insertion evicts phrase 1 instead.
     await tts.synthesize(phrases[0], max_duration_samples=96_000)
     await tts.synthesize(phrases[-1], max_duration_samples=96_000)
 
@@ -196,7 +197,6 @@ async def test_cache_hit_enforces_ceiling_and_input_validation_like_fresh() -> N
         await tts.synthesize("On it!", max_duration_samples=0)
     assert ceiling.value.reason == "invalid_sample_ceiling"
 
-    # The entry survives for later valid ceilings and still skips HTTP.
     again = await tts.synthesize("On it!", max_duration_samples=96_000)
     assert again.samples == 960
     assert len(transport.requests) == 1
@@ -204,8 +204,6 @@ async def test_cache_hit_enforces_ceiling_and_input_validation_like_fresh() -> N
 
 @pytest.mark.asyncio
 async def test_cache_hit_preserves_announcement_and_track_flow() -> None:
-    """A hit drives the exact speak -> publish -> finished flow of a miss."""
-
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
@@ -228,7 +226,6 @@ async def test_cache_hit_preserves_announcement_and_track_flow() -> None:
         lambda: sum(item.kind == "speech_finished" for item in notices) == 2
     )
 
-    # One real synthesis, two full announcement/track publications.
     assert inner.calls == [(GREETING, 96_000)]
     assert len(room.local_participant.published) == 2
     assert len(factory.sources) == 2
@@ -239,8 +236,6 @@ async def test_cache_hit_preserves_announcement_and_track_flow() -> None:
 
 
 def test_phrase_vocabulary_matches_coordinator_source_of_truth() -> None:
-    """Drift-pin the mirrored closed vocabulary against the coordinator."""
-
     coordinator = pytest.importorskip(
         "orchestrator.voice_coordinator",
         reason="the isolated worker image ships no orchestrator source",
@@ -248,8 +243,6 @@ def test_phrase_vocabulary_matches_coordinator_source_of_truth() -> None:
     assert SERVER_OWNED_PHRASE_TEXTS == frozenset(
         coordinator.APPROVED_PHRASE_TEXT.values()
     )
-    # Pre-acceptance rejection projections reuse APPROVED_PHRASE_TEXT keys,
-    # so the closed vocabulary above already covers them.
     for _kind, phrase_key in coordinator.PREACCEPTANCE_REJECTION_PHRASES.values():
         assert (
             coordinator.APPROVED_PHRASE_TEXT[phrase_key] in SERVER_OWNED_PHRASE_TEXTS
@@ -270,8 +263,6 @@ def test_phrase_vocabulary_matches_coordinator_source_of_truth() -> None:
 
 
 def test_cache_bound_is_documented_and_under_seven_mib() -> None:
-    """Worst case: 32 validated 4-second quanta = 6,144,000 bytes."""
-
     assert TTS_CACHE_MAX_ENTRIES * MAX_QUANTUM_SAMPLES * 2 == 6_144_000
     assert all(
         len(text) <= TTS_CACHE_MAX_TEXT_CHARS for text in SERVER_OWNED_PHRASE_TEXTS

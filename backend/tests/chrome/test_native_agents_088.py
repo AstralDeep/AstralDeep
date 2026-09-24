@@ -1,4 +1,8 @@
-"""088 Agents native projection preserves web authorization and personal state."""
+"""Tests that the native Agents projection (orchestrator/projection_surfaces/agents.py)
+matches web authorization and personal state: visibility, permission masters,
+credential metadata, and external-identity handling.
+"""
+
 import json
 from dataclasses import replace
 

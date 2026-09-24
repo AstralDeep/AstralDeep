@@ -1,8 +1,6 @@
-"""Fixtures for file_tools tests.
-
-We deliberately *generate* test artifacts at runtime (PDFs via reportlab,
-DOCX via python-docx, etc.) so the repo doesn't carry binary fixtures and
-tests stay deterministic.
+"""Pytest fixtures for file_tools tests: builds PDF/DOCX/XLSX/DICOM/NIfTI/WSI and other
+fixtures at runtime instead of storing binaries, plus fake Plane blob-store, reader,
+and parser-capability doubles.
 """
 
 from __future__ import annotations
@@ -21,12 +19,10 @@ import pytest
 from astralplane import BlobIntegrityError
 from astralplane.errors import PlaneError
 
-# Make `from orchestrator.X import Y` resolve.
 _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
-# Make the backend/tests/attachments StubDatabase reusable here.
 sys.path.insert(0, os.path.abspath(os.path.join(_BACKEND, "tests")))
 
 from attachments.conftest import StubDatabase, seed_attachment_for_test  # noqa: E402
@@ -40,8 +36,6 @@ from agents.general.file_tools import set_plane_dependencies_for_testing  # noqa
 
 
 class _FixtureBlobReader:
-    """Small explicit file-tools fake; production still uses Plane capabilities."""
-
     def __init__(self, stream: BinaryIO, *, chunk_bytes: int = 64 * 1024) -> None:
         self._stream = stream
         self._chunk_bytes = chunk_bytes
@@ -61,8 +55,6 @@ class _FixtureBlobReader:
 
 
 class _FixtureParserPath:
-    """Revocable path-shaped fixture capability matching Plane's contract."""
-
     def __init__(self, path: Path) -> None:
         self._path = path
         self._active = True
@@ -77,8 +69,6 @@ class _FixtureParserPath:
 
 
 class _FixtureBlobStore:
-    """Filesystem-backed test double for read/parser capability consumers."""
-
     def __init__(self, root: Path) -> None:
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
@@ -196,7 +186,6 @@ def repo(stub_db) -> AttachmentRepository:
 def _persist(repo: AttachmentRepository, *, user_id: str, filename: str,
              category: str, extension: str, content_type: str,
              upload_root: Path, payload: bytes) -> str:
-    """Write *payload* to disk under the canonical layout, insert a row, return id."""
     aid = str(uuid.uuid4())
     written = _FixtureBlobStore(upload_root).seed(
         owner_id=user_id,
@@ -218,13 +207,7 @@ def _persist(repo: AttachmentRepository, *, user_id: str, filename: str,
     return aid
 
 
-# ---------------------------------------------------------------------------
-# Fixture builders for each file type
-# ---------------------------------------------------------------------------
-
-
 def make_pdf_with_text(text: str = "Hello PDF world") -> bytes:
-    """Build a tiny PDF whose first page contains *text*."""
     from reportlab.pdfgen import canvas  # type: ignore
 
     buf = io.BytesIO()
@@ -236,7 +219,6 @@ def make_pdf_with_text(text: str = "Hello PDF world") -> bytes:
 
 
 def make_pdf_blank() -> bytes:
-    """Build a PDF with no extractable text (single blank page)."""
     from reportlab.pdfgen import canvas  # type: ignore
 
     buf = io.BytesIO()
@@ -247,7 +229,7 @@ def make_pdf_blank() -> bytes:
 
 
 def make_docx(paragraphs: list[str]) -> bytes:
-    import docx  # python-docx
+    import docx
 
     doc = docx.Document()
     for p in paragraphs:
@@ -326,13 +308,6 @@ def make_csv(rows: list[list[object]]) -> bytes:
     return out.getvalue().encode()
 
 
-# ---------------------------------------------------------------------------
-# Medical imaging fixture builders.
-# Each builder imports its library lazily so tests can individually skip when
-# the library isn't installed in the current env.
-# ---------------------------------------------------------------------------
-
-
 def make_dicom(
     rows: int = 64,
     cols: int = 64,
@@ -341,7 +316,6 @@ def make_dicom(
     patient_id: str = "12345",
     modality: str = "CT",
 ) -> bytes:
-    """Build a minimal DICOM file with identifiable PHI tags in the header."""
     import numpy as np  # type: ignore
     import pydicom  # type: ignore
     from pydicom.dataset import FileDataset, FileMetaDataset  # type: ignore
@@ -399,7 +373,6 @@ def make_dicom(
 
 
 def make_nifti(shape: Tuple[int, int, int] = (8, 8, 8), gz: bool = False) -> bytes:
-    """Build a tiny NIfTI (.nii) payload from a numpy array."""
     import tempfile
     import numpy as np  # type: ignore
     import nibabel as nib  # type: ignore
@@ -422,7 +395,6 @@ def make_nifti(shape: Tuple[int, int, int] = (8, 8, 8), gz: bool = False) -> byt
 
 
 def make_nrrd(shape: Tuple[int, int, int] = (8, 8, 8)) -> bytes:
-    """Build a tiny NRRD volume payload."""
     import tempfile
     import numpy as np  # type: ignore
     import SimpleITK as sitk  # type: ignore
@@ -443,7 +415,6 @@ def make_nrrd(shape: Tuple[int, int, int] = (8, 8, 8)) -> bytes:
 
 
 def make_mha(shape: Tuple[int, int, int] = (8, 8, 8)) -> bytes:
-    """Build a single-file MetaImage (.mha) payload."""
     import tempfile
     import numpy as np  # type: ignore
     import SimpleITK as sitk  # type: ignore
@@ -464,19 +435,16 @@ def make_mha(shape: Tuple[int, int, int] = (8, 8, 8)) -> bytes:
 
 
 def make_ome_tiff(shape: Tuple[int, int, int] = (3, 16, 16)) -> bytes:
-    """Build a minimal OME-TIFF payload (CYX, channels=3)."""
     import numpy as np  # type: ignore
     import tifffile  # type: ignore
 
     arr = (np.random.rand(*shape) * 255).astype(np.uint8)
     buf = io.BytesIO()
-    # Use `ome=True` so tifffile emits OME-XML; axes describes the dim order.
     tifffile.imwrite(buf, arr, ome=True, metadata={"axes": "CYX"})
     return buf.getvalue()
 
 
 def make_tiff(width: int = 32, height: int = 32) -> bytes:
-    """Build a plain 2-D TIFF (tifffile without OME metadata)."""
     import numpy as np  # type: ignore
     import tifffile  # type: ignore
 
@@ -487,17 +455,10 @@ def make_tiff(width: int = 32, height: int = 32) -> bytes:
 
 
 def make_pyramidal_tiff(size: int = 512, levels: int = 3) -> bytes:
-    """Build a tiled pyramidal TIFF OpenSlide can read as a WSI.
-
-    The result is saved to a tempfile and returned as bytes — OpenSlide reads
-    from a path, but downstream tests go through ``_persist`` which writes the
-    bytes back to disk before opening, so the round-trip is fine.
-    """
     import tempfile
     import numpy as np  # type: ignore
     import tifffile  # type: ignore
 
-    # Base level: RGB gradient for visual interest.
     base = np.zeros((size, size, 3), dtype=np.uint8)
     for y in range(size):
         base[y, :, 0] = (y * 255) // max(1, size - 1)
@@ -519,7 +480,6 @@ def make_pyramidal_tiff(size: int = 512, levels: int = 3) -> bytes:
                     compression="zlib",
                     subfiletype=0 if level == 0 else 1,
                 )
-                # Halve resolution for the next pyramid level.
                 cur = cur[::2, ::2, :]
                 if cur.shape[0] < 2 or cur.shape[1] < 2:
                     break

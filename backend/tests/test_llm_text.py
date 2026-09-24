@@ -1,14 +1,13 @@
-"""strip_reasoning_markup — leaked Harmony channel tokens / <think> blocks.
-
-Some serving stacks leak control tokens like ``<|channel|>thought`` (and
-pipe-mangled variants) or ``<think>…</think>`` into ``message.content``;
-these must never reach chat, summaries, or titles.
+"""Tests for shared/llm_text.py's strip_reasoning_markup: removes leaked Harmony channel
+tokens and <think> blocks from provider output before it reaches chat, summaries, or
+titles.
 """
+
 from shared.llm_text import strip_reasoning_markup
 
 
 def test_mangled_channel_tokens_from_field_report():
-    # Exact shape observed in chat output (one pipe dropped on each token).
+    # Exact malformed shape seen in production output
     raw = "<|channel>thought\n<channel|>Here is your weather dashboard for Lexington, KY:"
     assert strip_reasoning_markup(raw) == "Here is your weather dashboard for Lexington, KY:"
 
@@ -32,7 +31,7 @@ def test_clean_text_passthrough():
     for text in (
         "Plain reply with no markup.",
         "Math: 3 < 5 and 7 > 2.",
-        "| Metric | Value |\n|---|---|\n| Temp | 83.7 |",  # markdown table pipes
+        "| Metric | Value |\n|---|---|\n| Temp | 83.7 |",
         "Code: `a < b ? x : y` and <div> in prose.",
         "",
     ):
@@ -47,7 +46,7 @@ def test_non_string_passthrough():
 def test_thought_only_content_falls_back_to_token_stripped_text():
     raw = "<|channel|>thought<|message|>only reasoning, no final channel"
     out = strip_reasoning_markup(raw)
-    assert out  # never empty when the original had content
+    assert out
     assert "<|" not in out and "|>" not in out
 
 
@@ -57,7 +56,6 @@ def test_stray_tokens_stripped():
 
 
 def test_plain_angle_words_untouched():
-    # No pipe on either side -> not a control token.
     assert strip_reasoning_markup("<channel> tuning is fun") == "<channel> tuning is fun"
 
 

@@ -1,4 +1,6 @@
-"""Offline CLI boundary tests; fake public Plane API, no PostgreSQL qualification."""
+"""Tests for scripts/retire_restored_sessions.py: offline CLI boundaries against a fake
+public Plane API, pending-receipt durability, and secret-free failure output.
+"""
 
 from __future__ import annotations
 

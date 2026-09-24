@@ -1,3 +1,8 @@
+"""Owns chat/conversation persistence, canonical snapshot construction, and the
+text-only chat-rail reduction of canvas components, built on AstralPlane's typed
+repositories; used throughout orchestrator.py and api.py.
+"""
+
 import copy
 import hashlib
 import json
@@ -23,7 +28,6 @@ from astralplane.repositories.workspaces import (
     PublicationRecord,
 )
 
-# Ensure shared module is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shared.feature_flags import flags
 from shared.protocol import CANONICAL_TEXT_PART_VARIANTS
@@ -41,20 +45,19 @@ from orchestrator.scheduled_publication import current_scheduled_history_stage
 
 logger = logging.getLogger('HistoryManager')
 
-# Maximum length of a chat-list preview snippet before truncation (030).
 PREVIEW_MAX_CHARS = 140
 
 
 class ConversationCommitConflict(RuntimeError):
-    """A staged logical turn no longer owns its declared base revision."""
+    pass
 
 
 class ConversationNotFound(LookupError):
-    """Non-disclosing owner-scoped chat lookup failure."""
+    pass
 
 
 class ConversationSnapshotInvalid(RuntimeError):
-    """A complete canonical snapshot could not be constructed safely."""
+    pass
 
 
 def _uuid4_text(value: Any, field_name: str) -> str:
@@ -74,7 +77,6 @@ def _required_text(value: Any, field_name: str, *, maximum: int = 512) -> str:
 
 
 def _mutable_json_value(value: Any) -> Any:
-    """Copy Plane's immutable JSON view into a transport-safe value."""
     if isinstance(value, Mapping):
         return {key: _mutable_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -91,10 +93,7 @@ def _rfc3339(value: Any) -> str:
         raise ConversationSnapshotInvalid("snapshot timestamp is unavailable")
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
-    # Second precision: the native continuity validators parse RFC 3339 with
-    # a plain ISO8601DateFormatter, which rejects fractional seconds — a
-    # microsecond-bearing timestamp makes every Apple client silently drop
-    # the committed conversation snapshot.
+    # No sub-second precision — Apple's parser rejects it
     return (
         moment.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
@@ -155,8 +154,6 @@ def _recovery_part() -> dict[str, str]:
 
 
 def _recovery_parts() -> list[dict[str, Any]]:
-    """Return a visible recovery value plus a deterministic diagnostic."""
-
     diagnostic = {"code": "saved_content_unrenderable"}
     return [
         _recovery_part(),
@@ -169,24 +166,6 @@ def _recovery_parts() -> list[dict[str, Any]]:
 
 
 def _structured_parts(value: Any) -> list[dict[str, Any]]:
-    """One canonical ``structured`` part, or an honest recovery if it is blank.
-
-    ``_plain_text`` renders "" for an empty string and for a nested array that
-    reduces to one, so a stored tool result carrying a blank element would
-    otherwise commit a part whose rendition is invisible. Every Apple client
-    guards ``continuityNonBlank(plain_text)`` — which TRIMS before testing
-    emptiness — and decodes a snapshot all-or-nothing (``parts.count ==
-    rawParts.count``, ``messages.count == transcript.count``), so ONE blank
-    part discards the WHOLE ``conversation_snapshot`` and that chat's rail
-    never hydrates. The blank ``text`` twin is already dropped by
-    ``_rail_parts``; ``structured`` parts pass through it untouched, which is
-    why this is the path that has to refuse.
-
-    Degrading to the visible recovery pair mirrors how a ``None`` element is
-    already handled: the turn says a saved response could not be displayed
-    instead of silently committing something no client can render.
-    """
-
     try:
         plain_text = _plain_text(value)
     except (TypeError, ValueError):
@@ -226,7 +205,6 @@ def _canonical_component(component: Any, position: int) -> dict[str, Any]:
     if not isinstance(component, Mapping):
         raise ConversationSnapshotInvalid("component is not an object")
     clean = _strip_reserved_presentation(component)
-    # Receiver-specific action presentation is never durable component state.
     clean.pop("component_chrome", None)
     component_type = clean.get("type")
     if component_type not in _allowed_component_types():
@@ -243,12 +221,6 @@ def _canonical_component(component: Any, position: int) -> dict[str, Any]:
     return clean
 
 
-# Feature 045's chat-rail rule, applied to the 060 snapshot transcript: the
-# rail is WORDS ONLY. Rich components (tables/charts/metrics/heroes/…) live on
-# the canvas and re-hydrate from the workspace — a transcript message surfaces
-# only its text-like primitives. Mirrors Orchestrator._TEXT_ONLY_TYPES /
-# _is_text_only_components (web load_chat's `_transcript_html` filter), which
-# cannot be imported here without a cycle.
 _RAIL_TEXT_ONLY_TYPES = {
     "text", "card", "container", "collapsible", "divider", "list", "alert"
 }
@@ -269,63 +241,15 @@ def _is_rail_text_only(components: list[Any]) -> bool:
     return True
 
 
-# Text-only WRAPPER chrome whose nested words must survive the rail
-# reduction. ``Orchestrator._chat_narrative`` persists a multi-paragraph
-# answer as ``Card(title=…, content=[Text(answer)])`` — chat-rail narrative
-# that never enters the workspace. Dropping the whole card (the pre-fix
-# feature-063 rule) erased the assistant's answer from the committed
-# conversation snapshot: the end-of-turn snapshot then REPLACED the live
-# view answer-less on every client ("first message of a new chat gets no
-# response"). Rich components inside a wrapper still drop to the canvas.
 _RAIL_WRAPPER_TYPES = {"card", "container", "collapsible"}
 
 
 def _rail_wrapper_is_anchored(component: Mapping[str, Any]) -> bool:
-    """True when a wrapper carries an AUTHOR workspace identity.
-
-    ``_component_identity`` preserves an author-supplied ``component_id``
-    (e.g. the ``doc_…`` narrative doc card, which the workspace re-hydrates
-    to the canvas beside its concise rail lead) and synthesizes a ``cc_…``
-    fingerprint for identity-less components (the ``_chat_narrative`` card,
-    which lives nowhere but the transcript). Lifting an anchored wrapper's
-    words would duplicate its canvas rendition in the rail; dropping an
-    unanchored one loses the words entirely.
-    """
     identity = component.get("component_id")
     return isinstance(identity, str) and bool(identity) and not identity.startswith("cc_")
 
 
-# Feature 066 T023 (CLOSED as a deliberate cross-client contract extension):
-# a lifted caption's variant now rides the rail part as an optional bounded
-# ``variant`` key — accepted by the server validator (shared/protocol.py
-# CANONICAL_TEXT_PART_VARIANTS), the web/Windows/Android/Apple decoders, and
-# documented in specs/060-…/contracts/conversation-continuity.md. Every other
-# authoring variant still normalizes away, so the canonical boundary stays
-# exact for non-caption text.
 def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
-    """One canonical rail text part; caption weight survives the lift.
-
-    The carry is gated by ``FF_RAIL_CAPTION_VARIANT`` (default OFF). This is
-    the ONLY place a rail part gains the T023 ``variant`` key, and the gate
-    exists because T023 shipped after apple-v1.2 / Android versionCode 4:
-    those store builds compare the part's key set for EXACT equality, so a
-    caption part makes them drop the whole ``conversation_snapshot`` and the
-    rail silently stops committing. Emission is gated; ACCEPTANCE is not (see
-    ``CANONICAL_TEXT_PART_VARIANTS``), so flipping the gate on later needs no
-    client change. Pins: tests/test_rail_caption_emission_gate.py.
-
-    The gate is deliberately GLOBAL, not per-target: while it is off a caption
-    also flattens for web and Windows, which decode the shape correctly. There
-    is no reliable client-version signal to scope it by (v1.2 and v1.3
-    ``register_ui`` frames are byte-identical), and diverging per target would
-    break snapshot parity. That cost is accepted — do not "fix" it by
-    re-deriving weight downstream.
-
-    The flag is read FIRST so the default path is one boolean and behaves
-    exactly like pre-T023 code: ``variant`` arrives from stored agent output
-    and an agent emitting plain dicts can make it unhashable (e.g. a list),
-    which would raise TypeError from the membership test alone.
-    """
     part: dict[str, Any] = {"type": "text", "text": text}
     if (
         flags.is_enabled("rail_caption_variant")
@@ -336,11 +260,12 @@ def _lifted_text_part(text: str, variant: Any) -> dict[str, Any]:
     return part
 
 
-def _wrapper_texts(
+def _wrapper_parts(
     component: Mapping[str, Any], canvas_component_ids: frozenset[str],
-) -> list[tuple[str, Any]]:
-    """Depth-first (text, variant) contents of one text-only wrapper."""
-    texts: list[tuple[str, Any]] = []
+) -> list[dict[str, Any]]:
+    from orchestrator.source_details import present_source_details
+
+    parts: list[dict[str, Any]] = []
     for key in ("content", "children"):
         children = component.get(key)
         if not isinstance(children, (list, tuple)):
@@ -350,54 +275,29 @@ def _wrapper_texts(
                 continue
             if child.get("component_id") in canvas_component_ids:
                 continue
+            child = present_source_details(child)
             child_type = str(child.get("type", "")).strip().lower()
             if child_type == "text":
                 text = child.get("content")
                 if not isinstance(text, str):
                     text = child.get("text")
                 if isinstance(text, str) and text.strip():
-                    texts.append((text, child.get("variant")))
+                    parts.append(_lifted_text_part(text, child.get("variant")))
+            elif child_type == "collapsible":
+                parts.append({"type": "components", "components": [dict(child)]})
             elif child_type in _RAIL_WRAPPER_TYPES:
-                texts.extend(_wrapper_texts(child, canvas_component_ids))
-    return texts
+                parts.extend(_wrapper_parts(child, canvas_component_ids))
+    return parts
 
 
 def _rail_parts(
     parts: list[dict[str, Any]], *, canvas_component_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """Reduce a transcript message's parts to TEXT ONLY (feature 063).
+    from orchestrator.source_details import present_source_details
 
-    The chat rail is the conversation; the canvas is where UI lives. So a
-    ``components`` part is reduced to the plain text of non-canvas ``text``
-    primitives it carries (lifted to ``text`` parts, so no assistant words are
-    lost) and every other component — tables, lists, alerts, metrics — is
-    dropped from the transcript: it is canvas state, not conversation. A message
-    left with no parts is omitted (it was purely a rendered component).
-
-    One refinement over the original feature-063 rule: a TEXT-ONLY wrapper
-    (card/container/collapsible whose children are all words — the shape
-    ``_chat_narrative`` persists for multi-paragraph answers) has its nested
-    text lifted instead of being dropped, UNLESS it carries an author
-    workspace identity (``doc_…`` narrative doc cards re-hydrate to the
-    canvas; lifting them would duplicate the write-up beside its rail lead).
-    Identity-less narrative chrome never enters the workspace, so dropping
-    it lost the assistant's words entirely from the committed snapshot. A
-    wrapper with any rich child still drops whole: it is a canvas component
-    and the workspace re-hydrates it.
-
-    This supersedes the feature-062 rule that kept text-like components in the
-    rail (they still appeared as duplicate cards beside the canvas)."""
     kept: list[dict[str, Any]] = []
     for part in parts:
         if part.get("type") != "components":
-            # Canonical-boundary normalization (066 R-9 rail fix): stored
-            # narrative parts may carry authoring fields (``variant``,
-            # ``content``) that the canonical transcript contract forbids —
-            # text parts must be EXACTLY {"type","text"} plus the T023
-            # bounded ``variant`` carve-out. A voice turn's rail delivery
-            # rides canonical ``conversation_snapshot`` frames, so an
-            # un-normalized part made every client reject the whole snapshot
-            # (``invalid_snapshot``) and the rail silently never updated.
             if part.get("type") == "text":
                 text = part.get("text")
                 if not isinstance(text, str):
@@ -410,10 +310,9 @@ def _rail_parts(
         for comp in part.get("components", []):
             if not isinstance(comp, Mapping):
                 continue
-            # Workspace-owned text (for example a source link) belongs in
-            # the response container just like workspace-owned cards.
             if comp.get("component_id") in canvas_component_ids:
                 continue
+            comp = present_source_details(comp)
             comp_type = str(comp.get("type", "")).strip().lower()
             if comp_type == "text":
                 text = comp.get("content")
@@ -421,14 +320,14 @@ def _rail_parts(
                     text = comp.get("text")
                 if isinstance(text, str) and text.strip():
                     kept.append(_lifted_text_part(text, comp.get("variant")))
+            elif comp_type == "collapsible" and _is_rail_text_only([comp]):
+                kept.append({"type": "components", "components": [dict(comp)]})
             elif (
                 comp_type in _RAIL_WRAPPER_TYPES
                 and not _rail_wrapper_is_anchored(comp)
                 and _is_rail_text_only([comp])
             ):
-                for text, variant in _wrapper_texts(comp, canvas_component_ids):
-                    kept.append(_lifted_text_part(text, variant))
-            # anything else is a UI component — canvas only
+                kept.extend(_wrapper_parts(comp, canvas_component_ids))
     return kept
 
 
@@ -451,9 +350,6 @@ def _content_parts(
                         ),
                     )
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    # Plane preserves an invalid legacy TEXT value as a string.
-                    # Retain the historic recovery posture for malformed values
-                    # that claimed to be structured content.
                     return _recovery_parts()
         value = stored
     elif not isinstance(stored, str):
@@ -501,9 +397,6 @@ def _content_parts(
         isinstance(item, Mapping) and item.get("type") in allowed_types
         for item in value
     ):
-        # A partially valid primitive group is not safe to reinterpret as
-        # ordinary structured data: doing so would silently change its UI
-        # semantics. Preserve a visible recovery value instead.
         return _recovery_parts()
     if isinstance(value, (list, tuple)):
         if not value:
@@ -524,12 +417,6 @@ def augment_conversation_snapshot_for_target(
     snapshot: Mapping[str, Any], profile: Any, *, target: str,
     canonical_canvas: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Return a transport copy with presentation added only for web sockets.
-
-    Reserved presentation is removed first even when handed an already
-    augmented value. It therefore cannot become semantic/durable authority.
-    """
-
     candidate = _strip_reserved_presentation(snapshot)
     from webrender.chrome.component_model import (
         canonical_components_by_id,
@@ -575,20 +462,6 @@ def augment_conversation_snapshot_for_target(
         return output
 
     def augment_text(part: dict[str, Any]) -> None:
-        """Feature 066: give an assistant rail text part its web rendition.
-
-        The words-only rail (062) keeps only the raw markdown SOURCE of a
-        text primitive, so the transcript rendered it inert and the user saw
-        literal ``**asterisks**`` the moment a turn committed. The rendition
-        rides the same transport-only ``_presentation`` envelope the
-        components path uses and goes through the IDENTICAL escape-first
-        pipeline (``render_text`` markdown branch -> ``block_md``), so the
-        semantic value stays authoritative and nothing new is trusted.
-
-        T023: a part carrying the bounded canonical ``variant`` renders at
-        that weight (a lifted caption hydrates as a caption); everything
-        else keeps the markdown default.
-        """
         variant = part.get("variant")
         if variant not in CANONICAL_TEXT_PART_VARIANTS:
             variant = "markdown"
@@ -603,8 +476,6 @@ def augment_conversation_snapshot_for_target(
         for message in transcript:
             if not isinstance(message, dict):
                 continue
-            # Only the assistant's own prose is markdown; a user's typed
-            # asterisks stay inert.
             is_assistant = message.get("role") == "assistant"
             for part in message.get("parts") or []:
                 if not isinstance(part, dict):
@@ -620,8 +491,6 @@ def augment_conversation_snapshot_for_target(
 
 
 class ConversationCommitRepository:
-    """Deep publication policy over the application-scoped Plane runtime."""
-
     def __init__(
         self,
         database: Any = None,
@@ -938,15 +807,6 @@ class ConversationCommitRepository:
         operation_owner: Any,
         accept_turn: Callable[..., Any],
     ) -> dict[str, Any]:
-        """Commit one user bubble and allocate its private result atomically.
-
-        This is the short voice admission/snapshot critical section. The
-        caller already owns a running no-queue execution fence. The callback
-        joins this exact transaction to bind the content-free ``voice_turn`` row,
-        so acknowledgement is impossible before both conversation commits and
-        the voice correlation are durable.
-        """
-
         chat_id = _uuid4_text(chat_id, "chat_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         request_generation = _uuid4_text(
@@ -1400,8 +1260,6 @@ class ConversationCommitRepository:
         owner_user_id: str,
         operation_fence: Any = None,
     ) -> int:
-        """Copy the complete authoritative canvas into an invisible stage."""
-
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         with self._transaction(operation_fence) as transaction:
@@ -1502,8 +1360,6 @@ class ConversationCommitRepository:
         timestamp: Optional[int] = None,
         operation_fence: Any = None,
     ) -> str:
-        """Append one invisible ordered message under the staged commit."""
-
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         message = self._validate_messages(
@@ -1561,8 +1417,6 @@ class ConversationCommitRepository:
         commit_id: Any,
         owner_user_id: str,
     ) -> dict[str, Any]:
-        """Discard only invisible staged rows; a committed winner is immutable."""
-
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         with self._transaction() as transaction:
@@ -1717,8 +1571,6 @@ class ConversationCommitRepository:
         canvas_layouts: Optional[Sequence[Mapping[str, Any]]] = None,
         operation_fence: Any,
     ) -> dict[str, Any]:
-        """Three-way publish one private assistant result exactly once."""
-
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         if operation_fence is None:
@@ -2176,8 +2028,6 @@ class ConversationCommitRepository:
         request_generation: str,
         snapshot_purpose: str,
     ) -> dict[str, Any]:
-        """Build one repeatable-read snapshot exclusively through Plane."""
-
         with self.plane_runtime.transaction(
             isolation=IsolationLevel.REPEATABLE_READ
         ) as transaction:
@@ -2238,10 +2088,6 @@ class ConversationCommitRepository:
                 raise ConversationSnapshotInvalid(
                     "conversation transcript exceeds the supported bound"
                 )
-            # Resolve ownership in the same repeatable-read view as the
-            # transcript. A text component with an arbitrary author ID may
-            # still be a narrative reply; only actual canvas membership
-            # makes it part of the UI response rather than the chat rail.
             component_records = self._workspaces.canvas.list_current(
                 transaction,
                 owner_id=owner_user_id,
@@ -2252,10 +2098,7 @@ class ConversationCommitRepository:
             )
             transcript = []
             for message in message_records:
-                # Plane's typed repository has already decoded the legacy TEXT
-                # representation.  Parsing semantic strings again would turn
-                # newly persisted prose such as ``"[]"`` or ``"null"`` into a
-                # different JSON type at the orchestration boundary.
+                # Don't re-parse: prose like '[]' would become real JSON
                 parts = _rail_parts(
                     _content_parts(message.content, already_decoded=True),
                     canvas_component_ids=canvas_component_ids,
@@ -2393,8 +2236,6 @@ class ConversationCommitRepository:
         commit_id: Any,
         owner_user_id: str,
     ) -> Any | None:
-        """Return the last assistant payload from one exact committed result."""
-
         commit_id = _uuid4_text(commit_id, "commit_id")
         owner_user_id = _required_text(owner_user_id, "owner_user_id")
         with self._transaction() as transaction:
@@ -2423,17 +2264,6 @@ class ConversationCommitRepository:
         )
 
 def _component_preview_text(components) -> str:
-    """Flatten a component-list message into human-readable preview text.
-
-    Feature 030 bug fix: assistant messages are stored as JSON lists of UI
-    component dicts, and the history list previously previewed them with
-    ``str(...)`` — leaking Python repr like ``[{'type': 'text', ...}]``.
-    Walks the components in order, preferring the ``content`` of
-    ``type == "text"`` components, falling back to a component's ``title``,
-    and skipping anything without human text (charts, raw data payloads).
-    Returns the joined pieces with whitespace collapsed; truncation is the
-    caller's responsibility.
-    """
     parts = []
     for item in components:
         if isinstance(item, str):
@@ -2526,14 +2356,6 @@ class HistoryManager:
         user_id: str = 'legacy',
         agent_id: Optional[str] = None,
     ) -> str:
-        """Create a new chat session.
-
-        Feature 013: ``agent_id`` binds the new chat to a specific agent so
-        the UI can render the active-agent indicator (FR-006) and detect
-        unavailability (FR-009). Pass None for unbound chats (legacy
-        behaviour); a NULL ``agent_id`` is later interpreted by the
-        frontend as "Unknown agent — pick one".
-        """
         if not chat_id:
             chat_id = str(uuid.uuid4())
         stage = current_scheduled_history_stage()
@@ -2554,7 +2376,6 @@ class HistoryManager:
         return chat_id
 
     def add_message(self, chat_id: str, role: str, content: any, user_id: str = 'legacy'):
-        """Add a message to a chat session."""
         stage = current_scheduled_history_stage()
         if stage is not None:
             stage.add_message(
@@ -2620,13 +2441,6 @@ class HistoryManager:
             )
 
     def get_latest_message_id(self, chat_id: str, user_id: str = 'legacy'):
-        """Return the integer id of the most recent message in a chat.
-
-        Added for feature 014 — chat-step recorder needs the
-        ``messages.id`` of the user message that initiated a turn so step
-        rows can FK back to it (see chat_steps.turn_message_id). Returns
-        ``None`` if the chat has no messages.
-        """
         return self._history.call(
             self._history.repository.messages.latest_visible_id,
             owner_id=user_id,
@@ -2638,8 +2452,6 @@ class HistoryManager:
         chat_id: str,
         user_id: str = "legacy",
     ) -> Optional[str]:
-        """Return one owner's bound agent without loading conversation content."""
-
         conversation = self._history.call(
             self._history.repository.conversations.get,
             owner_id=user_id,
@@ -2652,12 +2464,6 @@ class HistoryManager:
         chat_id: str,
         user_id: str = "legacy",
     ):
-        """Return one owner-scoped detached Plane conversation record.
-
-        Callers that only need authority or revision metadata must not load the
-        conversation's bounded message inventory through :meth:`get_chat`.
-        """
-
         return self._history.call(
             self._history.repository.conversations.get,
             owner_id=user_id,
@@ -2665,7 +2471,6 @@ class HistoryManager:
         )
 
     def update_chat_title(self, chat_id: str, title: str, user_id: str = 'legacy'):
-        """Update the title of a specific chat."""
         stage = current_scheduled_history_stage()
         if stage is not None:
             stage.update_title(
@@ -2696,7 +2501,6 @@ class HistoryManager:
             )
 
     def get_chat(self, chat_id: str, user_id: str = 'legacy') -> Optional[Dict]:
-        """Get full details of a specific chat."""
         stage = current_scheduled_history_stage()
         publication_stage = current_conversation_publication()
         chat_record = self._history.call(
@@ -2788,20 +2592,6 @@ class HistoryManager:
         }
 
     def get_recent_chats(self, limit: int = 20, user_id: str = 'legacy') -> List[Dict]:
-        """Get list of recent chats (metadata only).
-
-        Excludes draft-test chats and zero-message chats (feature 030):
-        eagerly created "New Chat" husks stay out of the listing until
-        their first message lands, at which point the chat appears
-        automatically — chat creation itself is unchanged. Previews are
-        human text: component-list message content is flattened via
-        _component_preview_text() instead of leaking its Python repr,
-        and every preview is truncated to PREVIEW_MAX_CHARS.
-
-        Single round trip (feature 052): the last-message preview comes
-        from a correlated subquery and the saved-components flag from the
-        chats row itself, replacing the previous 1 + 2N per-chat lookups.
-        """
         rows = self._history.call(
             self._history.repository.conversations.list_recent_nonempty,
             owner_id=user_id,
@@ -2822,10 +2612,6 @@ class HistoryManager:
                     preview = _component_preview_text([content_obj])
                 else:
                     preview = str(content_obj)
-                # 066: a preview is an excerpt of PROSE — strip the markdown
-                # so the list never shows literal "**asterisks**". The single
-                # choke point for every consumer (web surface, history_list
-                # frame, REST /api/chats, voice extraction).
                 from webrender.sanitize import plain_md
 
                 preview = plain_md(preview)
@@ -2844,8 +2630,6 @@ class HistoryManager:
         return results
     
     def delete_chat(self, chat_id: str, user_id: str = 'legacy'):
-        """Fence voice state and delete one owner chat atomically."""
-
         from orchestrator.voice_sessions import VoiceSessionRepository
 
         mutation = VoiceSessionRepository(
@@ -2858,8 +2642,6 @@ class HistoryManager:
             delete_chat=True,
             now=datetime.now(UTC),
         )
-        # component_version deliberately has no chats FK. Sweep it through
-        # Plane's owner-scoped typed repository after the voice/chat mutation.
         self._artifacts.call(
             self._artifacts.repository.versions.delete_for_conversation,
             owner_id=user_id,
@@ -2872,13 +2654,6 @@ class HistoryManager:
         chat_id: str,
         user_id: str = "legacy",
     ):
-        """Fence voice publication/speech before an external access revocation.
-
-        The caller remains responsible for the authorization-store mutation;
-        this hook deliberately leaves normal chat content in place so both
-        changes can be coordinated by the owning access-control workflow.
-        """
-
         from orchestrator.voice_sessions import VoiceSessionRepository
 
         return VoiceSessionRepository(
@@ -2892,13 +2667,7 @@ class HistoryManager:
             now=datetime.now(UTC),
         )
 
-    # =========================================================================
-    # Saved UI Components Methods
-    # =========================================================================
-    
     def save_component(self, chat_id: str, component_data: any, component_type: str, title: str = None, user_id: str = 'legacy') -> str:
-        """Save one revision-zero component through the typed Plane canvas."""
-
         row_id = str(uuid.uuid4())
         payload = copy.deepcopy(component_data)
         semantic_id = (
@@ -2953,7 +2722,6 @@ class HistoryManager:
         return row_id
     
     def get_saved_components(self, chat_id: str = None, user_id: str = 'legacy') -> List[Dict]:
-        """Get saved components, optionally filtered by chat_id."""
         records = self._workspaces.call(
             self._workspaces.repository.canvas.list_current_for_owner,
             owner_id=user_id,
@@ -2967,8 +2735,6 @@ class HistoryManager:
         return [self._saved_component_dict(record) for record in records]
     
     def delete_component(self, component_id: str, user_id: str = 'legacy') -> bool:
-        """Delete one current revision-zero component and its artifact history."""
-
         with self._workspaces.transaction() as transaction:
             visible = self._workspaces.repository.canvas.get_current_by_row_id(
                 transaction,
@@ -3010,7 +2776,6 @@ class HistoryManager:
         return True
     
     def get_component_by_id(self, component_id: str, user_id: str = 'legacy') -> Optional[Dict]:
-        """Get a single saved component by ID."""
         record = self._workspaces.call(
             self._workspaces.repository.canvas.get_current_by_row_id,
             owner_id=user_id,
@@ -3019,8 +2784,6 @@ class HistoryManager:
         return None if record is None else self._saved_component_dict(record)
 
     def replace_components(self, old_ids: list, new_components: list, chat_id: str, user_id: str = 'legacy') -> list:
-        """Atomically replace revision-zero rows through Plane typed records."""
-
         if len(set(old_ids)) != len(old_ids):
             raise ValueError("old component ids must be unique")
         with self._workspaces.transaction() as transaction:
@@ -3112,7 +2875,6 @@ class HistoryManager:
         return created
 
     def chat_has_saved_components(self, chat_id: str, user_id: str = 'legacy') -> bool:
-        """Check if a chat has saved components."""
         conversation = self._history.call(
             self._history.repository.conversations.get,
             owner_id=user_id,
@@ -3134,7 +2896,6 @@ class HistoryManager:
         }
 
     def add_file_mapping(self, chat_id: str, original_name: str, backend_path: str, user_id: str = 'legacy'):
-        """Register a mapping between an original filename and its backend UUID path."""
         import time
         timestamp = int(time.time() * 1000)
         self._conversation_files.call(
@@ -3147,7 +2908,6 @@ class HistoryManager:
         )
 
     def get_file_mappings(self, chat_id: str, user_id: str = 'legacy') -> List[Dict]:
-        """Retrieve all file mappings for a chat."""
         records = self._conversation_files.call(
             self._conversation_files.repository.list_mappings,
             owner_id=user_id,
@@ -3163,8 +2923,6 @@ class HistoryManager:
         ]
 
     def list_chat_steps(self, chat_id: str, user_id: str = "legacy"):
-        """Return one owner's detached durable progress trail from Plane."""
-
         return self._chat_steps.call(
             self._chat_steps.repository.list_steps,
             owner_id=user_id,

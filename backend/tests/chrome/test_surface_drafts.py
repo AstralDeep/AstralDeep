@@ -1,4 +1,8 @@
-"""Feature 027 — T026: drafts surface structure + manual-create handler."""
+"""Tests for orchestrator/projection_surfaces/drafts.py: list and detail rendering with
+origin badges, refine and revision forms, owner scoping, and the manual-create
+handler's shared agentic_creation pipeline.
+"""
+
 import asyncio
 import json
 import types
@@ -68,14 +72,14 @@ def test_list_shows_origin_badges_and_self_test():
 def test_empty_list_hints_at_both_entry_points():
     html = run(drafts.render(orch_with([]), "u1", [], {}))
     assert "No drafts yet" in html
-    assert "Create a server-side agent" in html  # form always present (077: says what it makes)
+    assert "Create a server-side agent" in html
 
 
 def test_detail_decisions_for_normal_draft():
     html = run(drafts.render(orch_with([_draft()]), "u1", [], {"draft_id": "d1"}))
     assert 'data-ui-action="draft_approve"' in html
     assert 'data-ui-action="draft_discard"' in html
-    assert "draft_refine" not in html  # refine form only with refine param
+    assert "draft_refine" not in html
 
 
 def test_detail_refine_form_collects_message():
@@ -98,7 +102,6 @@ def test_detail_owner_scoped():
 
 
 def test_rejected_drafts_remain_listed():
-    """012 FR-010a: rejected drafts stay editable, so they must be visible."""
     html = run(drafts.render(orch_with([_draft(status="rejected")]), "u1", [], {}))
     assert "Tracker" in html
 

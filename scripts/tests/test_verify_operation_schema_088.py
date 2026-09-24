@@ -1,4 +1,6 @@
-"""Data-only 088 migration imports remain explicit and tamper-evident."""
+"""Tests that the migration's data-only imports are explicit and tamper-evident:
+reviewed digests, alias/rebinding refusal, and no inherited expression evaluator.
+"""
 
 from __future__ import annotations
 
@@ -90,7 +92,6 @@ def test_both_reviewed_imports_match_independent_canonical_digest_without_execut
 
 def test_exact_pinned_operation_and_assignment_files_match_qualified_088_digest() -> None:
     root = REPOSITORY_ROOT / COMPONENT_PATHS["astral-plane"]
-    # Reading the pinned files must not import AstralPlane or initialize its runtime.
     assert composition._plane_migration_digest(root) == EXPECTED_PLANE_MIGRATION_SHA256
 
 

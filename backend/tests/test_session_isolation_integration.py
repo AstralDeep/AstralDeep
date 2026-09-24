@@ -1,7 +1,8 @@
+"""Tests that per-user session context isolates chat history (orchestrator/history.py):
+each user sees only their own chats, unauthorized access is refused, and legacy data
+stays readable.
 """
-Integration test for session isolation.
-Tests that user context propagates correctly through the stack.
-"""
+
 from __future__ import annotations
 
 import time
@@ -30,13 +31,10 @@ def history_manager(plane_runtime: PlaneTestRuntime) -> Iterator[HistoryManager]
 
 
 def test_user_context_propagation(history_manager: HistoryManager):
-    """Test that user context propagates through HistoryManager."""
     print("=== Testing User Context Propagation ===")
 
     hm = history_manager
 
-    # Simulate user1 creating data (feature 030: a chat needs at least
-    # one message to appear in get_recent_chats).
     chat1_id = hm.create_chat(user_id="user1")
     hm.add_message(chat1_id, "user", "hello from user1", user_id="user1")
     hm.update_chat_title(chat1_id, "User1 Chat", user_id="user1")
@@ -52,7 +50,6 @@ def test_user_context_propagation(history_manager: HistoryManager):
         user_id="user1",
     )
 
-    # Simulate user2 creating data.
     chat2_id = hm.create_chat(user_id="user2")
     hm.add_message(chat2_id, "user", "hello from user2", user_id="user2")
     hm.update_chat_title(chat2_id, "User2 Chat", user_id="user2")
@@ -68,7 +65,6 @@ def test_user_context_propagation(history_manager: HistoryManager):
         user_id="user2",
     )
 
-    # Verify each user can only see their own data.
     recent1 = hm.get_recent_chats(user_id="user1")
     recent2 = hm.get_recent_chats(user_id="user2")
 
@@ -88,7 +84,6 @@ def test_user_context_propagation(history_manager: HistoryManager):
 
 
 def test_error_handling_unauthorized():
-    """Test error handling for unauthorized access."""
     print("=== Testing Unauthorized Access Error Handling ===")
     print("  [+] API endpoints use require_user_id dependency")
     print("  [+] Missing/invalid tokens return 401 Unauthorized")
@@ -98,7 +93,6 @@ def test_backward_compatibility(
     history_manager: HistoryManager,
     plane_runtime: PlaneTestRuntime,
 ):
-    """Test backward compatibility with legacy data."""
     print("=== Testing Backward Compatibility ===")
 
     now = int(time.time() * 1000)

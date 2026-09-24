@@ -1,15 +1,8 @@
-"""Shared fixtures for backend/tests.
-
-Hermeticity guard: a dev container's ``.env`` may export feature flags
-globally (FF_UI_DESIGNER_* pass flags, FF_MOA_DEBATE, FF_HOOK_SYSTEM, ...),
-but these suites assume the in-code defaults and monkeypatch only the flag
-under test. CI sets none of them, so ambient values are stripped for the
-whole session to make in-container runs behave identically to CI. Flag
-values can also be cached by module-level state on first read, so the strip
-must happen once up front, not per-test. Note the ui_designer prefix is
-``FF_UI_DESIGNER_`` (trailing underscore): the master ``FF_UI_DESIGNER``
-kill-switch is left alone.
+"""Shared pytest fixtures for backend/tests: strips ambient feature-flag env vars for
+hermeticity and builds/tears down real Orchestrator and
+credential/typesafe/data-sharing store fixtures.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +21,7 @@ _AMBIENT_FLAGS = (
 
 
 def _strip_ambient_flags() -> None:
-    # Host runs load the repo ``.env`` lazily: ``orchestrator/orchestrator.py``
-    # calls ``load_dotenv(override=False)`` on FIRST import, which happens
-    # inside a test module — i.e. AFTER this strip. Worse, ``override=False``
-    # only protects keys that still EXIST, so a stripped flag would be
-    # re-injected by that later load. Load ``.env`` once NOW (so host runs
-    # keep their DB coordinates etc.), strip, then disarm later loads —
-    # exactly matching CI, where no ``.env`` file exists at all.
-    # (In-container runs already have the flags as ambient process env, so
-    # the early load is a no-op there and the strip behaves as before.)
+    # Disarms load_dotenv so it can't re-inject stripped flags
     try:
         import dotenv
         dotenv.load_dotenv(override=False)
@@ -49,22 +34,11 @@ def _strip_ambient_flags() -> None:
             del os.environ[name]
 
 
-# Run at collection import time (before any test module import can cache a
-# flag read); tests that need a flag set it explicitly via monkeypatch.
 _strip_ambient_flags()
 
 
 @pytest.fixture
 async def orchestrator_factory():
-    """Construct real Orchestrators and release their application graph.
-
-    The production runtime intentionally permits one application-scoped Plane
-    binding.  Tests that historically constructed a fresh Orchestrator for
-    every parameter case must therefore close the exact graph at fixture
-    teardown instead of leaking process bindings and connection pools into the
-    next case.
-    """
-
     instances = []
 
     def build():
@@ -86,8 +60,6 @@ async def orchestrator_factory():
 
 @pytest.fixture(scope="module")
 async def orchestrator_module_factory():
-    """Module-scoped counterpart for intentionally shared Orchestrators."""
-
     instances = []
 
     def build():
@@ -108,41 +80,12 @@ async def orchestrator_module_factory():
 
 @pytest.fixture
 def user_skills_disabled(monkeypatch):
-    """Run a legacy turn seam with feature 077's user skills switched OFF.
-
-    Feature 088 made the per-turn skill catalog read an authority handoff:
-    with ``FF_USER_SKILLS`` on, ``handle_chat_message`` /
-    ``_dispatch_async_chat`` / ``subtasks.handle_meta_tool`` require a
-    registered human socket read (``human_request_authority``) plus a captured
-    turn-guidance origin, and raise ``SkillCatalogError('skill_lookup_
-    unavailable')`` without one. Suites that drive the turn with orchestrator
-    test doubles (MagicMock sockets, fake orchestrators) register neither and
-    are testing seams that have nothing to do with skills — the MoA panel, the
-    output supervisor, context editing, sub-task decomposition, the LLM
-    pre-flight gate. Turning the flag off is the product's own fail-open
-    posture for those seams and keeps each test asserting exactly what it
-    asserted before.
-
-    The handoff itself stays pinned by ``test_skill_turn_handoffs_088.py`` and
-    ``test_turn_guidance_ingress_088.py``, which drive it over the real Plane.
-    """
-
     from shared.feature_flags import flags
 
     monkeypatch.setitem(flags._flags, "user_skills", False)
 
 
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401
-
-
-# ---------------------------------------------------------------------------
-# Feature 089 — credential stores over an in-memory Plane double
-# ---------------------------------------------------------------------------
-#
-# The llm_config suite already has a narrow in-memory implementation of the
-# exact Plane repository contract. Reusing it here keeps these tests free of
-# Postgres and of the running product's data, which a durable store would
-# otherwise leak between tests.
 
 
 @pytest.fixture

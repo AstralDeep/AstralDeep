@@ -1,9 +1,8 @@
-"""Verified external identity projection for restricted agents.
-
-Agent cards may declare ``metadata.required_identity_claims``. Astral projects
-only those claims from the already-verified Keycloak access-token payload into
-the MCP envelope; it never copies the bearer token or arbitrary token claims.
+"""Projects verified external identity claims (ORCID) from the Keycloak-verified token
+into the MCP envelope for agents declaring required_identity_claims — never the raw
+bearer token. Used by tool_permissions.py and tool_visibility.py.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,7 +20,6 @@ INTERNAL_IDENTITIES_CLAIM = "_verified_external_identities"
 
 
 def normalize_orcid(value: Any) -> str | None:
-    """Return a canonical, checksum-valid ORCID iD or ``None``."""
     if not isinstance(value, str):
         return None
     candidate = value.strip().upper()
@@ -37,12 +35,8 @@ def normalize_orcid(value: Any) -> str | None:
     return candidate if digits[-1] == expected else None
 
 
+# Malformed claims fail closed, never read as unrestricted
 def required_identity_claims(card: Any) -> tuple[str, ...]:
-    """Return a card's declared requirements, malformed declarations included.
-
-    Invalid declarations become an unsupported sentinel so every downstream
-    decision fails closed instead of accidentally treating them as unrestricted.
-    """
     metadata = getattr(card, "metadata", None) or {}
     if not isinstance(metadata, Mapping):
         return (_INVALID_REQUIREMENT,)
@@ -62,7 +56,6 @@ def required_identity_claims(card: Any) -> tuple[str, ...]:
 
 
 def identity_projection_trusted(card: Any) -> bool:
-    """Whether this agent is operator-approved to receive identity claims."""
     agent_id = getattr(card, "agent_id", None)
     if not isinstance(agent_id, str) or not agent_id:
         return False
@@ -95,7 +88,6 @@ def _orcid_from_verified_claims(
 
 
 def verified_identity_for(card: Any, token_claims: Any) -> dict[str, str] | None:
-    """Project required claims, or return ``None`` when any is unavailable."""
     required = required_identity_claims(card)
     if not required:
         return {}
@@ -110,7 +102,7 @@ def verified_identity_for(card: Any, token_claims: Any) -> dict[str, str] | None
             return None
         if claim == ORCID_CLAIM:
             value = _orcid_from_verified_claims(card, token_claims)
-        else:  # pragma: no cover - guarded by the supported set
+        else:  # pragma: no cover
             value = None
         if value is None:
             return None
@@ -123,7 +115,6 @@ def identity_requirement_satisfied(card: Any, token_claims: Any) -> bool:
 
 
 def identity_access_message(card: Any) -> str:
-    """Stable user-facing refusal without exposing claim contents."""
     name = str(getattr(card, "name", None) or "This agent")
     required = required_identity_claims(card)
     if required == (ORCID_CLAIM,):

@@ -1,14 +1,6 @@
-"""FastAPI router for the Attachment REST surface (feature 002-file-uploads).
-
-Implements the contract from ``specs/002-file-uploads/contracts/upload-api.md``:
-
-* ``POST   /api/upload``                  (replaces the legacy implementation in auth.py)
-* ``GET    /api/attachments``             (list current user's live attachments)
-* ``GET    /api/attachments/{id}``        (one attachment's metadata)
-* ``DELETE /api/attachments/{id}``        (soft-delete)
-
-All endpoints are gated by the existing ``require_user_id`` dependency. Non-owner
-reads return ``404`` (we do not confirm or deny the existence of foreign rows).
+"""FastAPI router for the attachment REST surface: upload, list, get, delete, and
+account retirement. Streams uploads through attachments/materialization.py and
+triggers attachment_autoparse.py when a type has no reader.
 """
 
 from __future__ import annotations
@@ -37,20 +29,13 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("AttachmentsAPI")
 
-# Legacy alias: kept for any downstream imports. The real per-upload cap now
-# comes from ``content_type.max_bytes_for_category(category)``.
 MAX_UPLOAD_BYTES = ct.MAX_BYTES_BY_CATEGORY["document"]
 
-# Stream upload in modest chunks so we can short-circuit oversize files without
-# buffering them in memory. Medical uploads can run into the GBs, so the central
-# pending-first materialization service stages each chunk under Plane's durable
-# lease rather than collecting the request in a list.
-_CHUNK_SIZE = 1024 * 256  # 256 KiB
+_CHUNK_SIZE = 1024 * 256
 _SNIFF_BYTES = 8192
 
 
 def _format_cap_mb(cap_bytes: int) -> str:
-    """Render a byte cap as a human-friendly '30 MB' / '2 GB' string."""
     if cap_bytes >= 1024 * 1024 * 1024:
         return f"{cap_bytes // (1024 * 1024 * 1024)} GB"
     return f"{cap_bytes // (1024 * 1024)} MB"
@@ -59,13 +44,10 @@ attachments_router = APIRouter(tags=["Files"])
 
 
 class AccountRetirementRequest(BaseModel):
-    """Deliberate confirmation for the destructive self-service event."""
-
     confirmation: Literal["retire-my-account"]
 
 
 def _get_orchestrator(request: Request):
-    """Resolve the orchestrator instance from app state (or its root app)."""
     orch = getattr(request.app.state, "orchestrator", None)
     if orch is None:
         root_app = getattr(request.app, "_root_app", None) or request.app
@@ -74,7 +56,6 @@ def _get_orchestrator(request: Request):
 
 
 def _get_repository(request: Request) -> AttachmentRepository:
-    """Resolve the AttachmentRepository from the orchestrator on app state."""
     orch = _get_orchestrator(request)
     if orch is None:
         raise HTTPException(status_code=503, detail="Orchestrator not initialised")
@@ -134,11 +115,6 @@ def _attachment_to_response(att) -> dict:
         "sha256": att.sha256,
         "created_at": created_at.isoformat() if created_at else None,
     }
-
-
-# ---------------------------------------------------------------------------
-# POST /api/upload
-# ---------------------------------------------------------------------------
 
 
 @attachments_router.post(
@@ -247,9 +223,6 @@ async def upload_file(
         f"for user={user_id}"
     )
 
-    # Feature 031: eager parser-coverage check. If no built-in or globally
-    # promoted parser can read this type, kick off the safe auto-creation flow
-    # in the background (off the request path) and report the status.
     response_body = _attachment_to_response(attachment)
     response_body["parser_status"] = "covered"
     try:
@@ -271,11 +244,6 @@ async def upload_file(
         status_code=status.HTTP_201_CREATED,
         content=response_body,
     )
-
-
-# ---------------------------------------------------------------------------
-# GET /api/attachments
-# ---------------------------------------------------------------------------
 
 
 @attachments_router.get(
@@ -311,7 +279,6 @@ async def get_attachment(
     repo = _get_repository(request)
     att = await repo.aget_by_id(attachment_id, user_id)
     if att is None:
-        # Deliberately 404, not 403, so we don't confirm existence to non-owners.
         raise HTTPException(status_code=404, detail="Attachment not found")
     return _attachment_to_response(att)
 
@@ -376,13 +343,6 @@ async def begin_account_retirement(
     retirement: AccountRetirementRequest,
     user_id: str = Depends(require_user_id),
 ):
-    """Fence new owner blobs and begin durable namespace cleanup.
-
-    This event is intentionally distinct from logout.  It accepts only the
-    immutable subject of the verified access token and never an owner supplied
-    in the request body.
-    """
-
     del retirement
     coordinator = _get_purge_coordinator(request)
     try:

@@ -1,4 +1,8 @@
-"""088 native audit parity through the authorized host adapter and dispatcher."""
+"""Tests that the native audit-log projection matches web: owner/date-scoped queries,
+pagination and cursor handling, filter validation, and self-audit reads without
+keyword or record contents.
+"""
+
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace

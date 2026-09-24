@@ -1,15 +1,8 @@
-"""A minimal, real-socket fake implementing just enough of Deep's MCP wire
-contract (JSON-RPC 2.0 over ``POST /mcp``) to exercise ``astral_sdk``'s HTTP
-layer with NO network access and NO dependency on the actual backend package.
-
-This intentionally re-implements only the request/response SHAPE
-(``mcp_server_endpoint.py``'s header/meta validation, the JSON-RPC envelope,
-and the ``tools/call`` -> ``{resultType, content, structuredContent, isError}``
-result shape) plus a small in-memory Work-operation state machine — never the
-real orchestrator, Plane, or auth stack. It exists purely so SDK tests can run
-offline and fast; genuine end-to-end conformance against the REAL server is
-``backend/tests/test_framework_conformance_088.py``.
+"""Minimal real-socket fake implementing just the shape of Deep's MCP wire contract
+(JSON-RPC over POST /mcp) plus an in-memory Work-operation state machine, so
+sdk/tests can run offline without the real backend.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,16 +25,12 @@ _SCOPE_FOR_TOOL = {
 
 
 class FakeAstralState:
-    """Shared, lock-protected in-memory state for one fake server instance."""
-
     def __init__(self, *, valid_token: str = "afk_test-token", scopes=frozenset(_SCOPE_FOR_TOOL.values())):
         self.lock = threading.Lock()
         self.valid_token = valid_token
         self.scopes = frozenset(scopes)
         self.operations: dict[str, dict[str, Any]] = {}
         self.by_key: dict[str, str] = {}
-        #: Number of remaining requests to answer with a transient 503
-        #: (used to exercise the SDK's retry policy).
         self.fail_next_n: int = 0
         self.requests: list[dict[str, Any]] = []
 
@@ -53,8 +42,8 @@ def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
 class _Handler(BaseHTTPRequestHandler):
     state: FakeAstralState
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
-        pass  # silence per-request stderr logging in test output
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        pass
 
     def _send_json(self, status: int, body: dict[str, Any], *, www_authenticate: Optional[str] = None) -> None:
         payload = json.dumps(body).encode("utf-8")
@@ -68,9 +57,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _error(self, request_id: Any, status: int, message: str) -> None:
-        # Mirrors the real server: an auth failure's JSON body carries only a
-        # generic message — the machine-readable reason rides the
-        # WWW-Authenticate challenge (see orchestrator.mcp_authz.challenge_header).
         challenge = f'Bearer resource_metadata="http://fake/.well-known", scope="", error="{message}"' \
             if status in (401, 403) else None
         body_message = "MCP authorization failed" if status in (401, 403) else message
@@ -78,7 +64,7 @@ class _Handler(BaseHTTPRequestHandler):
                                  "error": {"code": -32000, "message": body_message}},
                         www_authenticate=challenge)
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib handler name
+    def do_POST(self) -> None:  # noqa: N802
         if self.path != "/mcp":
             self._error(None, 404, "not found")
             return
@@ -214,8 +200,6 @@ class _ToolError(Exception):
 
 
 class FakeAstralServer:
-    """A background ``ThreadingHTTPServer`` bound to an OS-assigned localhost port."""
-
     def __init__(self, state: Optional[FakeAstralState] = None) -> None:
         self.state = state or FakeAstralState()
         handler = type("_BoundHandler", (_Handler,), {"state": self.state})

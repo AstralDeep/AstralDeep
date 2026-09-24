@@ -1,15 +1,8 @@
-"""Resolve an owned ``file_handle`` through Plane's scoped blob capabilities.
-
-Used by external-service agents (CLASSify, Forecaster, LLM-Factory) and by
-``modify_data`` in the general agent — anywhere a tool needs to read a CSV
-the user uploaded via the chat composer. The host must inject its one
-application-scoped AstralPlane runtime before a tool call reaches this module.
-
-Trust boundary: the resolver requires a ``user_id`` argument and uses the
-``AttachmentRepository.get_by_id(attachment_id, user_id)`` query, which
-already enforces per-user ownership at the database layer (returns
-``None`` if the attachment exists but belongs to a different user).
+"""Resolves an owned file_handle through AstralPlane's scoped blob capabilities for the
+external-service agents and the general agent's modify_data tool; the host must
+register its AstralPlane runtime via register_plane_runtime() first.
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,12 +31,6 @@ def register_plane_runtime(
     plane_repositories=None,
     blob_store=None,
 ) -> bool:
-    """Bind the host's initialized AstralPlane runtime exactly once.
-
-    A networked agent process owns one explicitly composed runtime; an
-    in-process agent receives the orchestrator's already initialized runtime.
-    This module never constructs a driver, pool, or repository catalog.
-    """
     if plane_runtime is None:
         raise ValueError("an initialized AstralPlane runtime is required")
     repositories = plane_repositories or getattr(plane_runtime, "repositories", None)
@@ -75,8 +62,6 @@ def unregister_plane_runtime(
     plane_repositories,
     blob_store,
 ) -> None:
-    """Release only the exact application binding after consumers are joined."""
-
     global _PLANE_RUNTIME, _PLANE_REPOSITORIES, _PLANE_BLOBS
     if _PLANE_RUNTIME is _PLANE_REPOSITORIES is _PLANE_BLOBS is None:
         return
@@ -101,8 +86,6 @@ def _plane_dependencies():
 
 
 def _resolve_attachment(file_handle: str, user_id: str):
-    """Resolve typed metadata after the owner-scoped repository lookup."""
-
     if not file_handle:
         raise ValueError("file_handle is required")
 
@@ -135,8 +118,6 @@ def open_attachment_parser_lease(
     file_handle: str,
     user_id: str,
 ) -> Iterator[os.PathLike[str]]:
-    """Yield a revocable local path only for a trusted path-only parser."""
-
     attachment, blobs = _resolve_attachment(file_handle, user_id)
     try:
         with _open_parser_lease(blobs, attachment, user_id) as capability:
@@ -153,8 +134,6 @@ def open_attachment_blob_reader(
     file_handle: str,
     user_id: str,
 ) -> Iterator[tuple[object, BlobReadStream]]:
-    """Yield typed metadata plus a bounded, digest-fenced Plane reader."""
-
     attachment, blobs = _resolve_attachment(file_handle, user_id)
     try:
         with _open_reader(blobs, attachment, user_id) as reader:

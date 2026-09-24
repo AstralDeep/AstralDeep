@@ -1,12 +1,6 @@
-"""``validate_token`` must refuse tokens minted for a non-user purpose.
-
-A delegated agent token carries the human's ``sub``, the user's realm roles, the
-realm ``iss`` and the requesting client's ``azp``, so it satisfies every gate
-``validate_token`` applied before this check and ``register_ui`` would promote it
-to a full interactive session. The production Keycloak RFC 8693 exchange emits
-neither ``act`` nor ``delegation``, so the audience is the only discriminator —
-which is why the predicate is a denylist rather than a positive ``aud`` check
-(real logins carry ``aud="account"``).
+"""Tests for orchestrator.py's validate_token: ordinary and realm-granted user tokens
+are accepted, while MCP-audience, RFC 8693 actor-claim, and delegation-flagged tokens
+are refused.
 """
 
 import base64
@@ -19,7 +13,6 @@ from orchestrator.orchestrator import Orchestrator
 
 
 def _token(payload: dict) -> str:
-    """A JWT-shaped token the mock branch will base64-decode."""
     body = base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"header.{body}.signature"
 
@@ -44,11 +37,9 @@ async def test_ordinary_user_token_is_accepted(orch):
     assert claims["sub"] == "user-1"
 
 
+# Real user logins share this audience — must not refuse
 @pytest.mark.asyncio
 async def test_live_realm_user_token_is_accepted(orch):
-    """The deployment realm grants the agent-service audience to ordinary
-    interactive tokens, so that audience must NOT be treated as a refusal —
-    doing so locks every real user out of the WebSocket."""
     agent_aud = os.getenv("AGENT_SERVICE_CLIENT_ID", "astral-agent-service")
     payload = dict(_USER, aud=[agent_aud, "realm-management", "account"])
     claims = await orch.validate_token(_token(payload))

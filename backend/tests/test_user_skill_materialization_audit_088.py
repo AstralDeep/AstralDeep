@@ -1,4 +1,8 @@
-"""Automatic legacy cutover has one atomic, content-free hash-chain event."""
+"""Tests that legacy skill-catalog cutover (user_skill_catalog.py, user_skills.py)
+writes exactly one content-free audit event atomically, rolling back the whole
+cutover if the audit or a concurrent import fails.
+"""
+
 import asyncio
 import json
 from pathlib import Path

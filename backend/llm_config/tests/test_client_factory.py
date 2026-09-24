@@ -1,15 +1,8 @@
-"""Feature 054 — build_llm_client factory unit tests.
-
-New signature: ``build_llm_client(config, source)`` — the caller
-(``Orchestrator._resolve_llm_client_for``) picks the record and source;
-the factory only materializes the client. The feature-006 two-tier
-user→operator-default rule is gone:
-
-* config present  ⇒ client bound to that record's base_url/api_key.
-* config None     ⇒ LLMUnavailable (first-run gate / honest system skip).
-* OPERATOR_DEFAULT source ⇒ ValueError (retired; no new call may carry it).
-* keyless config  ⇒ api_key placeholder "not-needed".
+"""Tests for llm_config/client_factory.py's build_llm_client: a present config builds a
+client, a None config raises LLMUnavailable, the retired OPERATOR_DEFAULT source
+raises, and the factory never caches a client across calls.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -77,8 +70,6 @@ class TestOperatorDefaultRetired:
             build_llm_client(_cfg(), CredentialSource.OPERATOR_DEFAULT)
 
     def test_operator_default_raises_valueerror_with_none_config(self):
-        # The source check precedes the config check: no path may carry
-        # the retired source, not even the unavailable one.
         with pytest.raises(ValueError, match="OPERATOR_DEFAULT"):
             build_llm_client(None, CredentialSource.OPERATOR_DEFAULT)
 
@@ -94,9 +85,6 @@ class TestKeylessConfig:
 
 
 class TestFactoryIsPureAndUncached:
-    """A clear (which re-gates the user) must be observed on the very
-    next call — the factory never caches clients across calls."""
-
     def test_two_calls_yield_different_clients(self):
         c1, _, _ = build_llm_client(_cfg(), CredentialSource.USER)
         c2, _, _ = build_llm_client(

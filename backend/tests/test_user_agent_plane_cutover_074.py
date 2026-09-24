@@ -1,4 +1,7 @@
-"""Focused Plane-bound personal-agent lifecycle coverage for feature 074."""
+"""Tests for personal-agent lifecycle bound to AstralPlane (user_agents.py,
+agent_lifecycle.py): production runtimes stay Plane-only, revision activation shares
+authority with request settlement, and exits preserve delivery/tombstone semantics.
+"""
 
 from __future__ import annotations
 

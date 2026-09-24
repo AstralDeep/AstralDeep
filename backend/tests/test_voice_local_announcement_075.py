@@ -1,4 +1,7 @@
-"""Server-authorized client-local announcement and playout contracts."""
+"""Tests for voice_coordinator.py's server-authorized client-local announcements:
+policy-only text, authorization and bounding of recaps, fail-closed playout on mute
+or foreground-end, and revision-fenced ordering.
+"""
 
 from __future__ import annotations
 
@@ -258,8 +261,6 @@ def test_local_announcement_terminal_playout_scrubs_and_fences_state() -> None:
 
 
 def test_local_playout_failure_may_be_the_only_terminal_observation() -> None:
-    """A synthesizer may fail before it can emit an audible-start callback."""
-
     registry = ClientLocalAnnouncementRegistry()
     session = _session()
     announcement = registry.issue(

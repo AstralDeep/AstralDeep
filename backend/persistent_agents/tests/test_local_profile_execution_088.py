@@ -1,11 +1,8 @@
-"""A local-profile Work execution is charged through the UNCHANGED adapter.
-
-Feature 088 T016 / FR-019. ``persistent_agents.execution`` is used read-only:
-the local profile's reservation is the action maximum, the adapter's own rule
-(``tokens = maximum.tokens if total is None else total``) charges an unknown
-usage observation at the reserved maximum and a parsed one at its actual
-count, and no synthetic zero/negative counter is ever recorded.
+"""Tests for persistent_agents/execution.py's local-model adapter: unknown usage charges
+the reserved maximum, parsed usage charges the actual token count, and local and
+OpenAI reservations share one charging shape.
 """
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -57,9 +54,6 @@ async def test_local_profile_execution_with_unknown_usage_charges_the_reserved_m
     assert reserved == maximum == action.intent.maximum
     receipt = executor.test_outcomes[0]
     assert receipt.outcome == "succeeded"
-    # Unknown provider usage: the receipt carries NO actual amount, so the
-    # reservation (the profile's declared maximum) is what stays charged. A
-    # zero or negative synthetic counter is never written.
     assert receipt.actual is None
     executor.store.repository.start_action.assert_called_once()
     assert not any(method == "release_unstarted_action" for method, _ in executor.test_calls)
@@ -76,9 +70,6 @@ async def test_local_profile_execution_with_parsed_usage_charges_actual_tokens(e
     receipt = executor.test_outcomes[0]
     assert receipt.outcome == "succeeded"
     actual = receipt.actual
-    # Actual tokens are the provider's own count -- never clamped to the
-    # reservation, never zero -- and the elapsed charge is bounded by the
-    # profile's declared elapsed maximum while staying strictly positive.
     assert actual.tokens == total > 0
     assert actual.model_calls == maximum.model_calls == 1
     assert actual.tool_calls == 0
@@ -88,7 +79,6 @@ async def test_local_profile_execution_with_parsed_usage_charges_actual_tokens(e
 
 @pytest.mark.asyncio
 async def test_local_and_openai_reservations_share_one_charging_shape(executor):
-    """The adapter never sees a profile object -- only the reservation shape."""
     for declared in profile.PROFILES:
         amount = AssignmentResourceAmount(**declared.reservation())
         assert amount.model_calls == 1 and amount.tokens == declared.reserved_tokens

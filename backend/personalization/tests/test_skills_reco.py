@@ -1,4 +1,8 @@
-"""Unit tests for skill recommendation + onboarding panels (feature 025, T019/T020)."""
+"""Tests for personalization/skills_reco.py and panels.py: relevance ranking,
+authorized-tools-win-ties ordering, limit handling, the profession/skills/personality
+onboarding panels, and profile-update schema validation.
+"""
+
 from __future__ import annotations
 
 from personalization.panels import (
@@ -21,15 +25,12 @@ _TOOLS = [
 
 def test_recommend_ranks_by_relevance():
     ranked = recommend_skills("Research grant administrator", ["track grant funding deadlines"], _TOOLS)
-    # The grants search tool should rank first (overlap on grant/funding/research).
     assert ranked[0]["tool_name"] == "search_grants"
     assert ranked[0]["score"] >= 1
 
 
 def test_recommend_prefers_authorized_on_ties():
-    # No profession overlap → all score 0 → authorized tools come before unauthorized.
     ranked = recommend_skills(None, None, _TOOLS)
-    # The unavailable tool must not be first when scores tie at 0.
     assert ranked[0].get("available", True) is True
     assert ranked[-1]["tool_name"] == "start_training_job"
 
@@ -51,7 +52,7 @@ def test_skills_panel_marks_unauthorized():
     ranked = recommend_skills("ml engineer", ["train models"], _TOOLS)
     resp = build_skills_panel(ranked)
     options = resp["_ui_components"][0]["fields"][0]["options"]
-    assert any("needs permission" in o for o in options)  # the unavailable tool
+    assert any("needs permission" in o for o in options)
 
 
 def test_skills_panel_empty_shows_alert():

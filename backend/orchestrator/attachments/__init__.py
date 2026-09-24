@@ -1,5 +1,6 @@
-"""Attachments package: storage, persistence, and content-type sniffing for
-chat-message file uploads (feature 002-file-uploads)."""
+"""Attachment package: storage, persistence, and content-type sniffing for chat-message
+uploads; re-exports attachments/models.py.
+"""
 
 from orchestrator.attachments.models import (
     Attachment,

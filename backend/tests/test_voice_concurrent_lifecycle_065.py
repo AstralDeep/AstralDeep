@@ -1,4 +1,8 @@
-"""Concurrent voice-turn lifecycle integration guards for Feature 065."""
+"""Tests for concurrent voice-turn lifecycle handling in
+voice_sessions.py/work_admission.py: navigation preserves origin attribution without
+treating interruption as cancellation, and reversed completions terminalize each turn
+once.
+"""
 
 from __future__ import annotations
 

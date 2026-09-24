@@ -1,16 +1,6 @@
-"""080-runtime-metrics: verified-admin gate on deployment diagnostics (US1).
-
-These contract-first tests exercise the *real* FastAPI dependency chain for
-``GET /api/runtime-reliability/metrics``.  Only the verified payload boundary
-(``get_current_user_payload``) is overridden — never ``verify_admin`` itself —
-so the genuine role-extraction and fail-closed denial logic runs against
-synthetic principals without contacting Keycloak.
-
-Against unchanged ``main`` the endpoint requires only ``require_user_id``, so an
-ordinary authenticated (non-admin) principal receives the full snapshot; the
-non-admin denial test below is therefore EXPECTED RED until feature 080 adds the
-admin gate.  Owner-scoped operation reconciliation must stay available to the
-same non-admin principal on both trees.
+"""Tests for the verified-admin gate on GET /api/runtime-reliability/metrics
+(orchestrator/api.py, runtime_observability.py): admin-only snapshot access,
+fail-closed denial, and owner-scoped reconciliation staying open to non-admins.
 """
 
 from __future__ import annotations
@@ -54,8 +44,6 @@ class _Clock:
 
 
 class _ObservabilitySpy:
-    """Delegating collector that counts export snapshots without altering them."""
-
     def __init__(self, inner: RuntimeObservability) -> None:
         self._inner = inner
         self.snapshot_calls = 0
@@ -69,8 +57,6 @@ class _ObservabilitySpy:
 
 
 class _CoordinatorSpy:
-    """Delegating coordinator that records admission-inspection access."""
-
     def __init__(self, inner: WorkAdmissionCoordinator) -> None:
         self._inner = inner
         self.inspect_calls: list[AdmissionClass] = []
@@ -169,8 +155,6 @@ def test_admin_principal_receives_no_store_snapshot() -> None:
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert isinstance(body["metrics"], list)
-    # The verified-admin snapshot actually consulted the collector and the
-    # effective-admission inspection path.
     assert observability.snapshot_calls >= 1
     assert AdmissionClass.INTERACTIVE in coordinator.inspect_calls
 
@@ -178,8 +162,6 @@ def test_admin_principal_receives_no_store_snapshot() -> None:
 def test_non_admin_authenticated_principal_denied_without_collector_access(
     monkeypatch,
 ) -> None:
-    # EXPECTED RED on unchanged main: without the admin gate this ordinary
-    # authenticated principal receives 200 and the collector is consulted.
     client, observability, coordinator = _make_client(_NON_ADMIN_PAYLOAD)
     lookup = Mock(wraps=api_module._get_orchestrator)
     monkeypatch.setattr(api_module, "_get_orchestrator", lookup)
@@ -257,8 +239,6 @@ def test_non_admin_owner_can_still_reconcile_own_operation() -> None:
     body = response.json()
     assert body["operation_id"] == str(accepted.operation_id)
     assert body["owner_scope"] == "user"
-    # Owner reconciliation is not a deployment-diagnostic read and does not
-    # touch the metrics collector snapshot.
     assert observability.snapshot_calls == 0
 
 

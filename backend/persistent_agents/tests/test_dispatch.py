@@ -1,4 +1,7 @@
-"""Every physical dispatch needs its own durable permit and finite bounds."""
+"""Tests for persistent_agents/dispatch_context.py: every physical dispatch requires its
+own durable permit, denial or lease loss never sends, timeouts and cancellations stay
+uncertain and charged, and model caps bound nested spend.
+"""
 
 import asyncio
 from unittest.mock import AsyncMock

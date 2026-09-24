@@ -1,8 +1,8 @@
-"""Current human metadata requests over the existing IAM and Plane boundaries.
-
-This supplies no operation, tool, grant or publication authority. One host-owned
-boundary bounds its async work over the existing pool, independently of Work.
+"""Authenticates the current human caller from IAM and the live WebSocket transport,
+then mints short-lived per-socket reads for internal skill lookups. Grants no
+operation or tool authority; used across orchestrator.py and work_write_boundary.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,7 +66,6 @@ def _socket_method(message):
 
 
 def _socket_policy():
-    # Change detection only; normal production IAM remains the sole evaluator.
     return tuple(os.getenv(key) for key in (
         "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP",
         "USE_MOCK_AUTH", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
@@ -120,8 +119,6 @@ def _orchestrator(app):
 
 
 class HumanRequestBoundary:
-    """One application-owned bounded adapter; never creates a database pool."""
-
     def __init__(self, orchestrator):
         plane = getattr(getattr(orchestrator, "runtime_composition", None), "plane", None)
         self.orchestrator = orchestrator
@@ -160,7 +157,6 @@ class _Composition:
 
     @classmethod
     def capture_host(cls, boundary):
-        """Capture storage identities only; this grants no caller authority."""
         if type(boundary) is not HumanRequestBoundary:
             _unavailable()
         value = cls(None, boundary, boundary.orchestrator, boundary.plane_runtime,
@@ -194,7 +190,6 @@ class _Composition:
         return value
 
     def assert_host_current(self, expected_orchestrator):
-        """Check the original host composition, without asserting a transport grant."""
         plane = getattr(getattr(self.orch, "runtime_composition", None), "plane", None)
         if (expected_orchestrator is not self.orch
                 or getattr(self.orch, "human_request_boundary", None) is not self.boundary
@@ -231,8 +226,6 @@ class _Composition:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class CurrentHumanCaller:
-    """Original normal human IAM and optional issuance, never refreshed/adopted."""
-
     context: AuthenticatedWorkRequest
     caller: SessionConsentObservation | None
     _binding: _Composition
@@ -281,7 +274,6 @@ class CurrentHumanCaller:
         return self.caller
 
     def require_write(self):
-        """Only the frozen authenticated write transport may authorize mutation."""
         self._assert_local(self._binding.orch)
         if self._method not in {"POST", "DELETE", "WS_WRITE"}:
             raise AssignmentError("human_write_required", 403)
@@ -301,7 +293,6 @@ class CurrentHumanCaller:
         return state
 
     async def transaction(self, callback, *, expected_orchestrator):
-        """A server-owned synchronous repository callback with outer caller guards."""
         self._assert_local(expected_orchestrator)
         if not callable(callback):
             _unavailable()
@@ -351,7 +342,6 @@ class CurrentHumanCaller:
 
 
 async def authenticate_current_human_request(request, *, boundary):
-    """Normal IAM on frozen transport before body/domain work, with original time bounds."""
     deadline = time.monotonic() + 15
     until = datetime.now(timezone.utc) + timedelta(seconds=15)
     try:
@@ -375,8 +365,6 @@ async def authenticate_current_human_request(request, *, boundary):
 
 
 class _HumanSocketRequest:
-    """One private original message lifetime, captured before queue/admission waits."""
-
     def __init__(self, boundary, *, websocket, context, message, method, purpose):
         if type(boundary) is not HumanRequestBoundary:
             _unavailable()
@@ -413,8 +401,7 @@ class _HumanSocketRequest:
                 raise ValueError
             if any(key == "token" for key, _ in parse_qsl(query.decode("utf-8"), keep_blank_values=True)):
                 raise AssignmentError("human_query_token_refused", 403)
-            # Header parsing only: this is the actual WebSocket transport, never
-            # a fabricated HTTP Request or an HTTP authentication invocation.
+            # Real transport for header parsing, not a fabricated request
             transport = HTTPConnection({"type": "websocket", "headers": headers})
             self.session_id = _signed_selection(transport)
             from orchestrator import web_auth
@@ -465,7 +452,6 @@ class _HumanSocketRequest:
             _unauthenticated()
 
     async def capture_session(self):
-        """Capture issued B once before IAM/admission; no token decryption/refresh."""
         async with asyncio.timeout_at(self.deadline), self._capture_lock:
             self.binding.assert_current(self.boundary.orchestrator)
             if self._captured_session:
@@ -501,7 +487,6 @@ class _HumanSocketRequest:
             self._captured_session = True
 
     async def authenticate(self):
-        """Normal institutional JWT verification over the exact registered token."""
         try:
             async with asyncio.timeout_at(self.deadline), self._auth_lock:
                 await self.capture_session()
@@ -539,7 +524,6 @@ class _HumanSocketRequest:
 
 
 def capture_human_socket_request(boundary, *, websocket, context, message, purpose="metadata"):
-    """Classify only server-owned metadata actions; payload flags grant no method."""
     if purpose == "skill_lookup":
         method = ("WS_READ" if type(message) is dict and message.get("type") == "ui_event"
                   and message.get("action") == "chat_message" else None)
@@ -562,22 +546,6 @@ def _voice_guidance_message(message):
 
 async def current_socket_human_read(*, expected_orchestrator, websocket,
                                     operation_context=None):
-    """Original registered chat caller for one internal skill lookup, never a write.
-
-    The consumer verifies delivery before using its read result, then calls
-    retire_socket_human_read in finally. This does not bound the chat/model run.
-
-    ``operation_context`` is the connection operation context the caller already
-    holds. Pass it whenever you have it. Re-reading the ContextVar here is a
-    race: the admission executor sets it around a frame and resets it in its
-    ``finally``, while a chat turn keeps running past that point, so a turn can
-    observe the variable populated when it enters ``handle_chat_message`` and
-    empty a few milliseconds later inside this function. That is not
-    theoretical -- it made every chat turn fail with ``skill_lookup_unavailable``
-    for any signed-in user whenever ``FF_USER_SKILLS`` was on, which is the
-    default. The threaded value is an ordinary argument and cannot be reset out
-    from under the turn.
-    """
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
     context = operation_context
     if not isinstance(context, dict):
@@ -591,7 +559,6 @@ async def current_socket_human_read(*, expected_orchestrator, websocket,
 
 
 def retire_socket_human_read(caller):
-    """Retire an internal lookup even when its caller already failed currentness."""
     if type(caller) is not CurrentHumanCaller:
         _unauthenticated()
     pending = caller._binding.socket_request
@@ -613,7 +580,6 @@ def bind_human_caller(caller):
 
 
 def current_human_caller(*, expected_orchestrator=None):
-    """Private dispatch/render context; never reconstruct a caller from user_id."""
     caller = _HUMAN_CALLER.get()
     if caller is not None:
         caller._assert_local(expected_orchestrator or caller._binding.orch)

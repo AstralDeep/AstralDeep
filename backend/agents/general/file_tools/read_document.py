@@ -1,8 +1,6 @@
-"""``read_document`` tool: PDF, DOCX, RTF, ODT.
-
-Per ``contracts/agent-tools.md``. PDFs that lack extractable text are
-rasterized and the page images are returned for the vision-capable model
-to interpret directly. There is no OCR step.
+"""read_document tool: extracts text from PDF/DOCX/RTF/ODT attachments; PDFs with too
+little embedded text are rasterized via ocr.py and handed to the vision model instead
+of running OCR.
 """
 
 from __future__ import annotations
@@ -16,14 +14,10 @@ from agents.general.file_tools.ocr import pdf_to_vision_images
 
 logger = logging.getLogger("FileTools.read_document")
 
-# If embedded extraction yields fewer than this many characters total, we
-# treat the PDF as image-only and hand the rasterized pages to the vision
-# model (no OCR step).
 _TEXT_MIN_CHARS = 32
 
 
 def _parse_page_range(spec: str, total: int) -> list[int]:
-    """Parse '1-3,5,9-' into a list of 0-indexed page numbers."""
     if not spec:
         return list(range(total))
     pages: list[int] = []
@@ -68,7 +62,6 @@ def _read_pdf(payload: bytes, page_range: Optional[str], max_chars: int) -> Dict
             "images": [],
         }
 
-    # Embedded extraction yielded too little — hand pages to the vision model.
     images = pdf_to_vision_images(payload)
     return {
         "page_count": len(reader.pages),
@@ -80,7 +73,7 @@ def _read_pdf(payload: bytes, page_range: Optional[str], max_chars: int) -> Dict
 
 
 def _read_docx(payload: bytes, max_chars: int) -> Dict[str, Any]:
-    import docx  # python-docx
+    import docx
 
     doc = docx.Document(io.BytesIO(payload))
     text = "\n".join(p.text for p in doc.paragraphs)
@@ -133,7 +126,6 @@ def read_document(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Read a document attachment (PDF/DOCX/RTF/ODT) and return its text."""
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err

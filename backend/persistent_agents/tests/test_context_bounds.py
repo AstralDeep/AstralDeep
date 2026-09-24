@@ -1,4 +1,8 @@
-"""Large delegated findings stay bounded without changing owner authority."""
+"""Tests for persistent_agents/dispatch_context.py and runtime_values.py: bounded
+evidence context preserves exact release evidence, counts UTF-8/JSON escaping
+correctly, and refuses unbounded owner instructions without truncation.
+"""
+
 import pytest
 from persistent_agents.dispatch_context import canonical
 from persistent_agents.runtime_values import bounded_context, legacy_bounded_context

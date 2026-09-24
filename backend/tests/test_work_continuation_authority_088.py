@@ -1,9 +1,8 @@
-"""Original-session control observations, without changing execution eligibility.
-
-Normal signed JWT verification and all session/operation rows use the real host
-and Plane paths. Only external JWKS/refresh responses are synthetic. These tests
-do not activate a route, claim work, or treat an observation as a committed control.
+"""Tests for original-session control observation (session_authority.py,
+work_submit_authority.py): resume/wake observations stay private and non-granting,
+session replacement cannot adopt control, and expiry is checked before any refresh.
 """
+
 import asyncio
 from contextlib import ExitStack
 from dataclasses import FrozenInstanceError, replace
@@ -33,7 +32,6 @@ def module():
 
 
 def control(runtime, record, command="pause"):
-    """Apply a real owner transition to one fixture operation."""
     with runtime.transaction() as tx:
         return runtime.repositories.assignments.apply_control(
             tx, owner_id=record.owner_id, assignment_id=record.assignment_id,
@@ -50,7 +48,6 @@ def current(runtime, record):
 
 
 async def context(fixture, runtime, **claims):
-    """Authenticate a synthetic owner bearer through ordinary production IAM."""
     return await authenticate_work_submission_request(request(headers=[
         (b"authorization", ("Bearer " + fixture[3](**claims)).encode()),
         (b"content-type", b"application/json"),
@@ -114,7 +111,6 @@ def test_changed_operation_since_receipt_miss_refuses_before_refresh(fixture, ru
 
 
 def wait(fixture, runtime, record):
-    """Construct a real worker event-wait row, not a new owner wait endpoint."""
     state = fixture[0].capture_execution_reference(
         owner_id=record.owner_id, session_id=fixture[2]).state
     observation = SessionExecutionObservation(state.credential, state.observed_at,
@@ -318,7 +314,6 @@ def test_operation_sql_reads_refuse_while_actual_table_blocker_stays_held(fixtur
             block()
         else:
             async def keys(*args, **kwargs):
-                # Context IAM runs before refresh; block only the refreshed JWT.
                 if fixture[-1]:
                     block()
                 return signing_key[1]

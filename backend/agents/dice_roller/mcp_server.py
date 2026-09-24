@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""
-MCP Server for Dice Roller — dispatches tool calls to tool functions.
+"""MCP server for the Dice Roller agent: routes tool/call requests from
+dice_roller_agent.py to mcp_tools.py and classifies exceptions as retryable or not.
 """
 import os
 import sys
@@ -30,13 +30,10 @@ NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class MCPServer:
-    """MCP server that routes tool/call requests to registered functions."""
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 
     def get_tool_list(self) -> list:
-        """Return list of available tools with their schemas."""
         return [
             {
                 "name": name,
@@ -48,7 +45,6 @@ class MCPServer:
 
     @staticmethod
     def _classify_error(exc: Exception) -> bool:
-        """Return True if the error is retryable (transient), False otherwise."""
         if isinstance(exc, RETRYABLE_EXCEPTIONS):
             return True
         if isinstance(exc, NON_RETRYABLE_EXCEPTIONS):
@@ -56,7 +52,6 @@ class MCPServer:
         return True
 
     def process_request(self, request: MCPRequest) -> MCPResponse:
-        """Process an MCP request and return a response."""
         if request.method == "tools/list":
             return MCPResponse(
                 request_id=request.request_id,
@@ -76,7 +71,6 @@ class MCPServer:
 
             try:
                 tool_fn = self.tools[tool_name]["function"]
-                # Filter out orchestrator-injected kwargs the tool doesn't expect
                 sig = inspect.signature(tool_fn)
                 params = sig.parameters
                 has_var_keyword = any(

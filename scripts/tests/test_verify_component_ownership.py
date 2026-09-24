@@ -1,4 +1,7 @@
-"""Tests for the feature-074 tracked-source ownership verifier."""
+"""Tests for the tracked-source ownership verifier: owner-map validation,
+cross-repository duplicate detection, and generated-copy digest/source invariants
+across the five component repositories.
+"""
 
 from __future__ import annotations
 

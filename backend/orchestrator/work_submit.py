@@ -1,10 +1,9 @@
-"""Unregistered interactive public-reader acceptance; no execution or ingress.
-
-Receipt identity is the original owner/namespace/key and immutable command, not
-today's source policy or refreshed credentials. New work commits with its audit.
-The optional fixed research preflight additionally qualifies model availability
-and whole-episode ceilings; omitting it preserves the source-only acceptance API.
+"""Accepts new Work submissions (chat or fixed-research) under
+work_submit_authority.py's caller fence, screening chat text through typesafe_routing
+before admission. Used by work_admission_api.py, work_operations.py, and
+work_publication.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +46,6 @@ def _pairs(pairs):
 
 
 def _selected_ids(value):
-    """Closed identifiers only. Exact wire ordering stays in the receipt digest."""
     if (type(value) is not dict or set(value) != {"version", "agent", "skills", "notes"}
             or type(value["version"]) is not int or value["version"] != 1):
         _invalid()
@@ -87,7 +85,6 @@ def _selected_uuid(value):
 
 
 def _parse(raw):
-    """Bound structure/digest only; never reapply mutable source/limit policy here."""
     try:
         if type(raw) is not bytes or not 1 <= len(raw) <= 16384:
             _invalid()
@@ -127,7 +124,6 @@ def _limits(value):
             or any(type(value[key]) is not int or not minimum <= value[key] <= maximum
                    for key, (minimum, maximum) in bounds.items())):
         _invalid()
-    # Budgets never grant model or fanout capability; this adapter admits one reader only.
     return {**value, "max_depth": 0, "max_concurrent_tasks": 1, "max_tasks": 1}
 
 
@@ -160,13 +156,6 @@ class _SelectedAdmission:
 
 @dataclass(frozen=True, slots=True)
 class FixedResearchPreflight:
-    """Opt-in admission availability check, never a reusable execution permit.
-
-    Keep the exact USER row locked through acceptance and audit. The model path
-    independently captures and guards its own configuration/input at dispatch;
-    no selection, provider key or prompt is added to the operation or receipt.
-    """
-
     config_store: object = field(repr=False)
 
     def __post_init__(self):
@@ -175,7 +164,6 @@ class FixedResearchPreflight:
             raise TypeError("fixed research requires the USER configuration store")
 
     async def prepare(self, *, owner_id, runtime, definition, source_bound):
-        """Check complete declared ceilings and capture uncached private config."""
         from llm_config import research_profile as profile
         source = definition.source
         if (not isinstance(source, Mapping) or source.get("profile") != "public_page"
@@ -192,7 +180,6 @@ class FixedResearchPreflight:
                                    minimum=minimum)
 
     async def prepare_chat(self, *, owner_id, runtime, definition):
-        """Qualify one source-less model turn: same model reservation, no reader."""
         from llm_config import research_profile as profile
         if (definition.source != {} or definition.allowed_tools != ()
                 or definition.consented_scopes != () or definition.offline_grant_id is not None):
@@ -221,7 +208,6 @@ class FixedResearchPreflight:
 
     @staticmethod
     def assert_key(prepared):
-        """Require the original named key to remain resolvable and unchanged."""
         from audit.pii import private_binding_key
         try:
             current = private_binding_key(prepared.key.key_id)
@@ -232,7 +218,6 @@ class FixedResearchPreflight:
             raise AssignmentError("work_research_profile_unavailable", 503) from None
 
     def assert_current(self, transaction, *, runtime, owner_id, prepared):
-        """Lock the captured USER row after owner/session and before new insert."""
         try:
             if (type(prepared) is not _ResearchAdmission
                     or self.config_store._repository.plane_runtime is not runtime
@@ -248,7 +233,6 @@ class FixedResearchPreflight:
 
     @staticmethod
     def assert_policy(transaction, *, runtime, orchestrator, owner_id, claims):
-        """Take the fixed policy fence last; later work cannot write policy rows."""
         from orchestrator.tool_permissions import FixedReaderPolicyError
         try:
             orchestrator.tool_permissions.assert_fixed_reader_current(transaction,
@@ -261,7 +245,6 @@ class FixedResearchPreflight:
 
 class WorkSubmitService:
     def __init__(self, assignments, audit, sessions, *, research_preflight=None, new_admission_check=None):
-        """Keep source-only acceptance unless this exact capability is supplied."""
         if research_preflight is not None and type(research_preflight) is not FixedResearchPreflight:
             raise TypeError("research_preflight must be FixedResearchPreflight")
         if new_admission_check is not None and not callable(new_admission_check):
@@ -272,7 +255,6 @@ class WorkSubmitService:
         self.new_admission_check = new_admission_check
 
     def _check_new_admission(self):
-        """Run an optional server-only capability check, never on receipt replay."""
         if self.new_admission_check is not None:
             if _sync(self.new_admission_check()) is not None:
                 raise AssignmentError("work_submit_unavailable", 503)
@@ -304,19 +286,6 @@ class WorkSubmitService:
 
 
     async def _typesafe_screen_chat(self, owner_id: str, instructions: str) -> None:
-        """Seam I7: screen an HTTP-submitted chat instruction before admitting it.
-
-        This path never reaches ``handle_chat_message``, so it gets none of the
-        turn seams. It asks the three security questions only -- there is no
-        round one to narrow and no canvas to arrange here, and paying for the
-        routing half would spend the owner's quota on answers nobody reads.
-
-        A ``confirm_tools`` verdict cannot be satisfied by a background
-        submission: there is nobody to confirm. It is therefore treated as a
-        pass and left to the executor's own gate stack, which is unchanged. A
-        refusal is the only verdict that stops admission, and the refuse tier
-        is currently disabled, so today this is inert by design.
-        """
         try:
             from orchestrator.typesafe_routing import screen_instruction
             from orchestrator.typesafe_routing.security_policy import Verdict
@@ -336,7 +305,6 @@ class WorkSubmitService:
         except AssignmentError:
             raise
         except Exception:
-            # A screen that cannot reach its service must not block work.
             logging.getLogger("Orchestrator.WorkSubmit").debug(
                 "typesafe submission screen unavailable", exc_info=True
             )
@@ -345,11 +313,6 @@ class WorkSubmitService:
             raise AssignmentError("assignment_sensitive_content_refused", 422)
 
     async def _chat_definition(self, context, authority, body):
-        """A chat turn admits no source, selection or retention choice.
-
-        The same content policy as research applies to the owner's text: the
-        PHI gate and conversation ownership. There is no tool or egress to check.
-        """
         from persistent_agents.privacy import content_text, privacy_text
         if (body["source"] is not None or "selection" in body
                 or body.get("source_retention", "operation") != "operation"):
@@ -408,7 +371,6 @@ class WorkSubmitService:
             offline_grant_id=None, limits=limits, conversation_id=conversation)
 
     def _selection_current(self, context, prepared, selected):
-        """Exact application composition and named-key identity, never caller DTO authority."""
         self._current(context)
         orch, runtime = self.assignments.orch, self.store.plane_runtime
         plane = getattr(getattr(orch, "runtime_composition", None), "plane", None)
@@ -473,7 +435,6 @@ class WorkSubmitService:
 
         expanded = await self.store.transaction(capture, bound_session_waits=True)
         self._selection_current(context, prepared, selected)
-        # Local privacy analysis is outside SQL; never persist the expansion.
         from persistent_agents.privacy import privacy_text
         try:
             sensitive = await asyncio.to_thread(self.assignments.phi_gate.contains_phi, privacy_text(expanded.prepared.text))
@@ -494,8 +455,6 @@ class WorkSubmitService:
             None if expected.agent is None else SelectedAgentReference(**asdict(expected.agent)),
             expected.binding_key_id, expected.combined_binding,
             expected.expansion_version, expected.version)
-        # create_operation already acquired the new assignment's locks. Bind
-        # precedes selected-head reads and config, never another assignment lock.
         record = repository.bind_selected_input(tx, owner_id=context.owner_id,
             assignment_id=record.assignment_id, expected_instruction_revision=record.instruction_revision,
             expected_control_epoch=record.control_epoch, expected_state_version=record.state_version,
@@ -520,7 +479,6 @@ class WorkSubmitService:
                 _invalid()
             preflight = self.research_preflight
             if kind == "chat" and preflight is None:
-                # Source-only acceptance never admits a model turn it cannot qualify.
                 raise AssignmentError("work_chat_profile_unavailable", 503)
             authority = await refresh_work_submission_authority(context, sessions=self.sessions)
             definition = await self._definition(context, authority, body)
@@ -552,7 +510,6 @@ class WorkSubmitService:
                 sessions = self.store.plane_runtime.repositories.history.sessions
                 current = _sync(sessions.assert_current_execution(transaction, observation=observation))
                 self._current(context, now=current.observed_at)
-                # The owner lock now excludes a concurrent create between this read and insert.
                 replay = self._receipt(repository, transaction, context, body, signature)
                 if replay is not None:
                     self._current(context)
@@ -562,8 +519,6 @@ class WorkSubmitService:
                     preflight.assert_current(transaction, runtime=self.store.plane_runtime,
                                              owner_id=context.owner_id, prepared=prepared)
                     if kind == "research":
-                        # A chat turn authorizes no reader; its policy fence is
-                        # the owner/session/config lock already taken above.
                         preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
                             orchestrator=self.assignments.orch, owner_id=context.owner_id,
                             claims=authority.claims)
@@ -610,8 +565,6 @@ class WorkSubmitService:
                     self._selection_current(context, prepared, selected)
                     if selected.agent_revision is not None:
                         self._agent_selection_policy(selected.agent_revision, definition)
-                    # Last database wait/clock. The following local checks are
-                    # synchronous and do not acquire another SQL/network guard.
                     record = repository.assert_selected_input_current(transaction,
                         owner_id=context.owner_id, assignment_id=identity,
                         expected_instruction_revision=record.instruction_revision,
@@ -628,8 +581,6 @@ class WorkSubmitService:
             self._current(context)
             return result
         except Exception:
-            # A concurrent accepted receipt or lost commit acknowledgement is the
-            # only proof of success. Never retry refresh, compensate or create again.
             accepted = await self._accepted(context, body, signature)
             if accepted is not None:
                 return accepted

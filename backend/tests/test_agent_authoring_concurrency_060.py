@@ -1,4 +1,7 @@
-"""Feature-060 draft CAS, generation-claim, and tombstone races."""
+"""Concurrency tests for agent_authoring.py and agent_analyze.py over
+draft_store_double.py and user_agent_registry.py: concurrent draft creation, CAS
+writers, generation-claim races, and delete/register interleavings.
+"""
 
 from __future__ import annotations
 

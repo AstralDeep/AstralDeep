@@ -1,4 +1,8 @@
-"""Current metadata callers retain normal IAM without requiring Work service."""
+"""Tests for human-caller resolution (orchestrator/auth.py) independent of the Work
+service flag: metadata GET without JSON/write origin, session replacement/rebinding
+rules, and rollback on final-caller loss.
+"""
+
 import importlib
 import asyncio
 from dataclasses import replace
@@ -143,7 +147,6 @@ async def test_rebound_composition_never_runs_metadata_callback(human, bound, fi
         "adapter": (boundary, "adapter"),
     }
     touched = []
-    # Restore the boundary before its fixture closes its own adapter.
     with monkeypatch.context() as patch:
         patch.setattr(*objects[part], object())
         with pytest.raises(AssignmentError, match="human_request_unavailable"):

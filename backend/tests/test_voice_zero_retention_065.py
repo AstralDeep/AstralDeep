@@ -1,8 +1,6 @@
-"""Cross-channel zero-retention inspections for Feature 065.
-
-The final transcript is retained exactly once as the user's ordinary chat
-message. Voice coordination state, worker buffers, diagnostics, telemetry,
-audit metadata, and crash representations must remain content-free.
+"""Cross-channel zero-retention tests: the final transcript persists exactly once as the
+ordinary chat message, while voice coordination state, worker buffers, telemetry, and
+crash traces stay content-free.
 """
 
 from __future__ import annotations
@@ -166,9 +164,6 @@ def test_database_schema_is_metadata_only_and_message_is_single_source() -> None
     )
     assert "message_id" in turn_columns
 
-    # Acceptance owns the one typed ordinary user-message append. Proof
-    # admission and the content-free voice correlation update cannot create a
-    # duplicate or regain a raw persistence path in Deep.
     acceptance_source = inspect.getsource(
         ConversationCommitRepository.accept_voice_turn
     )

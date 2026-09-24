@@ -1,4 +1,7 @@
-"""Proof-bound voice submission, reconnect, and privacy tests for Feature 065."""
+"""Tests for proof-bound voice submission in orchestrator.py: content-free
+owner-reconnectable operation identity, replaying only the durable ack on reconnect,
+redacted WS audit, and refusal before ack when no LLM is configured.
+"""
 
 from __future__ import annotations
 

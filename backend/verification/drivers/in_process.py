@@ -1,12 +1,8 @@
-"""In-process driver — the deterministic CI merge gate (T012 / D2-D6).
-
-Drives a real ``Orchestrator`` with a deterministic scripted LLM and a *loopback
-agent* that answers MCP requests by invoking the real general-agent tool handler
-(``MCPServer.process_request`` over the real ``TOOL_REGISTRY``). The orchestrator's
-real gates, RFC-8693 delegation seam, audit, workspace persistence, ROTE, and web
-render all run around the real tool code — only the model's token output is
-scripted (so output is reproducible).
+"""In-process driver: the deterministic CI merge gate that drives a real Orchestrator
+with a scripted LLM (backend/verification/drivers/scripted_llm.py) and a loopback MCP
+agent, running the product's real gates, audit, workspace, and web render.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,16 +23,10 @@ from verification.drivers.scripted_llm import scripted_llm_for
 logger = logging.getLogger("verification.in_process")
 
 AGENT_ID = "general-verif-1"
-# Read-family scopes granted to the loopback agent so the readers + chart tool
-# survive the permission gate (US1). Authority scenarios (US2) deliberately
-# revoke a scope to observe withholding.
 READ_SCOPES = {"tools:read": True, "tools:search": True, "tools:files": True}
 
 
 class CaptureSocket:
-    """A fake UI socket that buffers the exact server->client messages a browser
-    would receive (the VirtualWebSocket pattern, D4)."""
-
     def __init__(self, label: str = "capture") -> None:
         self.label = label
         self.outputs: List[Dict[str, Any]] = []
@@ -70,10 +60,6 @@ class CaptureSocket:
 
 
 class LoopbackAgent:
-    """Stands in for a network agent connection. ``send`` answers an MCP request
-    by running the real general-agent handler and resolving the orchestrator's
-    pending-request future in place."""
-
     def __init__(self, orch: Any, server: Any) -> None:
         self.orch = orch
         self.server = server
@@ -87,7 +73,7 @@ class LoopbackAgent:
             method=obj.get("method", ""),
             params=obj.get("params", {}) or {},
         )
-        resp = await _run_sync(self.server.process_request, req)  # REAL tool execution
+        resp = await _run_sync(self.server.process_request, req)
         fut = self.orch.pending_requests.get(req.request_id)
         if fut is not None and not fut.done():
             fut.set_result(resp)
@@ -97,13 +83,6 @@ class LoopbackAgent:
 
 
 class InProcessDriver:
-    """Drives the orchestrator in-process; the qualification merge-gate surface.
-
-    Durable setup and cleanup reuse the one Plane runtime/catalog composed by
-    the product orchestrator. This driver does not borrow a legacy database
-    handle or own an independent data-plane connection.
-    """
-
     mode = "in_process"
     auth_mode = "mock_inprocess"
 
@@ -118,9 +97,7 @@ class InProcessDriver:
         self._teardown_task: asyncio.Task[None] | None = None
         self._fixture_identity = None
 
-    # ------------------------------------------------------------------ setup
     async def setup(self) -> None:
-        # Determinism: the adaptive UI designer must not rewrite tool output.
         os.environ["FF_UI_DESIGNER"] = "false"
 
         from verification.drivers.fixture_identity import FixtureIdentity
@@ -131,10 +108,7 @@ class InProcessDriver:
 
         from orchestrator.orchestrator import Orchestrator
 
-        # Construction performs the same blocking Plane initialization used by
-        # product main before its event loop starts. Keep that work off-loop,
-        # but retain ownership until it finishes: cancelling to_thread alone
-        # would abandon a graph that the worker can still publish afterward.
+        # Never cancel to_thread directly — it can abandon a live graph.
         construction = asyncio.create_task(
             asyncio.to_thread(Orchestrator),
             name="in-process-verification-construction",
@@ -184,8 +158,6 @@ class InProcessDriver:
         return runtime, repositories, blobs
 
     def _execution_principal(self, principal: Principal) -> Principal:
-        """Map one logical run principal to a one-shot durable owner namespace."""
-
         existing = self._execution_principals.get(principal.user_id)
         if existing is not None:
             if tuple(existing.roles) != tuple(principal.roles):
@@ -206,15 +178,8 @@ class InProcessDriver:
         return scoped
 
     async def _seed_llm_config(self, user_id: str) -> None:
-        """Feature 054: the operator-default env path is gone — seed the
-        harness principal's ``user_llm_config`` row so the first-run gate /
-        availability pre-flight passes (in-process ephemeral DB only;
-        external mode must NEVER write the singleton system row). Actual
-        calls go through the injected scripted ``_call_llm``, so these
-        values never reach a real model; teardown removes the row with the
-        other namespaced principal rows."""
         store = getattr(self.orch, "_llm_store", None)
-        if store is None:  # pragma: no cover — orchestrator predates 054
+        if store is None:  # pragma: no cover
             return
         try:
             await _run_sync(
@@ -228,10 +193,7 @@ class InProcessDriver:
         except Exception:
             logger.warning("verification: llm config seeding failed", exc_info=True)
 
-        # Keep delegated dispatch offline + deterministic: no real token
-        # exchange in-process (dev posture treats a missing token as fail-open,
-        # the documented local behaviour). US2 asserts delegation *evidence*
-        # via the delegation service separately.
+        # Dev-only stub: delegation calls fail open here, unlike production.
         async def _no_delegation(*_a, **_k):
             return None
 
@@ -265,9 +227,7 @@ class InProcessDriver:
         self.orch.agents[self.agent_id] = LoopbackAgent(self.orch, server)
         self.orch.tool_permissions.register_tool_scopes(self.agent_id, scope_map)
 
-    # ---------------------------------------------------------------- uploads
     async def upload_as(self, principal: Principal, fixture: Fixture) -> Dict[str, Any]:
-        """Upload a fixture as ``principal`` via the real store + repository."""
         from orchestrator.attachments import content_type as ct
         from orchestrator.attachments.materialization import (
             materialization_service_from_orchestrator,
@@ -299,10 +259,6 @@ class InProcessDriver:
                 await asyncio.to_thread(fh.close)
 
         materializations = materialization_service_from_orchestrator(self.orch)
-        # Register the isolated verification namespace before publication so
-        # teardown remains a second fail-closed owner-wide cleanup barrier even
-        # when streaming, sniffing, metadata persistence, or immediate cleanup
-        # fails partway through this method.
         owners = getattr(self, "_uploaded_blob_owners", None)
         if owners is None:
             owners = self._uploaded_blob_owners = set()
@@ -326,10 +282,9 @@ class InProcessDriver:
             "path": path,
         }
 
-    # ------------------------------------------------------------ sessions
     async def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
         principal = self._execution_principal(principal)
-        await self._seed_llm_config(principal.user_id)  # 054: pass the first-run gate
+        await self._seed_llm_config(principal.user_id)
         ws = CaptureSocket(label=principal.user_id)
         claims, token = self._fixture_identity.claims_and_token(principal.claims())
         self.orch.ui_sessions[ws] = claims | {"_raw_token": token}
@@ -354,7 +309,6 @@ class InProcessDriver:
             context.closing = True
 
     async def _send_registered_turn(self, ws, message, chat_id, *, user_id, attachments):
-        """Supply the original registered caller handoff expected by chat ingress."""
         from orchestrator.human_request_authority import capture_human_socket_request
         from verification.drivers.fixture_admission import admitted_registered_turn
 
@@ -390,7 +344,6 @@ class InProcessDriver:
             principal.user_id, agent_id or self.agent_id, {scope: enabled}
         )
 
-    # ------------------------------------------------------------- scenarios
     async def run_scenario(self, scenario: Scenario) -> CapturedEvidence:
         p = self._execution_principal(scenario.principal)
         persona = scenario.persona
@@ -438,13 +391,10 @@ class InProcessDriver:
     async def reference_attachment_as(
         self, principal: Principal, attachment_id: str, filename: str
     ) -> CapturedEvidence:
-        """Send a turn as ``principal`` referencing ``attachment_id`` (may be
-        foreign). Used to prove cross-user refusal (US2)."""
         principal = self._execution_principal(principal)
         await self.grant_default_scopes(principal)
         chat_id = await _run_sync(self.orch.history.create_chat, user_id=principal.user_id)
         ws = await self._register_session(principal, chat_id)
-        # Scripted LLM that never calls tools (we only care about the attach gate).
         import types as _types
 
         async def _no_tools(websocket, messages, tools_desc=None, temperature=None,
@@ -476,9 +426,7 @@ class InProcessDriver:
         finally:
             self._drop_session(ws)
 
-    # ----------------------------------------------------------- US2 probes
     async def probe_cross_user(self, run_id: str) -> CapturedEvidence:
-        """User A uploads; user B references A's attachment -> refusal + audit."""
         from verification.isolation import make_principal
         from verification.personas import get_persona
 
@@ -490,7 +438,6 @@ class InProcessDriver:
         att = await self.upload_as(a, persona.fixture)
         ev = await self.reference_attachment_as(b, att["attachment_id"], att["filename"])
         leaked = any(m in json.dumps(ev.messages) for m in persona.fixture.known_markers)
-        # B's workspace must never contain A's components.
         b_ws = await _run_sync(
             self.orch.workspace.live_components, (ev.extra or {}).get("chat_id", ""), b.user_id
         )
@@ -506,7 +453,6 @@ class InProcessDriver:
         return ev
 
     async def probe_scope_withheld(self, run_id: str) -> CapturedEvidence:
-        """Revoke read scopes, then a query needing a read tool -> withheld."""
         from verification.isolation import make_principal
         from verification.personas import get_persona
 
@@ -543,7 +489,6 @@ class InProcessDriver:
             self._drop_session(ws)
 
     def probe_delegation(self, run_id: str) -> CapturedEvidence:
-        """Mint a delegation token and assert acting-agent != on-behalf-of-user."""
         from audit.hooks import actor_principal_from_claims
         from verification.isolation import make_principal
 
@@ -574,7 +519,6 @@ class InProcessDriver:
         )
 
     async def probe_admin_approval(self, run_id: str) -> CapturedEvidence:
-        """Non-admin (incl. uploader) cannot approve an auto-created parser."""
         import uuid as _uuid
 
         from orchestrator import agentic_creation
@@ -582,8 +526,6 @@ class InProcessDriver:
 
         owner = self._execution_principal(make_principal(run_id, "apprOwner"))
         other = self._execution_principal(make_principal(run_id, "apprOther"))
-        # Must be a UUID: _h_draft_approve passes draft_id as the audit
-        # correlation_id, and that column is UUID-typed.
         draft_id = str(_uuid.uuid4())
         draft_store = agentic_creation._draft_store(self.orch)
         payload = {"draft_id": draft_id}
@@ -624,14 +566,9 @@ class InProcessDriver:
                 self._drop_session(ws_owner)
             if ws_other is not None:
                 self._drop_session(ws_other)
-            # PlaneDraftStore is already bound to the orchestrator's composed
-            # runtime/catalog. Cleanup failures propagate: this qualification
-            # probe must not pass while leaving a synthetic draft behind.
             await _run_sync(draft_store.delete_draft_agent, draft_id)
 
     def enrich_thin_client(self, ev: CapturedEvidence) -> CapturedEvidence:
-        """Attach the objective client-surface measurement + a backend ROTE
-        device-adaptation comparison to the evidence (US3)."""
         from verification.checks.thin_client import inspect_client_surface
 
         ev.client_inspection = inspect_client_surface()
@@ -659,12 +596,10 @@ class InProcessDriver:
             ev.device_diff = {"backend_adapted": True}
         return ev
 
-    # --------------------------------------------------------------- helpers
     def _read_audit(self, user_id: str):
         rows: List[Dict[str, Any]] = []
         try:
             result = self.orch.audit_repo.list_for_user(user_id, limit=200)
-            # list_for_user returns (rows, next_cursor); tolerate a bare list too.
             dtos = result[0] if isinstance(result, tuple) else result
             for d in dtos:
                 rows.append(
@@ -710,8 +645,6 @@ class InProcessDriver:
             raise cancellation
 
     async def _teardown_owned_graph(self, orch: Any) -> None:
-        """Settle every durable owner cleanup before closing the owned graph."""
-
         errors: list[BaseException] = []
         plane_runtime = None
         plane_repositories = None
@@ -736,9 +669,6 @@ class InProcessDriver:
                 except BaseException as error:
                     errors.append(error)
 
-            # Scheduling every namespace is the critical durable barrier. Only
-            # after all attempts have been made do physical reconciliation
-            # passes run; one failed owner can never skip later owners.
             for _index in range(accepted_owners):
                 try:
                     await purges.areconcile_once(fail_on_incomplete=True)
@@ -755,8 +685,6 @@ class InProcessDriver:
             except BaseException as error:
                 errors.append(error)
 
-        # Removing SQL metadata before every owner tombstone is accepted and
-        # globally reconciled would recreate the historical orphan window.
         if not errors and plane_runtime is not None and plane_repositories is not None:
             try:
                 await asyncio.to_thread(
@@ -783,8 +711,6 @@ class InProcessDriver:
 
 
 async def _close_owned_orchestrator_graph(orchestrator: Any) -> None:
-    """Close voice then the owned runtime graph through repeated cancellation."""
-
     unified_close = getattr(orchestrator, "_close_started_services", None)
     if callable(unified_close):
         task = asyncio.create_task(unified_close())
@@ -825,7 +751,6 @@ def _assert_verification_purge_ready(plane_runtime: Any, purges: Any) -> None:
 
 
 async def _run_sync(callback, *args, **kwargs):
-    """Settle blocking harness work before cancellation can begin graph teardown."""
     task = asyncio.create_task(asyncio.to_thread(callback, *args, **kwargs))
     error, cancellation = await _observe_task_through_cancellation(task)
     if error is not None:
@@ -838,7 +763,6 @@ async def _run_sync(callback, *args, **kwargs):
 async def _observe_task_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
-    """Join retained construction or cleanup before returning cancellation."""
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:

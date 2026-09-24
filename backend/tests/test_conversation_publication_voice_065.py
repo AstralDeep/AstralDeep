@@ -1,4 +1,8 @@
-"""Concurrent voice acceptance and terminal publication proofs for 065."""
+"""Tests for concurrent voice-turn acceptance and publication
+(orchestrator/voice_coordinator.py, conversation_publication.py, voice_sessions.py):
+deterministic merge, atomic completion, rollback on correlation failure, and result
+scrubbing.
+"""
 
 from __future__ import annotations
 
@@ -855,8 +859,6 @@ def test_acceptance_copies_full_workspace_and_abort_cleans_only_private_result(
     )
     assert json.loads(acceptance_layout["layout"]) == layout["layout"]
 
-    # An impossible mutation of the immutable acceptance view must fail closed
-    # against the digest stored on the private result anchor.
     tampered = _component("copied-component", "tampered")
     database.execute(
         "UPDATE saved_components SET component_data = ? WHERE "

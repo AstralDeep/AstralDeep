@@ -1,17 +1,8 @@
-"""Feature 030 — wiring/onboarding fixes (walkthrough findings).
-
-Covers:
-* welcome canvas consent card (``welcome_components(tools_available=...)``)
-* ToolPermissionManager.has_any_enabled_scope / scopes_required_by_tools
-* Orchestrator._enable_recommended_agent_scopes (consent bulk enable)
-* Orchestrator._text_only_cta_components (deterministic enable affordance)
-* Orchestrator._is_draft_agent public-ownership short-circuit (etf false positive)
-* Orchestrator._delegation_required (Constitution VII fail-closed posture)
-* Plane-backed first-party visibility and owner-scoped permission state
-
-Run inside the astraldeep container:
-    python -m pytest tests/test_wiring_030.py -q
+"""Tests across welcome.py, tool_permissions.py, and orchestrator.py for onboarding
+wiring: the consent enable card and its scope grants, draft/public agent visibility,
+delegation posture, and PHI-notice detection.
 """
+
 import sys
 import types
 import uuid
@@ -31,11 +22,6 @@ from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E4
 def plane_runtime():
     with isolated_plane_runtime("wiring_030") as runtime:
         yield runtime
-
-
-# ---------------------------------------------------------------------------
-# Welcome canvas consent card
-# ---------------------------------------------------------------------------
 
 
 def _component_types(components):
@@ -62,7 +48,6 @@ def test_welcome_without_tools_prepends_enable_card_after_hero():
     actions = [child.get("action") for child in card["content"]
                if child.get("type") == "button"]
     assert actions == ["enable_recommended_agents", "chrome_open"]
-    # The chrome_open button must target the agents surface.
     chrome_btn = [c for c in card["content"]
                   if c.get("action") == "chrome_open"][0]
     assert chrome_btn["payload"] == {"surface": "agents"}
@@ -72,11 +57,6 @@ def test_enable_agents_card_never_promises_write_access():
     card = enable_agents_card()
     text = str(card)
     assert "never write access" in text
-
-
-# ---------------------------------------------------------------------------
-# ToolPermissionManager helpers
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -106,19 +86,7 @@ def test_has_any_enabled_scope_false_for_fresh_user(perms):
     assert manager.has_any_enabled_scope(user_id) is False
 
 
-# ── 030 ∩ 040: who the enable affordance is still FOR ─────────────────────
-
-
 def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
-    """The 030 affordance is deliberately unreachable for a fresh account.
-
-    Feature 040 seeds the bundled built-ins safe + public, and the safe
-    baseline flips deny→allow for a user with no explicit scope row. So a fresh
-    user's tools ARE available and the "Agents are off for this account" card
-    must not render — showing it would be a false statement, and the register
-    entry calling this "structurally unreachable" describes intended behavior,
-    not a defect. This pins the premise so the affordance is not "restored".
-    """
     manager, user_id = perms
     agent_id = f"pytest-030-safe-{uuid.uuid4().hex[:10]}"
     manager.user_agent_registry.upsert_agent_safe(agent_id, True, marked_by="pytest")
@@ -129,21 +97,13 @@ def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
     )
     manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
 
-    # Dispatchable → compute_tools_available_for_user would return True …
     assert manager.is_tool_allowed(user_id, agent_id, "web_search") is True
-    # … even though the user has granted nothing explicitly.
     assert manager.has_any_enabled_scope(user_id) is False
     assert all("Agents are off" not in str(c.get("title", ""))
                for c in welcome_components(tools_available=True))
 
 
 def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
-    """…and it is still reachable, and honest, for the opt-out population.
-
-    An explicit ``enabled=False`` row outranks the safe flip, so a user who
-    deliberately turned everything off has no dispatchable tools — the card's
-    copy is then true, and its Enable button writes the rows that undo it.
-    """
     manager, user_id = perms
     agent_id = f"pytest-030-optout-{uuid.uuid4().hex[:10]}"
     manager.user_agent_registry.upsert_agent_safe(agent_id, True, marked_by="pytest")
@@ -187,11 +147,6 @@ def test_scopes_required_by_tools_defaults_to_read_for_unmapped_agent(perms):
     assert manager.scopes_required_by_tools("never-registered") == ["tools:read"]
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator._enable_recommended_agent_scopes (fake-self pattern)
-# ---------------------------------------------------------------------------
-
-
 def _enable_fake(manager, agent_ids, ownership_rows, drafts=()):
     fake = types.SimpleNamespace(
         agent_cards={aid: object() for aid in agent_ids},
@@ -217,7 +172,7 @@ def test_consent_enable_grants_nonwrite_scopes_for_public_agents(perms):
     assert enabled == ["pub-1"]
     scopes = manager.get_agent_scopes(user_id, "pub-1")
     assert scopes["tools:read"] is True
-    assert scopes["tools:write"] is False  # never granted by consent enable
+    assert scopes["tools:write"] is False
     assert manager.get_agent_scopes(user_id, "priv-1")["tools:read"] is False
 
 
@@ -232,11 +187,6 @@ def test_consent_enable_skips_drafts_and_honors_requested_subset(perms):
     assert enabled == ["pub-2"]
     assert manager.get_agent_scopes(user_id, "pub-1")["tools:read"] is False
     assert manager.get_agent_scopes(user_id, "draft-1")["tools:read"] is False
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator._text_only_cta_components
-# ---------------------------------------------------------------------------
 
 
 def _cta_fake(has_any: bool):
@@ -267,11 +217,6 @@ def test_text_only_cta_fails_safe_on_permission_error():
     assert fake._text_only_cta_components("u1") == []
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator._is_draft_agent — public ownership short-circuit
-# ---------------------------------------------------------------------------
-
-
 def _draft_fake(draft, ownership):
     fake = types.SimpleNamespace(
         lifecycle_manager=types.SimpleNamespace(
@@ -286,7 +231,6 @@ def _draft_fake(draft, ownership):
 
 def test_public_agent_never_hidden_by_stale_draft_row():
     fake = _draft_fake({"status": "error"}, {"is_public": True})
-    # weather-1 is a surviving bundled public agent (040 retired etf-tracker-1-1).
     assert fake._is_draft_agent("weather-1") is False
 
 
@@ -298,11 +242,6 @@ def test_private_agent_with_non_live_draft_row_stays_hidden():
 def test_live_draft_row_is_not_hidden():
     fake = _draft_fake({"status": "live"}, {"is_public": False})
     assert fake._is_draft_agent("promoted-agent-1") is False
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator._delegation_required — Constitution VII posture
-# ---------------------------------------------------------------------------
 
 
 def _delegation_required(monkeypatch, astral_env, override):
@@ -330,11 +269,6 @@ def test_delegation_required_in_production_posture(monkeypatch):
 def test_delegation_override_wins_both_ways(monkeypatch):
     assert _delegation_required(monkeypatch, "development", "true") is True
     assert _delegation_required(monkeypatch, "production", "false") is False
-
-
-# ---------------------------------------------------------------------------
-# Current Plane-backed catalog visibility policy
-# ---------------------------------------------------------------------------
 
 
 def test_visibility_policy_flips_only_listed_agents_and_is_idempotent(plane_runtime):
@@ -372,26 +306,12 @@ def test_first_party_catalog_constants_match_post_029_catalog():
     from orchestrator.orchestrator import RETIRED_AGENT_IDS
 
     ids = set(FIRST_PARTY_PUBLIC_AGENT_IDS)
-    # The two 029 plug-and-play agents the walkthrough found invisible MUST
-    # be in the visibility backfill.
     assert {"web-research-1", "summarizer-1"} <= ids
-    # Drafts / retired ids must never be listed.
     assert not any(agent_id in ids for agent_id in RETIRED_AGENT_IDS)
-
-
-# ---------------------------------------------------------------------------
-# Provenance caption — REMOVED by owner decision (2026-08-03): chat replies
-# carry no appended disclaimer. Pin the removal so it cannot silently return.
-# ---------------------------------------------------------------------------
 
 
 def test_chat_replies_carry_no_provenance_caption():
     assert not hasattr(Orchestrator, "_provenance_caption")
-
-
-# ---------------------------------------------------------------------------
-# PHI notice detection — fail-open semantics (030 second wave)
-# ---------------------------------------------------------------------------
 
 
 def _gate(analyzer):
@@ -416,7 +336,6 @@ def test_detect_for_notice_prefilter_fires_without_analyzer():
 
 def test_detect_for_notice_fails_open_when_analyzer_missing():
     gate = _gate(None)
-    # contains_phi fails CLOSED here; the notice path must NOT.
     text = "metformin dosing considerations for my trial"
     assert gate.contains_phi(text) is True
     assert gate.detect_for_notice(text) is False
@@ -435,13 +354,7 @@ def test_detect_for_notice_empty_text_clean():
     assert _gate(_HitAnalyzer()).detect_for_notice(None) is False
 
 
-# ---------------------------------------------------------------------------
-# Scheduling from chat (030 second wave)
-# ---------------------------------------------------------------------------
-
-
 def _sched_fake(manager, scheduled_job_store, agent_ids=("web-research-1",)):
-    """Fake orchestrator self for scheduling_chat over the typed Plane store."""
     renders = []
 
     async def send_ui_render(ws, components, target="canvas"):
@@ -460,7 +373,6 @@ def _sched_fake(manager, scheduled_job_store, agent_ids=("web-research-1",)):
 
 @pytest.fixture
 def sched_env(perms, plane_runtime):
-    """Scheduling fixture over the same isolated application Plane."""
     from scheduler.store import ScheduledJobStore
 
     manager, user_id = perms
@@ -489,7 +401,6 @@ def test_schedule_meta_tool_returns_consent_card_and_creates_nothing(sched_env):
     actions = [c.get("payload", {}).get("decision") for c in card["content"]
                if c.get("type") == "button"]
     assert actions == ["approve", "discard"]
-    # NOTHING persisted before consent.
     assert store.list_jobs(user_id) == []
     assert len(fake._schedule_proposals) == 1
 
@@ -524,13 +435,6 @@ def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     manager.register_tool_scopes("web-research-1", {"web_search": "tools:search"})
     manager.set_agent_scopes(user_id, "web-research-1", {"tools:search": True})
     fake = _sched_fake(manager, store)
-    # ``handle_decision`` re-checks the approving socket's CURRENT registration
-    # around every await (session-bound consent): an unregistered socket is
-    # refused before the job is created, which is the deliberate fail-closed
-    # posture. Register the approving socket so this test reaches the
-    # scope-bounding assertions it is actually about. ``select_consent_session``
-    # still returns None for a non-HTTP socket, so the job is created without a
-    # durable grant — exactly what ``offline_grant_id is None`` below pins.
     approving_ws = object()
     fake.ui_sessions = {approving_ws: {"sub": user_id, "exp": _time.time() + 3600}}
     asyncio.run(scheduling_chat.handle_meta_tool(
@@ -550,10 +454,8 @@ def test_schedule_decision_approve_creates_job_with_bounded_scopes(sched_env):
     assert row["status"] == "active"
     assert row["target_chat_id"] == "chat-1"
     assert row["offline_grant_id"] is None
-    # Bounded to CURRENT grants — only the search scope that was enabled.
     assert row["consented_scopes"] == ["tools:search"]
     assert fake._schedule_proposals == {}
-    # Success alert + manage button rendered to chat.
     components, target = fake._renders[-1]
     assert target == "chat"
     assert components[0]["variant"] == "success"
@@ -572,12 +474,10 @@ def test_schedule_decision_discard_and_foreign_user_refused(sched_env):
          "schedule_expr": "1d"},
         user_id=user_id, chat_id="c", websocket=object()))
     proposal_id = next(iter(fake._schedule_proposals))
-    # Another user cannot action this proposal.
     asyncio.run(scheduling_chat.handle_decision(
         fake, object(), "someone-else", {"proposal_id": proposal_id,
                                          "decision": "approve"}))
     assert proposal_id in fake._schedule_proposals
-    # Discard removes it and creates nothing.
     asyncio.run(scheduling_chat.handle_decision(
         fake, object(), user_id, {"proposal_id": proposal_id,
                                   "decision": "discard"}))
@@ -614,11 +514,6 @@ def test_schedule_human_cadence_lines():
     assert human_cadence("one_shot", "2026-07-01T09:00:00", "UTC").startswith("once")
 
 
-# ---------------------------------------------------------------------------
-# Welcome button accessible names (030 second wave)
-# ---------------------------------------------------------------------------
-
-
 def test_welcome_buttons_have_unique_accessible_names():
     components = welcome_components()
 
@@ -632,19 +527,13 @@ def test_welcome_buttons_have_unique_accessible_names():
     labels = []
     for child in walk(components):
         if child.get("type") == "button" and child.get("action") == "chat_message":
-            # astralprims to_dict() merges `attributes` at the top level.
             labels.append(child.get("aria-label"))
             assert child.get("aria-label") == child.get("label")
     from orchestrator.welcome import WELCOME_EXAMPLES
 
     assert len(labels) == len(WELCOME_EXAMPLES)
     assert all(labels)
-    assert len(set(labels)) == len(WELCOME_EXAMPLES)  # all distinct
-
-
-# ---------------------------------------------------------------------------
-# Draft permission leakage (030 wave 3)
-# ---------------------------------------------------------------------------
+    assert len(set(labels)) == len(WELCOME_EXAMPLES)
 
 
 def test_orphan_draft_permission_sweep_and_delete_purge(
@@ -665,13 +554,13 @@ def test_orphan_draft_permission_sweep_and_delete_purge(
     )
     purge = types.MethodType(
         AgentLifecycleManager._purge_agent_permission_rows, fake)
-    fake._purge_agent_permission_rows = purge  # the sweep calls it via self
+    fake._purge_agent_permission_rows = purge
     sweep = types.MethodType(
         AgentLifecycleManager.reconcile_orphaned_draft_permissions, fake)
 
-    orphan = f"pytest-orphan-{uuid.uuid4().hex[:6]}-1"     # no dir, no draft row
-    marked = f"pytest-marked-{uuid.uuid4().hex[:6]}-1"     # dir WITH .draft, no row
-    keeper = f"pytest-keeper-{uuid.uuid4().hex[:6]}-1"     # real dir, no marker
+    orphan = f"pytest-orphan-{uuid.uuid4().hex[:6]}-1"
+    marked = f"pytest-marked-{uuid.uuid4().hex[:6]}-1"
+    keeper = f"pytest-keeper-{uuid.uuid4().hex[:6]}-1"
     for agent_id in (orphan, marked, keeper):
         manager.set_agent_scopes(user_id, agent_id, {"tools:read": True})
     marked_dir = tmp_path / marked[:-2].replace("-", "_")
@@ -687,7 +576,7 @@ def test_orphan_draft_permission_sweep_and_delete_purge(
     purge(
         keeper,
         owner_user_id=user_id,
-    )  # the delete-time purge helper removes rows through Plane
+    )
     assert manager.get_agent_scopes(user_id, keeper)["tools:read"] is False
 
 
@@ -695,10 +584,6 @@ def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
     perms,
     plane_runtime,
 ):
-    """Boot sweep for the junk rows a removed legacy filesystem discovery keyed
-    by agents/ DIRECTORY names: every table is cleared for the literal id, the
-    real ``<slug>-1`` runtime id and an id that merely ENDS with a target are
-    untouched, and a second run is a no-op."""
     from orchestrator.agent_lifecycle import (
         LEGACY_DIRECTORY_AGENT_IDS,
         AgentLifecycleManager,
@@ -729,16 +614,15 @@ def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
         for agent_id in (junk, real, lookalike, "tests"):
             registry.set_agent_ownership(agent_id, email, is_public=True)
             manager.set_agent_scopes(user_id, agent_id, {"tools:read": True})
-        # An ownerless override (no scope row to enumerate its owner from).
         manager.set_tool_overrides(other_user, junk, {"get_weather": False})
         assert manager.get_tool_overrides(other_user, junk) == {"get_weather": False}
         registry.upsert_agent_safe(junk, True, marked_by="pytest")
         registry.upsert_agent_safe(real, True, marked_by="pytest")
 
         removed = sweep(agent_ids=[junk, "tests", real, lookalike])
-        assert removed["agent_ownership"] == 2            # weather + tests
-        assert removed["policy_rows"] >= 3                # 2 scope rows + 1 override
-        assert removed["agent_trust_neutralised"] == 1    # weather only
+        assert removed["agent_ownership"] == 2
+        assert removed["policy_rows"] >= 3
+        assert removed["agent_trust_neutralised"] == 1
 
         assert registry.get_agent_ownership(junk) is None
         assert registry.get_agent_ownership("tests") is None
@@ -751,11 +635,9 @@ def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
         assert registry.get_agent_is_safe(junk) is False
         assert registry.get_agent_is_safe(real) is True
 
-        # Repeat-safe: nothing left to match, nothing written.
         assert sweep(agent_ids=[junk, "tests", real, lookalike]) == {
             "agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0,
         }
-        # The candidate restriction can only narrow the literal set.
         assert sweep(agent_ids=[real, lookalike, "not-a-legacy-id"]) == {
             "agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0,
         }
@@ -769,11 +651,6 @@ def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
                     transaction, owner_id=user_id, agent_id=agent_id)
             repos.tool_policy_state.remove_owner_state(
                 transaction, owner_id=other_user)
-
-
-# ---------------------------------------------------------------------------
-# Chat-vs-canvas narrative split (030 wave 3)
-# ---------------------------------------------------------------------------
 
 
 def test_narrative_is_long_detects_length_headings_tables():
@@ -797,16 +674,11 @@ def test_narrative_doc_card_identity_stable_per_title():
     a2 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv2 revised")
     b = Orchestrator._narrative_doc_card("chat-1", "## Budget Plan\ntext")
     other_chat = Orchestrator._narrative_doc_card("chat-2", "## Specific Aims\nv1")
-    assert a1["id"] == a2["id"]            # same doc iterates in place
-    assert a1["id"] != b["id"]             # different doc appends
-    assert a1["id"] != other_chat["id"]    # per-chat identity
+    assert a1["id"] == a2["id"]
+    assert a1["id"] != b["id"]
+    assert a1["id"] != other_chat["id"]
     assert a1["title"] == "Specific Aims"
     assert a1["content"][0]["variant"] == "markdown"
-
-
-# ---------------------------------------------------------------------------
-# Tool dispatch hardening (030 wave 3)
-# ---------------------------------------------------------------------------
 
 
 def test_tool_timeout_overrides_cover_long_running_verbs():
@@ -821,14 +693,11 @@ def test_draft_decision_cards_carry_stable_author_id():
     live = creation_card(draft, {"status": "passed", "summary": "ok"})
     done = _terminal_card("d-123", "Discarded: Web Researcher", "Removed.")
     assert live["id"] == "draft-card-d-123" == done["id"]
-    # Terminal card must carry no actionable buttons.
     assert all(c.get("type") != "button" for c in done["content"])
     assert any(c.get("type") == "button" for c in live["content"])
 
 
 def test_renderer_honors_flattened_attributes_shape():
-    """astralprims to_dict() flattens `attributes` to top-level keys — the
-    renderer must honor both that and the nested hand-built shape (030)."""
     from webrender.renderer import _base_attrs
 
     flattened = {"type": "button", "label": "x", "aria-label": "Run example: A"}
@@ -840,4 +709,4 @@ def test_renderer_honors_flattened_attributes_shape():
     assert 'aria-label="Run example: B"' in _base_attrs(nested)
     out = _base_attrs(hostile)
     assert "onclick" not in out
-    assert 'onmouseover="alert' not in out  # escaped, not live
+    assert 'onmouseover="alert' not in out

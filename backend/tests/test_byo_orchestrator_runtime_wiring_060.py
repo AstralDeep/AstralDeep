@@ -1,9 +1,7 @@
-"""Focused production-adapter tests for the feature-060 BYO runtime.
-
-The PostgreSQL state machines have their own fault-injection suites.  These
-tests pin the orchestration ordering at the boundary where durable transitions
-are projected onto live sockets, so a future refactor cannot accidentally make
-an in-memory map or a WebSocket acknowledgement authoritative.
+"""Tests for the BYO runtime's production adapter
+(backend/orchestrator/agent_lifecycle.py): delivery retry/replay ordering, host
+selection, and authority projection stay driven by durable state, not in-memory maps
+or socket acks.
 """
 
 from __future__ import annotations
@@ -144,8 +142,6 @@ def _online_runtime(
 
 
 class _RecordingExitWaiters(dict):
-    """Remember exact waiter entries even when production removes them."""
-
     def __init__(self) -> None:
         super().__init__()
         self.recorded: list[object] = []
@@ -2005,9 +2001,6 @@ async def test_ambiguous_promotion_reconciles_committed_winner(monkeypatch):
     assert retry_kwargs["state"] is OperationState.RETRYABLE
     orchestrator._publish_personal_agent_runtime.assert_not_awaited()
 
-    # The ambiguous transaction becomes visible only on the explicit replay.
-    # That replay validates the exact immutable identity, reconciles cleanup,
-    # and projects the already-committed winner without activating again.
     authority_visible = True
     delivered = await orchestrator._deliver_personal_agent_revision(
         **_revision_delivery_args(
@@ -3290,8 +3283,6 @@ async def test_completed_stop_receipt_is_reusable_and_duplicate_safe_until_relea
     )
     orchestrator._terminalize_personal_agent_runtime.assert_not_awaited()
 
-    # Plane's exact finalizer commits before the lifecycle owner releases the
-    # acknowledgement. A later duplicate is then terminal-state idempotent.
     instance.state = "stopped"
     assert first.release() is None
     assert instance.fence.runtime_instance_id not in (
@@ -4549,7 +4540,6 @@ async def test_watchdog_uses_atomic_database_deadline_transitions():
         (("startup-request",), "child_registration_timeout"),
         (("hung-request",), "child_hung"),
     ]
-    # A never-launched delivery has no process to stop; the hung child does.
     assert sent == [{"type": "agent_stop", "fence": online.fence.to_dict()}]
 
 

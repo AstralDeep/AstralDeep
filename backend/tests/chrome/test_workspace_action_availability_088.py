@@ -1,4 +1,8 @@
-"""Owner-authenticated chrome delivery preserves independent canvas flags."""
+"""Tests for orchestrator/chrome_availability.py: workspace, export, share, and
+work-menu flag resolution stays independent and consistent across REST, negotiated
+WebSocket, and the chrome menu model.
+"""
+
 import json
 
 import pytest
@@ -36,16 +40,10 @@ def test_rest_ws_and_web_resolve_same_workspace_inventory(monkeypatch, export, s
     assert response.status_code == 200
     model = response.json()
     availability = projection_chrome_availability()
-    # api.py deliberately forces work_enabled/notes_enabled off for the legacy
-    # REST menu: those two items require a negotiated native capability that a
-    # REST caller never declares (pinned by test_chrome_menu_api.py::
-    # test_rest_body_equals_unnegotiated_native_model). Build the expected model
-    # with that documented REST disposition, not with the raw host availability.
     rest_availability = {**availability, "work_enabled": False, "notes_enabled": False}
     frame = json.loads(ChromeMenu(model=menu_model_dict(
         ["admin", "user"], include_admin=False, include_tour=False, **rest_availability)).to_json())
     assert frame["model"] == model and model["version"] == 2
-    # The negotiated WebSocket model carries the account item REST omits.
     negotiated = menu_model_dict(["admin", "user"], include_admin=False, include_tour=False,
         **projection_native_chrome_availability(
             {"_client_capabilities": ["work_read_v1", "guidance_notes_v1"]}))

@@ -1,17 +1,6 @@
-"""The System One question set and the bounded request that feeds it (feature 089).
-
-One TypeSafe call answers everything the turn needs: is this request hostile,
-which agent should handle it, which of that agent's tools fits, and how the
-result should be arranged. Asking them together is the whole point -- six
-sequential judgments would cost more than the round they are meant to narrow.
-
-What goes into the request is deliberately small (FR-038). The model sees the
-user's current message, a short slice of recent conversation, the active agent,
-and the names and descriptions of the tools the user is actually allowed to
-use. It does not see attachment bodies, tool outputs, credentials, file maps,
-memory or guidance text. Everything here is bounded before it leaves: a request
-that grows with the user's history is a request whose latency and cost grow
-with it.
+"""Builds the bounded, single-call System One question set
+(request/history/description/catalog size limits) from a RoutingRequest; decision.py
+parses the answers this produces.
 """
 
 from __future__ import annotations
@@ -19,29 +8,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-#: Bounds on what one routing request may carry (FR-038).
 ROUTING_MAX_REQUEST_CHARS = 4000
 ROUTING_MAX_HISTORY_MESSAGES = 6
 ROUTING_MAX_HISTORY_CHARS = 600
 ROUTING_MAX_DESCRIPTION_CHARS = 200
 
-#: Truncation bounds on the catalog.
-#:
-#: Measured 2026-09-17 (T015). Latency turned out to be almost flat in catalog
-#: size: 20 agents x 12 tools (260 options, 25 questions) cost p50 239 ms and
-#: p95 265 ms, against p50 186 ms for a single agent with three tools. So these
-#: bounds are not set by latency -- they are set by what is worth sending. 20
-#: agents covers the bundled catalog of 8 with room for a user's own agents,
-#: and 12 tools per agent is twice the largest bundled agent's count.
 MAX_ROUTING_AGENTS = 20
 MAX_TOOLS_PER_AGENT = 12
 
-#: Sentinel options. They are real answers, not failures: "this needs no tool"
-#: and "none of this agent's tools fit" are both useful things to learn.
 NO_TOOL_NEEDED = "no_tool_needed"
 NONE_FIT = "none_fit"
 
-#: Presentation styles. ``as_delivered`` means "do not rearrange".
 PRESENTATION_STYLES = (
     "dashboard",
     "detailed_table",
@@ -67,8 +44,6 @@ QUESTION_TARGET_AGENT = "target_agent"
 QUESTION_PRESENTATION_STYLE = "presentation_style"
 TOOL_QUESTION_PREFIX = "tool_for_"
 
-#: The three security questions. A security-only request (the HTTP Work chat
-#: path) asks exactly these and nothing else.
 SECURITY_QUESTION_IDS = (
     QUESTION_IS_JAILBREAK,
     QUESTION_HARM_SCORE,
@@ -102,7 +77,6 @@ STYLE_CRITERIA = {
 
 
 def _truncate(text: object, limit: int) -> str:
-    """Bound a string without pretending the rest was never there."""
     if not isinstance(text, str):
         return ""
     text = text.strip()
@@ -113,8 +87,6 @@ def _truncate(text: object, limit: int) -> str:
 
 @dataclass(frozen=True, slots=True)
 class AgentOption:
-    """One eligible agent, as the model sees it."""
-
     agent_id: str
     name: str
     description: str = ""
@@ -122,33 +94,18 @@ class AgentOption:
 
 @dataclass(frozen=True, slots=True)
 class ToolOption:
-    """One eligible tool, named exactly as the LLM will be offered it.
-
-    ``name`` is the prefixed name, which matters: two agents may expose tools
-    with the same unqualified name, and a decision that cannot tell them apart
-    is worse than no decision.
-    """
-
     name: str
     description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class HistoryTurn:
-    """One prior message, reduced to a role and bounded text."""
-
     role: str
     text: str
 
 
 @dataclass(frozen=True, slots=True)
 class RoutingRequest:
-    """Everything one routing call is allowed to know about a turn.
-
-    Construct through :meth:`build`, which applies every bound. The dataclass
-    itself is frozen so a caller cannot widen it after the fact.
-    """
-
     current_request: str
     recent_conversation: tuple[HistoryTurn, ...] = ()
     active_agent: Optional[str] = None
@@ -158,9 +115,9 @@ class RoutingRequest:
 
     @property
     def is_empty(self) -> bool:
-        """True when there is nothing to route to, so no call should be made."""
         return not self.agents or not any(self.tools_by_agent.values())
 
+    # Active agent must be kept first — dropping it would break the turn
     @classmethod
     def build(
         cls,
@@ -174,13 +131,6 @@ class RoutingRequest:
         max_agents: int = MAX_ROUTING_AGENTS,
         max_tools_per_agent: int = MAX_TOOLS_PER_AGENT,
     ) -> "RoutingRequest":
-        """Apply every FR-038 bound and return an immutable request.
-
-        Truncation priority when the catalog is larger than the bounds: the
-        active agent is kept first, then agents the user explicitly selected
-        tools from, then the declared order. Dropping the agent the user is
-        already talking to would be the one truncation guaranteed to be wrong.
-        """
         selected = tuple(dict.fromkeys(str(name) for name in selected_tools if name))
         selected_agents = {
             name.split("__", 1)[0].split(".", 1)[0] for name in selected if name
@@ -248,12 +198,6 @@ class RoutingRequest:
         )
 
     def state(self) -> dict[str, Any]:
-        """The ``state`` payload sent to System One.
-
-        Only bounded, already-truncated values appear here. The turn's
-        attachments, tool outputs and credentials are not in this dataclass at
-        all, which is a stronger guarantee than filtering them out on the way.
-        """
         return {
             "current_request": self.current_request,
             "recent_conversation": [
@@ -267,12 +211,6 @@ class RoutingRequest:
 
 @dataclass(frozen=True, slots=True)
 class QuestionSet:
-    """The questions for one call, plus the local index-to-agent mapping.
-
-    Question ids are not sent to the model, so the mapping from ``tool_for_3``
-    back to an agent id lives here rather than being parsed out of a response.
-    """
-
     questions: Mapping[str, Any]
     agent_by_index: Mapping[int, str]
     tool_names: Mapping[str, tuple[str, ...]]
@@ -285,7 +223,6 @@ class QuestionSet:
 
 
 def build_security_questions(sdk: Any) -> dict[str, Any]:
-    """The three security questions, which every request includes."""
     return {
         QUESTION_IS_JAILBREAK: sdk.noul(
             instructions=(
@@ -311,14 +248,6 @@ def build_security_questions(sdk: Any) -> dict[str, Any]:
 
 
 def build_questions(request: RoutingRequest, sdk: Any) -> QuestionSet:
-    """Build the full fan-out question set for ``request``.
-
-    One agent question, one tool question per agent, one presentation
-    question, plus the security core. The per-agent tool questions are the
-    reason a single call can produce a usable answer: asking "which tool"
-    without first fixing the agent produces a flat list where the same verb
-    means different things in different agents.
-    """
     questions: dict[str, Any] = build_security_questions(sdk)
 
     agent_criteria = {
@@ -371,7 +300,6 @@ def build_questions(request: RoutingRequest, sdk: Any) -> QuestionSet:
 
 
 def build_security_question_set(sdk: Any) -> QuestionSet:
-    """A security-only question set, for the HTTP Work chat path (I7)."""
     return QuestionSet(
         questions=build_security_questions(sdk),
         agent_by_index={},

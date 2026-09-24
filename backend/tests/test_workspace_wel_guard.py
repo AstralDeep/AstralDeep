@@ -1,10 +1,8 @@
-"""Feature 055 US1 — the workspace layer refuses ephemeral wel_ identities.
-
-``wel_`` is the welcome-canvas namespace: never persisted, never allowed to
-collide with (or supersede) workspace identities. If a component carrying a
-wel_ id somehow reaches identity resolution, the id is discarded and the
-component resolves as if unidentified (rule-2 fingerprint).
+"""Tests for the workspace layer's refusal of ephemeral wel_ identities
+(backend/orchestrator/workspace.py): a wel_-namespaced id is discarded and falls back
+to fingerprint resolution.
 """
+
 from __future__ import annotations
 
 import sys

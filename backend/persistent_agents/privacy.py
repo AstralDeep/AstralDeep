@@ -1,8 +1,6 @@
-"""Typed privacy views; reviewed URLs retain every identifying component.
-
-Only the exact public resources in the validated owner definition receive a
-classifier representation. The stored URL and dispatched arguments never change.
-Unknown URLs and arbitrary reader data retain the ordinary fail-closed gate.
+"""Typed privacy views for source text: reviewed URLs keep identifying components;
+everything else fails closed via the ordinary PHI/injection gate. Used by
+execution.py and runner.py before source content reaches a model or audit log.
 """
 
 from __future__ import annotations
@@ -23,19 +21,10 @@ def reviewed_urls(source) -> tuple[str, ...]:
 
 
 def privacy_text(text: str, urls: tuple[str, ...] = ()) -> str:
-    """Separate URL syntax from prose without discarding identifiers.
-
-    Presidio can label a complete public URL as a location. Breaking the scheme
-    delimiter avoids that syntactic false positive; hostname, path, query keys,
-    and values still undergo the same detector, including decoded token views.
-    No arbitrary URL-looking text is exempted and decoding is strictly bounded.
-    """
     views = []
 
     def replace(match):
         token = match.group()
-        # Markdown/prose closing punctuation is outside the URL token. Never
-        # match a reviewed prefix of a longer path, hostname, query or fragment.
         url = token.rstrip(".,;:!)]}")
         if url not in urls:
             return token
@@ -44,7 +33,7 @@ def privacy_text(text: str, urls: tuple[str, ...] = ()) -> str:
             if re.search(r"%(?![0-9a-fA-F]{2})", decoded):
                 raise ValueError("assignment_source_encoding_refused")
             views.append(decoded.replace("://", ": //"))
-            # A second view prevents separators from concealing names or labels.
+            # Second view stops separators from hiding names from PHI scan
             views.append(re.sub(r"[/_.?&=+%:-]+", " ", decoded))
             if "%" not in decoded:
                 break
@@ -58,11 +47,6 @@ def privacy_text(text: str, urls: tuple[str, ...] = ()) -> str:
 
 
 def content_text(value, depth=0) -> str:
-    """Scan raw leaves, including JSON nested in model message content.
-
-    JSON escaping must not hide whitespace from the injection detector, nor
-    manufacture name-like spans from escaped newlines for the PHI detector.
-    """
     if depth > 20:
         raise ValueError("assignment_source_limit")
     if isinstance(value, str):
@@ -82,7 +66,6 @@ def content_text(value, depth=0) -> str:
 
 
 def redact_observation(value, gate):
-    """Redact each bounded raw source leaf before hashing or retention."""
     changed = False
 
     def walk(node, depth=0):
@@ -110,11 +93,6 @@ def redact_observation(value, gate):
 
 
 def model_evidence(observation):
-    """Give models source prose and flags, keeping ledger digests in Plane.
-
-    This is only for the executor's own result envelope, never arbitrary
-    registered-reader dictionaries or model-created keys.
-    """
     if observation is None:
         return None
     observation = thaw(observation)

@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
-"""
-Test the complete navigation flow from 'Generate Code' to 'approved' state.
-
-This test simulates the user journey and verifies that:
-1. Progress indicators update correctly
-2. Page transitions from 'progress' to 'editor' after generation
-3. Testing phase shows proper progress
-4. Navigation happens correctly
+"""Tests for shared/progress.py: the agent-creation navigation journey (form to chat to
+progress to editor to testing to approved) and its progress-event emission at each
+phase.
 """
 
 import sys
 import os
 from unittest.mock import Mock, AsyncMock
 
-# Add backend to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.progress import ProgressPhase, ProgressStep, ProgressEmitter
 
 
 def simulate_user_journey():
-    """Simulate the complete user journey through the agent creation flow."""
     print("\nSimulating user journey...")
     print("1. User fills out form and starts session")
     
-    # Step 1: User starts session (form submission)
     session_id = "test-session-123"
     print(f"   Session created: {session_id}")
     
-    # Step 2: User chats with LLM to refine agent
     print("2. User chats with LLM to refine agent")
     chat_messages = [
         {"role": "user", "content": "Make it able to fetch weather data"},
@@ -36,20 +27,16 @@ def simulate_user_journey():
     ]
     print(f"   {len(chat_messages)} messages exchanged")
     
-    # Step 3: User clicks "Generate Code"
     print("3. User clicks 'Generate Code'")
     print("   UI transitions to 'progress' step")
     
-    # Track navigation steps
     navigation_steps = ["form", "chat", "progress"]
     
-    # Simulate progress events during generation
     print("4. Backend emits progress events")
     generation_events = []
     
     emitter = ProgressEmitter(ProgressPhase.GENERATION)
     
-    # Simulate typical generation flow
     steps = [
         (ProgressStep.PROMPT_CONSTRUCTION, 10, "Constructing generation prompt..."),
         (ProgressStep.LLM_API_CALL, 30, "Calling LLM API..."),
@@ -66,17 +53,14 @@ def simulate_user_journey():
             generation_events.append(event)
             print(f"   - {step.value}: {percentage}% - {message}")
     
-    # Verify progress events
     assert len(generation_events) == 7, f"Expected 7 progress events, got {len(generation_events)}"
     assert generation_events[0].percentage == 10
     assert generation_events[-1].percentage == 100
     assert generation_events[-1].step == ProgressStep.GENERATION_COMPLETE
     
-    # Step 5: Generation completes, UI transitions to editor
     print("5. Generation completes, UI transitions to 'editor' step")
     navigation_steps.append("editor")
     
-    # Simulate generated files
     generated_files = {
         "tools": "# Weather tools code\ndef get_weather():\n    return {'_ui_components': []}",
         "agent": "# Agent class",
@@ -84,18 +68,15 @@ def simulate_user_journey():
     }
     print(f"   Generated {len(generated_files)} files")
     
-    # Step 6: User reviews files and clicks "Save & Run Tests"
     print("6. User clicks 'Save & Run Tests'")
     print("   UI transitions to 'testing' step")
     navigation_steps.append("testing")
     
-    # Simulate testing progress
     print("7. Backend emits testing progress events")
     testing_events = []
     
     testing_emitter = ProgressEmitter(ProgressPhase.TESTING)
     
-    # Simulate typical testing flow
     testing_steps = [
         (ProgressStep.SAVING_FILES, 10, "Saving agent files..."),
         (ProgressStep.STARTING_PROCESS, 20, "Starting agent process on port 8003..."),
@@ -114,17 +95,14 @@ def simulate_user_journey():
             testing_events.append(event)
             print(f"   - {step.value}: {percentage}% - {message}")
     
-    # Verify testing events
     assert len(testing_events) == 9, f"Expected 9 testing events, got {len(testing_events)}"
     assert testing_events[0].percentage == 10
     assert testing_events[-1].percentage == 100
     assert testing_events[-1].step == ProgressStep.TESTING_COMPLETE
     
-    # Step 7: Testing completes, UI transitions to approved
     print("8. Testing completes, UI transitions to 'approved' step")
     navigation_steps.append("approved")
     
-    # Verify navigation flow
     expected_steps = ["form", "chat", "progress", "editor", "testing", "approved"]
     assert navigation_steps == expected_steps, f"Navigation mismatch: {navigation_steps} != {expected_steps}"
     
@@ -136,10 +114,8 @@ def simulate_user_journey():
 
 
 def test_error_handling():
-    """Test error handling during the flow."""
     print("\nTesting error handling...")
     
-    # Simulate generation error
     emitter = ProgressEmitter(ProgressPhase.GENERATION)
     error_event = emitter.emit_error(
         message="LLM API call failed",
@@ -153,7 +129,6 @@ def test_error_handling():
     assert error_event.data["error"] is True
     assert "API timeout" in str(error_event.data["error_details"])
     
-    # Verify UI would transition back to chat (as per AgentCreatorPage.tsx line 104-106)
     print("   Error event emitted correctly")
     print("   UI would transition back to 'chat' after error")
     
@@ -161,16 +136,11 @@ def test_error_handling():
 
 
 def test_progress_state_transitions():
-    """Test that progress state transitions match frontend expectations."""
     print("\nTesting progress state transitions...")
     
-    # Simulate what the frontend hook does
-    
-    # Create a sample event stream
     events = []
     emitter = ProgressEmitter(ProgressPhase.GENERATION)
     
-    # Emit events
     events.append(emitter.emit(
         ProgressStep.PROMPT_CONSTRUCTION, 10, "Starting...", force=True
     ))
@@ -181,13 +151,11 @@ def test_progress_state_transitions():
         ProgressStep.GENERATION_COMPLETE, 100, "Done!", force=True
     ))
     
-    # Verify event sequence
     assert len(events) == 3
     assert events[0].percentage == 10
     assert events[1].percentage == 30
     assert events[2].percentage == 100
     
-    # Verify frontend would update progress bar correctly
     percentages = [e.percentage for e in events]
     assert percentages == [10, 30, 100]
     
@@ -198,16 +166,10 @@ def test_progress_state_transitions():
 
 
 def test_complete_integration_with_mocks():
-    """Test complete integration with mocked API calls.
-
-    Verifies that progress emission works correctly with mock endpoints.
-    (agent_generator module was removed; this test uses standalone mocks.)
-    """
     print("\nTesting complete integration with mocked APIs...")
 
     mock_gen = Mock()
 
-    # Setup mock responses
     mock_gen.start_session = AsyncMock(return_value={
         "session_id": "test-123",
         "initial_response": "Hello! Let's create your agent."
@@ -219,7 +181,6 @@ def test_complete_integration_with_mocks():
         "tool_call_id": None
     })
 
-    # Mock generate_code to emit progress events
     async def mock_generate_code(session_id, progress_callback=None, user_id=None):
         if progress_callback:
             emitter = ProgressEmitter(ProgressPhase.GENERATION, progress_callback)
@@ -237,7 +198,6 @@ def test_complete_integration_with_mocks():
 
     mock_gen.generate_code = AsyncMock(side_effect=mock_generate_code)
 
-    # Simulate the frontend API calls
     print("   Mocked all backend endpoints")
     print("   Simulated progress emission works correctly")
 
@@ -245,7 +205,6 @@ def test_complete_integration_with_mocks():
 
 
 def main():
-    """Run all navigation flow tests."""
     print("\n" + "="*70)
     print("Navigation Flow Tests")
     print("="*70 + "\n")

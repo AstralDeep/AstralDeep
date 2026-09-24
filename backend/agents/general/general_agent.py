@@ -1,13 +1,8 @@
+"""General Agent: FastAPI A2A server exposing the file-reading and system tools over
+/agent (WebSocket MCP) plus A2A discovery endpoints; composes its own Plane runtime
+via orchestrator/plane_composition.py when run networked rather than in-process.
 """
-General Agent — A2A-compliant specialist agent with MCP tool execution.
 
-Runs a FastAPI server with:
-- /.well-known/agent-card.json (legacy A2A discovery)
-- /a2a/.well-known/agent-card.json (official A2A v0.3 discovery)
-- /a2a/ (A2A JSON-RPC endpoint)
-- /agent (WebSocket for MCP tool calls from orchestrator)
-- /health (health check)
-"""
 import asyncio
 import os
 import sys
@@ -26,8 +21,6 @@ DEFAULT_PORT = 8003
 
 
 class GeneralAgent(BaseA2AAgent):
-    """Unified specialist agent with patient, system, and search capabilities."""
-
     agent_id = "general-1"
     service_name = "General Agent"
     description = (
@@ -62,11 +55,6 @@ class GeneralAgent(BaseA2AAgent):
             )
 
         super().__init__(MCPServer(), port=port)
-        # Feature 002/031: the file-reader tools (read_document, read_spreadsheet,
-        # read_presentation, read_text, read_image, list_attachments, …) resolve
-        # attachments through typed Plane-backed adapters. In-process operation
-        # reuses the orchestrator's runtime; networked operation composes exactly
-        # one runtime in this process before constructing the agent.
         from agents.general.file_tools import (
             register_plane_dependencies,
             unregister_plane_dependencies,
@@ -107,8 +95,6 @@ class GeneralAgent(BaseA2AAgent):
             raise
 
     def close_plane_bindings(self) -> None:
-        """Idempotently release only the process bindings created by this agent."""
-
         from agents.general.file_tools import unregister_plane_dependencies
         from shared.attachment_resolver import unregister_plane_runtime
 
@@ -142,8 +128,6 @@ class GeneralAgent(BaseA2AAgent):
 
 
 def _compose_standalone_plane():
-    """Compose the one Plane runtime owned by a networked agent process."""
-
     from orchestrator.plane_composition import compose_plane_from_environment
 
     manifest = Path(__file__).resolve().parents[3] / "config" / "astral-composition.json"
@@ -151,8 +135,6 @@ def _compose_standalone_plane():
 
 
 async def _run_standalone(port: int) -> None:
-    """Run a networked agent and always release bindings before its Plane."""
-
     composition = _compose_standalone_plane()
     agent = None
     try:
@@ -168,13 +150,6 @@ async def _run_standalone(port: int) -> None:
 
 
 async def _close_standalone_plane(agent, composition) -> None:
-    """Join agent-local Plane consumers before final synchronous teardown.
-
-    Standalone agents never start the durable purge retry loop. Continuous
-    reconciliation is owned by the orchestrator process over the same Plane
-    state; this close only joins work admitted by this networked agent.
-    """
-
     from orchestrator.runtime_composition import close_blocking_component
 
     errors: list[BaseException] = []

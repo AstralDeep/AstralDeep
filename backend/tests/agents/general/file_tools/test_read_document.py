@@ -1,4 +1,6 @@
-"""read_document: PDF (text / OCR / vision fallback), DOCX, RTF, ODT."""
+"""Tests for agents/general/file_tools/read_document.py and ocr.py: PDF
+text/OCR/vision-fallback extraction, DOCX/RTF/ODT parsing, and max-chars truncation.
+"""
 
 from __future__ import annotations
 
@@ -37,8 +39,6 @@ def test_read_pdf_with_embedded_text(repo, upload_root):
 
 
 def test_read_pdf_blank_falls_back_to_vision(repo, upload_root, monkeypatch):
-    """Blank PDF: embedded extraction yields nothing → vision-model path
-    with rasterized page images. Stubbed so the test doesn't require poppler."""
     from agents.general.file_tools import read_document as rd
 
     def _fake_pdf_to_vision(_path):
@@ -58,9 +58,6 @@ def test_read_pdf_blank_falls_back_to_vision(repo, upload_root, monkeypatch):
 
 
 def test_read_pdf_blank_no_poppler_returns_empty_images(repo, upload_root, monkeypatch):
-    """If rasterization fails (e.g., poppler missing), images is empty but
-    the call still succeeds with vision_required=True so the agent can tell
-    the user the PDF was unreadable."""
     from agents.general.file_tools import read_document as rd
 
     monkeypatch.setattr(rd, "pdf_to_vision_images", lambda _p: [])

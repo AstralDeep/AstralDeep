@@ -1,11 +1,8 @@
-"""Closed-loop runner: plan -> act -> observe -> verify (T013).
-
-For each scenario the runner observes (drives the driver, capturing evidence
-under a hard time budget with informed retries) then verifies (runs each check
-plus its adversarial counter, reconciling into a definite verdict). Every
-scenario reaches pass/fail/uncertain within bounded steps — never on the agent's
-own say-so (FR-001 / FR-005 / FR-006 / D13).
+"""Closed-loop runner: plan, act, observe, verify (backend/verification/checks/base.py,
+scenarios.py, verdict.py): drives each scenario under a time budget with informed
+retries, then reconciles checks and counters into a definite verdict.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,8 +19,6 @@ logger = logging.getLogger("verification.runner")
 
 
 class Runner:
-    """Drives scenarios through their checks, producing reconciled verdicts."""
-
     def __init__(
         self,
         driver: Any,
@@ -37,9 +32,8 @@ class Runner:
         self.evidence: Dict[str, CapturedEvidence] = {}
 
     async def _observe(self, scenario: Scenario) -> Optional[CapturedEvidence]:
-        """Drive the scenario under the time budget with informed retries."""
         last_err: Optional[str] = None
-        for attempt in range(1, self.config.max_retries + 2):  # initial + retries
+        for attempt in range(1, self.config.max_retries + 2):
             try:
                 ev = await asyncio.wait_for(
                     self.driver.run_scenario(scenario), timeout=self.config.timeout_s
@@ -47,7 +41,7 @@ class Runner:
                 if last_err:
                     ev.extra["prior_attempt_error"] = last_err
                 return ev
-            except Exception as exc:  # noqa: BLE001 — informed retry then give up
+            except Exception as exc:  # noqa: BLE001
                 last_err = f"{type(exc).__name__}: {exc}"
                 logger.warning(
                     "scenario %s attempt %d failed: %s",
@@ -63,10 +57,8 @@ class Runner:
         }
 
     async def verify_scenario(self, scenario: Scenario, checks: List[Check]) -> None:
-        """Observe the scenario, then run every check + counter into verdicts."""
         ev = await self._observe(scenario)
         if ev is None:
-            # FR-033: "harness could not observe" — distinct from "product wrong".
             self.verdicts.append(
                 Verdict(
                     verdict_id=f"{scenario.scenario_id}:observe",
@@ -123,8 +115,6 @@ class Runner:
         for scenario in scenarios:
             await self.verify_scenario(scenario, checks)
         return self.verdicts
-
-    # ---- convenience aggregations -----------------------------------------
 
     def has_failures(self) -> bool:
         return any(v.outcome == Outcome.FAIL for v in self.verdicts)

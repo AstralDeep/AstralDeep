@@ -1,8 +1,6 @@
-"""Executable setup-command contracts for feature 060.
-
-These tests intentionally inspect the tracked runbook and Makefile instead of
-starting Docker.  They keep the quickstart's copy/paste commands aligned with
-real targets and make an empty focused pytest selection a hard failure.
+"""Tests that the quickstart runbook's copy/paste commands resolve to real Makefile
+targets, the focused test selection fails closed if empty, and the Docker/browser
+tooling stays lock- and digest-pinned.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ QUICKSTART_PATH = (
 
 if not (
     MAKEFILE_PATH.is_file() and (REPO_ROOT / "specs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,

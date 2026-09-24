@@ -1,11 +1,8 @@
-"""Tests for the personalization prompt-fragment assembly (feature 025, T010/T012).
-
-These validate the *mechanism* that keeps personality subordinate to
-compliance (FR-015): the personality block is rendered last and behind the
-explicit "never overrides compliance" preamble, after memory/context/skills.
-The full behavioral guarantee (the LLM actually obeying) is an integration
-test that requires the live stack.
+"""Tests for personalization/service.py: empty-user fragment is empty, personality
+renders last and subordinate to the compliance preamble, and a profile without
+personality omits the style block.
 """
+
 from __future__ import annotations
 
 from personalization.service import PERSONALITY_PREAMBLE, PersonalizationService
@@ -24,7 +21,7 @@ class _FakeRepo:
 
 
 def _service_with(profile=None, memory=None) -> PersonalizationService:
-    svc = PersonalizationService(db=None)  # repo replaced below; db unused
+    svc = PersonalizationService(db=None)
     svc.repo = _FakeRepo(profile=profile, memory=memory)
     return svc
 
@@ -46,20 +43,17 @@ def test_personality_is_last_and_subordinate():
 
     fragment = svc.build_prompt_fragment("u1", skill_lines=["grants:search_grants — find funding"])
 
-    # All sections present
     assert "WHAT YOU REMEMBER" in fragment
     assert "USER CONTEXT" in fragment
     assert "ENABLED SKILLS" in fragment
     assert PERSONALITY_PREAMBLE in fragment
 
-    # Ordering: memory -> context -> skills -> personality (subordinate, last)
     i_mem = fragment.index("WHAT YOU REMEMBER")
     i_ctx = fragment.index("USER CONTEXT")
     i_skill = fragment.index("ENABLED SKILLS")
     i_persona = fragment.index(PERSONALITY_PREAMBLE)
     assert i_mem < i_ctx < i_skill < i_persona, fragment
 
-    # The persona content is rendered behind the subordinate preamble.
     assert fragment.index("concise") > i_persona
 
 

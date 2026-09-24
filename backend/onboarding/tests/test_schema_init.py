@@ -1,4 +1,6 @@
-"""Verify onboarding storage through AstralPlane's current schema contract."""
+"""Tests that AstralPlane's baseline schema and migrations own the onboarding tables,
+columns, indexes, and check constraints for status and target consistency.
+"""
 
 from __future__ import annotations
 

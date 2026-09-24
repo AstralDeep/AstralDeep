@@ -1,4 +1,9 @@
-"""Public research and attended decisions through the actual shared dispatcher."""
+"""Tests for HITL confirmation over the shared dispatch gate
+(orchestrator/hitl_confirmation.py, supervisor.py, taint.py): public-research
+exemptions, approval binding to one stored call, and fail-closed on stale or replayed
+clicks.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +39,7 @@ def _register(orch, agent, tool):
 
 
 @pytest.fixture
-def runtime(gate_orchestrator, monkeypatch):  # noqa: F811 - pytest fixture import
+def runtime(gate_orchestrator, monkeypatch):  # noqa: F811
     orch, ws = gate_orchestrator
     monkeypatch.setattr(hitl, "hitl_enabled", lambda: True)
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)

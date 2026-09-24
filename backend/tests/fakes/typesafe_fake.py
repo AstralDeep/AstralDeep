@@ -1,14 +1,6 @@
-"""A deterministic TypeSafe stand-in for every 089 test (T013).
-
-Substituted at exactly one boundary -- :class:`TypeSafeAdapterClient` -- so
-everything above it, the question builder, the parser, the budget, the circuit,
-the seams, runs its real code. No test in this feature touches the network.
-
-Determinism is the point. A recorded answer set per fixture prompt means a tier
-assertion is a statement about the tiering rules, not about what a model
-happened to say that afternoon. Failures are injected by script rather than by
-probability, so "the second attempt times out and the third succeeds" is a test
-you can write, not one you wait for.
+"""Deterministic TypeSafe SDK stand-in substituted at TypeSafeAdapterClient so the
+routing, parsing, and budget code above it runs unmodified; provides scripted
+answers, injected faults, and a dev-only fault-injection switch.
 """
 
 from __future__ import annotations
@@ -29,16 +21,8 @@ from orchestrator.typesafe_routing.questions import (
     TOOL_QUESTION_PREFIX,
 )
 
-# -- error classes ------------------------------------------------------
-#
-# Named to match the SDK's classes, because the budget classifies by class
-# name. Using the real classes would make the fake depend on the package
-# being installed, which is the one thing the fake must not require.
-
 
 class FakeTypeSafeError(Exception):
-    """Base for every injected failure."""
-
     def __init__(self, message: str = "", *, status_code: Optional[int] = None) -> None:
         super().__init__(message or type(self).__name__)
         self.status_code = status_code
@@ -86,7 +70,6 @@ class TypeSafeAPIError(FakeTypeSafeError):
     pass
 
 
-#: Every error class a fault name can produce, by the short name tests use.
 ERROR_CLASSES: Mapping[str, type[FakeTypeSafeError]] = {
     "timeout": TypeSafeAPITimeoutError,
     "connection": TypeSafeAPIConnectionError,
@@ -97,9 +80,6 @@ ERROR_CLASSES: Mapping[str, type[FakeTypeSafeError]] = {
     "unprocessable": TypeSafeUnprocessableEntityError,
     "malformed": TypeSafeAPIResponseValidationError,
 }
-
-
-# -- answers ------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,8 +101,6 @@ class ChoiceAnswer:
 
 @dataclass(frozen=True, slots=True)
 class FakeResponse:
-    """The three answer buckets the parser reads."""
-
     nouls: Mapping[str, NoulAnswer] = field(default_factory=dict)
     scores: Mapping[str, ScoreAnswer] = field(default_factory=dict)
     choices: Mapping[str, ChoiceAnswer] = field(default_factory=dict)
@@ -130,13 +108,6 @@ class FakeResponse:
 
 @dataclass(frozen=True, slots=True)
 class AnswerSet:
-    """A recorded answer for one fixture prompt, independent of question ids.
-
-    The agent and tool are named, not indexed, so a recording survives a change
-    in catalog ordering -- the fake resolves the right ``tool_for_<n>`` id from
-    the question set it is handed.
-    """
-
     agent_id: Optional[str] = None
     agent_confidence: float = 0.0
     agent_probabilities: Mapping[str, float] = field(default_factory=dict)
@@ -164,7 +135,6 @@ class AnswerSet:
 
 
 def high_confidence(agent_id: str, tool_name: str, *, style: str = "dashboard") -> AnswerSet:
-    """A recorded answer that lands in the high tier."""
     return AnswerSet(
         agent_id=agent_id,
         agent_confidence=0.94,
@@ -179,7 +149,6 @@ def high_confidence(agent_id: str, tool_name: str, *, style: str = "dashboard") 
 def medium_confidence(
     agent_id: str, tools: Sequence[str], *, style: str = "detailed_table"
 ) -> AnswerSet:
-    """A recorded answer that lands in the medium tier (a shortlist)."""
     if not tools:
         raise ValueError("a medium answer needs at least one tool")
     spread = {name: 0.85 / len(tools) for name in tools}
@@ -195,7 +164,6 @@ def medium_confidence(
 
 
 def low_confidence(*, style: str = "conversational") -> AnswerSet:
-    """A recorded answer that lands in the low tier: nothing is narrowed."""
     return AnswerSet(
         agent_id=NO_TOOL_NEEDED,
         agent_confidence=0.41,
@@ -205,7 +173,6 @@ def low_confidence(*, style: str = "conversational") -> AnswerSet:
 
 
 def none_fit(agent_id: str, *, style: str = "as_delivered") -> AnswerSet:
-    """The model picked an agent but said none of its tools apply."""
     return AnswerSet(
         agent_id=agent_id,
         agent_confidence=0.81,
@@ -218,7 +185,6 @@ def none_fit(agent_id: str, *, style: str = "as_delivered") -> AnswerSet:
 
 
 def _response_for(answers: AnswerSet, questions: Mapping[str, Any]) -> FakeResponse:
-    """Render one answer set against the question ids actually asked."""
     choices: dict[str, ChoiceAnswer] = {
         QUESTION_THREAT_CATEGORY: ChoiceAnswer(
             choice=answers.threat_category,
@@ -237,7 +203,6 @@ def _response_for(answers: AnswerSet, questions: Mapping[str, Any]) -> FakeRespo
             choice=answers.style, confidence=1.0, probabilities={answers.style: 1.0}
         )
     if answers.tool_name:
-        # Find the tool question whose options contain the recorded tool.
         for question_id, question in questions.items():
             if not question_id.startswith(TOOL_QUESTION_PREFIX):
                 continue
@@ -265,24 +230,14 @@ def _response_for(answers: AnswerSet, questions: Mapping[str, Any]) -> FakeRespo
     )
 
 
-# -- the fake SDK surface and client -------------------------------------
-
-
 @dataclass
 class _FakeQuestion:
-    """Stands in for ``Noul`` / ``Score`` / ``Choice``.
-
-    It keeps ``criteria`` so the fake can resolve a recorded tool name back to
-    the question that offered it.
-    """
-
     kind: str
     instructions: str = ""
     criteria: Any = None
 
 
 def fake_sdk_surface() -> SdkSurface:
-    """An :class:`SdkSurface` that needs no installed package."""
     return SdkSurface(
         client_class=None,
         retry_policy=lambda **kwargs: kwargs,
@@ -295,8 +250,6 @@ def fake_sdk_surface() -> SdkSurface:
 
 @dataclass
 class Call:
-    """One recorded request. Kept so tests can assert on what was sent."""
-
     api_key: str = field(repr=False)
     state: Mapping[str, Any]
     questions: Mapping[str, Any]
@@ -304,14 +257,6 @@ class Call:
 
 
 class FakeTypeSafeClient:
-    """Drop-in replacement for :class:`TypeSafeAdapterClient`.
-
-    ``answers`` maps a fixture prompt (exactly, or by a prefix match) to the
-    recorded :class:`AnswerSet`. ``faults`` is a script consumed one entry per
-    attempt: an exception class, an instance, a float (seconds of latency), or
-    ``None`` to answer normally.
-    """
-
     def __init__(
         self,
         *,
@@ -331,7 +276,6 @@ class FakeTypeSafeClient:
         self.calls: list[Call] = []
         self.closed = False
 
-    # The adapter reads this to build questions.
     def _surface(self) -> SdkSurface:
         return self._sdk
 
@@ -378,12 +322,6 @@ class FakeTypeSafeClient:
         return _response_for(answers, questions)
 
     async def _elapse(self, seconds: float, timeout: float) -> None:
-        """Simulate latency, honoring the per-attempt timeout the SDK enforces.
-
-        Without this the fake would answer a call the real client would have
-        abandoned, and a test asserting "the budget stopped the attempt" would
-        pass for the wrong reason.
-        """
         if timeout is not None and seconds > timeout:
             await self._sleep(timeout)
             raise TypeSafeAPITimeoutError(
@@ -395,13 +333,6 @@ class FakeTypeSafeClient:
         self.closed = True
 
 
-# -- local fault injection for the quickstart ----------------------------
-#
-# A switch a developer can flip while walking through quickstart.md, without
-# editing code. It deliberately does NOT use the TYPESAFE_ prefix: those three
-# names are refused at boot (FR-005), and reusing the prefix for a test switch
-# would undermine the rule.
-
 FAULT_ENV_NAME = "ASTRAL_TEST_TYPESAFE_FAULT"
 
 FAULT_ALIASES: Mapping[str, str] = {
@@ -412,13 +343,8 @@ FAULT_ALIASES: Mapping[str, str] = {
 }
 
 
+# Ignored outside dev: honoring it in prod is a DoS vector
 def configured_fault(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
-    """Return the configured fault name, honoring it only outside production.
-
-    Production posture ignores the switch entirely. A fault injector that a
-    production process respects is a denial-of-service control with a friendly
-    name.
-    """
     import os
 
     environ = environ if environ is not None else os.environ
@@ -427,7 +353,7 @@ def configured_fault(environ: Optional[Mapping[str, str]] = None) -> Optional[st
         return None
     try:
         from orchestrator.session_store import is_dev_mode
-    except ImportError:  # pragma: no cover - the module is always present
+    except ImportError:  # pragma: no cover
         return None
     if not is_dev_mode():
         return None
@@ -435,18 +361,12 @@ def configured_fault(environ: Optional[Mapping[str, str]] = None) -> Optional[st
 
 
 class FaultInjectingClient:
-    """Wraps a real adapter client and raises the configured fault instead.
-
-    Used only by the quickstart walkthrough. With no fault configured, or in
-    production posture, every call passes straight through.
-    """
-
     def __init__(self, inner: Any, *, environ: Optional[Mapping[str, str]] = None) -> None:
         self._inner = inner
         self._environ = environ
 
     def _surface(self) -> SdkSurface:
-        return self._inner._surface()  # noqa: SLF001 - delegation to the wrapped client
+        return self._inner._surface()  # noqa: SLF001
 
     async def system_one(self, **kwargs: Any) -> Any:
         fault = configured_fault(self._environ)

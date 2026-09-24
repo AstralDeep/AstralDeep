@@ -1,10 +1,8 @@
-"""US2 — delegated authority on every interaction (T021).
-
-Drives the authority probes ONCE in-process (module-scoped) and asserts:
-cross-user reference refused with no leakage (SC-005); ungranted scope withheld +
-non-admin parser approval refused (SC-006); every denial audited and the chain
-unbroken with on-behalf-of attribution (SC-007); run mode labelled (SC-010).
+"""Tests for delegated-authority checks (backend/verification/checks/authority.py,
+drivers/in_process.py): cross-user isolation, scope withholding, delegation
+attribution, and admin-only parser approval, driven once module-scoped.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -53,15 +51,12 @@ def _verdict(check, ev):
 
 
 def test_us2_cross_user_isolation(probes):
-    # The security-critical isolation guarantee and the chain integrity must PASS.
     for check in (A.CROSS_USER, A.CHAIN):
         outcome, reason = _verdict(check, probes["xuser"])
         assert outcome == Outcome.PASS, f"{check.check_id}: {reason}"
-    # The denial-audit check is a reported finding: it may be UNCERTAIN when the
-    # product's denial path fails to persist, but it must never be a hard FAIL.
     outcome, reason = _verdict(A.DENIALS, probes["xuser"])
     assert outcome != Outcome.FAIL, f"denials_audited unexpectedly FAILED: {reason}"
-    assert probes["xuser"].run_mode == "mock_inprocess"  # SC-010
+    assert probes["xuser"].run_mode == "mock_inprocess"
 
 
 def test_us2_scope_withheld(probes):

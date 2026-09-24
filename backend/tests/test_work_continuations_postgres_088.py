@@ -1,4 +1,8 @@
-"""Private owner holds and conservative settlements with real IAM and Plane."""
+"""Tests for private owner waits and conservative settlement (work_control_authority.py,
+work_controls.py) against real IAM and Plane: legacy envelope settlement, race-safe
+locked reads, and rollback on a failed decision.
+"""
+
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -84,7 +88,6 @@ async def safe_control(value, command):
 
 
 async def uncertain(value):
-    """A genuine DB permit and unknown synthetic effect; no physical call occurs."""
     action, attempt, permit = await issued_fixture(value.reads, value.identity)
     outcome = AssignmentActionOutcome("uncertain", digest("synthetic-unknown-outcome"), {})
     await value.reads.store.call("record_action_outcome", owner_id="owner", assignment_id=value.identity,
@@ -101,11 +104,6 @@ async def reconcile_body(value, outcome, **changes):
 
 
 async def historical_envelope(value):
-    """Model a restored v1 envelope; preserve the genuinely issued action ledger.
-
-    This compatibility fixture does not claim that the permit was minted by an
-    old release. Plane separately qualifies its retained historical receipts.
-    """
     def restore(tx, _repository):
         data = thaw(tx.fetch_one("SELECT data FROM persistent_assignment WHERE id=%s",
                                  (value.identity,))["data"])
@@ -203,8 +201,6 @@ async def test_reconcile_charges_maximum_once_without_output_or_continuation(val
     assert event.outputs_meta == {"assignment_id": value.identity,
         "instruction_revision": before.instruction_revision, "control_epoch": before.control_epoch,
         "submission_id": body.submission_id, "action_id": action.action_id, "decision": decision}
-    # Expected revision is a transient observation; the same immutable decision
-    # replays even after a later safe control changes control/state counters.
     if not paused:
         await safe_control(value, "pause")
     before_replay = await current(value)
@@ -282,8 +278,6 @@ async def test_failed_decision_rolls_back_audit_state_and_receipt(value, monkeyp
         if failure == "replacement":
             value.reads.assignments.orch.audit_repo = object()
         if failure == "expired":
-            # Cross only the narrowed private attempt lifetime after real audit.
-            # Do not patch process clocks or alter production/SQL timeouts.
             time.sleep(.10)
         return result
 

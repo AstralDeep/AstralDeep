@@ -1,9 +1,8 @@
-"""Current-human encrypted notes on the application Plane personalization facade.
-
-Only current ciphertext or a minimal erasure tombstone is durable. Note text is
-ephemeral owner guidance, never an audit value, source citation or permission.
-Automatic personalization memory retains its existing independent behavior.
+"""Owner-encrypted note storage on Plane's personalization facade -- only ciphertext or
+an erasure tombstone is durable; notes are ephemeral guidance, never audit or
+citation content. Exposed via orchestrator's projection_surfaces/guidance.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -71,8 +70,6 @@ def _unavailable():
 
 
 class ExplicitNoteService:
-    """One facade; reuse the live credential manager and bounded human adapter."""
-
     def __init__(self, orchestrator):
         from audit.repository import AuditRepository
         from orchestrator.credential_manager import CredentialManager
@@ -136,7 +133,6 @@ class ExplicitNoteService:
 
     @staticmethod
     def snapshot(body):
-        """Detach and validate every field before any asynchronous or SQL wait."""
         try:
             if type(body) is not ExplicitNoteCommand:
                 raise ValueError
@@ -172,8 +168,6 @@ class ExplicitNoteService:
             self._current(caller)
             if repositories is not self.repositories:
                 _unavailable()
-            # Consistency, not authorization: all note mutations take owner79.
-            # The outer caller guard has already taken any current session lock.
             self.notes.lock_explicit_note_owner(tx, owner_id=caller.owner_id)
             result = callback(tx, self.notes)
             self._current(caller)
@@ -218,18 +212,16 @@ class ExplicitNoteService:
         self._current()
 
     async def _privacy(self, caller, value):
-        """Two off-loop scans; cancellation retains capacity until work finishes."""
         from personalization.phi_gate import get_phi_gate
 
         def scan():
-            # Analyzer initialization is also blocking and stays off the loop.
             return get_phi_gate().contains_phi(value)
 
         def finished(task):
             self._privacy_tasks.discard(task)
             self._privacy_slots.release()
             if not task.cancelled():
-                task.exception()  # Consume errors even after the waiter retires.
+                task.exception()
 
         try:
             async with asyncio.timeout_at(caller._deadline):
@@ -288,7 +280,6 @@ class ExplicitNoteService:
             result = repository.put_explicit_note(tx, preparation=prepared, record=record)
             self._audit(tx, owner_id=caller.owner_id, principal=caller.owner_id,
                         action=command.command, record=result)
-            # Audit may wait. Recheck availability before allowing commit.
             if repository.get_explicit_note(tx, owner_id=caller.owner_id,
                                             note_id=command.note_id) != result:
                 raise AssignmentError("explicit_note_changed", 409)
@@ -297,13 +288,12 @@ class ExplicitNoteService:
         result = await self._transaction(caller, accept)
         await caller.verify_delivery()
         self._current(caller)
-        # Mutation responses contain identity/metadata only, never plaintext or ciphertext.
+        # Returns metadata only; never plaintext or ciphertext
         if type(result) is ExplicitNoteTombstone:
             return result
         return self._encrypted(result).metadata
 
     async def _deliver(self, caller, records):
-        # Never adopt a corrected/re-enabled value after the caller verification wait.
         await caller.verify_delivery()
 
         def current(tx, repository):
@@ -315,9 +305,6 @@ class ExplicitNoteService:
             expiring = tuple(record for record in records if record.expires_at is not None)
             if expiring:
                 earliest = min(expiring, key=lambda record: record.expires_at)
-                # Decryption takes time, and the host clock can lag PostgreSQL.
-                # Under the owner lock, a final DB-clock check of the earliest
-                # expiry bounds every selected note without adopting new rows.
                 if repository.get_explicit_note(tx, owner_id=caller.owner_id,
                                                 note_id=earliest.note_id) != earliest:
                     raise AssignmentError("explicit_note_changed", 409)
@@ -342,7 +329,6 @@ class ExplicitNoteService:
         return (await self._deliver(caller, (record,)))[0]
 
     async def list(self, *, caller, after_id=None, limit=50, search=""):
-        """Bounded owner-only plaintext search; cursor advances over scanned rows."""
         try:
             _integer(limit, 1, 100)
             if after_id is not None:
@@ -360,13 +346,6 @@ class ExplicitNoteService:
         return ExplicitNotePage(matches, records[-1].note_id if len(records) == limit else None)
 
     async def verify_snapshot(self, *, caller, notes):
-        """Recheck a built owner view before its host starts sending it.
-
-        The host retains this exact ephemeral snapshot across rendering. This
-        final current-IAM/head/DB-expiry check never substitutes newer values.
-        Network delivery is not atomic with a database transaction; the host
-        must start sending immediately after its final local caller check.
-        """
         self._current(caller)
         try:
             if caller is None or type(notes) is not tuple or len(notes) > 100:
@@ -395,12 +374,6 @@ class ExplicitNoteService:
             raise AssignmentError("explicit_note_changed", 409)
 
     async def expire_batch(self, *, limit=20):
-        """Host maintenance only; bounded erasure with a private fair scan cursor.
-
-        This method is not a human/machine route or a note-selection capability.
-        It only retires rows whose captured database expiry has passed. A busy
-        owner is skipped until the next cycle; no tenant can stall later owners.
-        """
         from astralplane.repositories import RepositoryConflictError, RepositoryNotFoundError
         try:
             _integer(limit, 1, 100)
@@ -448,7 +421,6 @@ class ExplicitNoteService:
             return ExplicitNoteExpiryBatch(len(page.records), erased, skipped, page.next_cursor is None)
 
     async def expiry_loop(self):
-        """Application-owned bounded cleanup; startup shutdown owns cancellation."""
         while True:
             self._current()
             interval = 30
@@ -457,6 +429,6 @@ class ExplicitNoteService:
                 if not batch.cycle_complete:
                     interval = 1
             except Exception as exc:
-                # Never log repository messages, identities, ciphertext or values.
+                # Log only the exception type, never repository detail
                 logger.warning("explicit_note_expiry_retry reason=%s", type(exc).__name__)
             await asyncio.sleep(interval)

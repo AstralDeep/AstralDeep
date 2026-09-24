@@ -1,9 +1,8 @@
-"""Actual socket admission and managed async handoff reach the current catalog.
-
-These tests deliberately stop immediately after ordinary slash expansion after guidance
-expansion. The stop is an explicit failed operation, never evidence of a model
-completion, publication, or provider call.
+"""Tests for socket admission into orchestrator/turn_guidance_authority.py: foreground
+and managed-background handoffs expand only the current guidance catalog, stopping
+right after slash expansion.
 """
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -43,8 +42,6 @@ async def guidance_turn(metadata, runtime, fixture, tmp_path, monkeypatch):
     orch.async_task_manager.bind(plane_runtime=runtime, plane_repositories=runtime.repositories)
     observed = []
     chat = str(uuid4())
-    # Conversation publication itself has independent full-path gates. These
-    # adapters create no commit and no history success in this guidance probe.
     async def no_stage(*_args, **_kwargs):
         return None, None, None
     async def no_detached(*_args, **_kwargs):

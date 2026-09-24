@@ -1,4 +1,7 @@
-"""Focused tests for the offline feature-074 composition verifier."""
+"""Tests for the offline composition verifier: exact pins, canonical URLs/contracts,
+floating-branch and dirty-component rejection, and deterministic CLI/JSON reporting
+across the five repositories.
+"""
 
 from __future__ import annotations
 
@@ -67,7 +70,6 @@ def _git(cwd: Path, *arguments: str) -> str:
 
 
 def _gitlink_commit(root: Path, component_path: str) -> str:
-    # Match the verifier's candidate index, including deliberate precommit repins.
     entry = _git(root, "ls-files", "--stage", "--", component_path)
     metadata, listed_path = entry.split("\t", maxsplit=1)
     mode, commit, stage = metadata.split()

@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Export bounded, repository-normalized Swift line coverage from an xcresult.
-
-``xccov view --archive --json`` is not a stable producer contract across Xcode
-versions.  This exporter uses the documented per-file archive interface, validates
-every observation, and writes the exact mapping consumed by
-``check_changed_coverage.py``.
+"""Exports bounded, repository-normalized Swift line coverage from an xcresult archive
+via xccov's per-file interface, writing the mapping check_changed_coverage.py
+consumes.
 """
 
 from __future__ import annotations
@@ -59,8 +56,6 @@ PLATFORM_ROOTS = {
 
 
 class ExportError(RuntimeError):
-    """Stable fail-closed producer error."""
-
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -74,8 +69,6 @@ def _bounded_command(
     max_stdout_bytes: int,
     export_deadline: float | None = None,
 ) -> bytes:
-    """Run one fixed-argument command and reject failures or oversized output."""
-
     if export_deadline is not None and time.monotonic() >= export_deadline:
         raise ExportError(
             "export_timeout", "coverage export exceeded its overall deadline"
@@ -179,8 +172,6 @@ def _bounded_windows_process_output(
     max_stdout_bytes: int,
     export_deadline: float | None,
 ) -> bytes:
-    """Drain Windows pipe handles concurrently without socket selectors."""
-
     assert process.stdout is not None and process.stderr is not None
     streams = (process.stdout, process.stderr)
     limits = (max_stdout_bytes, MAX_FILE_LIST_BYTES)
@@ -197,7 +188,7 @@ def _bounded_windows_process_output(
                     events.put((index, None, None))
                     return
                 events.put((index, chunk, None))
-        except BaseException as exc:  # pragma: no cover - exceptional OS seam
+        except BaseException as exc:  # pragma: no cover
             events.put((index, None, exc))
 
     readers = tuple(
@@ -290,8 +281,6 @@ def _bounded_windows_process_output(
 
 
 def _strict_json(content: bytes) -> Any:
-    """Decode strict UTF-8 JSON while rejecting duplicate object keys/constants."""
-
     def reject_constant(value: str) -> None:
         raise ValueError(f"invalid JSON constant {value}")
 
@@ -314,8 +303,6 @@ def _strict_json(content: bytes) -> Any:
 
 
 def _safe_repo_path(value: str) -> str:
-    """Return one normalized, non-control-character repository path."""
-
     if (
         not value
         or "\x00" in value
@@ -352,8 +339,6 @@ def _decode_git_object_id(output: bytes, *, code: str, message: str) -> str:
 def _projection_checkout(
     repo: Path, *, export_deadline: float | None = None
 ) -> Path:
-    """Return the initialized Projection checkout pinned by the parent gitlink."""
-
     component = repo.joinpath(*PROJECTION_COMPONENT.parts)
     try:
         component_stat = component.lstat()
@@ -523,8 +508,6 @@ def _archive_file_list(
 
 
 def _normalize_archive_path(raw_path: str) -> str | None:
-    """Map from the first Apple repository anchor, never a later lookalike."""
-
     value = raw_path.replace("\\", "/")
     candidates: list[int] = []
     if value.startswith(APPLE_ROOT):
@@ -543,8 +526,6 @@ def _normalize_archive_path(raw_path: str) -> str | None:
 
 
 def _canonical_archive_repo_root(value: str | Path) -> str:
-    """Validate a historical producer checkout root without resolving it locally."""
-
     raw = os.fspath(value)
     if (
         not raw
@@ -568,8 +549,6 @@ def _canonical_archive_repo_root(value: str | Path) -> str:
 
 
 def _local_archive_repo_root(repo: Path) -> str:
-    """Render a local checkout as the absolute POSIX path xccov records."""
-
     raw = repo.as_posix()
     if repo.drive and not raw.startswith("/"):
         raw = f"/{raw}"
@@ -579,8 +558,6 @@ def _local_archive_repo_root(repo: Path) -> str:
 def _read_source_bytes(
     repo: Path, relative_path: str, *, export_deadline: float | None = None
 ) -> bytes:
-    """Read source through one stable, regular, non-symlink descriptor."""
-
     path = _validate_path(Path(relative_path), repo=repo, kind="source")
     try:
         before = path.lstat()
@@ -636,13 +613,11 @@ def _read_source_bytes(
 def _read_source_line_count(
     repo: Path, relative_path: str, *, export_deadline: float | None = None
 ) -> int:
-    """Count physical source lines without inferring their executable status."""
     content = _read_source_bytes(repo, relative_path, export_deadline=export_deadline)
     return content.count(b"\n") + int(not content.endswith(b"\n"))
 
 
 def _native_domain_policy() -> Any:
-    """Load only this policy's fixed sibling native-domain validator."""
     path = Path(__file__).resolve().with_name("native_xccov_domain.py")
     if not path.is_file() or path.is_symlink():
         raise ExportError("native_domain_policy_unavailable", "native domain policy unavailable")
@@ -733,8 +708,6 @@ def _normalize_observations(
 
 
 def _validate_path(path: Path, *, repo: Path, kind: str) -> Path:
-    """Resolve an existing input beneath the repo without accepting symlink components."""
-
     absolute = path if path.is_absolute() else repo / path
     if ".." in absolute.parts:
         raise ExportError(f"unsafe_{kind}", f"{kind} path cannot traverse parents")
@@ -806,8 +779,6 @@ def export_xccov(
     archive_repo_root: str | Path | None = None,
     native_domain: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Export one platform-filtered normalized xccov mapping."""
-
     repo = repo.resolve(strict=True)
     if platform not in PLATFORM_ROOTS:
         raise ExportError("invalid_platform", "unsupported Apple coverage platform")
@@ -916,9 +887,6 @@ def export_xccov(
             for path, facts in domain["sources"].items():
                 actual = policy.source_facts(_read_source_bytes(repo, path, export_deadline=deadline))
                 policy.require(all(facts[key] == value for key, value in actual.items()))
-            # The binary maps some Core sources that an App-only raw lane may
-            # not observe. Preserve that complete mapping but record only the
-            # actual raw archive's selected source inventory as observations.
             domain["observed_sources"] = sorted(report)
             report = policy.native_report(report, {domain["lane"]: domain})
         except policy.DomainError as exc:
@@ -947,8 +915,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the fail-closed xccov export CLI."""
-
     args = _parser().parse_args(argv)
     try:
         export_xccov(

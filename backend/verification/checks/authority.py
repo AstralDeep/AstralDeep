@@ -1,9 +1,8 @@
-"""US2 — delegated-authority conformance checks (T019).
-
-Deterministic assertions over probe evidence: cross-user isolation, scope
-withholding, admin-only parser approval, delegation attribution, and audit-chain
-integrity (FR-016..020). Each positive check carries an adversarial counter.
+"""Delegated-authority conformance checks (backend/verification/checks/base.py,
+evidence.py): cross-user isolation, audit-chain integrity, scope withholding,
+delegation attribution, and admin-only approval, each with an adversarial counter.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict
@@ -14,12 +13,7 @@ from verification.evidence import CapturedEvidence
 _DENY_ACTION = "attachment_reference_denied"
 
 
-# --- cross_user_refused -----------------------------------------------------
-
 def _xuser_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    # The security-critical guarantee (SC-005): the other user receives NONE of
-    # the victim's data — no marker leakage and nothing in the attacker's
-    # workspace. (The denial *audit* is checked separately by denials_audited.)
     x = ev.extra or {}
     leaked = bool(x.get("leaked_markers"))
     ws_size = int(x.get("attacker_workspace_size", 0) or 0)
@@ -39,17 +33,11 @@ def _xuser_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     return no("us2.cross_user_refused.counter", "no leakage found")
 
 
-# --- denials_audited --------------------------------------------------------
-
 def _denials_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     rows = [r for r in ev.audit_rows if r.get("action_type") == _DENY_ACTION]
     if rows and all(r.get("outcome") == "failure" for r in rows):
         return ok("us2.denials_audited", f"{len(rows)} denial(s) recorded as failures",
                   event_class=sorted({r.get("event_class") for r in rows}))
-    # Isolation held but the denial event is absent: the product's _audit_drop
-    # builds an AuditEventCreate missing required fields, so the event silently
-    # fails to persist. Report as a FINDING (uncertain), not a gate failure —
-    # the harness observes, it does not change product behaviour (FR-032).
     if not (ev.extra or {}).get("leaked_markers"):
         return unsure(
             "us2.denials_audited",
@@ -58,8 +46,6 @@ def _denials_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
         )
     return no("us2.denials_audited", "expected an audited attachment_reference_denied failure")
 
-
-# --- audit_chain_unbroken ---------------------------------------------------
 
 def _chain_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     if ev.audit_chain_ok is True:
@@ -73,8 +59,6 @@ def _chain_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     return no("us2.audit_chain_unbroken.counter", "chain is clean")
 
 
-# --- scope_withheld ---------------------------------------------------------
-
 def _scope_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}
     if x.get("withheld") and not x.get("read_success"):
@@ -87,8 +71,6 @@ def _scope_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
         return ok("us2.scope_withheld.counter", "tool executed despite revoked scope")
     return no("us2.scope_withheld.counter", "no tool executed under revoked scope")
 
-
-# --- delegation_attribution -------------------------------------------------
 
 def _deleg_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}
@@ -108,8 +90,6 @@ def _deleg_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
         return ok("us2.delegation_attribution.counter", "agent assumed the user's own identity")
     return no("us2.delegation_attribution.counter", "acting agent is distinct from the user")
 
-
-# --- admin_only_approval ----------------------------------------------------
 
 def _approval_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}

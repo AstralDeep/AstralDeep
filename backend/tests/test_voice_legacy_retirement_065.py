@@ -1,4 +1,7 @@
-"""Regression guards for physical retirement of the legacy voice proxy."""
+"""Regression guards confirming the legacy voice proxy is physically removed from
+orchestrator/api.py and voice_api.py, only authenticated fixed-profile routes remain,
+and typed chat stays available when voice is not.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,6 @@
-"""read_presentation: PPTX."""
+"""Tests for agents/general/file_tools/read_presentation.py: PPTX parsing, slide-range
+selection, and ODP bytes-IO input.
+"""
 
 from __future__ import annotations
 

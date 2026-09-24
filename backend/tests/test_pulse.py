@@ -1,4 +1,9 @@
-"""Feature 033 (C-U8) — proactive Pulse digest + conversational scheduling."""
+"""Tests for backend/dreaming/pulse.py and its chrome surface
+(orchestrator/projection_surfaces/pulse.py): digest grouping, deduping and bounding,
+schedule-cadence proposals, and the real render() producing escaped astralprims
+cards.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -25,8 +30,6 @@ def test_flag_default_off(monkeypatch):
     assert pulse.pulse_enabled() is True
 
 
-# ───────────────────────── digest ────────────────────────────────────────────
-
 def test_build_digest_groups_by_category():
     items = [
         {"category": "goal", "title": "Ship 033", "salience": 0.9},
@@ -37,7 +40,6 @@ def test_build_digest_groups_by_category():
     titles = [c["title"] for c in cards]
     assert "Goal" in titles and "Preference" in titles
     goal_card = next(c for c in cards if c["title"] == "Goal")
-    # both goal lines present, highest salience first
     assert goal_card["content"][0]["content"] == "• Ship 033"
 
 
@@ -45,7 +47,7 @@ def test_build_digest_dedups_and_bounds():
     items = [{"category": "goal", "title": "X", "salience": 0.5} for _ in range(4)]
     cards = pulse.build_digest(items)
     goal = next(c for c in cards if c["title"] == "Goal")
-    assert len(goal["content"]) == 1  # deduped
+    assert len(goal["content"]) == 1
 
 
 def test_build_digest_max_cards():
@@ -55,7 +57,7 @@ def test_build_digest_max_cards():
 
 def test_build_digest_empty_and_junk():
     assert pulse.build_digest([]) == []
-    assert pulse.build_digest([None, "x", {"category": "g"}]) == []  # no title/value → skipped
+    assert pulse.build_digest([None, "x", {"category": "g"}]) == []
 
 
 def test_digest_cards_are_astralprims_shaped():
@@ -64,8 +66,6 @@ def test_digest_cards_are_astralprims_shaped():
     assert c["type"] == "card" and isinstance(c["content"], list)
     assert c["content"][0]["type"] == "text"
 
-
-# ───────────────────────── scheduling ────────────────────────────────────────
 
 @pytest.mark.parametrize("req,cadence", [
     ("remind me every morning", "daily"),
@@ -99,18 +99,7 @@ def test_proposal_needs_confirmation_and_schedulability():
     assert pulse.is_schedulable(pulse.propose_schedule("do the thing")) is False
 
 
-# ───────────────────────── Pulse chrome surface (real render) ────────────────
-#
-# The surface is wired into the chrome surface registry and renders
-# build_digest(...) for the user. These exercise the REAL render() against a
-# minimal fake orchestrator (no Postgres) and assert it returns real digest
-# HTML — escaped card/text markup produced by webrender.render_one — when the
-# flag is on, and an "off" notice when the flag is off.
-
-
 class _FakeRepo:
-    """PersonalizationRepository stand-in: durable memories + pending signals."""
-
     def __init__(self, memories=None, signals=None):
         self._memories = memories or []
         self._signals = signals or []
@@ -131,7 +120,6 @@ def _render(orch, user_id="u1"):
 
 
 def test_surface_is_registered():
-    """The pulse surface self-registers so chrome_open can resolve it."""
     mod = get_surface("pulse")
     assert mod is not None
     assert mod.TITLE
@@ -139,17 +127,14 @@ def test_surface_is_registered():
 
 
 def test_surface_off_when_flag_disabled(monkeypatch):
-    """Flag OFF (default): the surface renders an 'off' notice, no cards."""
     monkeypatch.delenv("FF_PULSE_DIGEST", raising=False)
     repo = _FakeRepo(memories=[{"category": "goal", "value": "ship 033", "salience": 0.9}])
     html = _render(_orch(repo))
     assert "turned off" in html.lower()
-    # No digest card grid rendered.
     assert "astral-card" not in html
 
 
 def test_surface_renders_real_digest_cards_when_enabled(monkeypatch):
-    """Flag ON: render() returns real card/text HTML from build_digest items."""
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
     repo = _FakeRepo(
         memories=[
@@ -159,17 +144,13 @@ def test_surface_renders_real_digest_cards_when_enabled(monkeypatch):
         signals=[{"category": "context", "value": "Kubernetes scaling", "recall_count": 2}],
     )
     html = _render(_orch(repo))
-    # Real rendered primitives: render_one emits .astral-card for cards.
     assert "astral-card" in html
-    # Grouped headings (category-titled cards) and the memory values are present.
     assert "Goal" in html
     assert "ship 033" in html and "dark mode" in html
-    # The conversational-scheduling hint (propose_schedule) is shown too.
     assert "schedule" in html.lower()
 
 
 def test_surface_empty_state_when_no_items(monkeypatch):
-    """Flag ON but no memories/signals: a friendly empty state, not an error."""
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
     html = _render(_orch(_FakeRepo()))
     assert "Nothing to show yet" in html
@@ -177,7 +158,6 @@ def test_surface_empty_state_when_no_items(monkeypatch):
 
 
 def test_surface_escapes_user_values(monkeypatch):
-    """Digest content goes through render_one (escape-by-default) — no raw HTML."""
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
     repo = _FakeRepo(memories=[
         {"category": "goal", "value": "<script>alert(1)</script>", "salience": 0.9},
@@ -188,7 +168,6 @@ def test_surface_escapes_user_values(monkeypatch):
 
 
 def test_surface_handles_missing_subsystem(monkeypatch):
-    """No personalization service: a clean error notice, never a crash."""
     monkeypatch.setenv("FF_PULSE_DIGEST", "on")
     orch = SimpleNamespace(personalization_service=None)
     html = _render(orch)

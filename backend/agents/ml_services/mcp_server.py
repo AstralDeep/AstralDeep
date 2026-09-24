@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
-"""MCP server for the ML Services Agent — dispatches tool calls to the union registry.
-
-Identical dispatch behavior to the predecessor classify/forecaster servers
-(required-argument pre-validation, ``_ui_components`` unwrapping, ``_retryable``
-honored on the error branch); the retry-classification shim lives in
-:mod:`agents.ml_services._wrapper`.
+"""MCP server for the ML Services agent: dispatches tool/call requests to the union
+TOOL_REGISTRY, reusing _wrapper.py's retry classification.
 """
 import inspect
 import logging
@@ -21,18 +17,10 @@ logger = logging.getLogger("MlServicesAgentMCPServer")
 
 
 class MCPServer:
-    """Routes ``tools/list`` and ``tools/call`` MCP requests to TOOL_REGISTRY."""
-
     def __init__(self):
-        """Bind the server to the union ML Services tool registry."""
         self.tools = TOOL_REGISTRY
 
     def get_tool_list(self) -> list:
-        """Build the ``tools/list`` payload from the registry.
-
-        Returns:
-            A list of ``{name, description, input_schema}`` dicts.
-        """
         return [
             {
                 "name": name,
@@ -43,15 +31,6 @@ class MCPServer:
         ]
 
     def process_request(self, request: MCPRequest) -> MCPResponse:
-        """Handle one MCP request (``tools/list`` or ``tools/call``).
-
-        Args:
-            request: The incoming MCP request.
-
-        Returns:
-            An :class:`MCPResponse` carrying either the tool result (with any
-            UI components) or a structured error with a ``retryable`` hint.
-        """
         if request.method == "tools/list":
             return MCPResponse(
                 request_id=request.request_id,

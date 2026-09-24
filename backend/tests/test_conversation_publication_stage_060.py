@@ -1,9 +1,6 @@
-"""Feature 060 durable staged-canvas publication seam tests.
-
-These tests use an isolated PostgreSQL database because the defining safety
-property is visibility across committed transactions: workspace mutations may
-durably prepare the next conversation revision while every reader outside the
-active task still sees the prior complete canvas.
+"""Tests for staged canvas publication (orchestrator/conversation_publication.py,
+workspace.py, history.py) over Postgres: task-local staged mutations stay invisible
+to other readers until the authoritative revision commits.
 """
 
 from __future__ import annotations
@@ -226,12 +223,9 @@ def test_staged_workspace_mutations_are_task_local_and_authority_is_unchanged(
         }
         assert refs == {"authoritative-layout": [], "next-layout": ["component-a"]}
 
-        # Timeline snapshots are authoritative history, never a staging store.
         assert manager.snapshot(CHAT_ID, OWNER, "staged-turn") is None
         assert manager.count_snapshots(CHAT_ID, OWNER) == 0
 
-        # ContextVar state must cross the exact asyncio.to_thread seam used by
-        # WorkspaceManager's async facade.
         async def read_in_thread() -> dict[str, str]:
             components = await manager.alive_components(CHAT_ID, OWNER)
             return {item["component_id"]: item["content"] for item in components}
@@ -299,7 +293,6 @@ def test_unmatched_stage_and_current_revision_filter_hide_non_authoritative_rows
 
     token = activate_conversation_publication(stage)
     try:
-        # A different chat/user/history must never inherit this task's stage.
         assert manager.live_rows(CHAT_ID, "another-owner") == []
         other_history = HistoryManager(
             plane_runtime=database,
@@ -327,8 +320,6 @@ def test_unmatched_stage_and_current_revision_filter_hide_non_authoritative_rows
             (COMMIT_ID, CHAT_ID, OWNER),
         )
 
-    # Legacy revision-zero rows coexist physically but the current committed
-    # revision is the only authoritative read outside a publication stage.
     assert set(_contents(manager)) == {"component-a", "component-b"}
     assert all(
         row["id"]

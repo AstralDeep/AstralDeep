@@ -1,10 +1,8 @@
+"""Office connector tools generating Excel/CSV, PowerPoint outlines, Word documents,
+pitch decks, and Outlook email (Microsoft Graph when credentialed, preview otherwise)
+as astralprims SDUI components.
 """
-Office tools for the Claude Connectors Agent — US-22.
 
-Excel/CSV generation, PowerPoint outlines, Word/Markdown documents, Outlook
-emails (Microsoft Graph when credentialed; preview otherwise), and pitch
-templates. All output as SDUI primitives.
-"""
 import csv
 import io
 import logging
@@ -23,10 +21,6 @@ from agents.connectors._external import verdict_for_exception, user_facing_error
 logger = logging.getLogger("Connectors.Office")
 
 
-# ---------------------------------------------------------------------------
-# Download URL helper (mirrors the medical agent's pattern)
-# ---------------------------------------------------------------------------
-
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -36,18 +30,6 @@ def _safe_filename(name: str, default: str = "file") -> str:
 
 
 def _write_download_file(args: Dict[str, Any], filename: str, contents: bytes) -> str:
-    """Persist ``contents`` under the orchestrator's per-session tmp dir and
-    return a ROOT-RELATIVE download URL served by the existing
-    ``/api/download/{session_id}/{filename}`` endpoint.
-
-    The URL is deliberately origin-less (``/api/download/...``) so the browser
-    resolves it against whatever origin served the page — a hard-coded
-    ``http://localhost:<port>`` would break every non-localhost deployment
-    (Constitution X).
-
-    ``user_id`` / ``session_id`` come from the orchestrator-injected kwargs;
-    we fall back to ``"legacy"`` / ``"default"`` for direct unit-test calls.
-    """
     user_id = args.get("user_id") or "legacy"
     session_id = args.get("session_id") or "default"
 
@@ -60,10 +42,6 @@ def _write_download_file(args: Dict[str, Any], filename: str, contents: bytes) -
 
     return f"/api/download/{session_id}/{filename}"
 
-
-# ---------------------------------------------------------------------------
-# Excel / CSV Generator
-# ---------------------------------------------------------------------------
 
 _EXCEL_METADATA = {
     "name": "excel_generate",
@@ -102,10 +80,6 @@ def handle_excel_generate(args: Dict[str, Any]) -> Dict[str, Any]:
         FileDownload(label=f"Download {filename}", url=download_url, filename=filename),
     ])
 
-
-# ---------------------------------------------------------------------------
-# PowerPoint / Presentation Outline
-# ---------------------------------------------------------------------------
 
 _PPT_METADATA = {
     "name": "powerpoint_outline",
@@ -149,10 +123,6 @@ def handle_ppt_outline(args: Dict[str, Any]) -> Dict[str, Any]:
     components.append(Text(content=f"Total: {len(slides)} slides", variant="caption"))
     return create_ui_response(components)
 
-
-# ---------------------------------------------------------------------------
-# Word / Document Generator
-# ---------------------------------------------------------------------------
 
 _WORD_METADATA = {
     "name": "word_document",
@@ -200,10 +170,6 @@ def handle_word_document(args: Dict[str, Any]) -> Dict[str, Any]:
 
     return create_ui_response(components)
 
-
-# ---------------------------------------------------------------------------
-# Outlook / Email — Microsoft Graph when credentialed, preview otherwise
-# ---------------------------------------------------------------------------
 
 _OUTLOOK_METADATA = {
     "name": "outlook_email",
@@ -313,7 +279,6 @@ def handle_outlook_email(args: Dict[str, Any]) -> Dict[str, Any]:
         ))
         return create_ui_response(preview)
 
-    # Graph returns 202 Accepted on success.
     if resp.status_code in (200, 202):
         preview.append(Alert(
             variant="success",
@@ -349,10 +314,6 @@ def handle_outlook_credentials_check(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"credential_test": "ok"}
     return {"credential_test": "unexpected", "detail": f"HTTP {resp.status_code}"}
 
-
-# ---------------------------------------------------------------------------
-# Pitch Templates
-# ---------------------------------------------------------------------------
 
 _PITCH_TEMPLATES = {
     "startup": {
@@ -457,10 +418,6 @@ def handle_pitch_template(args: Dict[str, Any]) -> Dict[str, Any]:
     components.append(Text(content="Edit each slide to add your specifics.", variant="caption"))
     return create_ui_response(components)
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 OFFICE_TOOL_REGISTRY = {
     "excel_generate": {"function": handle_excel_generate, **_EXCEL_METADATA},

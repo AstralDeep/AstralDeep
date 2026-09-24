@@ -1,4 +1,6 @@
-"""``read_text`` tool: TXT, MD, JSON, YAML, XML, HTML, LOG, code."""
+"""read_text tool: decodes and returns a plaintext rendering of
+TXT/MD/JSON/YAML/XML/HTML/LOG and source-code attachments.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +31,6 @@ def _decode(raw: bytes) -> str:
             return raw.decode(encoding)
         except UnicodeDecodeError:
             continue
-    # Latin-1 maps every byte value and therefore cannot fail.
     return raw.decode("latin-1")
 
 
@@ -81,7 +82,6 @@ def read_text(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Read a text-class attachment and return its source plus a plaintext rendering."""
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err

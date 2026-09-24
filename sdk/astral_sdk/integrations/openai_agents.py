@@ -1,9 +1,8 @@
-"""OpenAI function-calling / Assistants-style tool definitions (extra: ``openai``).
-
-Nothing in this module imports ``openai`` at module load time — only
-:func:`require_openai` does, on first call, so simply importing
-``astral_sdk.integrations.openai_agents`` never requires the package.
+"""OpenAI Chat Completions/Assistants tool-call adapter over astral_sdk.client and
+integrations/generic.py; only require_openai() imports the openai package, and only
+on first call.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -24,22 +23,10 @@ def require_openai() -> Any:
 
 
 def as_openai_tools() -> list[dict[str, Any]]:
-    """Astral's tools as OpenAI Chat Completions ``tools=[...]`` entries.
-
-    Pure data shaping — does not require ``openai`` to be installed, since the
-    Chat Completions tool schema has no client-side type to import.
-    """
     return [{"type": "function", "function": schema} for schema in FUNCTION_SCHEMAS]
 
 
 def execute_tool_call(client: AstralClient, tool_call: Any) -> dict[str, Any]:
-    """Run one OpenAI ``tool_call`` (Chat Completions or Assistants shape) against Astral.
-
-    Accepts either object form (``tool_call.function.name`` /
-    ``tool_call.function.arguments`` as a JSON string) or a plain dict with the
-    same keys — callers on either the Chat Completions or Assistants API
-    surface pass slightly different shapes for the same data.
-    """
     import json
 
     function = getattr(tool_call, "function", None) or tool_call["function"]

@@ -1,4 +1,7 @@
-"""fetch_page and research_brief tests — egress gating, truncation, synthesis."""
+"""Tests for agents/web_research/mcp_tools.py: fetch_page (egress gating, redirects,
+truncation) and research_brief (search, fetch, cited synthesis).
+"""
+
 from unittest.mock import patch
 
 import requests
@@ -21,11 +24,6 @@ PAGE_ONE = """<html><head><title>Page One</title></head><body>
 
 PAGE_TWO = """<html><head><title>Page Two</title></head><body>
 <h1>Beta</h1><p>More snake facts.</p></body></html>"""
-
-
-# ---------------------------------------------------------------------------
-# fetch_page
-# ---------------------------------------------------------------------------
 
 
 def test_fetch_page_renders_card_with_markdown(rmock: HttpMock) -> None:
@@ -154,10 +152,6 @@ def test_fetch_page_non_html_returns_raw_text(rmock: HttpMock) -> None:
     assert card["content"][1]["content"] == "plain text payload"
 
 
-# ---------------------------------------------------------------------------
-# research_brief
-# ---------------------------------------------------------------------------
-
 BRIEF_WITH_SECTIONS = (
     "## Overview\nPythons are constrictors [1]. Bogus citation [9].\n\n"
     "## Habitat\nThey live in warm climates [2]."
@@ -183,13 +177,13 @@ def test_brief_happy_path_card_table_tabs(rmock: HttpMock, fake_openai) -> None:
     assert card["title"] == "Research brief: pythons"
     brief_text = card["content"][0]["content"]
     assert "[1]" in brief_text and "[2]" in brief_text
-    assert "[9]" not in brief_text  # out-of-range citation stripped
+    assert "[9]" not in brief_text
 
     assert table["type"] == "table"
     assert table["headers"] == ["#", "Source", "Title", "Retrieved"]
     assert len(table["rows"]) == 2
     assert table["rows"][0][1] == "https://example.com/python"
-    assert all(row[3] for row in table["rows"])  # Retrieved timestamp present
+    assert all(row[3] for row in table["rows"])
 
     assert tabs["type"] == "tabs"
     assert [tab["label"] for tab in tabs["tabs"]] == ["Overview", "Habitat"]
@@ -204,7 +198,6 @@ def test_brief_cites_only_fetched_urls_in_data(rmock: HttpMock, fake_openai) -> 
 
 
 def test_brief_shallow_depth_fetches_two_pages(rmock: HttpMock, fake_openai) -> None:
-    """Three results available, but shallow depth fetches only the first two."""
     provider_url = "https://search.example.com/api"
     creds = {"SEARCH_API_URL": provider_url, "SEARCH_API_KEY": "sk"}
     rmock.add("POST", provider_url, status=200, json={"results": [
@@ -241,7 +234,6 @@ def test_brief_invalid_depth_falls_back_to_standard(rmock: HttpMock, fake_openai
 
 def test_brief_zero_fetched_pages_is_error_without_llm_call(
         rmock: HttpMock, monkeypatch) -> None:
-    """Search succeeds but every page 404s -> error Alert, LLM never touched."""
     rmock.add("GET", DDG_HTML_URL, status=200, body=DDG_HTML.encode("utf-8"))
     monkeypatch.setattr(mcp_tools, "OpenAI", ExplodingOpenAI)
     result = research_brief(
@@ -280,7 +272,6 @@ def test_brief_llm_unavailable_is_error(rmock: HttpMock, no_llm_credentials) -> 
 
 def test_brief_skips_sources_with_no_readable_text(
         rmock: HttpMock, fake_openai) -> None:
-    """A fetched page with no extractable text is skipped, not cited."""
     rmock.add("GET", DDG_HTML_URL, status=200, body=DDG_HTML.encode("utf-8"))
     rmock.add("GET", "https://example.com/python", status=200, body=b"",
               headers={"Content-Type": "text/html"})
@@ -318,7 +309,6 @@ def test_brief_empty_topic_is_error() -> None:
 
 
 def test_brief_uses_session_llm_credentials(rmock: HttpMock, fake_openai) -> None:
-    """Per-session credential resolution mirrors the general agent (006)."""
     _register_search_and_pages(rmock)
     fake_cls = fake_openai(BRIEF_WITH_SECTIONS)
     research_brief(

@@ -1,4 +1,7 @@
-"""Reconstructable, metered action execution through the ordinary dispatcher."""
+"""Reconstructable, metered dispatch of one owner-approved action through the ordinary
+tool/model gates; ActionExecutor charges reservations, redacts results and settles
+receipts for chat_episode.py, research_episode.py and runner.py.
+"""
 
 from __future__ import annotations
 
@@ -50,32 +53,27 @@ _RESULT_FAILURE_ALIASES = {
 
 
 def _result_failure_code(value: Any) -> str:
-    """Only fixed diagnostic identities may cross the rejected-content boundary."""
     if type(value) is str:
         value = _RESULT_FAILURE_ALIASES.get(value, value)
     return value if type(value) is str and value in _RESULT_FAILURE_CODES else "assignment_result_refused"
 
 
 class ApprovalPending(RuntimeError):
-    """The immutable action is persisted and requires attended owner review."""
+    pass
 
 
 class _OperationAuthorityWindow:
-    """Own one optional authority lock, with an idempotent early permit release."""
-
     def __init__(self, lock):
         self.lock = lock
         self.held = False
 
     async def acquire(self):
-        """Acquire once; cancellation cannot release another window's lock."""
         if self.lock is not None:
             await self.lock.acquire()
             self.held = True
         return self
 
     def release(self):
-        """Release only this window, including early release at permit issuance."""
         if self.held:
             self.held = False
             self.lock.release()
@@ -88,7 +86,6 @@ class _OperationAuthorityWindow:
 
 
 async def safe_text(text: str, urls: tuple[str, ...] = ()) -> None:
-    """Every payload is checked before assignment storage or downstream use."""
     from orchestrator.mas_defense import scan_message
     raw = content_text(text)
     if scan_message(text) or scan_message(raw):
@@ -112,14 +109,11 @@ class ActionExecutor:
         self.interactive_receipt_id = interactive_receipt_id
         self.remote_marker = remote_marker
         self.approved_action_id = approved_action_id
-        # Deliberately unregistered: existing runners supply no session resolver.
         self.operation_sessions = operation_sessions
         if operation_authority_lock is not None and not isinstance(operation_authority_lock, asyncio.Lock):
             raise TypeError("operation authority lock must be an asyncio lock")
         self.operation_authority_lock = operation_authority_lock
-        # Opaque generation only; source text never lives in executor/session state.
         self._research_generation = None
-        # Original selection and opened guidance are private episode input only.
         self._research_guidance = None
         self.record = claim.assignment
         self.one_shot = self.record.execution_profile == "one_shot"
@@ -129,13 +123,11 @@ class ActionExecutor:
         )
 
     def fork(self, websocket):
-        """A child shares durable budgets, with its own live authority binding."""
         if self.interactive or self.one_shot:
             raise DispatchDenied("assignment_foreground_fanout_denied")
         return ActionExecutor(self.runner, self.claim, self.operation_fence, websocket)
 
     def _operation_reader(self, request, action=None, *, record=None):
-        """Only the qualified durable read profile can enter this adapter."""
         from persistent_agents.research_input import fixed_reader_source
 
         current = self.record if record is None else record
@@ -163,7 +155,6 @@ class ActionExecutor:
             raise DispatchDenied("assignment_operation_profile_unavailable")
 
     def _chat_kind(self, record=None) -> bool:
-        """The source-less chat profile shares every fence but has no reader."""
         current = self.record if record is None else record
         return self.one_shot and current.operation.get("kind") == "chat"
 
@@ -172,7 +163,6 @@ class ActionExecutor:
             from persistent_agents.research_input import ResearchInput, route
             if _research is None:
                 if self._chat_kind():
-                    # A chat turn prepares only its own fixed model route.
                     if (request != route() or self.operation_sessions is None or self.interactive
                             or self.remote_marker is not None or self.approved_action_id is not None):
                         raise DispatchDenied("assignment_operation_profile_unavailable")
@@ -205,8 +195,6 @@ class ActionExecutor:
                     checks = await self.service.validate_execution(
                         current.owner_id, authority.claims, current,
                         SimpleNamespace(request=request), authority=authority)
-            # Permission/source checks can await. Revalidate the same snapshot,
-            # never rotate the JWT after the ordinary delegation gate has run.
             self.record = await self.store.call_for_operation("assert_current_assignment_execution",
                 fence=self.claim.fence, binding=self.binding, authority=authority.observation)
             if _research is not None:
@@ -230,7 +218,7 @@ class ActionExecutor:
                 raise DispatchDenied("assignment_authorization_required")
             self.orch._bind_machine_turn(self.websocket, authority)
         claims = self.orch.ui_sessions.get(self.websocket, {})
-        # A foreground chat's per-turn memo must not hide a permission revoke.
+        # Per-turn memo must not hide a live permission revoke
         with turn_permission_memo():
             return await self.service.validate_execution(
                 self.record.owner_id, claims, self.record,
@@ -238,7 +226,6 @@ class ActionExecutor:
             )
 
     async def action(self, key: str, request: dict[str, Any], *, task_id=None, event_id=None):
-        """Keep preparation and permit authorization coherent with optional renewal."""
         if self.one_shot and self.record.operation.get("source_retention") == "none":
             raise DispatchDenied("assignment_operation_profile_unavailable")
         async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
@@ -246,7 +233,6 @@ class ActionExecutor:
                                       authority_window=window if window.lock is not None else None)
 
     async def acquire_research_source(self):
-        """One fresh charged read whose scanned body never enters durable storage."""
         from persistent_agents.research_episode import source_request
         from persistent_agents.research_recovery import EphemeralAcquisition
 
@@ -269,8 +255,6 @@ class ActionExecutor:
             if existing is None:
                 break
             if ephemeral is not None:
-                # An acquisition never reuses a previously reserved/issued key,
-                # including an unknown commit acknowledgement or UUID collision.
                 raise DispatchDenied("assignment_research_binding_changed")
             if existing.intent.request_digest != digest(request):
                 raise DispatchDenied("assignment_action_binding_changed")
@@ -283,10 +267,6 @@ class ActionExecutor:
             if ((existing.state == "invalidated" or unstarted_failure)
                     and not existing.ever_started and existing.result is None
                     and existing.control_epoch < self.record.control_epoch):
-                # Controls can leave pre-permit failures intact. Preserve their
-                # evidence while authorizing a fresh intent in the current epoch.
-                # Begun actions, results and failed sensitive effects retain
-                # their original identity and disposition.
                 key = digest([key, "successor", existing.control_epoch])
                 continue
             return (await self._execute(existing, authority_window=authority_window)
@@ -348,7 +328,6 @@ class ActionExecutor:
                 if authority_window is not None else await self.execute(action))
 
     async def execute(self, action):
-        """Execute a stored action with an optional pre-permit authority window."""
         if self.one_shot and self.record.operation.get("source_retention") == "none":
             raise DispatchDenied("assignment_operation_profile_unavailable")
         async with _OperationAuthorityWindow(self.operation_authority_lock if self.one_shot else None) as window:
@@ -462,8 +441,6 @@ class ActionExecutor:
                     return permit
                 permit = await self._reader_policy_transaction(checks["authority"], action.action_id, commit)
                 if authority_window is not None:
-                    # Issuance commits the effect permit. Renewal may now run
-                    # while physical I/O continues; settlement has its own window.
                     authority_window.release()
                 return permit
             def transaction(tx, repository, _current):
@@ -487,8 +464,6 @@ class ActionExecutor:
             result: dict[str, Any] = {}
             actual = None
             if outcome == "uncertain" and action.intent.boundary == "read_only":
-                # Retrying a reviewed read cannot duplicate a mutation. Keep
-                # the full charge for this attempt even without a response.
                 outcome = "failed"
             if outcome == "succeeded":
                 try:
@@ -508,23 +483,15 @@ class ActionExecutor:
                         normalized = extract_result(legacy_page_response(response) if fixed_page else response)
                         page = (read_page_observation(response, requested_url=request["arguments"]["url"])
                                 if self.one_shot and fixed_page else None)
-                        # Scan the existing bounded reader observation (page text <=20,000)
-                        # before retained excerpts; upstream omitted tails are unavailable.
                         from orchestrator.mas_defense import scan_message
                         complete = {"legacy": normalized, "page": page} if page is not None else normalized
                         original = canonical(complete)
                         if scan_message(original) or scan_message(content_text(complete)):
                             raise DispatchDenied("assignment_result_quarantined")
                         if page is not None:
-                            # Metadata is never redacted into a different source
-                            # identity. Only prose is transformed; unsafe actual
-                            # URL/time/profile facts must fail their normal gate.
                             protected, redacted = await asyncio.to_thread(redact_observation,
                                 {"text": page["text"], "title": page["title"]}, get_phi_gate())
                             protected = {**page, **protected}
-                            # Validated server timestamps/enums are structured
-                            # facts, not source prose (ISO dates match DOB rules).
-                            # Every source-controlled text/URL still meets PHI.
                             await safe_text(canonical({key: protected[key] for key in
                                 ("requested_url", "final_url", "title", "text")}),
                                 reviewed_urls(self.record.definition.source))
@@ -540,8 +507,7 @@ class ActionExecutor:
                     if len(canonical(result).encode("utf-8")) > 8192:
                         raise ValueError("assignment_result_limit")
                     await safe_text(result["text"], reviewed_urls(self.record.definition.source))
-                    # Unknown provider usage is conservatively charged at the
-                    # reserved maximum. No absent monetary usage becomes zero.
+                    # Missing usage charges the reserved max, never zero
                     usage = getattr(response, "usage", None)
                     total = getattr(usage, "total_tokens", None)
                     if request["kind"] == "tool" or type(total) is int:
@@ -568,8 +534,6 @@ class ActionExecutor:
                             self.record, action, attempt_id, result, actual, ephemeral)
                     except (ValueError, PermissionError):
                         outcome = "failed"
-                # Even failed reads have no durable payload in this profile.
-                # The live proof alone can authenticate and use discarded text.
                 receipt = AssignmentActionOutcome(outcome=outcome,
                     result_digest=(source_proof.receipt if source_proof is not None
                         else ephemeral._key.sign("result", canonical({"profile": "ephemeral-read-failure-v1",
@@ -587,9 +551,6 @@ class ActionExecutor:
             settlement_window = _OperationAuthorityWindow(
                 self.operation_authority_lock if self.one_shot else None)
             if getattr(self.record, "execution_profile", "persistent") == "one_shot":
-                # An authentic old permit must settle even when a current claim,
-                # admission generation or fresh remote authority is no longer
-                # available. Only a fresh matching observation may retain content.
                 try:
                     await settlement_window.acquire()
                     current_checks = await self.refresh(request if request["kind"] == "tool" else None)
@@ -598,7 +559,7 @@ class ActionExecutor:
                         result_context = {"result_fence": self.claim.fence,
                                           "result_binding": self.binding,
                                           "result_authority": current_checks["authority"].observation}
-                except Exception:  # noqa: BLE001 - settlement survives unavailable authority
+                except Exception:  # noqa: BLE001
                     pass
                 except asyncio.CancelledError:
                     cancelled = True
@@ -632,9 +593,6 @@ class ActionExecutor:
                 observed = source_proof
                 return
             if ephemeral is not None and outcome == "failed":
-                # A failed read is already charged and has no reusable text.
-                # Do not mask cancellation/transport failure with an availability
-                # error from intentionally discarded content.
                 observed = {"code": _result_failure_code(result.get("code"))}
                 return
             if retained_result.get("result_available") is False:
@@ -656,8 +614,6 @@ class ActionExecutor:
         expected_session = None
         try:
             if self.one_shot:
-                # One coherent verified generation precedes every ordinary gate.
-                # Final callbacks only recheck this same snapshot locally.
                 authority = operation_checks["authority"]
                 expected_session = authority.claims
                 expected_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
@@ -711,8 +667,6 @@ class ActionExecutor:
         finally:
             if invocation is not None and self.orch.ui_sessions.get(invocation) is private_session:
                 self.orch.ui_sessions.pop(invocation, None)
-            # Gate denials never received a physical permit, so their reserved
-            # capacity can be released. Plane refuses release of begun work.
             if not permit_issued:
                 await self.store.call(
                     "release_unstarted_action", owner_id=self.record.owner_id,
@@ -722,7 +676,6 @@ class ActionExecutor:
                 )
 
     async def _capture_research_guidance(self, authority):
-        """Capture once before any source action; later checks never adopt heads."""
         from persistent_agents.research_input import ResearchGuidance
 
         captured = None
@@ -757,10 +710,6 @@ class ActionExecutor:
         self._assert_research_guidance(tx, repository, current, authority)
 
     async def _reader_policy_transaction(self, authority, action_id, callback):
-        """Fence current fixed-reader policy at cache, permit and result boundaries."""
-        # No captured guidance means no episode input to fence, so refuse before
-        # opening a transaction rather than raising an attribute error on the
-        # final check below (the closed code the reader profile already uses).
         if self._research_guidance is None:
             raise DispatchDenied("assignment_operation_profile_unavailable")
         def guarded(tx, repository, current):
@@ -782,7 +731,6 @@ class ActionExecutor:
             final_check=self._research_guidance.assert_local)
 
     async def _research_transaction(self, private, authority, callback, *, action_id):
-        """Compose only current public Plane guards and locked config in one tx."""
         if (private._guidance is not self._research_guidance
                 and (private._guidance is not None or self._research_guidance is None
                      or self._research_guidance.captured is not None)):
@@ -796,8 +744,7 @@ class ActionExecutor:
             repository.assert_current_assignment_execution(tx, fence=self.claim.fence,
                 binding=self.binding, authority=authority.observation,
                 action_id=action_id if chat else private.source_action_id)
-            # Take all action row locks in stable order before waiting on the
-            # current USER configuration. Later callbacks only revisit these rows.
+            # Row locks taken in stable order before the config lock
             identities = {action_id} if chat else {private.source_action_id, action_id}
             locked = {identity: repository.get_action(tx, owner_id=private.owner_id,
                 assignment_id=private.assignment_id, action_id=identity)
@@ -810,8 +757,6 @@ class ActionExecutor:
             if private._ephemeral is not None:
                 private._ephemeral.assert_executor(self)
             if not chat:
-                # A chat turn holds no reader consent; the fixed reader policy
-                # fence applies only where a source read was authorized.
                 self._assert_fixed_reader_policy(tx, authority)
             self._assert_research_guidance(tx, repository, current, authority)
             result = callback(tx, repository, current)
@@ -822,7 +767,6 @@ class ActionExecutor:
             final_check=final_check)
 
     def _assert_fixed_reader_policy(self, tx, authority):
-        """Take the opt-in policy fence only after every waiting action/config lock."""
         from orchestrator.tool_permissions import FixedReaderPolicyError
         from persistent_agents.models import AssignmentError
         try:
@@ -834,11 +778,6 @@ class ActionExecutor:
                 403 if error.code == "assignment_scope_revoked" else 503) from None
 
     async def research_selection(self, key: str, *, source_action_id: str, ephemeral=None):
-        """Attempt only the fixed USER passage-selection profile, never raw prompts.
-
-        This entry remains unregistered. It cannot run a generic model intent or
-        complete an operation; a separate reviewed handler owns that lifecycle.
-        """
         import re
         from llm_config import research_profile as profile
         from persistent_agents.research_input import ResearchInput, route
@@ -866,7 +805,6 @@ class ActionExecutor:
             if ephemeral is not None:
                 from persistent_agents.research_recovery import assert_ready
                 assert_ready(current)
-            # A linked page must pass its own ordinary consent/egress/tool checks.
             source_checks = await self.refresh(thaw(source.intent.request), authority=initial["authority"])
             if (source.intent.permission_digest != source_checks["permission_digest"]
                     or source.intent.precondition_digest != source_checks["precondition_digest"]):
@@ -895,8 +833,6 @@ class ActionExecutor:
                     raise DispatchDenied("assignment_precondition_changed")
                 if existing.state == "succeeded":
                     if ephemeral is not None:
-                        # A discarded selection is not reconstructed from IDs or
-                        # a caller object. Only this live physical result returns.
                         raise DispatchDenied("assignment_result_unavailable")
                     def cached(tx, repository, _current):
                         actual = repository.get_action(tx, owner_id=private.owner_id,
@@ -907,8 +843,6 @@ class ActionExecutor:
                 if existing.ever_started or existing.state in {"started", "uncertain", "reconciliation"}:
                     raise DispatchDenied("assignment_action_uncertain")
             if current.definition.limits.get("currency") is not None:
-                # Existing aggregate quote rates do not identify this exact USER
-                # model/config. Do not invent price or provider-identity coverage.
                 raise DispatchDenied("assignment_cost_bound_unavailable")
             if existing is None:
                 intent = AssignmentActionIntent(action_key="research-v1-" + key, request=route(),
@@ -924,12 +858,6 @@ class ActionExecutor:
             return await self._execute_research(existing, private, checks, window)
 
     async def chat_turn(self, key: str):
-        """Attempt only the fixed USER source-less chat profile, never raw prompts.
-
-        This entry remains unregistered and cannot complete an operation; the
-        chat handler owns that lifecycle. It shares research's reservation,
-        permit, settlement and cached-result guards without any reader step.
-        """
         import re
         from llm_config import research_profile as profile
         from persistent_agents.chat_episode import CHAT_KEY_PREFIX, chat_action_key
@@ -992,7 +920,6 @@ class ActionExecutor:
             return await self._execute_research(existing, private, checks, window)
 
     async def _execute_research(self, action, private, operation_checks, window):
-        """Meter one fixed effect, preserve authentic liability and guard result use."""
         from astralplane.repositories.assignment_models import AssignmentResultDisposition
         from llm_config import research_profile as profile
         from persistent_agents.research_input import PRE_SEND_FAILURE, UnsentAttempt, route
@@ -1024,8 +951,6 @@ class ActionExecutor:
         private_session.update(_raw_token=authority.subject_token, _invocation_channel="background")
         self.orch.ui_sessions[invocation] = private_session
         checks = operation_checks
-        # Candidate set inside callback means start may have committed despite a
-        # lost acknowledgement. Never refund or send from that uncertain state.
         candidate_permit = None
         observed = None
         effect_started = None
@@ -1071,15 +996,10 @@ class ActionExecutor:
             outcome = "uncertain"
             refusal = "assignment_research_response_refused"
             if unsent is not None:
-                # The request provably never left this process: the issued
-                # permit settles as a failed attempt with known-zero provider
-                # usage, releasing its reservation for Plane's bounded retry.
                 actual = AssignmentResourceAmount(model_calls=0, tokens=0, elapsed_ms=elapsed)
                 outcome, refusal = "failed", PRE_SEND_FAILURE
                 result = {"code": PRE_SEND_FAILURE}
             elif parsed is not None and parsed.usage is not None:
-                # Usage is factual even for wrong model, refusal, malformed
-                # selection or overrun. It is never clamped to a lower reservation.
                 actual = AssignmentResourceAmount(model_calls=1, tokens=parsed.usage.total_tokens,
                                                    elapsed_ms=elapsed)
                 outcome = "failed"
@@ -1087,11 +1007,10 @@ class ActionExecutor:
                     usable = parsed.text is not None and elapsed <= profile.RESERVED_MILLISECONDS
                     if usable:
                         try:
-                            # A refused answer is still a charged, settled attempt.
                             await safe_text(parsed.text)
                         except DispatchDenied as denied:
                             usable, refusal = False, str(denied)
-                        except Exception:  # noqa: BLE001 - an unavailable gate never skips settlement
+                        except Exception:  # noqa: BLE001
                             usable, refusal = False, "assignment_phi_redaction_unavailable"
                     if usable:
                         from persistent_agents.chat_episode import chat_result_value
@@ -1132,9 +1051,6 @@ class ActionExecutor:
                                                                 action_id=action.action_id)
                     current_result = True
             except (Exception, asyncio.CancelledError) as error:
-                # Source/config/key/session can disappear after a real effect,
-                # including while reacquiring the renewal lock. A committed but
-                # unacknowledged receipt is idempotent by its exact signature.
                 retained = await self.store.call_for_operation("record_action_outcome",
                     owner_id=private.owner_id, assignment_id=private.assignment_id,
                     action_id=action.action_id, attempt_id=attempt_id,
@@ -1146,9 +1062,6 @@ class ActionExecutor:
             observed = saved
             if outcome == "uncertain":
                 if ephemeral and status != "succeeded":
-                    # The context owns the original cancellation/transport error.
-                    # Settlement completed; do not replace that signal merely
-                    # because this authentic attempt has unresolved consumption.
                     return
                 raise DispatchDenied("assignment_action_uncertain")
             if ephemeral and outcome == "succeeded" and current_result:

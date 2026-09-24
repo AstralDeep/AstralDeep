@@ -1,22 +1,7 @@
-"""Feature 089 (T026): the HTTP Work ``kind="chat"`` submission screen.
-
-This path hands an instruction to a background executor with nobody watching
-it. It never reaches ``handle_chat_message``, so it gets none of the turn
-seams — which is why it has a seam of its own (I7), and why that seam asks the
-three security questions and nothing else.
-
-The properties that matter here are the ones a background path makes easy to
-get wrong:
-
-* it asks the security questions **only** — no agent, no tool, no layout, so
-  the owner's quota is not spent on answers nobody will read;
-* a ``confirm_tools`` verdict cannot be satisfied when there is nobody to
-  confirm, so it is a pass and the executor's own gate stack still runs;
-* a refusal is the only verdict that stops admission, and it stops it before
-  anything is recorded;
-* every failure — no key, the feature off, a dead service, an open circuit —
-  admits the work. A screen that cannot reach its service must not become a
-  way to block work.
+"""Tests for the HTTP Work chat submission's security screen in
+orchestrator/typesafe_routing/runner.py: it asks only the three security questions, a
+confirm_tools verdict passes with nobody to confirm, and every service failure admits
+the work.
 """
 
 from __future__ import annotations
@@ -52,9 +37,6 @@ class _EnabledFlags:
 
 
 def screen(client, *, text: str = TEXT, api_key: str | None = KEY, circuit=None):
-    # A fresh breaker per call unless the test supplies one: the module-level
-    # default is shared, so a test that injects failures would otherwise leave
-    # the circuit open for whatever ran next.
     return asyncio.run(
         screen_instruction(
             user_id="owner-1",
@@ -72,9 +54,6 @@ def benign() -> AnswerSet:
     return AnswerSet(threat_category="none")
 
 
-# -- it asks the security questions and nothing else ----------------------
-
-
 def test_only_the_three_security_questions_are_asked() -> None:
     client = FakeTypeSafeClient(default=benign())
     assert screen(client) is Verdict.PASS
@@ -84,8 +63,6 @@ def test_only_the_three_security_questions_are_asked() -> None:
 
 
 def test_no_agent_tool_or_layout_question_reaches_the_service() -> None:
-    """Paying for the routing half here would spend the owner's quota on
-    answers nobody reads: there is no round one and no canvas."""
     client = FakeTypeSafeClient(default=high_confidence("weather-1", "get_current_weather"))
     screen(client)
     asked = " ".join(client.calls[0].questions)
@@ -108,17 +85,11 @@ def test_a_long_instruction_is_bounded_before_it_leaves() -> None:
     assert len(sent) < 40_000
 
 
-# -- the verdicts ---------------------------------------------------------
-
-
 def test_a_benign_instruction_is_admitted() -> None:
     assert screen(FakeTypeSafeClient(default=benign())) is Verdict.PASS
 
 
 def test_a_confirm_verdict_is_a_pass_because_nobody_is_there_to_confirm() -> None:
-    """A background submission has no one to ask. Treating "confirm" as a
-    block would refuse work on a verdict that never said to refuse it; the
-    executor's own gate stack is unchanged and still runs."""
     client = FakeTypeSafeClient(
         default=benign().with_security(jailbreak_probability=0.80, harm_score=0.40)
     )
@@ -127,7 +98,6 @@ def test_a_confirm_verdict_is_a_pass_because_nobody_is_there_to_confirm() -> Non
 
 
 def test_the_verdict_comes_from_the_same_policy_as_an_interactive_turn() -> None:
-    """Not a second, laxer policy for background work."""
     from orchestrator.typesafe_routing.decision import parse_security
     from orchestrator.typesafe_routing.security_policy import verdict_for
     from tests.fakes.typesafe_fake import _response_for  # noqa: PLC2701
@@ -137,9 +107,6 @@ def test_the_verdict_comes_from_the_same_policy_as_an_interactive_turn() -> None
     observed = screen(client)
     rendered = _response_for(answers, client.calls[0].questions)
     assert observed is verdict_for(parse_security(rendered))
-
-
-# -- every failure admits the work ----------------------------------------
 
 
 def test_no_key_means_no_call_and_no_block() -> None:
@@ -175,8 +142,6 @@ def test_a_service_failure_admits_the_work(fault) -> None:
 
 
 def test_enough_service_failures_open_the_circuit() -> None:
-    """The screen shares the turn path's breaker, so a background submission
-    that keeps failing stops paying for the round trip too."""
     circuit = UserCircuit()
     client = FakeTypeSafeClient(
         default=benign(), faults=[TypeSafeAPITimeoutError] * 6
@@ -202,9 +167,6 @@ def test_a_success_keeps_the_circuit_closed() -> None:
     assert circuit.allows("owner-1", fingerprint=FP)
 
 
-# -- the key never leaves its argument ------------------------------------
-
-
 def test_the_key_is_passed_only_as_the_call_argument() -> None:
     client = FakeTypeSafeClient(default=benign())
     screen(client)
@@ -222,13 +184,7 @@ def test_the_screen_never_puts_the_key_in_the_environment() -> None:
         assert name not in os.environ
 
 
-# -- background turns still receive the routing notices -------------------
-
-
 def test_a_virtual_websocket_accepts_a_routing_notice() -> None:
-    """Background turns run over ``VirtualWebSocket``; a notice sent to one
-    must not raise, because a dead or synthetic socket is not an error on the
-    notice path."""
     from orchestrator.typesafe_routing.runner import NOTICE_FALLBACK, _notify_once
 
     delivered: list[tuple[str, str]] = []
@@ -246,4 +202,4 @@ def test_a_dead_socket_does_not_break_the_turn() -> None:
     async def dead(_status: str, _message: str) -> None:
         raise RuntimeError("socket closed")
 
-    asyncio.run(_notify_once(dead, "retrying", NOTICE_RETRYING))  # must not raise
+    asyncio.run(_notify_once(dead, "retrying", NOTICE_RETRYING))

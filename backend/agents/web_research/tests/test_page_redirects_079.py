@@ -1,4 +1,7 @@
-"""Page resource paths and bounded, revalidated redirect chains."""
+"""Tests for agents/web_research/mcp_tools.py: resource-path preservation and bounded,
+revalidated redirect chains, including expired-chain rejection.
+"""
+
 from unittest.mock import patch
 
 import pytest

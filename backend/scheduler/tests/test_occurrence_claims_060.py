@@ -1,9 +1,6 @@
-"""Real-PostgreSQL scheduler occurrence, lease, and effect contracts (T023).
-
-The tests intentionally exercise the product store and two independent Plane
-runtime consumers. PostgreSQL time, row locks, unique indexes,
-and the feature-060 operation coordinator are part of the assertions; a fake
-repository cannot satisfy this suite.
+"""Tests for scheduler occurrence claim/lease/effect contracts against real PostgreSQL
+(backend/scheduler/store.py, runner.py): concurrent claiming, lease renewal, and
+effect-ledger idempotency a fake repository can't reproduce.
 """
 
 from __future__ import annotations
@@ -80,8 +77,6 @@ def _classes(*, scheduled_active: int = 1, scheduled_queue: int = 20):
 
 @pytest.fixture(scope="module")
 def postgres_database() -> Iterator[PlaneTestRuntime]:
-    """Create one isolated database initialized only by AstralPlane."""
-
     with isolated_plane_runtime("scheduler_occurrence") as runtime:
         yield runtime
 
@@ -208,9 +203,6 @@ def _dummy_claim(label: str = "dummy", *, attempt_number: int = 1) -> Occurrence
             "target_chat_id": f"chat-{label}",
             "offline_grant_id": None,
         },
-        # Just-due, not a fixed past date: the runner now completes
-        # occurrences older than SCHEDULER_STALE_GRACE_SECONDS as
-        # ``skipped_stale`` without dispatching.
         scheduled_for=datetime.now(UTC) - timedelta(seconds=1),
         claim_generation=1,
         lease_token=uuid.uuid5(uuid.NAMESPACE_X500, f"scheduler-lease:{label}"),
@@ -407,8 +399,6 @@ def test_recovery_preserves_occurrence_but_allocates_distinct_attempt_operations
 async def test_claim_renews_while_operation_is_queued_for_two_full_leases(
     clean_database,
 ):
-    """A real 31-second queue residence proves the default 15-second lease."""
-
     coordinator = _coordinator(clean_database, scheduled_active=1)
     store = ScheduledJobStore(clean_database, coordinator=coordinator)
     _due_job(store, "saturated-a")
@@ -750,11 +740,6 @@ def test_deterministic_10000_interleavings_publish_one_visible_effect(
     visible_effects: list[str] = []
 
     for index in range(10_000):
-        # The loop performs ~11k serial DB round trips; on a loaded CI runner
-        # that exceeds the max 60 s lease, and the store correctly refuses the
-        # now-stale claim. This test exercises effect deduplication, not lease
-        # expiry, so renew the running claim well within the lease window (the
-        # same renewal a real long-running attempt performs per lease/3).
         if index and index % 250 == 0:
             stores[0].renew_claim(claim, lease_seconds=60)
         store = stores[index % len(stores)]
@@ -2031,8 +2016,6 @@ async def test_dispatch_cancels_handler_immediately_on_renewal_loss(monkeypatch)
         store, _LoopRunner(blocking_runner), coordinator
     )._dispatch_claim(attempt.claim))
     try:
-        # Lose renewal during execution; a timer can fire before dispatch starts
-        # on a loaded host, which exercises the separate pre-start refusal test.
         await asyncio.wait_for(entered.wait(), timeout=2)
         assert renewal_lost is not None
         renewal_lost.set()
@@ -2141,8 +2124,6 @@ async def test_dispatch_bounds_cancellation_resistant_handler_after_lease_loss(
 async def test_dispatch_treats_finish_fence_loss_as_retryable_authority_loss(
     monkeypatch,
 ):
-    """A renewal/finish race must not misreport stale work as a handler failure."""
-
     attempt = _dummy_attempt("operation-lease-lost-at-finish", started=False)
     store = _LoopStore(attempt)
     store.finish_error = StaleExecutionFenceError("operation lease rotated")

@@ -1,4 +1,7 @@
-"""Immutable deployment speech-backend selection for Feature 075."""
+"""Tests for the deployment-wide voice speech-backend selection (voice_backend.py,
+voice_bootstrap.py, voice_runtime.py): legacy default preservation, fail-closed
+malformed selectors, one frozen-at-boot selection, and the local kill switch.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ from shared.feature_flags import flags
 class _PlaneRuntime:
     repositories = SimpleNamespace(voice=object())
 
-    def transaction(self):  # pragma: no cover - construction must not transact.
+    def transaction(self):  # pragma: no cover
         raise AssertionError("unexpected database access")
 
 

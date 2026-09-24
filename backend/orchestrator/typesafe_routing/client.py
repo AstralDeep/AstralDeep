@@ -1,27 +1,6 @@
-"""The only module in AstralDeep that imports ``typesafe_sdk`` (feature 089).
-
-Everything about talking to TypeSafe is confined here so the rest of the
-orchestrator can be written against plain dataclasses, and so the adapter can
-be swapped for a deterministic fake at exactly one boundary in tests.
-
-Three rules shape this module:
-
-**The import is lazy.** ``typesafe_sdk`` is imported inside
-:func:`load_sdk`, never at module scope. A deployment without the package
-installed must degrade to standard routing, not fail to boot, so an
-``ImportError`` here is an ordinary "TypeSafe is unavailable" outcome.
-
-**Nothing is read from the environment.** ``api_key``, ``base_url`` and
-``model`` are always passed explicitly. The SDK falls back to
-``TYPESAFE_API_KEY`` / ``TYPESAFE_BASE_URL`` / ``TYPESAFE_DEFAULT_MODEL`` when
-they are omitted, and feature 089 forbids exactly that (FR-005): a production
-process refuses to boot with those names set, and the tests monkeypatch them to
-sentinels to prove no code path consults them.
-
-**Retrying belongs to the caller.** The client is constructed with
-``RetryPolicy(max_retries=0)``. :mod:`.budget` owns the attempt schedule,
-because the 1.5-second turn deadline is a property of the turn, not of one
-request, and an SDK-internal retry would spend that budget invisibly.
+"""The sole module that imports typesafe_sdk (lazily, inside load_sdk);
+api_key/base_url/model are always passed explicitly rather than read from the SDK's
+own environment fallback, per budget.py's attempt/deadline clipping.
 """
 
 from __future__ import annotations
@@ -33,45 +12,20 @@ from typing import Any, Mapping, Optional
 
 logger = logging.getLogger("Orchestrator.TypeSafe.Client")
 
-#: The TypeSafe API base. This is a **code constant**, not configuration.
-#: Making it configurable would reintroduce the environment surface FR-005
-#: exists to remove, and there is no deployment that legitimately needs a
-#: different endpoint for a per-user third-party credential.
 TYPESAFE_API_BASE = "https://api.typesafe.ai"
 
-#: The System One model used for routing. Also a code constant, so a routing
-#: decision is reproducible from a commit rather than from a host's env.
 TYPESAFE_MODEL = "jev-latest"
 
-#: Per-attempt wall clock, in milliseconds. :mod:`.budget` clips this to the
-#: remaining turn budget.
-#:
-#: Measured 2026-09-17 (T015) against the real service: p50 186-240 ms and p95
-#: 205-365 ms, essentially flat from 4 to 260 options, with a p99 of 611 ms.
-#: 400 ms is the largest value that still fits three full attempts plus both
-#: backoffs inside the 1.5 s turn budget (400 + 100 + 400 + 200 + 400 = 1500),
-#: and it clears the observed p95 with margin. A p99 outlier loses its first
-#: attempt and is retried, which is the trade this budget is for: a rare extra
-#: round trip costs less than a turn that cannot retry at all.
+# Sized so 3 attempts + backoff fit exactly in the turn budget
 ATTEMPT_TIMEOUT_MS = 400
 
 
 class TypeSafeUnavailable(Exception):
-    """TypeSafe cannot be reached at all: no SDK, or a refused base URL.
-
-    Distinct from an API error. An API error means the request was made and
-    failed; this means it was never made, so there is nothing to retry.
-    """
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class SdkSurface:
-    """The pieces of ``typesafe_sdk`` the adapter uses, resolved once.
-
-    Holding them in one object keeps the lazy import in a single place and
-    makes the fake's job obvious: provide these attributes.
-    """
-
     client_class: Any
     retry_policy: Any
     noul: Any
@@ -85,12 +39,6 @@ _sdk_failed = False
 
 
 def load_sdk() -> SdkSurface:
-    """Import ``typesafe_sdk`` and return the surface the adapter uses.
-
-    Raises :class:`TypeSafeUnavailable` when the package is absent. The failure
-    is cached: a deployment without the package would otherwise pay an import
-    attempt on every turn.
-    """
     global _sdk_cache, _sdk_failed
     if _sdk_cache is not None:
         return _sdk_cache
@@ -132,22 +80,15 @@ def load_sdk() -> SdkSurface:
 
 
 def reset_sdk_cache() -> None:
-    """Forget the cached SDK surface. Tests use this; production does not."""
     global _sdk_cache, _sdk_failed
     _sdk_cache = None
     _sdk_failed = False
 
 
 def _validated_base_url(base_url: str) -> str:
-    """Return ``base_url`` after the shared egress check accepts it.
-
-    Routing is outbound traffic carrying the user's request text, so it goes
-    through the same egress validation every other external call does. A base
-    URL that resolves to a private address is refused rather than dialled.
-    """
     try:
         from shared.external_http import EgressBlockedError, validate_egress_url
-    except ImportError:  # pragma: no cover - the helper is always present
+    except ImportError:  # pragma: no cover
         return base_url
     try:
         validate_egress_url(base_url)
@@ -157,18 +98,6 @@ def _validated_base_url(base_url: str) -> str:
 
 
 class TypeSafeAdapterClient:
-    """One shared HTTP client, one ``system_one`` call per attempt.
-
-    The underlying ``httpx2.AsyncClient`` is owned by this adapter and shared
-    across users and turns: connection reuse is most of the difference between
-    a routing call that fits in the budget and one that does not. It is closed
-    on :meth:`aclose`, which the orchestrator calls at shutdown.
-
-    Per-user clients are *not* cached, because a cache keyed by user would hold
-    key material in memory for the process lifetime. The SDK client object is
-    cheap; the connection pool underneath it is what is worth sharing.
-    """
-
     def __init__(
         self,
         *,
@@ -196,7 +125,6 @@ class TypeSafeAdapterClient:
         return self._sdk if self._sdk is not None else load_sdk()
 
     async def _shared_http_client(self) -> Any:
-        """Create the shared connection pool on first use."""
         if self._http_client is not None:
             return self._http_client
         async with self._http_lock:
@@ -218,11 +146,6 @@ class TypeSafeAdapterClient:
         questions: Mapping[str, Any],
         timeout: float,
     ) -> Any:
-        """Issue exactly one System One request.
-
-        Every constructor argument is explicit. ``retry`` is zero attempts:
-        :mod:`.budget` decides whether there is time for another try.
-        """
         surface = self._surface()
         base_url = _validated_base_url(self._base_url)
         http_client = await self._shared_http_client()
@@ -237,7 +160,6 @@ class TypeSafeAdapterClient:
         return await client.system_one(state=dict(state), questions=dict(questions))
 
     async def aclose(self) -> None:
-        """Close the shared connection pool. Safe to call more than once."""
         self._closed = True
         client, self._http_client = self._http_client, None
         if client is None:
@@ -247,7 +169,7 @@ class TypeSafeAdapterClient:
             return
         try:
             await closer()
-        except Exception:  # pragma: no cover - shutdown is best-effort
+        except Exception:  # pragma: no cover
             logger.debug("closing the TypeSafe HTTP client failed", exc_info=True)
 
 
@@ -255,26 +177,13 @@ _adapter_client: Optional[TypeSafeAdapterClient] = None
 
 
 def _maybe_fault_injecting(client: TypeSafeAdapterClient) -> Any:
-    """Wrap the client when the quickstart's fault switch is set.
-
-    T013 added `ASTRAL_TEST_TYPESAFE_FAULT` so quickstart section 4 can be walked
-    without editing code, but nothing ever installed the wrapper, so the switch
-    did nothing on a running stack. This is that installation.
-
-    It stays inert unless the variable is set, and `configured_fault` itself
-    returns None in production posture -- a fault injector a production process
-    respects is a denial-of-service control with a friendly name. The import is
-    deliberately local and failure-tolerant: the wrapper lives under `tests/`,
-    which a trimmed deployment image may not carry, and its absence must never
-    keep the real client from being created.
-    """
     import os
 
     if not (os.getenv("ASTRAL_TEST_TYPESAFE_FAULT") or "").strip():
         return client
     try:
         from tests.fakes.typesafe_fake import FaultInjectingClient, configured_fault
-    except Exception:  # pragma: no cover - absent in a trimmed image
+    except Exception:  # pragma: no cover
         logger.warning(
             "ASTRAL_TEST_TYPESAFE_FAULT is set but the fault injector is not "
             "importable; continuing with the real client"
@@ -291,7 +200,6 @@ def _maybe_fault_injecting(client: TypeSafeAdapterClient) -> Any:
 
 
 def adapter_client() -> TypeSafeAdapterClient:
-    """Return the process-wide adapter client, creating it on first use."""
     global _adapter_client
     if _adapter_client is None:
         _adapter_client = _maybe_fault_injecting(TypeSafeAdapterClient())
@@ -299,13 +207,11 @@ def adapter_client() -> TypeSafeAdapterClient:
 
 
 def set_adapter_client(client: Optional[TypeSafeAdapterClient]) -> None:
-    """Install a client (or clear it). Tests and shutdown use this."""
     global _adapter_client
     _adapter_client = client
 
 
 async def shutdown_adapter_client() -> None:
-    """Close and drop the process-wide client."""
     global _adapter_client
     client, _adapter_client = _adapter_client, None
     if client is not None:

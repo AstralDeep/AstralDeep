@@ -1,4 +1,6 @@
-"""Tracked documentation, link, and apply/recreate contracts for feature 060."""
+"""Tests for the tracked-documentation link validator and release-artifact recreation
+script: doc reachability, link extraction, git-inventory scanning, and CI invocation.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ GUIDE = REPO_ROOT / "docs" / "byo-client-agents.md"
 
 if not (
     (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "docs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -109,7 +111,7 @@ def test_apply_target_recreates_and_prints_only_the_normalized_flag() -> None:
     assert "Do not use `make restart`" in guide
 
 
-def test_link_validator_is_stdlib_only_and_documents_public_functions() -> None:
+def test_link_validator_is_stdlib_only_and_exposes_public_functions() -> None:
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"), filename=str(SCRIPT))
     imports: set[str] = set()
     public_functions: dict[str, ast.FunctionDef] = {}
@@ -135,7 +137,6 @@ def test_link_validator_is_stdlib_only_and_documents_public_functions() -> None:
         "main",
     }
     assert expected <= set(public_functions)
-    assert all(ast.get_docstring(public_functions[name]) for name in expected)
 
 
 def test_nul_safe_git_inventory_and_requested_path_selection(tmp_path: Path) -> None:

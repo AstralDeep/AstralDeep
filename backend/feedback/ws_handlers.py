@@ -1,14 +1,8 @@
-"""WebSocket handlers for component_feedback / feedback_retract / feedback_amend.
-
-Each handler is invoked from the orchestrator's ``ui_event`` dispatch
-loop with the incoming :class:`backend.shared.protocol.UIEvent` plus the
-authenticated user_id and auth_principal already extracted by the
-orchestrator from the connection's claims.
-
-Acks are delivered as ``ui_event`` messages back over the same socket,
-matching the convention documented in
-``specs/004-component-feedback-loop/contracts/ws-protocol.md``.
+"""WebSocket handlers for component_feedback / feedback_retract / feedback_amend,
+invoked from the orchestrator's ui_event dispatch loop with an already-authenticated
+user_id. Delegate to feedback/recorder.py and ack over the same socket.
 """
+
 from __future__ import annotations
 
 import json
@@ -46,7 +40,6 @@ async def handle_component_feedback(
     recorder: Recorder,
     conversation_id: Optional[str] = None,
 ) -> None:
-    """Submit feedback. Always acknowledges (success or error)."""
     try:
         req = FeedbackSubmitRequest(**payload)
     except ValidationError as exc:
@@ -69,7 +62,7 @@ async def handle_component_feedback(
             category=req.category,
             comment=req.comment,
         )
-    except Exception as exc:  # pragma: no cover — log and report a generic error
+    except Exception as exc:  # pragma: no cover
         logger.exception("component_feedback submit failed: %s", exc)
         await _send_error(safe_send, websocket, "INVALID_INPUT", "submit failed")
         return
@@ -127,7 +120,6 @@ async def handle_feedback_amend(
     if not feedback_id or not isinstance(feedback_id, str):
         await _send_error(safe_send, websocket, "INVALID_INPUT", "feedback_id is required")
         return
-    # Strip control fields before pydantic validation
     fields = {k: v for k, v in payload.items() if k != "feedback_id"}
     comment_explicit = "comment" in fields
     try:

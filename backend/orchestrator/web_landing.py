@@ -1,25 +1,6 @@
-"""Feature 089 (T052): the landing and sidebar data, for the web shell only.
-
-The a8p console shows two things the server already knows and no client
-should invent: the agent directory, and the example scenarios a new user can
-start from. Both are built here and injected into the *shell*, which only the
-web client ever fetches.
-
-That placement is the point. A new websocket frame would have to be emitted
-for one target and withheld from the others, and every native client would
-have to be taught to ignore it. The shell is web-by-construction, so nothing
-a native client receives changes at all — see
-``backend/tests/test_web_landing_089.py``, which holds the registration frames
-to that promise.
-
-The two sources are the ones that already exist:
-
-* scenarios come from ``orchestrator.welcome.WELCOME_EXAMPLES`` — the same
-  list the server-driven welcome components are built from, so the landing
-  and the welcome can never drift apart;
-* the directory comes from the agents view model's own row builder
-  (``projection_surfaces.agents._agent_rows``), so the sidebar lists exactly
-  the agents the settings surface lists.
+"""Builds the web shell's landing payload - welcome.py's example scenarios plus the
+agent directory - injected only into the web client, never sent over the websocket to
+native clients. Used by orchestrator.py.
 """
 
 from __future__ import annotations
@@ -31,9 +12,6 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Which filter tab each welcome example belongs under. Keyed by the slug
-# ``welcome._slug`` derives from the example's title, so a renamed example
-# fails the mapping loudly in the test rather than silently losing its tab.
 SCENARIO_CATEGORIES: Dict[str, str] = {
     "build_a_business_dashboard": "Dashboards",
     "brief_me_with_citations": "Research",
@@ -44,15 +22,12 @@ SCENARIO_CATEGORIES: Dict[str, str] = {
     "roll_some_dice": "Utilities",
 }
 
-#: Tab order on the landing. "All" is prepended by the client.
 CATEGORY_ORDER = ("Dashboards", "Research", "Live data", "Utilities")
 
-#: The directory is a sidebar, not a search result page.
 MAX_AGENTS = 60
 
 
 def scenarios() -> List[Dict[str, str]]:
-    """The welcome examples as landing cards: title, description, prompt, tab."""
     from orchestrator.welcome import WELCOME_EXAMPLES, _slug
 
     out: List[Dict[str, str]] = []
@@ -69,7 +44,6 @@ def scenarios() -> List[Dict[str, str]]:
 
 
 def categories(items: List[Dict[str, str]]) -> List[str]:
-    """The tabs actually needed, in a fixed order, with strays appended."""
     present = {item["category"] for item in items}
     ordered = [name for name in CATEGORY_ORDER if name in present]
     ordered.extend(sorted(present - set(ordered)))
@@ -77,12 +51,6 @@ def categories(items: List[Dict[str, str]]) -> List[str]:
 
 
 async def agents(orch, user_id: str) -> List[Dict[str, Any]]:
-    """The agent directory for this user, from the agents view model's rows.
-
-    Returns an empty list rather than raising: a sidebar that cannot be built
-    should leave the directory empty and let the rest of the page work, not
-    take the shell down with it.
-    """
     try:
         from orchestrator.projection_surfaces.agents import _agent_rows, _list_context
 
@@ -109,7 +77,6 @@ async def agents(orch, user_id: str) -> List[Dict[str, Any]]:
 
 
 async def payload(orch, user_id: str) -> Dict[str, Any]:
-    """Everything the shell injects as ``window.__ASTRAL_LANDING__``."""
     items = scenarios()
     return {
         "scenarios": items,
@@ -119,12 +86,6 @@ async def payload(orch, user_id: str) -> Dict[str, Any]:
 
 
 def as_script_json(data: Dict[str, Any]) -> str:
-    """JSON safe to embed in a ``<script>`` element.
-
-    ``</script>`` inside a string would end the block early, and ``<!--``
-    would open an HTML comment; both are escaped at the character level so no
-    agent-supplied name or description can break out of the script.
-    """
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return (
         text.replace("<", "\\u003c")

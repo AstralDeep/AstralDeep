@@ -1,9 +1,6 @@
-"""FR-019 SDK-wire compatibility, without vendor traffic or billing claims.
-
-The real encrypted store, context resolver, factory and OpenAI SDK execute.
-Only the final httpx transport is replaced; request hooks and serialization
-remain real. A synthetic response proves local interoperability, not that a
-vendor/model is live or has a qualified task reservation/accounting profile.
+"""Tests for llm_config/client_factory.py and research_profile.py across every catalog
+provider: real store/resolver/factory/SDK code runs with only the httpx transport
+replaced, confirming wire auth and no cross-credential fallback.
 """
 
 from copy import deepcopy
@@ -34,20 +31,12 @@ from llm_config.types import CredentialSource, LLMUnavailable
 
 @pytest.fixture
 def wire(request, monkeypatch):
-    """Capture the actual SDK request before any network connection is made."""
     state = SimpleNamespace(requests=[], status=200, usage=True)
 
     def refuse_network(*_args, **_kwargs):
         raise AssertionError("provider test attempted unmocked network access")
 
     if inspect.iscoroutinefunction(getattr(request.node, "obj", None)):
-        # Materialize the test's event loop BEFORE the socket refusal is
-        # installed: on Windows the ProactorEventLoop builds its self-pipe with
-        # a loopback ``socketpair`` connect, which must stay refused for the
-        # test body itself (``test_transport_fixture_blocks_unintercepted_network``
-        # pins that 127.0.0.1 connects are refused, so the guard is not
-        # loosened). pytest-asyncio 1.x names the loop runner fixture by scope;
-        # a missing name is not an error on hosts that never needed it.
         try:
             request.getfixturevalue("_function_scoped_runner")
         except pytest.FixtureLookupError:
@@ -86,9 +75,6 @@ def wire(request, monkeypatch):
             }
         return response_type(200, json=response)
 
-    # The allowed OpenAI SDK range includes legacy httpx and newer httpx2
-    # defaults. Keyless production clients explicitly use legacy httpx. Patch
-    # each installed transport while retaining its own request/response types.
     transports = [httpx]
     if importlib.util.find_spec("httpx2") is not None:
         transports.append(importlib.import_module("httpx2"))
@@ -102,7 +88,6 @@ def wire(request, monkeypatch):
 
 
 def test_transport_fixture_blocks_unintercepted_network(wire):
-    """A future SDK transport change must fail before DNS or any connection."""
     with socket.socket() as connection:
         for action in (
             lambda: connection.connect(("127.0.0.1", 1)),
@@ -116,7 +101,6 @@ def test_transport_fixture_blocks_unintercepted_network(wire):
 
 
 def _complete(client, resolved):
-    """Use ordinary compatible chat framing with the selected model unchanged."""
     return client.chat.completions.create(
         model=resolved.model,
         messages=[
@@ -129,7 +113,6 @@ def _complete(client, resolved):
 
 
 def _seed(store, provider, source):
-    """Keep alternate user and system records populated to detect borrowing."""
     selected = dict(
         provider=provider,
         base_url=resolve_base_url(provider, "https://custom.example.test/gateway/v1"),
@@ -215,7 +198,7 @@ def test_keyless_local_calls_keep_fresh_transport_and_unknown_usage(
             response = _complete(client, resolved)
             assert (
                 response.usage is None
-            )  # Missing observations are not synthetic zero counters.
+            )
         assert client.is_closed()
     assert len(wire.requests) == 2
     assert all(
@@ -289,7 +272,6 @@ def test_local_config_remains_usable_after_strict_research_profile_refusal(
 
 
 def _bind_audit(store, monkeypatch):
-    """Private binding key + session stub the exact-row capture path needs."""
     store._repository.plane_runtime.repositories.history = SimpleNamespace(
         sessions=SimpleNamespace(bound_request_execution_waits=Mock(return_value=None)),
     )
@@ -317,7 +299,6 @@ DOCUMENTED_PRESET_KEYS = (
 
 
 def test_preset_catalog_is_exactly_the_documented_breadth():
-    """FR-019: a removed, renamed or reordered provider fails here, not in prod."""
     presets = all_presets()
     assert tuple(preset.key for preset in presets) == DOCUMENTED_PRESET_KEYS
     assert presets[-1].key == "custom" and presets[-1].base_url is None
@@ -327,7 +308,6 @@ def test_preset_catalog_is_exactly_the_documented_breadth():
     for preset in presets:
         if preset.key not in profile.LOCAL_PROVIDERS:
             assert preset.key_required and preset.base_url.startswith("https://")
-    # The Work profiles select from this catalog and never widen it.
     assert profile.OPENAI_PROFILE.providers == ("openai",)
     assert set(profile.LOCAL_PROFILE.providers) < set(DOCUMENTED_PRESET_KEYS)
     assert profile.PROFILES == (profile.OPENAI_PROFILE, profile.LOCAL_PROFILE)
@@ -349,7 +329,6 @@ def test_local_profile_reserves_bounded_accounting_and_charges_unknown_usage_at_
     binding = _bind_audit(store, monkeypatch)
     encrypted_before = deepcopy((fake_db.users, fake_db.system))
     capture = store.capture_user_sync("alice")
-    # The default (OpenAI) profile still refuses this row: no silent widening.
     with pytest.raises(ResearchProfileUnavailable):
         select_config(capture, store=store, binding_key=binding)
     selection = select_config(
@@ -360,14 +339,12 @@ def test_local_profile_reserves_bounded_accounting_and_charges_unknown_usage_at_
     assert selection.profile.base_url == base_url
     assert selection.profile.endpoint == base_url + "/chat/completions"
     assert selection._api_key == ("" if key in ("", "not-needed") else key)
-    # Same shape as the OpenAI reservation the execution adapter charges.
     reservation = selection.reservation
     assert set(reservation) == set(profile.OPENAI_PROFILE.reservation()) == {
         "model_calls", "tokens", "elapsed_ms"}
     assert reservation == {"model_calls": 1, "tokens": 32768 + 1024, "elapsed_ms": 120000}
     assert reservation == profile.LOCAL_PROFILE.reservation()
     assert 0 < reservation["tokens"] and 0 < reservation["elapsed_ms"] <= 120_000
-    # The admitted body can never exceed the declared context bound.
     assert profile.MAX_REQUEST_BYTES // 2 <= profile.LOCAL_CONTEXT_TOKENS
     observation = _observation()
     request = profile.build_request("Select release notes.", observation,
@@ -376,9 +353,6 @@ def test_local_profile_reserves_bounded_accounting_and_charges_unknown_usage_at_
     assert body["model"] == "local-selector-q4"
     assert body["max_completion_tokens"] == profile.LOCAL_OUTPUT_TOKENS
     assert "p001" in request.passage_ids
-    # Unknown usage is 'usage_unknown' -- never a synthetic zero -- so the
-    # adapter rule (tokens = maximum.tokens when total is None) charges the
-    # full reserved maximum for this profile.
     document = _reply("local-selector-q4", usage=None)
     unknown = profile.parse_response(document, status_code=200,
                                      passage_ids=request.passage_ids,
@@ -392,13 +366,10 @@ def test_local_profile_reserves_bounded_accounting_and_charges_unknown_usage_at_
     assert (known.usage.total_tokens, known.usage.prompt_tokens,
             known.usage.completion_tokens) == (37, 30, 7)
     assert not known.usage.exceeds_profile
-    # Overrun is observed against the LOCAL bound, not the OpenAI 128k one.
     over = profile.parse_response(_reply("local-selector-q4", usage=(32769, 1, 32770)),
                                   status_code=200, passage_ids=request.passage_ids,
                                   profile=selection.profile)
     assert over.disposition == "profile_exceeded" and over.usage.total_tokens == 32770
-    # An OpenAI-model answer on the local profile is an invalid answer, never a
-    # cross-profile fallback; usage stays factual.
     foreign = profile.parse_response(_reply(profile.MODEL, usage=(1, 1, 2)), status_code=200,
                                      passage_ids=request.passage_ids, profile=selection.profile)
     assert foreign.disposition == "answer_invalid" and foreign.usage.total_tokens == 2
@@ -412,10 +383,10 @@ def test_local_profile_reserves_bounded_accounting_and_charges_unknown_usage_at_
     "provider,base_url",
     [
         ("custom", "https://custom.example.test/gateway/v1"),
-        ("custom", "http://ollama.internal:11434/v1"),  # unresolved hostname
-        ("custom", "http://169.254.1.1:8000/v1"),  # link-local is not RFC1918
-        ("custom", "http://100.64.0.1:8000/v1"),  # CGNAT is not RFC1918
-        ("custom", "http://172.32.0.1:8000/v1"),  # one past 172.16/12
+        ("custom", "http://ollama.internal:11434/v1"),
+        ("custom", "http://169.254.1.1:8000/v1"),
+        ("custom", "http://100.64.0.1:8000/v1"),
+        ("custom", "http://172.32.0.1:8000/v1"),
         ("custom", "http://user:secret@127.0.0.1:8000/v1"),
         ("ollama", "https://api.openai.com/v1"),
         ("openai", "https://api.openai.com/v1"),
@@ -435,7 +406,6 @@ def test_local_profile_never_selected_for_remote_base_url(
     with pytest.raises(ResearchProfileUnavailable, match="^research_profile_unavailable$"):
         select_config(capture, store=store, binding_key=binding,
                       profile=profile.LOCAL_PROFILE)
-    # Allowlisting a DIFFERENT origin (other port) does not admit this one.
     monkeypatch.setenv("RESEARCH_LOCAL_ENDPOINT_ALLOWLIST", "http://ollama.internal:11435")
     with pytest.raises(ResearchProfileUnavailable):
         select_config(capture, store=store, binding_key=binding,
@@ -447,11 +417,8 @@ def test_local_profile_never_selected_for_remote_base_url(
     assert wire.requests == []
     frame = local_inference_frame(store.get_sync("alice"))
     if provider in profile.LOCAL_PROVIDERS:
-        # A local-runtime provider on a remote endpoint is remote everywhere.
         assert not frame.local and frame.audit_base_url == base_url
     else:
-        # A hosted-vendor provider is refused by the profile even when its
-        # endpoint is lexically local; the frame is lexical only.
         assert frame.model == "some-model" and not frame.keyless
 
 

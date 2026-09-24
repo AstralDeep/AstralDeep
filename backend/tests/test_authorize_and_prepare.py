@@ -1,14 +1,8 @@
-"""T004 (056-delegated-agent-chaining): the shared gate authorizer.
-
-``Orchestrator._authorize_and_prepare`` is the single-path gate stack factored
-into one reusable sequence (security flag, permission, policy, taint,
-supervisor, HITL, path mapping, credentials, disabled-tool, no-agent,
-delegation, PRE_TOOL_USE hook, concurrency cap). These tests drive each gate's
-allow AND deny through the authorizer directly and assert the refusal surfaces
-identically to the historical single path (``execute_single_tool`` consumes
-the same object), so dispatch-path parity (US3/FR-017) has one enforcement
-point to test against.
+"""Tests for Orchestrator._authorize_and_prepare, the single-path gate stack (security
+flag, permission, policy, taint, supervisor, HITL, delegation, hooks, concurrency
+cap) that execute_single_tool also consumes.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,10 +25,6 @@ def orch():
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    # Exercise the real bound gate methods without composing the application
-    # Plane graph.  This unit suite has no durable-storage behavior in scope;
-    # its external permission, credential, and LLM lookups are explicit fakes,
-    # while the hook and concurrency gates use their production implementations.
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}
@@ -76,15 +66,10 @@ def _msg(outcome) -> str:
     return (outcome.response.error or {}).get("message", "")
 
 
-# --------------------------------------------------------------------------- #
-# Allow path
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_allow_returns_prepared_dispatch(orch):
     out = await _auth(orch, args={"q": "hi"})
     assert isinstance(out, PreparedDispatch)
-    # Path-mapping step injected the chat/user identifiers.
     assert out.args["session_id"] == "c1"
     assert out.args["user_id"] == "u1"
     assert out.args["q"] == "hi"
@@ -93,7 +78,6 @@ async def test_allow_returns_prepared_dispatch(orch):
 
 @pytest.mark.asyncio
 async def test_strict_tool_schema_does_not_receive_undeclared_context(orch):
-    """Post-gate context injection must not invalidate a strict agent call."""
     orch.agent_cards["a1"] = AgentCard(
         name="Strict external agent",
         description="Rejects undeclared arguments",
@@ -141,7 +125,6 @@ async def test_strict_tool_schema_receives_declared_context_only(orch):
 
 @pytest.mark.asyncio
 async def test_partial_legacy_card_still_honours_strict_schema(orch):
-    """Older/synthetic cards may omit the optional skill name attribute."""
     orch.agent_cards["a1"] = SimpleNamespace(skills=[SimpleNamespace(
         id="t1",
         input_schema={
@@ -165,10 +148,6 @@ async def test_allow_injects_encrypted_credentials(orch):
     assert out.args["_credentials_encrypted"] is True
 
 
-# --------------------------------------------------------------------------- #
-# Gate: system security-flag block
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_security_flag_block_refuses(orch):
     orch.security_flags["a1"] = {"t1": {"blocked": True, "reason": "unsafe"}}
@@ -178,21 +157,13 @@ async def test_security_flag_block_refuses(orch):
     assert out.response.error["retryable"] is False
 
 
-# --------------------------------------------------------------------------- #
-# Gate: per-user tool permission
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_permission_denied_refuses(orch):
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=False)
     out = await _auth(orch)
     assert "restricted for this agent" in _msg(out)
-    assert out.render_target is None  # default-canvas render, as today
+    assert out.render_target is None
 
-
-# --------------------------------------------------------------------------- #
-# Gate: policy engine (deny + rewrite)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_policy_deny_refuses(orch, monkeypatch):
@@ -216,13 +187,8 @@ async def test_policy_rewrite_updates_args_and_stream_params(orch, monkeypatch):
     out = await _auth(orch, args={"q": "secret"})
     assert isinstance(out, PreparedDispatch)
     assert out.args["q"] == "[redacted]"
-    # 055: the stream twin must fingerprint the REDACTED params.
     assert out.stream_params == {"q": "[redacted]"}
 
-
-# --------------------------------------------------------------------------- #
-# Gate: taint sink
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_taint_deny_refuses(orch, monkeypatch):
@@ -233,10 +199,6 @@ async def test_taint_deny_refuses(orch, monkeypatch):
     out = await _auth(orch)
     assert "untrusted" in _msg(out)
 
-
-# --------------------------------------------------------------------------- #
-# Gates: supervisor + HITL (env-driven, mirroring test_security_gates_wiring)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_supervisor_blocks_unrequested_destructive(orch, monkeypatch):
@@ -254,24 +216,14 @@ async def test_hitl_blocks_egress(orch, monkeypatch):
     assert "confirm" in _msg(out).lower()
 
 
-# --------------------------------------------------------------------------- #
-# Gate: no-agent
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_unregistered_agent_refuses(orch):
     out = await _auth(orch, agent="ghost-agent")
     assert "No agent available" in _msg(out)
     assert out.render_target == "chat"
-    # Historical shape: the response itself carries no ui_components; the
-    # alert is rendered separately by the dispatch path.
     assert out.response.ui_components is None
     assert out.render_components
 
-
-# --------------------------------------------------------------------------- #
-# Gate: delegation required (production posture)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_delegation_required_refuses_without_token(orch, monkeypatch):
@@ -284,9 +236,6 @@ async def test_delegation_required_refuses_without_token(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delegation_refusal_names_permissions_not_the_realm(orch, monkeypatch):
-    """An empty effective scope set on an authenticated turn is the user's
-    permissions, not a realm misconfiguration — pointing them at the IdP is a
-    dead end."""
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     ws = MagicMock()
     orch.ui_sessions[ws] = {"_raw_token": "user-token"}
@@ -300,8 +249,6 @@ async def test_delegation_refusal_names_permissions_not_the_realm(orch, monkeypa
 
 @pytest.mark.asyncio
 async def test_unbound_turn_refusal_names_the_exchange(orch, monkeypatch):
-    """No bound user token (an unconsented machine turn) is an authority
-    problem, not a permissions one — even though its scope set is also empty."""
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=[])
     out = await _auth(orch)
@@ -316,10 +263,6 @@ async def test_delegation_optional_passes_without_token(orch, monkeypatch):
     assert out.delegation_token is None
 
 
-# --------------------------------------------------------------------------- #
-# Gate: PRE_TOOL_USE hook
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_hook_block_refuses_without_render(orch, monkeypatch):
     from shared.feature_flags import flags
@@ -329,13 +272,8 @@ async def test_hook_block_refuses_without_render(orch, monkeypatch):
                                      modified_args=None))
     out = await _auth(orch)
     assert "blocked by hook" in _msg(out)
-    # Hook blocks never rendered an alert on the single path.
     assert out.render_components is None
 
-
-# --------------------------------------------------------------------------- #
-# Gate: concurrency cap
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_cap_acquired_on_long_running(orch, monkeypatch):
@@ -358,10 +296,6 @@ async def test_cap_exceeded_refuses(orch, monkeypatch):
     assert out.render_target == "chat"
 
 
-# --------------------------------------------------------------------------- #
-# Parity: execute_single_tool surfaces the authorizer's refusal unchanged
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_single_path_surfaces_authorizer_refusal(orch):
     orch.security_flags["a1"] = {"t1": {"blocked": True, "reason": "unsafe"}}
@@ -370,14 +304,9 @@ async def test_single_path_surfaces_authorizer_refusal(orch):
         MagicMock(), tc, {"t1": "a1"}, "c1", user_id="u1")
     direct = await _auth(orch)
     assert (resp.error or {}).get("message") == _msg(direct)
-    # The single path rendered the refusal alert to the chat target.
     orch.send_ui_render.assert_awaited()
     assert orch.send_ui_render.await_args.kwargs.get("target") == "chat"
 
-
-# --------------------------------------------------------------------------- #
-# Gate: feature 063 destructive-operation confirmation (remote-compute-1 only)
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, monkeypatch):
@@ -397,7 +326,7 @@ async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, mo
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
     from orchestrator import remote_confirmation
-    ev = MagicMock(return_value=None)  # non-destructive / already-approved → proceed
+    ev = MagicMock(return_value=None)
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
     orch.local_agents["remote-compute-1"] = MagicMock()
     out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"})

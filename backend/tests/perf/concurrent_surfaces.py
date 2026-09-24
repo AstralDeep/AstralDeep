@@ -1,21 +1,8 @@
-"""Feature 052 concurrency probe (SC-011): 20 simultaneous agents-surface opens.
-
-Drives ``chrome_open`` for the agents surface through the real
-``Orchestrator`` + ``chrome_events`` dispatch against the live database
-(one ``VirtualWebSocket`` per open, mirroring the in-process harness in
-``orchestrator/async_tasks.py``), first as sequential singles and then as
-N=20 simultaneous opens on one event loop, and asserts
-P95(concurrent) <= max(2 x P95(sequential), an absolute floor) so slow or
-noisy CI machines don't flake and sub-5ms sequential baselines don't make
-the 2x bound meaningless.
-
-Not collected by the default ``test_*.py`` glob — run explicitly:
-``pytest tests/perf/concurrent_surfaces.py -q`` or
-``python -m tests.perf.concurrent_surfaces`` from ``backend/``.
-Set ``ASTRAL_SKIP_PERF=1`` to skip; ``PERF_CONCURRENT_FLOOR_MS`` (default
-250) tunes the absolute floor; ``PERF_CONCURRENT_OPENS`` (default 20) the
-concurrency level.
+"""Concurrency probe: drives chrome_open for the agents surface through a real
+Orchestrator against the live database, comparing P95 latency of simultaneous opens
+against sequential singles.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,31 +30,22 @@ _ERROR_MARKERS = ("This surface failed to load", "Unknown settings surface",
 
 
 def _percentile(values: list[float], pct: float) -> float:
-    """Nearest-rank percentile of a non-empty sample."""
     ordered = sorted(values)
     rank = max(1, math.ceil(pct / 100.0 * len(ordered)))
     return ordered[rank - 1]
 
 
 def _fresh_socket(user_id: str):
-    """A VirtualWebSocket capturing one open's frames, per the async harness."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id=user_id)
     return VirtualWebSocket(task)
 
 
 def _seed(orch, user_id: str, email: str, agent_ids: list[str]) -> None:
-    """Seed the probe user and a few owned agent cards so the render has rows."""
     from shared.protocol import AgentCard, AgentSkill
 
-    # The probe subject is itself email-shaped, so the agents surface's
-    # documented mock-auth fallback can derive the owner address without
-    # manufacturing a durable identity-provider observation.  Everything we
-    # do persist below has an exact typed cleanup path.
+    # Must stay email-shaped for the agents surface's mock-auth fallback
     assert user_id == email and "@" in user_id
-    # Feature 054: an unconfigured user's chrome_open is refused server-side
-    # (first-run gate) — seed the probe user's persisted LLM config so the
-    # probe measures the agents surface, not the setup dialog.
     orch._llm_store.set_sync(user_id, provider="custom",
                              base_url="http://test.invalid/v1",
                              model="test-model", api_key="test-key")
@@ -88,7 +66,6 @@ def _seed(orch, user_id: str, email: str, agent_ids: list[str]) -> None:
 
 
 def _cleanup(orch, user_id: str, agent_ids: list[str]) -> None:
-    """Remove every exact row created by :func:`_seed`."""
     from orchestrator.plane_repository_context import (
         PlaneRepositoryContext,
         plane_source_from_orchestrator,
@@ -112,13 +89,6 @@ def _cleanup(orch, user_id: str, agent_ids: list[str]) -> None:
 
 
 async def _open_once(orch, user_id: str, batch_t0: float | None = None) -> float:
-    """One chrome_open of the agents surface; returns wall time in ms.
-
-    For concurrent batches the latency each user experiences runs from the
-    moment everyone clicked (``batch_t0``), not from when this coroutine
-    happened to get scheduled — per-coroutine starts would hide any
-    serialization caused by loop-blocking work.
-    """
     from orchestrator import chrome_events
     ws = _fresh_socket(user_id)
     orch.ui_sessions[ws] = {"realm_access": {"roles": ["user"]}}
@@ -141,7 +111,6 @@ async def _open_once(orch, user_id: str, batch_t0: float | None = None) -> float
 
 
 async def _run_probe(n: int = N_CONCURRENT) -> dict:
-    """Sequential-singles baseline then n simultaneous opens; returns the timings."""
     from orchestrator.orchestrator import Orchestrator
     orch = await asyncio.to_thread(Orchestrator)
     user_id = f"perf-probe-{uuid.uuid4().hex[:8]}@perf.local"
@@ -170,7 +139,6 @@ async def _run_probe(n: int = N_CONCURRENT) -> dict:
 
 
 def _check(result: dict) -> str:
-    """Apply the SC-011 bound with the absolute floor; returns a summary line."""
     seq_p95 = result["seq_p95_ms"]
     conc_p95 = result["conc_p95_ms"]
     threshold = max(2.0 * seq_p95, FLOOR_MS)
@@ -187,7 +155,6 @@ def _check(result: dict) -> str:
 
 
 async def test_concurrent_agents_surface_opens_within_2x_single_user_p95():
-    """SC-011: with 20 concurrent agents-surface opens, P95 stays within 2x singles."""
     try:
         result = await _run_probe()
     except Exception as exc:
@@ -198,7 +165,6 @@ async def test_concurrent_agents_surface_opens_within_2x_single_user_p95():
 
 
 def main() -> int:
-    """CLI entry: run the probe and print the timing summary."""
     result = asyncio.run(_run_probe())
     print(_check(result))
     return 0

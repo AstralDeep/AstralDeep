@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""
-Data models for weather agent enhancements.
+"""Typed weather data models (extended conditions, historical ranges, alerts,
+multi-location comparisons) that agents/weather/mcp_tools.py builds from Open-Meteo
+API responses into UI components.
 """
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
@@ -9,7 +10,6 @@ from datetime import datetime
 
 @dataclass
 class ExtendedWeatherData:
-    """Extended weather data including UV, air quality, sunrise/sunset."""
     uv_index: Optional[float] = None
     pm2_5: Optional[float] = None
     pm10: Optional[float] = None
@@ -22,7 +22,6 @@ class ExtendedWeatherData:
     
     @classmethod
     def from_api_response(cls, current: Dict[str, Any], daily: Dict[str, Any]) -> 'ExtendedWeatherData':
-        """Create instance from Open-Meteo API response."""
         return cls(
             uv_index=current.get('uv_index'),
             pm2_5=current.get('pm2_5'),
@@ -38,7 +37,6 @@ class ExtendedWeatherData:
 
 @dataclass
 class HistoricalWeatherData:
-    """Historical weather data for a date range."""
     start_date: str
     end_date: str
     temperatures: list[float]
@@ -47,7 +45,6 @@ class HistoricalWeatherData:
 
     @classmethod
     def from_api_response(cls, daily: Dict[str, Any], start_date: str, end_date: str) -> 'HistoricalWeatherData':
-        """Create instance from Open-Meteo historical API response."""
         daily.get('time', [])
         temps = daily.get('temperature_2m_max', [])
         precip = daily.get('precipitation_sum', [])
@@ -63,9 +60,8 @@ class HistoricalWeatherData:
 
 @dataclass
 class WeatherAlert:
-    """Severe weather alert."""
     title: str
-    severity: str  # 'low', 'moderate', 'high', 'severe'
+    severity: str
     description: str
     effective: datetime
     expires: datetime
@@ -74,7 +70,6 @@ class WeatherAlert:
 
 @dataclass
 class LocationComparison:
-    """Comparison data for multiple locations."""
     locations: list[str]
     temperatures: list[float]
     conditions: list[str]

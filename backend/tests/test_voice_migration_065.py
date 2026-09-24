@@ -1,4 +1,7 @@
-"""Cross-repository evidence that AstralPlane owns the voice schema contract."""
+"""Cross-repository tests pinning that AstralPlane owns the voice schema contract:
+Deep's voice_sessions.py coordinator matches Plane's catalog exactly, and the
+imported AstralPlane package resolves to the expected source.
+"""
 
 from __future__ import annotations
 
@@ -74,8 +77,6 @@ def _require_embedded_plane_source(module_file: str | None) -> Path:
 
 
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
-    """Deep consumes, but does not recreate, Plane's guarded schema lineage."""
-
     _require_embedded_plane_source(astralplane.__file__)
     assert CURRENT_DATA_PLANE_REVISION.schema_revision == "088.003"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
@@ -132,8 +133,6 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
 
 
 def test_deep_voice_coordinator_matches_the_plane_catalog_exactly() -> None:
-    """Every persistence call in Deep resolves to the pinned typed repository."""
-
     signature = inspect.signature(VoiceSessionRepository)
     assert tuple(signature.parameters) == (
         "plane_runtime",

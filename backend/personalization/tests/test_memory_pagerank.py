@@ -1,10 +1,8 @@
-"""Feature 033 (capability C-M3) — Personalized-PageRank associative retrieval.
-
-A pure ~PageRank over the C-M2 ``memory_link`` graph, seeded by a query's
-direct matches, gives single-step multi-hop "connect-the-dots" recall. Covers
-the pure PPR, the PPR-backed ``memory_search`` (incl. 2-hop), and a real-DB
-round-trip.
+"""Tests for the Personalized-PageRank recall in memory_tools.py: pure PPR properties
+(mass conservation, determinism, decay by hop distance), PPR-backed memory_search
+ranking and fallback, and a real-DB multi-hop round-trip.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -21,8 +19,6 @@ from personalization.repository import PersonalizationRepository
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 
-# ───────────────────────── pure PageRank ─────────────────────────────────────
-
 def test_ppr_empty_graph_is_empty():
     assert personalized_pagerank({}, {}) == {}
 
@@ -34,10 +30,6 @@ def test_ppr_seed_outranks_its_neighbour():
 
 
 def test_ppr_decays_along_a_chain():
-    # Seed A; C is two hops away. Mass decays WITH HOP DISTANCE, so the farthest
-    # node carries the least (the seed itself can be outranked by a high-degree
-    # neighbour — a real PageRank property — but the distant node is always
-    # lightest).
     adj = {"A": ["B"], "B": ["A", "C"], "C": ["B"]}
     r = personalized_pagerank(adj, {"A": 1.0})
     assert r["C"] == min(r.values()) and r["C"] > 0.0
@@ -50,25 +42,22 @@ def test_ppr_is_deterministic():
 
 
 def test_ppr_conserves_mass():
-    adj = {"A": ["B"], "B": ["A", "C"], "C": ["B"], "D": []}  # D dangling
+    adj = {"A": ["B"], "B": ["A", "C"], "C": ["B"], "D": []}
     r = personalized_pagerank(adj, {"A": 1.0})
     assert abs(sum(r.values()) - 1.0) < 1e-6
 
 
 def test_ppr_unseeded_is_uniform_restart():
     adj = {"A": ["B"], "B": ["A"]}
-    r = personalized_pagerank(adj, {})  # no seeds → ordinary PageRank
-    assert abs(r["A"] - r["B"]) < 1e-9  # symmetric graph → equal
+    r = personalized_pagerank(adj, {})
+    assert abs(r["A"] - r["B"]) < 1e-9
 
 
 def test_ppr_unreachable_node_gets_no_personalized_mass():
-    # X is disconnected from the A–B component; seeding A leaves X at ~0.
     adj = {"A": ["B"], "B": ["A"], "X": ["Y"], "Y": ["X"]}
     r = personalized_pagerank(adj, {"A": 1.0})
     assert r["A"] > 0 and r["X"] < 1e-6
 
-
-# ───────────────────────── flag ──────────────────────────────────────────────
 
 def test_pagerank_enabled_default_on(monkeypatch):
     monkeypatch.delenv("FF_MEMORY_PAGERANK", raising=False)
@@ -81,8 +70,6 @@ def test_pagerank_flag_off(monkeypatch, value):
     assert pagerank_enabled() is False
 
 
-# ───────────────────────── PPR-backed search ─────────────────────────────────
-
 class _Gate:
     def contains_phi(self, value):
         return False
@@ -91,7 +78,7 @@ class _Gate:
 class _GraphRepo:
     def __init__(self):
         self.rows = []
-        self.edges = set()  # directed (a, b)
+        self.edges = set()
 
     def create_memory(self, user_id, category, value, *, source="explicit",
                        salience=0.0, keywords=None, project_id=None):
@@ -126,7 +113,6 @@ class _GraphRepo:
 
 
 def _seed_chain(repo, user="u"):
-    """A (matches query) — B — C chain; B and C share no query token with the query."""
     a = repo.create_memory(user, "goal", "track grant deadlines", keywords="track grant deadlines")
     b = repo.create_memory(user, "workflow_tag", "submission portal", keywords="submission portal")
     c = repo.create_memory(user, "context", "uses two factor auth", keywords="uses factor auth")
@@ -139,24 +125,24 @@ def test_search_ranks_seed_then_multi_hop_neighbours():
     repo = _GraphRepo()
     a, b, c = _seed_chain(repo)
     mt = MemoryTools(repo, phi_gate=_Gate())
-    hits = mt.memory_search("u", "grant")  # only A matches directly
+    hits = mt.memory_search("u", "grant")
     ids = [h["id"] for h in hits]
-    assert ids[0] == a["id"]               # the direct match leads
-    assert b["id"] in ids and c["id"] in ids  # 1- and 2-hop neighbours surface
-    assert ids.index(b["id"]) < ids.index(c["id"])  # closer neighbour ranks higher
+    assert ids[0] == a["id"]
+    assert b["id"] in ids and c["id"] in ids
+    assert ids.index(b["id"]) < ids.index(c["id"])
 
 
 def test_search_excludes_unconnected_nonmatch():
     repo = _GraphRepo()
     a, b, c = _seed_chain(repo)
-    repo.create_memory("u", "preference", "enjoys hiking", keywords="enjoys hiking")  # island
+    repo.create_memory("u", "preference", "enjoys hiking", keywords="enjoys hiking")
     mt = MemoryTools(repo, phi_gate=_Gate())
     vals = [h["value"] for h in mt.memory_search("u", "grant")]
-    assert "enjoys hiking" not in vals  # no query match, no link → not recalled
+    assert "enjoys hiking" not in vals
 
 
 def test_search_no_graph_falls_back_to_direct():
-    repo = _GraphRepo()  # no links added
+    repo = _GraphRepo()
     repo.create_memory("u", "goal", "track grant deadlines", keywords="track grant deadlines")
     repo.create_memory("u", "preference", "enjoys hiking", keywords="enjoys hiking")
     mt = MemoryTools(repo, phi_gate=_Gate())
@@ -169,8 +155,6 @@ def test_search_respects_limit():
     mt = MemoryTools(repo, phi_gate=_Gate())
     assert len(mt.memory_search("u", "grant", limit=2)) == 2
 
-
-# ───────────────────────── real-DB round-trip ────────────────────────────────
 
 def test_pagerank_search_over_real_db():
     with isolated_plane_runtime("personalization_pagerank") as runtime:
@@ -202,4 +186,4 @@ def test_pagerank_search_over_real_db():
         tools = MemoryTools(repo, phi_gate=_Gate())
         values = [hit["value"] for hit in tools.memory_search(user, "grant")]
         assert "track grant deadlines" in values
-        assert "submission portal" in values  # multi-hop
+        assert "submission portal" in values

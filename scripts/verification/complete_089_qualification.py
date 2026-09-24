@@ -1,56 +1,7 @@
 #!/usr/bin/env python3
-"""Feature 089: finish the qualification that needed an authenticated human.
-
-Section 7c of verification.md originally said no chat turn could run on the
-local stack, and that unblocking it needed a realm administrator. Both halves
-were wrong. The realm already has a registered local redirect URI -- under
-``localhost``, not the ``127.0.0.1`` every run happened to use -- and the
-device authorization grant needs no redirect URI at all.
-
-What is genuinely required is a person signing in once. That is the design
-working, not a defect, and it is why **the owner runs this, not the
-implementer**: the one step nobody else can take is approving the code with
-their own realm account.
-
-This is the whole walkthrough, not a probe. After the approval it runs
-unattended and closes, in order:
-
-* **T021 / US1** -- status, save, reject, replace, hide, remove, re-save, all
-  through ``chrome_typesafe_save`` / ``chrome_typesafe_clear``: the same
-  handlers the web settings surface calls, over the socket a native client
-  uses. Both client postures in one run.
-* **T069 / US7** -- the data-sharing acknowledgment gate: a save without the
-  box refuses with the documented message and reaches no provider; a save with
-  it proceeds.
-* **T062 sections 2 and 2a** -- the same steps the quickstart walks by hand.
-* **T004 / T032 (SC-002)** -- real turns, timed from send to first progress
-  frame, bracketed by UTC stamps so the server-side overlap window can be read
-  out of the orchestrator's own perf log afterwards (see ``--perf-only``
-  in ``typesafe_turn_timeline.py``).
-
-Two rules it keeps. The **access token** lives in this process's memory only:
-never printed, never written, never passed on a command line. The **TypeSafe
-key** goes straight to the settings save handler -- never an environment
-variable, never a file this writes, never a log line, never the report.
-
-The key is read first, before the device wait, either from the terminal with
-``getpass`` or, when there is no terminal, from stdin -- the piped entry path
-FR-044 allows. Stage it once::
-
-    docker cp scripts/verification/complete_089_qualification.py \\
-        astraldeep:/tmp/complete_089.py
-
-On a terminal, which prompts for the key::
-
-    docker exec -it astraldeep python /tmp/complete_089.py
-
-Piped, which is what an unattended runner wants::
-
-    grep -m1 '^TYPESAFE_API_KEY=' <owner env> | cut -d= -f2- \\
-      | docker exec -i astraldeep python /tmp/complete_089.py
-
-Either way the device code is printed to stdout and the JSON report lands at
-``/tmp/089_report.json``.
+"""Owner-run walkthrough that signs in once via device grant, then drives the whole
+qualification (first-run dialog, TypeSafe key save/clear, chat turns) unattended over
+the orchestrator's websocket.
 """
 from __future__ import annotations
 
@@ -74,7 +25,6 @@ DEVICE_CLIENT = os.getenv("DEVICE_CLIENT", "astral-watch")
 WS_URI = os.getenv("WS_URI", "ws://127.0.0.1:8001/ws")
 OUT = os.getenv("REPORT", "/tmp/089_report.json")
 
-# The surface contract, as the product defines it.
 STATUS_UNSET = "Not set — standard routing"
 STATUS_ACTIVE = "Active"
 PLACEHOLDER_HIDDEN = "Saved key hidden"
@@ -111,7 +61,6 @@ def _post(url, data):
 
 
 def device_login():
-    """RFC 8628 against the public watch client. Returns an access token."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(40)).rstrip(b"=").decode()
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -156,23 +105,11 @@ def device_login():
 
 
 def password_grant(user, password, client):
-    """A direct grant, for an unattended run against a LOCAL realm.
-
-    This is not a way around the sign-in the real realm asks for. It is the
-    ordinary OAuth password grant, and the only realm it is ever pointed at
-    here is one provisioned locally for the qualification, with a throwaway
-    account of its own. The stack verifies the resulting token exactly as it
-    verifies any other: real RS256 signature, real issuer, real ``azp``. No
-    gate is stubbed, weakened or bypassed -- the token is simply issued by a
-    realm this run owns.
-    """
     form = {"grant_type": "password", "client_id": client,
             "username": user, "password": password,
             "scope": "openid profile email"}
     secret = os.getenv("KC_SECRET", "")
     if secret:
-        # The web client is confidential, so the grant carries its secret.
-        # A public client (the desktop/watch posture) needs none.
         form["client_secret"] = secret
     status, t = _post(AUTH + "/protocol/openid-connect/token", form)
     if status != 200 or not t.get("access_token"):
@@ -182,7 +119,6 @@ def password_grant(user, password, client):
 
 
 def claims_of(token):
-    """Non-validating decode, for the report. The stack does the real check."""
     try:
         part = token.split(".")[1]
         part += "=" * ((4 - len(part) % 4) % 4)
@@ -191,14 +127,8 @@ def claims_of(token):
         return {}
 
 
+# Must be real uuid4s; dispatch silently drops otherwise
 def ui_event(action, payload):
-    """One ui_event frame, with the identifiers the dispatcher requires.
-
-    Feature 065's durable dispatch drops any ui_event that does not carry a
-    canonical uuid4 ``submission_id`` and ``request_generation`` -- silently,
-    with `return None` and no log line, which is exactly as confusing to debug
-    as it sounds. A real client mints both per submission; so does this.
-    """
     return {"type": "ui_event", "action": action, "payload": payload,
             "submission_id": str(uuid.uuid4()),
             "request_generation": str(uuid.uuid4())}
@@ -209,8 +139,6 @@ def now_utc():
 
 
 class Walk:
-    """One socket, the whole walkthrough, one report."""
-
     def __init__(self, ws, key):
         self.ws = ws
         self.key = key
@@ -238,7 +166,6 @@ class Walk:
         return got
 
     async def act(self, action, payload, seconds=20.0):
-        """Send one ui_event and return (frames, the longest html in them)."""
         await self.ws.send(json.dumps(ui_event(action, payload)))
         frames = await self.collect(seconds)
         html = ""
@@ -249,17 +176,7 @@ class Walk:
                     html = v
         return frames, html
 
-    # -- T069 / US7, on the dialog a new account actually meets -----------
-
     async def first_run(self, creds):
-        """The mandatory first-run dialog, and the acknowledgment gate on it.
-
-        A new account meets this before anything else: until a provider is
-        saved, every chrome action is answered with this dialog instead. That
-        makes it the honest place to test the acknowledgment, and it is the
-        quickstart's own section 2a step 5 -- "open the first-run LLM dialog as
-        a new test user".
-        """
         _, html = await self.act("chrome_open", {"surface": "llm"})
         mandatory = 'data-mandatory="1"' in html
         self.record("T069", "first-run dialog shown", mandatory,
@@ -269,8 +186,6 @@ class Walk:
                     ACK_FIELD in html,
                     "the data-sharing field is on the first-run dialog"
                     if ACK_FIELD in html else "no " + ACK_FIELD + " field")
-        # Feature 089 moved the surface actions into the dialog footer; a
-        # dialog that cannot be dismissed must still offer a way to save.
         self.record("T069", "first-run dialog has a save action",
                     "chrome_llm_save" in html,
                     "the dialog offers a save action"
@@ -288,7 +203,6 @@ class Walk:
                         "exercised")
             return
 
-        # Save without the box: refused, and no provider request is made.
         fields = dict(base)
         fields[ACK_FIELD] = False
         _, html = await self.act("chrome_llm_save", {"fields": fields}, 60)
@@ -296,7 +210,6 @@ class Walk:
                     "refused with the documented message" if ACK_ERROR in html
                     else "expected the acknowledgment refusal; got: " + html[:200])
 
-        # Save with the box: proceeds, and clears the first-run gate.
         fields = dict(base)
         fields[ACK_FIELD] = True
         _, html = await self.act("chrome_llm_save", {"fields": fields}, 90)
@@ -307,8 +220,6 @@ class Walk:
         self.record("FR-035", "provider key never echoed", api_key not in html,
                     "the provider key does not appear in the surface"
                     if api_key not in html else "KEY MATERIAL IN THE SURFACE")
-
-    # -- T021 / T062 section 2 -------------------------------------------
 
     async def settings(self):
         _, html = await self.act("chrome_open", {"surface": "llm"})
@@ -324,7 +235,6 @@ class Walk:
                     "the data-sharing field is on the surface" if ACK_FIELD in html
                     else "no " + ACK_FIELD + " field found")
 
-        # T021: an invalid key is rejected by TypeSafe, status unchanged.
         _, html = await self.act("chrome_typesafe_save", {
             "fields": {KEY_FIELD: "sk-invalid-089-walkthrough", ACK_FIELD: True}}, 45)
         rejected = REJECTED in html or "reject" in html.lower()
@@ -332,7 +242,6 @@ class Walk:
                     "rejected" if rejected else "expected a rejection; got: "
                     + html[:200])
 
-        # T021: the real key saves and reads back as Active, never echoed.
         _, html = await self.act("chrome_typesafe_save", {
             "fields": {KEY_FIELD: self.key, ACK_FIELD: True}}, 45)
         saved = SAVED_OK in html or "saved" in html.lower()
@@ -354,7 +263,6 @@ class Walk:
                     "the key does not appear on reopen"
                     if self.key not in html else "KEY MATERIAL IN THE SURFACE")
 
-        # T021: removal returns to the unset state.
         _, html = await self.act("chrome_typesafe_clear", {"fields": {}}, 30)
         _, html2 = await self.act("chrome_open", {"surface": "llm"})
         unset = STATUS_UNSET in html2
@@ -362,14 +270,11 @@ class Walk:
                     "status is back to the unset line" if unset
                     else "status after removal: " + html2[:200])
 
-        # Put it back for the turn phase.
         _, html = await self.act("chrome_typesafe_save", {
             "fields": {KEY_FIELD: self.key, ACK_FIELD: True}}, 45)
         self.record("T021", "re-saved for the turn phase",
                     SAVED_OK in html or "saved" in html.lower(),
                     "re-saved")
-
-    # -- T004 / T032 SC-002 ---------------------------------------------
 
     async def turns(self, count):
         prompts = [
@@ -482,17 +387,7 @@ def main():
     if "--turns" in sys.argv:
         turns = int(sys.argv[sys.argv.index("--turns") + 1])
 
-    # Credentials reach the settings save handlers and nothing else: never an
-    # environment variable for an Astral process, never a file this writes,
-    # never a log line, never the report. Read FIRST, before the device wait,
-    # so stdin is not left dangling.
-    #
-    # On a terminal only the TypeSafe key is asked for. Otherwise the whole
-    # owner env file is piped in -- the entry path FR-044 allows -- and the
-    # four values used are picked out of it. Piping matters for more than
-    # convenience: the account that approves the device code may never have
-    # used this stack, and without a provider every turn would die at the
-    # first-run gate and waste the run.
+    # Read stdin before the device wait, not after
     creds = {}
     if sys.stdin is not None and sys.stdin.isatty():
         say("Paste the TypeSafe API key.")
@@ -517,8 +412,6 @@ def main():
             "no TYPESAFE_API_KEY on the terminal or stdin. Pipe the owner env "
             "file in, or run with -it to be prompted.")
 
-    # Unattended when the realm is a local one this run provisioned; the
-    # device code otherwise, because the real realm wants a person.
     kc_user = os.getenv("KC_USER", "")
     if kc_user:
         token = password_grant(kc_user, os.getenv("KC_PASS", ""),

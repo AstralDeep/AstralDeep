@@ -1,4 +1,6 @@
-"""list_attachments tool: ownership-scoped, category filter."""
+"""Tests for agents/general/file_tools/list_attachments.py: ownership-scoped listing,
+category filtering, and the required-user check.
+"""
 
 from __future__ import annotations
 

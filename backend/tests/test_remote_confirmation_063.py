@@ -1,25 +1,8 @@
-"""US3 destructive-operation confirmation gate — adversarial unit tests (SC-004).
-
-Exercises ``orchestrator/remote_confirmation.py`` in isolation with a typed,
-in-memory AstralPlane proposal repository and the transport test seam. No
-PostgreSQL, no network — runs the same in CI and in-container.
-
-The security properties proved here (spec confirmation.md / FR-027..FR-033, FR-044):
-- a destructive verb NEVER executes on first reach — it produces a proposal + refusal;
-- an UNATTENDED turn is refused for EVERY mutating-registry verb — destructive or
-  not — with NO proposal created and NO transport contact (T043/FR-033), while
-  read verbs still pass this gate (FR-044's status-poll allowance);
-- approval is single-use, owner-bound, TTL-bounded, and argument-fingerprint-bound;
-- a re-labelled / re-argumented / replayed approval does not carry over;
-- a non-destructive mutating verb proceeds on an ATTENDED turn (its explicit grant
-  already gated it).
-
-T036/T037 adversarial suite (bottom sections): the same properties proved through
-the REAL gate stack (``_run_gate_stack`` via ``execute_single_tool`` /
-``execute_parallel_tools`` / the chained-hop seam), per destructive verb, across
-machine-turn classes, and across an orchestrator restart (SC-004/SC-005/SC-006) —
-with zero destructive transport operations asserted via the FakeTransport call log.
+"""Adversarial tests for orchestrator/remote_confirmation.py's destructive-operation
+gate: a verb never executes on first reach, an unattended turn is refused with no
+transport contact, and approval is single-use and owner-bound.
 """
+
 from __future__ import annotations
 
 import json
@@ -44,11 +27,7 @@ def PAST():
     return int(time.time()) - 10
 
 
-# ── fake proposal store (matches remote_confirmation's exact queries) ──────────
-
 class _FakeDB:
-    """Mutable state owned by the in-memory typed Plane repositories."""
-
     def __init__(self):
         self.rows: dict = {}
 
@@ -62,10 +41,6 @@ class _Rec:
 
 
 class _WS:
-    """Hashable websocket stand-in (a real WS is hashable; SimpleNamespace is not
-    because it defines __eq__ — production only ever reaches ui_sessions.get with a
-    real socket or None, both hashable)."""
-
     def __init__(self, **attrs):
         for k, v in attrs.items():
             setattr(self, k, v)
@@ -105,8 +80,6 @@ def _reset_transport():
     set_transport(None)
 
 
-# ── fingerprint / canonicalisation ─────────────────────────────────────────────
-
 def test_canonical_args_excludes_underscore_keys_and_is_order_independent():
     a = {"machine_id": "m", "path": "/x", "_remote_op_proposal_id": "p"}
     b = {"path": "/x", "machine_id": "m"}
@@ -117,8 +90,6 @@ def test_canonical_args_excludes_underscore_keys_and_is_order_independent():
 def test_fingerprint_changes_when_a_real_arg_changes():
     assert rc._fingerprint({"path": "/a"}) != rc._fingerprint({"path": "/b"})
 
-
-# ── classification predicate ────────────────────────────────────────────────────
 
 def test_classification_for_known_and_unknown():
     assert rc.classification_for("remove_path") == "always"
@@ -150,11 +121,8 @@ def test_is_destructive_if_exists_fails_closed_when_stat_errors(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: tgt)
     o = _orch(_FakeDB())
     set_transport(FakeTransport(force_verdict=Verdict.UNREACHABLE))
-    # Cannot tell whether the file exists → treat as destructive (fail-closed).
     assert rc._is_destructive(o, USER, "upload_file", {"machine_id": "m1", "remote_path": "/x"}, "if_exists") is True
 
-
-# ── no-live-human detection (FR-033) ────────────────────────────────────────────
 
 def test_no_live_human_none_socket_is_unattended():
     assert rc._no_live_human(_orch(_FakeDB()), None) is True
@@ -170,12 +138,7 @@ def test_no_live_human_plain_socket_is_attended():
     assert rc._no_live_human(_orch(_FakeDB()), object()) is False
 
 
-# ── evaluate: the gate hook ─────────────────────────────────────────────────────
-
 def test_evaluate_read_verb_on_merged_agent_never_gates():
-    # Merge safety: read verbs are not in the destructive map, so the gate fires
-    # for NONE of them — the unified agent's reads run under the safe-seed baseline
-    # untouched. Only the mutating agent's destructive verbs are gated.
     o = _orch(_FakeDB())
     for verb in ("list_queue", "job_status", "host_facts", "list_processes"):
         assert rc.evaluate(o, object(), "remote-compute-1", verb,
@@ -203,7 +166,6 @@ def test_evaluate_destructive_first_reach_creates_proposal_and_refuses():
     msg, comps = out
     assert "confirmation_required" in msg
     assert comps and isinstance(comps, list)
-    # exactly one pending proposal recorded, owned by the caller, not executed
     assert len(db.rows) == 1
     (row,) = db.rows.values()
     assert row["status"] == "pending" and row["owner_user_id"] == USER and row["verb"] == "remove_path"
@@ -217,7 +179,7 @@ def test_evaluate_unattended_refuses_and_creates_no_proposal():
     assert out is not None
     msg, _ = out
     assert "unattended_refused" in msg
-    assert db.rows == {}  # NOTHING persisted; the op cannot be approved later out-of-band
+    assert db.rows == {}
 
 
 def test_evaluate_valid_marker_consumes_single_use_and_proceeds():
@@ -227,7 +189,7 @@ def test_evaluate_valid_marker_consumes_single_use_and_proceeds():
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
     passed = dict(args, **{rc._MARKER: "P1"})
     assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job", passed, "chat", USER) is None
-    assert rc._MARKER not in passed          # marker stripped, never reaches the agent
+    assert rc._MARKER not in passed
     assert db.rows["P1"]["status"] == "consumed"
 
 
@@ -238,7 +200,6 @@ def test_evaluate_consumed_marker_cannot_be_replayed():
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
     assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                        dict(args, **{rc._MARKER: "P1"}), "chat", USER) is None
-    # second use of the same approval must be refused (single-use)
     out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None and "no longer valid" in out[0]
@@ -251,7 +212,7 @@ def test_evaluate_marker_owned_by_another_user_is_refused():
     _seed(db, "P1", owner=OTHER, verb="cancel_job", args=args, status="approved")
     out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None and db.rows["P1"]["status"] == "approved"  # untouched
+    assert out is not None and db.rows["P1"]["status"] == "approved"
 
 
 def test_evaluate_expired_marker_is_refused():
@@ -269,13 +230,10 @@ def test_evaluate_marker_with_mutated_args_is_refused():
     o = _orch(db)
     _seed(db, "P1", owner=USER, verb="remove_path",
           args={"machine_id": "m", "path": "/safe"}, status="approved")
-    # Approval was for /safe; the model now asks to delete /etc with the same token.
     out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
                       {"machine_id": "m", "path": "/etc", rc._MARKER: "P1"}, "chat", USER)
     assert out is not None and "no longer valid" in out[0]
 
-
-# ── handle_decision: the approve/decline click ──────────────────────────────────
 
 async def test_handle_decision_approve_redispatches_with_stored_args_and_marker():
     db = _FakeDB()
@@ -308,7 +266,7 @@ async def test_handle_decision_by_non_owner_is_refused():
     _seed(db, "P1", owner=USER, verb="cancel_job",
           args={"machine_id": "m", "job_id": "9"}, status="pending")
     await rc.handle_decision(o, object(), OTHER, {"proposal_id": "P1", "decision": "approve"})
-    assert db.rows["P1"]["status"] == "pending"  # untouched
+    assert db.rows["P1"]["status"] == "pending"
     assert o.execute_single_tool.calls == []
 
 
@@ -329,17 +287,10 @@ async def test_handle_decision_double_approve_dispatches_once():
           args={"machine_id": "m", "path": "/data"}, status="pending")
     await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
     await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-    assert len(o.execute_single_tool.calls) == 1  # second approve is a no-op (already handled)
+    assert len(o.execute_single_tool.calls) == 1
 
-
-# ── hash-chained audit lifecycle (FR-047/FR-048) ───────────────────────────────
 
 class _FakeRecorder:
-    """Captures the AuditEventCreate objects the gate emits. Construction of each
-    validates event_class + outcome + required fields, so a bad shape would raise
-    inside _audit_* (swallowed) and simply never reach here — the assertions below
-    therefore also prove the events are schema-valid."""
-
     def __init__(self):
         self.events = []
 
@@ -383,8 +334,6 @@ def test_audit_unattended_refusal_is_recorded_as_failure(audit_rec):
 
 
 def test_audit_unattended_refusal_recorded_for_non_destructive_verb(audit_rec):
-    # T043 widened the unattended refusal to non-destructive mutating verbs — the
-    # audit trail must name those refusals identically.
     rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "submit_job",
                 {"machine_id": "m", "script": "echo hi"}, "chat", USER)
     assert _types(audit_rec) == ["remote_op.refused_unattended"]
@@ -416,15 +365,6 @@ async def test_audit_approve_and_decline_events(audit_rec):
     assert by_type["remote_op.approved"].correlation_id == "PA"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# T036/T037 adversarial suite (SC-004/SC-005/SC-006)
-#
-# Zero destructive executions throughout: the FakeTransport call log must never
-# contain a `run` or `put_file` op — the only transport call the GATE may make is
-# the read-only `stat` that decides the `if_exists` classification, and only on an
-# ATTENDED turn (an unattended turn is refused before ANY transport contact).
-# ═══════════════════════════════════════════════════════════════════════════════
-
 _TGT = MachineTarget(machine_id="m1", label="dgx", address="10.0.0.5", port=22,
                      username="me", cred_type="password", secret="x")
 
@@ -444,9 +384,6 @@ def _tc(name, args):
         name=name, arguments=json.dumps(args)))
 
 
-#: One representative destructive invocation per gated verb. Completeness is
-#: enforced against DESTRUCTIVE_CLASSIFICATION below, so a future verb addition
-#: fails this suite until it gains a first-call case.
 _FIRST_CALL_CASES = {
     "remove_path": {"machine_id": "m1", "path": "/data", "recursive": True},
     "cancel_job": {"machine_id": "m1", "job_id": "7"},
@@ -456,9 +393,6 @@ _FIRST_CALL_CASES = {
     "upload_file": {"machine_id": "m1", "remote_path": "/exists.txt"},
 }
 
-#: One representative NON-destructive invocation per mutating shape: the "never"
-#: verbs plus each by_action/if_exists verb's benign variant. Attended, all of
-#: these proceed; on a machine turn every one is refused (T043/FR-033).
 _NON_DESTRUCTIVE_CALL_CASES = {
     "make_directory": {"machine_id": "m1", "path": "/tmp/new"},
     "submit_job": {"machine_id": "m1", "script": "echo hi"},
@@ -468,7 +402,6 @@ _NON_DESTRUCTIVE_CALL_CASES = {
     "manage_package": {"machine_id": "m1", "package_name": "vim", "action": "install"},
 }
 
-#: Both shapes per verb — the machine-turn sweep runs the union (12 cases).
 _MUTATING_SWEEP = list(_FIRST_CALL_CASES.items()) + list(_NON_DESTRUCTIVE_CALL_CASES.items())
 
 
@@ -478,17 +411,13 @@ def test_first_call_matrix_covers_every_gated_verb():
 
 
 def test_mutating_sweep_covers_every_registry_verb():
-    # Completeness against the SINGLE SOURCE OF TRUTH: a verb added to the mutating
-    # registry fails this suite until it gains a machine-turn case (T043).
     assert {v for v, _ in _MUTATING_SWEEP} == set(rc.DESTRUCTIVE_CLASSIFICATION)
 
-
-# ── SC-005: each destructive verb's FIRST call proposes and has NO effect ──────
 
 @pytest.mark.parametrize("verb", sorted(_FIRST_CALL_CASES))
 def test_each_destructive_verb_first_call_proposes_no_effect(verb, monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
-    t = _fake(files={"/exists.txt": b"x"})  # upload_file's if_exists probe finds it
+    t = _fake(files={"/exists.txt": b"x"})
     db = _FakeDB()
     o = _orch(db)
     out = rc.evaluate(o, object(), "remote-compute-1", verb,
@@ -500,25 +429,19 @@ def test_each_destructive_verb_first_call_proposes_no_effect(verb, monkeypatch):
     assert o.execute_single_tool.calls == []
 
 
-# ── verb binding: an approval for one verb cannot be consumed by another ───────
-
 def test_approval_for_one_verb_cannot_be_consumed_by_another():
     t = _fake()
     db = _FakeDB()
     o = _orch(db)
     args = {"machine_id": "m", "job_id": "9"}
     _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    # IDENTICAL args (identical fingerprint) — only the verb name differs, so this
-    # isolates the verb binding from the argument-fingerprint binding.
     out = rc.evaluate(o, object(), "remote-compute-1", "signal_process",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None and "no longer valid" in out[0]
-    assert db.rows["P1"]["status"] == "approved"  # NOT consumed by the wrong verb
-    assert set(db.rows) == {"P1"}                 # and no bonus proposal appeared
+    assert db.rows["P1"]["status"] == "approved"
+    assert set(db.rows) == {"P1"}
     assert _destructive_ops(t) == []
 
-
-# ── repeating the call does not auto-approve ───────────────────────────────────
 
 def test_repeating_the_call_never_auto_approves():
     t = _fake()
@@ -529,14 +452,11 @@ def test_repeating_the_call_never_auto_approves():
         out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
                           dict(args), "chat", USER)
         assert out is not None and "confirmation_required" in out[0]
-    # each reach re-proposes; none ever advances past 'pending' without a human
     assert len(db.rows) == 3
     assert all(r["status"] == "pending" for r in db.rows.values())
     assert _destructive_ops(t) == []
     assert o.execute_single_tool.calls == []
 
-
-# ── every stale-approval shape is refused with zero executions ─────────────────
 
 @pytest.mark.parametrize("case", ["expired", "already_used", "other_user", "redirected_args"])
 def test_invalid_approval_shapes_refused_store_intact(case):
@@ -551,7 +471,7 @@ def test_invalid_approval_shapes_refused_store_intact(case):
     elif case == "other_user":
         owner = OTHER
     elif case == "redirected_args":
-        call_args = {"machine_id": "m", "path": "/etc"}  # approval was for /safe
+        call_args = {"machine_id": "m", "path": "/etc"}
     _seed(db, "P1", owner=owner, verb="remove_path", args=approved_args,
           status="approved", expires_at=expires)
     if case == "already_used":
@@ -561,18 +481,13 @@ def test_invalid_approval_shapes_refused_store_intact(case):
                       dict(call_args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None
     expected = "consumed" if case == "already_used" else "approved"
-    assert db.rows["P1"]["status"] == expected  # refusal never mutates the row
+    assert db.rows["P1"]["status"] == expected
     assert _destructive_ops(t) == []
     assert o.execute_single_tool.calls == []
 
 
-# ── the REAL gate stack: parallel batch + chained hop still gate ───────────────
-
 @pytest.fixture
 def real_orch(monkeypatch):
-    """A REAL Orchestrator whose gate stack runs the REAL confirmation gate over
-    the fake proposal store, with the scope gate PASSING — so any refusal below is
-    provably the confirmation gate's, not a missing grant's."""
     from orchestrator.orchestrator import Orchestrator
 
     proposal_storage = _FakeDB()
@@ -607,7 +522,7 @@ async def test_parallel_batch_with_destructive_verbs_still_gates(real_orch):
     assert len(results) == 2
     for r in results:
         assert r.error and "confirmation_required" in r.error["message"]
-        assert r.ui_components is None  # errors and UI are exclusive on the wire
+        assert r.ui_components is None
     rendered = [call.args[1] for call in real_orch.send_ui_render.await_args_list]
     assert sum(
         any(component.get("type") == "card" for component in components)
@@ -621,8 +536,6 @@ async def test_parallel_batch_with_destructive_verbs_still_gates(real_orch):
 
 async def test_chained_hop_reaching_destructive_verb_still_gates(real_orch):
     t = _fake()
-    # A mediated hop re-enters execute_single_tool with the initiator's parent
-    # authority (056 US1) — the confirmation gate must fire identically there.
     parent = {"sub": USER, "scopes": ["tools:write"], "depth": 0,
               "act": {"sub": "agent:summarizer-1"}}
     resp = await real_orch.execute_single_tool(
@@ -630,7 +543,6 @@ async def test_chained_hop_reaching_destructive_verb_still_gates(real_orch):
         {"remove_path": "remote-compute-1"}, "chat-1", user_id=USER,
         parent_token=parent, initiating_agent_id="summarizer-1")
     assert resp.error and "confirmation_required" in resp.error["message"]
-    # the refused hop carries mint-failure audit evidence (056 SC-002 wrapper)
     real_orch._record_hop_audit.assert_awaited_once()
     kw = real_orch._record_hop_audit.await_args.kwargs
     assert kw["operation"] == "mint" and kw["outcome"] == "failure"
@@ -639,15 +551,8 @@ async def test_chained_hop_reaching_destructive_verb_still_gates(real_orch):
     assert _destructive_ops(t) == []
 
 
-# ── T043/FR-033: machine-initiated turns refused regardless of scope ───────────
-
 @pytest.mark.parametrize("mclass", MACHINE_TURN_CLASSES)
 def test_machine_turn_every_mutating_verb_refused_before_any_transport_contact(mclass, monkeypatch):
-    # ANY mutating-registry verb — destructive shape OR benign variant, including
-    # the if_exists upload whose classification probe is itself transport contact —
-    # is refused on a machine turn with ZERO transport calls (FR-033). build_target
-    # is patched to a live FakeTransport target precisely so a probe, had one run,
-    # would be visible in the call log.
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
     t = _fake(files={"/exists.txt": b"x"})
     db = _FakeDB()
@@ -656,16 +561,12 @@ def test_machine_turn_every_mutating_verb_refused_before_any_transport_contact(m
     for verb, args in _MUTATING_SWEEP:
         out = rc.evaluate(o, ws, "remote-compute-1", verb, dict(args), "chat", USER)
         assert out is not None and "unattended_refused" in out[0], verb
-    assert db.rows == {}   # nothing persisted a later actor could approve
-    assert t.calls == []   # refused BEFORE any transport contact at all
+    assert db.rows == {}
+    assert t.calls == []
     assert o.execute_single_tool.calls == []
 
 
 def test_machine_turn_upload_refused_before_the_if_exists_probe(monkeypatch):
-    # T043: the unattended check precedes the if_exists classification, so an
-    # unattended upload — over an existing file OR to a new path — is refused with
-    # no transport contact at all, not even the read-only stat (FR-033: a person
-    # must be live for every remote-control verb).
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
     t = _fake(files={"/exists.txt": b"x"})
     db = _FakeDB()
@@ -676,13 +577,11 @@ def test_machine_turn_upload_refused_before_the_if_exists_probe(monkeypatch):
                           {"machine_id": "m1", "remote_path": path}, "chat", USER)
         assert out is not None and "unattended_refused" in out[0]
     assert db.rows == {}
-    assert t.calls == []                   # not even the read-only stat
-    assert t.files["/exists.txt"] == b"x"  # untouched
+    assert t.calls == []
+    assert t.files["/exists.txt"] == b"x"
 
 
 def test_machine_turn_cannot_consume_an_approved_marker():
-    # A human approval must be SPENT by a human turn: an unattended replay of a
-    # valid marker is refused before marker consumption; the approval survives.
     t = _fake()
     db = _FakeDB()
     o = _orch(db)
@@ -692,30 +591,25 @@ def test_machine_turn_cannot_consume_an_approved_marker():
     out = rc.evaluate(o, ws, "remote-compute-1", "cancel_job",
                       dict(args, **{rc._MARKER: "P1"}), "chat", USER)
     assert out is not None and "unattended_refused" in out[0]
-    assert db.rows["P1"]["status"] == "approved"  # NOT consumed unattended
+    assert db.rows["P1"]["status"] == "approved"
     assert _destructive_ops(t) == []
     assert o.execute_single_tool.calls == []
 
 
 def test_attended_non_destructive_mutating_verbs_still_proceed(monkeypatch):
-    # T043 preserves the attended posture: every non-destructive mutating shape
-    # (including the new-path upload, classified via a read-only stat) proceeds
-    # with no proposal — the explicit grant already gated it.
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
-    t = _fake()  # no files -> the upload probe finds nothing (non-destructive)
+    t = _fake()
     db = _FakeDB()
     o = _orch(db)
     for verb, args in _NON_DESTRUCTIVE_CALL_CASES.items():
         assert rc.evaluate(o, object(), "remote-compute-1", verb,
                            dict(args), "chat", USER) is None, verb
-    assert db.rows == {}                           # no proposal needed
-    assert [c["op"] for c in t.calls] == ["stat"]  # the upload probe, nothing else
+    assert db.rows == {}
+    assert [c["op"] for c in t.calls] == ["stat"]
     assert _destructive_ops(t) == []
 
 
 def test_machine_turn_read_verbs_still_pass_this_gate():
-    # FR-044's status-poll allowance: read verbs are not in the mutating registry,
-    # so the gate lets them through even on a machine turn — zero side effects.
     t = _fake()
     db = _FakeDB()
     o = _orch(db)
@@ -755,9 +649,6 @@ async def test_machine_turn_refused_even_with_full_scope_grant(real_orch, bound_
 
 @pytest.mark.parametrize("bound_authority", [False, True])
 async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch, bound_authority):
-    # FR-044: unattended SUBMISSION stays refused through the REAL gate stack even
-    # when the scope gate passes — the refusal does not depend on a scheduler flag,
-    # and a non-destructive classification ("never") does not exempt the verb.
     t = _fake()
     ws = _WS()
     real_orch.ui_sessions[ws] = {"machine_class": "scheduled_job"}
@@ -783,8 +674,6 @@ async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch,
     assert t.calls == []
 
 
-# ── T037/SC-006: restart survival — pending survives, never auto-approves ──────
-
 async def test_pending_proposal_survives_restart_and_never_auto_approves():
     t = _fake()
     db = _FakeDB()
@@ -795,24 +684,19 @@ async def test_pending_proposal_survives_restart_and_never_auto_approves():
     assert out is not None
     (pid,) = db.rows.keys()
 
-    # "Restart": a fresh orchestrator over the SAME durable rows. The module keeps
-    # no in-process approval state, so re-instantiation IS the restart surface.
     o2 = _orch(db)
-    assert db.rows[pid]["status"] == "pending"  # survived; NOT auto-approved
+    assert db.rows[pid]["status"] == "pending"
 
-    # the surviving pending proposal is still not an approval
     out = rc.evaluate(o2, object(), "remote-compute-1", "remove_path",
                       dict(args, **{rc._MARKER: pid}), "chat", USER)
     assert out is not None and "no longer valid" in out[0]
     assert db.rows[pid]["status"] == "pending"
 
-    # re-issuing the verb post-restart re-proposes — it never silently proceeds
     out = rc.evaluate(o2, object(), "remote-compute-1", "remove_path",
                       dict(args), "chat", USER)
     assert out is not None and "confirmation_required" in out[0]
     assert len(db.rows) == 2
 
-    # only an explicit human decision on the restarted instance dispatches
     await rc.handle_decision(o2, object(), USER, {"proposal_id": pid, "decision": "approve"})
     assert db.rows[pid]["status"] == "approved"
     assert len(o2.execute_single_tool.calls) == 1
@@ -820,16 +704,7 @@ async def test_pending_proposal_survives_restart_and_never_auto_approves():
     assert _destructive_ops(t) == []
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Degraded-path behaviour: the gate's decisions must not depend on the audit sink,
-# the machine-label lookup, or a resolvable machine — and the two "impossible"
-# store shapes (unknown proposal id, lost single-use race) must still refuse.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 class _BoomRecorder:
-    """Audit sink that fails on every write (FR-047 is best-effort, never fatal)."""
-
     def record_blocking(self, ev):
         raise RuntimeError("audit sink down")
 
@@ -856,8 +731,6 @@ class TestAuditIsBestEffort:
         await rc._audit_async(USER, "remote_op.approved", "x")
 
     def test_gate_still_refuses_when_the_audit_sink_is_down(self, monkeypatch):
-        # The refusal is authoritative even with no usable audit sink — a broken
-        # recorder must never turn a refusal into a pass.
         monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
         out = rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
                           {"machine_id": "m", "path": "/data"}, "chat", USER)
@@ -901,8 +774,6 @@ class TestMachineLabelResolution:
                            {"machine_id": "m1"}) == "make_directory on dgx"
 
     def test_proposal_card_survives_an_unresolvable_machine(self, monkeypatch):
-        # A proposal must still be offered (with the raw id in its summary) when the
-        # inventory read fails — the human still sees exactly what would run.
         def _boom(*a, **k):
             raise RuntimeError("db down")
         monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
@@ -916,8 +787,6 @@ class TestMachineLabelResolution:
 
 class TestDestructiveClassificationEdges:
     def test_if_exists_fails_closed_when_the_machine_cannot_be_resolved(self, monkeypatch):
-        # build_target raising (credential gone / undecryptable) is indistinguishable
-        # from "cannot tell whether the file exists" → destructive (fail-closed).
         def _boom(*a, **k):
             raise RuntimeError("credential undecryptable")
         monkeypatch.setattr("orchestrator.remote_machines.build_target", _boom)
@@ -926,8 +795,6 @@ class TestDestructiveClassificationEdges:
                                   {"machine_id": "m1", "remote_path": "/x"}, "if_exists") is True
 
     def test_unknown_classification_fails_closed(self):
-        # A future verb whose classification string nobody taught the gate must be
-        # treated as destructive, never waved through.
         assert rc._is_destructive(_orch(_FakeDB()), USER, "weird_verb", {}, "sometimes") is True
 
 
@@ -945,21 +812,16 @@ class TestNoLiveHumanGuard:
         assert db.rows == {}
 
     def test_guard_survives_an_unusable_async_tasks_module(self, monkeypatch):
-        # The isinstance probe is defensive: if async_tasks cannot be resolved the
-        # guard must swallow it and fall through to the machine-claims check, not
-        # explode inside the gate.
         import sys
         from types import ModuleType
         stub = ModuleType("orchestrator.async_tasks")
-        stub.VirtualWebSocket = "not-a-class"  # isinstance() raises TypeError
+        stub.VirtualWebSocket = "not-a-class"
         monkeypatch.setitem(sys.modules, "orchestrator.async_tasks", stub)
         assert rc._no_live_human(_orch(_FakeDB()), object()) is False
 
 
 class TestProposalStoreEdges:
     def test_marker_for_an_unknown_proposal_is_refused(self):
-        # A fabricated marker matches no row at all — refused, and it does not
-        # conjure a proposal the model could then "approve".
         db = _FakeDB()
         o = _orch(db)
         out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
@@ -983,9 +845,6 @@ class TestProposalStoreEdges:
         assert len(o.send_ui_render.calls) == 1
 
     async def test_approve_losing_the_single_use_race_never_dispatches(self):
-        # The SELECT still reads 'pending' but a concurrent tab wins the guarded
-        # UPDATE, so the atomic approve returns no row — this click must report
-        # "already handled" and must NOT re-enter the tool.
         db = _FakeDB()
         db.lose_next_decision = True
         o = _orch(db)

@@ -1,4 +1,6 @@
-"""``read_czi`` tool: parse Zeiss .czi microscopy files via aicspylibczi."""
+"""read_czi tool: parses Zeiss .czi microscopy files via aicspylibczi, returning
+dimension metadata plus a mid-plane thumbnail.
+"""
 
 from __future__ import annotations
 
@@ -15,10 +17,8 @@ logger = logging.getLogger("FileTools.read_czi")
 
 
 def _flatten_to_2d(arr: np.ndarray) -> np.ndarray:
-    """Collapse an n-d CZI tile to something we can thumbnail."""
     while arr.ndim > 2:
-        # aicspylibczi returns arrays shaped like (S, T, C, Z, Y, X) — pick
-        # the middle of each extra axis.
+        # aicspylibczi axes are S,T,C,Z,Y,X; middle-index each extra one
         idx = arr.shape[0] // 2
         arr = arr[idx]
     return arr
@@ -31,7 +31,6 @@ def read_czi(
     scene: int = 0,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return CZI metadata, dimension sizes, and a mid-plane thumbnail."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -74,14 +73,12 @@ def read_czi(
         "scene": scene,
     }
 
-    # Thumbnail: grab the requested scene, middle Z if present, channel 0.
     try:
         read_kwargs: Dict[str, Any] = {}
         if "S" in (dims_str or ""):
             read_kwargs["S"] = scene
         if "C" in (dims_str or ""):
             read_kwargs["C"] = 0
-        # Middle Z-plane if there's a Z axis.
         if dims_shape:
             first = dims_shape[0]
             if "Z" in first:

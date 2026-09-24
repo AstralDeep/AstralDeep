@@ -1,4 +1,8 @@
-"""Fresh owner-authenticated Work reads and bounded lifecycle controls."""
+"""Owner-authenticated REST and SSE reads plus lifecycle controls for Work operations,
+composing work_service.py, work_controls.py, work_publication.py, and work_resume.py
+behind one frozen per-request credential. Mounted by api.py.
+"""
+
 import asyncio
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -36,8 +40,6 @@ _CLAIMS = Depends(get_web_or_bearer_user_payload)
 
 
 async def _read_owner(claims: dict = _CLAIMS):
-    # Authentication already resolved the current credential and audit claims.
-    # Read delivery must not invoke require_user_id's synchronous profile write.
     owner_id = claims.get("sub") if isinstance(claims, dict) else None
     if not isinstance(owner_id, str) or not owner_id:
         raise HTTPException(401, "Not authenticated")
@@ -64,14 +66,12 @@ def _origin(value, *, base=False):
 
 
 async def _write_owner(request: Request, owner_id: str = _OWNER):
-    # Query tokens remain an existing read contract, never write credentials.
     if "token" in request.query_params:
         raise AssignmentError("work_query_token_refused", 403)
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         raise AssignmentError("work_json_required", 415)
     authorization = request.headers.get("authorization", "").split(None, 1)
     if len(authorization) == 2 and authorization[0].lower() == "bearer":
-        # The normal dependency already verified this explicit credential.
         return owner_id
     origins = request.headers.getlist("origin")
     if len(origins) != 1:
@@ -102,8 +102,6 @@ def _read_expiry(claims):
 
 @dataclass(frozen=True, repr=False)
 class _ReadDelivery:
-    """Request-private original IAM identity; never refreshed or serialized."""
-
     owner_id: str
     expires_at: float
     token: str = field(repr=False)
@@ -120,11 +118,9 @@ class _ReadDelivery:
         return cls(owner_id, _read_expiry(claims), token, cookie)
 
     async def verify(self, service):
-        """Re-verify the original credential; returns the delivery cap it allows."""
         if time.time() >= self.expires_at:
             raise HTTPException(401, "Not authenticated")
-        # Reuse the exact normal production JWT/issuer/client/role policy, with
-        # the original token. Calling ensure_session here could adopt a refresh.
+        # Not ensure_session - that could silently refresh the token
         claims = await verify_user(await auth.verify_production_token(self.token))
         if claims.get("sub") != self.owner_id or _read_expiry(claims) != self.expires_at:
             raise HTTPException(401, "Not authenticated")
@@ -147,7 +143,6 @@ class WorkReadRoute(APIRoute):
             original = request
             try:
                 if request.method == "GET":
-                    # Incoming middleware state cannot substitute a private token.
                     request = freeze_work_request(request)
                 elif request.method in {"POST", "DELETE"}:
                     request = freeze_work_request(request)
@@ -198,15 +193,12 @@ class WorkReadRoute(APIRoute):
                 return _json({"error": "work_authentication_required"}, exc.status_code, headers)
             finally:
                 if request is not original:
-                    # Existing HTTP audit middleware owns the outer request.
-                    # Preserve only verified attribution, never the private token.
                     claims = getattr(request.state, "audit_claims", None)
                     if isinstance(claims, dict):
                         original.state.audit_claims = deepcopy(claims)
         return safe
 
 
-# api.operation_router supplies the single /api prefix.
 work_router = APIRouter(prefix="/work/v1/operations", tags=["Work"], route_class=WorkReadRoute)
 
 
@@ -254,8 +246,6 @@ async def get_work(identity: str, request: Request, owner_id: str = _OWNER, clai
 @work_router.get("/{identity}/poll")
 async def poll_work(identity: str, request: Request, after_revision: str | None = None,
                     owner_id: str = _OWNER, claims: dict = _CLAIMS):
-    # An immediate poll is a fresh HTTP request through the same institutional
-    # bearer/cookie dependency. Never retain an identity for later deliveries.
     revision = None if after_revision is None else _query_integer(after_revision)
     return _json(await _read(request, owner_id, claims, "poll", identity=identity, after_revision=revision))
 
@@ -263,18 +253,15 @@ async def poll_work(identity: str, request: Request, after_revision: str | None 
 @work_router.get("/{identity}/measurements")
 async def measurements_work(identity: str, request: Request, owner_id: str = _OWNER,
                             claims: dict = _CLAIMS):
-    """Disclose one operation's timing and claim accounting, never an estimate."""
     return _json({"measurements": await _read(request, owner_id, claims, "measurements",
                                               identity=identity)})
 
 
 @work_router.get("/{identity}/result")
 async def result_work(identity: str, request: Request, owner_id: str = _OWNER, claims: dict = _CLAIMS):
-    """Deliver only the closed result reconstructed from its settled ledger."""
     return _json(await _read(request, owner_id, claims, "result", identity=identity))
 
 
-# Bounded SSE delivery: one poll per tick, never a held transaction or a refresh.
 SSE_INTERVAL_SECONDS = 2.0
 SSE_MAX_SECONDS = 900
 _SSE_ERRORS = frozenset({"work_not_found", "work_authentication_required", "work_read_unavailable"})
@@ -295,18 +282,6 @@ def _sse_failure(exc):
 
 
 async def _events(service, owner_id, claims, delivery, identity, after_revision, credential_cap, bound):
-    """Yield SSE frames until a cap, a refusal, or the client disconnects.
-
-    Every emission is preceded by a fresh poll (one bounded transaction) and by
-    ``_ReadDelivery.verify`` of the ORIGINAL token and cookie issuance; nothing
-    is ever refreshed. ``credential_cap`` (token expiry / issuance hard cap) can
-    only shrink; ``bound`` is the fixed 15-minute (or caller-shortened) limit.
-    Reaching the credential cap is an ``error``; reaching the time bound is an
-    ``end`` the client may resume from with ``Last-Event-ID``. Cancellation
-    (Starlette's disconnect listener, or the OSError of a closed peer on the
-    next tick) closes the generator; nothing is spawned, so no task outlives
-    the response. Keepalive comments make a closed peer visible within a tick.
-    """
     last = after_revision
     try:
         while True:
@@ -317,7 +292,6 @@ async def _events(service, owner_id, claims, delivery, identity, after_revision,
                 yield _sse("error", {"error": _sse_failure(exc)}, last)
                 return
             if time.time() >= credential_cap:
-                # Past the cap, delivery would rest on an expired or capped issuance.
                 yield _sse("error", {"error": "work_authentication_required"}, last)
                 return
             if result["changed"]:
@@ -333,22 +307,13 @@ async def _events(service, owner_id, claims, delivery, identity, after_revision,
                     yield _sse("end", {"reason": "work_stream_bounded", "revision": last}, last)
                 return
             await asyncio.sleep(min(SSE_INTERVAL_SECONDS, remaining))
-    except Exception:  # noqa: BLE001 - a malformed reply or raw driver failure ends as a closed frame, never a truncated stream
+    except Exception:  # noqa: BLE001
         yield _sse("error", {"error": "work_read_unavailable"}, last)
 
 
 @work_router.get("/{identity}/events")
 async def events_work(identity: str, request: Request, after_revision: str | None = None,
                       max_seconds: str | None = None, owner_id: str = _OWNER, claims: dict = _CLAIMS):
-    """Stream revision events for one operation under the original credential.
-
-    ``Last-Event-ID`` (or ``after_revision``) resumes without a duplicate frame.
-    The stream is bounded by min(original token expiry, cookie issuance hard
-    cap, 15 minutes, ``max_seconds``) and ends with a final ``error`` event on
-    revocation, expiry or an inconclusive identity. The first read and
-    verification run before any byte is streamed, so refusals stay ordinary
-    JSON responses through the same closed error-code allowlist.
-    """
     resume = request.headers.get("last-event-id")
     if resume is not None and resume.strip() == "":
         resume = None
@@ -371,7 +336,6 @@ async def events_work(identity: str, request: Request, after_revision: str | Non
 
 @work_router.post("/{identity}/pause")
 async def pause_work(identity: str, body: WorkControlRequest, request: Request):
-    """Pause future execution without discarding already issued effects."""
     caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).control(
         caller.context.owner_id, caller.context.claims, identity, "pause", body, caller=caller))
@@ -379,7 +343,6 @@ async def pause_work(identity: str, body: WorkControlRequest, request: Request):
 
 @work_router.post("/{identity}/cancel")
 async def cancel_work(identity: str, body: WorkControlRequest, request: Request):
-    """Stop future execution; issued or uncertain effects still require settlement."""
     caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).control(
         caller.context.owner_id, caller.context.claims, identity, "cancel", body, caller=caller))
@@ -387,7 +350,6 @@ async def cancel_work(identity: str, body: WorkControlRequest, request: Request)
 
 @work_router.delete("/{identity}")
 async def delete_work(identity: str, body: WorkDeleteRequest, request: Request):
-    """Delete only settled terminal work. Repeated/absent/foreign IDs return 404."""
     caller = _write_caller(request)
     return _json(await WorkControlService(_service(request).assignments).delete(
         caller.context.owner_id, caller.context.claims, identity, body, caller=caller))
@@ -395,49 +357,42 @@ async def delete_work(identity: str, body: WorkDeleteRequest, request: Request):
 
 @work_router.post("/{identity}/resume")
 async def resume_work(identity: str, body: WorkControlRequest, request: Request):
-    """Resume only with the original issued session and current research policy."""
     return _json(await WorkResumeService(_service(request).assignments).resume(
         identity, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/wait")
 async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request):
-    """Hold for a manual owner event without granting future execution."""
     return _json(await WorkContinuationService(_service(request).assignments).wait(
         identity, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/actions/{action_id}/reconcile")
 async def reconcile_work(identity: str, action_id: str, body: WorkReconcileRequest, request: Request):
-    """Record an owner's factual decision without recovering output or waking."""
     return _json(await WorkContinuationService(_service(request).assignments).reconcile(
         identity, action_id, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/actions/{action_id}/decide")
 async def decide_work(identity: str, action_id: str, body: WorkDecideRequest, request: Request):
-    """Approve or reject one proposed action; approval grants no execution by itself."""
     return _json(await WorkControlService(_service(request).assignments).decide(
         identity, action_id, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/wake")
 async def wake_work(identity: str, body: WorkOwnerWakeRequest, request: Request):
-    """Acknowledge a manual owner event with current continuation checks."""
     return _json(await WorkWakeService(_service(request).assignments).wake(
         identity, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/result/proposals")
 async def propose_result_work(identity: str, body: WorkResultProposalRequest, request: Request):
-    """Review the exact rebuilt public result against one destination head; publish nothing."""
     return _json(await WorkPublicationService(_service(request).assignments).propose(
         identity, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/result/proposals/{submission_id}/save")
 async def save_result_work(identity: str, submission_id: str, body: WorkResultSaveRequest, request: Request):
-    """Save one reviewed proposal exactly once with its explicit approval digest."""
     return _json(await WorkPublicationService(_service(request).assignments).save(
         identity, submission_id, body, caller=_write_caller(request)))
 

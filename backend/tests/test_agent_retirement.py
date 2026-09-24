@@ -1,9 +1,7 @@
-"""Feature 029 — removal regression guard (T025 / FR-001 / SC-005).
-
-Static, CI-able proof that the six retired agents are gone with zero dangling
-references: their directories don't exist, no backend module imports their
-packages, and the runtime retirement set covers every retired identity.
+"""Static guard confirming the six retired agents leave no directories or backend
+imports, and that orchestrator.py's retirement set covers every retired identity.
 """
+
 from __future__ import annotations
 
 import ast
@@ -16,7 +14,6 @@ if str(BACKEND_DIR) not in sys.path:
 
 REMOVED_PACKAGES = (
     "email_tracker", "grant_budgets", "grants", "linkedin", "nefarious", "nocodb",
-    # merged into ml_services — their packages are gone too
     "classify", "forecaster", "llm_factory",
 )
 SKIP_DIRS = {"__pycache__", "tmp", "data", "node_modules", ".venv"}
@@ -59,7 +56,6 @@ def test_retirement_set_covers_all_retired_identities():
     for hyphen_id in ("email-tracker-1", "grant-budgets-1", "grants-1",
                       "linkedin-1", "nefarious-1", "nocodb-1"):
         assert hyphen_id in RETIRED_AGENT_IDS
-    # Merged identities are NOT retired — they reroute.
     for merged in ("classify-1", "forecaster-1", "llm-factory-1"):
         assert merged not in RETIRED_AGENT_IDS
         new_agent, _ = remap_merged_source(merged, "any_tool")
@@ -67,7 +63,6 @@ def test_retirement_set_covers_all_retired_identities():
 
 
 def test_expected_agent_catalog_directories():
-    """The post-029 catalog (baseline.md): 9 surviving + 1 merged + 2 new."""
     agents_dir = BACKEND_DIR / "agents"
     present = {p.name for p in agents_dir.iterdir()
                if p.is_dir() and p.name not in SKIP_DIRS and not p.name.startswith((".", "__"))}

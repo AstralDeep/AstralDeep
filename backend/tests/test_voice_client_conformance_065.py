@@ -1,9 +1,6 @@
-"""Backend execution of the canonical Feature-065 C0-C6 client fixture.
-
-The canonical schema validator is imported from the isolated contract tool;
-this suite does not reimplement its rules.  Selected public protocol classes
-and the server-owned composer builder are also exercised so schema-only drift
-cannot masquerade as product-parser conformance.
+"""Tests that the backend accepts the canonical client-local voice fixture vectors
+through the same isolated schema/semantic validator other clients use, plus public
+protocol parsers and per-failure-class rejection reasons.
 """
 
 from __future__ import annotations
@@ -99,8 +96,6 @@ fixture = validator.strict_load_json(FIXTURE_PATH)
 
 
 def _expand_boolean_schemas(value: Any) -> Any:
-    """Express Draft boolean schemas in the engine's equivalent object profile."""
-
     def expand_schema(schema: Any) -> Any:
         if schema is True:
             return {}
@@ -135,8 +130,6 @@ indexed = validator.index_fixture_vectors(fixture)
 
 
 class _NoDatabasePlane:
-    """Construct the local backend without opening a database connection."""
-
     def __init__(self) -> None:
         self.repositories = create_repository_catalog()
 
@@ -228,8 +221,6 @@ def test_canonical_c0_c6_vectors_run_through_authoritative_validator(
     vector_id: str,
     accepted: bool,
 ) -> None:
-    """Every canonical client vector reaches the real schema/semantic gates."""
-
     vector = _materialized(vector_id)
     errors: list[str] = []
     try:
@@ -313,8 +304,6 @@ def test_public_backend_protocol_parsers_accept_canonical_frames(
 def test_each_failure_class_is_rejected_for_its_canonical_reason(
     vector_id: str,
 ) -> None:
-    """Pin strict shape, packet, policy, identity, and stale-fence failures."""
-
     vector = _materialized(vector_id)
     errors: list[str] = []
     try:
@@ -336,8 +325,6 @@ def test_each_failure_class_is_rejected_for_its_canonical_reason(
 async def test_web_client_local_two_turns_complete_with_speech_endpoints_blocked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two strict local finals reach authenticated dispatch without speech egress."""
-
     def blocked_remote_constructor(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("client_local constructed remote media")
 

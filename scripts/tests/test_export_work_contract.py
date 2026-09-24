@@ -1,12 +1,8 @@
-"""Tests for scripts/export_work_contract.py (feature 088 T050).
-
-Pins that the checked-in ``sdk/astral_sdk/work_contract.json`` is exactly what
-running the exporter against the CURRENT backend produces (drift guard for
-the one shared source between the server's MCP projection and the SDK), and
-that the exporter's own shape (keys, tool list, scope set) matches what
-``orchestrator.mcp_projection``/``orchestrator.work_operations`` actually
-define today.
+"""Tests for scripts/export_work_contract.py: the checked-in work_contract.json matches
+a fresh export, --check mode never writes, and the contract mirrors
+mcp_projection/work_operations definitions.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -39,7 +35,6 @@ def _backend_on_path():
 
 
 def test_checked_in_contract_is_not_stale():
-    """The committed JSON must equal a fresh export byte-for-byte (drift pin)."""
     contract = export_work_contract.build_contract()
     fresh_text = json.dumps(contract, indent=2, sort_keys=True) + "\n"
     assert CHECKED_IN.exists(), "sdk/astral_sdk/work_contract.json is missing; run the exporter"
@@ -54,7 +49,6 @@ def test_check_mode_reports_drift(tmp_path):
     stale = tmp_path / "stale.json"
     stale.write_text("{}\n", encoding="utf-8")
     assert export_work_contract.main(["--check", "--out", str(stale)]) == 1
-    # --check must never write, even on drift.
     assert stale.read_text(encoding="utf-8") == "{}\n"
 
 

@@ -1,8 +1,8 @@
+"""Adaptive Runtime Intelligence tool: inspects an incoming request and recommends which
+bundled agent should handle it, exposed as RUNTIME_TOOL_REGISTRY to the Connectors
+MCP server.
 """
-Adaptive Runtime Intelligence tool for the Claude Connectors Agent — US-22.
 
-Analyzes incoming requests and recommends optimal agent dispatch.
-"""
 import logging
 from typing import Dict, Any
 

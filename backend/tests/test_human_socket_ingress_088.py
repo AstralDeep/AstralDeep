@@ -1,8 +1,8 @@
-"""Actual finite ingress, normal registered JWT, and current-human Plane calls.
-
-The controlled metadata handler performs an actual guarded repository read;
-this verifies shared dispatch authority, not a fabricated authoring mutation.
+"""Tests for orchestrator/human_request_authority.py and chrome_events.py: metadata
+dispatch through a real guarded repository read, capture lifecycle across admission
+waits, and refusal of unregistered or mismatched metadata actions.
 """
+
 import asyncio
 from copy import deepcopy
 import json
@@ -63,7 +63,6 @@ async def metadata(ingress, runtime, service, monkeypatch):
     monkeypatch.setattr(chrome_events, "_handlers", lambda: {
         "chrome_user_skill_save": ("agent_authoring", handler),
         "chrome_user_skill_edit": ("agent_authoring", handler),
-        # Even a mistakenly registered unknown namespace action gets no caller.
         "chrome_user_skill_unguarded": ("agent_authoring", handler),
     })
     monkeypatch.setattr("audit.hooks.record_ws_action", audit)
@@ -96,7 +95,6 @@ async def cleaned(frame):
 async def test_actual_metadata_dispatch_uses_verified_caller_and_scrubs_outer_audit(metadata, fixture):
     state, calls, audits = metadata
     await registered(state)
-    # Registration-derived role hints cannot grant roles absent from verified IAM.
     state.orch.ui_sessions[state.socket]["realm_access"] = {"roles": ["injected-role"]}
     generation = send(state, url="private-untrusted-url", agent_id="private-text")
     result = await terminal(state)
@@ -201,7 +199,6 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
     send(state, "chrome_user_skill_edit", attempt_write=False)
     try:
         await asyncio.wait_for(captured.wait(), 5)
-        # Admission/worker establishment is observed, not simulated success.
         async with asyncio.timeout(5):
             while not context.operations:
                 await asyncio.sleep(0.01)
@@ -331,8 +328,6 @@ async def test_chat_skill_read_uses_original_capture_without_extending_to_chat_e
         used.append(result.credential.incarnation_id)
         with pytest.raises(AssignmentError):
             await caller.verify_delivery()
-        # A later chat/model phase is outside the metadata lifetime, not cancelled
-        # merely because the completed private lookup has been retired.
         await asyncio.sleep(0.25)
 
     monkeypatch.setattr(orch, "_serialized_chat", lookup, raising=False)

@@ -1,31 +1,8 @@
-"""Feature 051 — RFC 8628 device-login broker (watch QR sign-in).
-
-The watch never talks to the IdP: it calls ``/api/auth/device/start`` (backend
-requests the device authorization from Keycloak, renders the QR first-party via
-``shared.qr``, and returns an opaque Fernet *poll handle*), then polls
-``/api/auth/device/poll`` until the user approves from another device. See
-specs/051-apple-native-clients/contracts/device-login.md.
-
-Posture (FR-020..FR-027):
-
-* **Fail-closed** — ``FF_DEVICE_LOGIN`` off, no encryption key, IdP
-  unreachable, or a realm without the device grant all yield
-  ``DeviceLoginUnavailable`` (HTTP 503) with an actionable message.
-* **Stateless** — everything poll needs rides inside the encrypted handle
-  (device_code, client, expiry, interval); per-handle throttle/single-use
-  bookkeeping is in-memory (the orchestrator is single-process; see
-  data-model.md Constitution IX fallback).
-* **Server-authoritative pacing** — early polls are answered locally with
-  ``slow_down`` (no IdP call); ``start`` is rate-limited per client address.
-* **Role gate before token release** — a token whose realm/client roles lack
-  ``user``/``admin`` is refused (``denied_no_access``) and its refresh token
-  revoked at the IdP, matching the web callback posture (028).
-* **Audited** — ``auth`` class: device_login_{started,approved,denied,expired}.
-  Token material is never logged or audited.
-
-HTTP seams (``http_post_form`` / ``http_get_json``) are injectable for tests;
-defaults use httpx with verified TLS, lazily imported.
+"""RFC 8628 device-authorization broker backing watch QR sign-in: issues an opaque
+encrypted poll handle from Keycloak's device grant and polls/refreshes it; used by
+auth.py and native_session_custody.py.
 """
+
 from __future__ import annotations
 
 import base64
@@ -50,9 +27,8 @@ _DISCOVERY_TTL_SECONDS = 300
 _START_WINDOW_SECONDS = 60
 _START_MAX_PER_WINDOW = int(os.getenv("DEVICE_LOGIN_START_RATE", "10"))
 _DEFAULT_INTERVAL = 5
-_SLOW_DOWN_BUMP = 5  # RFC 8628 §3.5: increase interval by 5s on slow_down
+_SLOW_DOWN_BUMP = 5
 
-# Token-response keys the broker will relay to the device — nothing else.
 _TOKEN_KEYS = (
     "access_token", "refresh_token", "expires_in", "refresh_expires_in",
     "token_type", "id_token", "scope",
@@ -92,12 +68,7 @@ class RefreshRejected(DeviceLoginError):
     code = "invalid_grant"
 
 
-# ---------------------------------------------------------------------------
-# In-memory state (single-process; reset_state() for tests).
-# ---------------------------------------------------------------------------
-
 _START_HITS: Dict[str, list] = {}
-# handle digest -> {"next_ok": float, "interval": int, "used": bool}
 _POLL_STATE: Dict[str, Dict[str, Any]] = {}
 _DISCOVERY: Dict[str, Any] = {"at": 0.0, "data": None}
 
@@ -109,13 +80,7 @@ def reset_state() -> None:
     _DISCOVERY["data"] = None
 
 
-# ---------------------------------------------------------------------------
-# Config / plumbing.
-# ---------------------------------------------------------------------------
-
 def flag_on() -> bool:
-    """``FF_DEVICE_LOGIN`` — default ON (spec FR-026); any explicit falsey
-    value kills the surface."""
     return os.getenv("FF_DEVICE_LOGIN", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
@@ -131,10 +96,6 @@ def _authority() -> str:
 
 
 def device_grant_clients() -> set:
-    """Public clients allowed to use the device grant (default the watch).
-
-    Must also be allow-listed azps and never the confidential web client —
-    the same posture as the 044 native logout endpoint."""
     raw = os.getenv("KEYCLOAK_DEVICE_CLIENTS", "astral-watch")
     return {c.strip() for c in raw.split(",") if c.strip()}
 
@@ -165,7 +126,8 @@ def _fernet():
     try:
         from cryptography.fernet import Fernet
         return Fernet(key.encode() if isinstance(key, str) else key)
-    except Exception as exc:  # bad key material == unavailable, never plaintext
+    # Key errors mean unavailable — never expose plaintext
+    except Exception as exc:
         raise DeviceLoginUnavailable(f"session encryption key unusable: {exc}") from None
 
 
@@ -194,8 +156,6 @@ async def _default_get_json(url: str) -> Tuple[int, Dict[str, Any]]:
 
 
 async def _discover(http_get: Optional[HttpGetJson]) -> Dict[str, str]:
-    """Realm OIDC discovery, cached. A realm that does not advertise
-    ``device_authorization_endpoint`` has the grant disabled — fail closed."""
     now = time.time()
     if _DISCOVERY["data"] and now - _DISCOVERY["at"] < _DISCOVERY_TTL_SECONDS:
         return _DISCOVERY["data"]
@@ -228,9 +188,6 @@ def _handle_digest(handle: str) -> str:
 
 
 def _jwt_claims(token: str) -> Dict[str, Any]:
-    """Non-validating claims decode. The token arrived directly from the IdP
-    over verified TLS in the same call — the same trust the web callback
-    places in its token response (028)."""
     try:
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
@@ -247,7 +204,6 @@ def _has_entry_role(claims: Dict[str, Any]) -> bool:
 
 
 async def _audit(action: str, sub: str, description: str, *, outcome: str = "success") -> None:
-    """auth-class audit row; never carries token material."""
     try:
         from audit.hooks import record_auth_event
         await record_auth_event(
@@ -278,10 +234,6 @@ def _check_start_rate(ip: str) -> None:
     _START_HITS[ip] = hits
 
 
-# ---------------------------------------------------------------------------
-# Public operations.
-# ---------------------------------------------------------------------------
-
 async def start(
     client: str,
     ip: str,
@@ -290,7 +242,6 @@ async def start(
     http_get: Optional[HttpGetJson] = None,
     custody=None,
 ) -> Dict[str, Any]:
-    """Begin a device sign-in: returns the QR + short code + opaque handle."""
     if not flag_on():
         raise DeviceLoginUnavailable("FF_DEVICE_LOGIN is off")
     fernet = _fernet()
@@ -303,11 +254,6 @@ async def start(
         assert_discovery(custody, disco)
 
     poster = http_post or _default_post_form
-    # PKCE (RFC 7636) on the device grant: realms that enforce a code-challenge
-    # policy on the client (Keycloak "PKCE Code Challenge Method" = S256)
-    # refuse the request without one; sending it is harmless everywhere else.
-    # The verifier never leaves the backend — it rides inside the encrypted
-    # handle and returns on the token poll.
     code_verifier = secrets.token_urlsafe(64)
     code_challenge = base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode("ascii")).digest()
@@ -324,9 +270,6 @@ async def start(
     except Exception as exc:
         raise DeviceLoginUnavailable(f"IdP device authorization failed: {exc}") from None
     if status != 200 or not body.get("device_code") or not body.get("user_code"):
-        # Surface the IdP's own error so the watch message is actionable —
-        # ``unauthorized_client`` means the realm operator has not enabled the
-        # device grant on this client (keycloak-realm-settings.md §051).
         idp_error = str(body.get("error", "")) if isinstance(body, dict) else ""
         if idp_error == "unauthorized_client":
             raise DeviceLoginUnavailable(
@@ -401,7 +344,6 @@ async def poll(
     http_get: Optional[HttpGetJson] = None,
     custody=None,
 ) -> Dict[str, Any]:
-    """Poll a pending device sign-in. Terminal states are terminal (SC-009)."""
     if not flag_on():
         raise DeviceLoginUnavailable("FF_DEVICE_LOGIN is off")
     fernet = _fernet()
@@ -436,7 +378,6 @@ async def poll(
         await _audit("device_login_expired", "anonymous",
                      f"Device sign-in expired for {client}", outcome="failure")
         return {"status": "expired"}
-    # Server-authoritative pacing: early polls never reach the IdP.
     if now < state["next_ok"]:
         return {"status": "slow_down", "interval": state["interval"]}
 
@@ -452,7 +393,7 @@ async def poll(
             "device_code": device_code,
             "client_id": client,
         }
-        if code_verifier:   # PKCE round trip (absent only on pre-PKCE handles)
+        if code_verifier:
             token_request["code_verifier"] = code_verifier
         status, body = await poster(disco["token_endpoint"], token_request)
     except DeviceLoginError:
@@ -468,8 +409,6 @@ async def poll(
         sub = str(claims.get("sub", "") or "anonymous")
         state["used"] = True
         if not _has_entry_role(claims):
-            # Same gate as the web callback (028): no user/admin role — no
-            # session, and the fresh refresh credential is revoked at the IdP.
             await _revoke_refresh(str(body.get("refresh_token", "")), client)
             await _audit("device_login_denied", sub,
                          f"Device sign-in refused for {client}: token has no "
@@ -509,8 +448,6 @@ async def refresh(
     http_post: Optional[HttpPostForm] = None,
     http_get: Optional[HttpGetJson] = None,
 ) -> Dict[str, Any]:
-    """Proxy a refresh-token grant for a device-grant client (the watch keeps a
-    single TLS peer; iOS/macOS refresh directly like Windows — research D7)."""
     if not flag_on():
         raise DeviceLoginUnavailable("FF_DEVICE_LOGIN is off")
     client = _validate_client(client)

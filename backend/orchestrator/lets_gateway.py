@@ -1,15 +1,6 @@
-"""LETS authorization transport and final protected-executor gateway.
-
-This module keeps two security boundaries explicit:
-
-* :class:`LetsAuthorizationGateway` asks the independently deployed warden for
-  authority after Astral's existing gates and final argument rewrites; and
-* :class:`ReceiptExecutorGateway` performs host binding checks and calls the
-  public LETS ``ReceiptVerifier.verify_and_claim`` immediately before an
-  actuator.
-
-The signed receipt is carried in MCP/A2A/internal envelope metadata under the
-``astraldeep.lets/v1`` key.  It is never inserted into tool arguments.
+"""LETS authorization transport and protected-executor gateway: LetsAuthorizationGateway
+asks the warden for authority after Astral's own gates, and ReceiptExecutorGateway
+claims a signed receipt before the actuator runs. Used by governed_dispatch.py.
 """
 
 from __future__ import annotations
@@ -62,8 +53,6 @@ T = TypeVar("T")
 
 
 class AuthorityBinding(Protocol):
-    """Host-neutral fields required from an AstralPlane authority binding."""
-
     binding_id: str
     owner_id: str
     agent_id: str
@@ -94,8 +83,6 @@ class GatewayEvidenceObserver(Protocol):
 
 
 class DurableEffectCoordinator(Protocol):
-    """Deep-owned Plane checkpoint seam used without exposing Plane internals."""
-
     def prepare_authorization(
         self,
         *,
@@ -138,8 +125,6 @@ class DurableEffectCoordinator(Protocol):
 
 
 class LetsGatewayError(RuntimeError):
-    """Typed, content-free refusal safe for user and operator projection."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -193,8 +178,6 @@ def _safe_evidence(
 
 @dataclass(frozen=True, slots=True)
 class ProtectedPermitEnvelope:
-    """Strict receipt envelope carried outside ordinary tool arguments."""
-
     binding_id: str
     owner_id: str
     runtime_generation: int
@@ -278,8 +261,6 @@ class ProtectedPermitEnvelope:
 
 @dataclass(slots=True)
 class IssuedPermit:
-    """One authorization result while its binding-order lock is held."""
-
     operation_id: str
     enforced: bool
     shadow: bool
@@ -306,8 +287,6 @@ class IssuedPermit:
 
 
 class LetsAuthorizationGateway:
-    """Authorize protected effects and serialize one runtime through claim."""
-
     def __init__(
         self,
         config: LetsHostConfig,
@@ -360,8 +339,6 @@ class LetsAuthorizationGateway:
         authorized_effect: Mapping[str, object],
         observer: GatewayEvidenceObserver | None = None,
     ) -> IssuedPermit:
-        """Return a permit without ever placing it in ``final_arguments``."""
-
         context.assert_snapshot_matches(
             final_arguments=final_arguments,
             authorized_effect=authorized_effect,
@@ -410,7 +387,7 @@ class LetsAuthorizationGateway:
         await lock.acquire()
         coordinator = self._effect_coordinator
         if self.config.mode == "enforce":
-            assert coordinator is not None  # Constructor fail-closed fence.
+            assert coordinator is not None
             try:
                 await asyncio.to_thread(
                     coordinator.prepare_authorization,
@@ -431,7 +408,7 @@ class LetsAuthorizationGateway:
                     observer=observer,
                 )
         try:
-            assert self.client is not None  # Active mode constructor fence.
+            assert self.client is not None
             receipt = await asyncio.to_thread(
                 self.client.authorize_tool,
                 operation_id=context.operation_id,
@@ -479,9 +456,6 @@ class LetsAuthorizationGateway:
                 observer=observer,
             )
         except Exception:
-            # The warden may have committed while its response was lost. Keep
-            # the exact LETS_PENDING intent recoverable under the same request
-            # identity; never invent a new operation here.
             lock.release()
             return await self._deny_or_shadow(
                 context,
@@ -554,9 +528,7 @@ class LetsAuthorizationGateway:
                 observer=observer,
             )
         except Exception:
-            # An enforce audit append is part of the authorization boundary.
-            # Release the per-runtime lock before refusing so an unavailable
-            # recorder cannot deadlock every later attempt for this lease.
+            # Release first: an audit failure must not deadlock retries
             lock.release()
             raise LetsGatewayError("audit_append_failed", retryable=True) from None
         return IssuedPermit(
@@ -587,9 +559,6 @@ class LetsAuthorizationGateway:
                 denied=denied,
             )
         except Exception:
-            # The original refusal remains authoritative. Recovery will find
-            # the nonterminal Plane intent; never allow an audit write failure
-            # to turn a denial into execution.
             return
 
     @staticmethod
@@ -724,8 +693,6 @@ class LetsAuthorizationGateway:
 
 
 class ReceiptExecutorGateway:
-    """Verify exact host context and durably claim immediately before effect."""
-
     def __init__(
         self,
         verifier: ReceiptVerifier,
@@ -922,8 +889,6 @@ class ReceiptExecutorGateway:
         outcome: str,
         error_code: str | None = None,
     ) -> None:
-        """Persist a redacted result when this executor owns Plane evidence."""
-
         if self._effect_coordinator is None:
             return
         try:
@@ -968,8 +933,6 @@ def create_executor_gateway(
     *,
     effect_coordinator: DurableEffectCoordinator | None = None,
 ) -> ExecutorGatewayRuntime:
-    """Build/reopen the pinned public LETS verifier from authenticated config."""
-
     if not isinstance(config, LetsHostConfig) or config.mode == "off":
         raise LetsGatewayError("executor_not_configured")
     manifest_ref = config.trust_manifest

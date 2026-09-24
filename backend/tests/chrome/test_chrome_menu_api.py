@@ -1,9 +1,8 @@
-"""Feature 042 — GET /api/chrome/menu + single-source equivalence.
-
-Verifies the REST delivery channel, role-gating, and that the REST body, the
-`chrome_menu` WS frame, and the web settings rail all derive from the ONE
-builder (Constitution XII — no divergence).
+"""Tests for GET /api/chrome/menu (orchestrator/api.py, chrome_availability.py):
+role-gated admin visibility, unauthenticated 401, and that the REST body, WS
+chrome_menu frame, and web settings rail all derive from one menu-model builder.
 """
+
 import json
 
 import pytest
@@ -36,14 +35,12 @@ def _client(payload):
 
 
 def test_native_menu_body_omits_admin_even_for_admins():
-    """ADMIN TOOLS is web-only — the native REST channel never sends it, even to
-    an admin caller (include_admin=False)."""
     c = _client({"realm_access": {"roles": ["admin", "user"]}})
     r = c.get("/api/chrome/menu")
     assert r.status_code == 200
     body = r.json()
     assert body["version"] == 2
-    assert [g["key"] for g in body["menu"]] == ["account", "help"]  # no admin group
+    assert [g["key"] for g in body["menu"]] == ["account", "help"]
     assert "admin_tools" not in json.dumps(body)
     assert [c_["key"] for c_ in body["topbar"]] == ["brand", "status", "timeline", "settings"]
     assert body["signout"] == {"key": "signout", "label": "Sign out", "style": "danger", "action": "logout"}
@@ -59,23 +56,20 @@ def test_non_admin_menu_omits_admin():
 def test_admin_via_resource_access_still_web_only():
     c = _client({"resource_access": {"astral-frontend": {"roles": ["admin"]}}})
     body = c.get("/api/chrome/menu").json()
-    assert [g["key"] for g in body["menu"]] == ["account", "help"]  # admin is web-only
+    assert [g["key"] for g in body["menu"]] == ["account", "help"]
 
 
 def test_unauthenticated_401():
     app = FastAPI()
-    app.include_router(chrome_router)  # no override → real dependency → 401 without a token
+    app.include_router(chrome_router)
     r = TestClient(app).get("/api/chrome/menu")
     assert r.status_code == 401
 
 
 def test_rest_body_equals_unnegotiated_native_model():
-    """Legacy REST agrees with native chrome without private-view capabilities."""
     for roles in (["user"], ["admin", "user"]):
         c = _client({"realm_access": {"roles": roles}})
         rest = c.get("/api/chrome/menu").json()
-        # Both native channels omit admin/tour. Work and private notes require
-        # a registered current socket capable of correlating the response.
         frame = json.loads(ChromeMenu(model=menu_model_dict(
             roles,
             include_admin=False,
@@ -87,19 +81,13 @@ def test_rest_body_equals_unnegotiated_native_model():
 
 
 def test_rest_body_matches_web_topbar_labels():
-    """The web rail and REST agree on items/order — one source."""
     from webrender.chrome import render_settings_nav
     from webrender.chrome.menu_model import build_menu_model
 
     body = _client({"realm_access": {"roles": ["admin", "user"]}}).get("/api/chrome/menu").json()
-    # The web renders the menu as the settings dialog's rail, not a dropdown
-    # in the shell; it is still built from the same model as the REST body.
     html = render_settings_nav(build_menu_model(
         ["admin", "user"], **projection_chrome_availability()))
-    # Every menu item label the REST model advertises is present in the web DOM,
-    # in the same order (the web renders from the same builder).
     labels = [i["label"] for g in body["menu"] for i in g["items"]]
-    # HTML escapes & as &amp; — normalize for the containment check.
     html_norm = html.replace("&amp;", "&")
     positions = [html_norm.index(lbl) for lbl in labels]
     assert positions == sorted(positions), "web menu order diverges from the model"

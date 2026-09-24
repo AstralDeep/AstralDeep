@@ -1,4 +1,7 @@
-"""Direct contract tests for the feature-060 changed-code coverage collector."""
+"""Tests for the changed-code coverage collector (scripts/native_xccov_domain.py):
+per-language producer ownership, strict projection of native reports onto composed
+paths, and Python executable-line detection.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_changed_coverage.py"
 XCCOV_EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_xccov_line_coverage.py"
 
-if not (REPO_ROOT / "scripts").is_dir():  # repo root absent inside the product image
+if not (REPO_ROOT / "scripts").is_dir():
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -99,8 +102,6 @@ def test_javascript_report_identity_matches_projection_v3_union() -> None:
 
 
 def test_report_reader_preserves_physical_crlf_bytes(tmp_path: Path) -> None:
-    """The bound identity must cover exact bytes on Windows as on POSIX."""
-
     content = b'{"coverage":"physical"}\r\n{"line":2}\r\n'
     report = tmp_path / "crlf-report.json"
     report.write_bytes(content)
@@ -110,20 +111,12 @@ def test_report_reader_preserves_physical_crlf_bytes(tmp_path: Path) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_ambient_actions_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep event selection deterministic under real GitHub Actions.
-
-    ``main()`` falls back to GITHUB_EVENT_NAME/GITHUB_EVENT_PATH when no
-    explicit ``--event-name``/``--event-path`` is given, so an ambient
-    ``pull_request`` event would hijack the CLI tests' manual selections.
-    """
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
     monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
 
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        # Coverage binds exact committed bytes, independent of host checkout
-        # conversion settings. This flag affects only these fixture commands.
         ["git", "-C", str(repo), "-c", "core.autocrlf=false", *args],
         check=True,
         text=True,
@@ -263,8 +256,6 @@ def _projection_strict_case(
     dict[str, list[Path]],
     dict[str, Path],
 ]:
-    """Build one real child-repository candidate and its eight native reports."""
-
     repo = tmp_path / "projection"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -1785,8 +1776,6 @@ def test_istanbul_statement_ranges_are_supported(
 def test_realistic_xccov_report_summary_is_not_misused_as_line_proof(
     tmp_path: Path,
 ) -> None:
-    """`xccov view --report --json` exposes aggregates, not raw line counts."""
-
     report = tmp_path / "xccov-report.json"
     report.write_text(
         json.dumps(
@@ -1925,10 +1914,7 @@ def _install_fake_xcrun(
     calls = tmp_path / "fake-xccov-calls.jsonl"
     binary_dir = tmp_path / "bin"
     binary_dir.mkdir(exist_ok=True)
-    # POSIX can execute the shebang fixture directly. On Windows, place the
-    # script at the first argument (``xccov``) and expose a hard-linked Python
-    # launcher as xcrun.exe; CreateProcess does not execute extensionless
-    # shebang files.
+    # Windows can't exec an extensionless shebang script
     xcrun = tmp_path / "repo" / "xccov" if os.name == "nt" else binary_dir / "xcrun"
     xcrun.write_text(
         """#!/usr/bin/env python3
@@ -3345,8 +3331,6 @@ def test_strict_four_lane_javascript_changed_files_require_their_own_observation
                                    "end": {"line": 1, "column": 16}}},
             "s": {"0": int(observation == "covered")},
         }
-    # Existing client.js remains the independent useful-report witness. Its
-    # covered line cannot substitute for the added candidate file's own line.
     slots["javascript"].write_text(json.dumps(document), encoding="utf-8")
     if observation == "missing":
         with pytest.raises(collector.CoveragePolicyError) as failure:
@@ -3434,8 +3418,6 @@ def test_ios_domain_uses_only_real_counters_and_binds_candidate_suffix(tmp_path)
     assert coverage.covered == {(path, 2)}
     assert (path, 3) not in coverage.observed
     assert collector._missing_apple_lines(coverage, path, {2, 3}) == set()
-    # Without the explicit native mapping, the unchanged counter rows cannot
-    # explain the missing physical source suffix.
     report.write_text(json.dumps(document["coverage"]))
     with pytest.raises(collector.CoveragePolicyError, match="line") as error:
         collector.evaluate_changed_coverage(

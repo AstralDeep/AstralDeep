@@ -1,14 +1,8 @@
-"""055-uniform-artifacts US2 (T020) — stream persist-on-terminal + auto-subscribe.
-
-With FF_STREAM_ARTIFACTS on, the orchestrator subscribes the originating
-socket (and co-viewing sockets of the chat) itself at streaming-tool
-dispatch, and on stream termination persists the retained last
-content-bearing chunk into the workspace under the bridged identity
-(source-tagged, snapshotted, audited, fanned as a normal ``ui_upsert``).
-An abandoned stream persists an honest failed-state Alert under the SAME
-identity. Flag off: no auto-subscribe, no persistence — today's ephemeral
-``stream-<id>`` behavior exactly.
+"""Tests for stream persist-on-terminal in orchestrator/orchestrator.py: with the flag
+on, the orchestrator auto-subscribes originating and co-viewing sockets and persists
+the retained chunk into workspace.py on termination.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +27,6 @@ PARAMS = {"latitude": 51.5, "longitude": -0.12}
 
 
 def _fresh_socket():
-    """A VirtualWebSocket capturing every delivered frame."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     task = BackgroundTask(task_id=uuid.uuid4().hex, chat_id="", user_id="")
     return VirtualWebSocket(task)
@@ -44,7 +37,6 @@ def _frames(ws, ftype=None):
 
 
 def _install_dispatcher(orch):
-    """Replace the agent dispatcher with a recorder (no real agent)."""
     calls = []
     counter = itertools.count(1)
 
@@ -82,7 +74,6 @@ async def _feed_end(orch, sub):
 
 
 def _metric(sub, value):
-    """A chunk component as the agent SDK ships it (top-level id = stream id)."""
     return {"type": "metric", "title": "Temp", "value": value, "id": sub.stream_id}
 
 
@@ -105,7 +96,6 @@ def stream_artifacts_off():
 
 @pytest.fixture()
 async def env(push_flags):
-    """A real Orchestrator + registered socket + fresh chat + fake push tool."""
     from orchestrator.orchestrator import Orchestrator
     try:
         orch = await asyncio.to_thread(Orchestrator)
@@ -145,7 +135,6 @@ async def env(push_flags):
 
 
 async def _auto_subscribed(orch, ws, chat_id, user_id, params=PARAMS):
-    """Auto-subscribe and return the live subscription record."""
     await orch._auto_subscribe_stream_artifacts(ws, chat_id, user_id, TOOL, params)
     acks = _frames(ws, "stream_subscribed")
     assert acks, "auto-subscribe must ack with stream_subscribed"
@@ -153,10 +142,6 @@ async def _auto_subscribed(orch, ws, chat_id, user_id, params=PARAMS):
     assert sub is not None
     return sub
 
-
-# ---------------------------------------------------------------------------
-# Auto-subscribe at streaming-tool dispatch
-# ---------------------------------------------------------------------------
 
 class TestAutoSubscribe:
     async def test_originating_socket_subscribed_with_bridged_identity(self, env):
@@ -220,10 +205,6 @@ class TestAutoSubscribe:
         assert not ws.task.outputs
 
 
-# ---------------------------------------------------------------------------
-# Persist-on-terminal
-# ---------------------------------------------------------------------------
-
 class TestPersistOnTerminal:
     async def test_stream_persists_and_rehydrates(self, env):
         orch, ws, chat_id, user_id = env
@@ -245,18 +226,15 @@ class TestPersistOnTerminal:
         assert comp["_source_params"] == PARAMS
         assert not str(comp.get("id", "")).startswith("stream-")
 
-        # Reload path: load_chat re-hydrates from live_components.
         live = await orch.workspace.alive_components(chat_id, user_id)
         assert any(c.get("component_id") == cid for c in live)
 
-        # The persist fanned a normal ui_upsert to the chat's sockets.
         upserts = _frames(ws, "ui_upsert")
         assert upserts, "terminal persist must fan a ui_upsert"
         op_cids = {op.get("component_id")
                    for f in upserts for op in f.get("ops", [])}
         assert cid in op_cids
 
-        # And captured a workspace snapshot for the timeline.
         snaps = await orch.workspace.alist_snapshots(chat_id, user_id)
         assert any(s.get("cause") == "stream" for s in snaps)
 
@@ -286,7 +264,6 @@ class TestPersistOnTerminal:
         cid = sub.component_id
 
         await _feed_chunk(orch, sub, 1, [_metric(sub, "12C")])
-        # Terminal-class error (agent died mid-stream) — resolves FAILED.
         await _feed_chunk(orch, sub, 2, [], error={
             "code": "cancelled", "message": "agent connection lost",
         }, terminal=True)
@@ -313,15 +290,10 @@ class TestPersistOnTerminal:
         assert not rows, "no content ever streamed ⇒ nothing to persist"
 
 
-# ---------------------------------------------------------------------------
-# FF_STREAM_ARTIFACTS off = today's behavior
-# ---------------------------------------------------------------------------
-
 class TestFlagOff:
     async def test_full_cycle_persists_nothing(self, env, stream_artifacts_off):
         orch, ws, chat_id, user_id = env
         _install_dispatcher(orch)
-        # Today's entry point: a client-driven subscribe (auto-subscribe is off).
         stream_id, attached = await orch.stream_manager.subscribe(
             ws=ws, user_id=user_id, chat_id=chat_id,
             tool_name=TOOL, agent_id=AGENT, params=dict(PARAMS),

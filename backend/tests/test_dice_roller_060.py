@@ -1,4 +1,7 @@
-"""Exact normalized dice-result contracts for feature 060."""
+"""Tests for the dice_roller agent (agents/dice_roller/mcp_tools.py, mcp_server.py):
+normalized six-d6 results, refusal of unsupported quantities or non-d6 requests, and
+registry-declared bounds.
+"""
 
 from __future__ import annotations
 

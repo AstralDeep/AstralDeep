@@ -1,10 +1,6 @@
-"""Feature 065 release-evidence producer projection contract tests.
-
-The platform producers are implemented in each client's native release lane,
-so this source-contract suite is the one fast, host-independent guard that can
-exercise all seven targets together.  The protected schema/validator remains
-authoritative; these assertions ensure no producer drops or locally invents
-the stage-owned voice runtime identity before that validation runs.
+"""Contract tests over source for the per-client release-evidence producers: each
+projects the exact stage-owned voice runtime identity from the staged projection, and
+CI workflows gate the right voice/coverage suites without duplication.
 """
 
 from __future__ import annotations
@@ -66,8 +62,6 @@ def test_every_non_doc_producer_projects_the_exact_voice_identity(
     for literal in VOICE_IDENTITY_LITERALS:
         assert literal in source, f"{platform} producer omits {literal}"
 
-    # Each producer must reject an old stage topology that lacks the voice
-    # worker; adding it locally would let candidate code forge stage identity.
     assert "worker_paths" in source
     assert "voice" in source
 
@@ -78,9 +72,6 @@ def test_voice_identity_is_taken_from_the_staged_projection(
 ) -> None:
     source = path.read_text(encoding="utf-8")
 
-    # The stage-owned object belongs inside the existing projection list/map.
-    # Producers validate it, then copy that original value into
-    # staging_environment; they must not create a replacement voice_runtime.
     projection_anchor = {
         "backend": '"voice_runtime",',
         "web": '"voice_runtime",',
@@ -108,12 +99,6 @@ def test_windows_coverage_producer_uses_one_unambiguous_source_root() -> None:
     step = workflow.split("- name: Run full Windows source suite with coverage", 1)[1]
     step = step.split("- name:", 1)[0]
 
-    # Coverage.py emits class filenames relative to each --cov source. Multiple
-    # roots collapse astral_client/app.py and win_agent/agent.py to basenames,
-    # which the fail-closed cross-language parser correctly rejects as
-    # ambiguous. Running from the repository root with one Projection-owned
-    # Windows source preserves both package prefixes without sweeping synthetic
-    # Qt support-module filenames into the canonical Cobertura report.
     assert "working-directory: windows-client" not in step
     assert r"-m pytest components\AstralProjection\windows-client\tests -q" in step
     assert "--cov=components/AstralProjection/windows-client `" in step

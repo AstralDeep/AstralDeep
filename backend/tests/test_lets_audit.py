@@ -1,4 +1,7 @@
-"""Redacted actor-specific LETS audit correlation tests for feature 074."""
+"""Tests for orchestrator/lets_audit.py: actor-principal and cross-system correlation
+are preserved and redacted, shadow observers never block on a missing recorder, and
+enforce mode fails closed without one.
+"""
 
 from __future__ import annotations
 

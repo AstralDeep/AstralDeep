@@ -1,8 +1,5 @@
-"""Execute the actual authenticated registration chrome branch in isolation.
-
-The enclosing register_ui authentication/lifecycle is covered separately. This
-test extracts the production device gate, without constructing an orchestrator,
-accessing a user store or claiming to simulate that enclosing authentication.
+"""Tests the production device gate in orchestrator/chrome_availability.py in isolation,
+without an authenticated register_ui lifecycle around it.
 """
 
 import ast

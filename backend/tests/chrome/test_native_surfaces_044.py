@@ -1,14 +1,8 @@
-"""Feature 044 (T034/T035/T036, US3) — native SDUI ``components()`` for the
-three surfaces that were web-HTML-only (workspace_timeline, pulse, attachments)
-plus the device-aware ``workspace_timeline`` ``_view``/``_live`` handlers.
-
-DB-free: fake orchestrators (with a ROTE device profile) + monkeypatched data
-sources, mirroring ``backend/tests/chrome/test_chrome_surface.py``. Asserts each
-``components()`` returns a non-empty component list with the expected
-buttons/actions, and that ``_view``/``_live`` are device-aware (native → an
-empty-components ``chrome_surface`` close; web → an empty ``chrome_render``) and
-return a re-render tuple on their error paths (contract §2/§3.1).
+"""DB-free tests for the native components() projections of workspace_timeline, pulse,
+and attachments (orchestrator/projection_surfaces): device-aware view/live close
+behavior and empty/failure notices.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -42,7 +36,6 @@ class FakeRote:
 
 
 def _buttons(components):
-    """Every button dict anywhere in a component list (top-level + nested)."""
     found = []
 
     def walk(node):
@@ -71,10 +64,6 @@ def _action(components, action):
 def _types(components):
     return [c.get("type") for c in components]
 
-
-# ===========================================================================
-# T034 — workspace_timeline.components() + device-aware _view/_live
-# ===========================================================================
 
 class FakeWorkspace:
     def __init__(self, snaps=None, snapshot=None, live=None):
@@ -144,16 +133,13 @@ def test_timeline_components_lists_snapshots_with_expected_actions():
     comps = run(wt.components(orch, "u1", ["user"], {"chat_id": "c1"}))
     assert comps, "non-empty component list"
 
-    # Back to live button.
     live_btns = _action(comps, "chrome_workspace_timeline_live")
     assert live_btns and live_btns[0]["payload"] == {"chat_id": "c1"}
 
-    # One view button per snapshot, carrying {chat_id, snapshot_id}.
     view_btns = _action(comps, "chrome_workspace_timeline_view")
     ids = {b["payload"]["snapshot_id"] for b in view_btns}
     assert ids == {8, 9}
     assert all(b["payload"]["chat_id"] == "c1" for b in view_btns)
-    # Human cause label shows in the row label ("Component removed" / "Assistant turn").
     labels = " ".join(b.get("label", "") for b in view_btns)
     assert "Component removed" in labels and "Assistant turn" in labels
 
@@ -182,23 +168,18 @@ def test_view_success_pushes_canvas_and_device_aware_close(device, audit_capture
         orch, ws, "u1", ["user"], {"chat_id": "c1", "snapshot_id": 7}))
     assert result is None, "success handled in place (device-aware close, not a re-render)"
 
-    # Timeline mode announced + entered.
     assert orch._ws_timeline_mode.get(id(ws)) is True
     modes = [f for f in orch.sent if f.get("type") == "workspace_timeline_mode"]
     assert modes and modes[-1]["active"] is True
 
-    # The historical canvas was pushed (banner + snapshot components).
     assert len(orch.renders) == 1
     _rws, comps, target = orch.renders[0]
-    assert target == "canvas" and comps[0]["type"] == "alert"  # read-only banner
+    assert target == "canvas" and comps[0]["type"] == "alert"
 
-    # Device-aware CLOSE: native gets an empty-components chrome_surface, never
-    # the web-only chrome_render (contract §2/§3.1).
     surfaces = [f for f in orch.sent if f.get("type") == "chrome_surface"]
     assert surfaces and surfaces[-1]["components"] == []
     assert not any(f.get("type") == "chrome_render" for f in orch.sent)
 
-    # History view is audited.
     assert any(e.get("action") == "timeline_viewed" for e in audit_capture)
 
 
@@ -223,7 +204,6 @@ def test_view_invalid_snapshot_returns_rerender_tuple(audit_capture):
     assert surface == "workspace_timeline"
     assert params == {"chat_id": "c1"}
     assert "invalid" in notice.lower()
-    # Nothing pushed, no audit, no mode flip.
     assert orch.sent == [] and orch.renders == []
     assert orch._ws_timeline_mode == {}
 
@@ -240,19 +220,13 @@ def test_live_success_restores_canvas_and_device_aware_close(device):
     assert id(ws) not in orch._ws_timeline_mode
     modes = [f for f in orch.sent if f.get("type") == "workspace_timeline_mode"]
     assert modes and modes[-1]["active"] is False
-    # Live canvas restored.
     assert orch.renders and orch.renders[-1][1] == live
-    # Device-aware close.
     surfaces = [f for f in orch.sent if f.get("type") == "chrome_surface"]
     assert surfaces and surfaces[-1]["components"] == []
     assert not any(f.get("type") == "chrome_render" for f in orch.sent)
 
 
 def test_chrome_open_without_chat_id_defaults_to_active_chat():
-    """Feature 044 — chrome_open with no chat_id param falls back to the
-    socket's active chat server-side (native clients don't inject chat_id the
-    way web's client.js does), so the timeline lists snapshots instead of the
-    'Open a chat first' notice."""
     from orchestrator import chrome_events
 
     snaps = [{"id": 3, "cause": "turn", "created_at": 1_700_000_000_000}]
@@ -299,10 +273,6 @@ def test_live_success_web_closes_with_empty_chrome_render():
     assert not any(f.get("type") == "chrome_surface" for f in orch.sent)
 
 
-# ===========================================================================
-# T035 — pulse.components()
-# ===========================================================================
-
 class FakePersonalizationRepo:
     def list_memory(self, user_id):
         return []
@@ -324,8 +294,8 @@ def test_pulse_components_enabled_returns_intro_and_cards(monkeypatch):
     comps = run(pulse_surface.components(_pulse_orch(), "u1", ["user"], {}))
     assert comps, "non-empty when enabled"
     kinds = _types(comps)
-    assert "text" in kinds  # intro caption
-    assert "card" in kinds  # the digest card
+    assert "text" in kinds
+    assert "card" in kinds
 
 
 def test_pulse_components_disabled_returns_off_notice(monkeypatch):
@@ -341,10 +311,6 @@ def test_pulse_components_enabled_no_digest_shows_empty_notice(monkeypatch):
     comps = run(pulse_surface.components(_pulse_orch(), "u1", ["user"], {}))
     assert any(c["type"] == "alert" and "Nothing to show yet" in c["message"] for c in comps)
 
-
-# ===========================================================================
-# T036 — attachments.components()
-# ===========================================================================
 
 def _att(attachment_id, filename, category, size_bytes=1024):
     return types.SimpleNamespace(attachment_id=attachment_id, filename=filename,
@@ -366,15 +332,12 @@ def test_attachments_components_lists_rows_with_attach_and_delete(monkeypatch):
     comps = run(att_surface.components(object(), "u1", ["user"], {}))
     assert comps, "non-empty when the user has uploads"
 
-    # Per-row Attach button uses the client-local attach_existing action with
-    # the full chip payload (never dispatched server-side).
     attach = _action(comps, "attach_existing")
     assert {b["payload"]["attachment_id"] for b in attach} == {"a1", "a2"}
     a1 = next(b for b in attach if b["payload"]["attachment_id"] == "a1")
     assert a1["payload"]["filename"] == "report.csv"
     assert a1["payload"]["category"] == "spreadsheet"
 
-    # Per-row Delete button routes through the existing chrome_attachment_delete.
     delete = _action(comps, "chrome_attachment_delete")
     assert {b["payload"]["attachment_id"] for b in delete} == {"a1", "a2"}
 

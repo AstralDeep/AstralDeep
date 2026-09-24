@@ -1,3 +1,9 @@
+"""Tests for GeneratedAgentPublicationService
+(orchestrator/generated_agent_publication.py, work_admission.py) over real Postgres:
+publish-then-replay without a second filesystem publication, and recovery after a
+lost commit boundary.
+"""
+
 from __future__ import annotations
 
 import hashlib

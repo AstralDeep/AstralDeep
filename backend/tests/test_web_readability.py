@@ -1,11 +1,8 @@
-"""Readable-extraction hygiene for the web_research + summarizer agents.
-
-Covers the shared shared/web_readability helpers and their wiring into both
-agents' HTML extractors and page tools: navigation/boilerplate is stripped by
-class/id/role (not just semantic tag), unbroken junk blobs (base64/serialized
-state) are dropped, real content is kept, and fetched-page output carries a
-source link for auditability.
+"""Tests for shared/web_readability.py and its use by the web_research and summarizer
+agents: chrome stripped by class/id/role, unbroken junk blobs dropped, real prose
+kept, and fetched pages carrying a source link.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -21,7 +18,7 @@ os.environ.setdefault("LLM_MODEL", "test-model")
 
 from shared import web_readability as wr  # noqa: E402
 
-_JUNK = "eNq9mFFv" + ("AbCdEf0123456789" * 9)  # 152 chars, base64-shaped, no spaces
+_JUNK = "eNq9mFFv" + ("AbCdEf0123456789" * 9)
 
 _PAGE = (
     "<!doctype html><html><head><title>NEA SMR Dashboard</title></head><body>"
@@ -40,8 +37,6 @@ _PAGE = (
     "</body></html>"
 )
 
-
-# --- shared helper ---------------------------------------------------------
 
 def test_should_skip_attrs_matches_chrome_class_id_role():
     assert wr.should_skip_attrs([("class", "main-nav")])
@@ -124,9 +119,7 @@ def test_clean_page_text_drops_boilerplate_and_junk_keeps_prose():
 
 
 def test_clean_page_text_keeps_long_real_sentences_and_urls():
-    # A long sentence (has spaces) is prose, not a junk token.
     sentence = "word " * 60
-    # A URL contains ':' and '.', excluded from the junk-token charset.
     url_line = "https://www.oecd-nea.org/jcms/pl_12345/nea-smr-dashboard-edition-iii"
     out = wr.clean_page_text(f"{sentence}\n\n{url_line}")
     assert "word word" in out
@@ -136,8 +129,6 @@ def test_clean_page_text_keeps_long_real_sentences_and_urls():
 def test_source_markdown_is_a_link():
     assert wr.source_markdown("https://x.test/a") == "Source: [https://x.test/a](https://x.test/a)"
 
-
-# --- web_research extractor + fetch_page -----------------------------------
 
 def test_web_research_extractor_strips_chrome_keeps_content():
     from agents.web_research.mcp_tools import _extract_readable
@@ -167,8 +158,6 @@ def test_fetch_page_prepends_source_link(monkeypatch):
     assert "Skip to main content" not in body and _JUNK not in body
     assert out["_data"]["url"] == "https://www.oecd-nea.org/smr"
 
-
-# --- summarizer extractor + summarize_url ----------------------------------
 
 def test_summarizer_extractor_strips_chrome_keeps_content():
     from agents.summarizer.mcp_tools import _extract_text

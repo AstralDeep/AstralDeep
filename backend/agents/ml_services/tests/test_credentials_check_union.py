@@ -1,10 +1,8 @@
-"""Tests for the ML Services union ``_credentials_check`` (feature 029, T024).
-
-The union probe dispatches per-bundle (CLASSify / Forecaster / LLM-Factory),
-reports three per-bundle verdicts, renders one summarizing Card+Table, and
-aggregates an overall ``credential_test`` verdict over the *configured*
-bundles only (all three bundles are optional).
+"""Tests for the ML Services union _credentials_check (mcp_tools.py): per-bundle
+verdicts, aggregate precedence over configured bundles, and that no credential ever
+leaks into the response.
 """
+
 import json
 import socket
 from unittest.mock import patch
@@ -60,11 +58,6 @@ def _add_ok_routes(rmock: HttpMock, *, classify=True, forecaster=True, llm=True)
         rmock.add("GET", LLM_FACTORY_PROBE_URL, status=200, json={"data": []})
 
 
-# ---------------------------------------------------------------------------
-# Verdict shape
-# ---------------------------------------------------------------------------
-
-
 def test_reports_three_per_bundle_verdicts(rmock: HttpMock) -> None:
     _add_ok_routes(rmock)
     result = mcp_tools._credentials_check(_credentials=ALL_CREDS)
@@ -98,18 +91,10 @@ def test_renders_one_card_with_three_row_status_table(rmock: HttpMock) -> None:
     assert table["headers"] == ["Service", "Status", "Detail"]
     assert [r[0] for r in table["rows"]] == ["CLASSify", "Forecaster", "LLM-Factory"]
     assert all(r[1] == "ok" for r in table["rows"])
-    # Status output is informational, never an error Alert — the save-time
-    # probe path must read the aggregate verdict from _data, not an error.
     assert card.get("variant") != "error"
 
 
-# ---------------------------------------------------------------------------
-# Optional-bundle semantics
-# ---------------------------------------------------------------------------
-
-
 def test_unconfigured_bundles_excluded_from_aggregate(rmock: HttpMock) -> None:
-    """Only classify configured + ok ⇒ aggregate ok; others not_configured."""
     rmock.add("GET", CLASSIFY_PROBE_URL, status=200, json={"parameters": {}})
     creds = {
         "CLASSIFY_URL": f"https://{CLASSIFY_HOST}",
@@ -121,18 +106,16 @@ def test_unconfigured_bundles_excluded_from_aggregate(rmock: HttpMock) -> None:
     assert data["bundles"]["classify"]["credential_test"] == "ok"
     assert data["bundles"]["forecaster"]["credential_test"] == "not_configured"
     assert data["bundles"]["llm_factory"]["credential_test"] == "not_configured"
-    # No upstream traffic for unconfigured bundles.
     urls = {c["url"] for c in rmock.calls}
     assert urls == {CLASSIFY_PROBE_URL}
 
 
 def test_partial_bundle_counts_as_not_configured(rmock: HttpMock) -> None:
-    """URL without key (or vice versa) is not a configured bundle."""
     rmock.add("GET", CLASSIFY_PROBE_URL, status=200, json={"parameters": {}})
     creds = {
         "CLASSIFY_URL": f"https://{CLASSIFY_HOST}",
         "CLASSIFY_API_KEY": "sentinel-classify-key",
-        "FORECASTER_URL": f"https://{FORECASTER_HOST}",  # no FORECASTER_API_KEY
+        "FORECASTER_URL": f"https://{FORECASTER_HOST}",
     }
     result = mcp_tools._credentials_check(_credentials=creds)
     assert result["_data"]["bundles"]["forecaster"]["credential_test"] == "not_configured"
@@ -154,11 +137,6 @@ def test_no_credentials_kwarg_at_all() -> None:
     assert result["_data"]["credential_test"] == "unexpected"
 
 
-# ---------------------------------------------------------------------------
-# Aggregate precedence
-# ---------------------------------------------------------------------------
-
-
 def test_auth_failed_outranks_ok(rmock: HttpMock) -> None:
     rmock.add("GET", CLASSIFY_PROBE_URL, status=200, json={"parameters": {}})
     rmock.add("GET", FORECASTER_PROBE_URL, status=401, body=b"{}")
@@ -167,8 +145,6 @@ def test_auth_failed_outranks_ok(rmock: HttpMock) -> None:
     data = result["_data"]
     assert data["bundles"]["forecaster"]["credential_test"] == "auth_failed"
     assert data["credential_test"] == "auth_failed"
-    # The detail names every bundle's verdict so the save-time response is
-    # actionable.
     assert "CLASSify: ok" in data["detail"]
     assert "Forecaster: auth_failed" in data["detail"]
     assert "LLM-Factory: ok" in data["detail"]
@@ -186,7 +162,6 @@ def test_all_unreachable_aggregates_unreachable() -> None:
 
 
 def test_unreachable_outranks_ok(rmock: HttpMock) -> None:
-    """A configured-but-unroutable bundle degrades the aggregate to unreachable."""
     rmock.add("GET", CLASSIFY_PROBE_URL, status=200, json={"parameters": {}})
     rmock.add("GET", LLM_FACTORY_PROBE_URL, status=200, json={"data": []})
     creds = dict(ALL_CREDS)
@@ -196,11 +171,6 @@ def test_unreachable_outranks_ok(rmock: HttpMock) -> None:
     assert data["bundles"]["classify"]["credential_test"] == "ok"
     assert data["bundles"]["forecaster"]["credential_test"] in ("unreachable", "unexpected")
     assert data["credential_test"] == data["bundles"]["forecaster"]["credential_test"]
-
-
-# ---------------------------------------------------------------------------
-# Registry exposure + secrecy
-# ---------------------------------------------------------------------------
 
 
 def test_registered_once_in_union_registry() -> None:

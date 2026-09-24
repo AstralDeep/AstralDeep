@@ -1,10 +1,6 @@
-"""Short-lived UI voice-control bindings for Feature 065.
-
-The bearer is minted only after an authenticated ``register_ui`` frame.  It
-binds one Keycloak subject to one UUID4 device and one UUID4 connection
-generation, and is never stored.  Durable voice-session rows retain only the
-binding identifier and expiry so REST mutations can compare server state after
-verifying this signature.
+"""Mints and verifies short-lived, unstored HMAC bearer tokens binding one Keycloak
+subject to a device and connection generation for voice control; durable session rows
+retain only the binding id and expiry to check against it.
 """
 
 from __future__ import annotations
@@ -31,8 +27,6 @@ _PROCESS_DEVELOPMENT_KEY = secrets.token_bytes(32)
 
 
 class VoiceControlBindingError(RuntimeError):
-    """A content-free control-binding refusal safe for a client/log."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -40,8 +34,6 @@ class VoiceControlBindingError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ClientLocalTurnAuthority:
-    """Memory-only authority for one bounded client-local recognition turn."""
-
     socket_id: int
     user_id: str
     device_id: str
@@ -62,8 +54,6 @@ class ClientLocalTurnAuthority:
 
 @dataclass(frozen=True, slots=True)
 class ClientLocalTurnReservation:
-    """One content-free, bounded reservation made before durable insertion."""
-
     reservation_id: str
     socket_id: int
     user_id: str
@@ -92,15 +82,6 @@ class _ClientLocalSequenceFence:
 
 
 class ClientLocalBindingRegistry:
-    """Bounded, process-local socket and turn fencing for local speech.
-
-    The registry never treats a client capability claim as authority. Every
-    admission rechecks the authenticated socket binding and durable session
-    snapshot supplied by the server before it creates or returns a turn
-    authority. No transcript content is stored; a digest exists only while an
-    admitted final is in flight and is scrubbed with the turn.
-    """
-
     def __init__(self, *, capacity: int = 256) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("invalid_local_binding_capacity")
@@ -268,8 +249,6 @@ class ClientLocalBindingRegistry:
         frame: Any,
         now: datetime,
     ) -> ClientLocalTurnReservation | ClientLocalTurnAuthority:
-        """Reserve ephemeral authority before a durable recognizing row exists."""
-
         self._prune(now)
         key = (user_id, frame.client_turn_id)
         existing = self._turns.get(key)
@@ -279,9 +258,7 @@ class ClientLocalBindingRegistry:
             raise VoiceControlBindingError("invalid_binding")
         pending = self._reservations.get(key)
         if pending is not None:
-            # A matching reservation is still owned by the first uncancellable
-            # repository insert. A concurrent retry must not start a second
-            # insert; it may retry after that exact reservation resolves.
+            # Refuses here so a concurrent retry can't double-insert the reservation
             raise VoiceControlBindingError("invalid_binding")
         if len(self._turns) + len(self._reservations) >= self._capacity:
             raise VoiceControlBindingError("capacity_exhausted")
@@ -336,8 +313,6 @@ class ClientLocalBindingRegistry:
         turn: Any,
         now: datetime,
     ) -> ClientLocalTurnAuthority:
-        """Convert the exact live reservation into final ephemeral authority."""
-
         self._prune(now)
         key = (reservation.user_id, reservation.client_turn_id)
         if self._reservations.get(key) != reservation or reservation.expires_at <= now:
@@ -423,8 +398,6 @@ class ClientLocalBindingRegistry:
         self,
         authority: ClientLocalTurnAuthority,
     ) -> None:
-        """Release only authority and sequence created by one failed request."""
-
         key = (authority.user_id, authority.client_turn_id)
         if self._turns.get(key) is not authority:
             return
@@ -448,8 +421,6 @@ class ClientLocalBindingRegistry:
         frame: Any,
         now: datetime,
     ) -> tuple[str, bool]:
-        """Return canonical text after exact in-flight turn verification."""
-
         from orchestrator.voice_sessions import canonicalize_local_transcript
 
         frame.validate()
@@ -626,8 +597,6 @@ class ClientLocalBindingRegistry:
 
 @dataclass(frozen=True, slots=True)
 class VoiceControlClaims:
-    """Non-secret signed scope retained by a socket/session row."""
-
     subject: str
     device_id: str
     connection_generation: str
@@ -647,8 +616,6 @@ class VoiceControlClaims:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class IssuedVoiceControlBinding:
-    """One bearer delivery plus its safe server-side scope."""
-
     bearer: str
     claims: VoiceControlClaims
 
@@ -657,8 +624,6 @@ class IssuedVoiceControlBinding:
 
 
 class VoiceControlBindingIssuer:
-    """Mint and verify compact, domain-separated HMAC control bearers."""
-
     def __init__(
         self,
         secret: bytes,
@@ -699,20 +664,13 @@ class VoiceControlBindingIssuer:
         connection_generation: str,
         credential_expires_at: datetime,
     ) -> IssuedVoiceControlBinding:
-        """Mint one bearer that never outlives the authenticated credential."""
-
         checked_subject = _subject(subject)
         checked_device = _uuid4(device_id, "device_id")
         checked_connection = _uuid4(
             connection_generation,
             "connection_generation",
         )
-        # The compact bearer serializes NumericDate values as whole seconds.
-        # Retain claims at that same precision so the socket-side current-
-        # binding fence compares equal to claims reconstructed by ``verify``.
-        # Without this normalization, ordinary real clocks (which nearly
-        # always include microseconds) make every newly minted binding appear
-        # stale even though its signature and scope are valid.
+        # Must truncate to whole seconds or every fresh binding looks stale
         now = _aware(self._clock(), "clock").replace(microsecond=0)
         credential_expiry = _aware(
             credential_expires_at,
@@ -747,8 +705,6 @@ class VoiceControlBindingIssuer:
         expected_binding_id: str | None = None,
         expected_expires_at: datetime | None = None,
     ) -> VoiceControlClaims:
-        """Verify signature, lifetime, and every caller/server scope fence."""
-
         if (
             not isinstance(bearer, str)
             or not 32 <= len(bearer.encode("utf-8")) <= _MAX_TOKEN_BYTES

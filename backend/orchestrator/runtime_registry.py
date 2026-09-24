@@ -1,8 +1,6 @@
-"""Atomic process-local projections of runtime state for feature 060.
-
-Durable personal-agent truth remains in PostgreSQL.  This registry exists so
-event-loop and worker-thread readers can consume one coherent version instead
-of iterating several dictionaries while another thread mutates them.
+"""Atomic process-local projections of runtime state, published as one coherent snapshot
+so event-loop and worker-thread readers never see a partially mutated view; writers
+serialize through a state-revision compare-and-set.
 """
 
 from __future__ import annotations
@@ -20,8 +18,6 @@ _MAX_UINT64 = (1 << 64) - 1
 
 
 class RegistryKind(str, Enum):
-    """The four projections published together in one registry snapshot."""
-
     RUNTIME = "runtime"
     HOST_SESSION = "host_session"
     LIFECYCLE = "lifecycle"
@@ -29,17 +25,10 @@ class RegistryKind(str, Enum):
 
 
 class StaleRegistryRevisionError(RuntimeError):
-    """A registry compare-and-set did not match the currently published row."""
+    pass
 
 
 def _freeze_value(value: Any) -> Any:
-    """Detach common mutable containers before publishing an opaque value.
-
-    Runtime handles and sockets are intentionally retained as opaque references;
-    dictionaries, lists, and sets are recursively replaced so ordinary protocol
-    payloads cannot mutate an already-published snapshot through an alias.
-    """
-
     if isinstance(value, Mapping):
         frozen: dict[Any, Any] = {}
         for key, item in value.items():
@@ -54,8 +43,6 @@ def _freeze_value(value: Any) -> Any:
 
 @dataclass(frozen=True)
 class RuntimeRegistryRecord:
-    """One immutable record in a named runtime-registry projection."""
-
     kind: RegistryKind
     identity: str
     state_revision: int
@@ -78,8 +65,6 @@ class RuntimeRegistryRecord:
 
 @dataclass(frozen=True)
 class RuntimeRegistrySnapshot:
-    """One atomically published, coherent view of every registry partition."""
-
     registry_version: int
     runtimes: tuple[RuntimeRegistryRecord, ...]
     host_sessions: tuple[RuntimeRegistryRecord, ...]
@@ -88,8 +73,6 @@ class RuntimeRegistrySnapshot:
     captured_at_monotonic: float
 
     def records(self, kind: RegistryKind) -> tuple[RuntimeRegistryRecord, ...]:
-        """Return the immutable tuple for ``kind`` from this exact snapshot."""
-
         if kind is RegistryKind.RUNTIME:
             return self.runtimes
         if kind is RegistryKind.HOST_SESSION:
@@ -102,8 +85,6 @@ class RuntimeRegistrySnapshot:
 
 
 class RuntimeRegistry:
-    """Lock-serialized writers with lock-free immutable snapshot readers."""
-
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._monotonic = monotonic
         self._writer_lock = threading.Lock()
@@ -123,8 +104,6 @@ class RuntimeRegistry:
         return max(floor, value)
 
     def snapshot(self) -> RuntimeRegistrySnapshot:
-        """Return the currently published snapshot without taking a writer lock."""
-
         return self._snapshot
 
     def list_records(
@@ -133,8 +112,6 @@ class RuntimeRegistry:
         *,
         snapshot: RuntimeRegistrySnapshot | None = None,
     ) -> tuple[RuntimeRegistryRecord, ...]:
-        """List one partition from one coherent snapshot."""
-
         if not isinstance(kind, RegistryKind):
             raise TypeError("kind must be a RegistryKind")
         selected = self._snapshot if snapshot is None else snapshot
@@ -148,12 +125,6 @@ class RuntimeRegistry:
         *,
         expected_state_revision: int | None,
     ) -> RuntimeRegistrySnapshot:
-        """Create or replace one record through a state-revision CAS.
-
-        ``expected_state_revision=None`` is create-only.  Replacement requires
-        an exact current revision and a strictly newer record revision.
-        """
-
         if not isinstance(record, RuntimeRegistryRecord):
             raise TypeError("record must be a RuntimeRegistryRecord")
         self._validate_expected_revision(expected_state_revision)
@@ -182,8 +153,6 @@ class RuntimeRegistry:
         *,
         expected_state_revision: int | None,
     ) -> RuntimeRegistrySnapshot:
-        """Remove one record only when its current state revision still matches."""
-
         if not isinstance(kind, RegistryKind):
             raise TypeError("kind must be a RegistryKind")
         if not isinstance(identity, str) or not identity.strip():

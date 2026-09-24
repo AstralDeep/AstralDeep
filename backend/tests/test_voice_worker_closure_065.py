@@ -1,4 +1,7 @@
-"""Canonical closure-manifest tests for the Feature 065 RTC-only worker."""
+"""Tests for the RTC-only voice worker's closure-manifest tool: deterministic canonical
+manifests, Trivy artifact/digest identity binding, fail-closed evidence and approval
+drift detection, and CLI generate/verify round-trips.
+"""
 
 from __future__ import annotations
 

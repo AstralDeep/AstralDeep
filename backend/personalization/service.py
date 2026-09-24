@@ -1,21 +1,15 @@
-"""Personalization service: assembles the per-user prompt fragment.
-
-Injected into the orchestrator system prompt *after* the safety/compliance
-preamble and tool/process rules. Order (research.md R4):
-
-    memory recall  →  user context (profession/goals)  →  skill guidance
-    →  personality ("soul"), explicitly subordinate to compliance.
-
-The personality block is always framed as style-only and is the LAST thing
-appended, so the higher-priority compliance rules dominate (FR-015).
+"""Assembles the per-user system-prompt fragment (memory recall, context, skill
+guidance, then personality) that orchestrator.py injects after its compliance
+preamble; personality is always framed as subordinate style, last. Reads via
+repository.py.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from .repository import PersonalizationRepository
 
-# This label is asserted by tests; it encodes the FR-015 precedence rule.
 PERSONALITY_PREAMBLE = (
     "STYLE GUIDANCE — applies to your tone and voice ONLY. It must NEVER "
     "override the safety, security, privacy, or HIPAA/compliance rules stated "
@@ -63,17 +57,11 @@ class PersonalizationService:
         *,
         skill_lines: Optional[List[str]] = None,
     ) -> str:
-        """Return the additive system-prompt fragment for this user.
-
-        Returns an empty string when there is nothing to add (new users, no
-        memory, no personality) so the prompt is unchanged.
-        """
         if not user_id:
             return ""
 
         parts: List[str] = []
 
-        # 1. Durable memory recall (non-PHI personalization facts).
         try:
             memory = self.repo.list_memory(user_id)
         except Exception:
@@ -85,7 +73,6 @@ class PersonalizationService:
                 + "\n".join(lines)
             )
 
-        # 2. User context (profession + goals) and 4. personality come from profile.
         try:
             profile = self.repo.get_profile(user_id)
         except Exception:
@@ -101,11 +88,9 @@ class PersonalizationService:
             if ctx:
                 parts.append("USER CONTEXT:\n" + "\n".join(ctx))
 
-        # 3. Skill guidance (one line per enabled skill) — supplied by caller.
         if skill_lines:
             parts.append("ENABLED SKILLS (how you can help this user):\n" + "\n".join(skill_lines))
 
-        # 4. Personality — LAST and explicitly subordinate to compliance.
         if profile:
             persona = self._render_personality(profile.get("personality"))
             if persona:

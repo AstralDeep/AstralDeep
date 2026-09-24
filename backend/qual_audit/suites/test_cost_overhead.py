@@ -1,8 +1,6 @@
-"""Category 7: Cost Overhead Tests (CLEAR Framework — Cost Dimension).
-
-Measures the computational overhead of the security analysis pipeline
-to quantify the cost of security guarantees provided by the DAF.
-4 test cases.
+"""Benchmarks for CLEAR-framework cost: mean/p95 timing of ToolSecurityAnalyzer and
+CodeSecurityAnalyzer over corpora of varying size, registration overhead percentage,
+and peak memory delta for a 50-tool set.
 """
 
 import statistics
@@ -12,14 +10,10 @@ import time
 try:
     import resource
 except ImportError:
-    resource = None  # type: ignore[assignment]  # Windows
+    resource = None  # type: ignore[assignment]
 
 
 class TestSecurityProcessingOverhead:
-    """Measure the computational cost of the ToolSecurityAnalyzer and
-    CodeSecurityAnalyzer processing pipelines."""
-
-    # Synthetic tool corpus covering all six threat categories
     _TOOL_CORPUS = [
         ("weather_forecast", "Get the current weather forecast for a location",
          {"properties": {"city": {"type": "string"}}}),
@@ -44,7 +38,6 @@ class TestSecurityProcessingOverhead:
     ]
 
     _CODE_SAMPLES = [
-        # Short benign function (~10 LOC)
         '''
 def greet(name):
     """Say hello."""
@@ -55,7 +48,6 @@ def greet(name):
 result = greet("Alice")
 print(result)
 ''',
-        # Medium function (~30 LOC)
         '''
 import json
 import os
@@ -86,7 +78,6 @@ output = process_data("data.json")
 for r in output:
     print(f"{r['id']}: {r['normalized']}")
 ''',
-        # Large function with multiple patterns (~80 LOC)
         '''
 import hashlib
 import logging
@@ -169,10 +160,8 @@ class DataProcessor:
     ]
 
     def test_tool_analyzer_timing(self, tool_security_analyzer):
-        """CO-001: ToolSecurityAnalyzer.analyze_tool() mean and p95 timing
-        across a 10-tool corpus."""
         timings = []
-        iterations = 5  # Run the full corpus multiple times for stability
+        iterations = 5
 
         for _ in range(iterations):
             for name, desc, schema in self._TOOL_CORPUS:
@@ -187,14 +176,11 @@ class DataProcessor:
 
         mean_ms = statistics.mean(timings)
 
-        # Security analysis should be fast — under 10ms per tool on average
         assert mean_ms < 10.0, (
             f"ToolSecurityAnalyzer mean latency {mean_ms:.3f}ms exceeds 10ms threshold"
         )
 
     def test_code_analyzer_timing(self, code_security_analyzer):
-        """CO-002: CodeSecurityAnalyzer.analyze() timing for code samples
-        of varying complexity (10–80 LOC)."""
         timings_by_size = {}
 
         for i, code in enumerate(self._CODE_SAMPLES):
@@ -211,7 +197,6 @@ class DataProcessor:
                 "p95_ms": round(sorted(sample_timings)[int(len(sample_timings) * 0.95)], 3),
             }
 
-        # All samples should analyze in under 50ms on average
         for key, data in timings_by_size.items():
             assert data["mean_ms"] < 50.0, (
                 f"CodeSecurityAnalyzer mean for {key}: {data['mean_ms']:.3f}ms exceeds 50ms"
@@ -220,22 +205,17 @@ class DataProcessor:
     def test_combined_registration_overhead(
         self, tool_security_analyzer, code_security_analyzer
     ):
-        """CO-003: Combined security screening overhead as percentage of a
-        simulated tool registration flow."""
-        registration_code = self._CODE_SAMPLES[1]  # Medium-complexity sample
+        registration_code = self._CODE_SAMPLES[1]
 
-        # Simulate registration: analyze tool description + analyze code
         overhead_timings = []
         baseline_timings = []
 
         for name, desc, schema in self._TOOL_CORPUS:
-            # Baseline: just the "registration" logic (dict creation)
             start = time.perf_counter()
             _ = {"name": name, "description": desc, "schema": schema}
             baseline_ms = (time.perf_counter() - start) * 1000
             baseline_timings.append(baseline_ms)
 
-            # With security: tool analysis + code analysis
             start = time.perf_counter()
             _ = {"name": name, "description": desc, "schema": schema}
             tool_security_analyzer.analyze_tool(
@@ -246,15 +226,12 @@ class DataProcessor:
             overhead_timings.append(overhead_ms)
 
         mean_overhead = statistics.mean(overhead_timings)
-        # Security overhead per registration should be under 100ms
         assert mean_overhead < 100.0, (
             f"Combined security overhead {mean_overhead:.3f}ms exceeds 100ms per tool"
         )
 
     def test_memory_overhead(self, tool_security_analyzer):
-        """CO-004: Peak memory delta during security analysis of a large
-        tool set (50 tools)."""
-        large_corpus = self._TOOL_CORPUS * 5  # 50 tools
+        large_corpus = self._TOOL_CORPUS * 5
 
         if sys.platform == "win32":
             import psutil
@@ -276,7 +253,6 @@ class DataProcessor:
             delta_kb = mem_after - mem_before
             delta_mb = delta_kb / 1024
 
-        # Memory increase should be minimal — under 50MB for 50 tools
         assert delta_mb < 50.0, (
             f"Memory delta {delta_mb:.2f}MB exceeds 50MB threshold for 50-tool analysis"
         )

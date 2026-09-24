@@ -1,8 +1,8 @@
-"""Private notes over real IAM, encryption, Plane CAS and required atomic audit.
-
-The external JWT responses and local PHI analyzer result are synthetic. No model
-or network effect starts; raw PostgreSQL reads below are test-only diagnostics.
+"""Tests for private notes (personalization/explicit_note_service.py, phi_gate.py) over
+real IAM, encryption, Plane CAS, and required atomic audit: create/edit/search,
+revision conflicts, PHI refusal, and timed expiry/erasure.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -473,7 +473,6 @@ async def test_database_expiry_during_decryption_refuses_even_when_host_clock_la
     from personalization import explicit_note_service as module
     expiry = time.time_ns()//1_000_000 + 450
     saved = await apply(notes, expires_at=expiry)
-    # Only this diagnostic host observation lags; the real PG clock advances.
     monkeypatch.setattr(module, "_now", lambda: saved.updated_at)
     original = ExplicitNoteService._open
 

@@ -1,7 +1,6 @@
-"""Closed ASGI submission with real IAM policy, installed Plane and atomic audit.
-
-Only JWT/JWKS/refresh replies are synthetic. The real fixed handler is selected
-but no runner loop or provider/tool execution starts in these transport tests.
+"""Closed ASGI-transport tests for orchestrator/work_admission_api.py against real IAM
+and Plane: framing and stream-length validation, disconnect/cancellation handling,
+origin/policy refusals, and idempotent-replay behavior at the registered route.
 """
 
 import asyncio
@@ -36,7 +35,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def api(research_service, runtime, fixture, monkeypatch):
-    """Build production-shaped bindings without an alternate service injection."""
     service = research_service
     orch = service.assignments.orch
     orch.runtime_composition = SimpleNamespace(
@@ -92,7 +90,6 @@ async def submit(
     method="POST",
     state=None,
 ):
-    """Send exact ASGI frames, including disconnect/framing cases HTTP clients hide."""
     fields = [
         (b"content-type", b"application/json"),
         (b"origin", b"https://app.invalid"),
@@ -433,7 +430,6 @@ async def test_error_details_are_closed_and_verified_attribution_survives(
 async def test_selected_refusals_keep_closed_codes_at_registered_route(
     api, monkeypatch, code, status
 ):
-    """The real route preserves actionable refusals without accepting work."""
     async def refused(*args, **kwargs):
         raise AssignmentError(code, status)
 
@@ -513,7 +509,6 @@ async def test_runtime_binding_mutation_during_config_capture_refuses(
     monkeypatch.setattr(api.orch._llm_store, "capture_user", capture)
     result = await submit(api)
     assert result.status == (403 if component == "assignments" else 503)
-    # Restore before fixture cleanup and inspect the original isolated runtime.
     monkeypatch.setattr(*target[component], api.runtime)
     no_acceptance(api.runtime, api.fixture[1])
 

@@ -1,13 +1,8 @@
-"""Deep-owned host adapter for the attachment-library Projection surface.
-
-Browse the user's previously uploaded attachments, attach an existing one to
-the next message without re-uploading, and delete attachments. The "attach"
-action is handled client-side (it stages a chip in the compose tray — no server
-round-trip and no duplicate blob); "delete" routes through the existing
-soft-delete via the ``chrome_attachment_delete`` handler.
-
-Renders for the web target only (chrome layer). All reads are user-scoped.
+"""Renders the attachment-library surface for browsing and deleting previously uploaded
+files; attaching an existing one to the next message is handled client-side. Delete
+routes through orchestrator/attachments/repository.py's soft-delete.
 """
+
 import asyncio
 import json
 import logging
@@ -50,13 +45,11 @@ def _repo(orch):
 
 
 def _list_items(orch, user_id):
-    """The user's live attachments (sync repository read, run off-loop)."""
     items, _ = _repo(orch).list_for_user(user_id, limit=100)
     return items
 
 
 async def _schedule_delete(orch, user_id, attachment_id):
-    """Hide metadata and durably accept cleanup without waiting on blob locks."""
     from astralplane.errors import PlaneError
     from orchestrator.attachments.purge import purge_coordinator_from_orchestrator
 
@@ -95,7 +88,6 @@ def _row_html(att) -> str:
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """List the caller's live attachments with attach/delete controls."""
     try:
         items = await asyncio.to_thread(_list_items, orch, user_id)
     except Exception:
@@ -116,16 +108,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def components(orch, user_id, roles, params):
-    """Feature 044 — the attachments library as native SDUI components.
-
-    Same data source as ``render()`` (the user's live uploads) + the same
-    Delete action. The per-row **Attach** button carries the client-local
-    ``attach_existing`` action: the native client INTERCEPTS it to stage a
-    composer chip (the SDUI twin of the web's ``astral-attach-existing``) and
-    never forwards it to the server — so there is no server handler for it (it
-    is listed in ``ui_protocol.json`` ``client_local_actions``). Empty state is
-    a single notice Alert. Web ``render()`` HTML is unchanged (contract §3.3).
-    """
     try:
         items = await asyncio.to_thread(_list_items, orch, user_id)
     except Exception:
@@ -154,7 +136,6 @@ async def components(orch, user_id, roles, params):
 
 
 async def _h_attachment_delete(orch, websocket, user_id, roles, payload):
-    """Durably hide an attachment and report pending physical cleanup."""
     attachment_id = str((payload or {}).get("attachment_id") or "")
     if not attachment_id:
         return ("attachments", {}, notice_block("error", "No attachment specified."))

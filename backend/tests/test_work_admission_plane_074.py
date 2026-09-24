@@ -1,3 +1,8 @@
+"""Tests binding orchestrator/work_admission.py's coordinator to AstralPlane's
+runtime/catalog repository: fenced transaction scope shared with terminalization,
+Plane stale-error mapping, and refusal of a missing runtime or catalog member.
+"""
+
 from __future__ import annotations
 
 import uuid

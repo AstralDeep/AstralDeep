@@ -1,4 +1,6 @@
-"""``read_bio_tiff`` tool: parse OME-TIFF / bio-TIFF files via tifffile."""
+"""read_bio_tiff tool: parses OME-TIFF/bio-TIFF files via tifffile, returning
+series/level layout plus a thumbnail for the vision model.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +22,6 @@ def read_bio_tiff(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return series/level layout + thumbnail for an OME-TIFF or generic TIFF."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -75,14 +76,12 @@ def read_bio_tiff(
         "ome_xml_preview": (ome_xml[:2000] + "…") if ome_xml and len(ome_xml) > 2000 else ome_xml,
     }
 
-    # Thumbnail: series 0, deepest pyramid level for speed.
     try:
         ser0 = tf.series[0]
         levels = getattr(ser0, "levels", None) or [ser0]
         thumb_level = levels[-1]
         arr = thumb_level.asarray()
         if arr.ndim > 2:
-            # Reduce extra axes by picking middle index of each until 2-D or 2-D+channels.
             while arr.ndim > 3:
                 arr = arr[arr.shape[0] // 2]
             if arr.ndim == 3 and arr.shape[-1] not in (1, 3, 4) and arr.shape[0] not in (1, 3, 4):

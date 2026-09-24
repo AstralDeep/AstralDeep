@@ -1,24 +1,6 @@
-"""Feature 060 connection-runtime reliability contract (T021).
-
-These tests intentionally exercise the two existing public socket entry points,
-``Orchestrator.handle_ui_connection`` and
-``Orchestrator.handle_ui_connection_fastapi``.  T025 may share an internal
-``ConnectionContext``/serve implementation between them, but no test-only
-runtime factory is part of this contract.
-
-T025's small production-facing policy/diagnostic seam is explicit here:
-
-* ``REGISTRATION_TIMEOUT_SECONDS == 5.0``;
-* ``CONNECTION_DRAIN_TIMEOUT_SECONDS == 5.0``;
-* ``REGISTRATION_QUEUE_LIMIT == 16``; and
-* ``Orchestrator.connection_diagnostics()`` returns non-sensitive aggregate
-  integer gauges named ``active_connections``, ``tracked_tasks``,
-  ``registration_waiters``, and ``preregistration_queued``.
-
-Tests patch the policy constants to short values, drive sockets with events,
-and use ``asyncio.sleep(0)`` only to hand control to ready tasks.  There are no
-timing sleeps.  ``wait_for`` calls are watchdogs for a failed contract, not the
-mechanism that makes a test pass.
+"""Reliability tests for Orchestrator.handle_ui_connection and
+handle_ui_connection_fastapi: registration backpressure, drain-on-disconnect
+ownership, the reader/mutation barrier, and runtime_registry coherence under load.
 """
 
 from __future__ import annotations
@@ -53,8 +35,6 @@ _DISCONNECT = object()
 
 
 class _FakeSocket:
-    """One fake implementing both websocket-libraries' public socket surface."""
-
     def __init__(self, disconnect_error: type[BaseException]) -> None:
         self._disconnect_error = disconnect_error
         self._incoming: asyncio.Queue[object] = asyncio.Queue()
@@ -136,13 +116,6 @@ class _Rote:
 
 
 class _MessageProbe:
-    """Deterministic stand-in for admitted application work.
-
-    T025 owns parsing, registration, admission, deduplication, ordering, task
-    tracking, and terminalization around this method.  The probe represents
-    user code only and deliberately emits no admission/status frames itself.
-    """
-
     def __init__(self) -> None:
         self.orchestrator: Any | None = None
         self.registrations = 0
@@ -217,8 +190,6 @@ class _MessageProbe:
                     ).wait()
                 except asyncio.CancelledError:
                     self.cancellations[probe_id] += 1
-                    # A stubborn worker ignores the cooperative request once.
-                    # T025's drain deadline must then perform the forced cancel.
                     if payload.get("stubborn") and self.cancellations[probe_id] == 1:
                         await self._release.setdefault(
                             probe_id, asyncio.Event()
@@ -249,8 +220,6 @@ def entrypoint(request: pytest.FixtureRequest) -> str:
 
 
 def _coordinator() -> object:
-    """Provide the real in-memory admission authority to the bare test host."""
-
     from orchestrator.work_admission import (
         AdmissionClass,
         AdmissionClassConfig,
@@ -277,8 +246,6 @@ def _coordinator() -> object:
 
 
 def _orchestrator(runtime: Any, probe: _MessageProbe) -> Any:
-    """Build the connection-only portion of an Orchestrator without a database."""
-
     async def _teardown(_websocket: object) -> None:
         return None
 
@@ -303,8 +270,6 @@ def _orchestrator(runtime: Any, probe: _MessageProbe) -> Any:
     orch._cleanup_streams = lambda _websocket: None
     orch._teardown_owner_tunnels = _teardown
     coordinator = _coordinator()
-    # T025 may settle on one of these names while wiring the T012 authority;
-    # aliases point to the same authority and are not separate coordinators.
     orch.work_admission = coordinator
     orch.operation_coordinator = coordinator
     orch._work_admission = coordinator
@@ -315,8 +280,6 @@ def _orchestrator(runtime: Any, probe: _MessageProbe) -> Any:
 
 
 class _RenewalProbe:
-    """Delegate admission while exposing one thread-safe lease-renewal latch."""
-
     def __init__(self, delegate: object) -> None:
         self.delegate = delegate
         self.renewed = threading.Event()
@@ -784,8 +747,6 @@ async def test_registration_type_is_structural_not_substring(
         assert probe.registrations == 1
         assert probe.starts == ["disguised"]
 
-        # A structural re-registration remains control work and never enters
-        # the admission/mutation lane (native clients use it for device refresh).
         websocket.feed(_register_frame(uuid.uuid4()))
         for _ in range(50):
             if probe.registrations == 2:
@@ -997,8 +958,6 @@ async def test_mutations_are_fifo_while_cancel_control_bypasses_lane(
         await _turns()
         assert probe.starts == ["mutation-0"]
 
-        # Cancellation (and the close control tested below) bypasses the
-        # mutation lane so saturation can never prevent a drain request.
         websocket.feed(_control_frame("cancel_task"))
         for _ in range(50):
             if probe.controls:
@@ -1027,15 +986,6 @@ async def test_reads_and_mutations_never_overlap_live_connection_state(
     entrypoint: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Concurrent reads are allowed, but live mutations need a reader barrier.
-
-    The application router reads and mutates shared live state rather than an
-    immutable per-frame snapshot. A read admitted before a mutation must finish
-    first, and a read admitted behind an active mutation must wait for it. The
-    transport-control bypass is exercised separately and remains independent
-    of this data-lane barrier.
-    """
-
     _set_short_policy(runtime_module, monkeypatch)
     baseline = set(asyncio.all_tasks())
     probe = _MessageProbe()
@@ -1569,8 +1519,6 @@ async def test_interactive_frame_reuses_connection_owner_and_renews_lease(
     entrypoint: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The normal chat path receives T025 ownership instead of T013 fallback."""
-
     _set_short_policy(runtime_module, monkeypatch)
     monkeypatch.setattr(
         runtime_module,
@@ -1735,8 +1683,6 @@ async def test_thousand_read_only_frames_are_bounded_and_fully_accounted(
     entrypoint: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SC-001: read concurrency is bounded; mutations use a separate FIFO test."""
-
     _set_short_policy(runtime_module, monkeypatch)
     baseline = set(asyncio.all_tasks())
     probe = _MessageProbe()
@@ -1759,8 +1705,6 @@ async def test_thousand_read_only_frames_are_bounded_and_fully_accounted(
             INTERACTIVE_ACTIVE_LIMIT + INTERACTIVE_QUEUE_LIMIT
         )
 
-        # Let every admitted operation finish while delivery is still live;
-        # the separate disconnect test below exercises forced cancellation.
         probe.release_all()
         for _ in range(500):
             accepted, refused, terminal = _operation_accounting(
@@ -1801,8 +1745,6 @@ async def test_disconnect_drains_connection_work_but_not_user_background(
     entrypoint: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FR-004 ownership: only work owned by this connection is cancelled."""
-
     _set_short_policy(runtime_module, monkeypatch)
     baseline = set(asyncio.all_tasks())
     probe = _MessageProbe()
@@ -1812,9 +1754,6 @@ async def test_disconnect_drains_connection_work_but_not_user_background(
     try:
         websocket.feed(_register_frame(uuid.uuid4()))
         await _wait(probe.registered, "registration")
-        # Launch the user-owned task first.  T021's reader/writer barrier now
-        # correctly prevents a later mutation from overtaking a blocked read,
-        # while this test is concerned only with disconnect ownership.
         websocket.feed(
             _event_frame(
                 "launch-user-background",
@@ -1848,8 +1787,6 @@ async def test_disconnect_drains_connection_work_but_not_user_background(
 
 
 def test_ten_thousand_runtime_registry_interleavings_are_coherent() -> None:
-    """SC-018: 10,000 publications never expose a partial registry view."""
-
     from orchestrator.runtime_registry import (
         RegistryKind,
         RuntimeRegistry,
@@ -1956,8 +1893,6 @@ def test_ten_thousand_runtime_registry_interleavings_are_coherent() -> None:
 
 
 async def test_release_load_maintenance_and_process_work_preserves_latency() -> None:
-    """SC-019: unrelated acknowledgement p95 <=2s and maximum <=5s."""
-
     from orchestrator.bounded_work import BoundedWorkExecutor
     from shared.process_supervision import (
         ProcessOwner,

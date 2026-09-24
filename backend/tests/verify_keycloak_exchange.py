@@ -1,11 +1,7 @@
+"""Manual RFC 8693 token-exchange verification script for Keycloak; run directly by an
+operator with a populated .env file, never in CI or automated tests.
 """
-Keycloak Token Exchange Verification Script
-Tests the RFC 8693 token exchange setup end-to-end.
 
-**Manual script only** — requires a running Keycloak instance and valid
-client secrets. Do NOT run in CI or automated testing. Invoke directly
-via `python verify_keycloak_exchange.py` with the .env file present.
-"""
 import os
 import sys
 import json
@@ -15,7 +11,6 @@ import aiohttp
 
 
 def load_env(env_path: str):
-    """Load .env from disk; fail early if missing."""
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             for line in f:
@@ -44,7 +39,6 @@ def decode_jwt(token):
 
 
 async def step1_get_service_token():
-    """Get a token via the agent-service client (which has service accounts enabled)."""
     print("=" * 60)
     print("STEP 1: Obtain token via astral-agent-service (service account)")
     print("=" * 60)
@@ -68,7 +62,6 @@ async def step1_get_service_token():
 
 
 async def step1b_get_frontend_token():
-    """Try to get a token via astral-frontend using client credentials."""
     print()
     print("=" * 60)
     print("STEP 1b: Try astral-frontend client credentials")
@@ -93,7 +86,6 @@ async def step1b_get_frontend_token():
 
 
 async def step2_exchange_token_with(subject_token, from_client_id, from_client_secret):
-    """Exchange a token for a delegation token (RFC 8693)."""
     audience = AGENT_SERVICE_CLIENT_ID if from_client_id == CLIENT_ID else CLIENT_ID
 
     print()
@@ -160,16 +152,13 @@ async def main():
     print(f"Agent service: {AGENT_SERVICE_CLIENT_ID}")
     print()
 
-    # Step 1: Get a service account token from agent-service
     service_token = await step1_get_service_token()
     if not service_token:
         print("\nABORT: Cannot get agent-service token")
         return
 
-    # Step 1b: Check if frontend has service accounts (informational)
     frontend_token = await step1b_get_frontend_token()
 
-    # Step 2: Exchange the service token to test the token exchange flow
     exchange_token = frontend_token or service_token
     exchange_client_id = CLIENT_ID if frontend_token else AGENT_SERVICE_CLIENT_ID
     exchange_client_secret = CLIENT_SECRET if frontend_token else AGENT_SERVICE_CLIENT_SECRET
@@ -178,10 +167,8 @@ async def main():
         exchange_token, exchange_client_id, exchange_client_secret
     )
 
-    # Step 3: Verify agent-service directly
     agent_ok = await step3_verify_agent_client()
 
-    # Summary
     print()
     print("=" * 60)
     print("SUMMARY")
@@ -215,5 +202,5 @@ if __name__ == "__main__":
 
     asyncio.run(main())
 else:
-    # When imported (e.g. by pytest collection), skip silently
+    # Import must stay a no-op — pytest collection must not run this.
     pass

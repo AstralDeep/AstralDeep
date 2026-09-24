@@ -1,8 +1,6 @@
-"""Closed retained page facts and deterministic one-page excerpt results.
-
-These pure helpers neither authorize a source nor execute research. Callers must
-use the ordinary reader and its current, authentic action result. Completeness is
-relative to the named text extractor, never a claim about a full visual page.
+"""Closed source facts and deterministic excerpt results bounded to MAX_RESULT_BYTES;
+pure helpers used by execution.py, monitoring_observation.py and research_episode.py
+to build page_result records without authorizing a read.
 """
 
 from __future__ import annotations
@@ -51,7 +49,6 @@ def _string(value, maximum, *, empty=False):
 
 
 def _validate(value, *, retained=False):
-    """Validate the closed factual domain before scanning or using its text."""
     if type(value) is not dict or set(value) != _RAW_KEYS | (
         _BOUND_KEYS if retained else set()
     ):
@@ -101,11 +98,6 @@ def _validate(value, *, retained=False):
 
 
 def legacy_page_response(response):
-    """Remove only additive fixed-reader facts before historical normalization.
-
-    The caller selects the exact fixed reader. Original UI, data and response
-    remain untouched, preserving its previous generic digests and size limits.
-    """
     result = getattr(response, "result", None)
     if (
         not isinstance(result, dict)
@@ -126,7 +118,6 @@ def legacy_page_response(response):
 
 
 def read_page_observation(response, *, requested_url):
-    """Validate actual fixed-reader metadata without guessing missing facts."""
     try:
         if getattr(response, "error", None):
             raise ValueError
@@ -148,11 +139,6 @@ def read_page_observation(response, *, requested_url):
 
 
 def retain_page_observation(value, *, source_action_id, redacted):
-    """Fit already scanned/redacted prose while retaining exact source facts.
-
-    The caller redacts only title/text and refuses unsafe metadata. No excerpt is
-    selected until the entire existing bounded observation has passed its gates.
-    """
     try:
         value = _validate(value)
         validate_id(source_action_id)
@@ -162,8 +148,7 @@ def retain_page_observation(value, *, source_action_id, redacted):
         result["revision_digest"] = digest({**value, "redacted": redacted})
         if len(_bytes(result)) <= MAX_RESULT_BYTES:
             return result
-        # Canonical JSON escaping and multibyte text, not character count, decide
-        # the retained domain. Only text may shrink; source metadata never does.
+        # Byte length after JSON escaping bounds text, not char count
         text = result["text"]
         result["excerpt_complete"] = False
         low, high = 0, len(text)
@@ -183,7 +168,6 @@ def retain_page_observation(value, *, source_action_id, redacted):
 
 
 def page_passages(observation):
-    """Return stable, contiguous exact-text passages tied to a retained result."""
     try:
         value = _validate(observation, retained=True)
         text, start, passages = value["text"], 0, []
@@ -205,12 +189,6 @@ def page_passages(observation):
 def build_page_result(
     observation, selection, *, source_action_id, source_result_digest
 ):
-    """Build exact attributed excerpts from one authentic available source result.
-
-    Supplied action/digest must come from the caller's guarded ledger read. This
-    pure equality check is not a replacement for owner or execution authority.
-    Empty selection means insufficient evidence for this scoped excerpt profile.
-    """
     try:
         value = _validate(observation, retained=True)
         if (

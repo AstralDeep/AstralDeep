@@ -1,14 +1,8 @@
-"""Real-Postgres tests for owner-issued framework credentials (088 T046-T048).
-
-Each test gets an isolated Plane schema via the shared ``plane`` fixture
-(``persistent_agents/tests/test_engine_postgres.py``), already migrated to the
-current guarded revision (which includes 088.008's ``framework_credential``
-table). Sessions are real ``web_session`` rows through ``WebSessionStore``; the
-``SessionConsentObservation`` used to mint/revoke is captured from that SAME
-store via ``tests.helpers.session_consent_088.consent_from_store`` — never a
-synthetic fence — so this suite proves the actual Deep-to-Plane round trip,
-not just the service's own validation.
+"""Tests for owner-issued framework credentials (orchestrator/framework_credentials.py)
+over real Postgres: session-consent-gated issuance, one-time secrets,
+scope/TTL/admission bounds, and resolve_bearer's tamper/expiry/ownership refusals.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -34,7 +28,6 @@ def _env(monkeypatch):
 
 @pytest.fixture
 def session(runtime):
-    """A real owner + live ``web_session`` row, and the store that owns it."""
     owner = str(uuid.uuid4())
     sid = uuid.uuid4().hex
     store = WebSessionStore(plane_runtime=runtime, plane_repositories=runtime.repositories)
@@ -69,8 +62,6 @@ def _issue(service, store, owner, sid, **overrides):
     return service.issue(**fields)
 
 
-# --- issuance requires a live, fresh, owner-matched session -----------------
-
 def test_issue_requires_a_typed_session_consent_observation(service, session):
     store, owner, sid = session
     with pytest.raises(AssignmentError, match="framework_credential_authority_required"):
@@ -91,9 +82,6 @@ def test_bare_owner_id_with_a_foreign_sessions_observation_is_refused(service, s
 
 
 def test_a_session_deleted_before_mint_refuses_issuance_and_persists_nothing(service, session, runtime):
-    """The Deep-level consent gate: a session revoked between capture and mint
-    loses the mint, closing the pre-lock-authority defect at the Deep layer
-    (Plane's own advisory-lock race is covered by the Plane suite)."""
     store, owner, sid = session
     caller = _caller(store, owner, sid)
     store.delete(sid)
@@ -106,14 +94,10 @@ def test_a_session_deleted_before_mint_refuses_issuance_and_persists_nothing(ser
             "SELECT count(*) AS n FROM framework_credential WHERE owner_id=%s", (owner,))["n"] == 0
 
 
-# --- successful issuance: shape, one-time secret, audit ---------------------
-
 def test_issue_returns_a_view_row_and_a_matching_secret_never_persisted(service, session, runtime):
     store, owner, sid = session
     view, secret = _issue(service, store, owner, sid)
     assert secret.startswith("afk_")
-    # The display prefix is derived from the high-entropy final segment only
-    # (never the owner/credential-id segments), so it carries no identity.
     random_part = secret.rsplit(".", 1)[-1]
     assert view["prefix"] == f"afk_{random_part[:10]}"
     assert view["name"] == "My SDK key"
@@ -169,8 +153,6 @@ def test_max_admissions_is_bounded_one_to_ten_thousand(service, session, max_adm
         _issue(service, store, owner, sid, max_admissions=max_admissions)
 
 
-# --- revoke ------------------------------------------------------------------
-
 def test_revoke_is_idempotent_and_owner_scoped(service, session):
     store, owner, sid = session
     view, _secret = _issue(service, store, owner, sid)
@@ -189,8 +171,6 @@ def test_revoke_unknown_credential_is_not_found(service, session):
     with pytest.raises(AssignmentError, match="framework_credential_not_found"):
         service.revoke(owner_id=owner, credential_id=str(uuid.uuid4()))
 
-
-# --- resolve_bearer: the MCP/A2A/SDK ingress path ----------------------------
 
 def test_resolve_bearer_round_trips_a_freshly_issued_token(service, session):
     store, owner, sid = session
@@ -220,10 +200,6 @@ def test_resolve_bearer_refuses_a_revoked_credential(service, session):
 def test_resolve_bearer_refuses_an_expired_credential(service, session, runtime):
     store, owner, sid = session
     view, secret = _issue(service, store, owner, sid, expires_in_seconds=300)
-    # Force expiry directly in the row (no product API mints an already-expired
-    # credential — this proves resolution, not issuance, honors expiry). Both
-    # columns move together so the row still satisfies the
-    # ``expires_at > created_at`` CHECK constraint.
     with runtime.transaction() as tx:
         tx.execute(
             "UPDATE framework_credential SET "
@@ -241,16 +217,12 @@ def test_resolve_bearer_refuses_a_tampered_secret(service, session):
 
 
 def test_resolve_bearer_refuses_a_credential_belonging_to_a_different_owner_segment(service, session):
-    """A token that decodes to a real owner but a foreign/unknown credential id
-    under that owner never resolves — no owner-agnostic search is performed."""
     store, owner, sid = session
     _view, secret = _issue(service, store, owner, sid)
     prefix, _cred, tail = secret[len("afk_"):].split(".", 2)
     forged = f"afk_{prefix}.{uuid.uuid4()}.{tail}"
     assert service.resolve_bearer(forged) is None
 
-
-# --- allowance CAS -----------------------------------------------------------
 
 def test_consume_admission_charges_exactly_once_and_refuses_when_exhausted(service, session, runtime):
     store, owner, sid = session
@@ -262,8 +234,6 @@ def test_consume_admission_charges_exactly_once_and_refuses_when_exhausted(servi
         with pytest.raises(AssignmentError, match="credential_allowance_exhausted"):
             service.consume_admission(tx, owner_id=owner, credential_id=view["credential_id"])
 
-
-# --- audit repository requirement -------------------------------------------
 
 def test_service_refuses_to_construct_without_a_real_audit_repository(runtime):
     with pytest.raises(ValueError):

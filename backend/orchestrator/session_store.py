@@ -1,18 +1,9 @@
-"""Feature 028 — durable server-side web-session store (research D3/D5).
-
-Backs ``web_auth``'s signed-cookie sessions with the ``web_session`` Postgres
-table so sessions survive backend restarts and multi-instance deploys
-(FR-008), honoring the feature-016 365-day hard cap anchored to the last
-*interactive* login. Access/refresh tokens are Fernet-encrypted at rest under
-``WEB_SESSION_ENC_KEY`` (falling back to ``OFFLINE_GRANT_ENC_KEY``, the
-feature-025 convention). In production mode (``ASTRAL_ENV`` != development)
-the absence of an encryption key is fail-closed: sessions cannot be persisted
-and login is refused rather than storing tokens in the clear.
-
-Also owns ``auth_revocation_queue`` — refresh tokens awaiting best-effort
-revocation at Keycloak after an offline sign-out (FR-013; the server-side
-analog of 016's client revocation queue).
+"""Postgres-backed durable store for web_auth's signed-cookie sessions: encrypts tokens
+at rest, fails closed in production when unconfigured, and owns the
+auth_revocation_queue. Used across orchestrator/*_authority.py and
+persistent_agents/runner.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,20 +43,9 @@ _TOKEN_MAX_BYTES = 32768
 
 
 def is_dev_mode() -> bool:
-    """True only when the operator explicitly declared development mode.
-
-    Unset/unknown ``ASTRAL_ENV`` means production: every 028 posture check
-    fails closed by default (FR-015/FR-016).
-    """
     return os.getenv("ASTRAL_ENV", "").strip().lower() in _DEV_VALUES
 
 
-# Feature 089 (FR-005): TypeSafe routing is strictly bring-your-own-key. There
-# is no deployment-wide TypeSafe credential, and no durable table that could
-# represent one. These are the environment names the vendor SDK would otherwise
-# fall back to, so a process that has them set is configured to do something the
-# feature forbids -- most likely routing every user's traffic through one
-# operator key. Production refuses to boot; development warns.
 TYPESAFE_ENV_NAMES = (
     "TYPESAFE_API_KEY",
     "TYPESAFE_BASE_URL",
@@ -74,18 +54,12 @@ TYPESAFE_ENV_NAMES = (
 
 
 def typesafe_env_names_present() -> tuple[str, ...]:
-    """Return the forbidden TypeSafe environment names that are currently set."""
     return tuple(
         name for name in TYPESAFE_ENV_NAMES if os.getenv(name, "").strip()
     )
 
 
 def warn_on_typesafe_environment() -> tuple[str, ...]:
-    """Log a development-mode warning for any TypeSafe environment name set.
-
-    Returns the offending names so a caller (or a test) can assert on them.
-    Production does not call this: it refuses to start instead.
-    """
     present = typesafe_env_names_present()
     if present:
         logger.warning(
@@ -98,7 +72,6 @@ def warn_on_typesafe_environment() -> tuple[str, ...]:
     return present
 
 
-# Shipped placeholder values that must never reach production.
 _DEV_PLACEHOLDER_SECRETS = (
     "dev-audit-hmac-secret-change-me-in-prod",
     "change-me",
@@ -106,20 +79,6 @@ _DEV_PLACEHOLDER_SECRETS = (
 
 
 def assert_production_posture() -> None:
-    """Fail-closed boot gate (028 FR-015, production hardening): refuse to
-    serve a production-mode process with a configuration that would silently
-    run open or unprotected. Collects EVERY problem before exiting so the
-    operator gets one actionable checklist. Raises ``SystemExit(78)``
-    (EX_CONFIG) — called before command-line runtime construction and again
-    from ``Orchestrator.start`` for embedded callers.
-
-    Development mode (``ASTRAL_ENV=development``) skips everything except the
-    advisory warnings — local dev stays friction-free (spec A13).
-
-    Feature 089 adds one refusal: any of ``TYPESAFE_API_KEY``,
-    ``TYPESAFE_BASE_URL`` or ``TYPESAFE_DEFAULT_MODEL`` set in the environment
-    fails the gate, because routing is bring-your-own-key and no
-    deployment-wide TypeSafe credential is representable (FR-005)."""
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
         warn_on_typesafe_environment()
@@ -181,10 +140,8 @@ def assert_production_posture() -> None:
             "fix the following before deploying:\n%s",
             "\n".join(f"  [{i + 1}] {p}" for i, p in enumerate(problems)),
         )
-        raise SystemExit(78)  # EX_CONFIG
+        raise SystemExit(78)
     if not os.getenv("AGENT_API_KEY", "").strip():
-        # Not fatal: agent registrations are refused (fail closed) — but the
-        # operator should know no specialist agents will come up.
         logger.warning(
             "AGENT_API_KEY is unset in production mode: ALL agent registrations "
             "will be refused (fail closed, 028 FR-016). Configure it if this "
@@ -198,15 +155,15 @@ def _enc_key() -> Optional[bytes]:
 
 
 class SessionStoreError(Exception):
-    """Raised when the store cannot operate safely (e.g. no key in prod)."""
+    pass
 
 
 class SessionRefreshUnavailable(SessionStoreError):
-    """Refresh cannot safely continue; existing access may still be usable."""
+    pass
 
 
 class SessionRevocationPageUnavailable(SessionStoreError):
-    """Reading a drainer page failed before any external revocation attempt."""
+    pass
 
 
 def _valid_token(value: object) -> bool:
@@ -226,8 +183,6 @@ def _valid_incarnation(value: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class WebSessionReference:
-    """Private request-local observation of one durable issued incarnation."""
-
     state: SessionExecutionState = field(repr=False)
 
 
@@ -238,8 +193,6 @@ def _binding_string(value, maximum):
 
 @dataclass(frozen=True, slots=True)
 class SessionIssuingIdentity:
-    """Server-private immutable refresh destination, never a token-derived guess."""
-
     owner_id: str = field(repr=False)
     issuer: str = field(repr=False)
     client_id: str = field(repr=False)
@@ -271,8 +224,6 @@ async def _exchange_claim(claimed, refresh, access, expected, exchange, bound_ex
 
 @dataclass(frozen=True, slots=True)
 class RefreshedSessionCredential:
-    """Persisted rotation awaiting normal IAM verification; authorizes no work."""
-
     credential: SessionCredentialFence = field(repr=False)
     started_at: datetime
     access_token: str = field(repr=False)
@@ -284,8 +235,6 @@ def _refresh_payload_valid(payload: object) -> bool:
 
 
 class WebSessionStore:
-    """Postgres-backed session CRUD with an in-process read-through cache."""
-
     def __init__(
         self,
         db=None,
@@ -295,13 +244,6 @@ class WebSessionStore:
         session_context: PlaneRepositoryContext | None = None,
         revocation_context: PlaneRepositoryContext | None = None,
     ):
-        """Bind to the application's initialized Plane runtime.
-
-        ``db`` remains accepted only as a transition-time dependency carrier:
-        it must expose the already-created ``plane_runtime`` and repository
-        catalog.  It is never used for statements or connection ownership.
-        Tests may instead inject the two narrow repository contexts directly.
-        """
         if session_context is None:
             history, runtime = repository_from(
                 "history",
@@ -332,15 +274,10 @@ class WebSessionStore:
         self._revocations = revocation_context
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._cache_lock = threading.RLock()
-        # Resolution and attempt mutations are owner-scoped in Plane.  The
-        # trusted drainer first obtains these fences from pending_revocations;
-        # keeping them detached here prevents queue ids becoming authority.
         self._revocation_fences: Dict[int, tuple[str, int]] = {}
         self._revocation_cursor = None
         self._revocation_ceiling = None
         self._revocation_drain_lock = asyncio.Lock()
-        # sid -> why get() last returned None for it ('hard_cap'), so the
-        # /auth/session contract can report reason:'hard_cap' (auth-session.md).
         self._death_reasons: Dict[str, str] = {}
         self._fernet = None
         key = _enc_key()
@@ -352,7 +289,6 @@ class WebSessionStore:
                 logger.exception("session_store: invalid WEB_SESSION_ENC_KEY (must be urlsafe-base64 Fernet)")
                 self._fernet = None
         if self._fernet is None and not is_dev_mode():
-            # Fail closed: production sessions must never hit disk unencrypted.
             raise SessionStoreError(
                 "WEB_SESSION_ENC_KEY (or OFFLINE_GRANT_ENC_KEY) is required outside "
                 "development mode — refusing to run with unencrypted session storage."
@@ -360,7 +296,6 @@ class WebSessionStore:
         if self._fernet is None:
             logger.warning("session_store: DEV MODE — sessions stored without encryption at rest")
 
-    # ── crypto ───────────────────────────────────────────────────────────
     def _enc(self, value: str) -> str:
         if self._fernet is None:
             return value or ""
@@ -371,7 +306,7 @@ class WebSessionStore:
             return "" if (value or "").startswith(_REFRESH_CLAIM_PREFIX) else value or ""
         try:
             plaintext = self._fernet.decrypt((value or "").encode()).decode()
-            # A claim is authenticated ciphertext, never an OAuth credential.
+            # Claim ciphertext: never treat this as an OAuth credential
             return "" if plaintext.startswith(_REFRESH_CLAIM_PREFIX) else plaintext
         except Exception:
             logger.warning("session_store: token decrypt failed (key rotated?) — treating session as dead")
@@ -395,7 +330,6 @@ class WebSessionStore:
         }
 
     def _evict_cached(self, sid: str, *, incarnation_id=None, observed=None) -> None:
-        """Retire only the cached observation selected before a database wait."""
         with self._cache_lock:
             current = self._cache.get(sid)
             if current is observed or (
@@ -405,7 +339,6 @@ class WebSessionStore:
                 self._cache.pop(sid, None)
 
     def _remember_row(self, row: dict, observed=None) -> None:
-        """Cache a read result only while it cannot replace a newer issuance."""
         with self._cache_lock:
             current = self._cache.get(row["sid"])
             if current is observed or (
@@ -413,13 +346,11 @@ class WebSessionStore:
             ):
                 self._cache[row["sid"]] = row
 
-    # ── session CRUD ─────────────────────────────────────────────────────
     def create(self, sid: str, *, user_id: str, access_token: str,
                refresh_token: str, hard_max_seconds: int,
                resumed: bool = False, issuing_issuer: str | None = None,
                issuing_client_id: str | None = None,
                request_execution: bool = False) -> Dict[str, Any]:
-        """Persist a new interactive session. Only this call sets the anchor."""
         if type(request_execution) is not bool:
             raise SessionStoreError("invalid session request bound")
         identity = (None if issuing_issuer is None and issuing_client_id is None else
@@ -465,11 +396,9 @@ class WebSessionStore:
         return row
 
     def get(self, sid: str, *, request_execution: bool = False) -> Optional[Dict[str, Any]]:
-        """Return the live session (cap-checked); expired sessions are deleted."""
         if type(request_execution) is not bool:
             raise SessionStoreError("invalid session request bound")
-        # Other workers rotate this exact credential family. A process cache
-        # cannot decide token validity or whether a logout has deleted a row.
+        # Cache alone can't prove validity: other workers rotate rows
         observed = self._cache.get(sid)
         scope = (self._request_execution_transaction() if request_execution
                  else self._sessions.transaction())
@@ -488,7 +417,6 @@ class WebSessionStore:
                 return None
         self._remember_row(row, observed)
         if int(time.time()) >= row["hard_expires_at"]:
-            # 016 hard cap: only interactive login can start a new session.
             logger.info("session_store: session %s hit the 365-day cap — cleared", sid[:8])
             self.delete(sid, expected_incarnation_id=record.incarnation_id,
                         **({"request_execution": True} if request_execution else {}))
@@ -498,12 +426,6 @@ class WebSessionStore:
 
     def verify_native_custody(self, *, issued: dict, original: dict | None,
                               valid_until: datetime) -> dict:
-        """Observe exact old/new issuances together; return cookie metadata only.
-
-        This is a delivery check after normal IAM, not a consent or execution
-        grant. The public consent guard supplies owner/session locks and final
-        database-clock checks. Locks last only through this transaction.
-        """
         if (type(issued) is not dict or (original is not None and type(original) is not dict)
                 or type(valid_until) is not datetime or valid_until.tzinfo is None
                 or valid_until.utcoffset() != timedelta(0)):
@@ -538,23 +460,12 @@ class WebSessionStore:
                 observation = SessionConsentObservation(state.credential, state.observed_at, cutoff)
                 self._sessions.repository.assert_current_consent(transaction, observation=observation)
                 observations.append(observation)
-            # Every lock is held; use current DB time again after the final wait.
             for observation in observations:
                 self._sessions.repository.assert_current_consent(transaction, observation=observation)
         return {key: issued[key] for key in ("sid", "user_id", "incarnation_id",
                 "issuing_issuer", "issuing_client_id", "hard_expires_at")}
 
     def latest_refresh_token_for(self, user_id: str) -> Optional[str]:
-        """The live refresh token of the user's newest interactive session.
-
-        056 (D8/FR-011): the explicit consent-capture step needs the user's
-        ``offline_access`` refresh token to create a durable offline grant, and
-        the encrypted web session is where it already lives — so consent
-        capture reads it from here instead of the product ever holding a second
-        copy. Returns ``None`` when the user has no live session (capture then
-        fails closed and nothing durable is created). Token bytes never leave
-        this class except through this deliberate, consent-gated read.
-        """
         with self._sessions.transaction() as transaction:
             record = self._sessions.repository.get_latest_live_for_owner(
                 transaction,
@@ -581,7 +492,6 @@ class WebSessionStore:
         self._death_reasons[sid] = reason
 
     def session_reference(self, owner_id: str, *, session_id: str, incarnation_id: str) -> dict:
-        """Resolve an approving request's exact issued session, never its latest."""
         if not _valid_incarnation(incarnation_id) or self._fernet is None:
             raise SessionRefreshUnavailable("live encrypted session required")
         with self._request_execution_transaction() as transaction:
@@ -596,11 +506,6 @@ class WebSessionStore:
                 "interactive_anchor": record.interactive_anchor}
 
     def is_current_incarnation(self, owner_id: str, *, session_id: str, incarnation_id: str) -> bool:
-        """Check offline tolerance against the original issuance, without tokens.
-
-        This unlocked read is not execution authority. Durable mutations still
-        require their independently validated and transaction-fenced observation.
-        """
         if not _valid_incarnation(incarnation_id):
             return False
         with self._request_execution_transaction() as transaction:
@@ -611,12 +516,6 @@ class WebSessionStore:
 
     @contextmanager
     def _request_execution_transaction(self):
-        """Use Plane's request-only SQL caps; unwind failed SQL before refusal.
-
-        Async cancellation cannot stop a running database thread. These local
-        SQL caps release ordinary lock/query waits independently of that await;
-        pool checkout and connection establishment retain their existing bounds.
-        """
         try:
             with self._sessions.transaction() as transaction:
                 self._sessions.repository.bound_request_execution_waits(transaction)
@@ -718,7 +617,6 @@ class WebSessionStore:
         return self._from_record(self._settle_refresh_record(claimed, access, refresh, reference))
 
     def capture_execution_reference(self, *, owner_id: str, session_id: str) -> WebSessionReference:
-        """Read exact owner/SID and DB time; never resolve a latest-owner session."""
         if self._fernet is None:
             raise SessionRefreshUnavailable("encrypted session required for execution")
         with self._request_execution_transaction() as transaction:
@@ -731,7 +629,6 @@ class WebSessionStore:
     def capture_incarnation_execution_reference(
         self, *, owner_id: str, incarnation_id: str,
     ) -> WebSessionReference:
-        """Resolve one issuance and capture its unchanged fence in one bounded read."""
         if self._fernet is None or not _valid_incarnation(incarnation_id):
             raise SessionRefreshUnavailable("encrypted issued session required")
         with self._request_execution_transaction() as transaction:
@@ -747,12 +644,6 @@ class WebSessionStore:
         return WebSessionReference(state)
 
     async def refresh_for_execution(self, reference: WebSessionReference, *, exchange, bound_exchange=None):
-        """Force one exact-generation refresh, with no conflict/adoption retries.
-
-        This candidate is not IAM authority. The host must verify its access token
-        normally and check a bounded Plane observation before using it. An unknown
-        remote outcome retains the existing durable claim and is never replayed.
-        """
         if not isinstance(reference, WebSessionReference):
             raise SessionRefreshUnavailable("typed session reference required")
         state = reference.state
@@ -787,18 +678,12 @@ class WebSessionStore:
             raise SessionRefreshUnavailable("refresh time limit exceeded") from None
 
     def assert_execution_observation(self, observation: SessionExecutionObservation) -> None:
-        """Validate after IAM; the mutation transaction must independently recheck."""
         with self._request_execution_transaction() as transaction:
             self._sessions.repository.assert_current_execution(
                 transaction, observation=observation)
 
     async def refresh_credential(self, sid, *, owner_id, exchange, reference=None,
                                  expected_incarnation_id=None, bound_exchange=None):
-        """Serialize consumers before HTTP and persist rotation before returning.
-
-        Cancellation, a crash, or an ambiguous response keeps the authenticated
-        claim in place. Nobody retries the potentially consumed old token.
-        """
         try:
             async with asyncio.timeout(REFRESH_WAIT_SECONDS):
                 if reference is not None:
@@ -817,8 +702,7 @@ class WebSessionStore:
                 identity = _issuing_identity(initial)
                 if identity is not None and not callable(bound_exchange):
                     raise SessionRefreshUnavailable("bound session refresh unavailable")
-                # Freeze before the first claim/retry/HTTP await. A replacement
-                # with identical SID, time and ciphertext cannot be adopted.
+                # Frozen pre-await: a same-looking replacement can't be adopted
                 reference = {"session_id": sid, "incarnation_id": initial.incarnation_id,
                              "created_at": initial.created_at,
                              "interactive_anchor": initial.interactive_anchor}
@@ -839,12 +723,10 @@ class WebSessionStore:
             raise SessionRefreshUnavailable("refresh time limit exceeded") from None
 
     def pop_death_reason(self, sid: str) -> Optional[str]:
-        """Why get() last refused this sid ('hard_cap'), consumed on read."""
         return self._death_reasons.pop(sid, None)
 
     def update_tokens(self, sid: str, *, access_token: str, refresh_token: str,
                       expected_incarnation_id: str | None = None) -> None:
-        """Rotate tokens after a silent refresh. NEVER moves the anchor (016 FR-001)."""
         observed = self._cache.get(sid)
         with self._sessions.transaction() as transaction:
             current = self._sessions.repository.get_by_session_id_for_administration(
@@ -873,7 +755,6 @@ class WebSessionStore:
 
     def mark_resumed(self, sid: str, resumed: bool = True, *,
                      expected_incarnation_id: str | None = None) -> None:
-        """Mark only the originally observed issuance as silently resumed."""
         observed = self._cache.get(sid)
         target = bool(resumed)
         with self._sessions.transaction() as transaction:
@@ -901,7 +782,6 @@ class WebSessionStore:
 
     def delete(self, sid: str, *, expected_incarnation_id: str | None = None,
                request_execution: bool = False) -> Optional[Dict[str, Any]]:
-        """Delete and return the exact durable credential for revocation."""
         if type(request_execution) is not bool:
             raise SessionStoreError("invalid session request bound")
         observed = self._cache.get(sid)
@@ -928,7 +808,6 @@ class WebSessionStore:
         return None if deleted is None else self._from_record(deleted)
 
     def delete_for_user(self, user_id: str) -> int:
-        """Delete every session of a user (user-switch revocation, 016 FR-008)."""
         with self._cache_lock:
             for sid in [s for s, r in self._cache.items() if r.get("user_id") == user_id]:
                 self._cache.pop(sid, None)
@@ -938,7 +817,6 @@ class WebSessionStore:
         )
 
     def purge_expired(self) -> int:
-        """Opportunistic cleanup of hard-cap-expired rows."""
         now = int(time.time())
         with self._cache_lock:
             for sid in [s for s, r in self._cache.items() if now >= r.get("hard_expires_at", 0)]:
@@ -948,7 +826,6 @@ class WebSessionStore:
             observed_at=now,
         )
 
-    # ── revocation queue (FR-013; client_id added by feature 044) ────────
     def enqueue_revocation(self, user_id: str, refresh_token: str,
                            client_id: str | None = None, *, issuing_issuer: str | None = None) -> None:
         if not refresh_token:
@@ -988,20 +865,12 @@ class WebSessionStore:
 
     @asynccontextmanager
     async def revocation_pass(self):
-        """One bounded page per pass, serialized only within this store.
-
-        No database transaction/lock survives the read into external HTTP. The
-        cursor and max-id ceiling are ephemeral, never shared between stores.
-        Legacy administrative peeks do not move the drainer's cycle position.
-        """
         async with self._revocation_drain_lock:
             try:
                 page, (rows, fences) = await asyncio.to_thread(
                     self._pending_revocation_page, self._revocation_cursor, self._revocation_ceiling)
             except Exception:
                 raise SessionRevocationPageUnavailable("revocation page unavailable") from None
-            # Cancellation of a thread await cannot stop its read; publish cursor
-            # state only here, never from a late/cancelled worker completion.
             self._revocation_cursor = page.next_cursor
             self._revocation_ceiling = page.ceiling if page.next_cursor is not None else None
             self._revocation_fences = fences
@@ -1018,7 +887,6 @@ class WebSessionStore:
                 "refresh_token": self._dec(record.refresh_token_ciphertext),
                 "attempts": record.attempts,
                 "enqueued_at": record.enqueued_at,
-                # NULL for pre-044 rows → retrier falls back to the web client id.
                 "client_id": record.client_id,
                 "issuing_issuer": getattr(record, "issuing_issuer", None),
             })
@@ -1052,13 +920,11 @@ class WebSessionStore:
         )
         self._revocation_fences[queue_id] = (owner_id, updated.attempts)
 
-    # ── async facade (event-loop-safe twins of the sync methods above) ────
     async def acreate(self, sid: str, *, user_id: str, access_token: str,
                       refresh_token: str, hard_max_seconds: int,
                       resumed: bool = False, issuing_issuer: str | None = None,
                       issuing_client_id: str | None = None,
                       request_execution: bool = False) -> Dict[str, Any]:
-        """Async twin of :meth:`create`, run off the event loop."""
         return await asyncio.to_thread(
             self.create, sid, user_id=user_id, access_token=access_token,
             refresh_token=refresh_token, hard_max_seconds=hard_max_seconds,
@@ -1067,12 +933,10 @@ class WebSessionStore:
         )
 
     async def aget(self, sid: str, *, request_execution: bool = False) -> Optional[Dict[str, Any]]:
-        """Async twin of :meth:`get`, run off the event loop."""
         return await asyncio.to_thread(self.get, sid, request_execution=request_execution)
 
     async def aupdate_tokens(self, sid: str, *, access_token: str, refresh_token: str,
                             expected_incarnation_id: str | None = None) -> None:
-        """Async twin of :meth:`update_tokens`, run off the event loop."""
         return await asyncio.to_thread(
             self.update_tokens, sid, access_token=access_token, refresh_token=refresh_token,
             expected_incarnation_id=expected_incarnation_id,
@@ -1080,39 +944,31 @@ class WebSessionStore:
 
     async def amark_resumed(self, sid: str, resumed: bool = True, *,
                            expected_incarnation_id: str | None = None) -> None:
-        """Async twin of :meth:`mark_resumed`, run off the event loop."""
         return await asyncio.to_thread(self.mark_resumed, sid, resumed,
                                        expected_incarnation_id=expected_incarnation_id)
 
     async def adelete(self, sid: str, *, expected_incarnation_id: str | None = None,
                       request_execution: bool = False) -> Optional[Dict[str, Any]]:
-        """Async twin of :meth:`delete`, run off the event loop."""
         return await asyncio.to_thread(self.delete, sid,
                                        expected_incarnation_id=expected_incarnation_id,
                                        request_execution=request_execution)
 
     async def adelete_for_user(self, user_id: str) -> int:
-        """Async twin of :meth:`delete_for_user`, run off the event loop."""
         return await asyncio.to_thread(self.delete_for_user, user_id)
 
     async def apurge_expired(self) -> int:
-        """Async twin of :meth:`purge_expired`, run off the event loop."""
         return await asyncio.to_thread(self.purge_expired)
 
     async def aenqueue_revocation(self, user_id: str, refresh_token: str,
                                   client_id: str | None = None, *, issuing_issuer: str | None = None) -> None:
-        """Async twin of :meth:`enqueue_revocation`, run off the event loop."""
         return await asyncio.to_thread(self.enqueue_revocation, user_id, refresh_token, client_id,
                                        issuing_issuer=issuing_issuer)
 
     async def apending_revocations(self, limit: int = 20) -> list:
-        """Async twin of :meth:`pending_revocations`, run off the event loop."""
         return await asyncio.to_thread(self.pending_revocations, limit)
 
     async def aresolve_revocation(self, queue_id: int) -> None:
-        """Async twin of :meth:`resolve_revocation`, run off the event loop."""
         return await asyncio.to_thread(self.resolve_revocation, queue_id)
 
     async def abump_revocation_attempt(self, queue_id: int) -> None:
-        """Async twin of :meth:`bump_revocation_attempt`, run off the event loop."""
         return await asyncio.to_thread(self.bump_revocation_attempt, queue_id)

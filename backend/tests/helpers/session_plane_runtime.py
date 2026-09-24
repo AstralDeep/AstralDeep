@@ -1,4 +1,7 @@
-"""Typed AstralPlane helpers for Deep web-session integration tests."""
+"""Typed AstralPlane session and revocation helpers binding
+orchestrator/session_store.py to the shared test Plane runtime, used across the
+web-session and native-session integration test suites.
+"""
 
 from __future__ import annotations
 
@@ -15,8 +18,6 @@ from tests.helpers.voice_plane_runtime import (
 
 
 def web_session_store(runtime: PlaneTestRuntime) -> WebSessionStore:
-    """Bind Deep's session policy to the already-created Plane runtime."""
-
     return WebSessionStore(
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
@@ -27,8 +28,6 @@ def get_session_record(
     runtime: PlaneTestRuntime,
     session_id: str,
 ) -> SessionRecord | None:
-    """Read one opaque session through Plane's explicit admin boundary."""
-
     with runtime.transaction() as transaction:
         return runtime.repositories.history.sessions.get_by_session_id_for_administration(
             transaction,
@@ -40,8 +39,6 @@ def replace_session_record(
     runtime: PlaneTestRuntime,
     record: SessionRecord,
 ) -> SessionRecord:
-    """Replace one fixture session atomically through owner-scoped APIs."""
-
     repository = runtime.repositories.history.sessions
     with runtime.transaction() as transaction:
         current = repository.get_by_session_id_for_administration(
@@ -62,8 +59,6 @@ def revocation_records(
     runtime: PlaneTestRuntime,
     owner_id: str,
 ) -> tuple[RevocationQueueRecord, ...]:
-    """Return only one owner's queued revocations through the typed contract."""
-
     with runtime.transaction() as transaction:
         return runtime.repositories.revocations.pending_for_owner(
             transaction,
@@ -76,8 +71,6 @@ def purge_revocations(
     runtime: PlaneTestRuntime,
     owner_ids: Iterable[str],
 ) -> None:
-    """Remove fixture-owned queue rows without an administrative SQL escape."""
-
     repository = runtime.repositories.revocations
     with runtime.transaction() as transaction:
         for owner_id in owner_ids:

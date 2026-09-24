@@ -1,17 +1,8 @@
-"""T022 (056-delegated-agent-chaining): explicit durable-consent capture.
-
-Approving a schedule is the ONE moment a durable offline grant may be created
-(FR-011): the consent card names the scopes being granted, its durable
-365-day-capped nature, and how to revoke it; approval captures the session's
-refresh token into an encrypted grant and links it onto the job. Nothing is
-captured implicitly — no capture on proposal or on decline.
-
-Agent-less jobs (proposed from chat without a specific agent) capture too:
-every machine turn needs a grant (``MachineTurnAuthority.derive`` is
-agent-independent) and the run is an ordinary assistant turn whose tool calls
-route across ALL of the user's enabled agents, so the consented scope list is
-the union of their effective scopes (``tool_visibility.enabled_scope_union``).
+"""Tests for durable offline-consent capture on schedule approval
+(orchestrator/offline_grant.py, scheduling_chat.py, tool_visibility.py): grant
+creation and linkage, decline capturing nothing, and agent-less union-scope consent.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,9 +23,6 @@ from tests.helpers.session_consent_088 import synthetic_consent  # noqa: E402
 def orch():
     o = MagicMock()
     o.history.db = MagicMock()
-    # The card and the capture both read the EFFECTIVE scope list, so the
-    # safe-baseline population (no explicit agent_scopes rows) is not told
-    # "no scopes yet" and does not capture an empty consented list.
     o.tool_permissions.get_agent_scopes = MagicMock(
         return_value={"tools:read": True, "tools:search": True, "tools:write": False})
     o.tool_permissions.get_enabled_scope_names = MagicMock(
@@ -52,7 +40,6 @@ def _socket(orch):
 
 @pytest.fixture
 def captured(monkeypatch, orch):
-    """Stub the offline-grant + session stores; record what capture receives."""
     seen = {}
 
     grants = MagicMock()
@@ -108,13 +95,10 @@ async def test_approval_captures_consent_and_links_grant(orch, captured):
         orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "approve"})
 
-    # The session's refresh token was captured into an encrypted grant...
     assert captured["user"] == "u1"
     assert captured["token"] is captured["selected"]
     assert captured["agent"] == "web-research-1"
-    # ...and linked onto the job (previously hardcoded None).
     assert captured["job_kwargs"]["prepared_consent"].grant_id == "grant-new-1"
-    # The consented scopes are the user's CURRENT enabled scopes, never wider.
     assert captured["job_kwargs"]["consented_scopes"] == ["tools:read", "tools:search"]
 
 
@@ -129,10 +113,6 @@ async def test_decline_captures_nothing(orch, captured):
 
 @pytest.mark.asyncio
 async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch):
-    """Defect (reproduced live): an agent-less job used to be created with
-    consented_scopes=[] and NO grant, so every run settled
-    skipped_auth/missing_consent. Approval must capture a user-wide grant
-    (agent_id=None) over the union of the user's enabled agents' scopes."""
     from orchestrator import tool_visibility
     monkeypatch.setattr(tool_visibility, "enabled_scope_union",
                         lambda o, uid: ["tools:read", "tools:search", "tools:files"])
@@ -146,16 +126,13 @@ async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch)
     captured["grants"].prepare_capture.assert_called_once()
     assert captured["user"] == "u1"
     assert captured["token"] is captured["selected"]
-    assert captured["agent"] is None                     # user-wide grant
+    assert captured["agent"] is None
     assert captured["job_kwargs"]["prepared_consent"].grant_id == "grant-new-1"
-    assert captured["job_kwargs"]["agent_id"] == ""      # attribution untouched
+    assert captured["job_kwargs"]["agent_id"] == ""
     assert captured["job_kwargs"]["consented_scopes"] == [
         "tools:read", "tools:search", "tools:files"]
-    # The per-agent helper is NOT consulted for an agent-less job.
     orch.tool_permissions.get_enabled_scope_names.assert_not_called()
 
-    # Audit rows: consent_captured with agent_id null + the union; create
-    # reports durable consent.
     by_type = {c.args[1]: c for c in audit.await_args_list}
     meta = by_type["schedule.consent_captured"].kwargs["inputs_meta"]
     assert meta["agent_id"] is None
@@ -165,7 +142,6 @@ async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch)
     assert create["durable_consent"] is True
     assert create["consented_scopes"] == ["tools:read", "tools:search", "tools:files"]
 
-    # The success Alert carries the same offline hint as agent-bound jobs.
     text = str(orch.send_ui_render.await_args.args[1])
     assert "run while you are signed out" in text
     assert "revoke" in text.lower()
@@ -175,12 +151,6 @@ async def test_agentless_job_captures_union_consent(orch, captured, monkeypatch)
 async def test_agentless_consent_never_includes_unattended_mutating_scopes(
     orch, captured, monkeypatch,
 ):
-    """A default user's union contains tools:write (the safe-seeded general
-    agent edits data). The unattended scheduler refuses write/execute
-    (``assess_job`` → handler_downstream_idempotency_unreviewed), so consenting
-    to them would create a job that is silently never materialised. Agent-less
-    consent is therefore narrowed to the scopes the scheduler can run — and
-    the card/create rows must agree."""
     from orchestrator import tool_visibility
     monkeypatch.setattr(
         tool_visibility, "enabled_scope_union",
@@ -195,16 +165,12 @@ async def test_agentless_consent_never_includes_unattended_mutating_scopes(
     by_type = {c.args[1]: c for c in audit.await_args_list}
     assert by_type["schedule.consent_captured"].kwargs["inputs_meta"][
         "consented_scopes"] == ["tools:read", "tools:search"]
-    # The created job passes the unattended eligibility assessment.
     from scheduler.runner import _UNREVIEWED_MUTATING_SCOPES
     assert not set(captured["job_kwargs"]["consented_scopes"]) & _UNREVIEWED_MUTATING_SCOPES
 
 
 @pytest.mark.asyncio
 async def test_agent_bound_scope_derivation_error_still_propagates(orch, captured, monkeypatch):
-    """Agent-bound approval is byte-identical to before: a scope-derivation
-    failure propagates and NO job or grant is created (never an empty-consent
-    grant that derive() would treat as unconstrained)."""
     orch.tool_permissions.get_enabled_scope_names = MagicMock(
         side_effect=RuntimeError("db down"))
     monkeypatch.setattr(scheduling_chat, "_audit", AsyncMock())
@@ -218,8 +184,6 @@ async def test_agent_bound_scope_derivation_error_still_propagates(orch, capture
 
 @pytest.mark.asyncio
 async def test_agentless_job_union_failure_fails_closed(orch, captured, monkeypatch):
-    """A union derivation error must never widen: the job captures [] scopes
-    (a grant still exists, but derive() asserts nothing for an empty list)."""
     from orchestrator import tool_visibility
 
     def boom(o, uid):
@@ -245,8 +209,6 @@ async def test_agentless_no_session_alert_says_cannot_run_signed_out(orch, captu
 
 @pytest.mark.asyncio
 async def test_agentless_consent_card_tells_the_truth(orch, monkeypatch):
-    """The card must not claim 'runs without agent tools' — the run routes
-    tools across every enabled agent; it names the union and the grant."""
     from orchestrator import tool_visibility
     monkeypatch.setattr(tool_visibility, "enabled_scope_union",
                         lambda o, uid: ["tools:read", "tools:search"])
@@ -265,7 +227,6 @@ async def test_agentless_consent_card_tells_the_truth(orch, monkeypatch):
 
 
 def _visibility_orch(agents, *, disabled=(), drafts=(), scopes_by_agent=None):
-    """Minimal orchestrator double for tool_visibility.enabled_scope_union."""
     o = MagicMock()
     cards = {}
     for aid in agents:
@@ -296,9 +257,9 @@ def test_union_excludes_drafts_disabled_and_not_connected(monkeypatch):
                          "a-draft": ["tools:execute"],
                          "a-disabled": ["tools:system"],
                          "a-gone": ["tools:files"]})
-    del o.local_agents["a-gone"]  # registered card, not connected
+    del o.local_agents["a-gone"]
     out = tool_visibility.enabled_scope_union(o, "u1")
-    assert out == ["tools:read", "tools:search"]  # VALID_SCOPES order
+    assert out == ["tools:read", "tools:search"]
     consulted = {c.args[1] for c in o.tool_permissions.get_enabled_scope_names.call_args_list}
     assert consulted == {"a-live"}
 
@@ -321,8 +282,6 @@ def test_union_fails_closed_on_error():
 
 @pytest.mark.asyncio
 async def test_no_live_session_creates_job_without_authority(orch, captured):
-    """Fail-closed on the AUTHORITY, fail-open on the job: with no refresh
-    token, the job exists but has no unattended grant (its first run skips)."""
     captured["selector"].return_value = None
     pid = _proposal(orch)
     await scheduling_chat.handle_decision(
@@ -340,7 +299,7 @@ async def test_capture_failure_is_not_fatal(orch, captured):
     await scheduling_chat.handle_decision(
         orch, _socket(orch), "u1",
         {"proposal_id": pid, "decision": "approve"})
-    assert captured["job_kwargs"]["offline_grant_id"] is None  # no fake authority
+    assert captured["job_kwargs"]["offline_grant_id"] is None
 
 
 @pytest.mark.asyncio
@@ -432,7 +391,6 @@ async def test_unknown_schedule_save_is_not_reported_as_expired_consent(orch, ca
 
 @pytest.mark.asyncio
 async def test_consent_card_names_scopes_durability_and_revocation(orch):
-    """FR-011: the card the user approves must SAY what it grants."""
     orch.tool_permissions.get_enabled_scope_names = MagicMock(
         return_value=["tools:read", "tools:search"])
     resp = await scheduling_chat.handle_meta_tool(
@@ -443,6 +401,6 @@ async def test_consent_card_names_scopes_durability_and_revocation(orch):
         user_id="u1", chat_id="c1", websocket=MagicMock())
     text = str(resp.ui_components)
     assert "durable consent" in text.lower()
-    assert "tools:read" in text and "tools:search" in text  # the scopes granted
-    assert "365 days" in text                               # the durability
-    assert "revoke" in text.lower()                         # the revocation path
+    assert "tools:read" in text and "tools:search" in text
+    assert "365 days" in text
+    assert "revoke" in text.lower()

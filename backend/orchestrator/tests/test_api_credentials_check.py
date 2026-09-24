@@ -1,8 +1,8 @@
-"""Tests for the save-time `_credentials_check` invocation in api.set_agent_credentials (T017).
-
-These tests stub `Orchestrator.execute_authorized_tool` and the credential manager
-so the route handler can be invoked directly without a full FastAPI lifecycle.
+"""Tests for orchestrator/api.py: the save-time credentials check in
+set_agent_credentials, covering skip-with-no-check-skill, ok/auth-failed/unreachable
+outcomes, and that a probe failure never blocks the save.
 """
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,12 +24,10 @@ def _make_card(agent_id: str, skill_names: list, required_credentials: list) -> 
 
 
 def _make_request_with_orch(orch) -> SimpleNamespace:
-    """Build a minimal `Request` stand-in carrying the orchestrator."""
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(orchestrator=orch)))
 
 
 def _orch_stub(card: AgentCard, dispatch_response):
-    """A fake Orchestrator with just the methods set_agent_credentials touches."""
     orch = MagicMock()
     orch.agent_cards = {card.agent_id: card}
     orch.credential_manager = MagicMock()
@@ -102,7 +100,6 @@ async def test_credential_test_unreachable_when_dispatch_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_credential_test_failure_does_not_block_save() -> None:
-    """Even when the probe blows up, the credential save itself must succeed."""
     card = _make_card("classify-1", skill_names=["_credentials_check"], required_credentials=[])
     orch = _orch_stub(card, dispatch_response=None)
     orch.execute_authorized_tool = AsyncMock(side_effect=RuntimeError("disconnected"))
@@ -111,5 +108,4 @@ async def test_credential_test_failure_does_not_block_save() -> None:
     assert resp.agent_id == "classify-1"
     assert resp.credential_test == "unreachable"
     assert "Credential probe failed" in (resp.credential_test_detail or "")
-    # The credential must have been persisted regardless.
     orch.credential_manager.set_bulk_credentials.assert_called_once_with("alice", "classify-1", {"X": "Y"})

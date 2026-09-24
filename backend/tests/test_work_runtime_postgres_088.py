@@ -1,9 +1,6 @@
-"""HTTP acceptance through actual supervision, governed dispatch and result read.
-
-Plane, encrypted configuration, JWT verification, reservations and audit are real.
-Institutional replies and the final source/model network responses are synthetic;
-the inherited dispatch fixture isolates unrelated policy analyzers. This is not
-live staging or a claim about all provider/clinical policy configurations.
+"""Tests for work runtime dispatch (backend/orchestrator/api.py,
+backend/persistent_agents/runtime.py): one charged episode delivering attributed
+results, unavailable-result metadata, and refusal of unqualified submissions.
 """
 
 import asyncio
@@ -107,8 +104,6 @@ async def test_registered_send_runs_one_charged_episode_and_delivers_only_attrib
 
 async def test_registered_result_preserves_metadata_and_unavailable_disposition(integrated):
     op, runner, client = integrated
-    # Existing source-only fixture work has no completed result or matching fixed
-    # capability; observing it must neither execute it nor expose its checkpoint.
     identity = op.executor.record.assignment_id
     before = len(op.physical), len(op.model_calls)
     response = await client.get("/api/work/v1/operations/" + identity + "/result")

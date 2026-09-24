@@ -1,4 +1,8 @@
-"""A/B caller and original-operation composition using actual refresh CAS."""
+"""Tests for work_continuation_authority.py's original-operation composition:
+same-issuance refresh requires causal proof, a valid refresh without that proof is
+not adopted, and distinct callers each keep their own required session.
+"""
+
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone

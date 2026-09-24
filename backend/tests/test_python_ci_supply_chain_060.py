@@ -1,4 +1,7 @@
-"""Supply-chain contracts for Spec 060's isolated Python CI tooling."""
+"""Supply-chain tests for the isolated Python CI tooling: direct inputs and lock-file
+hashes are exact and minimal, the secret scanner is checksum-pinned, release-tooling
+jobs stay source-free, and signing dependencies are hash-locked.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if not (
     (REPO_ROOT / "tooling").is_dir() and (REPO_ROOT / ".github").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -49,11 +52,6 @@ LOCK_INSTALL = (
 
 
 def _bridge_is_live() -> bool:
-    """See backend/tests/test_release_workflows_060.py::_bridge_is_live.
-
-    The protected bridge is parked at d3cb9a51; cc15b033 restored the direct
-    tag-push release path and Windows client v0.4.0 shipped on it.
-    """
     return "\n  bridge-sign:\n" in WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
 
 
@@ -175,15 +173,6 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
 
 
 def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
-    """Every baseline line is a reviewed comment or an exact fingerprint.
-
-    The comments used to be pinned as one exact string. Each entry here is a
-    finding somebody looked at and decided was not a secret, and the note
-    saying why belongs beside it -- pinning the prose meant the next reviewed
-    entry broke this test for writing its reason down. What the baseline must
-    not contain is an entry nobody can identify, and that is what the
-    fingerprint pattern and the exact count below hold.
-    """
     lines = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
     comments = [line for line in lines if line.startswith("#")]
     assert comments, "a baseline entry with no recorded reason is not reviewed"
@@ -213,11 +202,6 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
     omissions = set(re.findall(r"--omit=([^\s\\]+)", job))
     assert omissions == {
         "scripts/windows_release_candidate.py",
-        # export_work_contract.py imports the live backend + astralplane to
-        # emit the SDK contract; it cannot run in this stdlib-only lane, so it
-        # is covered by scripts/tests/test_export_work_contract.py in the
-        # product-image backend suite instead (same posture as the Windows
-        # release candidate builder above).
         "scripts/export_work_contract.py",
     }
     assert not any("*" in omission for omission in omissions)
@@ -278,7 +262,6 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
 
 
 def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
-    """Public release-tooling CI remains source-free while local gates use pins."""
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
 
@@ -292,7 +275,6 @@ def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
 
 
 def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -> None:
-    """The public source-free lane must still exercise its Deep-owned driver."""
     source_root = tmp_path / "source-free"
     test_path = source_root / "backend" / "tests" / ANDROID_CANARY_TEST.name
     script_path = source_root / "scripts" / ANDROID_CANARY_SCRIPT.name
@@ -328,14 +310,6 @@ def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> No
 
 @bridge_parked
 def test_windows_release_bridge_signs_archived_bytes_without_rebuild() -> None:
-    """The 060 bridge signs the exact archived build-once EXE (T119).
-
-    No rebuild toolchain, no requirements install, no ad-hoc tool install:
-    sigstore comes only from its SHA-pinned official action, and the bridge
-    holds read/read/attestation-read/id-token permissions — never
-    release-mutation authority.
-    """
-
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
     lower = workflow.lower()
     assert "pyinstaller" not in lower
@@ -386,19 +360,6 @@ def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> 
 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
-    """The signing toolchain must be immutably pinned however it is obtained.
-
-    This is the LIVE half of the parked
-    test_windows_release_bridge_signs_archived_bytes_without_rebuild. The bridge
-    got sigstore from a SHA-pinned official action; the direct tag-push release
-    gets pyinstaller AND the sigstore CLI from the complete hash lock, which is
-    an equal-or-stronger control — a hash-pinned wheel cannot be repointed the
-    way a floating action tag can. But it must be the ONLY install path into a
-    job that holds id-token: write.
-
-    The parked test's literal ``assert "pip install" not in workflow`` was a
-    mechanism artifact, not the property; this asserts the property.
-    """
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
     installs = [
         line.strip() for line in workflow.splitlines() if "pip install" in line
@@ -411,5 +372,3 @@ def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> N
         ), f"install is not from the release lock: {line}"
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow
-    # The lock's own exactness (every line hashed, sigstore/pyinstaller present)
-    # is enforced by components/AstralProjection/windows-client/tests/test_release_lock_060.py.

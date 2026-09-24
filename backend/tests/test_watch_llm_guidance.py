@@ -1,14 +1,8 @@
-"""Feature 054 — T042: watch guidance while unconfigured (US5 / FR-017).
-
-The watch is chrome-free by design and never receives the mandatory setup
-dialog. When an unconfigured user attempts AI use on the watch, the chat
-pre-flight sends the exact phone/web guidance Alert (spoken via the normal
-alert-render path) and audits ``llm_unconfigured``. Once the user configures
-a provider on ANY other client, the same watch socket works with no
-watch-side action.
-
-References: specs/054-byo-llm-setup/spec.md US5, FR-017.
+"""Tests that an unconfigured watch socket's chat pre-flight sends the exact phone/web
+setup guidance alert and audits the refusal, and that the same socket proceeds once
+the user configures a provider on another client.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,8 +38,6 @@ def orch(orch_module):
     o._safe_send = AsyncMock()
     o.send_ui_render = AsyncMock()
     o._record_llm_unconfigured = AsyncMock()
-    # Downstream seams for a full (faked-LLM) turn — same set the
-    # test_chat_text_only fixture patches.
     heartbeat = MagicMock()
     heartbeat.cancel = MagicMock()
     o._start_heartbeat = AsyncMock(return_value=heartbeat)
@@ -86,19 +78,13 @@ async def test_unconfigured_watch_gets_exact_spoken_guidance(orch, user_skills_d
 
     await orch.handle_chat_message(ws, "what's the weather", chat_id, user_id=uid)
 
-    # The turn was refused up-front — no LLM call, no silent loss into a
-    # broken turn (US5-AS1).
     assert called["n"] == 0
     alerts = _rendered_alerts(orch)
     assert alerts, "the watch must receive guidance, not silence"
-    # EXACT watch copy — phone/web pointer, not the generic settings copy.
     assert alerts[-1]["message"] == WATCH_GUIDE
     assert alerts[-1]["variant"] == "error"
-    # Audited llm_unconfigured refusal.
     assert orch._record_llm_unconfigured.await_count == 1
     assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "chat_dispatch"
-    # The watch is never pushed the mandatory dialog (FR-017): no chrome
-    # frame went out on this socket.
     for send_call in orch._safe_send.call_args_list:
         payload = send_call.args[1] if len(send_call.args) > 1 else ""
         assert "chrome_render" not in str(payload)
@@ -111,7 +97,6 @@ async def test_watch_works_after_configuring_on_another_client(orch, user_skills
     chat_id = f"watch-ok-{uuid.uuid4().hex[:8]}"
     await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=uid)
 
-    # The user configures on ANOTHER client (server-persisted record).
     await orch._llm_store.set(
         uid, provider="openai", base_url="https://api.openai.com/v1",
         model="gpt-4o-mini", api_key=SECRET)
@@ -131,8 +116,6 @@ async def test_watch_works_after_configuring_on_another_client(orch, user_skills
     try:
         await orch.handle_chat_message(ws, "what's the weather", chat_id, user_id=uid)
 
-        # The same watch socket now sails past the pre-flight — no
-        # watch-side steps were required (US5-AS2).
         assert called["n"] >= 1
         assert orch._record_llm_unconfigured.await_count == 0
         assert all(a["message"] != WATCH_GUIDE for a in _rendered_alerts(orch))

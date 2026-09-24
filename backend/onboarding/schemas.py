@@ -1,13 +1,8 @@
-"""Pydantic schemas for the onboarding subsystem (feature 005).
-
-The schemas mirror the contracts in
-``specs/005-tooltips-tutorial/contracts/`` and are the single source of
-truth for request validation, response shaping, and DB-row deserialization.
-
-Strict-by-design: validators reject inconsistent target/target_key pairs,
-empty title/body, and disallowed status transitions. The router relies on
-these checks rather than re-implementing them.
+"""Pydantic request/response schemas for onboarding: the single source of truth for
+validation (target/target_key consistency, non-empty title/body, disallowed status
+transitions), used by onboarding/api.py and repository.py.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -15,10 +10,6 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 STATUS_VALUES = ("not_started", "in_progress", "completed", "skipped")
 STATUS_WRITABLE = ("in_progress", "completed", "skipped")
@@ -30,12 +21,7 @@ TITLE_MAX = 120
 BODY_MAX = 1000
 
 
-# ---------------------------------------------------------------------------
-# Onboarding state
-# ---------------------------------------------------------------------------
-
 class OnboardingStateResponse(BaseModel):
-    """Shape returned by ``GET /api/onboarding/state`` (and PUT)."""
     status: str
     last_step_id: Optional[int] = None
     last_step_slug: Optional[str] = None
@@ -54,12 +40,6 @@ class OnboardingStateResponse(BaseModel):
 
 
 class OnboardingStateUpdateRequest(BaseModel):
-    """Body for ``PUT /api/onboarding/state``.
-
-    Clients cannot set ``not_started``; absence-of-row is the only path to
-    that state. Replay is its own endpoint (``POST /replay``) so writers
-    here only ever drive forward through the lifecycle.
-    """
     status: str
     last_step_id: Optional[int] = None
 
@@ -74,16 +54,7 @@ class OnboardingStateUpdateRequest(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Tutorial steps — DTO shared by user-side and admin-side reads
-# ---------------------------------------------------------------------------
-
 class TutorialStepDTO(BaseModel):
-    """Public shape of a single tutorial step.
-
-    Both user and admin reads return rows in this shape. Admin reads add
-    ``archived_at`` and ``updated_at``; the user view hides them.
-    """
     id: int
     slug: str
     audience: str
@@ -110,7 +81,6 @@ class TutorialStepDTO(BaseModel):
         return v
 
     def to_user_view(self) -> Dict[str, Any]:
-        """Strip admin-only fields (archived_at, updated_at)."""
         return {
             "id": self.id,
             "slug": self.slug,
@@ -127,12 +97,7 @@ class TutorialStepListResponse(BaseModel):
     steps: List[TutorialStepDTO]
 
 
-# ---------------------------------------------------------------------------
-# Admin tutorial-step write requests
-# ---------------------------------------------------------------------------
-
 class AdminTutorialStepCreateRequest(BaseModel):
-    """Body for ``POST /api/admin/tutorial/steps``."""
     slug: str = Field(min_length=1, max_length=128)
     audience: str
     display_order: int
@@ -180,12 +145,8 @@ class AdminTutorialStepCreateRequest(BaseModel):
         return self
 
 
+# slug omitted on purpose — slugs are stable identifiers
 class AdminTutorialStepUpdateRequest(BaseModel):
-    """Partial-update body for ``PUT /api/admin/tutorial/steps/{id}``.
-
-    Any field not present in the request is left unchanged. ``slug`` is
-    intentionally omitted — slugs are stable identifiers.
-    """
     audience: Optional[str] = None
     display_order: Optional[int] = None
     target_kind: Optional[str] = None
@@ -225,10 +186,6 @@ class AdminTutorialStepUpdateRequest(BaseModel):
 class AdminTutorialStepListResponse(BaseModel):
     steps: List[TutorialStepDTO]
 
-
-# ---------------------------------------------------------------------------
-# Revisions
-# ---------------------------------------------------------------------------
 
 class RevisionDTO(BaseModel):
     id: int

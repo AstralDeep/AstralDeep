@@ -1,8 +1,6 @@
-"""Small semantic seam for AstralPlane repository transactions.
-
-Every operation runs through the one initialized ``astralplane.PlaneRuntime``.
-The module deliberately contains no connection borrowing, SQL execution, or
-placeholder conversion; durable mechanics belong exclusively to AstralPlane.
+"""Binds a typed repository to the initialized AstralPlane runtime and runs its
+operations inside plane_runtime.transaction(). repository_from() and
+plane_source_from_orchestrator() resolve that runtime for callers across the backend.
 """
 
 from __future__ import annotations
@@ -17,8 +15,6 @@ _T = TypeVar("_T")
 
 
 class PlaneRepositoryContext:
-    """Bind one typed repository to the application-scoped Plane runtime."""
-
     def __init__(
         self,
         *,
@@ -56,20 +52,11 @@ class PlaneRepositoryContext:
 
 @dataclass(frozen=True, slots=True)
 class ApplicationPlaneSource:
-    """Repository-source view of Deep's one application Plane composition."""
-
     plane_runtime: Any
     plane_repositories: Any
 
 
 def plane_source_from_orchestrator(orchestrator: Any) -> Any:
-    """Resolve the application Plane source without borrowing a Deep database.
-
-    Narrow unit tests may inject ``plane_repository_source`` directly.  Normal
-    application callers resolve the initialized runtime/catalog pair from
-    ``runtime_composition.plane`` and fail closed when it is unavailable.
-    """
-
     injected = getattr(orchestrator, "plane_repository_source", None)
     if injected is not None:
         return injected
@@ -92,13 +79,6 @@ def repository_from(
     repositories: Any | None,
     legacy_database: Any | None = None,
 ) -> tuple[Any, Any]:
-    """Resolve a named repository from an initialized application runtime.
-
-    ``legacy_database`` is accepted temporarily only as an attribute carrier
-    for callers that have not renamed their constructor argument yet.  It must
-    expose the already-created Plane runtime/catalog and is never queried.
-    """
-
     runtime = plane_runtime or getattr(legacy_database, "plane_runtime", None)
     if runtime is None:
         raise ValueError("an initialized Plane runtime is required")

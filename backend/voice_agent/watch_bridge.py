@@ -1,9 +1,6 @@
-"""Authenticated, bounded foreground PCM bridge for watchOS.
-
-The bridge is a last-mile adapter around the same serialized worker session,
-Silero VAD, ASR, TTS, transcript proof, and coordinator control channel used by
-direct RTC clients.  It retains at most bounded in-memory PCM and never writes
-audio, tickets, transcripts, or provider payloads to disk or diagnostics.
+"""Authenticated bounded PCM bridge for watchOS clients, reusing session.py's serialized
+worker session, VAD/ASR/TTS, and transcript proof; retains audio and tickets only in
+memory, wired in by main.py.
 """
 
 from __future__ import annotations
@@ -58,8 +55,6 @@ _NONCE_IDENTITY = re.compile(r"^watch-([0-9a-f]{64})$")
 
 
 class WatchBridgeError(RuntimeError):
-    """Content-free bridge refusal safe for a close reason."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -76,8 +71,6 @@ class BridgeSocket(Protocol):
 
 
 class WatchPcmFrame:
-    """Strict fixed-header ADVC frame parser/encoder."""
-
     __slots__ = ("kind", "sequence", "timestamp_us", "payload")
 
     def __init__(
@@ -144,8 +137,6 @@ class WatchPcmFrame:
 
 
 class WatchTicketReplayStore:
-    """Bounded in-memory one-time nonce consumption with eager expiry."""
-
     def __init__(self, *, capacity: int = 1_024) -> None:
         if not 1 <= capacity <= 16_384:
             raise ValueError("invalid_ticket_capacity")
@@ -176,8 +167,6 @@ class WatchTicketReplayStore:
 
 
 class _IngressFence:
-    """Per-socket sequence, timestamp, rate, and duration authority."""
-
     def __init__(self, *, monotonic: Callable[[], float] | None = None) -> None:
         self._monotonic = monotonic or time.monotonic
         self._last_sequence: int | None = None
@@ -219,8 +208,6 @@ class _IngressFence:
 
 
 class WatchPcmSession(DirectRtcSession):
-    """Direct-RTC owner with an authenticated watch last-mile PCM adapter."""
-
     _SOURCE_ID = "watch-pcm"
 
     def __init__(self, binding: SessionBinding, **kwargs: Any) -> None:
@@ -522,8 +509,6 @@ class WatchPcmSession(DirectRtcSession):
 
 
 class WatchBridgeServer:
-    """One bounded WebSocket listener attached to current worker assignments."""
-
     def __init__(
         self,
         *,

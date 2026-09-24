@@ -1,4 +1,7 @@
-"""Feature 074 T176: binding-local ordering without global serialization."""
+"""Tests for orchestrator/governed_dispatch.py and lets_gateway.py: physical effects on
+the same binding stay strictly ordered while distinct bindings execute concurrently
+without cross-claiming.
+"""
 
 from __future__ import annotations
 

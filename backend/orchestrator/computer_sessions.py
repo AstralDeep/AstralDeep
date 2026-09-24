@@ -1,15 +1,8 @@
-"""Feature 076 — remote-control sessions between an owner's client and one of
-their computer hosts.
-
-A session is the consent envelope every host verb runs inside (spec FR-005 to
-FR-009): created only by an interactive, signed-in owner action; bound to
-``(owner, host, controller socket, chat)``; ``active | paused | ended(reason)``;
-idle- and hard-capped; heartbeat-watched; every transition audited under
-``agent_lifecycle`` (``computer_session.*``) and pushed to every socket of the
-owner as a ``computer_session`` frame (the host shows/hides its banner from it,
-phones refresh the surface). Sessions live in memory (D7) — the audit trail is
-the durable record.
+"""Manages consent-gated remote-control sessions between an owner's client and a
+computer host, with idle/duration caps, heartbeat watchdog, and audit logging; built
+on computer_hosts.py and used by orchestrator.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,8 +50,6 @@ class ComputerSession:
     last_heartbeat_at: float = field(default_factory=time.time)
     images_supported: bool = True
     last_screenshot: Optional[Dict[str, Any]] = None
-    #: Keystrokes into a terminal are allowed until this time (set by an
-    #: approved confirm_action / shell open_app; 0 = not granted).
     terminal_ok_until: float = 0.0
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -103,8 +94,6 @@ class ComputerSessionManager:
         self._sessions: Dict[str, ComputerSession] = {}
         self._sweeper: Optional[asyncio.Task] = None
 
-    # ── lookup ────────────────────────────────────────────────────────────────
-
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
 
@@ -125,8 +114,6 @@ class ComputerSessionManager:
                 return s
         return None
 
-    # ── lifecycle ─────────────────────────────────────────────────────────────
-
     def _controller_socket_alive(self, session: ComputerSession) -> bool:
         return any(id(ws) == session.controller_ws_id for ws in self._orch.ui_clients)
 
@@ -143,9 +130,6 @@ class ComputerSessionManager:
 
     async def start(self, owner_sub: str, host: ComputerHost, websocket, chat_id: Optional[str],
                     *, wait_for_ack: bool = True) -> ComputerSession:
-        """Start (or re-join) a session on ``host`` for the controller socket.
-        Raises :class:`ComputerHostError` with ``controlled_by_other`` when a
-        different, still-connected controller holds the session."""
         existing = self.live_for_host(owner_sub, host.host_id)
         if existing is not None:
             if existing.controller_ws_id == id(websocket):
@@ -157,7 +141,6 @@ class ComputerSessionManager:
                     "controlled_by_other",
                     f"{host.name} is already being controlled from your {existing.controller_label}; "
                     "stop that session first")
-            # Previous controller is gone — take over.
             existing.controller_ws_id = id(websocket)
             existing.controller_label = self._controller_label(websocket)
             existing.controller_device_id = self._device_id(websocket)
@@ -169,8 +152,7 @@ class ComputerSessionManager:
             return existing
 
         session = ComputerSession(
-            # A bare UUID4: the audit table's correlation_id is a UUID column,
-            # so the session id doubles as the audit correlation id verbatim.
+            # Must stay a bare UUID: doubles as audit correlation_id
             session_id=str(uuid.uuid4()),
             owner_sub=owner_sub,
             host_id=host.host_id,
@@ -243,8 +225,6 @@ class ComputerSessionManager:
         for s in list(self._sessions.values()):
             await self.end(s, reason)
 
-    # ── host-side events ──────────────────────────────────────────────────────
-
     async def on_host_event(self, owner_sub: str, host_id: str, event: str,
                             session_id: Optional[str], reason: Optional[str]) -> None:
         session = self._sessions.get(session_id or "")
@@ -260,8 +240,6 @@ class ComputerSessionManager:
             await self.resume(session)
         elif event == "stopped":
             await self.end(session, "local_stop")
-
-    # ── frames + audit ────────────────────────────────────────────────────────
 
     def _device_id(self, websocket) -> str:
         try:
@@ -303,10 +281,8 @@ class ComputerSessionManager:
                              "verbs_run": session.verbs_run},
                 started_at=datetime.now(timezone.utc),
             ))
-        except Exception:  # noqa: BLE001 — audit is best-effort here; verbs audit separately
+        except Exception:  # noqa: BLE001
             logger.debug("076: session audit failed (%s)", action_type, exc_info=True)
-
-    # ── watchdog ──────────────────────────────────────────────────────────────
 
     def _ensure_sweeper(self) -> None:
         if self._sweeper is None or self._sweeper.done():

@@ -1,4 +1,6 @@
-"""Statically read the exact 088.004 schema declaration without executing it."""
+"""Tests that the schema declaration is read statically as data only, never executed,
+and that its grammar cannot expand beyond the reviewed declarative module.
+"""
 
 from pathlib import Path
 

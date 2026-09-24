@@ -1,20 +1,8 @@
-"""Deep-owned host adapter for the product-tour Projection surface.
-
-Renders the guided-tour launcher. The modal body carries the ordered,
-audience-filtered tutorial steps (same read path as ``GET
-/api/tutorial/steps`` — ``orch.onboarding_repo.list_steps_for_user``) as
-escaped JSON in a hidden ``[data-tour-steps]`` holder; ``client.js``
-detects the holder in the opened modal, closes the modal, and runs the
-step sequence itself (highlighting ``[data-tour-target]`` elements).
-
-The ``chrome_tour_event`` handler persists tour lifecycle outcomes via
-the SAME onboarding-state internals the REST endpoints use
-(``PUT /api/onboarding/state``, ``POST /api/onboarding/replay``,
-``POST /api/onboarding/dismiss`` in ``onboarding/api.py``) — repository
-writes first, audit emission after, mirroring the endpoint bodies. The
-handler always returns ``None``: the tour runs outside the modal, so no
-surface re-render is pushed.
+"""Renders the guided product-tour launcher, handing client.js the audience-filtered
+step list from onboarding/recorder.py; chrome_tour_event persists lifecycle outcomes
+through the same internals as the onboarding REST endpoints.
 """
+
 import asyncio
 import json
 import logging
@@ -37,25 +25,10 @@ _TERMINAL_STATUSES = ("completed", "skipped")
 
 
 def _repo(orch):
-    """Return the onboarding repository wired on the orchestrator, or None."""
     return getattr(orch, "onboarding_repo", None)
 
 
 def _principal(orch, websocket, user_id):
-    """Resolve the audit ``auth_principal`` for the WS session.
-
-    Mirrors ``onboarding.api._principal_of`` using the validated
-    ``register_ui`` JWT claims stored in ``orch.ui_sessions`` (the same
-    source the chrome dispatcher uses for roles).
-
-    Args:
-        orch: Orchestrator instance.
-        websocket: The client websocket (key into ``orch.ui_sessions``).
-        user_id: Authenticated user id (JWT subject) as fallback.
-
-    Returns:
-        The preferred username, subject, user id, or ``"unknown"``.
-    """
     try:
         claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}
     except TypeError:
@@ -69,20 +42,6 @@ def _principal(orch, websocket, user_id):
 
 
 def _validated_step_id(repo, raw, is_admin):
-    """Validate an optional ``step_id`` the way ``PUT /api/onboarding/state`` does.
-
-    The REST endpoint rejects invalid ids with HTTP 400; mid-tour we drop
-    the value instead (warning logged) so an expected bad input never
-    interrupts the running tour with an error modal.
-
-    Args:
-        repo: ``OnboardingRepository`` (or compatible fake).
-        raw: The ``step_id`` value from the event payload (may be None).
-        is_admin: Whether the caller holds the admin role.
-
-    Returns:
-        The validated integer step id, or ``None`` when absent/invalid.
-    """
     if raw is None:
         return None
     try:
@@ -105,26 +64,6 @@ def _validated_step_id(repo, raw, is_admin):
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Render the tour surface body: intro paragraph + step-payload holder.
-
-    Fetches the ordered, audience-filtered steps exactly like
-    ``GET /api/tutorial/steps`` (``list_steps_for_user``; ``user``
-    audience for everyone, ``admin`` steps included only for admins).
-
-    Args:
-        orch: Orchestrator instance (uses ``orch.onboarding_repo``).
-        user_id: Authenticated user id (unused — steps are role-scoped).
-        roles: Session roles from the validated JWT.
-        params: Surface params (unused).
-
-    Returns:
-        Body HTML. When steps exist it includes a hidden div carrying
-        ``data-tour-steps='<json>'`` (escaped; fields ``id``, ``slug``,
-        ``title``, ``body``, ``target_kind``, ``target_key``,
-        ``display_order``) that ``client.js`` auto-detects to start the
-        tour. With no steps (or no repository) a notice is rendered
-        instead and no holder is emitted, so the client does not start.
-    """
     intro = (
         '<p class="text-sm text-astral-text/80">The guided tour walks you through '
         "the main controls of AstralDeep, step by step. It starts automatically "
@@ -160,30 +99,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def _handle_tour_event(orch, websocket, user_id, roles, payload):
-    """Persist one tour lifecycle event (``chrome_tour_event``).
-
-    Event mapping (same internals as the onboarding REST endpoints):
-
-    * ``started`` — replay semantics (``POST /replay`` audit) plus, when
-      the prior state is not terminal, the ``PUT state=in_progress``
-      upsert (incl. the first-start audit) — the endpoint's 409 guard
-      against terminal→in_progress becomes a no-op here.
-    * ``completed`` / ``skipped`` — ``PUT state=<status>`` semantics:
-      upsert, then the matching audit only on an actual transition.
-    * ``dismissed`` — ``POST /dismiss`` semantics
-      (``record_dismissal(max_dismissals=2)``).
-
-    Args:
-        orch: Orchestrator instance.
-        websocket: Client websocket (for principal resolution).
-        user_id: Authenticated user id (JWT subject).
-        roles: Session roles from the validated JWT.
-        payload: ``{event: started|completed|skipped|dismissed, step_id?}``.
-
-    Returns:
-        ``None`` always — the tour runs outside the modal, so the
-        dispatcher must not re-render any surface.
-    """
     payload = payload or {}
     event = str(payload.get("event") or "")
     if event not in _VALID_EVENTS:
@@ -227,7 +142,6 @@ async def _handle_tour_event(orch, websocket, user_id, roles, payload):
                 )
         return None
 
-    # completed | skipped — PUT /api/onboarding/state semantics.
     new_state, prior_status = await asyncio.to_thread(
         repo.upsert_state,
         user_id=user_id, status=event, last_step_id=step_id,

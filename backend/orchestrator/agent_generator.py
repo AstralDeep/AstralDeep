@@ -1,30 +1,9 @@
+"""Generates agent code for both server-hosted (backend) and desktop-hosted (byo)
+targets: template boilerplate plus one LLM-written mcp_tools.py.
+byo_import_violations() gates the LLM output against backend-package imports before
+delivery.
 """
-Agent Code Generator for AstralDeep.
 
-Two generation targets, sharing one LLM-written ``mcp_tools.py``:
-
-**backend** (feature 027 — server-hosted draft agents), 4 files:
-- {slug}_agent.py  — from template (not LLM)
-- mcp_server.py    — from template (not LLM)
-- protected_executor.py — deterministic LETS v1.0.11 final-boundary verifier
-- mcp_tools.py     — LLM-generated tool implementations
-
-**byo** (feature 060/074 — user-hosted desktop agents), 4 executable files:
-- agent_main.py    — from template (not LLM): self-contained JSON-lines-over-stdio runner
-- astralprims_ui.py — deterministic tool-result/UI normalization boundary
-- protected_executor.py — deterministic LETS v1.0.11 final-boundary verifier
-- mcp_tools.py     — LLM-generated tool implementations
-
-The four files are finalized together into one deterministic v3 runtime
-manifest.  ``manifest.json`` is metadata about those bytes, not a fourth input to
-their digest.  Runtime contract v2 remains an explicit dispatch-mediated-only
-legacy disposition; it is never silently treated as a protected executor.
-
-The BYO bundle must be SELF-CONTAINED: it runs on the owner's desktop, which
-ships none of the backend package (no fastapi/uvicorn/a2a-sdk) and sits behind
-NAT, so ``BaseA2AAgent``'s inbound uvicorn server is both too heavy and the wrong
-topology. See specs/058-byo-agents-runtime/contracts/host-bundle.md.
-"""
 import asyncio
 import hashlib
 import json
@@ -49,9 +28,6 @@ from orchestrator.agent_spec import generate_llm_prompt_section
 logger = logging.getLogger("AgentGenerator")
 
 
-#: Feature-060 personal-agent runtime contract and the exact reviewed lock file
-#: shipped by the Windows host. Tests hash the tracked artifact and fail if the
-#: generator, neutral fixture, or packaged host metadata drifts.
 BYO_RUNTIME_CONTRACT_VERSION = 3
 BYO_LEGACY_RUNTIME_DISPOSITIONS = MappingProxyType(
     {2: "dispatch_mediated_only"}
@@ -61,19 +37,10 @@ BYO_RUNTIME_LOCK_SHA256 = (
     "f376ece93b3754b02498e8243a88b3c68282fd26d80c868d85c23bb7ac1d317d"
 )
 
-#: Exact executable files covered by the v3 immutable canonical-JSON digest.
-#: Mapping insertion order never changes the serialized hash input.
 BYO_BUNDLE_FILENAMES = GENERATED_AGENT_BUNDLE_CONTRACT.file_names
 
 
 def _protected_executor_source() -> str:
-    """Return the reviewed generated-runtime adapter as deterministic text.
-
-    The emitted module contains only Astral's typed envelope/host checks and
-    delegates cryptography, receipt parsing, replay state, clock policy, and
-    rollback anchoring to the pinned public LETS v1.0.11 APIs.
-    """
-
     source_path = Path(__file__).with_name("generated_lets_executor.py")
     try:
         source = source_path.read_text(encoding="utf-8")
@@ -85,12 +52,8 @@ def _protected_executor_source() -> str:
     return source
 
 
-# Compatibility import name for the legacy publisher during the Plane cutover.
-# Plane's public class is the only implementation and validation authority.
 FinalizedBYOBundle = FinalizedBundle
 
-
-# ─── Templates ──────────────────────────────────────────────────────────
 
 AGENT_PY_TEMPLATE = '''#!/usr/bin/env python3
 """
@@ -303,12 +266,6 @@ class MCPServer:
                    "retryable": False}}
         )
 '''
-
-# ─── BYO templates (feature 058) ────────────────────────────────────────
-#
-# Split header/body because the body is brace-dense (dict literals) and
-# ``str.format`` would need every one of them doubled. Only the header — the few
-# identity constants — is formatted; the runner body is a plain constant.
 
 BYO_AGENT_MAIN_HEADER = '''#!/usr/bin/env python3
 """{service_name} — user-hosted (BYO) agent.
@@ -651,10 +608,7 @@ def normalize_tool_result(result):
     return data, components, None
 '''
 
-#: A BYO bundle that reaches for the backend package would ImportError on the
-#: desktop host (and, if it somehow resolved, would import server-side code onto
-#: a user's machine). Checked as a GATE on the LLM-written file, not merely asked
-#: for in the prompt.
+# Gated in code — a prompt instruction alone isn't enough
 BYO_FORBIDDEN_PATTERNS = (
     "from shared", "import shared", "from agents.", "import agents.",
     "sys.path.insert",
@@ -662,11 +616,8 @@ BYO_FORBIDDEN_PATTERNS = (
 
 
 def byo_import_violations(code: str) -> List[str]:
-    """The forbidden backend-coupling patterns present in a BYO bundle file."""
     return [p for p in BYO_FORBIDDEN_PATTERNS if p in (code or "")]
 
-
-# ─── Security rules (shared by generate + refine) ───────────────────────
 
 _SECURITY_RULES_COMMON = """- Do NOT use `eval()`, `exec()`, `compile()`, or `__import__()`
 - Do NOT use `subprocess`, `os.system`, `os.popen`, or any shell execution
@@ -681,7 +632,6 @@ _SECURITY_RULES_COMMON = """- Do NOT use `eval()`, `exec()`, `compile()`, or `__
 Code that breaks any of these rules is REFUSED by a static analyzer BEFORE it
 is ever imported or run, so a violation is a dead end, not a warning."""
 
-#: Server-hosted (027) image: requests/httpx ARE installed.
 _SECURITY_RULES_BACKEND = f"""{_SECURITY_RULES_COMMON}
 - Do NOT open network sockets directly (use `requests`/`httpx` for HTTP only)
 - Import ONLY the Python standard library and packages already installed in this
@@ -692,10 +642,6 @@ _SECURITY_RULES_BACKEND = f"""{_SECURITY_RULES_COMMON}
   or binary data via a documented partial read) and clearly state the limitation
   in the returned output rather than failing."""
 
-#: BYO (058) desktop host: ONLY the standard library + astralprims exist there.
-#: An `import requests` bundle dies at import on the user's machine, never sends
-#: `register_agent`, and surfaces only as the host's silence timeout — so the
-#: allowlist is enforced as a GATE at generation time (agent_validator).
 _SECURITY_RULES_BYO = f"""{_SECURITY_RULES_COMMON}
 - Do NOT open network sockets directly. For HTTP use `urllib.request` from the
   standard library — `requests` and `httpx` are NOT available on the user's machine.
@@ -709,39 +655,17 @@ _SECURITY_RULES_BYO = f"""{_SECURITY_RULES_COMMON}
 
 
 def security_rules_block(self_contained: bool = False) -> str:
-    """The SECURITY RULES prompt block for the target the code will run on."""
     return _SECURITY_RULES_BYO if self_contained else _SECURITY_RULES_BACKEND
 
 
-# ─── Code Generator ─────────────────────────────────────────────────────
-
 class AgentCodeGenerator:
-    """Generates agent code files using LLM for tool implementations and templates for boilerplate."""
-
     def __init__(self, llm_client: Optional[OpenAI] = None, llm_model: str = None,
                  config_resolver=None):
-        """Args:
-            llm_client / llm_model: An explicit pre-built client (tests,
-                injection seams). When absent, ``config_resolver`` is used.
-            config_resolver: Zero-arg SYNC callable returning the current
-                system LLM configuration (feature 054 — codegen is a
-                system-context flow billed to the admin-managed credential;
-                the retired ``OPENAI_*`` env fallback is gone). Resolved
-                per generation call so an admin save takes effect without
-                a restart.
-        """
         self.llm_client = llm_client
         self.llm_model = llm_model
         self._config_resolver = config_resolver
 
     async def _aresolve_client(self, config_resolver=None):
-        """Resolve (client, model) for one generation call, or (None, None).
-
-        ``config_resolver`` overrides the default (system) resolver for this call.
-        BYO authoring passes the OWNER's resolver: the user is actively authoring
-        their own private agent, so its code is generated with THEIR configured
-        LLM — not the admin-managed system credential that background codegen uses
-        (feature 054). A direct ``llm_client`` still wins (tests inject it)."""
         if self.llm_client is not None:
             return self.llm_client, self.llm_model
         resolver = config_resolver or self._config_resolver
@@ -763,48 +687,30 @@ class AgentCodeGenerator:
         ), cfg.model
 
     def _slugify(self, name: str) -> str:
-        """Convert agent name to a safe directory/module slug."""
         slug = re.sub(r'[^a-z0-9]+', '_', name.lower().strip())
         slug = slug.strip('_')
         return slug or 'custom_agent'
 
     def _class_name(self, slug: str) -> str:
-        """Convert slug to PascalCase class name."""
         return ''.join(word.capitalize() for word in slug.split('_')) + 'Agent'
 
     @staticmethod
     def _sanitize_description(description: str) -> str:
-        """Sanitize description for safe injection into Python source code.
-
-        Returns a single-line string safe for use in triple-quoted strings.
-        Collapses whitespace, escapes backslashes and triple quotes, and
-        ensures the string doesn't end with a quote (which would collide
-        with the closing triple-quote delimiter).
-        """
-        # Collapse all whitespace (newlines, tabs, multiple spaces) to single spaces
         safe = ' '.join(description.split())
         # Escape backslashes first, then triple quotes
         safe = safe.replace('\\', '\\\\').replace('"""', '\\"\\"\\"')
-        # If it ends with a quote, add a trailing space to prevent """" ambiguity
+        # Avoids a trailing quote merging with the closing triple-quote
         if safe.endswith('"'):
             safe += ' '
         return safe
 
     @staticmethod
     def default_agent_id(slug: str) -> str:
-        """The runtime agent id a slug implies on the server-hosted (027) path."""
         return f"{slug.replace('_', '-')}-1"
 
     def generate_template_files(self, agent_name: str, description: str,
                                  slug: str, skill_tags: List[str] = None,
                                  agent_id: Optional[str] = None) -> Dict[str, str]:
-        """Generate the boilerplate agent_py and mcp_server files from templates.
-
-        ``agent_id`` defaults to the slug-derived id, so the 027 path is
-        byte-identical. It is explicit because a BYO agent's identity is
-        owner-namespaced (``ua-<name>-<ownerhash>``) and must be the id the card
-        presents — the registry looks the card's id up and refuses fail-closed on
-        a mismatch (``user_agents.authorize_registration``)."""
         class_name = self._class_name(slug)
         agent_id = agent_id or self.default_agent_id(slug)
         port_env_var = f"{slug.upper()}_AGENT_PORT"
@@ -838,16 +744,6 @@ class AgentCodeGenerator:
     def generate_byo_files(self, agent_name: str, description: str,
                            agent_id: str, skill_tags: List[str] = None,
                            constitution_version: Optional[str] = None) -> Dict[str, str]:
-        """Build the legacy feature-058 scaffold and provisional manifest.
-
-        New code MUST use :meth:`generate_byo_scaffold` and then
-        :meth:`finalize_byo_bundle` after ``mcp_tools.py`` exists.  This helper is
-        retained only so an older caller does not silently receive a different
-        return shape before the v2 delivery seam is wired.
-
-        The runner bakes the OWNER-NAMESPACED ``agent_id`` it is handed; a
-        slug-derived id here would be refused at registration and the refusal is
-        silent on the wire (host-bundle.md §6)."""
         safe_desc = self._sanitize_description(description)
         agent_main = BYO_AGENT_MAIN_HEADER.format(
             service_name=agent_name.replace('"', '\\"'),
@@ -876,13 +772,6 @@ class AgentCodeGenerator:
         agent_id: str,
         skill_tags: Optional[List[str]] = None,
     ) -> Dict[str, str]:
-        """Generate the deterministic executable half of a v3 BYO bundle.
-
-        ``mcp_tools.py`` is deliberately absent: the lifecycle manager adds the
-        final, statically validated LLM output and only then finalizes the
-        revision manifest and digest.
-        """
-
         safe_desc = self._sanitize_description(description)
         agent_main = BYO_AGENT_MAIN_HEADER.format(
             service_name=agent_name.replace('"', '\\"'),
@@ -900,8 +789,6 @@ class AgentCodeGenerator:
 
     @staticmethod
     def _bundle_digest(files: Mapping[str, str]) -> str:
-        """Hash the exact four-file map using the host's canonical JSON rule."""
-
         return canonical_bundle_digest(files, GENERATED_AGENT_BUNDLE_CONTRACT)
 
     def finalize_byo_bundle(
@@ -915,13 +802,6 @@ class AgentCodeGenerator:
         constitution_version: str,
         required_runtime_lock_sha256: str,
     ) -> FinalizedBundle:
-        """Finalize one immutable v3 revision after all four files exist.
-
-        The digest contains no timestamp, filesystem path, mapping order, or
-        serialization-dependent value.  ``manifest.json`` names the already
-        finalized bytes and therefore cannot create a circular hash.
-        """
-
         if not isinstance(files, Mapping):
             raise TypeError("files must be a mapping")
         if set(files) != set(BYO_BUNDLE_FILENAMES):
@@ -931,8 +811,7 @@ class AgentCodeGenerator:
             content = files[filename]
             if not isinstance(content, str):
                 raise TypeError(f"{filename} must be UTF-8 text")
-            # Encoding now makes malformed surrogate input fail before hashing or
-            # delivery, so every digest always identifies actual UTF-8 bytes.
+            # Forces a surrogate check before hashing — not a no-op
             content.encode("utf-8")
             ordered_files[filename] = content
 
@@ -988,12 +867,6 @@ class AgentCodeGenerator:
                                    knowledge_context: str = "",
                                    self_contained: bool = False,
                                    config_resolver=None) -> str:
-        """Use LLM to generate mcp_tools.py with tool implementations.
-
-        ``self_contained`` (BYO): the file runs on the owner's desktop, which has
-        no backend package — say so in the prompt. The hard guarantee is the
-        ``byo_import_violations`` gate on the result, not this instruction.
-        ``config_resolver`` (BYO): use the owner's LLM, not the system one."""
         _client, _model = await self._aresolve_client(config_resolver)
         if not _client:
             raise RuntimeError("LLM not configured — cannot generate agent tools")
@@ -1090,10 +963,8 @@ Output ONLY the Python code. No markdown fences, no explanations."""
         )
 
         code = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
         if code.startswith("```"):
             lines = code.split("\n")
-            # Remove first and last fence lines
             if lines[0].startswith("```"):
                 lines = lines[1:]
             if lines and lines[-1].strip() == "```":
@@ -1106,14 +977,6 @@ Output ONLY the Python code. No markdown fences, no explanations."""
                                  agent_name: str, description: str,
                                  self_contained: bool = False,
                                  config_resolver=None) -> str:
-        """Refine existing mcp_tools.py based on user feedback.
-
-        ``self_contained`` (BYO): the refinement must stay runnable on the owner's
-        desktop — no backend package, no sys.path shim, stdlib + astralprims only.
-        The auto-fix loop refines BYO code too, so a refine prompt that mandated
-        the backend imports block would hand the self-containment gate a file it
-        must reject.
-        ``config_resolver`` (BYO): use the owner's LLM, not the system one."""
         _client, _model = await self._aresolve_client(config_resolver)
         if not _client:
             raise RuntimeError("LLM not configured — cannot refine agent tools")

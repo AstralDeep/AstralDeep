@@ -1,4 +1,7 @@
-"""Recorder unit tests — every onboarding wrapper writes one audit row."""
+"""Tests for onboarding/recorder.py: each wrapper writes exactly one audit row, and
+calling one with no recorder wired is silently harmless.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -98,7 +101,6 @@ def test_record_tutorial_step_edited(wired_recorder, database, unique_user):
 
 def test_record_when_no_recorder_wired_is_silent(database, unique_user):
     set_recorder(None)
-    # Should NOT raise even though no recorder is wired
     asyncio.run(record_onboarding_started(
         actor_user_id=unique_user, auth_principal=unique_user, step_slug=None,
     ))

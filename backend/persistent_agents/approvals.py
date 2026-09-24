@@ -1,4 +1,8 @@
-"""Durable bridge between exact assignment and attended remote approvals."""
+"""Bridges durable assignments to attended remote-confirmation approvals; links
+proposals through orchestrator/remote_confirmation.py and resumes dispatch via
+AssignmentRunner.execute_approved().
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,8 +17,6 @@ from .store import AssignmentStore
 
 
 class AssignmentApprovalBridge:
-    """First review never implies confirmation-gate approval or an external effect."""
-
     def __init__(self, runner):
         self.runner = runner
         self.service = runner.service
@@ -63,8 +65,6 @@ class AssignmentApprovalBridge:
         if (request.get("kind") != "tool" or not remote_confirmation.is_destructive_unattended(
                 request["tool_name"], request["arguments"], request["agent_id"])):
             return await self.runner.execute_approved(action, interaction)
-        # No evaluate()/conditional remote stat here. Conservative classification
-        # asks for the existing review without an unreserved network request.
         if remote_confirmation.policy_for(request["agent_id"]) is None:
             return await self.runner.execute_approved(action, interaction)
 
@@ -118,8 +118,7 @@ class AssignmentApprovalBridge:
         await self._validate(owner_id, record, action, interaction)
         if row.status == "pending":
             def decide(tx, repository):
-                # Parent/action row locks precede the remote-proposal mutation;
-                # this cannot approve an action already fenced by an owner control.
+                # Row locks precede proposal mutation; blocks fenced actions
                 self._link(tx, owner_id, record, action, row.proposal_id)
                 changed = self.remote.decide_if_pending(tx, owner_id=owner_id,
                     proposal_id=row.proposal_id, decision="approved" if decision == "approve" else "declined",
@@ -136,21 +135,14 @@ class AssignmentApprovalBridge:
         if row.status != "approved" or decision != "approve":
             return await self.store.call("get_action", owner_id=owner_id,
                                          assignment_id=action.assignment_id, action_id=action.action_id)
-        # The runner claims only this approved action, and re-enters the ordinary
-        # gates with a trusted marker. Never run the remote handler's chat continuation.
         return await self.runner.execute_approved(action, interaction, remote_marker=row.proposal_id)
 
 
 async def handle_linked_remote_decision(orch, interaction, owner_id, row, decision):
-    """Return True for every linked row, including disabled/unavailable service.
-
-    Lookup is independent of the feature flag: disabling assignments must never
-    transform a retained confirmation into an ordinary chat execution capability.
-    """
     try:
         source = plane_source_from_orchestrator(orch)
     except RuntimeError:
-        return False  # A pre-composition caller has no assignment repository.
+        return False
     repository = getattr(source.plane_repositories, "assignments", None)
     if repository is None:
         return False

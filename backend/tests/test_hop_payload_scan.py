@@ -1,12 +1,8 @@
-"""T034 (056-delegated-agent-chaining): MAS scan ENFORCED on inter-agent
-payloads (FR-007, D11).
-
-On the tool path the C-S14 scanner is advisory — findings are logged and the
-payload is delivered anyway. Chaining turns one agent's output into another
-agent's input, so on a hop result and on a sub-task digest the scan ENFORCES:
-the payload is quarantined (not delivered), the reason is audited, and the
-requester gets an honest error it can work around.
+"""Tests for enforced MAS payload scanning on inter-agent hops
+(orchestrator/mas_defense.py, delegation.py, subtasks.py): poisoned hop results and
+sub-task digests are quarantined and audited, while scanner failure fails open.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -82,10 +78,6 @@ async def _hop(orch, result):
     return await asyncio.wait_for(fut, timeout=2)
 
 
-# --------------------------------------------------------------------------- #
-# Hop results
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_clean_hop_result_is_delivered(orch, captured):
     resp = await _hop(orch, {"summary": "three NSF programs found"})
@@ -96,12 +88,10 @@ async def test_clean_hop_result_is_delivered(orch, captured):
 @pytest.mark.asyncio
 async def test_poisoned_hop_result_is_quarantined(orch, captured):
     resp = await _hop(orch, {"summary": POISON})
-    # NOT delivered — the initiating agent never sees the payload.
     assert resp.error is not None
     assert "quarantined" in resp.error["message"]
     assert resp.result is None
     assert POISON not in str(resp.error)
-    # ...and the reason is audited.
     rows = [c.args[0] for c in captured.record.await_args_list]
     quarantine = [r for r in rows if r.event_class == "delegation"
                   and (r.outcome_detail or "").startswith("quarantined")]
@@ -112,15 +102,12 @@ async def test_poisoned_hop_result_is_quarantined(orch, captured):
 @pytest.mark.asyncio
 async def test_quarantine_does_not_tear_down_the_session(orch, captured):
     await _hop(orch, {"summary": POISON})
-    # A subsequent clean hop still works.
     resp = await _hop(orch, {"summary": "clean"})
     assert resp.error is None
 
 
 @pytest.mark.asyncio
 async def test_poison_in_ui_components_is_quarantined(orch, captured):
-    """Both channels are scanned: a marker in ui_components (with a clean
-    result) must still quarantine — the initiating agent sees neither."""
     async def _dispatch(ws, agent_id, tool_name, args, max_retries=None):
         return MCPResponse(result={"summary": "clean"},
                            ui_components=[{"type": "text", "content": POISON}])
@@ -151,7 +138,6 @@ async def test_poison_in_ui_components_is_quarantined(orch, captured):
 
 @pytest.mark.asyncio
 async def test_scanner_failure_fails_open(orch, captured, monkeypatch):
-    """A broken scanner must not break dispatch (fail-open, logged)."""
     from orchestrator import mas_defense
     monkeypatch.setattr(mas_defense, "scan_message",
                         MagicMock(side_effect=RuntimeError("scanner down")))
@@ -160,14 +146,8 @@ async def test_scanner_failure_fails_open(orch, captured, monkeypatch):
     assert resp.result == {"summary": "fine"}
 
 
-# --------------------------------------------------------------------------- #
-# Sub-task digests
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_poisoned_subtask_digest_is_quarantined(captured, monkeypatch):
-    # This scanner unit supplies the admitted parent's guidance contract.
-    # Real inheritance/denials are exercised by test_skill_turn_handoffs_088.
     from orchestrator import turn_guidance_authority as guidance
 
     parent = SimpleNamespace(origin=SimpleNamespace(owner_id="u1"))
@@ -195,7 +175,7 @@ async def test_poisoned_subtask_digest_is_quarantined(captured, monkeypatch):
     results = {r["subtask"]: r for r in resp.result["subtasks"]}
     assert results["A"]["status"] == "ok"
     assert results["B"]["status"] == "quarantined"
-    assert results["B"]["digest"] == ""          # the payload never propagates
+    assert results["B"]["digest"] == ""
     assert POISON not in str(resp.result)
     rows = [c.args[0] for c in captured.record.await_args_list]
     assert [r for r in rows if r.action_type == "delegation.subtask.quarantined"]

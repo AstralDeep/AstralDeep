@@ -1,8 +1,8 @@
-"""Legacy env-name shim: the React-era VITE_ aliases are retired (054
-cleanup) — every backend read site uses the unprefixed names. A deployment
-whose .env still sets a VITE_-prefixed value gets it copied one-way to the
-real name with a deprecation warning. Exercised in a clean subprocess
-because the shim runs at first import of ``shared``."""
+"""Tests for the legacy VITE_-prefixed env shim (shared/__init__.py): unprefixed names
+pass through untouched, legacy names backfill one-way with a deprecation warning, and
+unprefixed wins when both are set.
+"""
+
 import os
 import subprocess
 import sys
@@ -35,7 +35,7 @@ def test_unprefixed_names_pass_through_untouched():
     assert vals[0] == "true"
     assert vals[1] == "https://kc.example/realms/x"
     assert vals[2] == "astral-frontend"
-    assert vals[3] == "None"          # no reverse backfill of the VITE_ alias
+    assert vals[3] == "None"
     assert "deprecated" not in stderr
 
 
@@ -43,10 +43,10 @@ def test_legacy_vite_names_backfill_with_deprecation_warning():
     vals, stderr = _probe({"VITE_USE_MOCK_AUTH": "true",
                            "VITE_KEYCLOAK_AUTHORITY": "https://old.example",
                            "VITE_KEYCLOAK_CLIENT_ID": "legacy-client"})
-    assert vals[0] == "true"           # USE_MOCK_AUTH backfilled from alias
+    assert vals[0] == "true"
     assert vals[1] == "https://old.example"
     assert vals[2] == "legacy-client"
-    assert "deprecated" in stderr      # operator told to rename
+    assert "deprecated" in stderr
 
 
 def test_unprefixed_name_wins_when_both_set():

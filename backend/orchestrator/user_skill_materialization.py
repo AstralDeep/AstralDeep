@@ -1,10 +1,8 @@
-"""Strict, pure preparation for controlled legacy user-skill materialization.
-
-The caller supplies bounded bytes captured from verified regular files. This
-module never opens a path, changes the current file store, grants owner authority
-or asserts that capture/SQL commit was atomic. Future cutover must hold its writer
-and owner fences and compare this exact manifest before making Plane authoritative.
+"""Pure preparation of a legacy user-skill manifest from caller-supplied bounded bytes;
+never opens a path or grants owner authority — user_skill_catalog.py must hold
+writer/owner fences and compare this manifest before Plane becomes authoritative.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,8 +27,6 @@ _FIELDS = frozenset({"name", "type", "owner", "slug", "command", "applies_to", "
 
 
 class LegacySkillMaterializationError(ValueError):
-    """Closed conflict without owner, filename, alias or instruction text."""
-
     def __init__(self):
         super().__init__("legacy_skill_materialization_conflict")
 
@@ -60,8 +56,6 @@ def _slug(value):
 
 @dataclass(frozen=True, slots=True)
 class LegacySkillFile:
-    """Supplied regular-file bytes, with a filename only, never an arbitrary path."""
-
     filename: str
     markdown: bytes = field(repr=False)
 
@@ -75,8 +69,6 @@ class LegacySkillFile:
 
 @dataclass(frozen=True, slots=True)
 class LegacySkillDefinition:
-    """Validated source interpretation, shaped for the forthcoming Plane definition."""
-
     format_version: int
     name: str
     instructions: str = field(repr=False)
@@ -87,8 +79,6 @@ class LegacySkillDefinition:
 
 @dataclass(frozen=True, slots=True)
 class LegacySkillSnapshot:
-    """Exact original bytes and interpretation; it creates no historical revision."""
-
     slug: str
     definition: LegacySkillDefinition
     markdown: bytes = field(repr=False)
@@ -98,8 +88,6 @@ class LegacySkillSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class PreparedLegacySkills:
-    """Immutable materialization input; no UUID allocation, writes or authority."""
-
     owner_id: str
     entries: tuple[LegacySkillSnapshot, ...]
     manifest_bytes: bytes = field(repr=False)
@@ -109,8 +97,6 @@ class PreparedLegacySkills:
 def _quoted_string(value):
     parsed = json.loads(value)
     if type(parsed) is not str:
-        # Objects (including duplicate-key objects), arrays and coercions are
-        # never metadata values in the historical Markdown format.
         raise LegacySkillMaterializationError()
     return parsed
 
@@ -171,8 +157,6 @@ def _snapshot(owner, file, reserved):
             raise LegacySkillMaterializationError()
         skill = Skill(slug, name, instructions, applies, alias, enabled, updated)
         if render_markdown(skill, owner) != text:
-            # Validate the actual historical writer format without rewriting
-            # captured bytes or normalizing away malformed/ambiguous metadata.
             raise LegacySkillMaterializationError()
         return LegacySkillSnapshot(slug, LegacySkillDefinition(
             1, name, instructions, applies, alias, enabled), file.markdown, updated)
@@ -180,16 +164,10 @@ def _snapshot(owner, file, reserved):
         raise LegacySkillMaterializationError() from None
 
 
+# No UUIDs/timestamps here — Plane's retry must not re-import over edits
 def prepare_legacy_skill_materialization(
     owner_id: str, *, files: tuple[LegacySkillFile, ...], reserved_aliases: tuple[str, ...],
 ) -> PreparedLegacySkills:
-    """Prepare a complete owner manifest, rejecting conflicting or lossy inputs.
-
-    Empty input has a real owner-bound manifest. UUIDs and database timestamps
-    are deliberately absent: Plane's eventual idempotent marker must return its
-    original mappings on retry, never import this snapshot over later edits.
-    The caller must verify filesystem eligibility and freshness separately.
-    """
     _owner(owner_id)
     if (type(files) is not tuple or len(files) > MAX_SKILLS
             or any(type(file) is not LegacySkillFile for file in files)

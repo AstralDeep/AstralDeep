@@ -1,4 +1,7 @@
-"""Direct-RTC session guards for Feature 065's first conversational turn."""
+"""Tests for voice_agent/session.py's first conversational turn over direct RTC: connect
+reconciliation, VAD hysteresis/pre-roll, capture gating, and content-free failure
+handling.
+"""
 
 from __future__ import annotations
 
@@ -704,8 +707,6 @@ async def test_capture_requires_explicit_gate_and_deterministic_silero_endpoint(
         item.kind == "media_state" and item.metadata.get("state") == "transcribing"
         for item in notices
     )
-    # Feature 066: the trailing endpoint-silence run is trimmed to a
-    # 128-ms ASR-context tail before the batch POST.
     assert (
         len(asr.calls[0]) == (8 + ASR_TAIL_SILENCE_FRAMES) * AUDIO_FRAME_SAMPLES * 2
     )
@@ -724,10 +725,6 @@ async def test_vad_start_accepts_natural_voice_probability_burst() -> None:
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
-    # Exact Silero v6 probabilities observed around the sustained portion of a
-    # non-sensitive, macOS-generated natural-voice phrase.  The old eight-frame
-    # gate never started this utterance even though the model was confidently
-    # positive for 128 ms.
     speech = [0.395, 0.562, 0.830, 0.880, 0.841, 0.723]
     probabilities = speech + [0.1] * VAD_END_SILENCE_FRAMES
     vad = FakeVad(probabilities)
@@ -744,7 +741,6 @@ async def test_vad_start_accepts_natural_voice_probability_burst() -> None:
     await _wait_for(lambda: len(asr.calls) == 1)
 
     assert any(item.kind == "recognition_started" for item in notices)
-    # Feature 066: endpoint silence past the 128-ms tail never reaches ASR.
     assert (
         len(asr.calls[0])
         == (len(speech) + ASR_TAIL_SILENCE_FRAMES) * AUDIO_FRAME_SAMPLES * 2
@@ -759,14 +755,6 @@ async def test_vad_start_survives_livekit_opus_posterior_smoothing() -> None:
     publication = FakePublication("TR_mic", track=FakeTrack())
     room = FakeRoom([FakeParticipant("client-a", [publication])])
     factory = FakeRtcFactory(room)
-    # Exact Silero v6 probabilities measured after a real LiveKit 1.1.14
-    # publisher/subscriber Opus round trip of a non-sensitive natural phrase.
-    # Requiring four >=0.5 frames rejected this ordinary speech; the bounded
-    # release-threshold pre-roll retains enough evidence without accepting a
-    # lone high-confidence noise spike.
-    # 0.313 already sits below the release threshold, so the trailing
-    # endpoint run starts there and the retained speech evidence is four
-    # frames plus the feature-066 ASR-context tail.
     speech = [0.429, 0.571, 0.580, 0.444]
     probabilities = speech + [0.313] + [0.1] * (VAD_END_SILENCE_FRAMES - 1)
     vad = FakeVad(probabilities)
@@ -783,7 +771,6 @@ async def test_vad_start_survives_livekit_opus_posterior_smoothing() -> None:
     await _wait_for(lambda: len(asr.calls) == 1)
 
     assert any(item.kind == "recognition_started" for item in notices)
-    # Feature 066: endpoint silence past the 128-ms tail never reaches ASR.
     assert (
         len(asr.calls[0])
         == (len(speech) + ASR_TAIL_SILENCE_FRAMES) * AUDIO_FRAME_SAMPLES * 2
@@ -819,8 +806,6 @@ async def test_vad_hysteresis_bridges_dips_and_delays_endpoint() -> None:
     for _ in ending_silence:
         factory.streams[0].feed()
     await _wait_for(lambda: len(asr.calls) == 1)
-    # Feature 066: the ambiguous bridged frames are speech evidence and stay;
-    # only the trailing endpoint run is trimmed to the 128-ms tail.
     assert len(asr.calls[0]) == (
         (len(start + ambiguous_speech) + ASR_TAIL_SILENCE_FRAMES)
         * AUDIO_FRAME_SAMPLES
@@ -858,8 +843,6 @@ async def test_vad_endpoint_bridges_natural_clause_pause() -> None:
     for _ in continuation + ending:
         factory.streams[0].feed()
     await _wait_for(lambda: len(asr.calls) == 1)
-    # Feature 066: the bridged clause pause is internal and survives whole;
-    # only the trailing endpoint run is trimmed to the 128-ms tail.
     assert len(asr.calls[0]) == (
         (len(clause + natural_pause + continuation) + ASR_TAIL_SILENCE_FRAMES)
         * AUDIO_FRAME_SAMPLES
@@ -985,8 +968,6 @@ async def test_exact_signed_final_replays_until_matching_rejection_then_scrubs()
     room.emit("reconnected")
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    # Count only transcript publications: the guidance announcement manifest
-    # shares this record and lands whenever synthesis completes.
     assert (
         sum(
             record["topic"] == VOICE_TRANSCRIPT_TOPIC

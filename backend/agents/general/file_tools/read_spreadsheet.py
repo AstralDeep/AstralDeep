@@ -1,4 +1,4 @@
-"""``read_spreadsheet`` tool: XLSX, XLS, ODS, TSV, CSV."""
+"""read_spreadsheet tool: reads rows from XLSX, XLS, ODS, TSV, and CSV attachments."""
 
 from __future__ import annotations
 
@@ -148,7 +148,6 @@ def read_spreadsheet(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Read a spreadsheet attachment (XLSX/XLS/ODS/TSV/CSV) and return rows."""
     att, payload, err = read_attachment_bytes(attachment_id, user_id)
     if err is not None:
         return err

@@ -1,10 +1,6 @@
-"""AstralDeep's narrow composition boundary for the embedded data plane.
-
-This module contains no connection, migration, or repository implementation.
-Those mechanics belong to :mod:`astralplane`. It validates the exact component
-contract declared by the AstralDeep composition manifest and delegates runtime
-construction, empty-database initialization, migrations, pooling, and
-transactions to Plane's stable public facade.
+"""Validates the composition manifest's declared AstralPlane contract and builds the
+initialized Plane runtime from it, delegating connection, migration, and repository
+mechanics to astralplane. Composed by runtime_composition.py at boot.
 """
 
 from __future__ import annotations
@@ -55,19 +51,11 @@ logger = logging.getLogger("Orchestrator.Plane")
 
 
 class PlaneCompositionError(RuntimeError):
-    """The declared AstralPlane component cannot be admitted safely."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class AstralDeepPlaneContractReconciler:
-    """Durably attest the exact Plane contract admitted by this product.
-
-    This is a real product reconciliation gate, not a placeholder migration:
-    Plane records the digest-derived hook version only after the installed
-    schema/contract, repository surface, and Deep runtime profile have all
-    matched the immutable composition supplied at construction.
-    """
-
     composition_digest: str
     contract_version: str
     schema_revision: str
@@ -103,8 +91,6 @@ def _required_text(value: object, field: str, pattern: re.Pattern[str]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class PlaneContractExpectation:
-    """Exact Plane metadata pinned by one AstralDeep composition."""
-
     contract_version: str
     schema_revision: str
     read_compatible_from: str
@@ -148,8 +134,6 @@ class PlaneContractExpectation:
 
 @dataclass(frozen=True, slots=True)
 class PlaneCompositionReport:
-    """Detached, non-sensitive evidence for the component admission check."""
-
     compatible: bool
     reasons: tuple[str, ...]
     producer_version: str
@@ -166,8 +150,6 @@ class PlaneCompositionReport:
 
 @dataclass(frozen=True, slots=True)
 class PlaneComposition:
-    """An exact compatible Plane repository catalog."""
-
     expectation: PlaneContractExpectation
     repositories: RepositoryCatalog
     report: PlaneCompositionReport
@@ -179,8 +161,6 @@ class PlaneComposition:
 
 @dataclass(frozen=True, slots=True)
 class InitializedPlaneComposition:
-    """A compatible Plane runtime and its application-scoped storage boundaries."""
-
     contract: PlaneComposition
     runtime: PlaneRuntime
     blobs: StreamingBlobStore
@@ -195,18 +175,11 @@ class InitializedPlaneComposition:
         return self.contract.repositories
 
     def close(self) -> None:
-        # The higher-level runtime joins request/upload state machines and the
-        # purge loop before reaching this final synchronous boundary.  An
-        # unstarted partial graph is also safe to abort here.  Blob staging
-        # workers must close before the Plane pool they may still need for
-        # fenced cleanup.
+        # Close order matters: cleanup below still needs the pool
         self.attachment_materializer.abort()
         self.attachment_materializations.close()
         self.attachment_purges.abort()
-        # A busy blob boundary means a staging capability was not joined.  Do
-        # not half-close the Plane pool needed to fence/abandon that durable
-        # intent; surface the error so the higher-level shared close task can
-        # be retried after the capability converges.
+        # Let a busy-store error raise; don't proceed to close the pool
         self.blobs.close()
         self.runtime.close()
 
@@ -214,8 +187,6 @@ class InitializedPlaneComposition:
 def inspect_plane_composition(
     expectation: PlaneContractExpectation,
 ) -> PlaneCompositionReport:
-    """Compare every declared compatibility field to the installed producer."""
-
     reasons: list[str] = []
     exact_fields = (
         (
@@ -267,8 +238,6 @@ def inspect_plane_composition(
 def compose_plane_catalog(
     expectation: PlaneContractExpectation,
 ) -> PlaneComposition:
-    """Return the public repository catalog only after an exact contract match."""
-
     report = inspect_plane_composition(expectation)
     if not report.compatible:
         raise PlaneCompositionError(
@@ -320,13 +289,6 @@ def compose_plane_runtime(
     acquire_timeout_seconds: float = 30.0,
     connect_timeout_seconds: int = 10,
 ) -> InitializedPlaneComposition:
-    """Create and initialize the exact declared Plane runtime or fail closed.
-
-    The database URL is passed through without being retained in detached
-    composition evidence or exception messages. Any construction or startup
-    failure closes the Plane-owned pool before it escapes.
-    """
-
     artifact_root = Path(personal_agent_artifact_root)
     if not artifact_root.is_absolute():
         raise PlaneCompositionError(
@@ -442,8 +404,6 @@ def _reconcile_agent_validation_policy(
     runtime: PlaneRuntime,
     repositories: RepositoryCatalog,
 ) -> AgentPolicyReconciliationResult:
-    """Enforce the current Deep policy revision before traffic admission."""
-
     with runtime.transaction() as transaction:
         return repositories.agents.reconcile_validation_policy_for_administration(
             transaction,
@@ -454,8 +414,6 @@ def _reconcile_agent_validation_policy(
 def _report_agent_policy_reconciliation(
     result: AgentPolicyReconciliationResult,
 ) -> None:
-    """Emit only the bounded, non-owner policy-reconciliation evidence."""
-
     logger.info(
         "User-agent policy reconciled: revision=%s marker_changed=%s "
         "agents_marked_for_revalidation=%d",
@@ -496,13 +454,6 @@ def _positive_float(
 
 
 def resolve_plane_database_url(environ: Mapping[str, str] | None = None) -> str:
-    """Resolve the product's PostgreSQL endpoint without retaining secrets.
-
-    Plane owns the driver and pool, while Deep owns deployment configuration.
-    Supplying one resolved URL to both Plane and the temporary legacy adapters
-    also prevents subtle drift for escaped credentials or IPv6 hosts.
-    """
-
     values = os.environ if environ is None else environ
     direct = values.get("DATABASE_URL")
     if direct is not None:
@@ -531,8 +482,6 @@ def resolve_plane_database_url(environ: Mapping[str, str] | None = None) -> str:
 
 
 def resolve_plane_blob_root(environ: Mapping[str, str] | None = None) -> Path:
-    """Resolve one explicit absolute blob root for the application composition."""
-
     values = os.environ if environ is None else environ
     configured = values.get("ATTACHMENT_UPLOAD_ROOT")
     if configured is None:
@@ -548,8 +497,6 @@ def resolve_plane_blob_root(environ: Mapping[str, str] | None = None) -> Path:
 def resolve_personal_agent_artifact_root(
     environ: Mapping[str, str] | None = None,
 ) -> Path:
-    """Resolve Deep's one absolute root for immutable generated-agent bundles."""
-
     values = os.environ if environ is None else environ
     configured = values.get("PERSONAL_AGENT_ARTIFACT_ROOT")
     if configured is None:
@@ -575,8 +522,6 @@ def compose_plane_from_environment(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> InitializedPlaneComposition:
-    """Initialize the one application-scoped Plane runtime from host config."""
-
     values = os.environ if environ is None else environ
     minimum = _positive_int(values, "DB_POOL_MIN", 2)
     maximum = _positive_int(values, "DB_POOL_MAX", 10)
@@ -609,8 +554,6 @@ def compose_plane_from_environment(
 
 
 def load_plane_expectation(path: str | Path) -> PlaneContractExpectation:
-    """Load only the declared data-plane block from a composition manifest."""
-
     manifest_path = Path(path)
     try:
         document: Any = json.loads(manifest_path.read_text(encoding="utf-8"))

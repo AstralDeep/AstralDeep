@@ -1,4 +1,7 @@
-"""Owner chat controls; models may propose authority but cannot consent."""
+"""Owner-only meta-tool controls for chat lifecycle; models may propose but never grant
+authority. Routes through AssignmentService (service.py) and is registered by
+orchestrator/orchestrator.py.
+"""
 
 from __future__ import annotations
 
@@ -40,8 +43,6 @@ async def handle_meta_tool(orch, tool_name, args, *, user_id, chat_id=None, webs
     try:
         if service is None:
             raise AssignmentError("assignment_runtime_unavailable", 503)
-        # This is an owner-control surface. External observations, machine turns
-        # and delegated agents cannot invoke it even if a model names the tool.
         service._owner(user_id, claims)
         if getattr(websocket, "task", None) is not None:
             raise AssignmentError("assignment_human_required", 403)
@@ -90,8 +91,7 @@ async def handle_meta_tool(orch, tool_name, args, *, user_id, chat_id=None, webs
                        payload={"surface": "personalization", "params": params}),
             ]).to_dict()
             return MCPResponse(result={"review_required": True}, ui_components=[card])
-        # A model-selected tool cannot turn observed page/email text into an
-        # owner command. Require the authenticated turn's exact control intent.
+        # Only the authenticated turn's text can issue owner commands
         original = orch._current_request_text(chat_id)
         if not isinstance(original, str):
             raise AssignmentError("assignment_explicit_chat_command_required", 403)

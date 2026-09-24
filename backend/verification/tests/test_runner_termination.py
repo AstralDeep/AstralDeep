@@ -1,7 +1,8 @@
-"""Runner termination + uncertainty handling (T028 / SC-001/009, FR-005/006).
-
-Pure: uses a fake driver, no orchestrator boot.
+"""Tests for runner termination and uncertainty handling
+(backend/verification/runner.py): bounded retries on observation failure, and
+reconcile() rules for counter refutation and judge disagreement.
 """
+
 from __future__ import annotations
 
 from verification.checks.base import Check, ok
@@ -48,11 +49,9 @@ def test_errored_observation_is_uncertain_and_bounded():
     runner = Runner(driver, cfg)
     run_async(runner.run([_scenario()], [Check("c", "tangible_ui",
                                               lambda e, i: ok("c"))]))
-    # Exactly one verdict (the observe-failure), outcome uncertain, not a hang.
     assert len(runner.verdicts) == 1
     assert runner.verdicts[0].outcome == Outcome.UNCERTAIN
     assert runner.verdicts[0].adversarial.get("errored_observation") is True
-    # Bounded retries: initial attempt + max_retries.
     assert driver.calls == cfg.max_retries + 1
 
 
@@ -67,8 +66,8 @@ def test_happy_path_produces_pass_verdict():
 
 def test_reconcile_rules():
     assert reconcile(Outcome.PASS, False, None)[0] == Outcome.PASS
-    assert reconcile(Outcome.PASS, True, None)[0] == Outcome.UNCERTAIN      # counter refuted
-    assert reconcile(Outcome.PASS, False, Outcome.FAIL)[0] == Outcome.UNCERTAIN  # judge disagrees
+    assert reconcile(Outcome.PASS, True, None)[0] == Outcome.UNCERTAIN
+    assert reconcile(Outcome.PASS, False, Outcome.FAIL)[0] == Outcome.UNCERTAIN
     assert reconcile(Outcome.PASS, False, Outcome.PASS)[0] == Outcome.PASS
     assert reconcile(Outcome.FAIL, False, None)[0] == Outcome.FAIL
     assert reconcile(Outcome.UNCERTAIN, False, None)[0] == Outcome.UNCERTAIN

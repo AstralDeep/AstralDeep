@@ -1,11 +1,6 @@
-"""The spoken acknowledgement must not gate the model turn.
-
-``_deliver_accepted_voice_turn`` used to ``await`` the announcement runner,
-which settles its future only after the acknowledgement has finished *playing*
-(and, when a speech terminal is lost, only after a 12s source timeout). That put
-the whole utterance on the critical path to the first model token of every voice
-turn. The runner's own command deque still serializes the acknowledgement ahead
-of the terminal recap, so detaching the call is safe.
+"""Tests that orchestrator.py's _deliver_accepted_voice_turn detaches the
+spoken-acknowledgement runner instead of awaiting it, so a slow or failing
+announcement cannot block the model turn.
 """
 
 import asyncio
@@ -17,8 +12,6 @@ from orchestrator.orchestrator import Orchestrator
 
 
 def _bare_orchestrator(start_turn_announcements):
-    """An Orchestrator with only what _deliver_accepted_voice_turn touches."""
-
     orch = Orchestrator.__new__(Orchestrator)
     orch._voice_ack_tasks = set()
     orch._reconnectable_operations = {}
@@ -57,13 +50,11 @@ async def _deliver(orch):
 
 @pytest.mark.asyncio
 async def test_dispatch_returns_while_acknowledgement_is_still_speaking():
-    """A never-settling announcement must not stall the turn."""
-
     speaking = asyncio.Event()
 
     async def _never_finishes(_turn):
         speaking.set()
-        await asyncio.Event().wait()  # models an utterance still playing
+        await asyncio.Event().wait()
 
     orch = _bare_orchestrator(_never_finishes)
 
@@ -79,8 +70,6 @@ async def test_dispatch_returns_while_acknowledgement_is_still_speaking():
 
 @pytest.mark.asyncio
 async def test_acknowledgement_task_is_tracked_until_it_completes():
-    """The task is strongly referenced, then discarded — asyncio holds only weak refs."""
-
     async def _finishes(_turn):
         return None
 
@@ -95,8 +84,6 @@ async def test_acknowledgement_task_is_tracked_until_it_completes():
 
 @pytest.mark.asyncio
 async def test_acknowledgement_failure_does_not_fail_the_turn():
-    """A runner that raises is logged by the done-callback, never propagated."""
-
     async def _raises(_turn):
         raise RuntimeError("runner unavailable")
 

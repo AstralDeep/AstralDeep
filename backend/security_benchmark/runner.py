@@ -1,11 +1,8 @@
-"""Harness runner — assemble adapters, drivers, adjudicator, report (spec 047).
-
-For each benchmark: load normalized cases, run every case under every envelope in
-the ablation matrix through the selected driver, adjudicate deterministically,
-and accumulate a per-benchmark ``RunRecord``. Emits the machine-readable records
-and the human-readable ASR report, and returns the records so a caller (CLI / CI
-gate) can inspect ASR against a threshold.
+"""Assembles the harness pipeline: loads each benchmark's cases, runs every case under
+the ablation matrix through the selected driver, adjudicates deterministically, and
+accumulates RunRecords for report.py and the CI gate.
 """
+
 from __future__ import annotations
 
 import logging
@@ -56,8 +53,6 @@ def run(config: RunConfig, stamp: str = "local") -> Tuple[List[RunRecord], str]:
 
 
 def check_regression(records: List[RunRecord], threshold: float) -> List[str]:
-    """Return a list of offending (benchmark, envelope) labels whose full-envelope
-    ASR exceeds ``threshold`` — the CI regression gate (FR-010, US4)."""
     offenders: List[str] = []
     for rec in records:
         labels = list(rec.adjudications.keys())

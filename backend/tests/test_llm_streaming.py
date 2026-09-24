@@ -1,14 +1,8 @@
-"""Feature 052 (T031/T032) — narrative token streaming through _call_llm.
-
-Exercises the buffer-until-discriminate streaming mode against a fake
-streaming client injected through the client-factory seam (the same bare
-Orchestrator pattern as test_call_llm_wave0.py): a prose narrative emits
-incremental ui_stream_data frames and returns the full text; a tool-call
-round emits no frames; a mid-stream provider error falls back to a
-non-streaming retry of the same call; the FF_LLM_STREAMING kill switch and
-the allow_stream opt-in both restore byte-for-byte legacy behavior
-(contracts/narrative-streaming.md).
+"""Tests for orchestrator/orchestrator.py's _call_llm streaming path: incremental frames
+for prose narrative, silence during tool-call rounds, fallback to a non-streaming
+retry on a mid-stream error, and the FF_LLM_STREAMING kill switch.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,14 +35,12 @@ class _Resp:
 
 
 def _content_chunk(text):
-    """One streamed chunk carrying a content delta."""
     delta = types.SimpleNamespace(role=None, content=text, tool_calls=None)
     return types.SimpleNamespace(
         choices=[types.SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
 
 
 def _tool_chunk(index=0, call_id=None, name=None, arguments=None):
-    """One streamed chunk carrying a tool_calls delta fragment."""
     fn = types.SimpleNamespace(name=name, arguments=arguments)
     tc = types.SimpleNamespace(index=index, id=call_id, function=fn)
     delta = types.SimpleNamespace(role=None, content=None, tool_calls=[tc])
@@ -57,8 +49,6 @@ def _tool_chunk(index=0, call_id=None, name=None, arguments=None):
 
 
 class _FakeCompletions:
-    """Records create() kwargs; streams ``chunks`` when stream=True is asked."""
-
     def __init__(
         self,
         chunks=None,
@@ -88,7 +78,6 @@ class _FakeCompletions:
 
 
 def _bare_orch(completions):
-    """A minimal Orchestrator wired to the fake client (no DB, no real WS)."""
     orch = Orchestrator.__new__(Orchestrator)
     orch._llm_unsupported_params = {}
     orch.llm_reasoning_effort = None
@@ -100,8 +89,6 @@ def _bare_orch(completions):
     orch._llm_audit_principals = lambda ws: ("u", "p")
 
     async def _resolve(ws):
-        # Feature 054: _resolve_llm_client_for is async; SYSTEM is the
-        # system-context source (OPERATOR_DEFAULT is retired).
         return (client, CredentialSource.SYSTEM, resolved)
 
     orch._resolve_llm_client_for = _resolve
@@ -126,12 +113,10 @@ def _bare_orch(completions):
 
 
 def _stream_frames(orch):
-    """The ui_stream_data frames the fake socket received."""
     return [f for f in orch._sent_frames if f.get("type") == "ui_stream_data"]
 
 
 async def test_content_path_streams_frames_and_returns_full_text():
-    """A prose narrative emits incremental frames; the return value matches."""
     comp = _FakeCompletions(chunks=[
         _content_chunk("Hello"), _content_chunk(" world"), _content_chunk("!")])
     orch = _bare_orch(comp)
@@ -153,7 +138,6 @@ async def test_content_path_streams_frames_and_returns_full_text():
 
 
 async def test_tool_call_path_emits_no_frames_and_returns_tool_calls():
-    """delta.tool_calls discriminates a tool round: silent + assembled calls."""
     comp = _FakeCompletions(chunks=[
         _tool_chunk(0, call_id="call_a", name="get_weather", arguments='{"cit'),
         _tool_chunk(0, arguments='y": "Rome"}'),
@@ -171,7 +155,6 @@ async def test_tool_call_path_emits_no_frames_and_returns_tool_calls():
 
 
 async def test_json_shaped_content_stays_silent():
-    """A leading '{' means component JSON — delivered whole, never streamed."""
     comp = _FakeCompletions(chunks=[
         _content_chunk('{"type": "card",'), _content_chunk(' "title": "x"}')])
     orch = _bare_orch(comp)
@@ -183,7 +166,6 @@ async def test_json_shaped_content_stays_silent():
 
 
 async def test_mid_stream_error_falls_back_to_non_streaming(caplog):
-    """A provider error mid-stream retries the call non-streaming, silently."""
     sentinel = "SENTINEL_STREAM_BODY_MUST_NOT_ESCAPE"
     comp = _FakeCompletions(
         chunks=[_content_chunk("partial ")],
@@ -205,7 +187,6 @@ async def test_mid_stream_error_falls_back_to_non_streaming(caplog):
 
 
 async def test_flag_off_never_attempts_streaming(monkeypatch):
-    """FF_LLM_STREAMING=false restores the legacy non-streaming call."""
     monkeypatch.setenv("FF_LLM_STREAMING", "false")
     comp = _FakeCompletions(content="plain")
     orch = _bare_orch(comp)
@@ -218,7 +199,6 @@ async def test_flag_off_never_attempts_streaming(monkeypatch):
 
 
 async def test_allow_stream_defaults_off_for_other_callers():
-    """Callers that do not opt in (designer, compaction, …) never stream."""
     comp = _FakeCompletions(content="plain")
     orch = _bare_orch(comp)
     msg, _usage = await orch._call_llm(object(), [{"role": "user", "content": "hi"}])
@@ -227,7 +207,6 @@ async def test_allow_stream_defaults_off_for_other_callers():
 
 
 async def test_chat_loop_context_opts_in_without_new_kwargs():
-    """The route call streams via _NARRATIVE_STREAM_CHAT, legacy signature."""
     from orchestrator.orchestrator import _NARRATIVE_STREAM_CHAT
     comp = _FakeCompletions(chunks=[_content_chunk("Hi"), _content_chunk(" there")])
     orch = _bare_orch(comp)
@@ -243,7 +222,6 @@ async def test_chat_loop_context_opts_in_without_new_kwargs():
 
 
 async def test_no_websocket_never_streams():
-    """Background jobs (websocket=None) keep the non-streaming path."""
     comp = _FakeCompletions(content="plain")
     orch = _bare_orch(comp)
     msg, _usage = await orch._call_llm(

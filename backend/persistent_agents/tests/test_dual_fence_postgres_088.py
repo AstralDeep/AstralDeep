@@ -1,8 +1,8 @@
-"""Real guarded Plane transactions; only external IAM and tool replies are fixtures.
-
-One-shot fixtures use the real stored interactive incarnation, normal JWT
-resolver and ordinary delegated dispatch. They activate no runner or ingress.
+"""Tests for persistent_agents/dispatch_context.py and execution.py through real
+Postgres: one-shot results use both fences and are never redispatched, checkpoints
+roll back on admission-commit failure, and revoked or expired grants recover safely.
 """
+
 import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
@@ -64,7 +64,6 @@ async def change_control(executor, command):
 
 
 def expire_claim(runtime, identity):
-    # Simulate a crashed worker's elapsed lease in this test's isolated schema.
     with runtime.transaction() as tx:
         tx.execute("WITH expired AS (SELECT clock_timestamp()-interval '1 second' AS at) "
             "UPDATE persistent_assignment SET lease_expires_at=expired.at, "
@@ -116,7 +115,6 @@ def test_guarded_finish_rolls_back_checkpoint_when_admission_commit_fails(engine
         assert await current(store, identity) == before
         assert not _episode_lease(executor).terminal
         runner._notify_activity.assert_not_awaited()
-        # The unchanged admission is still selected after the transaction rolled back.
         await asyncio.to_thread(host.work_admission.assert_current_execution, executor.operation_fence)
 
     asyncio.run(scenario())
@@ -183,7 +181,6 @@ async def test_authentic_old_permit_settles_once_but_cannot_return_content(opera
             await asyncio.to_thread(op.executor.orch.work_admission.reselect_execution,
                                     op.executor.operation_fence)
         elif loss == "remote":
-            # External refresh failure; the actual local/JWT resolver remains.
             monkeypatch.setattr(session_authority.web_auth, "_exchange_session_refresh",
                                 AsyncMock(side_effect=ConnectionError("synthetic IAM unavailable")))
         elif loss == "permission":

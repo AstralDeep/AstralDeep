@@ -1,19 +1,8 @@
-"""Per-tool quality-signal computation and `tool_flagged` / `tool_recovered`
-audit-event emission.
-
-A daily background job calls :func:`compute_for_window` once per 24 h
-(scheduled in :mod:`backend.orchestrator.orchestrator`'s startup). The
-function aggregates the prior 14-day window per ``(agent, tool)``,
-classifies each tool as ``healthy`` / ``insufficient-data`` /
-``underperforming`` per the operator-configurable thresholds, persists a
-snapshot row, and emits audit events on transitions.
-
-Defaults (FR-010 / FR-011 / FR-012):
-
-* window = 14 days
-* min eligibility dispatch count = 25
-* flag if ``failure_rate >= 0.20 OR negative_feedback_rate >= 0.30``
+"""Daily per-tool quality-signal job: aggregates a rolling window per (agent, tool) from
+feedback/repository.py, classifies healthy/insufficient-data/underperforming, and
+emits tool_flagged/tool_recovered audit events on transitions.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,15 +40,6 @@ def _read_thresholds():
     )
 
 
-# ───────────────────── trajectory evaluation (C-N5 wiring) ────────────────────
-# When FF_AGENT_EVAL is on, fold a deterministic trajectory-quality signal into
-# the daily job. We reconstruct each turn's ordered tool-call sequence from the
-# hash-chained audit trail (agent_tool_call *.end rows, grouped by
-# correlation_id, ordered by recorded_at) and score each agent's trajectories
-# against its OWN modal trajectory — a consistency/reliability measure (the same
-# posture as τ-bench pass^k) that needs no external ground-truth reference.
-
-#: Cap on trajectories pulled per window (bounds the extra query cost).
 TRAJ_CAP_ENV = "FEEDBACK_QUALITY_TRAJECTORY_CAP"
 DEFAULT_TRAJ_CAP = 2000
 
@@ -68,13 +48,6 @@ def _fetch_agent_trajectories(
     repo: FeedbackRepository, window_start: datetime, window_end: datetime,
     *, cap: int = DEFAULT_TRAJ_CAP,
 ) -> Dict[str, List[List[str]]]:
-    """Reconstruct per-agent ordered tool-call trajectories from the audit log.
-
-    Returns ``{agent_id: [[tool_name, ...], ...]}`` — one inner list per
-    distinct ``correlation_id`` (a turn), tools in ``recorded_at`` order. Reads
-    through Plane's fixed administration query. Best-effort: any error yields
-    an empty mapping so the quality job is never broken by it.
-    """
     try:
         rows = repo._audit.call(
             repo._audit.repository.list_tool_trajectory_events_for_administration,
@@ -98,29 +71,20 @@ def _fetch_agent_trajectories(
 def _score_agent_trajectories(
     trajectories: List[List[str]],
 ) -> Optional[Dict[str, Any]]:
-    """Score one agent's trajectories against its modal (consensus) trajectory.
-
-    Uses ``orchestrator.agent_eval`` (the C-N5 backbone): the most common
-    tool-sequence is the reference; every trajectory is scored against it and
-    folded into a single quality + a pass^k reliability number. Returns ``None``
-    when there is nothing to score or the backbone is unavailable.
-    """
     if not trajectories:
         return None
     try:
         from orchestrator import agent_eval
-    except Exception:  # pragma: no cover — backbone import shouldn't fail
+    except Exception:  # pragma: no cover
         logger.debug("agent_eval: backbone import failed", exc_info=True)
         return None
 
-    # Reference = modal trajectory (most frequent ordered tool sequence).
     modal_key, _ = Counter(tuple(t) for t in trajectories).most_common(1)[0]
     reference = list(modal_key)
 
     pairs = [(t, reference) for t in trajectories]
     batch = agent_eval.score_trajectory_batch(pairs)
 
-    # Reliability: pass^k over "exactly matches the consensus" per turn.
     outcomes = [
         agent_eval.trajectory_exact_match(t, reference) >= 1.0 for t in trajectories
     ]
@@ -142,12 +106,6 @@ def evaluate_trajectories(
     repo: FeedbackRepository, window_start: datetime, window_end: datetime,
     *, cap: int = DEFAULT_TRAJ_CAP,
 ) -> Dict[str, Dict[str, Any]]:
-    """Compute a per-agent trajectory-quality summary for the window.
-
-    Returns ``{agent_id: summary}`` (summary as in :func:`_score_agent_trajectories`).
-    The daily job calls this only when ``FF_AGENT_EVAL`` is enabled; it is a
-    pure read (no writes) and never raises.
-    """
     out: Dict[str, Dict[str, Any]] = {}
     for agent_id, trajectories in _fetch_agent_trajectories(
         repo, window_start, window_end, cap=cap
@@ -180,12 +138,6 @@ async def compute_for_window(
     fail_rate_threshold: Optional[float] = None,
     neg_fb_rate_threshold: Optional[float] = None,
 ) -> List[ToolQualitySignalDTO]:
-    """Compute snapshots for the prior window and emit transition audit events.
-
-    Returns the list of computed snapshots. Caller is responsible for
-    handing them to the proposal generator if it wants to (the synthesizer
-    runs on its own cadence).
-    """
     cfg_window, cfg_min, cfg_fail, cfg_neg = _read_thresholds()
     window_days = window_days or cfg_window
     min_dispatch = min_dispatch if min_dispatch is not None else cfg_min
@@ -236,7 +188,6 @@ async def compute_for_window(
         persisted = repo.insert_quality_signal(new_dto)
         snapshots.append(persisted)
 
-        # Transition detection (FR-012a)
         prior_status = prior.status if prior else None
         if status == "underperforming" and prior_status != "underperforming":
             await _emit_transition_event(
@@ -251,8 +202,6 @@ async def compute_for_window(
                 neg_fb_rate_threshold=neg_fb_rate_threshold,
             )
 
-    # C-N5: fold a deterministic trajectory-quality signal into the job output
-    # (flag-gated; default OFF → byte-identical behaviour to before).
     await _maybe_evaluate_trajectories(repo, window_start, window_end, snapshots)
 
     return snapshots
@@ -262,11 +211,6 @@ async def _maybe_evaluate_trajectories(
     repo: FeedbackRepository, window_start: datetime, window_end: datetime,
     snapshots: List[ToolQualitySignalDTO],
 ) -> Dict[str, Any]:
-    """Score recent agent tool-call trajectories and fold the result into the
-    job output: stamp each snapshot DTO with a ``trajectory_quality`` attribute
-    and emit one ``agent_eval`` audit event per agent. No-op + ``{}`` unless
-    ``FF_AGENT_EVAL`` is on. Never raises (the daily job must not break).
-    """
     try:
         from orchestrator.agent_eval import agent_eval_enabled
         if not agent_eval_enabled():
@@ -276,8 +220,6 @@ async def _maybe_evaluate_trajectories(
             logger.info("agent_eval: no trajectories to score in window")
             return {}
 
-        # Fold into the returned snapshots so callers that inspect them see the
-        # per-agent trajectory quality without a separate query.
         for dto in snapshots:
             summary = summaries.get(dto.agent_id)
             if summary is not None:
@@ -295,14 +237,12 @@ async def _maybe_evaluate_trajectories(
             )
             await _emit_trajectory_event(agent_id, summary)
         return summaries
-    except Exception as exc:  # pragma: no cover — defensive
+    except Exception as exc:  # pragma: no cover
         logger.warning("agent_eval: trajectory evaluation failed: %s", exc)
         return {}
 
 
 async def _emit_trajectory_event(agent_id: str, summary: Dict[str, Any]) -> None:
-    """Emit an ``agent_eval`` (class ``tool_quality``) audit event carrying a
-    per-agent trajectory-quality summary. Best-effort."""
     rec = get_recorder()
     if rec is None:
         return
@@ -338,7 +278,7 @@ async def _emit_trajectory_event(agent_id: str, summary: Dict[str, Any]) -> None
 
 async def _emit_transition_event(
     *,
-    event: str,  # "tool_flagged" | "tool_recovered"
+    event: str,
     dto: ToolQualitySignalDTO,
     fail_rate_threshold: float,
     neg_fb_rate_threshold: float,

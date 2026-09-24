@@ -1,4 +1,7 @@
-"""Owner/chat deletion and authorization-revocation proofs for Feature 065."""
+"""Tests for owner/chat deletion against voice_sessions.py and work_admission.py: hard
+delete fences voice state and retains replay tombstones, a failed physical delete
+rolls back the fence, and old-origin revocation leaves other stages untouched.
+"""
 
 from __future__ import annotations
 

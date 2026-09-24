@@ -1,17 +1,9 @@
-"""Deep-owned host adapter for the owner's saved-results Projection surface.
-
-Feature 088 T044 (FR-023). Lists the owner's committed ``result_publication``
-receipts -- feature 088 T043's exact Work "Save result" approvals
-(``orchestrator.work_publication.WorkPublicationService``) -- using Plane's
-own conservative decoder (``known_publication_action``) over the same
-``persistent_assignment_action`` rows ``AssignmentRepository.list_actions``
-already reads, owner-scoped instead of one operation at a time (Plane has no
-owner-wide publication accessor yet, so this adapter reuses the exact table
-and row shape Plane's own repository queries, never guessing at or widening
-a receipt). Viewing a saved result never mutates, proposes or re-derives
-anything; every value comes straight from the row Plane itself committed at
-Save time, or from the operation's own already-proven public result.
+"""Renders the owner's saved-results surface, listing committed result_publication
+receipts decoded from persistent_assignment_action rows via Plane's
+known_publication_action, the same rows work_publication.py's Save flow commits.
+Read-only.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,9 +13,6 @@ ADMIN_ONLY = False
 HANDLERS: dict = {}
 logger = logging.getLogger("Orchestrator.Chrome.SavedResults")
 
-# How many of the owner's most recent one-shot operations are scanned for a
-# committed publication. Plane has no owner-wide receipt index yet; bounding
-# the scan keeps one owner's long history from making this read unbounded.
 _OPERATION_SCAN_LIMIT = 100
 _PAGE_SIZE = 50
 
@@ -40,14 +29,6 @@ def _enabled(orch) -> bool:
 
 
 def _decoded_receipts(tx, repository, owner_id, *, limit):
-    """One transaction: scan the owner's own operations for committed Saves.
-
-    Newest-committed-first. Only a structurally exact ``succeeded``
-    ``result_publication`` action survives Plane's own decoder
-    (``known_publication_action``); anything else -- an unrelated action kind,
-    a still-open proposal, a half-written or foreign-shaped row -- is skipped,
-    never guessed at or partially rendered.
-    """
     from astralplane.repositories.assignments import plain
     from astralplane.repositories.result_publications import known_publication_action
 
@@ -105,11 +86,6 @@ def _conversation_title(tx, orch, owner_id, conversation_id):
 
 
 def _export_link(orch, conversation_id, render_revision):
-    """The result's own existing authenticated canvas download, unchanged.
-
-    Reuses ``GET /api/export/canvas/{chat_id}.html`` exactly as the workspace
-    timeline and any other canvas already do (feature 028); no new route.
-    """
     try:
         from shared.feature_flags import flags
         if not flags.is_enabled("artifact_export"):

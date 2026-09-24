@@ -1,10 +1,7 @@
-"""Feature 039 (C-2): a2a_card_to_custom must not invent phantom agent ids.
-
-The A2A discovery fallback used to slugify an agent's display name into an id
-(e.g. "Windows Tools (code & system)" -> "windows-tools-(code-&-system)") or use
-a base URL's host:port as the id, diverging from the agent's real id and
-creating phantom permission rows. These tests pin the cleaned behaviour.
+"""Tests for shared/a2a_bridge.py's custom_card_to_a2a: agent ids come from a cleaned
+slug or an explicit override, never a raw display name or a base URL's host:port.
 """
+
 from shared.a2a_bridge import (
     a2a_card_to_custom,
     custom_card_to_a2a,
@@ -28,8 +25,6 @@ def test_slugify_strips_punctuation_and_collapses():
 
 
 def test_no_interface_slugs_clean_id_not_raw_name():
-    # url="" → the win_agent case (no interface in its card) → slug the name,
-    # but cleanly: never "windows-tools-(code-&-system)".
     a2a = custom_card_to_a2a(_custom("Windows Tools (code & system)"), "")
     out = a2a_card_to_custom(a2a)
     assert out.agent_id == "windows-tools-code-system"
@@ -37,7 +32,6 @@ def test_no_interface_slugs_clean_id_not_raw_name():
 
 
 def test_base_url_host_port_is_rejected():
-    # http://host:8771 → last segment "host.docker.internal:8771" is NOT a slug.
     a2a = custom_card_to_a2a(
         _custom("Windows Tools (code & system)"), "http://host.docker.internal:8771"
     )

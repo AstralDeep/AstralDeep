@@ -1,4 +1,8 @@
-"""Strict owner input and bounded resource contracts."""
+"""Tests for persistent_agents/models.py: defaults are finite with unknown money,
+invalid owner input is rejected, and sources must be public, reviewed, in the tool
+allowlist, and free of duplicates or credentials.
+"""
+
 import copy
 from uuid import uuid4
 

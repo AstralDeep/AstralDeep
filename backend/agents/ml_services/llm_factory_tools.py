@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""LLM-Factory tools for the ML Services agent (ported from ``agents/llm_factory``).
-
-Wraps an LLM-Factory Router deployment — a pure OpenAI-compatible reverse
-proxy. Curated tool surface (all names unchanged by the 029 consolidation):
-
-- ``list_models``        — GET /v1/models
-- ``chat_with_model``    — POST /v1/chat/completions (synchronous)
-- ``create_embedding``   — POST /v1/embeddings
-- ``transcribe_audio``   — POST /v1/audio/transcriptions (multipart)
-- ``_credentials_check`` — internal probe (GET /v1/models; dispatched
-                           per-bundle by the union registry)
-
-All tools are synchronous; Router-2 exposes no long-running operations
-suitable for chat use, so ``LONG_RUNNING_TOOLS`` is empty.
+"""LLM-Factory tool slice for the ML Services agent: list/chat/embed/transcribe against
+an OpenAI-compatible Router deployment via _wrapper.py's ExternalServiceClient;
+merged into the union registry by mcp_tools.py.
 """
 import logging
 import os
@@ -37,57 +26,18 @@ LONG_RUNNING_TOOLS: Set[str] = set()
 
 
 def make_client(credentials: Dict[str, str]) -> _wrapper.ExternalServiceClient:
-    """Build an HTTP client scoped to the LLM-Factory credential bundle.
-
-    Args:
-        credentials: Decrypted credential map containing ``LLM_FACTORY_URL``
-            and ``LLM_FACTORY_API_KEY``.
-
-    Returns:
-        An (unvalidated) :class:`~agents.ml_services._wrapper.ExternalServiceClient`
-        (a trailing ``/v1`` on the base URL is stripped automatically).
-    """
     return _wrapper.ExternalServiceClient(credentials, BUNDLE)
 
 
 def _build_client(kwargs: Dict[str, Any]) -> _wrapper.ExternalServiceClient:
-    """Resolve and validate the LLM-Factory client from tool kwargs.
-
-    Args:
-        kwargs: The tool call's ``**kwargs`` carrying ``_credentials`` (and
-            ``_credentials_stale`` when decryption silently failed).
-
-    Returns:
-        A validated client.
-
-    Raises:
-        ValueError: When credentials are absent, stale, or incomplete.
-    """
     return _wrapper.build_client(kwargs, BUNDLE)
 
 
 def _user_facing_error(exc: Exception, service: str = "LLM-Factory") -> str:
-    """Map an HTTP-egress exception to the user-facing chat-rendered string.
-
-    Args:
-        exc: The exception raised by the upstream call.
-        service: Service label for the message; defaults to ``"LLM-Factory"``.
-
-    Returns:
-        A one-line actionable error message.
-    """
     return _wrapper.user_facing_error(exc, service)
 
 
 def _credentials_check(**kwargs) -> Dict[str, Any]:
-    """Probe ``GET /v1/models`` — Router-2 always serves this when auth is valid.
-
-    Args:
-        **kwargs: Tool kwargs carrying ``_credentials``.
-
-    Returns:
-        A ``{"credential_test": ...}`` verdict dict.
-    """
     try:
         client = _build_client(kwargs)
     except ValueError as e:
@@ -102,17 +52,6 @@ def _credentials_check(**kwargs) -> Dict[str, Any]:
 
 
 def list_models(**kwargs):
-    """List models served by the user's LLM-Factory Router deployment.
-
-    Surfaces the richer Router-2 fields (``id``, ``owned_by``,
-    ``max_model_len``) when the upstream provides them.
-
-    Args:
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a model-list Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         resp = client.get("/v1/models")
@@ -139,17 +78,6 @@ def list_models(**kwargs):
 
 def chat_with_model(model_id: str, messages: List[Dict[str, str]],
                     options: Dict[str, Any] = None, **kwargs):
-    """Send a synchronous chat completion to the user's chosen Router-2 model.
-
-    Args:
-        model_id: Identifier of a model served by the Router.
-        messages: OpenAI-style ``[{role, content}, ...]`` message list.
-        options: Extra OpenAI-compatible parameters (temperature, max_tokens, …).
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a reply Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         body = {
@@ -174,19 +102,6 @@ def chat_with_model(model_id: str, messages: List[Dict[str, str]],
 
 
 def create_embedding(model_id: str, input: Union[str, List[str]], **kwargs):
-    """Compute embeddings for ``input`` using the named model.
-
-    Mirrors the OpenAI ``/v1/embeddings`` shape: pass a single string or a
-    list of strings, get back a list of vectors plus the upstream usage.
-
-    Args:
-        model_id: Identifier of an embedding-capable model.
-        input: A single string or list of strings to embed.
-        **kwargs: Tool kwargs (``_credentials``).
-
-    Returns:
-        An MCP UI response dict with a summary Card and ``_data`` (vectors).
-    """
     try:
         client = _build_client(kwargs)
         if input is None or (isinstance(input, str) and not input.strip()):
@@ -219,21 +134,6 @@ def create_embedding(model_id: str, input: Union[str, List[str]], **kwargs):
 
 def transcribe_audio(model_id: str, file_handle: str,
                      language: str = None, **kwargs):
-    """Transcribe an uploaded audio file using the named transcription model.
-
-    Resolves ``file_handle`` through a bounded Plane reader (per-user ownership
-    enforced) and submits the bytes as ``multipart/form-data`` to
-    ``/v1/audio/transcriptions``.
-
-    Args:
-        model_id: Identifier of a transcription-capable model (e.g. whisper-1).
-        file_handle: AstralDeep attachment_id of the audio file.
-        language: Optional ISO-639-1 language hint (e.g. ``'en'``).
-        **kwargs: Tool kwargs (``_credentials``, ``user_id``).
-
-    Returns:
-        An MCP UI response dict with a transcription Card and ``_data``.
-    """
     try:
         client = _build_client(kwargs)
         user_id = kwargs.get("user_id")
@@ -260,11 +160,6 @@ def transcribe_audio(model_id: str, file_handle: str,
         )
     except (ExternalHttpError, ValueError) as e:
         return _ui([Alert(message=_user_facing_error(e), variant="error")], retryable=False)
-
-
-# ---------------------------------------------------------------------------
-# Tool registry (LLM-Factory slice — merged into the union by mcp_tools)
-# ---------------------------------------------------------------------------
 
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {

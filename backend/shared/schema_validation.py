@@ -1,10 +1,6 @@
-"""Bounded, offline JSON Schema validation for agent tool contracts.
-
-Astral accepts JSON Schema 2020-12 at the registration boundary. Validation
-never retrieves a URI: remote references are rejected and local references
-must resolve inside the submitted document. This is deliberately a structural
-validator, not a runtime instance validator, and uses only the standard
-library so feature 064 adds no dependency.
+"""Offline, dependency-free JSON Schema 2020-12 structural validator for agent tool
+registration; never resolves remote refs. Used by orchestrator/mcp_projection.py and
+orchestrator.py to vet tool schemas before registration.
 """
 
 from __future__ import annotations
@@ -40,7 +36,7 @@ _SCHEMA_LIST_KEYWORDS = frozenset(
 
 
 class ToolSchemaError(ValueError):
-    """A tool schema is unsafe or not valid enough to register."""
+    pass
 
 
 def _label(tool_name: str, reason: str) -> ToolSchemaError:
@@ -81,8 +77,6 @@ def validate_tool_schema(
     max_subschemas: int = 512,
     max_bytes: int = 262_144,
 ) -> dict[str, Any]:
-    """Validate without mutation, then return a dialect-declared deep copy."""
-
     if not isinstance(tool_name, str) or not tool_name:
         raise ToolSchemaError("tool name is required for schema validation")
     if not isinstance(schema, Mapping):

@@ -1,25 +1,8 @@
+"""Operator-only audit log CLIs: verify-chain walks a user's hash chain for tamper,
+purge-expired deletes rows past the retention horizon; run via `python -m audit.cli`,
+never exposed over REST.
 """
-Operator-only audit log CLIs.
 
-Two commands:
-
-* ``verify-chain --user-id <id>`` — walk a single user's hash chain
-  forward from genesis and report the first ``event_id`` whose
-  recomputed digest does not match the stored one. Exit code 0 when
-  the chain is clean; non-zero when tamper is detected.
-* ``purge-expired [--horizon-days N]`` — delete rows older than the
-  retention horizon (default 6 years per FR-012). The protective
-  trigger requires the ``audit.allow_purge`` GUC, which the repository
-  sets internally.
-
-Run::
-
-    python -m audit.cli verify-chain --user-id <id>
-    python -m audit.cli purge-expired [--horizon-days 2192]
-
-These commands are NOT exposed via REST. They live on the server only
-and are explicitly out of the user-facing audit-log read surface.
-"""
 from __future__ import annotations
 
 import argparse
@@ -30,7 +13,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Allow ``python -m audit.cli`` from the backend directory
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -99,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     p_purge.add_argument(
         "--horizon-days",
         type=int,
-        default=int(os.getenv("AUDIT_RETENTION_DAYS", "2192")),  # ~6 years
+        default=int(os.getenv("AUDIT_RETENTION_DAYS", "2192")),
         help="Retention horizon in days (default 2192 = 6 years)",
     )
     p_purge.set_defaults(func=cmd_purge_expired)

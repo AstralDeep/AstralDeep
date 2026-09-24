@@ -1,9 +1,6 @@
-"""In-memory fake Database for Feature 031 repository/wiring tests.
-
-Recognizes exactly the queries issued by AttachmentRepository,
-MessageAttachmentRepository, and AttachmentParserRepository (``?`` placeholder
-dialect) and serves them from per-table lists of dicts. Mirrors the approach in
-``conftest.StubDatabase`` but extends coverage to the two new tables.
+"""In-memory fake Database matching exactly the queries AttachmentRepository,
+MessageAttachmentRepository, and AttachmentParserRepository issue, serving per-table
+dict lists. Used across the attachments test suite.
 """
 
 from __future__ import annotations
@@ -264,7 +261,6 @@ class FakeDB:
         self.message_attachment = artifacts.message_attachments.records
         self.attachment_parser = parsers.records
 
-    # -- writes -------------------------------------------------------------
     def execute(self, query: str, params: Tuple = ()) -> _Cursor:
         q = " ".join(query.split()).lower()
         if q.startswith("insert into user_attachments"):
@@ -310,7 +306,6 @@ class FakeDB:
             return _Cursor(1)
         raise NotImplementedError(query)
 
-    # -- reads --------------------------------------------------------------
     def fetch_one(self, query: str, params: Tuple = ()) -> Optional[dict]:
         q = " ".join(query.split()).lower()
         if "from user_attachments where attachment_id = ? and user_id = ? and deleted_at is null" in q:

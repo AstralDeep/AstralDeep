@@ -1,9 +1,6 @@
-"""Authenticated HTTP-upgrade boundary for the Feature 065 voice worker.
-
-The endpoint owns only the short-lived upgrade challenge and WebSocket
-transport lifecycle.  Once authenticated, every registration and session
-frame is delegated to :class:`WorkerPool`, which remains the sole frame,
-direction, sequence, rate, capacity, and assignment authority.
+"""Authenticated HTTP-upgrade boundary for the voice worker socket: owns the challenge
+handshake and transport lifecycle, then delegates every frame to
+voice_coordinator.py's WorkerPool, the sole frame/assignment authority.
 """
 
 from __future__ import annotations
@@ -63,25 +60,21 @@ logger = logging.getLogger(__name__)
 
 
 class WorkerControlEndpointError(RuntimeError):
-    """A content-free endpoint failure safe for process diagnostics."""
-
     def __init__(self, code: str) -> None:
         self.code = code if _ERROR_CODE.fullmatch(code) else "worker_control_error"
         super().__init__(self.code)
 
 
 class WorkerControlConfigError(WorkerControlEndpointError):
-    """The orchestrator worker-control boundary is not safely configured."""
+    pass
 
 
 class WorkerControlAuthError(WorkerControlEndpointError):
-    """An upgrade challenge was missing, stale, replayed, or invalid."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerControlSettings:
-    """Validated server-only challenge and transport bounds."""
-
     secret: bytes = field(repr=False)
     challenge_ttl_seconds: int = 15
     challenge_capacity: int = 256
@@ -127,8 +120,6 @@ class WorkerControlSettings:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class UpgradeChallenge:
-    """One memory-only, single-use HTTP-upgrade challenge."""
-
     nonce: str
     issued_at: int
     expires_at: int
@@ -138,8 +129,6 @@ class UpgradeChallenge:
 
 
 class WorkerChallengeStore:
-    """Bounded single-use challenge registry with eager expiry pruning."""
-
     def __init__(
         self,
         settings: WorkerControlSettings,
@@ -204,18 +193,6 @@ class WorkerChallengeStore:
 
 
 class AdmissionRefusalLog:
-    """Bounded, memory-only retention of refused worker admission attempts.
-
-    Recorded only at the three genuine refusal exits (authentication failure,
-    registration timeout, registration refusal) — never on the healthy
-    challenge-issue leg, and never for a worker that was already admitted.
-
-    Retention is PER STAGE: the pre-accept authentication path is reachable
-    by any unauthenticated client, so its churn must never evict a genuine
-    registration-stage refusal (which requires a validly signed challenge)
-    from the operator's FR-034 view.
-    """
-
     def __init__(
         self,
         *,
@@ -246,8 +223,6 @@ class AdmissionRefusalLog:
         )
 
     def snapshot(self) -> tuple[AdmissionRefusal, ...]:
-        """Return retained refusals, most recent first across both stages."""
-
         merged = [entry for stage in self._entries.values() for entry in stage]
         merged.sort(key=lambda entry: entry.occurred_at, reverse=True)
         return tuple(merged)
@@ -262,8 +237,6 @@ class WorkerDisconnectHook(Protocol):
 
 
 class WorkerFrameHook(Protocol):
-    """Consume one frame only after the pool authenticated every fence."""
-
     def __call__(
         self,
         receipt: WorkerRegistrationReceipt,
@@ -276,8 +249,6 @@ class _RouterOwner(Protocol):
 
 
 class _StarletteWorkerSocket:
-    """Small adapter satisfying the WorkerPool socket contract."""
-
     def __init__(self, websocket: WebSocket) -> None:
         self._websocket = websocket
         self._closed = False
@@ -298,8 +269,6 @@ class _StarletteWorkerSocket:
 
 
 class WorkerControlEndpoint:
-    """Own challenge authentication and one bounded worker socket loop."""
-
     def __init__(
         self,
         pool: WorkerPool,
@@ -326,18 +295,12 @@ class WorkerControlEndpoint:
         )
 
     def readiness(self) -> Any:
-        """Expose the credential-free pool projection to capability wiring."""
-
         return self.pool.readiness()
 
     def worker_status(self) -> tuple[WorkerStatusEntry, ...]:
-        """Expose the credential-free per-worker registry facts (FR-034)."""
-
         return self.pool.worker_status()
 
     def admission_refusals(self) -> tuple[AdmissionRefusal, ...]:
-        """Expose retained admission refusals, most recent first (FR-034)."""
-
         return self.refusals.snapshot()
 
     async def handle(self, websocket: WebSocket) -> None:
@@ -424,13 +387,6 @@ class WorkerControlEndpoint:
         self,
         receipt: WorkerRegistrationReceipt,
     ) -> None:
-        """Reconcile assignments fenced while replacing the same worker.
-
-        The replaced connection's later unregister is deliberately a no-op,
-        so its assignment IDs must reach the same credential-free cleanup
-        hook immediately after the replacement commits.
-        """
-
         if receipt.fenced_assignments and self._disconnect_hook is not None:
             await self._disconnect_hook(receipt, ())
 
@@ -553,8 +509,6 @@ class WorkerControlEndpoint:
         reservation: SessionReservation,
         media_grant_revision: int,
     ) -> None:
-        """End and release exactly one rejected assignment, preserving peers."""
-
         try:
             await self.pool.send_session_command(
                 reservation,
@@ -587,8 +541,6 @@ class WorkerControlEndpoint:
         self,
         releases: tuple[WorkerConnectionRelease, ...],
     ) -> None:
-        """Deliver every lease-expiry fence before unregister becomes a no-op."""
-
         if self._disconnect_hook is None:
             return
         for release in releases:
@@ -612,8 +564,6 @@ def install_router(
     disconnect_hook: WorkerDisconnectHook | None = None,
     frame_hook: WorkerFrameHook | None = None,
 ) -> WorkerControlEndpoint:
-    """Install the worker-only route without importing the application singleton."""
-
     state = getattr(app, "state", None)
     existing = getattr(state, _APP_STATE_KEY, None) if state is not None else None
     if existing is not None:
@@ -636,8 +586,6 @@ def install_router(
 
 
 def _contains_route_path(owner: Any, path: str) -> bool:
-    """Inspect both ordinary routes and FastAPI's included-router wrappers."""
-
     pending = [owner]
     seen: set[int] = set()
     while pending:
@@ -761,10 +709,7 @@ async def _deny(
         headers=safe_headers,
         media_type=None,
     )
-    # Uvicorn supplies the HTTP-upgrade denial Content-Length itself.  Keeping
-    # Starlette's automatically generated copy produces two Content-Length
-    # headers on the wire; strict WebSocket clients correctly reject that as
-    # an invalid HTTP response before they can read the challenge headers.
+    # Strip it - a duplicate Content-Length breaks strict WS clients
     response.raw_headers = [
         (name, value)
         for name, value in response.raw_headers

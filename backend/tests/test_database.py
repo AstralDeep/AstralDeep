@@ -1,4 +1,6 @@
-"""HistoryManager integration over the application-scoped Plane runtime."""
+"""Tests for HistoryManager (orchestrator/history.py) over the application-scoped Plane
+runtime: schema initialization, chat creation, and message append/read.
+"""
 
 from __future__ import annotations
 

@@ -1,9 +1,6 @@
-"""Deep-owned host adapters for AstralProjection chrome surfaces.
-
-AstralProjection owns reusable view models, rendering, adaptation, and static
-resources. These adapters remain in AstralDeep because they authorize and
-query Deep services or execute Deep commands. Importing Projection must never
-import these host modules.
+"""Registry mapping each Projection chrome surface key to its host adapter module.
+get_surface() lazily imports one by key; collect_handlers() imports every surface and
+merges their HANDLERS maps, logging rather than raising on a failed import.
 """
 
 from __future__ import annotations
@@ -39,15 +36,11 @@ SURFACE_MODULES = {
 
 
 def get_surface(key: str):
-    """Resolve a registered host adapter, or return ``None`` for unknown keys."""
-
     path = SURFACE_MODULES.get(key)
     return importlib.import_module(path) if path else None
 
 
 def collect_handlers() -> dict[str, tuple[str, object]]:
-    """Collect host-authorized action handlers outside the Projection package."""
-
     handlers: dict[str, tuple[str, object]] = {}
     for key, path in SURFACE_MODULES.items():
         try:

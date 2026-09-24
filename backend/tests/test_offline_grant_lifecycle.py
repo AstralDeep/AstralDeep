@@ -1,16 +1,8 @@
-"""EC-3 — real offline-grant lifecycle (features 025/028), no OfflineGrantStore mocks.
-
-Exercises ``orchestrator.offline_grant.OfflineGrantStore`` against an isolated
-current Plane PostgreSQL runtime: capture (Fernet encryption at rest,
-fail-closed without a key),
-revoke_for_user, and the per-run ``mint_access_token`` gate — which must refuse
-revoked / expired / unknown grants BEFORE any Keycloak HTTP call. Also proves
-``web_auth.auth_logout`` revokes the signing-out user's grants through the REAL
-store (only the Keycloak revoke HTTP is monkeypatched).
-
-Every row is keyed by a uuid4 user_id and the database is dropped after the
-module.
+"""Tests for orchestrator/offline_grant.py's OfflineGrantStore and web_auth.auth_logout
+against real Plane Postgres: encrypted capture, revocation, and mint_access_token
+refusing revoked/expired/unknown grants before any Keycloak call.
 """
+
 import asyncio
 import json
 import secrets
@@ -32,10 +24,6 @@ from tests.helpers.session_plane_runtime import (
 _DAY_MS = 86_400_000
 
 
-# ---------------------------------------------------------------------------
-# Helpers / fixtures
-# ---------------------------------------------------------------------------
-
 class _FakeRequest:
     def __init__(self, cookies=None, query_params=None, base_url="http://localhost:8001/"):
         self.cookies = cookies or {}
@@ -51,8 +39,6 @@ def plane_runtime():
 
 @pytest.fixture()
 def fernet_key(monkeypatch):
-    """A fresh Fernet key, visible both via env and via the module-level
-    constant that offline_grant imported from agentic_settings at load time."""
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("OFFLINE_GRANT_ENC_KEY", key)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", key)
@@ -78,7 +64,6 @@ def _grant_record(plane_runtime, user_id, grant_id):
 
 
 def _capture(store, user_id, refresh_token, agent_id=None):
-    """Capture consent from a real canonical session, as product callers do."""
     if refresh_token:
         sessions = web_session_store(store._grants.plane_runtime)
         sid = "consent-" + uuid.uuid4().hex
@@ -115,8 +100,6 @@ def _revoke_grants(plane_runtime, *user_ids):
 
 
 def _install_exploding_idp(monkeypatch):
-    """Any instantiation of aiohttp.ClientSession fails the test outright —
-    refusal paths must trip BEFORE the IdP is contacted."""
     calls = []
 
     class _ExplodingClientSession:
@@ -131,7 +114,6 @@ def _install_exploding_idp(monkeypatch):
 
 
 def _install_fake_idp(monkeypatch, status=200, payload=None):
-    """Replace aiohttp.ClientSession with a capture-only fake token endpoint."""
     captured = []
     payload = payload or {}
 
@@ -178,15 +160,9 @@ def _install_fake_idp(monkeypatch, status=200, payload=None):
     return captured
 
 
-# ---------------------------------------------------------------------------
-# capture — encryption at rest, fail-closed posture
-# ---------------------------------------------------------------------------
-
 def test_capture_persists_encrypted_grant(
     plane_runtime, grant_store, fernet_key
 ):
-    """025 FR-022: capture stores the refresh token Fernet-encrypted with a
-    365-day expiry; the plaintext never lands in the row."""
     user_id = f"u-{uuid.uuid4()}"
     plaintext = f"offline-rt-{uuid.uuid4()}"
     try:
@@ -198,7 +174,7 @@ def test_capture_persists_encrypted_grant(
         assert row.revoked_at is None
 
         enc = row.encrypted_refresh_token
-        assert plaintext.encode() not in enc                      # not plaintext at rest
+        assert plaintext.encode() not in enc
         decrypted = Fernet(fernet_key.encode()).decrypt(enc).decode()
         assert decrypted.startswith(og._SESSION_REFERENCE_PREFIX)
         assert plaintext not in decrypted
@@ -211,8 +187,6 @@ def test_capture_persists_encrypted_grant(
 
 
 def test_capture_fails_closed_without_key(plane_runtime, monkeypatch):
-    """025: with OFFLINE_GRANT_ENC_KEY unset, capture refuses — it never falls
-    back to plaintext storage."""
     monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", None)
     user_id = f"u-{uuid.uuid4()}"
@@ -228,7 +202,6 @@ def test_capture_fails_closed_without_key(plane_runtime, monkeypatch):
 
 
 def test_capture_rejects_empty_refresh_token(plane_runtime, grant_store):
-    """025: a session without offline_access yields no refresh token — refuse."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         with pytest.raises(OfflineGrantError, match="consenting session required"):
@@ -238,15 +211,9 @@ def test_capture_rejects_empty_refresh_token(plane_runtime, grant_store):
         _revoke_grants(plane_runtime, user_id)
 
 
-# ---------------------------------------------------------------------------
-# revoke_for_user
-# ---------------------------------------------------------------------------
-
 def test_revoke_for_user_sets_revoked_at_and_returns_count(
     plane_runtime, grant_store
 ):
-    """EC-3: revoke_for_user returns the number of live grants revoked and
-    stamps revoked_at; a second call is a no-op (already revoked)."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
@@ -257,19 +224,14 @@ def test_revoke_for_user_sets_revoked_at_and_returns_count(
         assert row.revoked_at > 0
         assert grant_store.is_valid(grant_id, user_id=user_id) is False
 
-        assert grant_store.revoke_for_user(user_id) == 0  # idempotent
+        assert grant_store.revoke_for_user(user_id) == 0
     finally:
         _revoke_grants(plane_runtime, user_id)
 
 
-# ---------------------------------------------------------------------------
-# mint_access_token — refusal BEFORE any IdP contact (FR-024)
-# ---------------------------------------------------------------------------
-
 def test_mint_refuses_revoked_grant_before_any_idp_call(
     plane_runtime, grant_store, monkeypatch
 ):
-    """025 FR-024: a revoked grant is refused locally — Keycloak is never hit."""
     user_id = f"u-{uuid.uuid4()}"
     calls = _install_exploding_idp(monkeypatch)
     try:
@@ -286,7 +248,6 @@ def test_mint_refuses_revoked_grant_before_any_idp_call(
 def test_mint_refuses_expired_grant_before_any_idp_call(
     plane_runtime, grant_store, fernet_key, monkeypatch
 ):
-    """025 FR-024: past the 365-day cap, mint refuses without contacting the IdP."""
     user_id = f"u-{uuid.uuid4()}"
     calls = _install_exploding_idp(monkeypatch)
     try:
@@ -317,7 +278,6 @@ def test_mint_refuses_expired_grant_before_any_idp_call(
 def test_mint_refuses_unknown_grant_before_any_idp_call(
     plane_runtime, fernet_key, monkeypatch
 ):
-    """025: a nonexistent grant id is refused locally."""
     calls = _install_exploding_idp(monkeypatch)
     store = OfflineGrantStore(
         plane_runtime=plane_runtime,
@@ -329,15 +289,9 @@ def test_mint_refuses_unknown_grant_before_any_idp_call(
     assert store.is_valid(str(uuid.uuid4()), user_id="missing-user") is False
 
 
-# ---------------------------------------------------------------------------
-# mint_access_token — exchange path (HTTP boundary faked, store real)
-# ---------------------------------------------------------------------------
-
 def test_mint_happy_path_round_trips_refresh_token(
     plane_runtime, grant_store, monkeypatch
 ):
-    """025: a live grant decrypts back to the original refresh token and posts
-    a grant_type=refresh_token exchange; the fresh access token is returned."""
     user_id = f"u-{uuid.uuid4()}"
     plaintext = f"rt-{uuid.uuid4()}"
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "http://keycloak.test/token")
@@ -358,7 +312,7 @@ def test_mint_happy_path_round_trips_refresh_token(
         assert url == "http://keycloak.test/token"
         assert data["grant_type"] == "refresh_token"
         assert data["client_id"] == "astral-test-client"
-        assert data["refresh_token"] == plaintext        # Fernet round-trip
+        assert data["refresh_token"] == plaintext
         assert "client_secret" not in data
     finally:
         _revoke_grants(plane_runtime, user_id)
@@ -367,7 +321,6 @@ def test_mint_happy_path_round_trips_refresh_token(
 def test_mint_fails_safe_on_idp_rejection(
     plane_runtime, grant_store, monkeypatch
 ):
-    """025 FR-024: Keycloak-side revocation (non-200 exchange) fails the run safe."""
     user_id = f"u-{uuid.uuid4()}"
     monkeypatch.setenv("KEYCLOAK_TOKEN_URL", "http://keycloak.test/token")
     _install_fake_idp(monkeypatch, status=401, payload={"error": "invalid_grant"})
@@ -379,15 +332,9 @@ def test_mint_fails_safe_on_idp_rejection(
         _revoke_grants(plane_runtime, user_id)
 
 
-# ---------------------------------------------------------------------------
-# auth_logout integration — REAL OfflineGrantStore (FR-012 / 025 linkage)
-# ---------------------------------------------------------------------------
-
 def test_auth_logout_revokes_real_offline_grant(
     plane_runtime, grant_store, monkeypatch
 ):
-    """028 FR-012: /auth/logout revokes the user's feature-025 offline grants
-    through the real store — only the Keycloak revoke HTTP is faked."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
@@ -425,7 +372,6 @@ def test_auth_logout_revokes_real_offline_grant(
         assert session_store.get(sid) is None
         assert revoked_refresh == [session_refresh]
 
-        # The REAL store marked the grant revoked, and mint now refuses it.
         row = _grant_record(plane_runtime, user_id, grant_id)
         assert row is not None and row.revoked_at is not None
         assert grant_store.is_valid(grant_id, user_id=user_id) is False
@@ -440,10 +386,6 @@ def test_auth_logout_revokes_real_offline_grant(
         purge_revocations(plane_runtime, (user_id,))
 
 
-# ---------------------------------------------------------------------------
-# Token endpoint resolution — KEYCLOAK_AUTHORITY-derived, fail-closed
-# ---------------------------------------------------------------------------
-
 def _clear_keycloak_env(monkeypatch):
     for name in (
         "KEYCLOAK_TOKEN_URL",
@@ -455,9 +397,6 @@ def _clear_keycloak_env(monkeypatch):
 
 
 def test_token_endpoint_derives_from_keycloak_authority(monkeypatch):
-    """Production sets only KEYCLOAK_AUTHORITY (realm 'Astral'); the refresh
-    exchange must hit that realm, not a guessed ``/realms/astral`` path on an
-    empty host."""
     _clear_keycloak_env(monkeypatch)
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example.edu/realms/Astral/")
     assert (
@@ -490,8 +429,8 @@ def test_token_endpoint_legacy_pair_requires_both_and_never_guesses_realm(monkey
     "env",
     [
         {},
-        {"KEYCLOAK_REALM": "astral"},                    # the old silent default
-        {"KEYCLOAK_AUTHORITY": "iam.example.edu/realms/Astral"},  # no scheme
+        {"KEYCLOAK_REALM": "astral"},
+        {"KEYCLOAK_AUTHORITY": "iam.example.edu/realms/Astral"},
         {"KEYCLOAK_TOKEN_URL": "/realms/astral/protocol/openid-connect/token"},
     ],
 )
@@ -527,8 +466,6 @@ def test_mint_uses_authority_derived_endpoint(
 def test_mint_refuses_before_idp_when_endpoint_unconfigured(
     plane_runtime, grant_store, monkeypatch
 ):
-    """No endpoint → fail closed BEFORE any HTTP and before decrypting the
-    refresh token; the derive() caller maps this to a named skip reason."""
     user_id = f"u-{uuid.uuid4()}"
     _clear_keycloak_env(monkeypatch)
     calls = _install_exploding_idp(monkeypatch)
@@ -542,7 +479,7 @@ def test_mint_refuses_before_idp_when_endpoint_unconfigured(
     monkeypatch.setattr(og, "_fernet", _spy_fernet)
     try:
         grant_id = _capture(grant_store, user_id, f"rt-{uuid.uuid4()}")
-        decrypts.clear()  # capture legitimately encrypts
+        decrypts.clear()
         with pytest.raises(og.TokenEndpointUnconfigured, match="KEYCLOAK_AUTHORITY"):
             asyncio.run(grant_store.mint_access_token(grant_id, user_id=user_id))
         assert calls == []

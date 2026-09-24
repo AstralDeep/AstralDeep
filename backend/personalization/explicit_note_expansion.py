@@ -1,9 +1,8 @@
-"""Versioned, bounded expansion of explicitly selected authenticated note heads.
-
-Output text exists only in memory. Callers may retain the exact references and
-keyed binding, and must re-resolve the heads at every authority boundary. No
-provider token estimate or execution permission is inferred by this pure layer.
+"""Versioned, bounded expansion of selected note heads into ephemeral text plus a
+durable-safe keyed reference, re-resolved at every authority boundary by
+selected_guidance_boundary.py; never itself an authorization.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -39,8 +38,6 @@ def _sign(key, domain, payload):
 
 @dataclass(frozen=True, slots=True)
 class ExplicitNoteReference:
-    """An exact selected head and keyed binding; never a plaintext content hash."""
-
     owner_id: str
     note_id: str
     revision: int
@@ -58,8 +55,6 @@ class ExplicitNoteReference:
 
 @dataclass(frozen=True, slots=True)
 class ExpandedExplicitNotes:
-    """Ephemeral text plus durable-safe references/MAC, not an authorization fence."""
-
     references: tuple[ExplicitNoteReference, ...]
     key_id: str
     binding: str = field(repr=False)
@@ -70,7 +65,6 @@ class ExpandedExplicitNotes:
 def capture_note_reference(note: EncryptedExplicitNote, *, cipher: ExplicitNoteCipher,
                            binding_key: PrivateBindingKey, owner_id: str,
                            now_ms: int) -> ExplicitNoteReference:
-    """Authenticate the current enabled value before binding its exact opaque row."""
     if type(cipher) is not ExplicitNoteCipher:
         raise ExplicitNoteUnavailable()
     opened = cipher.open(note, owner_id=owner_id, now_ms=now_ms)
@@ -85,13 +79,6 @@ def expand_explicit_notes(*, owner_id: str, selections: tuple[ExplicitNoteRefere
                           current_notes: tuple[EncryptedExplicitNote, ...],
                           cipher: ExplicitNoteCipher, binding_key: PrivateBindingKey,
                           now_ms: int, approved_byte_allowance: int) -> ExpandedExplicitNotes:
-    """Expand exact heads in ID order within an explicit approved byte allowance.
-
-    The allowance is the caller's already-approved *remaining* input budget;
-    skills, instructions, framing and provider token accounting belong to that
-    caller. Refusal never truncates, substitutes a newer revision or silently
-    drops an unavailable selection. Repeated calls do not authorize later use.
-    """
     _owner(owner_id)
     _integer(now_ms)
     _key(binding_key)

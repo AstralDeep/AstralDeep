@@ -1,4 +1,7 @@
-"""Feature 074 T178: no governed effect exists without one matching claim."""
+"""Tests for orchestrator/governed_dispatch.py, lets_client.py and lets_gateway.py:
+every physical effect has exactly one matching receipt and claim, and denials or
+plane-claim failures never reach an effect.
+"""
 
 from __future__ import annotations
 

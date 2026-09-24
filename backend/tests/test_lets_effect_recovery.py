@@ -1,4 +1,7 @@
-"""Owner-scoped recovery of stale LETS protected-effect checkpoints."""
+"""Tests for orchestrator/lets_lifecycle.py and lets_reconciler.py: owner-scoped
+recovery of stale protected-effect checkpoints, resolving known terminal outcomes
+without false failures, and rejecting invalid cutoff or staleness values.
+"""
 
 from __future__ import annotations
 

@@ -1,16 +1,8 @@
-"""Feature 026 — T002: catalog parity between the legacy ``shared.primitives``
-module and the ``astralprims`` package.
-
-Verifies that ``astralprims`` defines every primitive type the product currently
-uses, with the same per-type fields, so web parity (SC-001) is achievable. The
-only intentional base-field rename is ``style`` (legacy) -> ``css`` (astralprims).
-
-Two layers:
-  * A durable, hard-coded catalog assertion (survives deletion of the legacy
-    module at the cutover gate).
-  * A dynamic cross-check against ``shared.primitives`` while it still exists
-    (skipped automatically once the legacy module is removed).
+"""Tests that astralprims/__init__.py's primitive catalog covers every type and field
+the product uses, including the style→css rename, cross-checked dynamically against
+the legacy shared.primitives module while it still exists.
 """
+
 import importlib
 
 import pytest
@@ -19,7 +11,6 @@ import astralprims
 from astralprims import Primitive, create_ui_response
 
 
-# type string -> astralprims class name + the per-type (non-base) fields we rely on
 EXPECTED = {
     "container": ("Container", {"children", "direction"}),
     "text": ("Text", {"content", "variant"}),
@@ -51,10 +42,6 @@ EXPECTED = {
 }
 
 
-# Dashboard primitives introduced by astralprims 0.2.0 (feature 029 follow-up:
-# badge/hero/keyvalue/timeline/rating). Skipped while the environment still has
-# 0.1.x installed so pre-publish images keep passing; once 0.2.0 lands in the
-# image these assert exactly like the durable catalog above.
 EXPECTED_0_2 = {
     "badge": ("Badge", {"label", "variant", "icon"}),
     "hero": ("Hero", {"title", "subtitle", "eyebrow", "icon", "variant", "badges"}),
@@ -92,9 +79,7 @@ def test_astralprims_exposes_type_and_fields(type_name):
     cls_name, fields = EXPECTED[type_name]
     cls = getattr(astralprims, cls_name)
     inst = cls()
-    # the declared `type` string matches
     assert inst.to_dict()["type"] == type_name
-    # every relied-upon field is a real model field
     model_fields = set(cls.model_fields.keys())
     missing = fields - model_fields
     assert not missing, f"{cls_name} missing fields: {missing}"
@@ -108,7 +93,6 @@ def test_from_dict_roundtrips_every_type():
 
 
 def test_base_fields_present():
-    # css (renamed from legacy `style`), id, class, tooltip, attributes escape hatch
     fields = set(astralprims.Text.model_fields.keys())
     assert {"css", "id", "tooltip", "attributes"}.issubset(fields)
 
@@ -132,15 +116,12 @@ def test_table_pagination_roundtrip():
 
 
 def test_dynamic_crosscheck_against_legacy_module_if_present():
-    """If the legacy module still exists, every legacy type must exist in astralprims
-    with matching non-base fields. Skipped once the module is removed at cutover."""
     try:
         legacy = importlib.import_module("shared.primitives")
     except Exception:
         pytest.skip("legacy shared.primitives removed (post-cutover) — durable catalog test covers parity")
 
     base_fields = {"type", "id", "style", "tooltip", "css", "class_name", "attributes"}
-    # discover legacy dataclasses that declare a `type`
     import dataclasses
     legacy_types = {}
     for name in dir(legacy):

@@ -1,15 +1,8 @@
-"""Unit tests for the unified remote-compute agent class (feature 063).
-
-Covers ``agents.remote_compute`` end to end without a real Plane runtime, SSH socket,
-or event-loop-bound orchestrator: construction + dependency wiring into both verb
-libraries, the unioned 18-verb registry, the agent card the orchestrator registers,
-and ``MCPServer``/``handle_mcp_request`` routing into each risk tier.
-
-Hermetic by construction — the Plane binding and ``CredentialManager`` are
-replaced with doubles before the agent is built, the ECIES key is written to a
-tmp path via ``AGENT_KEY_PATH`` (never the shared ``backend/data/agent_keys`` file),
-and the transport seam uses ``FakeTransport``.
+"""Tests for agents/remote_compute/remote_compute_agent.py: dependency wiring into both
+verb libraries, the unioned 18-verb registry, the agent card, and MCPServer routing,
+without a real Plane or SSH socket.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,11 +36,6 @@ class FakeCredentialManager:
 
 @pytest.fixture(autouse=True)
 def _isolate_module_state(monkeypatch, tmp_path):
-    """Restore both libraries' wired deps + the transport seam after every test.
-
-    ``register_deps`` sets module GLOBALS shared with every other 063 suite, so a
-    construction test would otherwise leak its doubles into whatever runs next.
-    """
     saved = (obs._DB, obs._CREDMGR, ctl._DB, ctl._CREDMGR, ctl._BLOBS)
     FakeCredentialManager.instances = []
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "remote-compute-1.pem"))
@@ -86,8 +74,6 @@ def _call(server: MCPServer, tool: str, **arguments):
 
 
 class _FakeWS:
-    """Captures the frames ``handle_mcp_request`` writes back to the orchestrator."""
-
     def __init__(self):
         self.sent: list = []
 
@@ -95,15 +81,11 @@ class _FakeWS:
         self.sent.append(text)
 
 
-# ── identity + construction ───────────────────────────────────────────────────
-
 def test_agent_identity_is_the_single_grantable_remote_compute_agent():
     agent = _agent()
     assert agent.agent_id == "remote-compute-1"
     assert agent.service_name == "Remote Compute"
     assert "ssh" in agent.skill_tags and "control" in agent.skill_tags
-    # UI v2 promises the same confirmation boundary in user-facing language.
-    # Destructive-call enforcement is covered by the dispatch tests below.
     assert "Anything destructive asks you first." in agent.description
 
 
@@ -112,7 +94,6 @@ def test_construction_wires_one_plane_binding_into_both_verb_libraries():
     ctl.register_deps(None, None, None)
     agent = _agent()
     assert agent.agent_id == "remote-compute-1"
-    # The same pool-free binding + CredentialManager reach both risk tiers.
     binding = obs._DB
     assert binding is ctl._DB
     assert ctl._BLOBS is not None
@@ -153,8 +134,6 @@ def test_missing_plane_dependency_fails_closed_without_rebinding():
     assert obs._DB is sentinel and ctl._DB is sentinel
 
 
-# ── the union (FR-024) ────────────────────────────────────────────────────────
-
 def test_registry_is_exactly_nine_plus_nine_with_no_key_collision():
     assert len(obs.TOOL_REGISTRY) == 9 and len(ctl.TOOL_REGISTRY) == 9
     assert set(obs.TOOL_REGISTRY) & set(ctl.TOOL_REGISTRY) == set()
@@ -170,15 +149,11 @@ def test_register_deps_propagates_to_both_libraries():
 
 
 def test_agent_serves_the_unified_registry_by_reference():
-    # Not a copy: the entry dicts the agent serves ARE the ones the source
-    # modules built, so destructive/scope metadata cannot drift.
     server = _agent().mcp_server
     assert server.tools is unified.TOOL_REGISTRY
     for name, entry in {**obs.TOOL_REGISTRY, **ctl.TOOL_REGISTRY}.items():
         assert server.tools[name] is entry
 
-
-# ── agent card ────────────────────────────────────────────────────────────────
 
 def test_card_publishes_all_eighteen_skills_with_their_scopes():
     card = _agent().card
@@ -204,8 +179,6 @@ def test_card_metadata_carries_the_public_key_and_tags():
     assert card.metadata["public_key_jwk"]["kty"] == "EC"
     assert all(set(s.tags) == set(RemoteComputeAgent.skill_tags) for s in card.skills)
 
-
-# ── MCPServer routing ─────────────────────────────────────────────────────────
 
 def test_tools_list_returns_every_verb_with_a_schema():
     server = _agent().mcp_server
@@ -258,8 +231,6 @@ def test_tools_call_routes_into_the_mutating_library(monkeypatch):
 
 
 def test_error_variant_component_becomes_an_error_response():
-    # No principal on the call → the verb's honest refusal alert, which the
-    # dispatch contract must surface as an MCP error (not a success payload).
     resp = _call(_agent().mcp_server, "list_machines")
     assert resp.error["code"] == -32603 and resp.error["retryable"] is False
     assert "unattended_refused" in resp.error["message"]
@@ -320,8 +291,6 @@ def test_plain_dict_result_passes_through_without_ui_components():
     assert resp.result == {"n": 1} and resp.ui_components is None
 
 
-# ── handle_mcp_request (the transport-facing entry point) ─────────────────────
-
 async def test_handle_mcp_request_dispatches_and_replies(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.list_machines",
                         lambda db, uid: [])
@@ -337,7 +306,6 @@ async def test_handle_mcp_request_dispatches_and_replies(monkeypatch):
     assert payload["type"] == "mcp_response" and payload["request_id"] == "req-7"
     assert payload["error"] is None and payload["result"] == {"machines": []}
     assert payload["ui_components"][0]["type"] == "card"
-    # The runtime bridge is injected for every tools/call (verbs take **kwargs).
     assert msg.params["arguments"]["_runtime"].agent_id == "remote-compute-1"
 
 
@@ -348,8 +316,6 @@ async def test_handle_mcp_request_serves_tools_list():
     payload = json.loads(ws.sent[0])
     assert len(payload["result"]["tools"]) == 18
 
-
-# ── CLI entry point ───────────────────────────────────────────────────────────
 
 def test_module_main_builds_the_agent_and_runs_it(monkeypatch):
     started = []
@@ -365,7 +331,7 @@ def test_module_main_builds_the_agent_and_runs_it(monkeypatch):
 
     def _fake_asyncio_run(coro):
         started.append(coro)
-        coro.close()  # never actually serve — the coroutine is inert until awaited
+        coro.close()
 
     monkeypatch.setattr(asyncio, "run", _fake_asyncio_run)
     monkeypatch.setattr(

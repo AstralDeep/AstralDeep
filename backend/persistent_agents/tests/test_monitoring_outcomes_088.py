@@ -1,4 +1,7 @@
-"""Typed monitoring outcomes are exact, bounded and never invent equality (T042)."""
+"""Tests for persistent_agents/monitoring_observation.py: classification is exact and
+bounded, byte-identical versus reordered content, incomplete extraction is never a
+definite outcome, and typed records outrank legacy cursors.
+"""
 
 from uuid import uuid4
 
@@ -116,7 +119,6 @@ def test_incomplete_extraction_is_never_initial_unchanged_or_changed(flags, has_
     assert record["observation_sequence"] == (2 if has_prior else 0)
     assert record["complete_source_set"] == []
     assert record["prior_result_digest"] == (digest(complete) if has_prior else None)
-    # The same bytes classified as unchanged only when the extractor was complete.
     assert classify(binding(incomplete), incomplete)["kind"] == "insufficient_evidence"
     assert classify(binding(complete), complete)["kind"] == "unchanged"
 
@@ -181,7 +183,6 @@ def test_prior_observation_reads_typed_records_before_legacy_cursors():
     assert prior_observation({"observation": unchanged}, source_configuration_digest=SOURCE_DIGEST) == binding(legacy())
     insufficient = classify({"revision_digest": "b" * 64, "result_digest": None, "sequence": 1}, legacy())
     assert prior_observation({"observation": insufficient}, source_configuration_digest=SOURCE_DIGEST) is None
-    # Another source configuration or a malformed record is not a prior.
     assert prior_observation({"observation": first}, source_configuration_digest="0" * 64) is None
     assert prior_observation({"observation": {**first, "kind": "weird"}, "cursor": {"revision": first["revision_digest"], "sequence": 1}},
                              source_configuration_digest=SOURCE_DIGEST) is None

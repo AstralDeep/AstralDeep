@@ -1,4 +1,6 @@
-"""Adversarial interruption guards for Feature 065 direct RTC speech."""
+"""Tests for voice_agent/session.py's barge-in and interruption handling: capture
+fencing timing, playout holds, echo-fingerprint suppression, and teardown races.
+"""
 
 from __future__ import annotations
 
@@ -42,8 +44,6 @@ from voice_agent.tests.test_session_start_065 import (
 
 
 class SequencedLocalParticipant(FakeLocalParticipant):
-    """Publish a distinct SID for every replacement output track."""
-
     async def publish_track(
         self,
         track: FakeTrack,
@@ -84,8 +84,6 @@ class PlannedRtcFactory(FakeRtcFactory):
 
 
 class CancellationResistantCaptureSource(FakeAudioSource):
-    """Model one native capture call that acknowledges cancellation late."""
-
     def __init__(self, *, hold_close: bool = False) -> None:
         super().__init__()
         self.hold_close = hold_close
@@ -100,8 +98,6 @@ class CancellationResistantCaptureSource(FakeAudioSource):
         except asyncio.CancelledError:
             self.cancel_seen.set()
             await self.capture_release.wait()
-        # Deliberately append even after close. The worker's post-close clear
-        # must remove this stale frame before replacing the source.
         self.frames.append(frame)
 
     async def aclose(self) -> None:
@@ -129,8 +125,6 @@ class HoldingPlayoutSource(FakeAudioSource):
 
 
 class DelayedCancellationTts:
-    """Return stale PCM after cancellation so epoch handling is exercised."""
-
     def __init__(self) -> None:
         self.entered = [asyncio.Event(), asyncio.Event()]
         self.release = [asyncio.Event(), asyncio.Event()]
@@ -402,15 +396,11 @@ async def test_source_drain_and_client_terminal_keep_capture_closed_for_tail(
     await asyncio.sleep(0)
     assert vad.calls == []
 
-    # This generation-fenced command models the coordinator's release only
-    # after an exact authenticated client terminal playout event.
     tail_epoch = session.capture_epoch
     session.deliver(_set_capture(True))
     await _wait_for(lambda: session._playout_tail_guard)
     assert session.capture_open is False
 
-    # A confirmation timeout already queued at the terminal boundary is stale
-    # once the authenticated release has entered its tail phase.
     session._enqueue_rtc(
         _OwnedEvent("client_playout_timeout", (session._playout_hold_epoch,))
     )
@@ -418,8 +408,6 @@ async def test_source_drain_and_client_terminal_keep_capture_closed_for_tail(
     await asyncio.sleep(0)
     assert task.done() is False
 
-    # Render-tail frames that arrive after the client terminal remain fenced,
-    # and their old epoch cannot cross the later listening transition.
     session._enqueue_rtc(_audio_event(tail_epoch))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -514,8 +502,6 @@ async def test_recent_speech_fingerprint_suppresses_only_bounded_exact_echo(
     await _wait_for(lambda: any(item.kind == "speech_finished" for item in notices))
     assert session._recent_speech_fingerprints == deque()
 
-    # A playout longer than the suppression window must not age out the
-    # fingerprint before the exact authenticated terminal release.
     monotonic_now[0] += suppression_window + 1.0
     session.deliver(_set_capture(True))
     await _wait_for(lambda: session.capture_open)

@@ -1,3 +1,8 @@
+"""Tests for skill-memory recipe induction and matching (orchestrator/skill_memory.py):
+the on/off flag, trace-to-recipe induction, keyword-overlap matching with tie-breaks,
+and parameterizing a recipe into per-tool steps.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -12,8 +17,6 @@ if str(BACKEND_DIR) not in sys.path:
 from orchestrator import skill_memory as sm  # noqa: E402
 from orchestrator.skill_memory import Recipe  # noqa: E402
 
-
-# ───────────────────────── flag ──────────────────────────────────────────────
 
 def test_skill_memory_default_off(monkeypatch):
     monkeypatch.delenv("FF_SKILL_MEMORY", raising=False)
@@ -32,8 +35,6 @@ def test_skill_memory_off_values(monkeypatch, v):
     assert sm.skill_memory_enabled() is False
 
 
-# ───────────────────────── induce_recipe ─────────────────────────────────────
-
 def _csv_trace():
     return [
         {"tool": "read_csv", "args": {"path": "/x.csv"}},
@@ -49,13 +50,11 @@ def test_induce_recipe_orders_tools_with_duplicates():
         {"tool": "read_csv", "args": {"path": "/b"}},
     ]
     recipe = sm.induce_recipe("dup", trace)
-    # ordered, duplicates preserved
     assert recipe.tools == ("read_csv", "transform", "read_csv")
 
 
 def test_induce_recipe_params_are_sorted_and_unique():
     recipe = sm.induce_recipe("csv->report", _csv_trace())
-    # union of all arg keys, de-duplicated, sorted
     assert recipe.params == ("dest", "max_words", "path")
 
 
@@ -65,7 +64,6 @@ def test_induce_recipe_keywords_lowercased_and_deduped():
         _csv_trace(),
         trigger_keywords=["CSV", "Report", "csv", "Summarize"],
     )
-    # lowercased, de-duplicated, order preserved
     assert recipe.trigger_keywords == ("csv", "report", "summarize")
 
 
@@ -76,7 +74,7 @@ def test_induce_recipe_no_keywords_is_empty_tuple():
 
 def test_induce_recipe_handles_step_without_args():
     trace = [
-        {"tool": "ping"},  # no args key at all
+        {"tool": "ping"},
         {"tool": "read_csv", "args": {"path": "/x"}},
     ]
     recipe = sm.induce_recipe("partial", trace)
@@ -101,8 +99,6 @@ def test_recipe_is_frozen():
         recipe.name = "mutated"  # type: ignore[misc]
 
 
-# ───────────────────────── match_recipe ──────────────────────────────────────
-
 def _recipes():
     return [
         Recipe("weather", ("get_weather",), ("city",),
@@ -116,7 +112,6 @@ def _recipes():
 
 def test_match_recipe_picks_best_overlap():
     recipes = _recipes()
-    # "weather forecast" hits 2 weather keywords, 0 others
     assert sm.match_recipe(recipes, "what's the weather forecast today") is recipes[0]
 
 
@@ -127,30 +122,23 @@ def test_match_recipe_case_insensitive():
 
 def test_match_recipe_none_when_below_min_overlap():
     recipes = _recipes()
-    # nothing relevant in the request
     assert sm.match_recipe(recipes, "hello there friend") is None
 
 
 def test_match_recipe_respects_min_overlap_threshold():
     recipes = _recipes()
-    # "weather" alone is 1 match → qualifies at default min_overlap=1 ...
     assert sm.match_recipe(recipes, "the weather is nice") is recipes[0]
-    # ... but not when min_overlap=2
     assert sm.match_recipe(recipes, "the weather is nice", min_overlap=2) is None
 
 
 def test_match_recipe_tie_break_prefers_more_keywords():
-    # both match exactly one keyword in the request; the one with MORE trigger
-    # keywords wins the tie.
     few = Recipe("few", ("t",), ("p",), ("apple",))
     many = Recipe("many", ("t",), ("p",), ("apple", "banana", "cherry"))
     assert sm.match_recipe([few, many], "i want an apple") is many
-    # order of the list must not change the winner
     assert sm.match_recipe([many, few], "i want an apple") is many
 
 
 def test_match_recipe_tie_break_falls_back_to_order():
-    # identical score AND identical keyword count → earlier list order wins
     first = Recipe("first", ("t",), ("p",), ("apple",))
     second = Recipe("second", ("t",), ("p",), ("apple",))
     assert sm.match_recipe([first, second], "an apple please") is first
@@ -162,8 +150,6 @@ def test_match_recipe_empty_recipes_or_request():
     assert sm.match_recipe(_recipes(), "") is None
 
 
-# ───────────────────────── parameterize ──────────────────────────────────────
-
 def test_parameterize_builds_one_step_per_tool():
     recipe = sm.induce_recipe("csv->report", _csv_trace())
     plan = sm.parameterize(
@@ -171,7 +157,6 @@ def test_parameterize_builds_one_step_per_tool():
         {"path": "/in.csv", "max_words": 80, "dest": "/out.md"},
     )
     assert [s["tool"] for s in plan] == ["read_csv", "summarize", "write_report"]
-    # every step carries the full set of provided recipe params
     for step in plan:
         assert step["args"] == {"path": "/in.csv", "max_words": 80, "dest": "/out.md"}
 
@@ -183,20 +168,18 @@ def test_parameterize_only_includes_recipe_params():
         {"tool": "toolA", "args": {"path": "/x"}},
         {"tool": "toolB", "args": {"path": "/x"}},
     ]
-    # the non-recipe key "extra" never leaks into a step
     assert all("extra" not in s["args"] for s in plan)
 
 
 def test_parameterize_omits_missing_params():
     recipe = Recipe("r", ("toolA",), ("path", "limit"), ())
-    plan = sm.parameterize(recipe, {"path": "/x"})  # "limit" not provided
+    plan = sm.parameterize(recipe, {"path": "/x"})
     assert plan == [{"tool": "toolA", "args": {"path": "/x"}}]
 
 
 def test_parameterize_steps_have_independent_arg_dicts():
     recipe = Recipe("r", ("toolA", "toolB"), ("path",), ())
     plan = sm.parameterize(recipe, {"path": "/x"})
-    # mutating one step's args must not bleed into the other
     plan[0]["args"]["path"] = "/mutated"
     assert plan[1]["args"]["path"] == "/x"
 
@@ -210,10 +193,8 @@ def test_parameterize_with_no_args_yields_empty_arg_steps():
     ]
 
 
-# ───────────────────────── missing_params ────────────────────────────────────
-
 def test_missing_params_lists_absent_in_order():
-    recipe = sm.induce_recipe("csv->report", _csv_trace())  # params: dest, max_words, path
+    recipe = sm.induce_recipe("csv->report", _csv_trace())
     assert sm.missing_params(recipe, {"path": "/x"}) == ["dest", "max_words"]
 
 

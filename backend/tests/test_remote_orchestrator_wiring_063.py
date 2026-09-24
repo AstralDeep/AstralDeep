@@ -1,21 +1,8 @@
-"""Feature 063 — the orchestrator-side wiring for remote compute (T-coverage).
-
-The 063 changes inside ``orchestrator.py`` are seams rather than logic: the
-always-on job poller loop, its boot launch + shutdown cancel, the
-``remote_op_decision`` ui_event route, and the ``FF_REMOTE_COMPUTE``-conditional
-safe-seed filter. Each is driven here against doubles — no DB, no SSH, no
-sockets, no live boot:
-
-- ``_remote_job_poll_loop`` — a failing pass never kills the loop, and a cancel
-  propagates (the poller must not swallow ``CancelledError`` at shutdown);
-- ``handle_ui_message`` — ``remote_op_decision`` reaches
-  ``remote_confirmation.handle_decision`` with the SERVER-derived user id;
-- ``_run_started_server()`` (driven with a fake self up to a sentinel, so no
-  server is bound) — the poller task exists only when the flag is on, and the
-  safe-seed set drops ``remote-compute-1`` when it is off;
-- ``_trace_frame`` — the marker-file-gated outbound frame tracer, including its
-  fail-open behavior (a broken trace must never break a send).
+"""Tests for orchestrator-side remote-compute wiring (orchestrator/orchestrator.py): the
+job poll loop's failure survival and cancel propagation, the remote_op_decision
+route, boot's flag-gated poller launch, and the marker-gated trace tee.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,10 +28,7 @@ def _no_audit(monkeypatch):
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
 
 
-# ── _remote_job_poll_loop ────────────────────────────────────────────────────
-
 def _poll_loop(fake_self):
-    """The REAL loop bound onto a bare double (it only ever touches poll_once)."""
     return types.MethodType(Orchestrator._remote_job_poll_loop, fake_self)()
 
 
@@ -57,7 +41,7 @@ async def test_poll_loop_runs_passes_and_survives_a_failing_one(monkeypatch):
         if len(calls) == 1:
             raise RuntimeError("transport blip")
         parked.set()
-        await asyncio.sleep(3600)  # park so the cancel below is deterministic
+        await asyncio.sleep(3600)
 
     monkeypatch.setattr(rj, "poll_once", _poll_once)
     monkeypatch.setattr(oo, "REMOTE_CLUSTER_POLL_INTERVAL_SECONDS", 0.0)
@@ -69,7 +53,6 @@ async def test_poll_loop_runs_passes_and_survives_a_failing_one(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The first pass raised; the loop slept and ran a SECOND pass anyway.
     assert len(calls) == 2
     assert calls[0] is fake and calls[1] is fake
 
@@ -88,12 +71,8 @@ async def test_poll_loop_cancel_propagates(monkeypatch):
     await asyncio.wait_for(entered.wait(), 5)
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
-    # Re-raised, not swallowed by the "never die on a bad pass" handler —
-    # otherwise shutdown would hang on a poller that refuses to stop.
     assert task.cancelled()
 
-
-# ── remote_op_decision ui_event route ────────────────────────────────────────
 
 class _WS:
     def __init__(self):
@@ -104,8 +83,6 @@ class _WS:
 
 
 def _ui_host(monkeypatch, ws, user_id="u-1"):
-    """A double carrying only what handle_ui_message touches before the
-    action dispatch: the parsed-frame seam, the session map, the id lookup."""
     async def _record_ws_action(**kwargs):
         return None
 
@@ -140,7 +117,6 @@ async def test_remote_op_decision_routes_to_the_confirmation_handler(monkeypatch
     assert len(seen) == 1
     orch, sock, user_id, payload = seen[0]
     assert orch is fake and sock is ws
-    # The acting principal comes from the SERVER's session map, never the frame.
     assert user_id == "u-1"
     assert payload == {"proposal_id": "p-1", "decision": "approve"}
 
@@ -175,18 +151,11 @@ async def test_other_actions_do_not_reach_the_confirmation_handler(monkeypatch):
     assert called == []
 
 
-# ── boot wiring: safe-seed filter + poller launch ────────────────────────────
-
 class _Stop(Exception):
-    """Sentinel that aborts start() right after the 063 wiring runs."""
+    pass
 
 
 async def _drive_start(monkeypatch, *, remote_compute: bool):
-    """Run the real startup body on a double until the sentinel.
-
-    Everything before the 063 wiring is stubbed (no posture assert, no DB seed,
-    no in-process fleet), and ``_start_phi_warm`` — the first statement after the
-    poller launch — raises, so no FastAPI app is built and no port is bound."""
     seeded: list = []
 
     async def _seed_safe(db, ids):
@@ -249,9 +218,6 @@ async def _drive_start(monkeypatch, *, remote_compute: bool):
         with pytest.raises(_Stop):
             await types.MethodType(Orchestrator._run_started_server, fake)()
     finally:
-        # The boot fires long-lived background tasks; none of them ever ran (no
-        # await point between their creation and the sentinel), so cancelling
-        # here leaves the loop clean.
         stragglers = [t for t in asyncio.all_tasks()
                       if t not in before and t is not asyncio.current_task()]
         for t in stragglers:
@@ -265,7 +231,6 @@ async def test_boot_launches_the_poller_and_seeds_remote_compute_when_enabled(mo
 
     assert len(seeded) == 1
     assert "remote-compute-1" in seeded[0][1]
-    # Feature 076 applies the same rule to computer-use-1 (its flag is off here).
     assert seeded[0][1] == tuple(
         agent_id for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
         if agent_id != "computer-use-1"
@@ -275,10 +240,6 @@ async def test_boot_launches_the_poller_and_seeds_remote_compute_when_enabled(mo
 
 
 def test_shutdown_cancels_the_poller():
-    """The serve/shutdown block only runs after uvicorn binds a port, so its
-    cancel contract is pinned structurally — the repo's convention for boot
-    wiring that cannot be driven hermetically (test_t013_production_wiring_060,
-    test_remote_jobs_063)."""
     import ast
     import inspect
     import textwrap
@@ -296,7 +257,6 @@ def test_shutdown_cancels_the_poller():
 async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the_seed(monkeypatch):
     fake, seeded = await _drive_start(monkeypatch, remote_compute=False)
 
-    # Byte-identical to the pre-063 fleet: no agent_trust row for the agent...
     assert len(seeded) == 1
     assert "remote-compute-1" not in seeded[0][1]
     assert seeded[0][1] == tuple(
@@ -304,11 +264,8 @@ async def test_flag_off_boot_creates_no_poller_and_drops_remote_compute_from_the
         for agent_id in oo.FIRST_PARTY_PUBLIC_AGENT_IDS
         if agent_id not in ("remote-compute-1", "computer-use-1")
     )
-    # ...and no background task at all.
     assert fake._remote_job_poll_task is None
 
-
-# ── _trace_frame (marker-gated diagnostic tee) ───────────────────────────────
 
 class _CapturedFile:
     def __init__(self, sink):
@@ -379,8 +336,6 @@ def test_trace_frame_is_fail_open(monkeypatch):
     _set_marker(monkeypatch, True)
     monkeypatch.setattr(oo, "open", _fake_open([], fail=True), raising=False)
 
-    # A broken tee must never surface to the caller — _safe_send calls this on
-    # its success path, so a raise here would break every outbound frame.
     Orchestrator._trace_frame(None, _WS(), json.dumps({"type": "x"}), ok=True)
 
 

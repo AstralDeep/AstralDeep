@@ -1,4 +1,7 @@
-"""030 — onboarding ParamPicker submit interpretation (US3 / T024)."""
+"""Tests for orchestrator/onboarding_submit.py: ParamPicker submit interpretation for
+profile/personality persistence and scope-gated skills submission.
+"""
+
 import asyncio
 import sys
 import types
@@ -107,4 +110,4 @@ def test_skills_submit_denied_when_unauthorized():
         "Enable these skills for me: web-research-1:web_search (write)",
         "c1"))
     assert handled is True
-    assert tp.enabled == []  # FR-011: never exceed granted scope
+    assert tp.enabled == []

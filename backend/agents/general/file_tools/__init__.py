@@ -1,19 +1,6 @@
-"""File-handling tools for the AstralDeep general agent.
-
-Each public reader function (``read_document``, ``read_spreadsheet``,
-``read_presentation``, ``read_text``, ``read_image``, ``list_attachments``)
-is registered in :data:`backend.agents.general.mcp_tools.TOOL_REGISTRY`.
-
-All readers route through :func:`resolve_attachment` which:
-
-  * Verifies the calling user owns the attachment (FR-009).
-  * Re-sniffs content type via libmagic (FR-008).
-  * Uses a bounded Plane stream when the parser accepts bytes.
-  * Returns a scoped path capability only for path-only parser libraries.
-
-The orchestrator injects ``user_id`` into tool-call ``arguments`` before
-dispatch (see ``orchestrator.py:2325``), so each reader receives it as a
-kwarg. Calls without a ``user_id`` are refused.
+"""Shared attachment-resolution core for the general agent's file readers
+(read_document.py, medical/*): verifies attachment ownership, re-sniffs content type
+via libmagic, and hands parsers a bounded Plane stream or a scoped path capability.
 """
 
 from __future__ import annotations
@@ -74,8 +61,6 @@ def set_plane_dependencies_for_testing(
     plane_repositories=None,
     blob_store=None,
 ) -> None:
-    """Inject or clear typed Plane dependencies for focused unit tests."""
-
     global _TEST_DEPENDENCIES
     if plane_runtime is plane_repositories is blob_store is None:
         _TEST_DEPENDENCIES = None
@@ -86,8 +71,6 @@ def set_plane_dependencies_for_testing(
 
 
 def register_plane_dependencies(plane_runtime, plane_repositories, blob_store) -> bool:
-    """Bind the process's single application Plane composition."""
-
     if plane_runtime is None or plane_repositories is None or blob_store is None:
         raise ValueError("all Plane file-tool dependencies are required")
     global _PRODUCTION_DEPENDENCIES
@@ -104,8 +87,6 @@ def register_plane_dependencies(plane_runtime, plane_repositories, blob_store) -
 
 
 def unregister_plane_dependencies(plane_runtime, plane_repositories, blob_store) -> None:
-    """Release the exact application binding after all file-tool work is joined."""
-
     global _PRODUCTION_DEPENDENCIES
     if _PRODUCTION_DEPENDENCIES is None:
         return
@@ -118,11 +99,10 @@ def unregister_plane_dependencies(plane_runtime, plane_repositories, blob_store)
     _PRODUCTION_DEPENDENCIES = None
 
 
+# Leases close when this returns — never retain the path after
 def attachment_parser_scope(
     function: Callable[..., _ReaderResult],
 ) -> Callable[..., _ReaderResult]:
-    """Keep every path capability inside one complete trusted parser call."""
-
     @wraps(function)
     def wrapped(*args, **kwargs):
         with ExitStack() as leases:
@@ -139,12 +119,6 @@ def resolve_attachment(
     attachment_id: str,
     user_id: Optional[str],
 ) -> Tuple[Optional[Attachment], Optional[os.PathLike[str]], Optional[Dict[str, Any]]]:
-    """Resolve an attachment_id to ``(Attachment, blob_path, error)``.
-
-    Returns ``(attachment, path, None)`` on success, or
-    ``(None, None, error_dict)`` on any failure (foreign owner, deleted,
-    missing on disk, content-type mismatch).
-    """
     if not user_id:
         return None, None, _error(
             "not_found",
@@ -191,13 +165,6 @@ def read_attachment_bytes(
     attachment_id: str,
     user_id: Optional[str],
 ) -> Tuple[Optional[Attachment], Optional[bytes], Optional[Dict[str, Any]]]:
-    """Read an owned attachment through Plane without exposing a local path.
-
-    This is the default seam for byte-oriented parsers.  Iterating to EOF is
-    deliberate: Plane verifies the expected digest at the complete read
-    boundary, while the metadata size and reader limit bound memory usage.
-    """
-
     if not user_id:
         return None, None, _error(
             "not_found",

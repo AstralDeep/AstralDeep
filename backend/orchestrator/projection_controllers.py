@@ -1,15 +1,6 @@
-"""Deep-owned authorization boundary for AstralProjection chrome surfaces.
-
-AstralProjection owns pure view models and rendering.  AstralDeep continues to
-own the authenticated query and command decisions that supply those models.
-This module keeps that boundary explicit: a surface cannot be registered
-without real authorization gates, state handlers, and Projection view
-builders, and every unregistered or failed path degrades closed.
-
-The controllers implement the synchronous host-neutral ports declared in
-``component_ports``.  Runtime adapters for asynchronous stores must finish
-their I/O before returning from the injected handler; the later composition
-cutover owns that wiring and does not change this security boundary.
+"""Authorization boundary between Deep's authenticated query/command decisions and
+AstralProjection's pure view models: every chrome surface registers through
+ProjectionControllerRegistry, and an unregistered or failed path fails closed.
 """
 
 from __future__ import annotations
@@ -36,22 +27,18 @@ QUERY_VIEW = "view"
 
 PROJECTION_SURFACE_GROUPS: Mapping[str, str] = MappingProxyType(
     {
-        # Audit/feedback/onboarding/admin supplied-state builders.
         "audit": "admin",
         "tour": "admin",
         "admin_tools": "admin",
-        # Agent/authoring/draft/attachment supplied-state builders.
         "agents": "agents",
         "agent_authoring": "agents",
         "drafts": "agents",
         "attachments": "agents",
-        # LLM/profile/memory/skills/scheduler/dreaming/pulse/theme builders.
         "llm": "personalization",
         "llm_system": "personalization",
         "personalization": "personalization",
         "pulse": "personalization",
         "theme": "personalization",
-        # Remote-machine/workspace/history/timeline builders.
         "remote_machines": "workspace",
         "feature_flags": "workspace",
         "workspace": "workspace",
@@ -199,15 +186,11 @@ _FIELD_SEPARATORS = re.compile(r"[-\s]+")
 
 
 class ProjectionViewModel(Protocol):
-    """Structural subset of ``astralprojection.models.ChromeViewModel``."""
-
     def to_dict(self) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class ProjectionPublicError:
-    """Bounded non-sensitive failure passed to a Projection status builder."""
-
     code: str
     message: str
     denied: bool = False
@@ -215,16 +198,12 @@ class ProjectionPublicError:
 
 @dataclass(frozen=True, slots=True)
 class ProjectionQueryState:
-    """Supplied state and optional optimistic revision returned by Deep."""
-
     state: Mapping[str, object]
     revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ProjectionCommandOutcome:
-    """Actual Deep mutation outcome, optionally followed by refreshed state."""
-
     accepted: bool
     code: str
     revision: int | None = None
@@ -243,8 +222,6 @@ StatusViewBuilder = Callable[
 
 @dataclass(frozen=True, slots=True)
 class ProjectionSurfaceControllerSpec:
-    """Complete Deep wiring required before one extracted surface can run."""
-
     surface: str
     group: str
     query_authorizer: QueryAuthorizer
@@ -315,8 +292,6 @@ class ProjectionSurfaceControllerSpec:
 
 
 class ProjectionControllerRegistry:
-    """Immutable exact registry shared by the query and command controllers."""
-
     def __init__(self, specs: Iterable[ProjectionSurfaceControllerSpec]) -> None:
         registered: dict[str, ProjectionSurfaceControllerSpec] = {}
         for spec in specs:
@@ -338,8 +313,6 @@ class ProjectionControllerRegistry:
 
 
 class ProjectionQueryController:
-    """Authorized owner-scoped query boundary implementing the query port."""
-
     def __init__(self, registry: ProjectionControllerRegistry) -> None:
         if not isinstance(registry, ProjectionControllerRegistry):
             raise TypeError("registry must be a ProjectionControllerRegistry")
@@ -361,7 +334,8 @@ class ProjectionQueryController:
 
         try:
             allowed = spec.query_authorizer(query)
-        except Exception as exc:  # noqa: BLE001 - injected auth must fail closed
+        # Auth callback errors must deny, not silently allow
+        except Exception as exc:  # noqa: BLE001
             _log_failure("query_authorization", query, exc)
             return _status_view(spec, spec.denied_view_builder, _FORBIDDEN)
         if allowed is not True:
@@ -379,14 +353,12 @@ class ProjectionQueryController:
                 revision=loaded.revision,
                 model=model,
             )
-        except Exception as exc:  # noqa: BLE001 - injected boundary must fail closed
+        except Exception as exc:  # noqa: BLE001
             _log_failure("query", query, exc)
             return _status_view(spec, spec.failure_view_builder, _QUERY_FAILED)
 
 
 class ProjectionCommandController:
-    """Authorized owner-scoped mutation boundary implementing the command port."""
-
     def __init__(self, registry: ProjectionControllerRegistry) -> None:
         if not isinstance(registry, ProjectionControllerRegistry):
             raise TypeError("registry must be a ProjectionControllerRegistry")
@@ -406,7 +378,7 @@ class ProjectionCommandController:
         try:
             authorizer = spec.command_authorizer
             allowed = authorizer(command) if authorizer is not None else False
-        except Exception as exc:  # noqa: BLE001 - injected auth must fail closed
+        except Exception as exc:  # noqa: BLE001
             _log_failure("command_authorization", command, exc)
             return _command_status(spec, spec.denied_view_builder, _FORBIDDEN)
         if allowed is not True:
@@ -416,13 +388,13 @@ class ProjectionCommandController:
             outcome = spec.command_handlers[command.action](command)
             if not isinstance(outcome, ProjectionCommandOutcome):
                 raise TypeError("command handler returned an invalid outcome")
-            # Validate accepted/code/revision before attempting a follow-up view.
             validated = PresentationCommandResult(
                 accepted=outcome.accepted,
                 code=outcome.code,
                 revision=outcome.revision,
             )
-        except Exception as exc:  # noqa: BLE001 - mutation boundary must fail closed
+        # Boundary errors must be treated as failure, not success
+        except Exception as exc:  # noqa: BLE001
             _log_failure("command", command, exc)
             return _command_status(spec, spec.failure_view_builder, _COMMAND_FAILED)
 
@@ -432,9 +404,8 @@ class ProjectionCommandController:
             state = _validated_state(command.surface, outcome.state)
             state = _redact_mapping(state, spec.sensitive_fields)
             model = _build_model(spec, spec.view_builder, state)
-        except Exception as exc:  # noqa: BLE001 - preserve known mutation outcome
-            # The mutation outcome is already known.  A rendering failure must
-            # not be relabelled as a failed mutation or produce false retry.
+        # A rendering failure here must not relabel a real success
+        except Exception as exc:  # noqa: BLE001
             _log_failure("command_view", command, exc)
             return validated
         return PresentationCommandResult(
@@ -524,7 +495,7 @@ def _redact_mapping(
     sensitive_fields: frozenset[str],
 ) -> BoundaryMapping:
     redacted = _redact_value(value, sensitive_fields)
-    if not isinstance(redacted, Mapping):  # pragma: no cover - mapping in, mapping out
+    if not isinstance(redacted, Mapping):  # pragma: no cover
         raise TypeError("redacted view state must remain a mapping")
     return redacted
 
@@ -580,7 +551,7 @@ def _status_view(
     try:
         model = _build_model(spec, builder, error)
         return PresentationView(surface=spec.surface, model=model)
-    except Exception as exc:  # noqa: BLE001 - status builder has safe fallback
+    except Exception as exc:  # noqa: BLE001
         _log_builder_failure(spec.surface, error.code, exc)
         return _fallback_view(spec.surface, error)
 
@@ -649,9 +620,7 @@ def _log_failure(
     request: PresentationQuery | PresentationCommand,
     exc: Exception,
 ) -> None:
-    # Never interpolate exception text or request arguments: both can contain
-    # credentials or upstream response bodies.  Correlation identity is enough
-    # for operators to join the separately governed audit trail.
+    # Never interpolate exception text: may hold credentials
     operation = (
         request.operation if isinstance(request, PresentationQuery) else request.action
     )

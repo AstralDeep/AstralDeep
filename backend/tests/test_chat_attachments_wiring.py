@@ -1,9 +1,6 @@
-"""Feature 031 — chat-turn attachment wiring (T021).
-
-Exercises Orchestrator._attach_turn_attachments directly with an in-memory DB:
-valid attachments are linked (message_attachment) and surfaced to the LLM as a
-structured block naming the reader tool (or "pending parser" for uncovered
-types); the per-message cap is enforced.
+"""Tests for Orchestrator._attach_turn_attachments
+(backend/orchestrator/orchestrator.py, attachments/repository.py): valid attachments
+link and surface to the LLM with the reader tool named, capped at ten per message.
 """
 
 from __future__ import annotations
@@ -79,9 +76,7 @@ async def test_valid_attachments_are_linked_and_surfaced():
 
     assert "[Attachments on this turn]" in out
     assert 'id=a-pdf name="report.pdf" category=document (readable: read_document)' in out
-    # uncovered data type → pending parser (drives US2)
     assert 'id=a-pq name="data.parquet" category=data (readable: pending parser)' in out
-    # both linked to the persisted message m1
     links = db.message_attachment
     assert {r.attachment_id for r in links} == {"a-pdf", "a-pq"}
     assert all(r.message_id == "m1" and r.owner_id == "u1" for r in links)

@@ -1,23 +1,13 @@
-"""Feature 040 (US5) — user-typed /slash-commands.
-
-A curated, first-party command set. A leading ``/command`` typed in chat is
-expanded into a normal prompt BEFORE any processing, so the rewritten turn flows
-through the exact same permission / audit / PHI / taint gates as any message —
-slash commands are a convenience, never a privileged bypass (they never invoke
-a tool directly; they only shape the prompt the model then acts on under the
-user's existing scopes).
-
-Unknown or malformed commands produce a friendly relay (the model tells the user
-it wasn't recognized and lists the available commands) rather than an error.
-A leading ``/`` that is not a clean command token (e.g. a file path
-``/usr/local/bin``) is left untouched and treated as ordinary text.
+"""Expands a leading /command typed in chat into an ordinary prompt before any
+permission/audit gate runs, so slash commands never bypass them. Curated names take
+precedence over user_skill_catalog's; unrecognized tokens pass through as text.
 """
+
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional
 
-#: Command name → spec. ``template(args) -> prompt`` shapes the LLM-facing text.
 _COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]*")
 
 
@@ -75,17 +65,11 @@ def _ordered() -> List[Dict]:
 
 
 def command_list() -> List[Dict]:
-    """Public command metadata for discovery surfaces (name + usage + description)."""
     return [{"name": n, "usage": c["usage"], "description": c["description"]}
             for n, c in COMMANDS.items()]
 
 
 def parse(message: str):
-    """Return ``(name, args)`` for a recognizable ``/command`` token, else ``None``.
-
-    Only a LEADING slash followed by a clean command-style token is treated as a
-    command; a leading slash that is part of a path or other text returns None.
-    """
     if not message:
         return None
     stripped = message.strip()
@@ -96,14 +80,12 @@ def parse(message: str):
         return None
     name = parts[0].lower()
     if not _COMMAND_NAME.fullmatch(name):
-        return None  # e.g. "/usr/local/bin" — not a command, leave as text
+        return None
     args = parts[1].strip() if len(parts) > 1 else ""
     return name, args
 
 
 def expand_skill(skill: Any, args: str) -> str:
-    """The prompt a user skill command expands to (feature 077): the skill's own
-    instructions, quoted as the user's standing guidance, plus what they typed."""
     body = str(getattr(skill, "instructions", "") or "").strip()
     name = str(getattr(skill, "name", "") or "your skill")
     request = args.strip() if args else ""
@@ -118,16 +100,6 @@ def expand_skill(skill: Any, args: str) -> str:
 
 
 def expand_message(message: str, user_skills: Optional[Dict[str, Any]] = None) -> str:
-    """Expand a ``/command`` into an LLM-facing prompt.
-
-    Returns the original message unchanged when it is not a command token.
-    Recognized commands return their expanded prompt; ``user_skills`` (feature
-    077: ``{command: skill}`` for the signed-in user) are checked first for
-    names the curated set does not own — a curated name can never be shadowed
-    (the store refuses such a save). An unrecognized clean command token
-    returns a friendly relay listing the available commands. The result is
-    always a prompt string — never a direct tool invocation.
-    """
     parsed = parse(message)
     if parsed is None:
         return message

@@ -1,11 +1,8 @@
-"""CLI: ``python -m security_benchmark`` (spec 047 SC-001, US4).
-
-Runs the ablation over the selected benchmarks and writes the ASR report +
-per-case records to a gitignored artifacts dir. Exit codes:
-  0  ran clean (and, if --asr-threshold given, no regression)
-  1  CI regression gate tripped (full-envelope ASR over threshold)
-  2  usage / configuration error
+"""CLI entry point for `python -m security_benchmark`: runs the ablation via
+runner.run() and writes the ASR report plus per-case records to a gitignored
+artifacts directory; exit code 1 signals a regression gate trip.
 """
+
 from __future__ import annotations
 
 import argparse

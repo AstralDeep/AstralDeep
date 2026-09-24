@@ -1,15 +1,8 @@
-"""Tests for backend/orchestrator/chat_steps.py — ChatStepRecorder lifecycle.
-
-Feature 014, T006. Covers:
-
-* :meth:`start` persists an in-progress row and emits an in-progress event.
-* :meth:`complete` flips status to ``completed`` with truncated result.
-* :meth:`error` flips status to ``errored`` with redacted error message.
-* :meth:`cancel_all_in_flight` marks every in-progress step ``cancelled``.
-* PHI redaction is applied to args, result, and error message.
-* Late completion after cancellation is dropped (R6 best-effort discard).
-* ``messages.step_count`` is bumped per started step.
+"""Tests for backend/orchestrator/chat_steps.py's ChatStepRecorder:
+start/complete/error/cancel lifecycle, PHI redaction on args, result, and error, and
+a late completion after cancellation being dropped.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,11 +21,6 @@ if str(BACKEND_DIR) not in sys.path:
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def db():
     with isolated_plane_runtime("chat_steps") as runtime:
@@ -41,7 +29,6 @@ def db():
 
 @pytest.fixture
 def chat_and_message(db):
-    """Create a real chat + user message so FK constraints are satisfied."""
     chat_id = f"pytest-{uuid.uuid4().hex[:12]}"
     user_id = "pytest-user"
     now = int(time.time() * 1000)
@@ -69,7 +56,6 @@ class FakeWebSocket:
 
 @pytest.fixture
 def emitted():
-    """Captures every payload sent through ``_safe_send`` substitute."""
     sent: list[dict] = []
 
     async def safe_send(_ws, data: str):
@@ -94,11 +80,6 @@ def recorder(db, chat_and_message, emitted):
         user_id=user_id,
         turn_message_id=msg_id,
     )
-
-
-# ----------------------------------------------------------------------
-# Tests
-# ----------------------------------------------------------------------
 
 
 class TestStart:
@@ -201,7 +182,7 @@ class TestCancellation:
         s1 = asyncio.run(recorder.start("tool_call", "a", {}))
         s2 = asyncio.run(recorder.start("tool_call", "b", {}))
         s3 = asyncio.run(recorder.start("phase", "c", {}))
-        asyncio.run(recorder.complete(s2, {"ok": 1}))  # one already done
+        asyncio.run(recorder.complete(s2, {"ok": 1}))
         asyncio.run(recorder.cancel_all_in_flight())
 
         rows = {r["id"]: r["status"] for r in db.fetch_all(
@@ -209,13 +190,12 @@ class TestCancellation:
             (s1, s2, s3),
         )}
         assert rows[s1] == "cancelled"
-        assert rows[s2] == "completed"  # already terminal — untouched
+        assert rows[s2] == "completed"
         assert rows[s3] == "cancelled"
 
     def test_late_complete_after_cancel_is_dropped(self, db, recorder):
         step_id = asyncio.run(recorder.start("tool_call", "x", {}))
         asyncio.run(recorder.cancel_all_in_flight())
-        # Late-arriving result should not flip status back to completed.
         asyncio.run(recorder.complete(step_id, {"late": True}))
         row = db.fetch_one("SELECT status FROM chat_steps WHERE id = ?", (step_id,))
         assert row["status"] == "cancelled"
@@ -241,7 +221,6 @@ class TestNoWebSocket:
             user_id=user_id,
             turn_message_id=msg_id,
         )
-        # No exception raised; row still persisted.
         step_id = asyncio.run(rec.start("tool_call", "lonely", {"q": "x"}))
         row = db.fetch_one("SELECT status FROM chat_steps WHERE id = ?", (step_id,))
         assert row is not None
@@ -249,17 +228,6 @@ class TestNoWebSocket:
 
 
 class TestLoggingDoesNotBreakLifecycle:
-    """Regression for the live-only stuck-step bug.
-
-    ``recorder.start`` logged with ``extra={..., "name": name}`` — but "name"
-    is a reserved LogRecord attribute, so once the logger is INFO-enabled
-    (as in the deployed container; pytest's WARNING default short-circuits
-    record creation and hid this) the logging call itself raised KeyError
-    *after* the row was persisted and the in-progress event emitted. Callers
-    caught the exception and got ``step_id=None``, so complete()/error() were
-    never invoked and every step stayed ``in_progress`` forever.
-    """
-
     def test_full_lifecycle_with_info_logging_enabled(self, db, recorder):
         import logging
 

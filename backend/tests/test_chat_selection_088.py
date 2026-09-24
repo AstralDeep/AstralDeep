@@ -1,9 +1,8 @@
-"""Composer selection: closed shape + turn-guidance binding.
-
-Feature 088 T011/T037 (FR-004, FR-015, FR-016, FR-017, FR-023). The wire-shape
-tests below need no database; the binding tests reuse the same real IAM/Plane
-composition qualified in ``test_declarative_agent_lifecycle_postgres_088``.
+"""Tests for composer selection (backend/shared/protocol.py,
+orchestrator/turn_guidance_authority.py): the chat_message wire shape and
+bind_turn_selection's checks against a caller's active agents, skills, and notes.
 """
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -20,17 +19,10 @@ from tests.test_declarative_agent_lifecycle_postgres_088 import (
     signing_key as signing_key, source_service as source_service,
 )
 
-# pytest.ini sets asyncio_mode = auto: async tests below need no marker, and
-# this file deliberately mixes them with plain sync shape tests.
-
 
 def selection(**changes):
     return {"version": 1, "agent": None, "skills": [], "notes": [], **changes}
 
-
-# ---------------------------------------------------------------------------
-# Socket boundary (shared/protocol.py) — additive, optional, chat_message only
-# ---------------------------------------------------------------------------
 
 def test_absent_selection_leaves_the_payload_untouched():
     event = UIEvent(action="chat_message", payload={"message": "hi"})
@@ -71,10 +63,6 @@ def test_selection_is_refused_on_every_other_action():
         UIEvent(action="chrome_open", payload={"surface": "guidance", "selection": payload})
 
 
-# ---------------------------------------------------------------------------
-# turn_guidance_authority: identifier normalization (no database)
-# ---------------------------------------------------------------------------
-
 def test_identifiers_are_bounded_sorted_and_hashable():
     a, b, c = str(uuid4()), str(uuid4()), str(uuid4())
     value = selection(
@@ -97,10 +85,6 @@ def test_identifiers_carry_the_agent_tuple():
     agent, skills, notes = tga._selection_identifiers(value)
     assert agent == (agent_id, revision_id) and skills == () and notes == ()
 
-
-# ---------------------------------------------------------------------------
-# turn_guidance_authority: bind_turn_selection over real Plane rows
-# ---------------------------------------------------------------------------
 
 async def build_binding(state, current):
     origin = await tga.capture_turn_guidance_from_human(current, expected_orchestrator=state.api.orch)
@@ -169,11 +153,6 @@ async def test_bind_turn_selection_type_checks_its_binding(declarations):
         await tga.bind_turn_selection(object(), expected_orchestrator=declarations.api.orch,
                                       selection=selection())
 
-
-# ---------------------------------------------------------------------------
-# turn_guidance_authority: _selection_current DB-level refuse branches for
-# skills and notes (the agent branches are covered above)
-# ---------------------------------------------------------------------------
 
 def make_skill(state, owner_id, *, enabled=True):
     from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
@@ -245,7 +224,6 @@ async def test_bind_turn_selection_refuses_a_deleted_skill(declarations):
 
 @pytest.fixture
 def notes_service(declarations, tmp_path):
-    """Wire a real ExplicitNoteService onto the shared orchestrator/runtime."""
     from orchestrator.credential_manager import CredentialManager
     from personalization.explicit_note_service import ExplicitNoteService
     orch = declarations.api.orch

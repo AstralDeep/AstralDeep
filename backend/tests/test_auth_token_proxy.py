@@ -1,11 +1,8 @@
-"""POST /auth/token — the BFF proxy that injects the confidential client_secret.
-
-The endpoint takes NO caller credential (the Windows client in legacy BFF mode
-posts a bare form), so it is constrained instead: a grant allow-list, a field
-allow-list, a server-pinned client_id and a per-IP rate limit. Without those it
-is a free oracle that speaks AS the confidential client — including the
-token-exchange grant DelegationService uses with the same secret.
+"""Tests for orchestrator/auth.py's POST /auth/token BFF proxy: grant and field
+allow-listing, a server-pinned client_id, per-IP rate limiting ahead of grant checks,
+and audit-on-refusal-only.
 """
+
 from __future__ import annotations
 
 import os
@@ -39,8 +36,6 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """Stands in for aiohttp.ClientSession; records the upstream form."""
-
     captured: dict = {}
     status = 200
     body = {"access_token": "at", "refresh_token": "rt"}
@@ -71,10 +66,6 @@ def client(monkeypatch):
         yield c
     auth_mod.reset_token_proxy_state()
 
-
-# ---------------------------------------------------------------------------
-# The two live grants keep working (Windows BFF client)
-# ---------------------------------------------------------------------------
 
 def test_authorization_code_grant_proxies_through(client):
     res = client.post("/auth/token", data={
@@ -112,10 +103,6 @@ def test_refresh_token_grant_proxies_through(client):
     }
 
 
-# ---------------------------------------------------------------------------
-# Grant allow-list
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize("grant_type", [
     "urn:ietf:params:oauth:grant-type:token-exchange",
     "password",
@@ -139,10 +126,6 @@ def test_missing_grant_type_refused(client):
     assert res.status_code == 400
     assert _FakeSession.captured == {}
 
-
-# ---------------------------------------------------------------------------
-# Field allow-list + client_id pinning
-# ---------------------------------------------------------------------------
 
 def test_smuggled_fields_are_dropped(client):
     res = client.post("/auth/token", data={
@@ -180,10 +163,6 @@ def test_client_id_pinned_when_caller_omits_it(client):
     assert _FakeSession.captured["data"]["client_id"] == "astral-frontend"
 
 
-# ---------------------------------------------------------------------------
-# Rate limit
-# ---------------------------------------------------------------------------
-
 def test_per_ip_rate_limit_returns_429(client, monkeypatch):
     monkeypatch.setattr(auth_mod, "_TOKEN_MAX_PER_WINDOW", 2)
     body = {"grant_type": "refresh_token", "refresh_token": "rt-1"}
@@ -198,17 +177,11 @@ def test_per_ip_rate_limit_returns_429(client, monkeypatch):
 
 
 def test_rate_limit_counts_refused_grants_too(client, monkeypatch):
-    """The limiter runs BEFORE the grant check, so a probe loop cannot spin
-    against the allow-list for free."""
     monkeypatch.setattr(auth_mod, "_TOKEN_MAX_PER_WINDOW", 1)
     assert client.post("/auth/token", data={"grant_type": "password"}).status_code == 400
     assert client.post("/auth/token", data={
         "grant_type": "refresh_token", "refresh_token": "rt"}).status_code == 429
 
-
-# ---------------------------------------------------------------------------
-# Refusals are audited (the HTTP audit middleware skips every /auth/ path)
-# ---------------------------------------------------------------------------
 
 def test_refusals_are_audited(client, monkeypatch):
     recorded = []
@@ -229,8 +202,6 @@ def test_refusals_are_audited(client, monkeypatch):
 
 
 def test_successful_proxy_is_not_audited(client, monkeypatch):
-    """Only refusals are recorded — a successful refresh would otherwise write
-    an auth row on every desktop token renewal."""
     recorded = []
 
     async def _record(**kw):
@@ -241,10 +212,6 @@ def test_successful_proxy_is_not_audited(client, monkeypatch):
                                      "refresh_token": "rt"})
     assert recorded == []
 
-
-# ---------------------------------------------------------------------------
-# Unconfigured backend keeps its 500 shape
-# ---------------------------------------------------------------------------
 
 def test_unconfigured_backend_returns_500_shape(client, monkeypatch):
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)

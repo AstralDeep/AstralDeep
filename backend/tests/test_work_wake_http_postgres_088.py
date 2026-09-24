@@ -1,4 +1,8 @@
-"""Manual owner wake through the mounted IAM/body boundary and actual Plane."""
+"""Tests for manual owner wake through the mounted HTTP boundary
+(backend/orchestrator/work_api.py): replay after cancel without a new continuation,
+and that denials reveal no private values.
+"""
+
 from uuid import uuid4
 
 import httpx

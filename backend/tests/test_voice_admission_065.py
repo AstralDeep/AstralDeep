@@ -1,4 +1,7 @@
-"""Feature-065 contract tests for voice-turn work admission."""
+"""Tests for work_admission.py's voice admission class: routing only voice chat through
+it, per-user running-turn limits without a queue, capacity refusal ordering, and
+identity-scoped capacity release on terminal turns.
+"""
 
 from __future__ import annotations
 

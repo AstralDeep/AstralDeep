@@ -1,4 +1,8 @@
-"""Actual streamed HTTP export boundaries; no private capture persistence."""
+"""Tests for streamed workspace HTTP export (backend/orchestrator/workspace_export.py,
+backend/orchestrator/api.py): revision/origin/cookie validation before body read,
+streaming byte limits, and no private capture persistence.
+"""
+
 import asyncio
 import json
 import threading
@@ -30,7 +34,6 @@ def capture():
 
 
 class ReadRuntime:
-    """A transaction fixture that refuses event-loop entry and records writes."""
     def __init__(self):
         self.threads = []
 
@@ -82,7 +85,6 @@ def assert_error(response, status, code):
 
 
 async def streamed(host, chunks, *, headers=None, query=QUERY):
-    """Drive the real ASGI request stream, including declared/actual mismatches."""
     received, sent = [], []
     messages = list(chunks)
     async def receive():
@@ -380,7 +382,6 @@ async def test_cancelled_cpu_keeps_admission_until_worker_finishes_and_never_que
 async def test_original_iam_rechecked_after_render_without_profile_write(host, monkeypatch, transport):
     from jose import JWTError
     from orchestrator import web_auth
-    # Restore the real shared IAM function, while substituting only the network/signature boundary.
     monkeypatch.setattr(auth, "get_web_or_bearer_user_payload", REAL_AUTHENTICATE)
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")

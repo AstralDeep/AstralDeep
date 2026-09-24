@@ -1,7 +1,6 @@
-"""Supervised, restartable episodes for durable owner assignments.
-
-The database chooses work and owns all progress. Local tasks only execute an
-already claimed episode; losing this process loses no instructions or outcomes.
+"""Supervised, restartable AssignmentRunner; the database owns all progress, so losing
+this process loses no work. Ticks persistent_agents/store.py and dispatches via
+execution.py's ActionExecutor and the chat/research episode handlers.
 """
 
 from __future__ import annotations
@@ -93,8 +92,6 @@ class _EpisodeLease:
 
 @dataclass(frozen=True, slots=True)
 class OneShotEpisodeResult:
-    """Trusted handler output plus the exact meaningful state it read."""
-
     record: AssignmentRecord
     completion: AssignmentEpisodeCompletion
     research: object = field(default=None, repr=False)
@@ -102,12 +99,6 @@ class OneShotEpisodeResult:
 
 @dataclass(frozen=True, slots=True)
 class OneShotLifecycle:
-    """Explicit, unregistered capability; no default planner or episode exists.
-
-    ``episode`` owns every kind unless ``chat`` names the fixed source-less
-    handler, which is selected only for ``operation.kind == "chat"`` records.
-    """
-
     sessions: object
     episode: Callable[[ActionExecutor], Awaitable[OneShotEpisodeResult]]
     chat: Callable[[ActionExecutor], Awaitable[OneShotEpisodeResult]] | None = None
@@ -149,7 +140,6 @@ class AssignmentRunner:
         self._loop = asyncio.create_task(self.run(), name="persistent-assignments")
 
     def notify(self, assignment_id=None):
-        # Only a wake hint. The next transaction rechecks durable owner controls.
         self._wake.set()
 
     async def stop(self):
@@ -169,9 +159,7 @@ class AssignmentRunner:
         while not self._stopping:
             try:
                 await self.tick()
-            except Exception:  # noqa: BLE001 - supervisor logs a redacted stable code
-                # Never include exception text: database/provider errors can
-                # contain source payloads or credentials. Next tick can recover.
+            except Exception:  # noqa: BLE001
                 logger.error("persistent_assignment_tick_failed")
             try:
                 await asyncio.wait_for(self._wake.wait(), self.config.tick_seconds)
@@ -195,7 +183,6 @@ class AssignmentRunner:
             limit=available, lease_seconds=self.config.lease_seconds,
         )
         if self._stopping:
-            # A claim acquired during shutdown expires through durable recovery.
             return
         for claim in claims:
             self._start_claim(claim)
@@ -203,15 +190,12 @@ class AssignmentRunner:
             await self._tick_operations()
 
     def _start_claim(self, claim):
-        """Track every locally running claim generation against shared capacity."""
-        # Count both generations while a controlled old claim unwinds.
         identity = (claim.assignment.assignment_id, claim.fence.claim_generation)
         task = asyncio.create_task(self.run_claim(claim), name="assignment-episode")
         self._active[identity] = task
         task.add_done_callback(lambda completed, key=identity: self._finished(key, completed))
 
     async def _operation_authority(self, record):
-        """Resolve the original incarnation through normal current IAM and owner policy."""
         authority = await refresh_operation_execution_authority(
             owner_id=record.owner_id, assignment_id=record.assignment_id,
             sessions=self.one_shot.sessions, plane_runtime=self.store.plane_runtime)
@@ -219,11 +203,6 @@ class AssignmentRunner:
         return authority
 
     def fixed_research_ready(self, *, service, sessions) -> bool:
-        """Check exact server-owned composition without resolving any authority.
-
-        This reports handler availability only. It does not start supervision,
-        qualify provider configuration or grant a claim/dispatch permission.
-        """
         from orchestrator.session_store import WebSessionStore
         from persistent_agents.service import AssignmentService
         from persistent_agents.store import AssignmentStore
@@ -240,33 +219,24 @@ class AssignmentRunner:
                 and self.store.repository is runtime.repositories.assignments)
 
     def _fixed_research(self):
-        """Only the existing exact handler selects this bounded research profile."""
         from persistent_agents.research_episode import run_research_episode
 
         return (type(self.one_shot) is OneShotLifecycle
                 and self.one_shot.episode is run_research_episode)
 
     def _fixed_chat(self):
-        """Only the exact source-less handler selects the bounded chat profile."""
         from persistent_agents.chat_episode import run_chat_episode
 
         return (type(self.one_shot) is OneShotLifecycle
                 and self.one_shot.chat is run_chat_episode)
 
     def _operation_handler(self, record):
-        """Select the handler by the record's closed kind; legacy handlers own the rest."""
         if (self._fixed_chat() and type(record) is AssignmentRecord
                 and record.operation is not None and record.operation.get("kind") == "chat"):
             return self.one_shot.chat
         return self.one_shot.episode
 
     def _assert_operation_capability(self, record):
-        """Refuse unsupported fixed research before claim and again at dispatch.
-
-        Explicit legacy handlers retain their own contracts. Resource minima use
-        the same tool bound and model reservation as admission and execution;
-        the action ledger still decides current remaining allowance and policy.
-        """
         if not self._fixed_research() and not self._fixed_chat():
             return
         from llm_config import research_profile as profile
@@ -302,7 +272,6 @@ class AssignmentRunner:
             raise DispatchDenied("assignment_operation_profile_unavailable")
 
     async def _tick_operations(self):
-        """Scan one bounded page, advancing past unavailable original sessions."""
         if self._stopping or len(self._active) >= self.config.concurrency:
             return
         cursor = self._operation_cursor
@@ -332,11 +301,10 @@ class AssignmentRunner:
                     authority=authority, callback=claim_current)
                 if claim is not None and not self._stopping:
                     self._start_claim(claim)
-            except Exception:  # noqa: BLE001 - refusal advances discovery, never grants authority
+            except Exception:  # noqa: BLE001
                 logger.warning("one_shot_claim_unavailable")
 
     async def _recover_operations(self):
-        """Recover factual liabilities and retire only their exact admission fence."""
         def recover(tx, repository):
             recovered = repository.recover_expired_operations_for_administration(tx, limit=100)
             for binding in recovered.operation_bindings:
@@ -347,7 +315,6 @@ class AssignmentRunner:
                         terminal_code="assignment_interrupted", safe_summary=None,
                         retry_after_ms=None, transaction=tx)
                 except StaleExecutionFenceError:
-                    # The old episode cannot retire a replacement generation.
                     pass
             return recovered
         return await self.store.transaction(recover, bound_session_waits=True)
@@ -399,7 +366,7 @@ class AssignmentRunner:
                                             executor.operation_fence)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - any lost lease must cancel the episode
+        except Exception:  # noqa: BLE001
             episode.cancel()
 
     async def run_claim(self, claim):
@@ -421,16 +388,14 @@ class AssignmentRunner:
             renewal = asyncio.create_task(self._renew(executor, asyncio.current_task()))
             await self.episode(executor)
         except asyncio.CancelledError:
-            # Permit outcomes are observed by ActionExecutor. Expiring the claim
-            # preserves every completed action and lets recovery fence this task.
             raise
-        except Exception as exc:  # noqa: BLE001 - convert provider errors to safe durable holds
+        except Exception as exc:  # noqa: BLE001
             code = "assignment_approval_required" if isinstance(exc, ApprovalPending) else (
                 str(exc) if isinstance(exc, DispatchDenied) else getattr(exc, "code", "assignment_failed"))
             if executor is not None:
                 try:
                     await self._hold(executor, code)
-                except Exception:  # noqa: BLE001 - retain recovery when hold storage fails
+                except Exception:  # noqa: BLE001
                     logger.error("persistent_assignment_hold_failed")
         finally:
             if renewal is not None:
@@ -440,7 +405,6 @@ class AssignmentRunner:
             await socket.close()
 
     async def _run_operation_claim(self, claim):
-        """Run only the explicitly supplied handler under two renewable leases."""
         record = claim.assignment
         self._assert_operation_capability(record)
         socket = VirtualWebSocket(BackgroundTask(
@@ -475,13 +439,11 @@ class AssignmentRunner:
             await self._finish_operation(executor, outcome)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - no exception payload enters a durable checkpoint
+        except Exception:  # noqa: BLE001
             if executor is not None and authority is not None:
                 try:
-                    # Do not retry a failed remote refresh. This original local
-                    # observation must still pass; otherwise recovery owns it.
                     await self._hold_operation(executor, authority)
-                except Exception:  # noqa: BLE001 - retain claims/permits for factual recovery
+                except Exception:  # noqa: BLE001
                     logger.warning("one_shot_hold_unavailable")
         finally:
             if renewal is not None:
@@ -491,7 +453,6 @@ class AssignmentRunner:
             await socket.close()
 
     async def _renew_operation(self, executor, episode):
-        """Renew both leases atomically using current original-session authority."""
         lease = _episode_lease(executor)
         interval = min(self.config.lease_seconds,
                        self.orch.work_admission.slot_lease.total_seconds()) / 3
@@ -514,11 +475,10 @@ class AssignmentRunner:
                         fence=executor.claim.fence, binding=executor.binding, callback=renew)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - no more work after either lease/authority is lost
+        except Exception:  # noqa: BLE001
             episode.cancel()
 
     async def _hold_operation(self, executor, authority):
-        """Retain a data-free failed episode only while old authority stays current."""
         def hold(tx, repository, current):
             self.service._owner(current.owner_id, authority.claims)
             completion = AssignmentEpisodeCompletion(expected_state_version=current.state_version,
@@ -537,7 +497,6 @@ class AssignmentRunner:
             return result
 
     def _complete_operation(self, tx, repository, executor, current, completion):
-        """Retire this physical episode atomically with its logical outcome."""
         result = repository.finish_episode(tx, fence=executor.claim.fence,
             completion=replace(completion, expected_state_version=current.state_version))
         self.orch.work_admission.terminalize(executor.operation_fence,
@@ -546,7 +505,6 @@ class AssignmentRunner:
         return result
 
     async def _finish_operation(self, executor, outcome):
-        """Commit a bounded explicit outcome; never synthesize a recurring wake."""
         from persistent_agents.chat_episode import ChatCompletion
         from persistent_agents.research_episode import EphemeralResearchCompletion, ResearchCompletion
 
@@ -560,9 +518,7 @@ class AssignmentRunner:
                     and completion.next_wake_at is None)):
             raise DispatchDenied("assignment_completion_invalid")
         proof = outcome.research
-        # Research may yield or fail without producing content. Every successful
-        # completion or content incorporation requires the closed result proof;
-        # a handler cannot bypass it by choosing a different checkpoint key.
+        # Handlers can't bypass the result proof with another key
         kind = record.operation.get("kind")
         fixed_kind = kind == "research" or (kind == "chat" and self._fixed_chat())
         research_output = fixed_kind and (
@@ -611,7 +567,6 @@ class AssignmentRunner:
         return result
 
     async def execute_approved(self, action, interaction, remote_marker=None):
-        """Claim only the exact reviewed action on the owner's live connection."""
         owner = action.owner_id
         claims = self.service._interaction(owner, interaction)
         record = await self.service.get(owner, claims, action.assignment_id)
@@ -641,7 +596,7 @@ class AssignmentRunner:
         except Exception as exc:
             try:
                 await self._hold(executor, getattr(exc, "code", "assignment_approved_action_failed"))
-            except Exception:  # noqa: BLE001 - approval failures cannot expose source errors
+            except Exception:  # noqa: BLE001
                 logger.error("persistent_assignment_approval_hold_failed")
             raise
         finally:
@@ -678,9 +633,6 @@ class AssignmentRunner:
         ):
             raise DispatchDenied("assignment_hold_invalid")
         if not authority_hold:
-            # Revalidate remote policy before the transaction. Failure holds must
-            # not retry the same failed external check; their local guard below
-            # still refuses revoked authority and leaves recovery responsible.
             await executor.refresh()
         checkpoint = thaw(record.checkpoint) if checkpoint is None else checkpoint
         next_wake = datetime.now(UTC) + timedelta(seconds=(
@@ -700,9 +652,6 @@ class AssignmentRunner:
                     or current.control_epoch != record.control_epoch
                     or current.checkpoint != record.checkpoint or current.tasks != record.tasks):
                 raise DispatchDenied("assignment_state_changed")
-            # A lease renewal or late usage receipt may advance the version
-            # without changing this checkpoint/task snapshot. Preserve those
-            # updates under the same row lock; never overwrite new payloads.
             result = repository.finish_episode(
                 tx, fence=executor.claim.fence,
                 completion=replace(completion, expected_state_version=current.state_version),
@@ -714,9 +663,7 @@ class AssignmentRunner:
             )
             return result
         lease = _episode_lease(executor)
-        # A successful terminal transaction retires both leases. Serialize its
-        # acknowledgement with renewal so that notification delivery cannot be
-        # cancelled by an attempted renewal of the already-completed episode.
+        # Serialize completion ack with renewal to avoid cancellation
         async with lease.lock:
             result = await self.store.current_execution_transaction(
                 fence=executor.claim.fence, binding=executor.binding,
@@ -728,11 +675,9 @@ class AssignmentRunner:
         return result
 
     async def _notify_activity(self, record):
-        """Deliver committed activity identities; reconnect reads durable state."""
         after = 0
         try:
-            # Plane bounds retained history at 1000. Pagination prevents an old
-            # first page from hiding recent pending findings after a restart.
+            # Plane retains only 1000 rows; page or miss recent items
             for _ in range(10):
                 page = await self.store.call(
                     "list_activity", owner_id=record.owner_id,
@@ -756,26 +701,15 @@ class AssignmentRunner:
                 if len(page) < 100:
                     return
                 after = page[-1].sequence
-        except Exception:  # noqa: BLE001 - transport errors cannot undo committed activity
-            # An unavailable client cannot roll back a committed checkpoint.
-            # The retained activity remains visible on reconnect, even when a
-            # transient notification's receipt is uncertain.
+        except Exception:  # noqa: BLE001
             logger.warning("persistent_assignment_notification_unavailable")
 
     async def _model(self, executor, key, system, context, *, task_id=None, event_id=None,
                      previous_contexts=()):
-        """Dispatch one metered model action; ``previous_contexts`` are older
-        projections of the same evidence whose already reserved intents stay valid."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": canonical(bounded_context(context))}]
-        # Completion capacity includes reasoning as well as visible JSON. The
-        # full bound is reserved by ActionExecutor under the owner's limits.
-        # Explicit low effort keeps small steps from inheriting a provider's
-        # maximum reasoning setting; it does not change owner caps.
         request = {"kind": "model", "max_output_tokens": 4096,
                    "reasoning_effort": "low", "messages": messages}
-        # JSON inside message content is escaped again in Plane's 8 KiB intent.
-        # Wider evidence must not turn an admissible legacy request into a refusal.
         if len(canonical(request).encode("utf-8")) > 8192:
             messages = [messages[0],
                         {"role": "user", "content": canonical(legacy_bounded_context(context))}]
@@ -799,8 +733,6 @@ class AssignmentRunner:
                     or not 1 <= retained["max_output_tokens"] <= 8192
                     or digest(retained) != existing.intent.request_digest):
                 raise DispatchDenied("assignment_action_binding_changed")
-            # Only exact current/legacy projections of this same context match.
-            # An upgrade cannot rewrite an old intent or invalidate its receipt.
             request = retained
         return await executor.action(key, request, task_id=task_id, event_id=event_id)
 
@@ -811,9 +743,6 @@ class AssignmentRunner:
                                        assignment_id=record.assignment_id, disposition="pending")
         if not events:
             source = thaw(record.definition.source)
-            # A failed episode may receive a new wake time. The last committed
-            # observation identifies this poll across those retries; advance it
-            # only when the observation/checkpoint is durably incorporated.
             key = digest(["source", record.instruction_revision,
                           record.checkpoint.get("last_checked_at", record.created_at),
                           thaw(record.checkpoint.get("cursor"))])
@@ -827,9 +756,6 @@ class AssignmentRunner:
             cursor = checkpoint.get("cursor")
             observation = self._classify(record, observed)
             if observation["kind"] not in INCORPORATED_KINDS:
-                # An unchanged complete source or insufficient evidence records
-                # its typed disposition and ends here: no event, no plan, no
-                # model call. Only the governed read itself was charged.
                 checkpoint["observation"] = observation
                 await self._finish(executor, record, checkpoint=checkpoint)
                 return
@@ -849,7 +775,6 @@ class AssignmentRunner:
             )
             record, events = await self.store.call("record_source_batch", fence=executor.claim.fence,
                                                   expected_state_version=record.state_version, batch=batch)
-        # One bounded pending event per episode. Later events remain durable.
         event = events[0]
         plan_key = digest([record.instruction_revision, event.event_id])
         active = [task for task in record.tasks if task["plan_key"] == plan_key]
@@ -857,8 +782,6 @@ class AssignmentRunner:
         if not active:
             observation = self._event_observation(record, event)
             if observation["kind"] == "initial":
-                # The first observation of a source yields exact attributed
-                # excerpts; changed-source assessment is the model's job only.
                 await self._extractive_episode(executor, record, event, observation)
                 return
             planner_context = {
@@ -868,9 +791,6 @@ class AssignmentRunner:
                 "prior_finding": record.checkpoint.get("last_finding"),
                 "maximum_tasks": min(8, record.definition.limits["max_tasks"]),
             }
-            # A planner intent reserved before the prior-result binding existed
-            # keeps its receipt: the older projection of this same evidence is
-            # still an exact match, never an assignment_action_binding_changed.
             proposal = await self._model(executor, plan_key + ":plan", _PLANNER, {
                 **planner_context, "prior_result_digest": observation["prior_result_digest"],
             }, event_id=event.event_id, previous_contexts=(planner_context,))
@@ -887,8 +807,6 @@ class AssignmentRunner:
             record = await self.store.call("put_task_plan", fence=executor.claim.fence,
                                            expected_state_version=record.state_version,
                                            plan_key=plan_key, plan_digest=digest(entries), tasks=entries)
-        # Dependency-ready tasks can run concurrently under the same durable
-        # claim; every child still takes its own shared resource reservation.
         while True:
             record = await self.store.call("assert_current_claim", fence=executor.claim.fence)
             tasks = [thaw(task) for task in record.tasks if task["plan_key"] == plan_key]
@@ -904,8 +822,6 @@ class AssignmentRunner:
             try:
                 await asyncio.gather(*children)
             except BaseException:
-                # Parent failure/approval/stop cannot leave sibling coroutines
-                # executing after its operation and local capacity are released.
                 for child in children:
                     child.cancel()
                 await asyncio.gather(*children, return_exceptions=True)
@@ -941,7 +857,6 @@ class AssignmentRunner:
         )
 
     def _classify(self, record, observed):
-        """Typed outcome of a fresh governed read against the checkpoint's prior."""
         source = thaw(record.definition.source)
         try:
             facts = extraction_facts(observed, source)
@@ -952,7 +867,6 @@ class AssignmentRunner:
             raise DispatchDenied("assignment_observation_invalid") from None
 
     def _event_observation(self, record, event):
-        """Typed record for an event the source ledger already admitted."""
         source = thaw(record.definition.source)
         observed = thaw(event.context)
         try:
@@ -963,11 +877,6 @@ class AssignmentRunner:
             raise DispatchDenied("assignment_observation_invalid") from None
 
     async def _bound_read_action(self, record, observed):
-        """Find the succeeded read whose retained result is exactly this event's context.
-
-        The batch key is the read's action key; a pre-permit failure retried in
-        a later control epoch lives under the executor's successor key chain.
-        """
         key = record.checkpoint.get("last_batch_key")
         for _ in range(256):
             if type(key) is not str:
@@ -988,7 +897,6 @@ class AssignmentRunner:
         raise DispatchDenied("assignment_research_result_invalid")
 
     async def _extractive_episode(self, executor, record, event, observation):
-        """Initial observation: exact attributed passages, no plan, no model call."""
         source = thaw(record.definition.source)
         observed = thaw(event.context)
         action_id, result_digest = await self._bound_read_action(record, observed)

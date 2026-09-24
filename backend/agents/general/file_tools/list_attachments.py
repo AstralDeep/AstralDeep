@@ -1,4 +1,6 @@
-"""``list_attachments`` tool: enumerate the calling user's attachments."""
+"""list_attachments tool: returns the calling user's own attachments, newest first, via
+file_tools/__init__.py's resolver.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ def list_attachments(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return the calling user's live attachments, newest first."""
     if not user_id:
         return {"error": {"code": "not_found", "message": "user context required"}}
     try:

@@ -1,4 +1,8 @@
-"""Server-selected consent identity, including refusal and await replacement."""
+"""Tests for server-selected session consent identity (orchestrator/session_consent.py,
+web_auth.py): exact cookie selection, refusal of unqualified principals, closed
+selection under await replacement, and expiry caps.
+"""
+
 import asyncio
 from dataclasses import replace
 from datetime import timedelta

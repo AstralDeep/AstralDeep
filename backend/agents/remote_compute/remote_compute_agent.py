@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""remote-compute-1 — the unified remote-compute agent (feature 063).
-
-Reaches the user's own registered machines/clusters over SSH and exposes BOTH the
-read-only verbs (queue, job status/history, host facts, directory/process listing,
-reachability) and the mutating verbs (submit/cancel jobs, create/delete paths,
-upload files, control services/packages, signal processes). Runs IN-PROCESS;
-gated by FF_REMOTE_COMPUTE.
-
-Safe-seeded so the read verbs work out of the box, but every DESTRUCTIVE mutating
-verb is still gated per-verb by the durable confirmation mechanism
-(``orchestrator/remote_confirmation.py``, keyed on this agent's id) — merging the
-read + control agents did NOT merge their safety classes.
+"""The single grantable remote-compute agent, gated by FF_REMOTE_COMPUTE: unions
+remote_observe's read verbs with remote_control's mutating verbs, the latter gated
+per-verb by orchestrator/remote_confirmation.py.
 """
 import asyncio
 import logging
@@ -30,8 +21,6 @@ logger = logging.getLogger("RemoteComputeAgent")
 
 
 class RemoteComputeAgent(BaseA2AAgent):
-    """Unified remote-compute agent: read + mutating verbs, one grantable agent."""
-
     agent_id = "remote-compute-1"
     service_name = "Remote Compute"
     description = (
@@ -67,9 +56,6 @@ class RemoteComputeAgent(BaseA2AAgent):
             )
 
         super().__init__(MCPServer(), port=port, port_env_var="REMOTE_COMPUTE_AGENT_PORT")
-        # The verb libraries retain their small host-object API while every
-        # durable call resolves a typed repository on the injected Plane runtime.
-        # This binding owns no driver or pool.
         from orchestrator.credential_manager import CredentialManager
         from agents.remote_compute import mcp_tools
 
@@ -86,8 +72,6 @@ class RemoteComputeAgent(BaseA2AAgent):
 
 
 def _compose_standalone_plane():
-    """Compose the one Plane runtime owned by a networked agent process."""
-
     from orchestrator.plane_composition import compose_plane_from_environment
 
     manifest = Path(__file__).resolve().parents[3] / "config" / "astral-composition.json"

@@ -1,37 +1,8 @@
-"""Deep-owned host adapter for the BYO agent Projection surface (key
-``agent_authoring``, T018/T019 + the UI half of T024/T026/T028/T030).
-
-One server-driven surface, two views:
-
-* **My agents & skills** (feature 077 home) — whether the owner's desktop client
-  is connected (by name when known) and what to do when it is not; the express
-  lane ("describe it and it exists": one description → a background pipeline
-  through the SAME gated session with a live step checklist, stopping only for
-  the assistant's questions); the owner's user agents with their DERIVED
-  running/offline status (liveness is socket presence, never a stored column);
-  in-progress step-editor sessions; the owner's SKILLS (list / create / edit /
-  toggle / delete, `orchestrator/user_skills.py`); and the step-by-step editor
-  as the advanced path. Revise + Delete live here. There is **no
-  share/publish/transfer control anywhere on this surface** — user agents are
-  private by construction (FR-020, Constitution K), so the affordance simply does
-  not exist (a test asserts it).
-* **The guided flow** — Specify → Clarify → Plan → Tasks → Analyze → Generate.
-  Each phase shows an ASSISTANT-DRAFTED, fully EDITABLE artifact; advancing is
-  always an explicit act. Clarify and Analyze are HARD GATES: they decline to
-  advance with a plain-language notice, and Generate is only ever reachable from
-  a passed Analyze — enforced in :mod:`orchestrator.agent_authoring`, on the
-  server, not by hiding a button.
-
-Renders BOTH ``render()`` (web HTML) and ``components()`` (native SDUI) from day
-one, so web/Windows/Android/Apple all author + manage with no client work
-(contracts/authoring-surface.md; the watch is excluded by ``chrome_events``'s
-device list, FR-023).
-
-**Flag**: every entry point here re-checks ``FF_BYO_AGENTS`` and fails closed.
-The delivery/tunnel/lifecycle seams underneath are not individually flagged —
-they are reachable ONLY from here, so this is the gate that keeps the whole
-feature inert when the flag is off (FR-009).
+"""Host adapter for the BYO agent authoring surface: the agents/skills home, the express
+quick-create lane, the step-by-step Specify-through-Generate editor, and the
+declarative-agent lifecycle. Generation gating lives in agent_authoring.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,10 +29,8 @@ TITLE = "My agents & skills"
 
 SURFACE_KEY = "agent_authoring"
 
-#: FR-024 — the honest, always-shown truth about where these agents run.
 HOST_NOTE = ("Your agents run on your desktop host, not on the server. They are offline "
              "while none of your desktop hosts is online.")
-#: 077 — what a person without a connected desktop client should do (FR-005).
 HOST_HOWTO = ("To run agents on your PC: install the AstralDeep desktop client, sign in "
               "with this same account, and keep it open. It shows up here as soon as it "
               "connects.")
@@ -92,15 +61,10 @@ _PHASE_HELP = {
 }
 
 
-# Declarative definitions are a distinct, inert authoring contract. These types
-# are deliberately absent from HANDLERS; existing generated desktop-agent flows
-# keep their runtime/Analyze gates. A parsed draft never grants execution.
 MAX_DECLARATIVE_DEFINITION_BYTES = 64 * 1024
 
 
 class DeclarativeAgentError(AssignmentError):
-    """A stable content-free lifecycle refusal, safe for a future host adapter."""
-
     def __init__(self, code="declarative_definition_invalid", status_code=422):
         super().__init__(code, status_code)
 
@@ -144,18 +108,10 @@ class _DeclarativeDefinition(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class DeclarativeAgentDefinition:
-    """One detached versioned draft; neither a policy verdict nor a grant.
-
-    Requested limits are normalized through the existing assignment model and
-    retained explicitly. Unknown tools may remain inert drafts; activation must
-    separately resolve current capability, policy and execution support.
-    """
-
     _canonical_json: str = field(repr=False)
 
     @classmethod
     def parse(cls, value):
-        """Validate the closed draft representation without external effects."""
         try:
             if type(value) is not dict or type(value.get("version")) is not int:
                 raise ValueError
@@ -173,7 +129,6 @@ class DeclarativeAgentDefinition:
             raise DeclarativeAgentError() from None
 
     def to_dict(self):
-        """Return a fresh draft copy, never mutable aliases into its snapshot."""
         return json.loads(self._canonical_json)
 
     @property
@@ -182,15 +137,12 @@ class DeclarativeAgentDefinition:
 
     @property
     def fixed_research_shape(self):
-        """Recognize only the capability shape; this is not activation readiness."""
         return self.to_dict()["capabilities"] == [
             {"agent_id": "web-research-1", "tool_name": "fetch_page"},
         ]
 
 
 class DeclarativeAgentRequest(StrictModel):
-    """Closed metadata intent; the current human supplies its owner separately."""
-
     version: Literal[1] = 1
     command: Literal["create", "revise", "activate", "archive", "clone", "delete"]
     command_id: str
@@ -222,13 +174,6 @@ class _DeclarativeActivation:
 
 
 class DeclarativeAgentService:
-    """Private current-human metadata lifecycle; no UI, route or execution start.
-
-    Metadata activation selects a validated immutable definition. It does not
-    connect that definition to Work, grant unattended consent, register an agent
-    transport, or start any task. Those consumers require separate qualification.
-    """
-
     def __init__(self, orchestrator):
         from audit.repository import AuditRepository
         from orchestrator.user_agents import UserAgentRegistry
@@ -300,8 +245,6 @@ class DeclarativeAgentService:
         try:
             if type(body) is not DeclarativeAgentRequest or type(body.version) is not int:
                 raise ValueError
-            # Revalidate a detached body before the first await, including model
-            # instances constructed outside Pydantic's ordinary validation path.
             data = json.loads(json.dumps(body.model_dump(warnings="none"), allow_nan=False))
             request = DeclarativeAgentRequest.model_validate(data)
             data = request.model_dump(exclude_none=True)
@@ -328,8 +271,6 @@ class DeclarativeAgentService:
         from personalization.phi_gate import get_phi_gate
         from persistent_agents.privacy import content_text, privacy_text
         data = definition.to_dict()
-        # Only authored strings are privacy material. Numeric resource ceilings
-        # are validated policy, not a putative patient/account number.
         content = {key: data[key] for key in ("purpose", "instructions", "capabilities")}
         content["display_name"] = display_name
         try:
@@ -342,7 +283,6 @@ class DeclarativeAgentService:
             raise DeclarativeAgentError("declarative_sensitive_content_refused", 422)
 
     async def command(self, *, caller, body: DeclarativeAgentRequest):
-        """Apply one owner command with current-caller and same-tx audit guards."""
         from persistent_agents.runtime_values import thaw
         self._current(caller)
         caller.require_write()
@@ -363,9 +303,6 @@ class DeclarativeAgentService:
                 if command.command == "activate":
                     activation = await self._prepare_activation(caller, definition)
             except AssignmentError:
-                # Another request may have accepted this exact immutable intent
-                # while preflight awaited mutable policy. Recover only its
-                # receipt under the original caller; never retry a mutation.
                 latest = await self._transaction(caller, lambda tx, repository: self._plane(
                     repository.prepare_declarative_command, tx, command=command))
                 if not latest.replayed:
@@ -374,8 +311,6 @@ class DeclarativeAgentService:
 
         def accept(tx, repository):
             current = self._plane(repository.prepare_declarative_command, tx, command=command)
-            # A concurrently accepted command is a read-only receipt, regardless
-            # of its current activation configuration or supervisor availability.
             if current.replayed:
                 return self._plane(repository.apply_declarative_command, tx, preparation=current)
             if (command.command in {"revise", "clone", "activate"}
@@ -491,7 +426,6 @@ class DeclarativeAgentService:
             raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
 
     def _lock_activation(self, tx, caller, prepared):
-        """Lock config after every selected agent/revision, before final policy."""
         self._activation_current(caller, prepared)
         try:
             row = self.repositories.encrypted_llm_config.get_user_for_update(
@@ -513,7 +447,6 @@ class DeclarativeAgentService:
                 403 if error.code == "assignment_scope_revoked" else 503) from None
 
     async def list_heads(self, *, caller, limit=50):
-        """Return only owned declarative agent heads, most recently updated first."""
         if type(limit) is not int or not 1 <= limit <= 50:
             raise DeclarativeAgentError("declarative_command_invalid", 422)
 
@@ -532,7 +465,6 @@ class DeclarativeAgentService:
         return result
 
     async def history(self, *, caller, agent_id, limit=50, before_revision_number=None):
-        """Return only actual owned definition revisions with a bounded cursor."""
         from persistent_agents.models import validate_id
         try:
             validate_id(agent_id)
@@ -563,19 +495,6 @@ class DeclarativeAgentService:
         self._current(caller)
         return result
 
-
-# ---------------------------------------------------------------------------
-# Declarative agents (T032/T037) — guidance-picker adapters
-#
-# These render the metadata-only declarative lifecycle (list/history/create/
-# revise/clone/activate/archive/delete) as a "Declarative agents" sub-view of
-# the SAME "agent_authoring" surface, reusing the shared
-# ``astralprojection.chrome.guidance.build_declarative_agents_view`` builder for
-# both web (``render_html``) and native SDUI (plain component dicts, adapted
-# generically by the caller — see ``chrome_events._render_surface_sdui``).
-# Activation still only selects immutable metadata (DeclarativeAgentService);
-# it grants no execution and is not wired into Work or chat dispatch here.
-# ---------------------------------------------------------------------------
 
 _DECLARATIVE_NOTICES = {
     "create": "Agent created.", "revise": "Revision saved.", "activate": "Revision activated.",
@@ -621,7 +540,6 @@ def _declarative_id(value) -> str:
 
 
 async def _resolve_agent_and_revision(orch, caller, agent_id, revision_id=None):
-    """Read the current head plus one exact (or the head's current) revision."""
     agent, revisions = await orch.declarative_agents.history(caller=caller, agent_id=agent_id, limit=100)
     target = revision_id or agent.selected_definition_revision_id
     if target is None:
@@ -633,11 +551,6 @@ async def _resolve_agent_and_revision(orch, caller, agent_id, revision_id=None):
 
 
 async def declarative_view_state(orch, caller, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the ``agents`` guidance-view state for one navigation request.
-
-    Every returned state is freshly re-read; navigation params are never
-    trusted as content, only as which owned rows to look up next.
-    """
     params = params if isinstance(params, dict) else {}
     mode = str(params.get("mode") or "list")
     if mode == "list":
@@ -687,7 +600,6 @@ async def declarative_view_state(orch, caller, params: Dict[str, Any]) -> Dict[s
 
 
 async def _render_declarative(orch, user_id: str, params: Dict[str, Any]) -> str:
-    """Web body for the "Declarative agents" sub-view (feature 088 T032/T037)."""
     from astralprojection.chrome import render_html
     from astralprojection.chrome.guidance import build_declarative_agents_view
     caller = _declarative_caller(orch, user_id)
@@ -702,11 +614,6 @@ async def _render_declarative(orch, user_id: str, params: Dict[str, Any]) -> str
 
 
 async def _declarative_components(orch, user_id: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Native SDUI body for the "Declarative agents" sub-view.
-
-    ROTE adaptation happens generically at the caller (``chrome_events.
-    _render_surface_sdui``), exactly like every other native surface here.
-    """
     from astralprojection.chrome.guidance import build_declarative_agents_view
     from webrender.chrome.surfaces import _sdui
     caller = _declarative_caller(orch, user_id)
@@ -720,11 +627,6 @@ async def _declarative_components(orch, user_id: str, params: Dict[str, Any]) ->
 
 
 async def _h_declarative_view(orch, websocket, user_id, roles, payload):
-    """``chrome_declarative_view {mode, ...}`` — navigate the declarative agents view.
-
-    A pending human request is required (``human_request_authority`` already
-    classifies this action WS_READ); rendering re-derives fresh state from the
-    round-tripped navigation params, never from client-supplied content."""
     _ = websocket, roles
     if not aa.byo_enabled():
         return _refused()
@@ -734,10 +636,6 @@ async def _h_declarative_view(orch, websocket, user_id, roles, payload):
 
 
 async def _h_declarative_command(orch, websocket, user_id, roles, payload):
-    """``chrome_declarative_command {...}`` — the closed declarative lifecycle command.
-
-    A pending human request is required (WS_WRITE); the exact receipt replay
-    guarantee lives in :meth:`DeclarativeAgentService.command`."""
     _ = websocket, roles
     if not aa.byo_enabled():
         return _refused()
@@ -750,10 +648,6 @@ async def _h_declarative_command(orch, websocket, user_id, roles, payload):
     notice = _DECLARATIVE_NOTICES.get(result.receipt.command, "Saved.")
     return (SURFACE_KEY, {"declarative": {"mode": "list"}}, notice_block("success", notice))
 
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
 
 def _payload(data: Dict[str, Any]) -> str:
     return esc(json.dumps(data))
@@ -768,8 +662,6 @@ def _fields(payload: Any) -> Dict[str, str]:
 
 
 def _mutation_fields(payload: Any) -> Dict[str, str]:
-    """Merge server-rendered CAS identities with collected editable fields."""
-
     fields = _fields(payload)
     if isinstance(payload, dict):
         for name in ("expected_revision", "transition_id"):
@@ -785,7 +677,6 @@ def _user_agents(orch, user_id: str) -> List[Dict[str, Any]]:
 
 
 def _agent_view(orch, user_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
-    """One agent's display state: durable status + DERIVED liveness."""
     agent_id = row.get("agent_id") or ""
     live = aa.agent_status(orch, user_id, agent_id)
     return {
@@ -810,9 +701,6 @@ async def _list_context(orch, user_id: str) -> Dict[str, Any]:
     presence = aa.host_presence(orch, user_id)
     return {
         "agents": [_agent_view(orch, user_id, r) for r in rows],
-        # A session whose draft already produced a delivered agent is not "in
-        # progress" — it would otherwise linger forever in the list; a session
-        # the express lane owns is shown as its run, not as an editor session.
         "sessions": [s for s in sessions
                      if (s["id"] not in live_ids or aa.phase_of(s) != "generate")
                      and s["id"] not in run_ids],
@@ -839,7 +727,6 @@ async def _skills(orch, user_id: str) -> List[us.Skill]:
 
 
 def _skill_identity(skill=None):
-    """One rendered command identity; the client retries that same payload."""
     return {"skill_id": skill.skill_id if skill else str(uuid.uuid4()),
             "command_id": str(uuid.uuid4()),
             "expected_revision": skill.revision if skill else 0}
@@ -870,15 +757,10 @@ def _skill_request_identity(payload, fields=None):
 
 
 def _commands_attr(skills: List[us.Skill]) -> str:
-    """``data-astral-commands`` — the web typeahead's refresh source (FR-012)."""
     items = [{"name": "/" + sk.command, "desc": sk.name}
              for sk in skills if sk.enabled and sk.command]
     return esc(json.dumps(items))
 
-
-# ---------------------------------------------------------------------------
-# Web render
-# ---------------------------------------------------------------------------
 
 def _status_badge(view: Dict[str, Any]) -> str:
     if view["live"] == "running":
@@ -927,7 +809,6 @@ def _session_row(session: Dict[str, Any]) -> str:
 
 
 def _new_form() -> str:
-    """The step-by-step (advanced) entry — the express lane is the default."""
     return (
         f'<details class="bg-white/5 border border-white/10 rounded-lg p-4">'
         f'<summary class="text-sm font-medium text-astral-text cursor-pointer">'
@@ -1013,8 +894,6 @@ def _run_card(run: qc.QuickRun, host_label: str) -> str:
         body = (f'<div class="text-xs text-red-400 mt-1">{esc(run.message)}</div>{violations}')
         retry = ""
         if run.outcome.get("step") in ("generate", "deliver") and run.steps.get("analyze") == "done":
-            # Analyze passed; the model's code (or the delivery) failed — a
-            # second generation is a fresh draft of the code, not a new design.
             retry = (f'<button type="button" class="{_BTN_PRIMARY}" '
                      f'data-ui-action="chrome_author_quick_resend" data-ui-payload=\'{pid}\'>'
                      f"Try again</button>")
@@ -1191,7 +1070,6 @@ def _violations_block(record: Dict[str, Any]) -> str:
 
 
 def _phase_body(row: Dict[str, Any], phase: str, orch=None) -> str:
-    """The editable artifact for ``phase`` (web)."""
     if phase == "specify":
         return (
             f'<input name="agent_name" type="text" value="{esc(row.get("agent_name") or "")}" '
@@ -1244,7 +1122,6 @@ def _phase_body(row: Dict[str, Any], phase: str, orch=None) -> str:
         if record.get("passed"):
             return notice_block("success", "Analyze passed — you can generate this agent.")
         return _violations_block(record)
-    # generate
     record = aa.analyze_record(row)
     ok, reason = _gate(orch, row)
     if not ok:
@@ -1254,20 +1131,15 @@ def _phase_body(row: Dict[str, Any], phase: str, orch=None) -> str:
 
 
 def _gate(orch, row: Dict[str, Any]) -> Tuple[bool, str]:
-    """The structural generation gate, as the surface shows it (never enforces
-    it — :func:`agent_authoring.generation_gate` is re-run server-side by the
-    handler; this only keeps the person from pressing a button that will fail)."""
     if orch is None:
         return True, ""
     try:
         return aa.generation_gate(orch, row)
-    except Exception:  # noqa: BLE001 — a test double without the registry
+    except Exception:  # noqa: BLE001
         return True, ""
 
 
 def _mutation_payload(draft_id: str, state_revision: int) -> Dict[str, Any]:
-    """Return one render-bound, replay-safe authoring mutation identity."""
-
     return {
         "draft_id": draft_id,
         "expected_revision": state_revision,
@@ -1276,13 +1148,6 @@ def _mutation_payload(draft_id: str, state_revision: int) -> Dict[str, Any]:
 
 
 def _phase_actions(draft_id: str, phase: str, state_revision: int, stale: bool = False) -> str:
-    """The phase's action buttons.
-
-    A collecting button (``data-ui-collect``) posts the form's named fields, so
-    the session id rides the form's hidden ``draft_id`` input; a non-collecting
-    button posts only its ``data-ui-payload``, so it carries the id explicitly.
-    Both land on the handler's ``_draft_id`` — miss either and the action would
-    silently address no session."""
     pid = _payload(_mutation_payload(draft_id, state_revision))
     back = (f'<button type="button" class="{_BTN}" data-ui-action="chrome_author_list">'
             "← My agents</button>")
@@ -1326,8 +1191,6 @@ async def _render_session(orch, user_id: str, draft_id: str) -> str:
     phase = aa.phase_of(row)
     return (
         f'<div data-ui-form class="space-y-3">'
-        # The session id rides every field-collecting action (client.js collects
-        # named inputs from the enclosing [data-ui-form]).
         f'<input type="hidden" name="draft_id" value="{esc(draft_id)}">'
         f"{_rail(phase)}"
         f'<div class="text-sm font-semibold text-astral-text">'
@@ -1342,7 +1205,6 @@ async def _render_session(orch, user_id: str, draft_id: str) -> str:
 
 
 async def render(orch, user_id: str, roles: Any, params: Any) -> str:
-    """Web body: the home (agents + skills), or one authoring session."""
     _ = roles
     params = params if isinstance(params, dict) else {}
     if not aa.byo_enabled() and not us.enabled():
@@ -1359,10 +1221,6 @@ async def render(orch, user_id: str, roles: Any, params: Any) -> str:
         return await _render_session(orch, user_id, draft_id)
     return await _render_list(orch, user_id, edit_skill=str(params.get("skill_slug") or ""))
 
-
-# ---------------------------------------------------------------------------
-# Native SDUI render
-# ---------------------------------------------------------------------------
 
 def _sdui_phase_fields(row: Dict[str, Any], phase: str, _sdui) -> List[Dict[str, Any]]:
     if phase == "specify":
@@ -1394,7 +1252,6 @@ def _sdui_phase_fields(row: Dict[str, Any], phase: str, _sdui) -> List[Dict[str,
 
 
 async def components(orch, user_id: str, roles: Any, params: Any) -> List[Dict[str, Any]]:
-    """Native SDUI body — the same surface, the same ``chrome_author_*`` actions."""
     _ = roles
     from webrender.chrome.surfaces import _sdui
     params = params if isinstance(params, dict) else {}
@@ -1621,10 +1478,6 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
     return out
 
 
-# ---------------------------------------------------------------------------
-# Handlers — EVERY one re-checks the flag and fails closed (FR-009)
-# ---------------------------------------------------------------------------
-
 def _refused() -> Tuple[str, Dict[str, Any], str]:
     return (SURFACE_KEY, {}, notice_block("error", _DISABLED))
 
@@ -1636,12 +1489,6 @@ def _draft_id(payload: Any) -> str:
 
 
 async def _autodraft(orch, websocket, user_id: str, draft_id: str) -> str:
-    """Assistant-draft the current phase's artifact when it is still empty.
-
-    This is what makes the flow "assistant-drafted, human-editable": landing on a
-    phase hands the user something to react to. Fail-open — a missing/erroring
-    LLM leaves an empty artifact the user can write themselves, never a dead end.
-    """
     row = await asyncio.to_thread(aa.get_session, orch, user_id, draft_id)
     if row is None:
         return ""
@@ -1659,7 +1506,6 @@ async def _autodraft(orch, websocket, user_id: str, draft_id: str) -> str:
 
 
 async def _h_start(orch, websocket, user_id, roles, payload):
-    """``chrome_author_start {fields}`` — open a session and draft Specify."""
     _ = roles
     if not aa.byo_enabled():
         return _refused()
@@ -1676,7 +1522,6 @@ async def _h_start(orch, websocket, user_id, roles, payload):
 
 
 async def _h_draft(orch, websocket, user_id, roles, payload):
-    """``chrome_author_draft {draft_id}`` — (re)draft the current artifact."""
     _ = roles
     if not aa.byo_enabled():
         return _refused()
@@ -1687,8 +1532,6 @@ async def _h_draft(orch, websocket, user_id, roles, payload):
 
 
 async def _h_edit(orch, websocket, user_id, roles, payload):
-    """``chrome_author_edit {draft_id, fields}`` — persist the human's edit. Never
-    advances: editing and advancing are separate, deliberate acts."""
     _ = roles, websocket
     if not aa.byo_enabled():
         return _refused()
@@ -1700,14 +1543,6 @@ async def _h_edit(orch, websocket, user_id, roles, payload):
 
 
 async def _h_advance(orch, websocket, user_id, roles, payload):
-    """``chrome_author_advance`` / ``chrome_author_clarify`` — save + advance one
-    phase.
-
-    The CLARIFY HARD GATE lives in :func:`agent_authoring.advance`: with an
-    unanswered question the session does not move and the notice says which
-    question is blocking. Both action names route here so the gate is the same
-    code on every path (a client cannot pick a laxer one).
-    """
     _ = roles
     if not aa.byo_enabled():
         return _refused()
@@ -1722,10 +1557,6 @@ async def _h_advance(orch, websocket, user_id, roles, payload):
 
 
 async def _h_analyze(orch, websocket, user_id, roles, payload):
-    """``chrome_author_analyze {draft_id}`` — the Analyze HARD GATE.
-
-    On violations the session stays at ``analyze`` and each violation is cited in
-    plain language with its offending field; NOTHING is generated (FR-003)."""
     _ = roles, websocket
     if not aa.byo_enabled():
         return _refused()
@@ -1762,11 +1593,6 @@ async def _h_analyze(orch, websocket, user_id, roles, payload):
 
 
 async def _h_generate(orch, websocket, user_id, roles, payload):
-    """``chrome_author_generate {draft_id}`` — generate + deliver.
-
-    Reachable ONLY post-Analyze-pass, and that is enforced HERE (server-side) by
-    :func:`agent_authoring.generation_gate`, not by which buttons the surface drew
-    — a forged action on a pre-Analyze session is refused."""
     _ = roles
     if not aa.byo_enabled():
         return _refused()
@@ -1789,9 +1615,6 @@ async def _h_generate(orch, websocket, user_id, roles, payload):
         return (SURFACE_KEY, {}, notice_block(
             "success", "Sent to your desktop host — it will start the agent and connect it."))
     if status == "no_host":
-        # The server does not queue delivery to an offline host.  Generate again
-        # reopens the exact immutable Plane publication; it never invokes the
-        # model or stages a second bundle for this completed draft revision.
         return (SURFACE_KEY, {"draft_id": draft_id}, notice_block(
             "info", "The agent is ready, but no desktop client is connected, so it "
                     "was not delivered. " + HOST_NOTE +
@@ -1825,20 +1648,13 @@ async def _h_generate(orch, websocket, user_id, roles, payload):
 
 
 async def _h_list(orch, websocket, user_id, roles, payload):
-    """``chrome_author_list`` — back to the home view."""
     _ = orch, websocket, user_id, roles, payload
     if not aa.byo_enabled() and not us.enabled():
         return _refused()
     return (SURFACE_KEY, {}, "")
 
 
-# ---------------------------------------------------------------------------
-# 077 — the express lane
-# ---------------------------------------------------------------------------
-
 async def _refresh_home(orch, websocket, user_id, roles, run) -> None:
-    """Re-render the home view for the socket that started a run — only while
-    that socket is still connected and still looking at this surface."""
     _ = run
     from orchestrator import chrome_events
     if websocket not in getattr(orch, "ui_clients", ()):
@@ -1849,8 +1665,6 @@ async def _refresh_home(orch, websocket, user_id, roles, run) -> None:
 
 
 async def _h_quick_create(orch, websocket, user_id, roles, payload):
-    """``chrome_author_quick_create {fields: {description, agent_name?}}`` —
-    open a session and run the whole pipeline in the background (FR-001)."""
     if not aa.byo_enabled():
         return _refused()
     fields = _fields(payload)
@@ -1865,8 +1679,6 @@ async def _h_quick_create(orch, websocket, user_id, roles, payload):
 
 
 async def _h_quick_answers(orch, websocket, user_id, roles, payload):
-    """``chrome_author_quick_answers {draft_id, fields: {q0..}}`` — the owner's
-    answers go through the Clarify hard gate, then the pipeline resumes (FR-002)."""
     if not aa.byo_enabled():
         return _refused()
     draft_id = _draft_id(payload)
@@ -1876,8 +1688,6 @@ async def _h_quick_answers(orch, websocket, user_id, roles, payload):
 
 
 async def _h_quick_resend(orch, websocket, user_id, roles, payload):
-    """``chrome_author_quick_resend {draft_id}`` — send the already verified
-    bundle to a now-connected desktop client (no model call; FR-006)."""
     if not aa.byo_enabled():
         return _refused()
     draft_id = _draft_id(payload)
@@ -1913,8 +1723,6 @@ async def _h_quick_resend(orch, websocket, user_id, roles, payload):
 
 
 async def _h_quick_dismiss(orch, websocket, user_id, roles, payload):
-    """``chrome_author_quick_dismiss {draft_id}`` — drop a finished run card
-    (the session and any delivered agent stay)."""
     _ = orch, websocket, roles
     if not aa.byo_enabled():
         return _refused()
@@ -1922,16 +1730,11 @@ async def _h_quick_dismiss(orch, websocket, user_id, roles, payload):
     return (SURFACE_KEY, {}, "")
 
 
-# ---------------------------------------------------------------------------
-# 077 — skills
-# ---------------------------------------------------------------------------
-
 def _skills_refused() -> Tuple[str, Dict[str, Any], str]:
     return (SURFACE_KEY, {}, notice_block("error", _SKILLS_DISABLED))
 
 
 async def _h_skill_save(orch, websocket, user_id, roles, payload):
-    """Apply the rendered exact revision command through the common facade."""
     store = us.store_for(orch)
     if store is None:
         return _skills_refused()
@@ -1945,13 +1748,10 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
     await store.save(caller=caller, **identity, name=fields.get("skill_name", ""),
         instructions=fields.get("skill_instructions", ""), applies_to=fields.get("skill_applies", ""),
         command=fields.get("skill_command", ""), enabled=value == "true", slug=slug)
-    # Receipt replay may follow a later edit/delete; do not echo old input as a
-    # statement about the current head. The surface rereads current values.
     return (SURFACE_KEY, {}, notice_block("success", "Skill saved."))
 
 
 async def _h_skill_edit(orch, websocket, user_id, roles, payload):
-    """``chrome_user_skill_edit {slug}`` — open the form prefilled."""
     _ = orch, websocket, user_id, roles
     if not us.enabled():
         return _skills_refused()
@@ -1977,8 +1777,6 @@ async def _h_skill_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _h_delete(orch, websocket, user_id, roles, payload):
-    """``chrome_author_delete {agent_id}`` — soft delete: stop the host agent,
-    drop routing, retain the row + audit trail (T028)."""
     _ = roles, websocket
     if not aa.byo_enabled():
         return _refused()
@@ -1991,11 +1789,6 @@ async def _h_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _h_revise(orch, websocket, user_id, roles, payload):
-    """``chrome_author_revise {agent_id}`` — re-enter authoring for a live agent.
-
-    The revision walks the whole flow again and must pass Analyze on its own
-    before it can generate (T027/FR-026); the running version keeps running until
-    the revision registers."""
     _ = roles, websocket
     if not aa.byo_enabled():
         return _refused()
@@ -2013,9 +1806,6 @@ HANDLERS = {
     "chrome_author_draft": _h_draft,
     "chrome_author_edit": _h_edit,
     "chrome_author_advance": _h_advance,
-    # The 057 contract names a handler per phase; specify/plan/tasks are the same
-    # save-and-advance act, so they route to the same gated implementation rather
-    # than three copies that could drift apart.
     "chrome_author_specify": _h_advance,
     "chrome_author_plan": _h_advance,
     "chrome_author_tasks": _h_advance,
@@ -2025,25 +1815,12 @@ HANDLERS = {
     "chrome_author_list": _h_list,
     "chrome_author_delete": _h_delete,
     "chrome_author_revise": _h_revise,
-    # 077 — the express lane
     "chrome_author_quick_create": _h_quick_create,
     "chrome_author_quick_answers": _h_quick_answers,
     "chrome_author_quick_resend": _h_quick_resend,
     "chrome_author_quick_dismiss": _h_quick_dismiss,
-    # 077 — skills
     "chrome_user_skill_save": _h_skill_save,
     "chrome_user_skill_edit": _h_skill_edit,
     "chrome_user_skill_toggle": _h_skill_toggle,
     "chrome_user_skill_delete": _h_skill_delete,
-    # 088 T032 — the "chrome_declarative_view"/"chrome_declarative_command"
-    # metadata-lifecycle handlers are DEFINED just above (they render through
-    # SURFACE_KEY and DeclarativeAgentService) but are deliberately NOT
-    # registered in this dict: test_declarative_agent_definition_088.py pins
-    # authoring.HANDLERS to name no "declarative" action (the declarative
-    # *definition* parsing contract stays a distinct, inert surface from the
-    # metadata dispatch added here). They are registered instead in
-    # guidance.HANDLERS, which chrome_events.collect_handlers() aggregates by
-    # action name alone — the module that registers a handler is transparent
-    # to dispatch and to human_request_authority's WS_READ/WS_WRITE
-    # classification of the action name itself.
 }

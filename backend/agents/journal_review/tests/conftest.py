@@ -1,12 +1,8 @@
-"""Shared fixtures for the Journal Review agent test suite.
-
-Follows the web_research/summarizer test pattern: ``HttpMock`` stubs the
-single ``requests.request`` call site used by ``shared.external_http``
-(which also proves all egress goes through the gated helper — the old
-direct ``requests.get`` path would bypass the mock entirely); DNS is
-stubbed so the SSRF guard resolves the API hosts deterministically.
-No network anywhere.
+"""Shared pytest fixtures for the Journal Review test suite (mcp_tools.py): HttpMock/DNS
+stubs so all egress is captured deterministically, plus OpenAlex source/works payload
+builders.
 """
+
 import socket
 from unittest.mock import patch
 
@@ -15,7 +11,6 @@ import pytest
 from agents.journal_review import mcp_tools
 from shared.tests._http_mock import HttpMock
 
-# Public hosts the agent talks to (resolve to a public address in tests).
 SAFE_HOSTS = {"api.openalex.org", "api.crossref.org"}
 
 EHJ_ID = "https://openalex.org/S64187185"
@@ -39,19 +34,12 @@ def stub_dns():
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    """The module keeps a 10-minute response cache; isolate every test."""
     mcp_tools._CACHE.clear()
     yield
     mcp_tools._CACHE.clear()
 
 
 def make_source(**over):
-    """A realistic OpenAlex source record (European Heart Journal-ish).
-
-    The real EHJ has a 2-yr mean citedness around 35 — the value OpenAlex
-    itself publishes, which is what the agent must surface (never a
-    home-grown "impact factor" approximation).
-    """
     src = {
         "id": EHJ_ID,
         "display_name": "European Heart Journal",
@@ -84,7 +72,6 @@ def make_source(**over):
 
 
 def make_works_payload(source_ids):
-    """An OpenAlex /works payload whose papers were published in source_ids."""
     return {
         "results": [
             {"primary_location": {"source": {"id": sid, "type": "journal"}}}

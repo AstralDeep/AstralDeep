@@ -1,4 +1,7 @@
-"""Focused Plane-boundary tests for Deep's user-agent registry policy."""
+"""Tests for Deep's user-agent registry policy over AstralPlane (user_agents.py,
+astralplane.repositories.agents): typed lifecycle transactions, identity revalidation
+and tombstoning, and plane-projected ownership/trust without a database facade.
+"""
 
 from __future__ import annotations
 

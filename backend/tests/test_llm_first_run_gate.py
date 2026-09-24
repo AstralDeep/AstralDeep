@@ -1,22 +1,8 @@
-"""Feature 054 — T023: the mandatory first-run LLM provider-setup gate.
-
-Exercises the server-authoritative gate against a REAL orchestrator
-(Postgres-backed ``user_llm_config`` store) with all outbound side effects
-captured:
-
-* ``llm_gate.push_setup_dialog`` device dispositions (web mandatory modal /
-  native ``chrome_surface {mode:"mandatory"}`` / watch skipped);
-* ``chrome_events`` refusals while unconfigured (audit + re-push) and the
-  pass-through of the setup surface's own actions;
-* the probe-gated persisting save (``handle_llm_config_set``) and the
-  multi-socket ``unlock_after_save`` fan-out;
-* the ``FF_LLM_FIRST_RUN`` kill switch (push disabled, refusals intact);
-* provider-health independence (a FAILING provider never re-gates);
-* the mandatory ``render_modal_shell`` variant's HTML contract.
-
-References: specs/054-byo-llm-setup/spec.md FR-013..FR-016,
-specs/054-byo-llm-setup/contracts/first-run-gate.md.
+"""Tests for llm_config/ws_handlers.py and orchestrator/llm_gate.py: the mandatory
+first-run setup gate's device-specific dialogs, refusal of other surfaces while
+unconfigured, probe-gated save with multi-socket unlock fan-out, and its kill switch.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,7 +41,6 @@ def orch_module(orchestrator_module_factory):
 
 @pytest.fixture
 def orch(orch_module):
-    """Per-test reset of the module orchestrator's mutable seams."""
     o = orch_module
     o.ui_sessions = {}
     o._ws_llm_gated = {}
@@ -105,10 +90,6 @@ async def _seed(orch, uid, base_url="https://api.example.com/v1",
         uid, provider=provider, base_url=base_url, model=model, api_key=api_key)
 
 
-# ---------------------------------------------------------------------------
-# (a) push_setup_dialog — device dispositions
-# ---------------------------------------------------------------------------
-
 async def test_push_browser_mandatory_modal_no_close_with_signout(orch):
     uid = _uid()
     ws = _register(orch, uid, device="browser")
@@ -121,12 +102,10 @@ async def test_push_browser_mandatory_modal_no_close_with_signout(orch):
     assert frame["region"] == "modal"
     html = frame["html"]
     assert 'data-mandatory="1"' in html
-    assert "astral-modal-close" not in html  # no ✕ affordance
-    assert "/auth/logout" in html            # sign-out escape hatch (FR-013)
+    assert "astral-modal-close" not in html
+    assert "/auth/logout" in html
     assert "Set up your AI provider" in html
-    # It's the real setup form, not a placeholder.
     assert 'data-ui-action="chrome_llm_save"' in html
-    # The socket is marked gated.
     assert orch._ws_llm_gated.get(id(ws)) is True
 
 
@@ -144,7 +123,6 @@ async def test_push_native_devices_get_mandatory_chrome_surface(orch):
         assert frame["surface_key"] == llm_gate.SURFACE_KEY == "llm"
         assert frame["region"] == "modal"
         assert frame["components"], "mandatory surface must carry the setup form"
-    # No web modal was pushed to a native socket.
     assert _frames(orch, "chrome_render") == []
 
 
@@ -158,10 +136,6 @@ async def test_push_watch_is_skipped(orch):
     assert id(ws) not in orch._ws_llm_gated
 
 
-# ---------------------------------------------------------------------------
-# (b) chrome_events — server-side refusals while unconfigured
-# ---------------------------------------------------------------------------
-
 async def test_chrome_open_other_surface_refused_while_unconfigured(orch):
     uid = _uid()
     ws = _register(orch, uid)
@@ -170,14 +144,11 @@ async def test_chrome_open_other_surface_refused_while_unconfigured(orch):
         orch, ws, "chrome_open", {"surface": "theme"}, uid)
 
     assert handled is True
-    # Audited llm_unconfigured refusal.
     assert orch._record_llm_unconfigured.await_count == 1
     kwargs = orch._record_llm_unconfigured.call_args.kwargs
     assert kwargs["feature"] == "chrome:chrome_open"
-    # The mandatory dialog was (re)pushed instead of the requested surface.
     frames = _frames(orch, "chrome_render")
     assert frames and 'data-mandatory="1"' in frames[-1][1]["html"]
-    # The theme surface never rendered.
     assert "Theme" not in frames[-1][1]["html"]
 
 
@@ -191,7 +162,6 @@ async def test_chrome_close_refused_while_unconfigured(orch):
     assert handled is True
     assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "chrome:chrome_close"
     frames = _frames(orch, "chrome_render")
-    # No empty-html close frame went out; the mandatory dialog replaced it.
     assert all(f["html"] != "" for _, f in frames)
     assert 'data-mandatory="1"' in frames[-1][1]["html"]
 
@@ -205,8 +175,6 @@ async def test_setup_surface_own_actions_pass_the_gate(orch):
         refused = await chrome_events._llm_gate_refusal(orch, ws, action, uid)
         assert refused is False, f"{action} must not be gate-refused"
 
-    # End-to-end: the clear handler actually runs (returns its own notice,
-    # is not hijacked to the mandatory dialog).
     handled = await chrome_events.handle_chrome_event(
         orch, ws, "chrome_llm_clear", {}, uid)
     assert handled is True
@@ -227,15 +195,11 @@ async def test_configured_user_passes_through_untouched(orch):
             orch, ws, "chrome_close", {}, uid)
         assert handled is True
         frames = _frames(orch, "chrome_render")
-        assert frames[-1][1]["html"] == ""  # a real close, not a re-gate
+        assert frames[-1][1]["html"] == ""
         assert orch._record_llm_unconfigured.await_count == 0
     finally:
         await orch._llm_store.clear(uid)
 
-
-# ---------------------------------------------------------------------------
-# (c) probe-gated save + unlock fan-out
-# ---------------------------------------------------------------------------
 
 async def test_probe_gated_save_persists_and_returns_true(orch, monkeypatch):
     from llm_config.ws_handlers import handle_llm_config_set
@@ -262,15 +226,12 @@ async def test_probe_gated_save_persists_and_returns_true(orch, monkeypatch):
         assert saved is True
         cfg = await orch._llm_store.get(uid)
         assert cfg is not None
-        # Preset base URL is SERVER-derived from the provider key.
         assert cfg.base_url == "https://api.openai.com/v1"
         assert cfg.model == "gpt-4o-mini"
         assert cfg.api_key == SECRET
-        # The probe ran against the EXACT triple being saved.
         assert probed == {"api_key": SECRET,
                           "base_url": "https://api.openai.com/v1",
                           "model": "gpt-4o-mini"}
-        # Ack went out on the socket.
         acks = [json.loads(d) for _, d in orch.sent
                 if json.loads(d).get("type") == "llm_config_ack"]
         assert acks and acks[-1]["ok"] is True
@@ -287,20 +248,14 @@ async def test_unlock_after_save_closes_all_gated_sockets(orch):
     unlocked = await llm_gate.unlock_after_save(orch, uid)
 
     assert unlocked is True
-    assert orch._ws_llm_gated == {}  # both markers consumed
+    assert orch._ws_llm_gated == {}
     close_frames = [(ws, f) for ws, f in _frames(orch, "chrome_render")
                     if f["html"] == ""]
     assert {id(ws) for ws, _ in close_frames} == {id(ws1), id(ws2)}
-    # Each unlocked socket got its suppressed welcome canvas.
     assert orch.send_ui_render.await_count == 2
 
-    # Idempotence: with nothing gated the fan-out reports False.
     assert await llm_gate.unlock_after_save(orch, uid) is False
 
-
-# ---------------------------------------------------------------------------
-# (d) FF_LLM_FIRST_RUN kill switch
-# ---------------------------------------------------------------------------
 
 async def test_kill_switch_disables_push_but_not_refusals(orch):
     uid = _uid()
@@ -309,9 +264,8 @@ async def test_kill_switch_disables_push_but_not_refusals(orch):
 
     count = await llm_gate.regate_after_clear(orch, uid)
     assert count == 0
-    assert orch.sent == []  # no mandatory push with the flag off
+    assert orch.sent == []
 
-    # Server-side refusals are structural and remain in force.
     handled = await chrome_events.handle_chrome_event(
         orch, ws, "chrome_open", {"surface": "theme"}, uid)
     assert handled is True
@@ -331,36 +285,23 @@ async def test_regate_after_clear_pushes_when_flag_on(orch):
     assert orch._ws_llm_gated.get(id(ws)) is True
 
 
-# ---------------------------------------------------------------------------
-# (e) provider health never re-gates a configured user
-# ---------------------------------------------------------------------------
-
 async def test_failing_provider_does_not_regate_configured_user(orch):
     uid = _uid()
     ws = _register(orch, uid)
-    # A configured-but-broken provider (unreachable endpoint, revoked key).
     await _seed(orch, uid, base_url="https://provider-down.invalid/v1",
                 api_key="sk-revoked-key-000000000000000000000")
     try:
-        # The gate predicate keys off record EXISTENCE, not provider health.
         assert await orch.llm_configured_for(uid) is True
         assert await chrome_events._llm_gate_refusal(
             orch, ws, "chrome_open", uid) is False
-        # Per-call resolution succeeds structurally (errors surface per-call
-        # at invocation time, not as a re-gate).
         client, source, resolved = await orch._resolve_llm_client_for(ws)
         assert source == orch._CredentialSource.USER
         assert resolved.base_url == "https://provider-down.invalid/v1"
-        # No gate frame was pushed anywhere along the way.
         assert _frames(orch, "chrome_render") == []
         assert _frames(orch, "chrome_surface") == []
     finally:
         await orch._llm_store.clear(uid)
 
-
-# ---------------------------------------------------------------------------
-# (f) render_modal_shell mandatory-variant HTML contract
-# ---------------------------------------------------------------------------
 
 def test_render_modal_shell_mandatory_variant():
     from webrender.chrome import render_modal_shell

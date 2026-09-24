@@ -1,11 +1,8 @@
-"""T005 (056-delegated-agent-chaining): ChainBudget + MachineTurnAuthority.
-
-The chain budget is the global per-turn ceiling over every hop and sub-task
-(FR-021); machine-turn authority is the one shared consent-derivation seam all
-machine-turn classes inherit (FR-012), fail-closed on missing/revoked/expired
-consent and on an empty (consented ∩ current) scope set (FR-013), with
-revocation re-checked at derivation time (FR-006).
+"""Tests for backend/orchestrator/chain_authority.py: ChainBudget's per-turn
+hop/depth/wall-clock ceiling and MachineTurnAuthority.derive's fail-closed consent
+derivation on missing, revoked, expired, or empty-intersection scopes.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,10 +21,6 @@ from orchestrator.chain_authority import (  # noqa: E402
 )
 from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH  # noqa: E402
 
-
-# --------------------------------------------------------------------------- #
-# ChainBudget
-# --------------------------------------------------------------------------- #
 
 def test_budget_charges_until_hop_limit():
     b = ChainBudget(turn_id="t1", max_hops=3, wall_clock_s=999)
@@ -55,9 +48,7 @@ def test_subtree_slice_debits_parent():
     child = parent.slice(max_hops=3)
     for _ in range(3):
         assert child.charge(1) is None
-    # Child slice exhausted its own allotment.
     assert child.charge(1) == "hop_budget_exhausted"
-    # Every child charge also debited the parent (global ceiling holds).
     assert parent.spent_hops == 3
     assert parent.charge(1) is None
     assert parent.charge(1) == "hop_budget_exhausted"
@@ -66,23 +57,15 @@ def test_subtree_slice_debits_parent():
 def test_subtree_slice_cannot_exceed_parent_ceiling():
     parent = ChainBudget(turn_id="t1", max_hops=2, wall_clock_s=999)
     child = parent.slice(max_hops=10)
-    assert child.max_hops == 2  # clamped to the global ceiling
+    assert child.max_hops == 2
     assert child.charge(1) is None
     assert child.charge(1) is None
     assert child.charge(1) == "hop_budget_exhausted"
 
 
-# --------------------------------------------------------------------------- #
-# MachineTurnAuthority.derive
-# --------------------------------------------------------------------------- #
-
 def _mta(*, grant_valid=True, latest=None, mint="fresh-token",
          current_scopes=None):
     orch = MagicMock()
-    # Callers describe the user's CURRENT grants as a {scope: enabled} dict, but
-    # derive reads the EFFECTIVE list (get_enabled_scope_names) so the feature-040
-    # safe baseline is not mistaken for "no grants" — a raw agent_scopes read is
-    # empty for the post-040 default population.
     _scopes = ({"tools:read": True, "tools:search": True}
                if current_scopes is None else current_scopes)
     orch.tool_permissions.get_agent_scopes = MagicMock(return_value=dict(_scopes))
@@ -107,7 +90,6 @@ async def test_derive_success_shape():
         grant_id="g1", turn_class="scheduled_job")
     assert isinstance(out, MachineAuthority)
     assert out.access_token == "fresh-token"
-    # Narrowed to (consented ∩ current): write consented but not current.
     assert out.allowed_scopes == ["tools:read"]
     assert out.agent_id == "a1"
     assert out.principal == "machine:scheduled_job"
@@ -115,7 +97,7 @@ async def test_derive_success_shape():
     claims = out.machine_claims()
     assert claims == {"sub": "u1", "machine_class": "scheduled_job",
                       "consent_ref": "g1"}
-    assert "fresh-token" not in str(claims)  # no token bytes in the marker
+    assert "fresh-token" not in str(claims)
     grants.mint_access_token.assert_awaited_once_with("g1", user_id="u1")
 
 
@@ -191,7 +173,6 @@ async def test_derive_skips_on_empty_intersection():
 
 @pytest.mark.asyncio
 async def test_derive_agentless_job_has_no_scope_skip():
-    """A job with no agent has no scope set to intersect — not a skip."""
     mta, _, _ = _mta()
     out = await mta.derive(user_id="u1", agent_id=None, consented_scopes=None,
                            grant_id="g1", turn_class="scheduled_job")
@@ -201,8 +182,6 @@ async def test_derive_agentless_job_has_no_scope_skip():
 
 @pytest.mark.asyncio
 async def test_derive_agentless_narrows_to_consented_union(monkeypatch):
-    """Agent-less job with consent: allowed = consented ∩ (union across the
-    user's enabled agents), the same helper the capture used."""
     from orchestrator import tool_visibility
     seen = []
     monkeypatch.setattr(tool_visibility, "enabled_scope_union",
@@ -247,8 +226,6 @@ async def test_derive_agentless_union_error_fails_closed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_derive_agentless_legacy_empty_consent_does_not_consult_union(monkeypatch):
-    """Legacy agent-less rows (consented_scopes=[]) keep today's behaviour:
-    nothing asserted, nothing widened, union never consulted."""
     from orchestrator import tool_visibility
     called = []
     monkeypatch.setattr(tool_visibility, "enabled_scope_union",
@@ -263,7 +240,6 @@ async def test_derive_agentless_legacy_empty_consent_does_not_consult_union(monk
 
 @pytest.mark.asyncio
 async def test_derive_agent_bound_path_unchanged(monkeypatch):
-    """Agent-bound: per-agent effective scopes, union helper untouched."""
     from orchestrator import tool_visibility
     called = []
     monkeypatch.setattr(tool_visibility, "enabled_scope_union",

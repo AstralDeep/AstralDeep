@@ -1,4 +1,6 @@
-"""read_bio_tiff: OME-TIFF and generic TIFF handling."""
+"""Tests for agents/general/file_tools/medical/read_bio_tiff.py: OME-XML detection and
+plain-TIFF handling.
+"""
 
 from __future__ import annotations
 

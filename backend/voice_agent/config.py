@@ -1,4 +1,7 @@
-"""Fail-closed configuration for the isolated Feature 065 voice worker."""
+"""Fail-closed configuration for the isolated voice worker (backend/voice_agent/main.py,
+control.py): reads only its explicit worker-prefixed environment, refusing unknown or
+ambient provider/proxy authority at startup.
+"""
 
 from __future__ import annotations
 
@@ -22,8 +25,6 @@ _ALLOWED_WORKER_ENVIRONMENT = frozenset(
     {
         "ASTRAL_VOICE_CONTROL_URL",
         "VOICE_CONTROL_SECRET",
-        # Feature 066: optional endpoint-silence tuning, read by the session
-        # module at import (clamped 320-2560 ms; empty/invalid -> 960 ms).
         "VOICE_ENDPOINT_SILENCE_MS",
         "VOICE_SPEECH_API_KEY",
         "VOICE_SPEECH_BASE_URL",
@@ -47,8 +48,6 @@ _PROXY_ENVIRONMENT = frozenset(
 
 
 class ConfigError(ValueError):
-    """A content-free startup configuration failure."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -56,8 +55,6 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class VoiceProfile:
-    """The one server-owned launch profile supported by Feature 065."""
-
     asr_model: str = ASR_MODEL
     tts_model: str = TTS_MODEL
     voice: str = TTS_VOICE
@@ -66,8 +63,6 @@ class VoiceProfile:
     sample_rate_hz: int = SAMPLE_RATE_HZ
 
     def to_dict(self) -> dict[str, str | int]:
-        """Return the contract representation without mutable shared state."""
-
         return {
             "asr_model": self.asr_model,
             "tts_model": self.tts_model,
@@ -80,8 +75,6 @@ class VoiceProfile:
 
 @dataclass(frozen=True, slots=True)
 class WorkerConfig:
-    """Validated worker settings with credentials excluded from representations."""
-
     environment: str
     control_url: str = field(repr=False)
     control_secret: bytes = field(repr=False)
@@ -96,13 +89,6 @@ class WorkerConfig:
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> WorkerConfig:
-        """Read only the worker's explicit authority-bearing environment.
-
-        Process-wide variables such as ``PATH`` remain usable, while unknown
-        worker-prefixed variables and ambient provider, LiveKit API, or proxy
-        authority fail startup. Empty compatibility variables are harmless.
-        """
-
         values = os.environ if environ is None else environ
         _validate_environment_names(values)
 

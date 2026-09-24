@@ -1,4 +1,8 @@
-"""Skills REST and chrome agree with effective, owner-bounded authorization."""
+"""Tests for personalization/api.py and
+orchestrator/projection_surfaces/personalization.py: the skills REST endpoint and
+chrome/native components agree on effective, owner-bounded tool authorization.
+"""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

@@ -1,16 +1,8 @@
-"""Cross-session memory from chat.
-
-The memory tools (``personalization/memory_tools.py``) and passive
-prompt-injected recall existed, but the tools were not registered with the
-orchestrator, so the assistant could not actually *use* them on request. This
-module makes them reachable as LLM tool calls, mirroring ``scheduling_chat.py``
-(a pseudo-agent id keeps the meta-tool outside every real-agent permission gate).
-
-Unlike scheduling (which needs a consent card before a job is created), memory
-operations are low-risk and PHI-gated, so they execute immediately and return a
-small confirmation. Passive recall via the personalization prompt fragment is
-unchanged — this only adds the active path.
+"""Exposes cross-session memory recall and writes as LLM tool calls under a pseudo agent
+id outside normal per-agent permission gates, mirroring scheduling_chat.py. Memory
+writes are PHI-gated but execute immediately, without a consent card.
 """
+
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -32,12 +24,10 @@ CROSS-SESSION MEMORY (remember / memory_search / memory_get):
   automatically; do not work around it.
 """
 
-#: Valid memory categories (mirrors personalization.repository.MEMORY_CATEGORIES).
 _CATEGORIES = ("profession", "goal", "preference", "workflow_tag", "context")
 
 
 def meta_tool_definitions() -> List[Dict[str, Any]]:
-    """OpenAI-style tool definitions for the memory meta-tools."""
     return [
         {
             "type": "function",
@@ -86,12 +76,10 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
 
 
 def should_inject(draft_agent_id: Optional[str]) -> bool:
-    """Offered on normal chat turns only — same exclusions as scheduling."""
     return flags.is_enabled("memory_chat") and not draft_agent_id
 
 
 def _memory_tools(orch):
-    """Lazily build a MemoryTools bound to the orchestrator's personalization repo."""
     cached = getattr(orch, "_memory_tools", None)
     if cached is not None:
         return cached
@@ -105,7 +93,6 @@ def _memory_tools(orch):
 async def _audit(user_id: str, action_type: str, description: str,
                  outcome: str = "success", chat_id: Optional[str] = None,
                  inputs_meta: Optional[Dict] = None) -> None:
-    """Record a ``personalization`` audit event (best-effort, never raises)."""
     try:
         from datetime import datetime, timezone
 
@@ -131,8 +118,6 @@ async def _audit(user_id: str, action_type: str, description: str,
 
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: str, chat_id: Optional[str], websocket):
-    """Dispatch a memory meta-tool call. Executes immediately (PHI-gated) and
-    returns a result + a small confirmation component. No consent card."""
     from shared.protocol import MCPResponse
 
     args = args or {}
@@ -142,8 +127,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         value = str(args.get("value") or "").strip()
         category = str(args.get("category") or "context").strip()
 
-        # Reconcile the write (ADD/UPDATE/DELETE/NOOP + supersession) via the
-        # user's LLM. Fail-open inside remember_reconciled → plain append.
         async def _reconcile_llm(messages):
             msg, _ = await orch._call_llm(websocket, messages, feature="memory_reconcile")
             return getattr(msg, "content", None) if msg else None
@@ -168,7 +151,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                         else "Got it — I've removed that from memory.")
             comp = Alert(message=msg_text, variant="info").to_dict()
             return MCPResponse(result={"status": action, **res}, ui_components=[comp])
-        # Refused (PHI or empty) — surface the reason without persisting.
         await _audit(user_id, "memory.remember_refused", "Memory write refused",
                      outcome="denied", chat_id=chat_id)
         comp = Alert(message=res.get("reason", "I could not save that."),
@@ -195,7 +177,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
 
 
 def _recall_component(items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Small recall summary for the chat (server-driven; no new primitive)."""
     if not items:
         return Text(content="I don't have anything remembered about you yet.",
                     variant="caption").to_dict()

@@ -1,4 +1,7 @@
-"""Static ownership guards for the AstralProjection cutover."""
+"""Static ownership guards for the AstralProjection cutover: owned sources and extracted
+pure tests exist only in their component, Deep's host surface registry holds only
+orchestrator adapters, and no removed surface module is imported.
+"""
 
 from __future__ import annotations
 
@@ -134,8 +137,6 @@ def test_projection_owned_sources_exist_only_in_component() -> None:
             capture_output=True,
             text=True,
         )
-        # Filter paths deleted in the working-tree cutover so this guard works
-        # both before and after the parent stages the removals.
         remaining = {
             path
             for line in tracked.stdout.splitlines()

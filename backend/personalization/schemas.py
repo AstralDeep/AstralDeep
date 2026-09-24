@@ -1,4 +1,8 @@
-"""Pydantic schemas for personalization (feature 025, US1/US3)."""
+"""Pydantic request/response schemas for the personalization profile API: personality
+spec, profile read/update payloads, and the PHI-gate rejection body. Used by
+personalization/api.py and orchestrator/projection_surfaces/personalization.py.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -7,7 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class PersonalitySpec(BaseModel):
-    """The user's personality/"soul" — style only, subordinate to compliance."""
     tone: Optional[str] = Field(default=None, max_length=40)
     directness: Optional[str] = Field(default=None, max_length=40)
     humor: Optional[str] = Field(default=None, max_length=40)
@@ -16,7 +19,6 @@ class PersonalitySpec(BaseModel):
 
 
 class ProfileResponse(BaseModel):
-    """Shape returned by GET /api/personalization/profile."""
     profession: Optional[str] = None
     goals: List[str] = Field(default_factory=list)
     personality: Dict[str, Any] = Field(default_factory=dict)
@@ -24,7 +26,6 @@ class ProfileResponse(BaseModel):
 
 
 class ProfileUpdateRequest(BaseModel):
-    """Partial update — only provided fields change."""
     profession: Optional[str] = Field(default=None, max_length=200)
     goals: Optional[List[str]] = None
     personality: Optional[PersonalitySpec] = None
@@ -44,7 +45,6 @@ class ProfileUpdateRequest(BaseModel):
 
 
 class ValueRejected(BaseModel):
-    """422 body when a value is rejected by the PHI gate (non-PHI reason)."""
     error: str = "value_rejected"
     field: str
     reason: str = "looks like protected health information"

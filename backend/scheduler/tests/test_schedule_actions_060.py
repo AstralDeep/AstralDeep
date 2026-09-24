@@ -1,8 +1,6 @@
-"""Feature-060 run-now and job-lifecycle action contracts.
-
-These are real-PostgreSQL tests because owner-scoped idempotency, job/occurrence
-locking, and operation cancellation are database concurrency properties.  The
-public API and Chrome adapters have separate focused fake-backed tests.
+"""Tests for scheduler run-now and job-lifecycle actions
+(backend/orchestrator/work_admission.py) against real PostgreSQL: owner-scoped
+idempotency, job/occurrence locking, and operation cancellation on pause/delete.
 """
 
 from __future__ import annotations
@@ -30,8 +28,6 @@ from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_r
 
 @pytest.fixture(scope="module")
 def postgres_database() -> Iterator[PlaneTestRuntime]:
-    """Create one isolated database initialized only by AstralPlane."""
-
     with isolated_plane_runtime("schedule_actions") as runtime:
         yield runtime
 

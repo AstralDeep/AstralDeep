@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Validate Feature 065 voice contracts and their shared conformance fixture.
-
-This tool is intentionally isolated from every product package.  Its only
-third-party imports come from the hash-locked ``tooling/contract-ci`` test
-environment: jsonschema, openapi-spec-validator, and their locked PyYAML
-transitive dependency.
+"""Isolated validator for the voice contracts and their shared conformance fixture; its
+only third-party imports are the hash-locked jsonschema, openapi-spec-validator, and
+PyYAML in tooling/contract-ci's own test environment.
 """
 
 from __future__ import annotations
@@ -96,16 +93,14 @@ EXPECTED_OPERATION_LOCATIONS = {
 
 
 class ContractValidationError(ValueError):
-    """Raised for a deterministic contract or fixture validation failure."""
+    pass
 
 
 class DuplicateKeyError(ContractValidationError):
-    """Raised when JSON or YAML repeats a mapping key."""
+    pass
 
 
 class ContractBundle:
-    """Loaded contract documents used by the fixture runner."""
-
     __slots__ = ("voice_schema", "worker_schema", "openapi", "fixture")
 
     def __init__(
@@ -123,8 +118,6 @@ class ContractBundle:
 
 
 class ValidationSummary:
-    """Content-free counts emitted after successful validation."""
-
     __slots__ = (
         "case_ids",
         "voice_positive_vectors",
@@ -195,8 +188,6 @@ def _read_bounded(path: Path) -> str:
 
 
 def strict_load_json(path: Path) -> dict[str, Any]:
-    """Load one bounded JSON object with duplicate/non-finite rejection."""
-
     try:
         loaded = json.loads(
             _read_bounded(path),
@@ -211,16 +202,10 @@ def strict_load_json(path: Path) -> dict[str, Any]:
 
 
 def strict_load_yaml(path: Path) -> dict[str, Any]:
-    """Load one bounded safe YAML object with duplicate-key rejection."""
-
-    # These dependencies are deliberately isolated to the contract-validator
-    # environment. Keeping the import at the YAML boundary lets the stdlib-only
-    # fixture materializer and semantic gates be reused by backend conformance
-    # tests without leaking PyYAML into the runtime/test closure.
     import yaml
 
     class UniqueKeyLoader(yaml.SafeLoader):
-        """Safe YAML loader that rejects duplicate mapping keys."""
+        pass
 
     def construct_unique_mapping(
         loader: Any,
@@ -263,8 +248,6 @@ def _reject_nonfinite_values(value: Any, *, location: str) -> None:
 
 
 def load_contract_bundle(repo_root: Path) -> ContractBundle:
-    """Load the two schemas, OpenAPI document, and canonical shared fixture."""
-
     contract_root = repo_root / "specs/065-conversational-voice/contracts"
     fixture_path = (
         repo_root
@@ -320,8 +303,6 @@ def _validate_local_refs(document: dict[str, Any], *, name: str) -> None:
 
 
 def validate_json_schema_document(schema: dict[str, Any], name: str) -> None:
-    """Validate one Draft 2020-12 schema and resolve every local reference."""
-
     from jsonschema import Draft202012Validator
     from jsonschema.exceptions import SchemaError
 
@@ -340,8 +321,6 @@ def validate_json_schema_document(schema: dict[str, Any], name: str) -> None:
 
 
 def validate_openapi_document(document: dict[str, Any]) -> None:
-    """Validate OpenAPI 3.1 shape, local references, and discriminator mappings."""
-
     from openapi_spec_validator import validate
 
     _validate_local_refs(document, name="OpenAPI")
@@ -392,8 +371,6 @@ def instance_errors(
     bundle: ContractBundle,
     schema_name: str | None = None,
 ) -> list[str]:
-    """Return content-free schema errors for one contract instance."""
-
     from jsonschema import Draft202012Validator, FormatChecker
 
     if contract == "voice_control":
@@ -493,8 +470,6 @@ def _apply_mutation(target: Any, mutation: Mapping[str, Any]) -> None:
 
 
 def index_fixture_vectors(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Index every non-aggregate fixture vector and reject duplicate IDs."""
-
     groups: list[list[Any]] = []
     for case in document.get("cases", []):
         if isinstance(case, dict):
@@ -529,8 +504,6 @@ def materialize_vector(
     *,
     _stack: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Expand one base/mutation fixture vector without mutating tracked data."""
-
     vector_id = vector.get("id")
     if not isinstance(vector_id, str):
         raise ContractValidationError("fixture vector has no string id")
@@ -600,8 +573,6 @@ def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
 
 
 def packet_size_errors(payload: Mapping[str, Any]) -> list[str]:
-    """Enforce the media-plane UTF-8 envelope ceilings."""
-
     frame_type = payload.get("type")
     limits = {
         "voice_transcript": TRANSCRIPT_PACKET_BYTES,
@@ -637,8 +608,6 @@ def _context_error(
 def voice_semantic_errors(
     payload: Mapping[str, Any], context: Mapping[str, Any] | None = None
 ) -> list[str]:
-    """Apply media/client semantics that JSON Schema cannot express."""
-
     errors = packet_size_errors(payload)
     context = context or {}
     frame_type = payload.get("type")
@@ -694,8 +663,6 @@ def voice_semantic_errors(
 def worker_bind_errors(
     payload: Mapping[str, Any], *, server_received_at: str | None = None
 ) -> list[str]:
-    """Validate nested direct-worker RTC grant binding and lifetime semantics."""
-
     if payload.get("type") != "session_bind":
         return []
     errors: list[str] = []
@@ -792,8 +759,6 @@ def _proof_input(binding: Mapping[str, Any], digest: str, expiry: str) -> str:
 
 
 def proof_vector_errors(vector: Mapping[str, Any]) -> list[str]:
-    """Recompute one domain-separated transcript proof golden vector."""
-
     canonical, errors = _canonical_transcript(vector.get("text_input"))
     if canonical is None:
         return errors
@@ -889,8 +854,6 @@ def materialize_aggregate_cases(document: dict[str, Any]) -> list[dict[str, Any]
 
 
 def aggregate_reservation_errors(case: Mapping[str, Any]) -> list[str]:
-    """Validate no-refund/idempotent result quantum sample reservations."""
-
     commands = case.get("commands")
     if not isinstance(commands, list) or not commands:
         return ["aggregate reservation case must contain commands"]
@@ -1003,8 +966,6 @@ def _branch_discriminators(document: dict[str, Any]) -> set[str]:
 def validate_discriminator_coverage(
     bundle: ContractBundle, document: dict[str, Any]
 ) -> None:
-    """Require declared/actual positives for every strict root branch."""
-
     expected = document.get("expected_discriminators")
     if not isinstance(expected, dict):
         raise ContractValidationError("fixture expected_discriminators must be an object")
@@ -1098,8 +1059,6 @@ def _collect_openapi_operations(
 def validate_rest_operation_mapping(
     openapi: dict[str, Any], mapping: Mapping[str, Any]
 ) -> None:
-    """Bind every composer voice action to its exact OpenAPI operation."""
-
     if dict(mapping) != EXPECTED_REST_MAPPING:
         raise ContractValidationError("REST mapping differs from the authoritative action map")
     operations = _collect_openapi_operations(openapi)
@@ -1179,8 +1138,6 @@ def _validate_case_shape(document: dict[str, Any]) -> tuple[str, ...]:
 def validate_fixture_document(
     document: dict[str, Any], bundle: ContractBundle
 ) -> ValidationSummary:
-    """Run every accepted/rejected fixture and cross-contract semantic gate."""
-
     case_ids = _validate_case_shape(document)
     indexed = index_fixture_vectors(document)
     positive_ids = positive_vector_ids(document)
@@ -1279,8 +1236,6 @@ def validate_fixture_document(
 
 
 def validate_dependency_lock(repo_root: Path) -> None:
-    """Require the approved validator dependencies and hashes for every lock entry."""
-
     tool_root = repo_root / "tooling/contract-ci"
     requirements_in = _read_bounded(tool_root / "requirements.in")
     direct: dict[str, str] = {}
@@ -1350,8 +1305,6 @@ def _validate_installed_versions() -> None:
 
 
 def validate_repository(repo_root: Path) -> ValidationSummary:
-    """Validate locks, schemas, OpenAPI, and every tracked fixture vector."""
-
     validate_dependency_lock(repo_root)
     _validate_installed_versions()
     bundle = load_contract_bundle(repo_root)

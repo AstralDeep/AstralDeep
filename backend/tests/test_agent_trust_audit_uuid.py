@@ -1,4 +1,7 @@
-"""Trust transitions must be insertable into the UUID audit schema."""
+"""Tests for orchestrator/agent_trust.py: trust transitions insert cleanly into the
+UUID-keyed audit schema, alongside agentic_creation.py.
+"""
+
 from __future__ import annotations
 
 import sys

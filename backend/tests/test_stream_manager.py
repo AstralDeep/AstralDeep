@@ -1,21 +1,8 @@
+"""Tests for orchestrator/stream_manager.py's constructable surface: params_hash
+canonicalization, compute_backoff ranges, classify_error routing, StreamSubscription
+invariants, and the token-revocation sweep.
 """
-Unit tests for StreamManager skeleton (001-tool-stream-ui foundational T026).
 
-These tests cover the constructable surface installed in Phase 2:
-- The StreamManager constructs cleanly with the expected dependencies.
-- params_hash is canonical (key order doesn't matter) and stable.
-- compute_backoff returns values in the expected ranges.
-- classify_error routes codes correctly (auth bypass is the load-bearing
-  security carve-out — research §12).
-- StreamSubscription invariants from data-model.md §3.
-
-Exercising the actual subscribe/unsubscribe/handle_agent_chunk methods is
-deferred to story-phase tests:
-- test_stream_lifecycle.py (US1, US2, US3)
-- test_stream_isolation.py (US4 cross-user)
-- test_stream_fanout.py (US4 multi-tab)
-- test_stream_reconnect.py (US5 auto-retry + auth bypass)
-"""
 import os
 import sys
 from unittest.mock import AsyncMock, Mock
@@ -36,10 +23,6 @@ from orchestrator.stream_manager import (
 )
 
 
-# ---------------------------------------------------------------------------
-# params_hash
-# ---------------------------------------------------------------------------
-
 class TestParamsHash:
     def test_deterministic_for_same_input(self):
         a = params_hash({"lat": 51.5, "lon": -0.12})
@@ -47,8 +30,6 @@ class TestParamsHash:
         assert a == b
 
     def test_canonicalization_order_independent(self):
-        # Key order in the dict literal MUST NOT change the hash.
-        # This is the load-bearing property for FR-009a deduplication.
         a = params_hash({"lat": 51.5, "lon": -0.12})
         b = params_hash({"lon": -0.12, "lat": 51.5})
         assert a == b
@@ -64,16 +45,11 @@ class TestParamsHash:
         assert all(c in "0123456789abcdef" for c in h)
 
 
-# ---------------------------------------------------------------------------
-# compute_backoff
-# ---------------------------------------------------------------------------
-
 class TestComputeBackoff:
     @pytest.mark.parametrize("attempt", [1, 2, 3])
     def test_attempt_within_jitter_range(self, attempt):
-        # Backoff is base ± 20% jitter; we just need to verify the range.
         base = RETRY_BACKOFF_SECONDS[attempt - 1]
-        for _ in range(20):  # sample to dodge unlucky single draws
+        for _ in range(20):
             value = compute_backoff(attempt)
             assert base * 0.8 <= value <= base * 1.2
 
@@ -86,10 +62,6 @@ class TestComputeBackoff:
             compute_backoff(0)
 
 
-# ---------------------------------------------------------------------------
-# classify_error  (research §12 — security carve-out)
-# ---------------------------------------------------------------------------
-
 class TestClassifyError:
     def test_transient_codes(self):
         assert classify_error("tool_error") == "transient"
@@ -97,8 +69,6 @@ class TestClassifyError:
         assert classify_error("rate_limited") == "transient"
 
     def test_auth_codes_bypass_retry(self):
-        # The load-bearing security property: auth failures MUST classify as
-        # "auth" so the orchestrator never enters RECONNECTING for them.
         assert classify_error("unauthenticated") == "auth"
         assert classify_error("unauthorized") == "auth"
 
@@ -107,16 +77,8 @@ class TestClassifyError:
         assert classify_error("cancelled") == "terminal"
 
     def test_unknown_code_defaults_transient(self):
-        # Unknown codes are conservatively retried (research §12 rationale:
-        # we don't want a tool author who invents a new code to accidentally
-        # bypass the retry path — but auth codes are explicitly enumerated
-        # so they cannot be confused for unknowns).
         assert classify_error("brand_new_invented_error") == "transient"
 
-
-# ---------------------------------------------------------------------------
-# StreamManager constructs cleanly
-# ---------------------------------------------------------------------------
 
 class TestStreamManagerConstruct:
     def test_constructs_with_minimal_deps(self):
@@ -132,7 +94,7 @@ class TestStreamManagerConstruct:
         assert mgr._active == {}
         assert mgr._dormant == {}
         assert mgr._request_to_key == {}
-        assert mgr._sweep_task is None  # lazy
+        assert mgr._sweep_task is None
 
     def test_count_active_for_user_starts_zero(self):
         mgr = StreamManager(
@@ -143,7 +105,7 @@ class TestStreamManagerConstruct:
         assert mgr._count_dormant_for_user("any-user") == 0
 
     def test_validate_params_size_accepts_small(self):
-        StreamManager._validate_params_size({"k": "v"})  # ~10 bytes
+        StreamManager._validate_params_size({"k": "v"})
 
     def test_validate_params_size_rejects_huge(self):
         big = {"k": "x" * (16 * 1024)}
@@ -151,9 +113,6 @@ class TestStreamManagerConstruct:
             StreamManager._validate_params_size(big)
 
     def test_subscribe_works_with_dispatcher(self):
-        # US1 T028: subscribe is fully implemented. Without an
-        # agent_dispatcher we can still register the subscription locally
-        # (the test in test_stream_lifecycle.py exercises the dispatcher path).
         import asyncio
         mgr = StreamManager(
             rote=Mock(), send_to_ws=AsyncMock(),
@@ -179,7 +138,6 @@ class TestStreamManagerConstruct:
             rote=Mock(), send_to_ws=AsyncMock(),
             get_user_session=Mock(return_value=None),
         )
-        # Inject a fake active subscription
         sub = StreamSubscription(
             stream_id="s1", user_id="u1", chat_id="c1",
             tool_name="t", agent_id="a", params={}, params_hash="h",
@@ -191,10 +149,6 @@ class TestStreamManagerConstruct:
         assert mgr._dormant == {}
         assert mgr._shutdown is True
 
-
-# ---------------------------------------------------------------------------
-# StreamSubscription invariants
-# ---------------------------------------------------------------------------
 
 class TestStreamSubscriptionInvariants:
     def _make(self, **overrides):
@@ -223,10 +177,6 @@ class TestStreamSubscriptionInvariants:
         assert 1 <= sub.min_fps <= sub.max_fps <= 60
         assert sub.max_chunk_bytes > 0
 
-
-# ---------------------------------------------------------------------------
-# US5 T088: token revocation sweep (SC-009)
-# ---------------------------------------------------------------------------
 
 class TestTokenRevocationSweep:
     @pytest.mark.asyncio
@@ -258,16 +208,10 @@ class TestTokenRevocationSweep:
             ws=ws, user_id="alice", chat_id="c", tool_name="t",
             agent_id="a", params={},
         )
-        # Now expire the token
         sessions[ws]["expires_at"] = int(time_mod.time()) - 60
 
-        # Run one sweep cycle (call the helper directly rather than waiting
-        # for the periodic timer)
         await mgr._sweep_token_revocation()
 
-        # The expired ws should have been removed from subscribers and got
-        # an unauthenticated error chunk; the subscription transitions to
-        # DORMANT (no more subscribers).
         msgs = [json.loads(p) for w, p in sent]
         auth_errs = [
             m for m in msgs
@@ -275,6 +219,4 @@ class TestTokenRevocationSweep:
         ]
         assert len(auth_errs) >= 1
         assert sid not in [s.stream_id for s in mgr._active.values()]
-        # Subscription is now in dormant (since the only subscriber went away
-        # via auth invariant removal — same path as natural leave)
         assert ("alice", "c") in mgr._dormant

@@ -1,13 +1,8 @@
-"""Model-facing file arguments must not read arbitrary container files (H3).
-
-``general.modify_data`` and ``medical.analyze_csv_file`` both run in-process
-in the orchestrator (FF_INPROCESS_AGENTS), so an unconstrained path argument
-reads the orchestrator's own filesystem. These tests pin that:
-
-  * no absolute path reaches ``open()`` through ``file_path``/``file_handle``,
-  * neither tool advertises a path parameter to the model, and
-  * a legitimately owned attachment still resolves and reads.
+"""Tests that general.modify_data and medical.analyze_csv_file, both in-process agent
+tools, never resolve a model-supplied path to an arbitrary container file, and expose
+no path parameter in their schemas.
 """
+
 import os
 import sys
 from types import SimpleNamespace
@@ -28,10 +23,6 @@ def _alert_messages(result):
     )
 
 
-# ---------------------------------------------------------------------------
-# modify_data (general agent)
-# ---------------------------------------------------------------------------
-
 def test_modify_data_refuses_absolute_file_path():
     for path in SENSITIVE_PATHS:
         result = modify_data(
@@ -44,7 +35,6 @@ def test_modify_data_refuses_absolute_file_path():
 
 
 def test_modify_data_refuses_absolute_path_as_file_handle():
-    """The resolver is the only path source — a handle is never a path."""
     error = {
         "error": {
             "code": "not_found",
@@ -65,7 +55,6 @@ def test_modify_data_refuses_absolute_path_as_file_handle():
 
 
 def test_modify_data_refuses_traversal_out_of_user_directory(tmp_path):
-    """A path that walks out of the caller's own directory is refused."""
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     escape = os.path.join(backend_dir, "tmp", "alice", "..", "..", "requirements.txt")
     result = modify_data(file_path=escape, modifications=[], user_id="alice")
@@ -89,7 +78,6 @@ def test_modify_data_refuses_another_users_directory():
 
 
 def test_modify_data_reads_owned_attachment_via_file_handle(tmp_path):
-    """The supported bounded-byte path still works end to end."""
     read_bytes = MagicMock(
         return_value=(
             SimpleNamespace(filename="owned.csv", extension="csv"),
@@ -121,13 +109,7 @@ def test_modify_data_schema_has_no_path_parameter():
     assert "file_path" not in GENERAL_TOOLS["modify_data"]["description"]
 
 
-# ---------------------------------------------------------------------------
-# analyze_csv_file (medical agent)
-# ---------------------------------------------------------------------------
-
 def test_analyze_csv_file_refuses_absolute_file_path():
-    """``file_path`` is no longer a parameter — it lands in **kwargs and is
-    ignored, leaving the tool with no attachment to read."""
     for path in SENSITIVE_PATHS:
         result = analyze_csv_file(file_path=path, user_id="alice")
         assert result["_data"] is None, f"{path} was read"

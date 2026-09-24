@@ -1,14 +1,9 @@
+"""Tests for orchestrator/tool_permissions.py's ToolPermissionManager: per-user
+per-agent scope defaults, enablement checks, tool-to-scope registration,
+effective-permission derivation, and persistence through astralplane's tool_policy
+repository.
 """
-Tests for ToolPermissionManager — Scope-based agent authorization.
 
-Verifies:
-1. Default scopes (all disabled)
-2. Setting/getting scopes per user per agent
-3. is_tool_allowed checks scope enablement
-4. Tool→scope mapping registration
-5. Persistence across instances
-6. get_effective_permissions derives from scopes
-"""
 import os
 import sys
 from contextlib import contextmanager
@@ -16,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-# Ensure backend is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from orchestrator.tool_permissions import (
@@ -28,8 +22,6 @@ from astralplane.repositories.tool_policy import ScopeState, ToolOverrideState
 
 
 class _ToolPolicyRepository:
-    """Small in-memory implementation of Plane's typed policy repository."""
-
     def __init__(self):
         self.scopes = {}
         self.overrides = {}
@@ -167,7 +159,7 @@ def _manager(runtime):
 
 
 def _override_rows(manager, owner_id, agent_id):
-    return manager._policy.call(  # noqa: SLF001 - verify through the typed seam
+    return manager._policy.call(  # noqa: SLF001
         manager._policy.repository.list_overrides,  # noqa: SLF001
         owner_id=owner_id,
         agent_id=agent_id,
@@ -221,7 +213,6 @@ def plane_runtime():
 @pytest.fixture
 def manager(plane_runtime):
     m = _manager(plane_runtime)
-    # Register tool→scope mapping for a test agent
     m.register_tool_scopes("agent1", {
         "get_system_status": "tools:system",
         "get_cpu_info": "tools:system",
@@ -238,24 +229,20 @@ TOOLS = ["get_system_status", "get_cpu_info", "modify_data", "search_wikipedia",
 
 class TestDefaultScopes:
     def test_all_scopes_disabled_by_default(self, manager):
-        """By default, all 4 scopes are disabled."""
         scopes = manager.get_agent_scopes("user1", "agent1")
         assert all(v is False for v in scopes.values())
         assert set(scopes.keys()) == set(VALID_SCOPES)
 
     def test_is_scope_enabled_default_false(self, manager):
-        """Default: all scopes disabled."""
         for scope in VALID_SCOPES:
             assert manager.is_scope_enabled("user1", "agent1", scope) is False
 
     def test_is_tool_allowed_default_false(self, manager):
-        """Default: no tools are allowed (scopes disabled)."""
         assert manager.is_tool_allowed("user1", "agent1", "modify_data") is False
         assert manager.is_tool_allowed("user1", "agent1", "get_system_status") is False
         assert manager.is_tool_allowed("user1", "agent1", "search_wikipedia") is False
 
     def test_effective_permissions_all_false(self, manager):
-        """Effective permissions default to False for all tools."""
         result = manager.get_effective_permissions("user1", "agent1", TOOLS)
         assert all(v is False for v in result.values())
         assert set(result.keys()) == set(TOOLS)
@@ -277,31 +264,26 @@ class TestOwnerIsolation:
 
 class TestSetGetScopes:
     def test_enable_single_scope(self, manager):
-        """Enabling a single scope."""
         manager.set_agent_scopes("user1", "agent1", {"tools:read": True})
         assert manager.is_scope_enabled("user1", "agent1", "tools:read") is True
         assert manager.is_scope_enabled("user1", "agent1", "tools:write") is False
 
     def test_enable_scope_allows_tools(self, manager):
-        """Enabling tools:write allows write tools."""
         manager.set_agent_scopes("user1", "agent1", {"tools:write": True})
         assert manager.is_tool_allowed("user1", "agent1", "modify_data") is True
-        # Read tools still blocked
         assert manager.is_tool_allowed("user1", "agent1", "generate_chart") is False
 
     def test_enable_multiple_scopes(self, manager):
-        """Enabling multiple scopes."""
         manager.set_agent_scopes("user1", "agent1", {
             "tools:read": True,
             "tools:search": True,
         })
         assert manager.is_tool_allowed("user1", "agent1", "generate_chart") is True
         assert manager.is_tool_allowed("user1", "agent1", "search_wikipedia") is True
-        assert manager.is_tool_allowed("user1", "agent1", "modify_data") is False  # write not enabled
-        assert manager.is_tool_allowed("user1", "agent1", "get_system_status") is False  # system not enabled
+        assert manager.is_tool_allowed("user1", "agent1", "modify_data") is False
+        assert manager.is_tool_allowed("user1", "agent1", "get_system_status") is False
 
     def test_different_users_different_scopes(self, manager):
-        """Different users have different scope settings."""
         manager.set_agent_scopes("user1", "agent1", {"tools:write": True})
         manager.set_agent_scopes("user2", "agent1", {"tools:write": False, "tools:read": True})
         assert manager.is_tool_allowed("user1", "agent1", "modify_data") is True
@@ -309,13 +291,11 @@ class TestSetGetScopes:
         assert manager.is_tool_allowed("user2", "agent1", "generate_chart") is True
 
     def test_invalid_scope_ignored(self, manager):
-        """Invalid scopes are silently ignored."""
         manager.set_agent_scopes("user1", "agent1", {"tools:invalid": True})
         scopes = manager.get_agent_scopes("user1", "agent1")
         assert "tools:invalid" not in scopes
 
     def test_disable_scope(self, manager):
-        """Disabling a previously enabled scope."""
         manager.set_agent_scopes("user1", "agent1", {"tools:write": True})
         assert manager.is_tool_allowed("user1", "agent1", "modify_data") is True
         manager.set_agent_scopes("user1", "agent1", {"tools:write": False})
@@ -324,21 +304,19 @@ class TestSetGetScopes:
 
 class TestEffectivePermissions:
     def test_effective_from_scopes(self, manager):
-        """Effective permissions are derived from scopes."""
         manager.set_agent_scopes("user1", "agent1", {
             "tools:read": True,
             "tools:system": True,
         })
         result = manager.get_effective_permissions("user1", "agent1", TOOLS)
-        assert result["generate_chart"] is True     # read
-        assert result["get_system_status"] is True   # system
-        assert result["get_cpu_info"] is True        # system
-        assert result["modify_data"] is False        # write (not enabled)
-        assert result["search_wikipedia"] is False   # search (not enabled)
-        assert result["search_arxiv"] is False       # search (not enabled)
+        assert result["generate_chart"] is True
+        assert result["get_system_status"] is True
+        assert result["get_cpu_info"] is True
+        assert result["modify_data"] is False
+        assert result["search_wikipedia"] is False
+        assert result["search_arxiv"] is False
 
     def test_detached_snapshot_uses_canonical_precedence(self):
-        """Legacy deny wins, then kind override, scope, and safe baseline."""
         scopes = (
             ScopeState("user1", "agent1", "tools:read", True, None),
             ScopeState("user1", "agent1", "tools:write", False, None),
@@ -371,7 +349,6 @@ class TestEffectivePermissions:
         }
 
     def test_detached_snapshot_rejects_cross_owner_rows(self):
-        """A foreign principal's durable grant fails closed before resolution."""
         foreign = ScopeState(
             "user2", "agent1", "tools:read", True, None
         )
@@ -496,7 +473,6 @@ class TestToolScopeMapping:
 
 class TestPersistence:
     def test_save_and_reload(self, plane_runtime):
-        """Typed repository state is visible across manager instances."""
         m1 = _manager(plane_runtime)
         m1.register_tool_scopes("agent1", {"modify_data": "tools:write"})
         m1.set_agent_scopes("user1", "agent1", {"tools:write": True})
@@ -509,7 +485,6 @@ class TestPersistence:
     def test_typed_repository_connected(self, plane_runtime):
         m = _manager(plane_runtime)
         m.set_agent_scopes("user1", "agent1", {"tools:read": True})
-        # Verify state was persisted through Plane's typed repository contract.
         assert m.is_scope_enabled("user1", "agent1", "tools:read") is True
 
 
@@ -527,7 +502,6 @@ class TestCleanup:
         assert manager.is_scope_enabled("user1", "agent2", "tools:write") is True
 
     def test_cleanup_stale_tool_overrides_prunes_removed_tool(self, manager):
-        """A tool override for a tool no longer in the live registry is pruned."""
         manager.set_tool_permission("user1", "agent1", "modify_data", "tools:write", False)
         manager.set_tool_permission("user1", "agent1", "removed_tool", "tools:read", False)
         live_tools = ["modify_data", "search_wikipedia", "generate_chart"]
@@ -539,14 +513,12 @@ class TestCleanup:
         assert "modify_data" in names
 
     def test_cleanup_stale_tool_overrides_empty_live_list(self, manager):
-        """An empty live tool list deletes every override row for the agent."""
         manager.set_tool_permission("user1", "agent1", "modify_data", "tools:write", False)
         manager.set_tool_permission("user1", "agent1", "search_arxiv", "tools:search", False)
         manager.cleanup_stale_tool_overrides("agent1", [])
         assert _override_rows(manager, "user1", "agent1") == ()
 
     def test_cleanup_stale_tool_overrides_preserves_other_agents(self, manager):
-        """Cleanup is scoped to the given agent_id; other agents untouched."""
         manager.register_tool_scopes("agent2", {"some_tool": "tools:read"})
         manager.set_tool_permission("user1", "agent1", "modify_data", "tools:write", False)
         manager.set_tool_permission("user1", "agent2", "some_tool", "tools:read", False)
@@ -557,7 +529,6 @@ class TestCleanup:
         assert {row.tool_name for row in agent2_rows} == {"some_tool"}
 
     def test_cleanup_stale_tool_overrides_idempotent(self, manager):
-        """Running cleanup twice yields zero deletions on the second call."""
         manager.set_tool_permission("user1", "agent1", "removed_tool", "tools:read", False)
         live_tools = ["modify_data"]
         first = manager.cleanup_stale_tool_overrides("agent1", live_tools)

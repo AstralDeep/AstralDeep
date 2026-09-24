@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""
-MCP Tools for the Journal Review Agent.
-
-Provides tools for evaluating scientific journals and recommending optimal
-publication venues for research papers. Uses OpenAlex and CrossRef APIs
-for journal metadata, impact metrics, and topical classification.
+"""Journal Review tools: query OpenAlex and CrossRef to find, profile, compare, and rank
+journals by topical fit and citation impact, feeding find_matching_journals,
+get_journal_profile, compare_journals, analyze_paper_fit, and get_field_landscape.
 """
 import os
 import sys
@@ -25,26 +22,19 @@ from shared import external_http
 
 logger = logging.getLogger("JournalReviewTools")
 
-# ── API Endpoints ───────────────────────────────────────────────────────
-
 OPENALEX_SOURCES_URL = "https://api.openalex.org/sources"
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 CROSSREF_JOURNALS_URL = "https://api.crossref.org/journals"
 
-OPENALEX_MAILTO = "astraldeep@example.com"  # polite pool access
+OPENALEX_MAILTO = "astraldeep@example.com"
 HEADERS = {"User-Agent": f"AstralDeep/1.0 (mailto:{OPENALEX_MAILTO})"}
 
-MAX_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB cap per API response
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
-# Display label for OpenAlex's 2-year mean citedness. NEVER label this (or
-# anything else) "Impact Factor" — that is a proprietary Clarivate metric
-# we cannot compute.
 CITEDNESS_LABEL = "2-yr Mean Citedness (OpenAlex)"
 
-# ── Simple In-Memory Cache ──────────────────────────────────────────────
-
 _CACHE: Dict[str, Tuple[float, Any]] = {}
-CACHE_TTL = 600  # 10 minutes
+CACHE_TTL = 600
 
 
 def _cache_key(*args: Any) -> str:
@@ -65,14 +55,7 @@ def _set_cached(key: str, val: Any) -> None:
     _CACHE[key] = (time.time(), val)
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────
-
 def _safe_get(url: str, params: dict = None, timeout: int = 15) -> Optional[dict]:
-    """Make an egress-gated GET request with error handling and caching.
-
-    All outbound HTTP goes through ``shared.external_http`` (SSRF guard,
-    bounded timeout, response-size cap) per the project egress posture.
-    """
     key = _cache_key(url, params)
     cached = _get_cached(key)
     if cached is not None:
@@ -95,31 +78,26 @@ def _safe_get(url: str, params: dict = None, timeout: int = 15) -> Optional[dict
 
 
 def _fmt_number(n: Optional[int]) -> str:
-    """Format large numbers with commas."""
     if n is None:
         return "N/A"
     return f"{n:,}"
 
 
 def _extract_issn(issn_raw) -> str:
-    """Extract a display-friendly ISSN from various formats."""
     if isinstance(issn_raw, list):
         return issn_raw[0] if issn_raw else "N/A"
     return str(issn_raw) if issn_raw else "N/A"
 
 
 def _fmt_citedness(value: Optional[float]) -> str:
-    """Format the 2-yr mean citedness for display (0.0 is a real value, not N/A)."""
     return "N/A" if value is None else str(value)
 
 
 def _parse_openalex_source(src: dict) -> dict:
-    """Parse an OpenAlex source record into a standardized journal dict."""
     counts = src.get("counts_by_year", [])
     recent_year = counts[0] if counts else {}
 
-    # OpenAlex's own 2-year mean citedness is the recent-impact metric we
-    # surface; we never compute a home-grown "impact factor" approximation.
+    # Surface OpenAlex's own metric only — no home-grown impact factor
     citedness = (src.get("summary_stats") or {}).get("2yr_mean_citedness")
     citedness = round(citedness, 2) if isinstance(citedness, (int, float)) else None
 
@@ -149,9 +127,6 @@ def _parse_openalex_source(src: dict) -> dict:
 
 
 def _discover_journals_from_works(query: str, per_page: int = 50) -> List[Tuple[str, int]]:
-    """Search OpenAlex works for a topic, then extract and rank the journals
-    those papers were published in.  Returns list of (openalex_source_id, count)
-    sorted by frequency."""
     data = _safe_get(OPENALEX_WORKS_URL, {
         "search": query,
         "per_page": per_page,
@@ -172,7 +147,6 @@ def _discover_journals_from_works(query: str, per_page: int = 50) -> List[Tuple[
 
 
 def _fetch_sources_by_ids(openalex_ids: List[str]) -> List[dict]:
-    """Fetch full source records for a list of OpenAlex source IDs."""
     if not openalex_ids:
         return []
     pipe_ids = "|".join(openalex_ids)
@@ -188,12 +162,10 @@ def _fetch_sources_by_ids(openalex_ids: List[str]) -> List[dict]:
 
 def _compute_fit_score(paper_keywords: List[str], journal: dict,
                        paper_count: int = 0) -> dict:
-    """Compute a multi-dimensional fit score between paper keywords and a journal."""
     journal_topics = [t.lower() for t in journal.get("topics", [])]
     journal_name_lower = journal.get("name", "").lower()
     kw_lower = [k.lower().strip() for k in paper_keywords if k.strip()]
 
-    # Topic overlap
     topic_hits = 0
     for kw in kw_lower:
         for topic in journal_topics:
@@ -205,15 +177,12 @@ def _compute_fit_score(paper_keywords: List[str], journal: dict,
                 topic_hits += 1
     topic_score = min(topic_hits / max(len(kw_lower), 1), 1.0)
 
-    # Impact score (normalized 0-1, assumes most journals h-index < 500)
     h = journal.get("h_index") or 0
     impact_score = min(h / 500.0, 1.0)
 
-    # Volume score (actively publishing journals preferred)
     recent = journal.get("recent_works", 0)
     volume_score = min(recent / 2000.0, 1.0)
 
-    # Publication frequency bonus — how many relevant papers this journal had
     freq_score = min(paper_count / 5.0, 1.0) if paper_count > 0 else 0.0
 
     weighted = (
@@ -235,8 +204,6 @@ def _compute_fit_score(paper_keywords: List[str], journal: dict,
     }
 
 
-# ── Tool: find_matching_journals ────────────────────────────────────────
-
 def find_matching_journals(
     query: str,
     keywords: str = "",
@@ -246,28 +213,13 @@ def find_matching_journals(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Search for journals that match a research paper's topic, abstract, or keywords.
-    Returns ranked journals with impact metrics and topical fit scores.
-
-    Args:
-        query: Research topic, paper title, or abstract excerpt to match against.
-        keywords: Comma-separated keywords for fine-grained matching.
-        max_results: Number of journals to return (default 10, max 25).
-        open_access_only: If true, only return open-access journals.
-        min_h_index: Minimum h-index filter (0 = no filter).
-
-    Returns:
-        Ranked list of matching journals with metrics and fit scores.
-    """
     max_results = min(max(max_results, 1), 25)
     kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
     search_terms = kw_list if kw_list else query.split()[:6]
 
-    # Strategy: search papers about this topic, then find what journals publish them
     ranked_sources = _discover_journals_from_works(query, per_page=80)
 
     if not ranked_sources:
-        # Fallback: try direct source name search
         data = _safe_get(OPENALEX_SOURCES_URL, {
             "search": query,
             "per_page": max_results * 2,
@@ -283,7 +235,6 @@ def find_matching_journals(
                   variant="warning")
         ])
 
-    # Fetch full source details for top candidates
     candidate_ids = [sid for sid, _ in ranked_sources[:max_results * 2]]
     paper_counts = {sid: cnt for sid, cnt in ranked_sources}
     sources = _fetch_sources_by_ids(candidate_ids)
@@ -300,7 +251,6 @@ def find_matching_journals(
         j["fit"] = _compute_fit_score(search_terms, j, paper_count=pc)
         journals.append(j)
 
-    # Sort by fit score
     journals.sort(key=lambda x: x["fit"]["overall"], reverse=True)
     journals = journals[:max_results]
 
@@ -310,10 +260,8 @@ def find_matching_journals(
                   variant="warning")
         ])
 
-    # Build UI
     components = []
 
-    # Summary metrics
     avg_fit = round(sum(j["fit"]["overall"] for j in journals) / len(journals), 1)
     oa_count = sum(1 for j in journals if j.get("is_oa"))
     top_journal = journals[0]
@@ -330,7 +278,6 @@ def find_matching_journals(
         ])
     )
 
-    # Results table
     rows = []
     for i, j in enumerate(journals, 1):
         fit = j["fit"]
@@ -360,7 +307,6 @@ def find_matching_journals(
         ])
     )
 
-    # Topic breakdown for top 3
     detail_items = []
     for j in journals[:3]:
         topics_str = ", ".join(j["topics"][:5]) if j["topics"] else "No topics listed"
@@ -383,7 +329,6 @@ def find_matching_journals(
     if detail_items:
         components.append(Card(title="Top Match Details", id="details-card", content=detail_items))
 
-    # Data for LLM
     data_summary = {
         "query": query,
         "keywords": kw_list,
@@ -414,24 +359,12 @@ def find_matching_journals(
     }
 
 
-# ── Tool: get_journal_profile ───────────────────────────────────────────
-
 def get_journal_profile(
     journal_name: str,
     issn: str = "",
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Get a detailed profile for a specific scientific journal including impact metrics,
-    scope, publication volume, open access status, and recent trends.
-
-    Args:
-        journal_name: Name of the journal (e.g., 'Nature Machine Intelligence').
-        issn: Optional ISSN for precise lookup.
-
-    Returns:
-        Comprehensive journal profile with metrics and trend data.
-    """
     source = None
     if issn:
         issn_clean = issn.strip().replace(" ", "")
@@ -466,7 +399,6 @@ def get_journal_profile(
 
     j = _parse_openalex_source(source)
 
-    # Pull CrossRef data for additional metadata
     crossref_meta = {}
     if j.get("issn_l"):
         cr_data = _safe_get(f"{CROSSREF_JOURNALS_URL}/{j['issn_l']}")
@@ -480,7 +412,6 @@ def get_journal_profile(
 
     components = []
 
-    # Header metrics
     oa_status = "Open Access" if j["is_oa"] else "Subscription"
     apc_str = f"${j['apc_usd']:,}" if j.get("apc_usd") else "N/A"
 
@@ -498,7 +429,6 @@ def get_journal_profile(
         ])
     )
 
-    # General info card
     topics_str = ", ".join(j["topics"]) if j["topics"] else "Not classified"
     subjects_str = ", ".join(
         s.get("name", "") for s in crossref_meta.get("subjects", [])
@@ -525,7 +455,6 @@ def get_journal_profile(
         ])
     )
 
-    # Publication trend (counts by year)
     counts_by_year = source.get("counts_by_year", [])[:10]
     if counts_by_year:
         years = [str(c["year"]) for c in reversed(counts_by_year)]
@@ -571,22 +500,11 @@ def get_journal_profile(
     }
 
 
-# ── Tool: compare_journals ─────────────────────────────────────────────
-
 def compare_journals(
     journal_names: str,
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Compare multiple scientific journals side-by-side on impact, scope, OA status,
-    and publishing volume. Provide 2-5 journal names separated by semicolons.
-
-    Args:
-        journal_names: Semicolon-separated journal names (e.g., 'Nature;Science;PNAS').
-
-    Returns:
-        Side-by-side comparison table and charts for the specified journals.
-    """
     names = [n.strip() for n in journal_names.split(";") if n.strip()]
     if len(names) < 2:
         return create_ui_response([
@@ -630,7 +548,6 @@ def compare_journals(
             Alert(message=f"Not found: {', '.join(not_found)}", variant="warning")
         )
 
-    # Comparison table
     headers = ["Metric"] + [j["name"][:35] for j in journals]
     metrics = [
         ("H-Index", lambda j: str(j.get("h_index", "N/A"))),
@@ -656,7 +573,6 @@ def compare_journals(
         ])
     )
 
-    # Bar charts
     j_labels = [j["name"][:25] for j in journals]
 
     h_values = [j.get("h_index") or 0 for j in journals]
@@ -699,8 +615,6 @@ def compare_journals(
     }
 
 
-# ── Tool: analyze_paper_fit ─────────────────────────────────────────────
-
 def analyze_paper_fit(
     paper_title: str,
     paper_keywords: str,
@@ -710,20 +624,6 @@ def analyze_paper_fit(
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Analyze how well a research paper fits specific journals, or find the best-fit
-    journals automatically. Scores topical relevance, impact alignment, and suitability.
-
-    Args:
-        paper_title: Title of the research paper.
-        paper_keywords: Comma-separated keywords describing the paper's content.
-        paper_abstract: Optional abstract or summary of the paper (improves matching).
-        target_journals: Optional semicolon-separated journal names to evaluate against.
-                         If empty, automatically finds best-matching journals.
-        max_suggestions: Max journals to return when auto-finding (default 8).
-
-    Returns:
-        Fit analysis with scores for each journal, plus recommendations.
-    """
     kw_list = [k.strip() for k in paper_keywords.split(",") if k.strip()]
     if not kw_list:
         return create_ui_response([
@@ -737,7 +637,6 @@ def analyze_paper_fit(
     journals = []
 
     if target_journals:
-        # Score against specified journals
         names = [n.strip() for n in target_journals.split(";") if n.strip()]
         for name in names[:10]:
             data = _safe_get(OPENALEX_SOURCES_URL, {
@@ -760,7 +659,6 @@ def analyze_paper_fit(
                 j["fit"] = _compute_fit_score(kw_list, j)
                 journals.append(j)
     else:
-        # Auto-find: search papers, extract journals they were published in
         ranked_sources = _discover_journals_from_works(search_text, per_page=80)
         if ranked_sources:
             candidate_ids = [sid for sid, _ in ranked_sources[:max_suggestions * 2]]
@@ -783,7 +681,6 @@ def analyze_paper_fit(
 
     components = []
 
-    # Paper info header
     components.append(
         Card(title="Paper Under Review", id="paper-info", content=[
             Text(content=f"**Title:** {paper_title}", id="paper-title"),
@@ -794,7 +691,6 @@ def analyze_paper_fit(
         ])
     )
 
-    # Fit scores overview
     rows = []
     for i, j in enumerate(journals, 1):
         fit = j["fit"]
@@ -824,7 +720,6 @@ def analyze_paper_fit(
         ])
     )
 
-    # Visual fit breakdown for top 3
     top3 = journals[:3]
     top3_labels = [j["name"][:25] for j in top3]
     components.append(
@@ -841,7 +736,6 @@ def analyze_paper_fit(
         ])
     )
 
-    # Recommendation summary
     best = journals[0]
     rec_text = (
         f"**Top recommendation: {best['name']}** with an overall fit score of "
@@ -890,34 +784,17 @@ def analyze_paper_fit(
     }
 
 
-# ── Tool: get_field_landscape ───────────────────────────────────────────
-
 def get_field_landscape(
     field: str,
     top_n: int = 15,
     session_id: str = "default",
     **kwargs
 ) -> Dict[str, Any]:
-    """Get an overview of the top journals in a research field/discipline, ranked by
-    impact. Useful for understanding the publishing landscape before deciding where
-    to submit.
-
-    Args:
-        field: Research field or discipline (e.g., 'machine learning', 'oncology',
-               'environmental science', 'quantum computing').
-        top_n: Number of top journals to return (default 15, max 25).
-
-    Returns:
-        Ranked list of leading journals in the field with impact metrics.
-    """
     top_n = min(max(top_n, 5), 25)
 
-    # Strategy: find papers in this field, extract their journals, then
-    # fetch full details and rank by citation impact
     ranked_sources = _discover_journals_from_works(field, per_page=100)
 
     if not ranked_sources:
-        # Fallback: direct source name search
         data = _safe_get(OPENALEX_SOURCES_URL, {
             "search": field,
             "per_page": top_n * 2,
@@ -943,7 +820,6 @@ def get_field_landscape(
         j["paper_count"] = paper_counts.get(src.get("id", ""), 0)
         journals.append(j)
 
-    # Sort by citation count for landscape view
     journals.sort(key=lambda x: x["cited_by_count"], reverse=True)
     journals = journals[:top_n]
 
@@ -954,7 +830,6 @@ def get_field_landscape(
 
     components = []
 
-    # Summary
     total_cites = sum(j["cited_by_count"] for j in journals)
     oa_pct = round(sum(1 for j in journals if j["is_oa"]) / len(journals) * 100)
     avg_h = round(sum(j.get("h_index") or 0 for j in journals) / len(journals))
@@ -972,7 +847,6 @@ def get_field_landscape(
         ])
     )
 
-    # Ranked table
     rows = []
     for i, j in enumerate(journals, 1):
         rows.append([
@@ -997,7 +871,6 @@ def get_field_landscape(
         ])
     )
 
-    # H-Index chart
     chart_labels = [j["name"][:25] for j in journals[:10]]
     chart_vals = [j.get("h_index") or 0 for j in journals[:10]]
     components.append(
@@ -1006,7 +879,6 @@ def get_field_landscape(
                  id="landscape-h-chart")
     )
 
-    # Publisher distribution
     pub_counts: Dict[str, int] = {}
     for j in journals:
         pub = j["publisher"] or "Unknown"
@@ -1044,8 +916,6 @@ def get_field_landscape(
         "_data": data_out,
     }
 
-
-# ── TOOL REGISTRY ──────────────────────────────────────────────────────
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "find_matching_journals": {

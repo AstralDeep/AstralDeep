@@ -1,10 +1,8 @@
-"""Server-driven welcome canvas (orchestrator/welcome.py).
-
-The initial-load examples are ordinary astralprims components delivered over
-the normal ui_render path — renderable by the registry, adaptable by ROTE,
-actionable through the standard ``chat_message`` ui_event. No shell HTML, no
-client-specific code (Constitution II).
+"""Tests for orchestrator/welcome.py's server-driven welcome canvas: every example
+renders through the normal astralprims/ROTE/ui_event path, the first screen discloses
+three choices, and unavailable tools stay separate from example buttons.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -48,8 +46,6 @@ def test_first_screen_has_three_choices_and_discloses_the_rest():
     more = comps[2]
     assert more["type"] == "collapsible"
     assert more["title"] == "More examples" and more["default_open"] is False
-    # Three on the first screen, the rest behind the disclosure — derived, so
-    # adding a curated example does not silently break the contract it tests.
     assert (len([n for n in _walk(more["content"]) if n["type"] == "button"])
             == len(WELCOME_EXAMPLES) - 3)
     assert not any(n["type"] in {"text", "card"} for n in _walk(comps))
@@ -92,10 +88,6 @@ def test_unavailable_tools_keep_explicit_consent_separate_from_examples():
 
 
 def test_welcome_components_carry_no_workspace_identity():
-    # 055 US1: welcome components now carry EPHEMERAL wel_ identities (so
-    # clients can purge them at turn start) — the ephemerality invariant is
-    # that any identity present is wel_-namespaced, which the workspace layer
-    # structurally refuses to persist (see test_workspace_wel_guard.py).
     for node in _walk(welcome_components()):
         cid = node.get("component_id")
         if cid is not None:

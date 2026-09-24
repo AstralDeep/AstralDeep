@@ -1,4 +1,7 @@
-"""Native chat composers must not overlay a custom keyboard-dismiss control."""
+"""Tests that native chat composers rely on the platform's own keyboard dismissal
+(immediate scroll on Apple, native IME on Android) rather than a custom overlay
+control.
+"""
 
 from pathlib import Path
 
@@ -11,7 +14,7 @@ PROJECTION_ROOT = ROOT / "components" / "AstralProjection"
 if not (
     (PROJECTION_ROOT / "apple-clients").is_dir()
     and (PROJECTION_ROOT / "android-client").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,

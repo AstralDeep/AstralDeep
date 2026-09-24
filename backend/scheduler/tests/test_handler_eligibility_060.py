@@ -1,9 +1,6 @@
-"""Feature-060 unattended-handler eligibility contracts (T024).
-
-These are contract-first tests.  They are expected to remain red until T029
-adds the declaration types and assessment seam to :mod:`scheduler.runner`.
-The tests deliberately stop at eligibility: occurrence claiming and the
-fenced effect ledger belong to T027--T029 and are not implemented here.
+"""Contract tests for scheduler/runner.py's assess_unattended_handler: missing or legacy
+handlers are refused, reviewed transaction/downstream boundaries are eligible,
+best-effort is never an idempotency boundary, and refusal projections stay safe.
 """
 
 from __future__ import annotations

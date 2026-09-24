@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""
-Test the progress indication system.
+"""Tests for backend/shared/progress.py: ProgressEvent creation, validation and
+serialization, ProgressEmitter throttling, percentage mapping, error/warning
+emission, and legacy SSE log compatibility.
 """
 
 import sys
@@ -8,7 +9,6 @@ import os
 import json
 from unittest.mock import Mock
 
-# Add backend to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shared.progress import (
@@ -22,7 +22,6 @@ from shared.progress import (
 
 
 def test_progress_event_creation():
-    """Test basic ProgressEvent creation and serialization."""
     event = ProgressEvent(
         phase=ProgressPhase.GENERATION,
         step=ProgressStep.PROMPT_CONSTRUCTION,
@@ -31,7 +30,6 @@ def test_progress_event_creation():
         data={"agent_name": "test_agent"}
     )
     
-    # Test basic properties
     assert event.phase == ProgressPhase.GENERATION
     assert event.step == ProgressStep.PROMPT_CONSTRUCTION
     assert event.percentage == 10
@@ -39,7 +37,6 @@ def test_progress_event_creation():
     assert event.data["agent_name"] == "test_agent"
     assert event.timestamp is not None
     
-    # Test to_dict
     event_dict = event.to_dict()
     assert event_dict["type"] == "progress"
     assert event_dict["phase"] == "generation"
@@ -49,12 +46,10 @@ def test_progress_event_creation():
     assert event_dict["data"]["agent_name"] == "test_agent"
     assert "timestamp" in event_dict
     
-    # Test to_sse
     sse = event.to_sse()
     assert sse.startswith("data: ")
     assert sse.endswith("\n\n")
     
-    # Test from_dict
     event2 = ProgressEvent.from_dict(event_dict)
     assert event2.phase == event.phase
     assert event2.step == event.step
@@ -66,15 +61,13 @@ def test_progress_event_creation():
 
 
 def test_progress_event_validation():
-    """Test percentage validation and edge cases."""
-    # Test percentage clamping
     event_low = ProgressEvent(
         phase=ProgressPhase.GENERATION,
         step=ProgressStep.PROMPT_CONSTRUCTION,
         percentage=-10,
         message="Test"
     )
-    assert event_low.percentage == 0  # Should be clamped to 0
+    assert event_low.percentage == 0
     
     event_high = ProgressEvent(
         phase=ProgressPhase.GENERATION,
@@ -82,9 +75,8 @@ def test_progress_event_validation():
         percentage=150,
         message="Test"
     )
-    assert event_high.percentage == 100  # Should be clamped to 100
+    assert event_high.percentage == 100
     
-    # Test valid percentages
     event_valid = ProgressEvent(
         phase=ProgressPhase.GENERATION,
         step=ProgressStep.PROMPT_CONSTRUCTION,
@@ -97,14 +89,12 @@ def test_progress_event_validation():
 
 
 def test_progress_emitter_basic():
-    """Test ProgressEmitter basic functionality."""
     mock_callback = Mock()
     emitter = ProgressEmitter(
         phase=ProgressPhase.GENERATION,
         callback=mock_callback
     )
     
-    # Test emit
     event = emitter.emit(
         step=ProgressStep.PROMPT_CONSTRUCTION,
         percentage=10,
@@ -117,12 +107,10 @@ def test_progress_emitter_basic():
     assert event.step == ProgressStep.PROMPT_CONSTRUCTION
     assert event.percentage == 10
     
-    # Verify callback was called
     mock_callback.assert_called_once()
     callback_event = mock_callback.call_args[0][0]
     assert callback_event == event
     
-    # Test current_step tracking
     assert emitter.current_step == ProgressStep.PROMPT_CONSTRUCTION
     assert emitter.emit_count == 1
     
@@ -130,14 +118,12 @@ def test_progress_emitter_basic():
 
 
 def test_progress_emitter_throttling():
-    """Test that rapid emissions are throttled."""
     mock_callback = Mock()
     emitter = ProgressEmitter(
         phase=ProgressPhase.GENERATION,
         callback=mock_callback
     )
     
-    # First emit should work
     event1 = emitter.emit(
         step=ProgressStep.PROMPT_CONSTRUCTION,
         percentage=10,
@@ -145,16 +131,13 @@ def test_progress_emitter_throttling():
     )
     assert event1 is not None
     
-    # Immediately try second emit (should be throttled)
     event2 = emitter.emit(
         step=ProgressStep.LLM_API_CALL,
         percentage=20,
         message="Second"
     )
-    # Should return None due to throttling
     assert event2 is None
     
-    # Force emit should work
     event3 = emitter.emit(
         step=ProgressStep.LLM_API_CALL,
         percentage=20,
@@ -163,21 +146,18 @@ def test_progress_emitter_throttling():
     )
     assert event3 is not None
     
-    # Verify only 2 calls (first + forced)
     assert mock_callback.call_count == 2
     
     print("✓ ProgressEmitter throttling tests passed")
 
 
 def test_progress_emitter_error_warning():
-    """Test error and warning emission."""
     mock_callback = Mock()
     emitter = ProgressEmitter(
         phase=ProgressPhase.GENERATION,
         callback=mock_callback
     )
     
-    # Test error emission
     error = Exception("Test error")
     error_event = emitter.emit_error(
         message="Something went wrong",
@@ -187,16 +167,14 @@ def test_progress_emitter_error_warning():
     
     assert error_event is not None
     assert error_event.step == ProgressStep.ERROR
-    assert error_event.percentage == 100  # Errors complete the phase
+    assert error_event.percentage == 100
     assert error_event.data["error"] is True
     assert error_event.data["error_type"] == "Exception"
     assert error_event.data["error_details"] == "Test error"
     assert error_event.data["extra"] == "info"
     
-    # Test warning emission - might be throttled since we just emitted an error
-    # Add a small delay to avoid throttling
     import time
-    time.sleep(0.11)  # Just over 100ms
+    time.sleep(0.11)
     
     warning_event = emitter.emit_warning(
         message="This is a warning",
@@ -213,10 +191,8 @@ def test_progress_emitter_error_warning():
 
 
 def test_progress_emitter_percentage_mapping():
-    """Test automatic percentage mapping based on step."""
     emitter = ProgressEmitter(phase=ProgressPhase.GENERATION)
     
-    # Test generation phase steps
     emitter.current_step = ProgressStep.PROMPT_CONSTRUCTION
     assert emitter._get_current_percentage() == 10
     
@@ -226,7 +202,6 @@ def test_progress_emitter_percentage_mapping():
     emitter.current_step = ProgressStep.GENERATION_COMPLETE
     assert emitter._get_current_percentage() == 100
     
-    # Test testing phase steps
     emitter2 = ProgressEmitter(phase=ProgressPhase.TESTING)
     emitter2.current_step = ProgressStep.SAVING_FILES
     assert emitter2._get_current_percentage() == 10
@@ -234,30 +209,25 @@ def test_progress_emitter_percentage_mapping():
     emitter2.current_step = ProgressStep.TESTING_COMPLETE
     assert emitter2._get_current_percentage() == 100
     
-    # Test unknown step
     emitter3 = ProgressEmitter(phase=ProgressPhase.GENERATION)
     emitter3.current_step = ProgressStep.ERROR
-    assert emitter3._get_current_percentage() == 0  # Default
+    assert emitter3._get_current_percentage() == 0
     
     print("✓ ProgressEmitter percentage mapping tests passed")
 
 
 def test_legacy_functions():
-    """Test legacy compatibility functions."""
-    # Test create_log_event
     sse_log = create_log_event("Test log message", "log")
     assert sse_log.startswith("data: ")
     assert sse_log.endswith("\n\n")
     
-    # Parse the JSON to verify structure
     import json
-    json_start = sse_log[6:-2]  # Remove "data: " and "\n\n"
+    json_start = sse_log[6:-2]
     log_data = json.loads(json_start)
     assert log_data["status"] == "log"
     assert log_data["message"] == "Test log message"
     assert "timestamp" in log_data
     
-    # Test create_progress_from_log
     progress_event = create_progress_from_log(
         message="Log converted to progress",
         phase=ProgressPhase.GENERATION,
@@ -272,7 +242,6 @@ def test_legacy_functions():
 
 
 def test_progress_emitter_sse():
-    """Test SSE formatting from emitter."""
     emitter = ProgressEmitter(phase=ProgressPhase.GENERATION)
     
     sse_string = emitter.emit_sse(
@@ -285,7 +254,6 @@ def test_progress_emitter_sse():
     assert sse_string.startswith("data: ")
     assert sse_string.endswith("\n\n")
     
-    # Verify it contains valid JSON
     json_start = sse_string[6:-2]
     sse_data = json.loads(json_start)
     assert sse_data["type"] == "progress"
@@ -296,22 +264,18 @@ def test_progress_emitter_sse():
 
 
 def test_integration_with_agent_generator():
-    """Test that ProgressEmitter works with generation flows."""
     from shared.progress import ProgressEmitter, ProgressPhase
     
-    # Create a mock callback to collect events
     collected_events = []
     
     def collect_event(event):
         collected_events.append(event)
     
-    # Create emitter with callback
     emitter = ProgressEmitter(
         phase=ProgressPhase.GENERATION,
         callback=collect_event
     )
     
-    # Simulate a generation flow
     steps = [
         (ProgressStep.PROMPT_CONSTRUCTION, 10, "Building prompt..."),
         (ProgressStep.LLM_API_CALL, 30, "Calling LLM..."),
@@ -331,7 +295,6 @@ def test_integration_with_agent_generator():
 
 
 def main():
-    """Run all tests."""
     print("\n" + "="*60)
     print("Testing Progress Indication System")
     print("="*60 + "\n")

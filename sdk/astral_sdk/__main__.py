@@ -1,14 +1,9 @@
-"""``python -m astral_sdk`` — a thin CLI over :class:`astral_sdk.client.AstralClient`.
-
-Used both as a real end-user tool (script a submit/poll/cancel loop from a
-shell) and as the separate-process leg of Deep's own framework conformance
-suite (``backend/tests/test_framework_conformance_088.py`` spawns exactly
-this as ``python -m astral_sdk ...`` against a live server). Every command
-prints ONE JSON document to stdout on success (dataclasses via
-``dataclasses.asdict``) and exits non-zero with a JSON error object on
-stderr on failure — never a Python traceback, so a caller can always parse
-the output.
+"""CLI over astral_sdk.client.AstralClient (python -m astral_sdk), used both as an
+operator tool and, spawned as a real subprocess, by
+backend/tests/test_framework_conformance_088.py; prints one JSON document per
+command.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -117,7 +112,7 @@ def run(argv: Optional[list[str]] = None) -> int:
                                            expected_revision=args.expected_revision)
         elif args.command == "result":
             value = client.get_artifact(args.operation_id)
-        else:  # pragma: no cover - argparse restricts choices already
+        else:  # pragma: no cover
             raise SystemExit(f"unknown command: {args.command}")
     except AstralHTTPError as exc:
         error = {"error": str(exc), "code": exc.code, "status_code": exc.status_code}

@@ -1,21 +1,15 @@
 #!/bin/bash
+# Docker container entrypoint for the backend: refuses to start if legacy SQLite files are present
+# under data/, pointing operators to AstralPlane's reviewed migration path, then execs start.py.
+# Referenced by the Dockerfile.
 set -e
 
-# Feature 026: no separate frontend static server. The orchestrator serves the
-# server-driven web UI (shell + static assets) directly on port 8001.
 echo "Starting AstralDeep Backend Services on port 8001..."
 export ORCHESTRATOR_PORT=8001
 export PYTHONIOENCODING=utf-8
 
 cd /app/backend
 
-# AstralPlane owns PostgreSQL connection readiness, guarded schema evolution,
-# and recovery. Deep must never open a second driver connection or run a
-# best-effort migration before the application-scoped Plane runtime starts.
-#
-# The retired SQLite importer could partially copy rows and then continue
-# startup after errors. Refuse legacy inputs instead: keep every source byte
-# untouched and require the reviewed Plane migration/recovery procedure.
 SQLITE_MAIN="/app/backend/data/astral.db"
 SQLITE_AUDIT="/app/backend/data/test_audit.db"
 
@@ -27,6 +21,4 @@ if [ -f "$SQLITE_MAIN" ] || [ -f "$SQLITE_AUDIT" ]; then
     exit 78
 fi
 
-# Normal startup composes exactly one Plane runtime. It owns connection retry,
-# migration, compatibility, and readiness; any failure propagates fail-closed.
 exec python start.py

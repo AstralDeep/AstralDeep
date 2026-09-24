@@ -1,8 +1,6 @@
-"""Feature 060 US5: durable, bounded LLM credential-save operations.
-
-These tests intentionally exercise the backend-owned half of the Apple
-first-login flow.  The client may render a local ``submitting`` projection,
-but only this admission path may create ``accepted`` and terminal states.
+"""Tests for the durable, bounded LLM credential-save admission path in
+orchestrator/work_admission.py: exact timeout bounds, single-worker admission,
+terminal-state fencing against late writes, and disconnect/reconnect handling.
 """
 
 from __future__ import annotations
@@ -452,15 +450,11 @@ async def test_success_phases_then_fenced_persistence_and_unlock(
         owner=_user_owner(), operation_id=claim.fence.operation_id
     )
     assert projection.state is OperationState.COMPLETED
-    # UI projection belongs to the outer wrapper after it observes the durable
-    # winner; the persistence handler cannot unlock or ack beforehand.
     unlock.assert_not_awaited()
     safe_send.assert_not_awaited()
 
 
 def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
-    """The final DB-time check and COMPLETED CAS share the insert transaction."""
-
     deadline = datetime.now(UTC) + timedelta(seconds=10)
 
     class _Transaction:
@@ -469,8 +463,6 @@ def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
             self.committed = None
 
         def fetch_one(self, *_args, **_kwargs):
-            """Identify the production caller-owned Plane transaction seam."""
-
             return None
 
     transaction = _Transaction()
@@ -495,9 +487,6 @@ def test_deadline_after_insert_rolls_back_before_completed_cas(store) -> None:
                 "model": model,
                 "api_key_ciphertext": api_key_ciphertext,
             }
-            # The deadline-fenced upsert won immediately before its bound, but
-            # the detached Plane record proves database time crossed the bound
-            # before the completed operation compare-and-set.
             completed_at = deadline_at + timedelta(microseconds=1)
             return EncryptedLLMConfigRecord(
                 scope="user",
@@ -744,8 +733,6 @@ async def test_saved_key_endpoint_change_has_typed_terminal_and_recovery_message
     probe.assert_not_awaited()
     fake_recorder.record.assert_not_awaited()
 
-    # Reconnecting consumers receive the same fixed explanation from the
-    # durable terminal, without a new provider call or secret disclosure.
     reconnect = _context(object())
     await orch._send_operation_projection(reconnect, frame, work, projection)
     replay = json.loads(orch._safe_send.await_args.args[1])
@@ -825,8 +812,6 @@ async def test_disconnected_save_finishes_from_captured_user_authority(
         auth_principal="owner@example.test",
     )
 
-    # The socket/session disappears after admission but before the worker's
-    # first turn. The durable USER owner, not the connection, authorizes it.
     context.closing = True
     orch.ui_sessions.clear()
     await orch._run_connection_operation(context, work)
@@ -893,8 +878,6 @@ async def test_completed_cas_precedes_unlock_and_legacy_ack(
             owner=_user_owner(), operation_id=accepted.operation_id
         )
         events.append(f"unlock:{projection.state.value}")
-        # Simulate the old deadline/watchdog path trying to win in the former
-        # gap between unlock authorization and the completed CAS.
         late = orch.work_admission.terminalize(
             work.fence,
             state=OperationState.RETRYABLE,

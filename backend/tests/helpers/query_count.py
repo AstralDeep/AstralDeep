@@ -1,19 +1,7 @@
-"""Query-count instrumentation for DB round-trip budget tests (feature 052).
-
-Usage:
-
-    from tests.helpers.query_count import count_queries
-
-    with count_queries(manager.db) as counter:
-        manager.do_something()
-    assert counter.count == 1
-    assert "FROM chats" in counter.queries[0]
-
-``count_queries`` wraps the instance's ``execute``/``fetch_one``/``fetch_all``
-methods, so every database round trip made through that ``Database`` object
-(including calls issued from other threads, e.g. ``asyncio.to_thread``) is
-counted and its SQL text recorded. The wrapping is reverted on exit.
+"""count_queries() wraps a Database's execute/fetch_one/fetch_all to tally and record
+round trips for DB query-budget tests, reverting the wrap on exit.
 """
+
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import List
@@ -24,20 +12,12 @@ _MISSING = object()
 
 @dataclass
 class QueryCounter:
-    """Live tally of database round trips made inside a count_queries block."""
-
     count: int = 0
     queries: List[str] = field(default_factory=list)
 
 
 @contextmanager
 def count_queries(db):
-    """Count every execute/fetch_one/fetch_all round trip made through ``db``.
-
-    Yields a :class:`QueryCounter` whose ``count`` and ``queries`` update as
-    calls happen. Accepts any object exposing the bounded query-counting
-    call surface. Nesting is safe; the instance is restored on exit.
-    """
     counter = QueryCounter()
     saved = {}
 

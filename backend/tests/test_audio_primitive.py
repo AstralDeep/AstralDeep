@@ -1,4 +1,7 @@
-"""US-21: Audio primitive serialization and create_ui_response tests."""
+"""Tests for astralprims' Audio primitive: serialization shape and its
+create_ui_response envelope.
+"""
+
 from astralprims import Audio, create_ui_response
 
 
@@ -21,8 +24,6 @@ class TestAudioPrimitive:
         assert data["autoplay"] is False
         assert data["loop"] is False
         assert data["showControls"] is True
-        # astralprims omits None-valued fields from to_dict() (cleaner wire form);
-        # the renderer treats absent fields as their default.
         assert data.get("label") is None
         assert data.get("description") is None
         assert data.get("contentType") is None

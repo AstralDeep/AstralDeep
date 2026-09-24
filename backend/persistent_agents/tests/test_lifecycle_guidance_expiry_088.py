@@ -1,7 +1,6 @@
-"""Real DB-time expiry after lifecycle writes, with synthetic external IAM only.
-
-The note is bound through public Plane APIs before claim. These no-output
-lifecycle witnesses do not claim selected Work ingress or model execution.
+"""Tests for persistent_agents/runner.py and personalization/explicit_notes.py: real
+database-time note expiry rolls back claim and admission, and the final local
+guidance check follows the last DB read rather than an earlier snapshot.
 """
 
 import time
@@ -75,8 +74,6 @@ async def guided(selected_note, lifecycle):
 
 
 def cross_expiry(note):
-    # The real database expiry is unchanged. This bounded host wait runs after
-    # the real write; it is not a fabricated SQL clock or lock-contention claim.
     remaining = note.expires_at / 1000 - time.time()
     assert 0 < remaining < 3
     time.sleep(remaining + 0.03)
@@ -143,7 +140,6 @@ async def test_expiry_after_write_rolls_back_claim_and_admission(
     assert await admission(op) == admission_before
     assert admission_before.state == OperationState.RUNNING
     assert not _episode_lease(op.executor).terminal
-    # Expiry is logical: no maintenance worker has erased this ciphertext yet.
     with op.runtime.transaction() as tx:
         row = tx.fetch_one(
             "SELECT ciphertext FROM explicit_note_current WHERE owner_id=%s AND note_id=%s",
@@ -178,8 +174,6 @@ async def cutoff_during_final_guidance_read(op, monkeypatch, kind):
     final_reads = []
 
     def delayed_guidance(*args, **kwargs):
-        # Delay only the new final public guard, after its preceding session
-        # observation. Its own final DB clock must enforce that same cutoff.
         final_reads.append(True)
         remaining = (observed.observation.valid_until - datetime.now(UTC)).total_seconds()
         assert 0 < remaining < 0.4

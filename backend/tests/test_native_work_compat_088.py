@@ -1,10 +1,6 @@
-"""T014 compatibility through registered routes, real JWT/JWKS and private PG.
-
-The institutional issuer URL and native client IDs match the pinned client
-configuration. Keys, credentials and all IdP replies are synthetic: this is not
-institutional staging or an interactive sign-in. Submission authority is exercised
-through the common service; this compatibility host has no complete research
-runner/configuration composition and cannot activate registered HTTP submission.
+"""Tests for orchestrator/work_submit.py and work_submit_authority.py: native bearer and
+custody-cookie admission through registered routes with real JWT/JWKS validation and
+synthetic IdP responses.
 """
 
 import asyncio
@@ -86,20 +82,12 @@ def fixture(base_session, monkeypatch):
 
 @pytest.fixture
 async def client(service, fixture, runtime, monkeypatch, tmp_path):
-    # Preserve production auth dependencies, owner policy, SQL repositories and
-    # audit recording. Only the application bindings point at this private DB.
     app = FastAPI()
     app.include_router(operation_router)
     app.include_router(auth.auth_router)
     app.state.orchestrator = service.assignments.orch
     app.state.orchestrator.persistent_assignments = service.assignments
     app.state.orchestrator.audit_repo = service.audit
-    # Owner controls are fenced to the exact production composition (088,
-    # ``work_control_authority._Composition``): the SAME web-session store and
-    # Plane runtime the assignments use, or every write is 503
-    # ``work_control_unavailable``. Deliberately still no ``_llm_store`` and no
-    # runner, so registered HTTP submission stays unavailable on this host
-    # (module docstring; ``test_native_bearer_refuses_new_admission…`` pins it).
     app.state.orchestrator.web_sessions = service.sessions
     app.state.orchestrator.runtime_composition = SimpleNamespace(
         plane=SimpleNamespace(runtime=runtime, repositories=runtime.repositories)
@@ -131,8 +119,6 @@ async def accepted(service, fixture, runtime):
 
 
 def session_count(runtime):
-    # Read-only evidence across this test's isolated schema: unchanged original
-    # SID alone would miss an unintended second session created by a proxy.
     with runtime.transaction() as transaction:
         return transaction.fetch_one("SELECT count(*) AS n FROM web_session")["n"]
 
@@ -316,9 +302,6 @@ async def test_native_bearer_refuses_new_admission_but_replays_after_session_ret
         f"{WORK}/{original.record.assignment_id}", headers=bearer(fixture, client_id)
     )
     assert detail.status_code == 200
-    # The real router now registers fixed research. This compatibility host has
-    # no runner/configuration composition; it must refuse before new work rather
-    # than borrowing another owner's server session or accepting a partial host.
     unavailable = await client.post(
         WORK, headers=bearer(fixture, client_id), content=body
     )
@@ -460,7 +443,6 @@ async def test_existing_native_token_routes_do_not_mint_work_session_authority(
             early.json() == {"status": "slow_down", "interval": 1}
             and len(post.calls) == 1
         )
-        # Follow the returned protocol interval; do not bypass the pacing state.
         await asyncio.sleep(early.json()["interval"])
         response = await client.post(
             "/api/auth/device/poll", json={"handle": started.json()["handle"]}
@@ -479,8 +461,6 @@ async def test_existing_native_token_routes_do_not_mint_work_session_authority(
     assert "astral_session" not in response.cookies
     assert get_session_record(runtime, fixture[2]) == before
     assert session_count(runtime) == 1
-    # The returned signed token passes the actual registered Work JWT dependency;
-    # successful token proxying alone is not counted as verification by the IdP.
     headers = {"Authorization": "Bearer " + returned["access_token"]}
     listing = await client.get(WORK, headers=headers)
     assert listing.status_code == 200 and listing.json()["operations"] == []
@@ -503,20 +483,7 @@ async def test_existing_native_token_routes_do_not_mint_work_session_authority(
 async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
     client, service, fixture, runtime, monkeypatch, client_id
 ):
-    """Feature 088 T014: the native client's server-custody cookie is the
-    issuance a NEW admission refreshes; the bearer it also holds is not.
-
-    Why bearer-only is refused (pinned, not just observed): a bearer selects
-    no signed-cookie session, so ``AuthenticatedWorkRequest.session_id`` is
-    None and ``refresh_work_submission_authority`` has no server-side row to
-    refresh into execution authority. It refuses ``work_authority_unavailable``
-    (403) BEFORE any IdP exchange and never borrows the owner's other session.
-    The watch client has no authorization-code redirect, so only the two
-    code-flow clients are parametrized here (device custody is pinned in
-    ``test_native_session_custody_088``).
-    """
     store, owner, original_sid, token, seen = fixture
-    # 1. Bare bearer: nothing to refresh, nothing exchanged, nothing admitted.
     selected = await context(
         fixture, runtime, cookie=False, bearer=True, changes={"azp": client_id}
     )
@@ -529,8 +496,6 @@ async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
     )
     assert totals(runtime, owner) == (0, 0, 0) and not seen
     assert session_count(runtime) == 1
-    # 2. The custody exchange (same public client, no secret) issues the
-    #    server-side session the client then presents as a cookie.
     exchanged = []
 
     async def token_post(url, data):
@@ -564,9 +529,6 @@ async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
     assert sid != original_sid and session_count(runtime) == 2
     custody = get_session_record(runtime, sid)
     assert (custody.issuing_issuer, custody.issuing_client_id) == (ISSUER, client_id)
-    # 3. New admission under the custody cookie refreshes THAT issuance through
-    #    the bound exchange (issuer + public client identity), never the
-    #    legacy confidential-client exchange the original web session uses.
     bound = []
 
     async def bound_exchange(refresh, identity):
@@ -592,7 +554,7 @@ async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
     result = await service.submit(admitted, command())
     assert result.created and totals(runtime, owner) == (1, 1, 1)
     assert bound == [("synthetic-native-custody-refresh", ISSUER, client_id, owner)]
-    assert not seen  # the original web session was never touched
+    assert not seen
     assert (
         result.record.operation["authority"]["reference_id"]
         == get_session_record(runtime, sid).incarnation_id
@@ -600,7 +562,6 @@ async def test_native_custody_cookie_replaces_bare_bearer_for_new_admission(
     assert get_session_record(runtime, original_sid).incarnation_id != (
         result.record.operation["authority"]["reference_id"]
     )
-    # 4. The same cookie reads the accepted work through the registered route.
     detail = await client.get(
         f"{WORK}/{result.record.assignment_id}",
         headers={"Cookie": "astral_session=" + cookie},

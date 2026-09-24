@@ -1,4 +1,8 @@
-"""Real authenticated retirement route fences Plane assignments atomically."""
+"""Tests for the authenticated account-retirement route: purges Plane assignments and
+schedules blob cleanup atomically within one request, without over-claiming success
+on partial failure.
+"""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock

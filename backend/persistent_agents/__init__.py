@@ -1,5 +1,4 @@
-"""Owner-directed durable assignments (feature 079).
-
-Importing the package starts no work. The application explicitly constructs the
-service and supervised runner only after its configured Plane runtime is ready.
+"""Package marker for durable owner assignments; importing starts no work.
+orchestrator/orchestrator.py constructs AssignmentService and AssignmentRunner
+explicitly once Plane is ready.
 """

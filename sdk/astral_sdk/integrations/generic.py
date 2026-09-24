@@ -1,9 +1,8 @@
-"""Framework-agnostic function-calling schemas and dispatch.
-
-Every other adapter in this package (OpenAI, Anthropic, LangChain, ...) is a
-thin re-shaping of what is defined here — this module has no third-party
-import at all, lazy or otherwise.
+"""Framework-agnostic function-calling schemas and dispatch that every other adapter in
+astral_sdk.integrations wraps; call_tool() is the single execution path they all
+route through to AstralClient.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -12,24 +11,15 @@ from typing import Any
 from astral_sdk.client import AstralClient
 from astral_sdk.tools import TOOL_NAMES, all_function_schemas, tools_for_scopes
 
-#: ``[{"name", "description", "parameters"}, ...]`` — one per Astral Work tool,
-#: in the exact shape most function-calling APIs expect for a single tool.
 FUNCTION_SCHEMAS: list[dict[str, Any]] = all_function_schemas()
 
 
 def schemas_for_scopes(scopes) -> list[dict[str, Any]]:
-    """The subset of :data:`FUNCTION_SCHEMAS` a credential's scopes actually unlock."""
     granted = tools_for_scopes(scopes)
     return [schema for schema in FUNCTION_SCHEMAS if schema["name"] in granted]
 
 
 def call_tool(client: AstralClient, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Execute one Astral tool by name against a live client; return a plain dict.
-
-    This is the single execution path every framework adapter below routes
-    through — a framework's own "tool executed" callback need only call this
-    and hand the dict back to its model.
-    """
     if name not in TOOL_NAMES:
         raise KeyError(f"unknown Astral tool: {name}")
     dispatch = {

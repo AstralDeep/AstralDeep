@@ -1,10 +1,8 @@
-"""Owner-scoped saved-results host adapter over an actual committed receipt.
-
-Only external IAM/JWKS, source and model replies are synthetic. The Save
-(propose+save) that produces the receipt this surface reads runs the real,
-registered ``/api/work/v1`` router against real PostgreSQL, exactly as
-``tests/test_work_save_postgres_088.py`` verifies independently.
+"""Tests for orchestrator/projection_surfaces/saved_results.py: owner-scoped list and
+detail over a receipt committed by the real /api/work/v1 save router against
+PostgreSQL.
 """
+
 import json
 from uuid import uuid4
 
@@ -35,11 +33,7 @@ pytestmark = [pytest.mark.asyncio,
 
 
 async def _committed(saved_value, monkeypatch):
-    """Propose then Save through the real HTTP routes; return the publication id."""
     monkeypatch.setitem(flags._flags, "persistent_agents", True)
-    # The saved-result detail offers the result's own existing authenticated
-    # canvas download, which _export_link gates on the artifact_export flag
-    # (feature 028); enable it so the detail exposes /api/export/canvas/.
     monkeypatch.setitem(flags._flags, "artifact_export", True)
     command = proposal_body(saved_value)
     proposed = await post(saved_value, path(saved_value), command)
@@ -78,11 +72,8 @@ async def test_owner_sees_the_committed_result_in_list_and_detail(saved, monkeyp
         orch, saved.op.owner, [], {"mode": "detail", "publication_id": publication_id})
     assert publication_id in detail
     assert "Reviewed result destination" in detail
-    # Provenance re-derived from the actual public research result.
     assert "93.184.216.34" in detail
-    # The result's own existing authenticated download, never a new route.
     assert "/api/export/canvas/" in detail
-    # Never the private excerpt/system material the save-flow tests already pin.
     assert "synthetic-provider-key" not in detail and "binding_key" not in detail
 
 

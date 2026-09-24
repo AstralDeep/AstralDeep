@@ -1,4 +1,6 @@
-"""Currency limits require a current trusted finite bound for every request."""
+"""Tests for persistent_agents/cost_bounds.py: unpriced amounts stay unknown, all
+reserved usage is priced, and unknown, expired or changed prices are refused.
+"""
 
 from datetime import UTC, datetime, timedelta
 

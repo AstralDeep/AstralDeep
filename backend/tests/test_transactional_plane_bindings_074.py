@@ -1,4 +1,7 @@
-"""Transactional process binding coverage for Plane-backed in-process agents."""
+"""Tests for transactional Plane service binding in orchestrator/plane_composition.py: a
+second-bind failure rolls back created resolvers without clearing observed ones,
+across general_agent.py, ml_services_agent.py, and standalone composition.
+"""
 
 from __future__ import annotations
 

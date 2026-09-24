@@ -1,4 +1,8 @@
-"""Feature 033 (C-U9) — scoped / project memory boundary."""
+"""Tests for personalization/project_scope.py: flag default, normalization and scope-key
+derivation, project/global filtering in both directions, visibility checks, and
+instruction layering.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -30,16 +34,16 @@ def test_filter_to_project_includes_own_and_global():
     items = [
         {"id": 1, "project_id": "alpha"},
         {"id": 2, "project_id": "beta"},
-        {"id": 3},  # global (untagged)
+        {"id": 3},
     ]
     ids = [i["id"] for i in ps.filter_to_project(items, "alpha")]
-    assert ids == [1, 3]  # alpha's own + global, not beta's
+    assert ids == [1, 3]
 
 
 def test_filter_global_view_excludes_project_private():
     items = [{"id": 1, "project_id": "alpha"}, {"id": 2}]
     ids = [i["id"] for i in ps.filter_to_project(items, None)]
-    assert ids == [2]  # global view sees only global items
+    assert ids == [2]
 
 
 def test_filter_can_exclude_global():
@@ -55,8 +59,8 @@ def test_filter_skips_junk():
 def test_visible_in():
     assert ps.visible_in({"project_id": "alpha"}, "alpha") is True
     assert ps.visible_in({"project_id": "alpha"}, "beta") is False
-    assert ps.visible_in({}, "alpha") is True       # global item visible in project
-    assert ps.visible_in({"project_id": "alpha"}, None) is False  # private not in global
+    assert ps.visible_in({}, "alpha") is True
+    assert ps.visible_in({"project_id": "alpha"}, None) is False
 
 
 def test_layer_instructions():

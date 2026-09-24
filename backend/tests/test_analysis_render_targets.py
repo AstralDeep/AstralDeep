@@ -1,16 +1,8 @@
-"""Regression tests: mid-loop analysis output must never replace the canvas.
-
-A canvas-target ``ui_render`` is a full-canvas replace on every client
-(web ``setHTML(canvas, …)``, Windows ``canvas.set_components``), so any
-words-only message the ReAct loop emits mid/end-of-turn — reasoning
-collapsibles, cancellation/denial alerts, the max-turns summary — must go to
-the chat rail. The user-visible bug: a reasoning-model turn ("Analyzing
-results") wiped this turn's just-delivered chart components and left only a
-"Reasoning" collapsible on the canvas.
-
-Components themselves reach the canvas via ``_deliver_round_components``
-(ui_upsert append/supersede semantics), never via a full-replace render.
+"""Tests for orchestrator/orchestrator.py's mid-turn render routing: reasoning,
+cancellation, denial, and max-turns output must reach the chat rail, never replace
+the canvas, which only _deliver_round_components may upsert.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,8 +27,6 @@ USER = "target-user"
 
 
 class _AttachmentMaterializer:
-    """No-I/O materializer for a fixture that never handles attachments."""
-
     def materialize_bytes(self, **_values):
         raise AssertionError("render-target tests must not materialize attachments")
 
@@ -86,8 +76,6 @@ def _runtime_composition(plane_runtime, bundle_store):
         attachment_materializer=_AttachmentMaterializer(),
         attachment_materializations=_AttachmentMaterializations(),
         attachment_purges=_AttachmentPurges(),
-        # The owning isolated_plane_runtime fixture closes the pool after every
-        # orchestrator has released its process bindings.
         close=lambda: None,
     )
     return AstralRuntimeComposition(plane=plane, lets=_LetsOff())
@@ -95,16 +83,12 @@ def _runtime_composition(plane_runtime, bundle_store):
 
 @pytest.fixture(scope="module")
 def plane_runtime():
-    """One isolated current-schema Plane shared by this focused test module."""
-
     with isolated_plane_runtime("analysis_render_targets") as runtime:
         yield runtime
 
 
 @pytest.fixture(scope="module")
 def generated_agent_bundles(tmp_path_factory):
-    """Real bounded Plane store required by Orchestrator construction."""
-
     return ImmutableBundleStore(
         tmp_path_factory.mktemp("analysis-render-bundles"),
         contract=GENERATED_AGENT_BUNDLE_CONTRACT,
@@ -121,16 +105,12 @@ async def orch(plane_runtime, generated_agent_bundles, monkeypatch):
         "orchestrator.runtime_composition.compose_astral_runtime",
         lambda _manifest: composition,
     )
-    # Voice is unrelated to render-target routing. Keep this focused graph
-    # typed-chat-only instead of constructing optional media infrastructure.
     monkeypatch.setattr(
         "orchestrator.voice_bootstrap.build_voice_services",
         MagicMock(side_effect=RuntimeError("voice disabled in render-target fixture")),
     )
     o = await asyncio.to_thread(Orchestrator)
     try:
-        # Feature 054: chat turns pre-flight the acting user's PERSISTED LLM
-        # config (env vars are inert) — seed the fixture user so turns proceed.
         await asyncio.to_thread(
             o._llm_store.set_sync,
             USER,
@@ -205,7 +185,6 @@ async def _cleanup(o, chat_id):
 
 
 def _target_of(call) -> str:
-    """The effective ui_render target of a recorded send_ui_render call."""
     if "target" in call.kwargs:
         return call.kwargs["target"]
     if len(call.args) > 2:
@@ -216,11 +195,6 @@ def _target_of(call) -> str:
 def _components_json(call) -> str:
     return json.dumps(call.args[1] if len(call.args) > 1 else call.kwargs.get("components"))
 
-
-# --------------------------------------------------------------------------- #
-# The reported bug: reasoning content on an "Analyzing results" turn replaced
-# the whole canvas with a Reasoning collapsible.
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_reasoning_goes_to_chat_and_never_replaces_canvas(orch):
@@ -250,16 +224,10 @@ async def test_reasoning_goes_to_chat_and_never_replaces_canvas(orch):
     reasoning_calls = [c for c in renders if '"Reasoning"' in _components_json(c)]
     assert reasoning_calls, "expected the reasoning collapsible to be rendered"
     assert all(_target_of(c) == "chat" for c in reasoning_calls)
-    # No full-canvas replace anywhere in the turn — components reach the
-    # canvas only through _deliver_round_components (upsert semantics).
     assert all(_target_of(c) != "canvas" for c in renders)
     orch._deliver_round_components.assert_awaited()
     await _cleanup(orch, chat_id)
 
-
-# --------------------------------------------------------------------------- #
-# Same class of bug: the other words-only mid/end-of-loop renders.
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_cancellation_alert_goes_to_chat(orch):
@@ -280,9 +248,6 @@ async def test_cancellation_alert_goes_to_chat(orch):
 
 @pytest.mark.asyncio
 async def test_denial_loop_warning_goes_to_chat(orch, monkeypatch):
-    # The all-tools-denied break requires tools_desc to empty out — keep the
-    # default-on meta-tools (create_capability, scheduling, memory, desktop
-    # codegen, subtasks) out of the tool list for this test.
     for mod in ("agentic_creation", "scheduling_chat", "memory_chat",
                 "desktop_codegen", "subtasks"):
         monkeypatch.setattr(f"orchestrator.{mod}.should_inject",
@@ -321,7 +286,7 @@ async def test_max_turns_summary_goes_to_chat(orch):
 
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
                        feature="tool_dispatch"):
-        return _msg(tool_calls=[_tc()]), _usage()  # never a final answer
+        return _msg(tool_calls=[_tc()]), _usage()
 
     orch._call_llm = fake_llm
     await registered_chat(orch, ws, "loop forever", chat_id, user_id=USER)
@@ -340,7 +305,7 @@ async def test_max_turns_fallback_card_goes_to_chat(orch):
     chat_id = await _chat(orch)
     orch.execute_single_tool = AsyncMock(return_value=SimpleNamespace(
         result={"ok": True}, error=None, ui_components=[], correlation_id=None))
-    orch._generate_tool_summary = AsyncMock(return_value=None)  # LLM summary failed
+    orch._generate_tool_summary = AsyncMock(return_value=None)
 
     async def fake_llm(websocket, messages, tools_desc=None, temperature=None,
                        feature="tool_dispatch"):

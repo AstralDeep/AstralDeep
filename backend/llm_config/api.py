@@ -1,20 +1,8 @@
-"""REST API for the LLM-config Test Connection probe (feature 006).
-
-A single endpoint, ``POST /api/llm/test``, performs a real
-``chat.completions.create`` call with ``max_tokens=1`` against the
-caller-supplied credentials and returns whether the probe succeeded.
-The credentials are used transiently to construct a one-shot
-:class:`openai.OpenAI` client, then discarded — they are NOT persisted,
-NOT placed in the per-WebSocket store, and NOT logged
-(:class:`backend.llm_config.log_scrub.LLMKeyRedactionFilter` covers any
-residual leakage paths).
-
-Authorization: standard Keycloak JWT validation via the existing
-:func:`orchestrator.auth.require_user_id` dependency. The endpoint
-never accepts a ``user_id`` parameter — it always probes on behalf of
-the authenticated caller alone (mirrors the per-user-isolation pattern
-from feature 003).
+"""REST endpoints for the LLM test-connection and model-listing probes: run a one-shot
+chat-completions/models.list call against caller-supplied credentials, never persist
+or log them, and audit llm_config_change(action='tested').
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,16 +27,11 @@ logger = logging.getLogger("LLMConfig.API")
 
 llm_router = APIRouter(prefix="/api/llm", tags=["LLM"])
 
-# Feature 054: per-user rate cap on the probe endpoints — the recorded
-# mitigation for the widened internal-reachability oracle (probes are
-# server-originated against user-supplied endpoints and reachable while the
-# first-run gate is active). Pattern mirrors DEVICE_LOGIN_START_RATE.
 _PROBE_RATE_PER_MINUTE = int(os.getenv("LLM_PROBE_RATE_PER_MINUTE", "20") or "20")
 _probe_hits: Dict[str, Deque[float]] = defaultdict(deque)
 
 
 def _check_probe_rate(user_id: str) -> None:
-    """Raise HTTP 429 when the caller exceeds the per-minute probe budget."""
     now = time.monotonic()
     hits = _probe_hits[user_id]
     while hits and now - hits[0] > 60.0:
@@ -62,10 +45,6 @@ def _check_probe_rate(user_id: str) -> None:
 
 
 class TestConnectionRequest(BaseModel):
-    """Body of ``POST /api/llm/test``.
-
-    All three fields are required and non-empty.
-    """
     api_key: str = Field(..., min_length=1)
     base_url: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
@@ -97,11 +76,6 @@ class TestConnectionResponse(BaseModel):
 
 
 class ListModelsRequest(BaseModel):
-    """Body of ``POST /api/llm/list-models``.
-
-    Mirrors :class:`TestConnectionRequest` minus the ``model`` field —
-    listing does not need a model id.
-    """
     api_key: str = Field(..., min_length=1)
     base_url: str = Field(..., min_length=1)
 
@@ -152,17 +126,6 @@ async def test_connection(
     user_id: str = Depends(require_user_id),
     user_payload: dict = Depends(get_current_user_payload),
 ) -> TestConnectionResponse:
-    """Issue a minimal ``chat.completions.create`` against the supplied
-    credentials and report success/failure.
-
-    Always returns HTTP 200 — ``ok=False`` indicates the probe ran but
-    the upstream rejected it; HTTP 4xx/5xx is reserved for problems
-    with THIS request itself (auth missing, body malformed).
-
-    Audit: emits ``llm_config_change(action="tested")`` per request,
-    regardless of outcome. The API key is NEVER recorded; only
-    ``base_url``, ``model``, ``result``, and ``error_class``-on-failure.
-    """
     orch = _get_orchestrator(request)
     _check_probe_rate(user_id)
     auth_principal = (
@@ -189,10 +152,6 @@ async def test_connection(
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1,
         )
-        # Verify the contract: a chat-completions response has at least
-        # one choice with a ``message`` object. If the upstream is not
-        # actually OpenAI-compatible, this raises and we classify it as
-        # a contract violation.
         if not getattr(response, "choices", None):
             raise ValueError("response missing 'choices' — not an OpenAI-compatible chat-completions endpoint")
         first = response.choices[0]
@@ -202,8 +161,6 @@ async def test_connection(
     except Exception as exc:
         ok = False
         error_class = _classify_probe_error(exc)
-        # Preserve the upstream message verbatim (FR-009). The log
-        # scrubber catches any leaked key in the message.
         upstream_message = str(exc)[:1024]
         logger.info(
             "Test Connection failed: error_class=%s base_url=%s model=%s",
@@ -211,7 +168,6 @@ async def test_connection(
         )
     latency_ms = int((time.monotonic() - started) * 1000)
 
-    # Audit: tested action, regardless of outcome.
     try:
         await record_llm_config_change(
             orch.audit_recorder,
@@ -224,7 +180,7 @@ async def test_connection(
             result="success" if ok else "failure",
             error_class=error_class if not ok else None,
         )
-    except Exception as exc:  # pragma: no cover — audit is best-effort
+    except Exception as exc:  # pragma: no cover
         logger.warning(f"llm_config_change(tested) audit failed (non-fatal): {exc}")
 
     return TestConnectionResponse(
@@ -248,17 +204,7 @@ async def list_models(
     user_id: str = Depends(require_user_id),
     user_payload: dict = Depends(get_current_user_payload),
 ) -> ListModelsResponse:
-    """Call ``client.models.list()`` against the supplied credentials and
-    return the sorted set of model ids the endpoint advertises.
-
-    Always returns HTTP 200 — ``ok=False`` indicates the upstream
-    rejected the listing call; HTTP 4xx/5xx is reserved for problems
-    with THIS request itself. No audit event is emitted: listing is a
-    read-only discovery aid that fires on every debounced edit, and the
-    existing ``tested`` audit on the same credentials covers the moment
-    that actually matters (save).
-    """
-    _ = request  # orchestrator not needed here — kept in signature for parity with /test
+    _ = request
     _ = user_payload
     _check_probe_rate(user_id)
 
@@ -290,10 +236,6 @@ async def list_models(
         ok = False
         models = []
         error_class = _classify_probe_error(exc)
-        # A 404 on /models means the endpoint doesn't exist on the host, not
-        # "the model id is wrong" — the shared classifier maps 404→model_not_found
-        # because that's the right meaning for /test. Locally promote to
-        # transport_error so the frontend hint reads "Couldn't load models".
         if error_class == "model_not_found":
             error_class = "transport_error"
         upstream_message = str(exc)[:1024]

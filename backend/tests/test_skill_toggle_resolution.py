@@ -1,5 +1,8 @@
-"""027 click-through fix: skill toggles must write the permission row that
-``is_tool_allowed`` actually honors (per-kind first, legacy NULL outranked)."""
+"""Tests that skill toggles write the exact permission row is_tool_allowed honors
+(orchestrator/tool_permissions.py): per-kind rows take precedence and clear the
+legacy NULL row.
+"""
+
 from orchestrator.tool_permissions import VALID_SCOPES, ToolPermissionManager
 
 
@@ -30,7 +33,6 @@ def _manager(scope_map):
 
 
 def test_valid_scopes_include_files():
-    """tools:files tools were uncontrollable — the scope now exists."""
     assert "tools:files" in VALID_SCOPES
 
 

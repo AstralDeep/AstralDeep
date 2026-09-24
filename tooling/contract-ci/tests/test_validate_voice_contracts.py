@@ -1,4 +1,7 @@
-"""Failure-first tests for the isolated Feature 065 contract validator."""
+"""Tests for tooling/contract-ci/validate_voice_contracts.py: schema/OpenAPI
+meta-validation, REST action mapping, worker grant bounds, proof vectors, fixture
+mutation handling, and dependency-lock pinning.
+"""
 
 from __future__ import annotations
 

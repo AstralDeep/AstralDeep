@@ -1,9 +1,8 @@
-"""Private selection of the session approving a durable offline grant.
-
-This is not an execution observation or a client capability. The normal request
-or socket IAM check runs first; capture later rechecks the exact issued session.
-No token search, owner-latest fallback, or caller payload supplies this identity.
+"""Resolves the exact signed-cookie session behind a durable offline-access grant,
+checked after normal IAM already ran. Used by offline_grant.py and persistent_agents;
+never falls back to token search or an owner's latest session.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,12 +21,9 @@ _SID = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
 
 @dataclass(frozen=True)
 class ConsentSession:
-    """Bounded server-private selection retained across consent work awaits."""
-
     observation: SessionConsentObservation
 
     def reference(self, owner_id: str) -> dict:
-        """Return only the closed encrypted-reference vocabulary, or refuse."""
         try:
             if not isinstance(self.observation, SessionConsentObservation):
                 raise ValueError
@@ -50,13 +46,6 @@ class ConsentSession:
 
 
 async def select_consent_session(connection: HTTPConnection, *, principal: dict, store) -> ConsentSession | None:
-    """Select the exact signed-cookie session after ordinary current IAM.
-
-    A web fetch may carry its normal bearer header as well as the private signed
-    cookie. A bearer alone does not select a session. The caller retains its
-    request/registration identity across this await and every subsequent await;
-    this helper never installs or changes authentication state.
-    """
     try:
         if (not isinstance(connection, HTTPConnection) or not isinstance(principal, dict)
                 or connection.scope.get("method") == "OPTIONS"
@@ -95,6 +84,5 @@ async def select_consent_session(connection: HTTPConnection, *, principal: dict,
         selected.reference(owner)
         return selected
     except Exception:
-        # Repository/token/cookie diagnostics must never leak into consent UI.
-        # Cancellation propagates without granting authority.
+        # Never add diagnostics here: they'd leak into consent UI
         return None

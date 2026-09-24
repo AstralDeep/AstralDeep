@@ -1,10 +1,8 @@
-"""030 T007 — grant-backed scheduler run end-to-end (US1).
-
-Drives JobRunner.run_job on a NON-dreaming job (dreaming is covered by
-test_runner_dreaming.py): valid grant → scope-intersected run via
-orch.run_scheduled_turn + success notification; missing/invalid grant →
-skipped_auth + pause + warning, never executing.
+"""Tests for backend/scheduler/runner.py's JobRunner.run_job end-to-end on a
+non-dreaming job: a valid grant intersects scopes and notifies on success, and a
+missing/invalid grant pauses without ever executing.
 """
+
 import asyncio
 import sys
 import types
@@ -54,7 +52,6 @@ def _orch(current_scopes):
     async def run_scheduled_turn(*, user_id, chat_id, instruction, agent_id,
                                  access_token, allowed_scopes, correlation_id,
                                  authority=None):
-        # 056 US2: the runner now threads the consent-derived MachineAuthority.
         calls["run"] = {"allowed_scopes": list(allowed_scopes), "access_token": access_token,
                         "instruction": instruction, "chat_id": chat_id, "user_id": user_id,
                         "authority_principal": getattr(authority, "principal", None)}
@@ -66,9 +63,6 @@ def _orch(current_scopes):
     orch = types.SimpleNamespace(
         run_scheduled_turn=run_scheduled_turn,
         notify_user=notify_user,
-        # Derivation reads the EFFECTIVE scope list, not the raw rows, so the
-        # safe-agent baseline is not mistaken for "no grants" (see
-        # test_machine_turn_authority.py::test_safe_baseline_*).
         tool_permissions=types.SimpleNamespace(
             get_agent_scopes=lambda uid, aid: dict(current_scopes),
             get_enabled_scope_names=lambda uid, aid: [
@@ -86,14 +80,13 @@ _JOB = {
 
 
 def test_grant_backed_run_intersects_scopes_and_notifies():
-    # current scopes: read enabled, search disabled → allowed = consented ∩ current
     orch, calls = _orch({"tools:read": True, "tools:search": False, "tools:write": True})
     store = _Store()
     runner = JobRunner(orch, store, _Grants(valid=True))
     outcome = asyncio.run(runner.run_job(dict(_JOB)))
     assert outcome == "success"
-    assert calls["run"]["allowed_scopes"] == ["tools:read"]  # SC-008 intersection
-    assert calls["run"]["access_token"] == "tok-g1"          # minted from the grant
+    assert calls["run"]["allowed_scopes"] == ["tools:read"]
+    assert calls["run"]["access_token"] == "tok-g1"
     assert store.finished[0][1] == "success"
     assert any(p.get("level") == "success" for p in calls["notify"])
 
@@ -105,6 +98,6 @@ def test_missing_grant_skips_auth_and_pauses_without_executing():
     outcome = asyncio.run(runner.run_job(dict(_JOB)))
     assert outcome == "skipped_auth"
     assert ("j1", "paused") in store.statuses
-    assert "run" not in calls  # never executed under stale authority
+    assert "run" not in calls
     assert any(p.get("level") == "warning" for p in calls["notify"])
     assert store.finished[0][1] == "skipped_auth"

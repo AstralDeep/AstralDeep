@@ -1,4 +1,8 @@
-"""CLI arg parsing + exit-code mapping (T027 / C1, I1). Pure — no boot."""
+"""Tests for CLI arg parsing and exit-code mapping (backend/verification/__main__.py):
+mode normalization, run-id derivation, and exit-code precedence for near-exposure and
+strict-uncertain.
+"""
+
 from __future__ import annotations
 
 from verification.__main__ import config_from_args, exit_code_for, parse_args
@@ -8,7 +12,7 @@ def test_parse_and_normalize_mode():
     args = parse_args(["--mode", "in-process", "--persona", "everyday",
                        "--persona", "government", "--strict", "--run-id", "__verif__cli"])
     cfg = config_from_args(args)
-    assert cfg.mode == "in_process"          # I1: hyphen normalized to underscore
+    assert cfg.mode == "in_process"
     assert cfg.personas == ["everyday", "government"]
     assert cfg.strict is True
     assert cfg.run_id == "__verif__cli"

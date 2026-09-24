@@ -1,11 +1,5 @@
-"""066 R-9 follow-through: bounded VAD pre-roll pins.
-
-Speech onsets ramp from below the release threshold and the candidate
-buffer clears on any sub-release frame, so the head of an utterance was
-lost ("transcribed from the middle"). The ring retains the last
-VAD_PREROLL_FRAMES admitted frames regardless of posterior dips and seeds
-the utterance at activation. A capture-epoch change (fence transition)
-clears it so pre-fence audio never resurfaces.
+"""Tests for voice_agent/session.py's VAD pre-roll ring: retaining sub-release onset
+frames, bounding ring capacity, and clearing on capture-epoch fence transitions.
 """
 
 from __future__ import annotations
@@ -73,9 +67,6 @@ def _session(vad: FakeVad, asr: FakeAsr, notices: list[SessionNotice]):
 
 @pytest.mark.asyncio
 async def test_onset_frames_below_release_are_retained_via_preroll() -> None:
-    # Three onset frames score BELOW release (discarded by the candidate
-    # logic), then confident speech activates. The ASR audio must contain
-    # the onset frames — previously they were structurally lost.
     silence_frames = session_module.VAD_END_SILENCE_FRAMES
     probabilities = [0.1, 0.2, 0.3] + [0.9] * 5 + [0.0] * silence_frames
     vad = FakeVad(list(probabilities))
@@ -93,11 +84,9 @@ async def test_onset_frames_below_release_are_retained_via_preroll() -> None:
     await _wait_for(lambda: len(asr.calls) == 1)
 
     audio = asr.calls[0]
-    # Onset fills 1..3 (sub-release) must be present — the pre-roll kept them.
     assert bytes([1, 0]) * AUDIO_FRAME_SAMPLES in audio
     assert bytes([2, 0]) * AUDIO_FRAME_SAMPLES in audio
     assert bytes([3, 0]) * AUDIO_FRAME_SAMPLES in audio
-    # Speech fills are present too, and the total is onset + speech + tail.
     assert bytes([4, 0]) * AUDIO_FRAME_SAMPLES in audio
     assert len(audio) == (3 + 5 + ASR_TAIL_SILENCE_FRAMES) * FRAME_BYTES
 
@@ -107,8 +96,6 @@ async def test_onset_frames_below_release_are_retained_via_preroll() -> None:
 
 @pytest.mark.asyncio
 async def test_preroll_is_bounded_to_its_ring_capacity() -> None:
-    # Long ambient run below release, then speech: only the last
-    # VAD_PREROLL_FRAMES of context may seed the utterance.
     silence_frames = session_module.VAD_END_SILENCE_FRAMES
     ambient = [0.1] * (VAD_PREROLL_FRAMES * 2)
     probabilities = ambient + [0.9] * 5 + [0.0] * silence_frames
@@ -124,17 +111,11 @@ async def test_preroll_is_bounded_to_its_ring_capacity() -> None:
     epoch = session.capture_epoch
     for index in range(len(probabilities)):
         session._enqueue_rtc(_frame_event(epoch, fill=(index % 251) + 1))
-        # Let the session loop drain each frame: this feed is longer than
-        # the bounded rtc queue and would overrun in a synchronous burst.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
     await _wait_for(lambda: len(asr.calls) == 1)
 
     audio = asr.calls[0]
-    # Activation fires on the 4th speech frame: the ring then holds exactly
-    # VAD_PREROLL_FRAMES frames (ambient tail + those 4 speech frames). The
-    # 5th speech frame extends post-activation, and the trailing silence is
-    # trimmed to the retained ASR tail.
     expected_frames = VAD_PREROLL_FRAMES + 1 + ASR_TAIL_SILENCE_FRAMES
     assert len(audio) == expected_frames * FRAME_BYTES
 
@@ -144,8 +125,6 @@ async def test_preroll_is_bounded_to_its_ring_capacity() -> None:
 
 @pytest.mark.asyncio
 async def test_epoch_change_clears_preroll() -> None:
-    # Frames admitted under an earlier capture epoch must never seed a turn
-    # after a fence transition.
     silence_frames = session_module.VAD_END_SILENCE_FRAMES
     probabilities = [0.1, 0.1] + [0.9] * 5 + [0.0] * silence_frames
     vad = FakeVad(list(probabilities))
@@ -162,7 +141,6 @@ async def test_epoch_change_clears_preroll() -> None:
     session._enqueue_rtc(_frame_event(first_epoch, fill=202))
     await _wait_for(lambda: len(vad.calls) == 2)
 
-    # Fence transition: close and reopen capture (epoch bumps).
     session.deliver(_set_capture(False))
     await _wait_for(lambda: not session.capture_open)
     session.deliver(_set_capture(True))

@@ -1,24 +1,8 @@
+"""Two validators for generated mcp_tools.py: validate() imports and executes code for
+server-hosted agents, while validate_static() checks pure AST — the only validator
+BYO user code may ever see, since it never imports or runs the code.
 """
-Agent Spec Validator — validates generated mcp_tools.py against the agent constitution.
 
-Two validators, and the difference is the whole security story:
-
-* ``validate`` EXECUTES the code under test (module import + a call to every
-  tool with synthesized args). That is acceptable ONLY for the server-hosted 027
-  path, where the same code is about to be ``Popen``'d on this host anyway.
-* ``validate_static`` NEVER imports, execs, compiles-and-runs, or otherwise
-  evaluates the code. It is pure ``ast`` inspection: registry shape, return
-  format, and an IMPORT ALLOWLIST. This is the ONLY validator a BYO agent's
-  code may see (058 G1/SC-002) — user-authored code never runs centrally, so
-  the orchestrator (which holds DB credentials and Fernet keys) can never be
-  the thing that runs it. Runtime behavior is the desktop host's business: the
-  agent either registers on the owner's machine or it doesn't.
-
-The import allowlist is also a HOST-COMPATIBILITY gate: the desktop host ships
-only the standard library plus ``astralprims``, so a bundle that imports
-``requests`` would die at import on the user's machine with no ``register_agent``
-frame — surfacing only as the host's silence timeout. Refuse it at generation.
-"""
 import ast
 import importlib.util
 import logging
@@ -32,30 +16,17 @@ from orchestrator.agent_spec import VALID_COMPONENT_TYPES, PRIMITIVES_SPEC
 
 logger = logging.getLogger("AgentValidator")
 
-#: Everything a BYO bundle is allowed to import: the standard library (which the
-#: host's interpreter always has) plus astralprims (the one client-side
-#: third-party dependency, Constitution V carve-out).
 BYO_EXTRA_ALLOWED_IMPORTS: Set[str] = {"astralprims"}
 
 
 def byo_allowed_modules() -> Set[str]:
-    """The BYO import allowlist: stdlib ∪ {astralprims}."""
     return set(getattr(sys, "stdlib_module_names", set())) | BYO_EXTRA_ALLOWED_IMPORTS
 
 
-#: Reported by :func:`disallowed_imports` for a dynamic import whose module name
-#: is not a literal, so the allowlist cannot be decided statically at all.
 UNRESOLVABLE_DYNAMIC_IMPORT = "<computed at runtime>"
 
 
 def _dynamic_import_arg(node: ast.Call) -> Optional[ast.expr]:
-    """The module-name argument of ``__import__(...)``/``importlib.import_module(...)``.
-
-    Returns ``None`` for any other call. Matches the bare name (``__import__``,
-    or ``import_module`` after ``from importlib import import_module``) and the
-    attribute form (``importlib.import_module``), which is every spelling a
-    flat 3-file bundle can reach.
-    """
     func = node.func
     if isinstance(func, ast.Name):
         name = func.id
@@ -74,28 +45,11 @@ def _dynamic_import_arg(node: ast.Call) -> Optional[ast.expr]:
 
 
 def disallowed_imports(code: str) -> List[str]:
-    """Top-level module names imported by ``code`` that a BYO host cannot resolve.
-
-    AST-only (never imports the module). A relative import is reported as
-    ``.<name>``: the bundle is a flat 3-file directory with no package.
-
-    Covers DYNAMIC imports too — ``__import__("requests")`` and
-    ``importlib.import_module("requests")`` reach the host's interpreter exactly
-    like a static ``import requests`` and die there the same way, but a
-    statement-only walk never saw them. The cost of missing one is not a
-    security hole (validation never executes the code, and ``__import__`` is
-    separately flagged CRITICAL by ``CodeSecurityAnalyzer``, which aborts BYO
-    generation) — it is that the author gets no generation-time feedback and
-    instead watches the agent fail as an unexplained host silence-timeout.
-    A non-literal module name is reported as
-    :data:`UNRESOLVABLE_DYNAMIC_IMPORT`, since host compatibility cannot be
-    decided statically in that case either.
-    """
     allowed = byo_allowed_modules()
     try:
         tree = ast.parse(code or "")
     except SyntaxError:
-        return []          # the syntax error is reported by the caller
+        return []
     bad: List[str] = []
 
     def _flag(name: str) -> None:
@@ -128,13 +82,11 @@ def disallowed_imports(code: str) -> List[str]:
     return bad
 
 
-# Exceptions that indicate structural code bugs (not transient failures)
 STRUCTURAL_EXCEPTIONS = (
     TypeError, NameError, AttributeError, KeyError, ImportError,
     ModuleNotFoundError, SyntaxError, IndentationError, UnboundLocalError,
 )
 
-# Exceptions that indicate network/external API failures (transient)
 NETWORK_EXCEPTIONS = (ConnectionError, TimeoutError, OSError)
 
 try:
@@ -162,8 +114,8 @@ class ValidationSeverity(str, Enum):
 
 @dataclass
 class ValidationFinding:
-    severity: str  # ValidationSeverity value
-    category: str  # IMPORT, REGISTRY, EXECUTION, RETURN_FORMAT, COMPONENT
+    severity: str
+    category: str
     message: str
     tool_name: Optional[str] = None
 
@@ -199,12 +151,6 @@ class ValidationReport:
 
 
 def registry_from_source(code: str) -> Dict[str, Dict[str, Any]]:
-    """The declared TOOL_REGISTRY of ``code``, read by AST (never executed).
-
-    ``{tool_name: {"description", "input_schema", "scope", "_function_name"}}``;
-    an unparseable/absent registry yields ``{}``. Callers use this to check what
-    the generator ACTUALLY produced against what Analyze approved.
-    """
     try:
         tree = ast.parse(code or "")
     except SyntaxError:
@@ -214,28 +160,7 @@ def registry_from_source(code: str) -> Dict[str, Dict[str, Any]]:
 
 
 class AgentSpecValidator:
-    """Validates generated mcp_tools.py files against the agent constitution."""
-
-    # ── Static (BYO) validation — NEVER executes the code under test ─────────
-
     def validate_static(self, code: str, slug: str = "") -> ValidationReport:
-        """Validate BYO agent code WITHOUT running it (058 G1/SC-002).
-
-        Pure ``ast`` inspection — no import, no exec, no compile-and-run. Checks:
-
-        1. the file parses;
-        2. every import resolves on the desktop host (stdlib ∪ astralprims) —
-           this is a GATE, not a warning: an ``import requests`` bundle would
-           die silently on the user's machine;
-        3. ``TOOL_REGISTRY`` exists as a module-level dict literal, is non-empty,
-           and every entry has ``function`` (a module-level def),
-           ``description``, ``input_schema`` and ``scope``;
-        4. every registered tool's body returns the ``_ui_components`` contract
-           (a dict literal carrying the key, or ``create_ui_response(...)``).
-
-        Tool *behavior* is deliberately NOT checked: it is the desktop host's
-        business, and checking it would mean running the user's code here.
-        """
         report = ValidationReport()
 
         try:
@@ -245,7 +170,6 @@ class AgentSpecValidator:
                        f"Syntax error prevents parsing: {e}")
             return report
 
-        # (2) Import allowlist — the host ships stdlib + astralprims, nothing else.
         for module in disallowed_imports(code):
             if module == UNRESOLVABLE_DYNAMIC_IMPORT:
                 report.add(ValidationSeverity.ERROR, "IMPORT",
@@ -259,9 +183,8 @@ class AgentSpecValidator:
                        "A user agent may import ONLY the Python standard library "
                        "and 'astralprims'.")
 
-        self._validate_imports(code, report)   # astralprims-usage WARNING (shared)
+        self._validate_imports(code, report)
 
-        # (3) Registry shape.
         registry, functions = self._static_registry(tree, report)
         if registry is None:
             return report
@@ -293,7 +216,6 @@ class AgentSpecValidator:
                            "Missing 'scope' key (defaults to tools:read).",
                            tool_name=tool_name)
 
-            # (4) Return contract — statically, from the function's own body.
             if ok and not self._returns_ui_contract(functions[fn_name]):
                 report.add(ValidationSeverity.ERROR, "RETURN_FORMAT",
                            "The function never returns the required shape: a dict "
@@ -325,12 +247,6 @@ class AgentSpecValidator:
     def _static_registry(tree: ast.Module, report: ValidationReport
                          ) -> Tuple[Optional[Dict[str, Dict[str, Any]]],
                                     Dict[str, ast.AST]]:
-        """Extract TOOL_REGISTRY + the module-level function defs, via AST only.
-
-        Each returned entry is ``{"_function_name", "description", "input_schema",
-        "scope"}``; a non-literal value (e.g. a computed schema) reads as absent
-        rather than being evaluated.
-        """
         functions: Dict[str, ast.AST] = {
             n.name: n for n in tree.body
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -379,7 +295,7 @@ class AgentSpecValidator:
                 try:
                     entry[k.value] = ast.literal_eval(v)
                 except (ValueError, SyntaxError, TypeError):
-                    continue      # non-literal: read as absent, never evaluated
+                    continue
             registry[tool_name] = entry
 
         if not registry:
@@ -390,15 +306,11 @@ class AgentSpecValidator:
 
     @staticmethod
     def _returns_ui_contract(fn: ast.AST) -> bool:
-        """True when the function's body can return the ``_ui_components`` shape."""
         for node in ast.walk(fn):
-            # Any dict literal in the body carrying the key — covers both a
-            # direct `return {...}` and a payload assembled into a local first.
             if isinstance(node, ast.Dict):
                 for k in node.keys:
                     if isinstance(k, ast.Constant) and k.value == "_ui_components":
                         return True
-            # create_ui_response([...]) builds the same shape.
             if isinstance(node, ast.Call):
                 fname = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
                 if fname == "create_ui_response":
@@ -406,27 +318,14 @@ class AgentSpecValidator:
         return False
 
     def validate(self, code: str, slug: str, agents_dir: str) -> ValidationReport:
-        """Run the full validation pipeline on generated tool code.
-
-        Args:
-            code: The mcp_tools.py source code
-            slug: The agent slug (directory name)
-            agents_dir: Path to backend/agents/
-
-        Returns:
-            ValidationReport with findings
-        """
         report = ValidationReport()
 
-        # Step 1: Check imports
         self._validate_imports(code, report)
 
-        # Step 2-3: Load and validate TOOL_REGISTRY
         registry = self._load_registry(code, slug, agents_dir, report)
         if registry is None:
             return report
 
-        # Capture tool metadata for the report
         for tool_name, tool_info in registry.items():
             schema = tool_info.get("input_schema", {})
             props = schema.get("properties", {})
@@ -447,14 +346,12 @@ class AgentSpecValidator:
                 "parameters": params,
             })
 
-        # Step 4-7: Validate each tool
         for tool_name, tool_info in registry.items():
             self._validate_tool(tool_name, tool_info, report)
 
         return report
 
     def _validate_imports(self, code: str, report: ValidationReport):
-        """Check that code imports primitive classes from astralprims."""
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
@@ -478,7 +375,6 @@ class AgentSpecValidator:
 
     def _load_registry(self, code: str, slug: str, agents_dir: str,
                        report: ValidationReport) -> Optional[Dict]:
-        """Dynamically import the module and extract TOOL_REGISTRY."""
         module_path = os.path.join(agents_dir, slug, "mcp_tools.py")
 
         if not os.path.exists(module_path):
@@ -486,14 +382,12 @@ class AgentSpecValidator:
                        f"mcp_tools.py not found at {module_path}")
             return None
 
-        # Ensure backend is on sys.path for shared imports
         backend_dir = os.path.abspath(os.path.join(agents_dir, '..'))
         original_path = sys.path.copy()
         if backend_dir not in sys.path:
             sys.path.insert(0, backend_dir)
 
         try:
-            # Create a unique module name to avoid caching issues
             module_name = f"_validator_{slug}_{id(report)}"
             spec = importlib.util.spec_from_file_location(module_name, module_path)
             if spec is None or spec.loader is None:
@@ -541,11 +435,9 @@ class AgentSpecValidator:
 
     def _validate_tool(self, tool_name: str, tool_info: Dict,
                        report: ValidationReport):
-        """Validate a single tool entry: structure, execution, and output."""
         report.tools_tested += 1
         tool_passed = True
 
-        # Check required keys
         if "function" not in tool_info:
             report.add(ValidationSeverity.ERROR, "REGISTRY",
                        "Missing 'function' key.", tool_name=tool_name)
@@ -564,7 +456,6 @@ class AgentSpecValidator:
             report.add(ValidationSeverity.WARNING, "REGISTRY",
                        "Missing 'input_schema' key.", tool_name=tool_name)
 
-        # Generate sample inputs and call the tool
         schema = tool_info.get("input_schema", {"type": "object", "properties": {}})
         sample_inputs = self._generate_sample_inputs(schema)
 
@@ -575,8 +466,6 @@ class AgentSpecValidator:
                        f"Network error during execution (expected for API-dependent tools): "
                        f"{type(e).__name__}: {e}",
                        tool_name=tool_name)
-            # Can't validate output, but the tool structure may be fine
-            # Do a static check instead
             self._static_check_return_format(tool_info["function"], tool_name, report)
             report.tools_passed += 1
             return
@@ -593,7 +482,6 @@ class AgentSpecValidator:
             report.tools_passed += 1
             return
 
-        # Validate return format
         if not isinstance(result, dict):
             report.add(ValidationSeverity.ERROR, "RETURN_FORMAT",
                        f"Tool returned {type(result).__name__}, expected dict with "
@@ -622,7 +510,6 @@ class AgentSpecValidator:
                            tool_name=tool_name)
                 tool_passed = False
             else:
-                # Validate each component
                 for i, comp in enumerate(ui_comps):
                     if not self._validate_component(comp, tool_name, i, report):
                         tool_passed = False
@@ -637,7 +524,6 @@ class AgentSpecValidator:
 
     def _validate_component(self, comp: Any, tool_name: str, index: int,
                             report: ValidationReport) -> bool:
-        """Validate a single component dict. Returns True if valid."""
         if not isinstance(comp, dict):
             report.add(ValidationSeverity.ERROR, "COMPONENT",
                        f"Component [{index}] is {type(comp).__name__}, expected dict. "
@@ -659,7 +545,6 @@ class AgentSpecValidator:
                        tool_name=tool_name)
             return False
 
-        # Validate field names against the spec
         spec_fields = PRIMITIVES_SPEC.get(comp_type, {}).get("fields", {})
         for key in comp:
             if key not in spec_fields and key not in ("type", "id", "style"):
@@ -668,7 +553,6 @@ class AgentSpecValidator:
                            f"field '{key}'. Expected fields: {list(spec_fields.keys())}",
                            tool_name=tool_name)
 
-        # Check for common mistakes
         if comp_type == "card" and "children" in comp and "content" not in comp:
             report.add(ValidationSeverity.ERROR, "COMPONENT",
                        f"Card component [{index}] uses 'children' but Card expects 'content'. "
@@ -676,7 +560,6 @@ class AgentSpecValidator:
                        tool_name=tool_name)
             return False
 
-        # Recursively validate nested components
         valid = True
         for container_field in ("content", "children"):
             nested = comp.get(container_field)
@@ -691,7 +574,6 @@ class AgentSpecValidator:
         return valid
 
     def _generate_sample_inputs(self, schema: Dict) -> Dict[str, Any]:
-        """Generate sample inputs from a JSON schema."""
         props = schema.get("properties", {})
         set(schema.get("required", []))
         sample = {}
@@ -719,7 +601,6 @@ class AgentSpecValidator:
 
     def _static_check_return_format(self, func, tool_name: str,
                                      report: ValidationReport):
-        """When a tool can't be executed, do a static AST check for return format."""
         try:
             import inspect
             source = inspect.getsource(func)
@@ -734,4 +615,4 @@ class AgentSpecValidator:
                            "Components may not be serialized correctly.",
                            tool_name=tool_name)
         except (OSError, TypeError):
-            pass  # Can't inspect source, skip static check
+            pass

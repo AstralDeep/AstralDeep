@@ -1,13 +1,6 @@
-"""Feature 089 (T029): the owner's failure sequence, measured.
-
-The requirement is a sequence, not a tolerance: notice, up to three attempts
-inside 1.5 s, fall back to standard routing, and stop making the user wait for
-a service that is not answering.
-
-These tests run the real runner against the deterministic fake with a fake
-clock, so "the total can never exceed the budget" is checked as arithmetic
-rather than as wall time. A timing test that sleeps is a timing test that is
-flaky on a loaded machine.
+"""Tests for orchestrator/typesafe_routing/runner.py's failure handling on a fake clock:
+up to three attempts within the turn budget, fallback to standard routing, notices
+with no request text, and the per-user circuit breaker.
 """
 
 from __future__ import annotations
@@ -61,8 +54,6 @@ TOOL = "weather-1__get_current_weather"
 
 
 class Clock:
-    """A monotonic clock the test advances, including through sleeps."""
-
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
         self.sleeps: list[float] = []
@@ -76,8 +67,6 @@ class Clock:
 
 
 class Notices:
-    """Collects everything the adapter said to the user."""
-
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
@@ -132,9 +121,6 @@ async def _run(
     return outcome, fake, notices, clock, circuit
 
 
-# -- the happy path -------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_a_clean_call_succeeds_with_no_notices() -> None:
     outcome, fake, notices, _clock, circuit = await _run()
@@ -143,9 +129,6 @@ async def test_a_clean_call_succeeds_with_no_notices() -> None:
     assert fake.call_count == 1
     assert notices.sent == []
     assert circuit.state_of(USER) is CircuitState.CLOSED
-
-
-# -- transient failures ---------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -186,9 +169,6 @@ async def test_the_backoff_schedule_is_100ms_then_200ms() -> None:
     assert 0.16 <= clock.sleeps[1] <= 0.24
 
 
-# -- non-transient failures -----------------------------------------------
-
-
 @pytest.mark.parametrize(
     "error",
     [
@@ -212,12 +192,8 @@ async def test_an_auth_failure_is_not_retried_and_blocks_the_key(error) -> None:
     assert fake.call_count == 1
     assert outcome.outcome is Outcome.FALLBACK_NONTRANSIENT
     assert outcome.credential_outcome == "rejected"
-    # Blocked by fingerprint: a cool-down will not unblock it, a new key will.
     assert circuit.allows(USER, fingerprint=FINGERPRINT) is False
     assert circuit.allows(USER, fingerprint="ffffffffffff") is True
-
-
-# -- notices --------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -276,14 +252,10 @@ async def test_a_dead_socket_does_not_break_the_turn() -> None:
     assert outcome.outcome is Outcome.SUCCESS
 
 
-# -- the budget -----------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_the_total_never_exceeds_the_turn_budget() -> None:
     clock = Clock()
     start = clock.now
-    # Every attempt burns its full per-attempt timeout before failing.
     await _run(
         faults=[0.4, 0.4, 0.4],
         clock=clock,
@@ -293,12 +265,6 @@ async def test_the_total_never_exceeds_the_turn_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_a_slow_attempt_is_abandoned_and_retried() -> None:
-    """An attempt that outruns its per-attempt timeout does not get to finish.
-
-    The first call would take 1.6 s, well past the whole turn budget. It is cut
-    at the per-attempt timeout, and the retry answers immediately, so the user
-    still gets a narrowed round instead of paying for a stalled call.
-    """
     clock = Clock()
     start = clock.now
     outcome, fake, _notices, _clock, _circuit = await _run(faults=[1.6], clock=clock)
@@ -323,9 +289,6 @@ async def test_every_attempt_timing_out_ends_in_fallback_inside_the_budget() -> 
     assert clock.now - start <= TURN_BUDGET_SECONDS + 1e-6
 
 
-# -- the circuit ----------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_the_circuit_opens_after_three_consecutive_fallback_turns() -> None:
     clock = Clock()
@@ -347,7 +310,6 @@ async def test_an_open_circuit_skips_the_call_entirely() -> None:
 
     assert outcome.outcome is Outcome.SKIPPED_CIRCUIT
     assert fake.call_count == 0
-    # SC-004: an open circuit costs essentially nothing.
     assert clock.now == before
 
 
@@ -364,9 +326,6 @@ async def test_the_circuit_half_opens_after_the_cooldown() -> None:
     assert fake.call_count == 1
     assert outcome.outcome is Outcome.SUCCESS
     assert circuit.state_of(USER) is CircuitState.CLOSED
-
-
-# -- the skip paths -------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -409,9 +368,6 @@ async def test_an_empty_request_makes_no_call() -> None:
     assert fake.call_count == 0
 
 
-# -- cancellation ---------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_cancelling_a_routing_task_is_safe() -> None:
     clock = Clock()
@@ -430,7 +386,6 @@ async def test_cancelling_a_routing_task_is_safe() -> None:
     cancel_routing(task)
     await asyncio.sleep(0)
     assert task.cancelled() or task.done()
-    # Cancelling twice, or cancelling a finished task, is not an error.
     cancel_routing(task)
     cancel_routing(None)
 
@@ -440,9 +395,6 @@ async def test_await_decision_on_a_missing_task_is_a_skip() -> None:
     outcome = await await_decision(None, user_id=USER)
     assert outcome.outcome is Outcome.SKIPPED_NO_KEY
     assert outcome.decision is None
-
-
-# -- nothing ever raises --------------------------------------------------
 
 
 @pytest.mark.asyncio

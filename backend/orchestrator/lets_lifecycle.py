@@ -1,10 +1,6 @@
-"""Durable Astral-to-LETS lifecycle convergence.
-
-AstralPlane owns neutral persistence and LETS owns remote finite authority.  This
-module is the product-policy adapter between them: it commits an owner-scoped
-intent before every remote mutation, reuses the exact request identity only for
-the same canonical intent, and leaves ambiguous results recoverable and
-fail-closed.
+"""Durable Astral-to-LETS lifecycle convergence: commits an owner-scoped intent before
+every remote mutation, reuses request identity for the same intent only, and leaves
+ambiguous results recoverable and fail-closed. Used by agent_lifecycle.py.
 """
 
 from __future__ import annotations
@@ -51,14 +47,10 @@ _QUIESCENT: Final = AuthorityBindingState.QUIESCENT
 
 
 class PlaneAuthorityRuntime(Protocol):
-    """The small AstralPlane runtime seam required by this adapter."""
-
     def transaction(self, **options: object): ...
 
 
 class LetsLifecycleError(RuntimeError):
-    """Stable, content-free lifecycle refusal."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -67,8 +59,6 @@ class LetsLifecycleError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class GovernedRuntime:
-    """Owner- and generation-fenced Astral identity admitted to LETS."""
-
     owner_id: str
     agent_id: str
     runtime_id: str
@@ -80,8 +70,6 @@ class GovernedRuntime:
 
 @dataclass(frozen=True, slots=True)
 class LifecycleConvergence:
-    """Redacted local result of one lifecycle convergence attempt."""
-
     protected: bool
     binding: AgentAuthorityBinding | None = None
     operation: AuthorityLifecycleOperation | None = None
@@ -92,8 +80,6 @@ class LifecycleConvergence:
 
 @dataclass(frozen=True, slots=True)
 class LifecycleRecoveryContext:
-    """Deep-owned context not represented by Plane's neutral operation model."""
-
     parent_binding_id: str | None = None
     revocation_reason: str | None = None
 
@@ -164,8 +150,6 @@ def _snapshot_state(snapshot: LeaseSnapshot) -> AuthorityBindingState:
 
 
 class LetsLifecycleService:
-    """Converge governed agent lifecycle through Plane and public LETS APIs."""
-
     def __init__(
         self,
         *,
@@ -202,8 +186,6 @@ class LetsLifecycleService:
         binding_id: str,
         operation_id: str,
     ) -> LifecycleConvergence:
-        """Issue one governed root after its local intent is durable."""
-
         if not self.governs(runtime):
             return LifecycleConvergence(protected=False)
         try:
@@ -271,12 +253,6 @@ class LetsLifecycleService:
         binding_id: str,
         operation_id: str,
     ) -> LifecycleConvergence:
-        """Spawn a distinct child/subtask agent under an active parent lease.
-
-        Feature 074 deliberately serializes generations for one ``agent_id``;
-        a concurrent child therefore has its own governed child agent identity.
-        """
-
         if not self.governs(runtime):
             return LifecycleConvergence(protected=False)
         try:
@@ -342,7 +318,7 @@ class LetsLifecycleService:
             return self._deny("lifecycle_persistence_failure", retryable=True)
         if terminal is not None:
             return terminal
-        if parent is None:  # pragma: no cover - guarded by the SPAWN preparation path.
+        if parent is None:  # pragma: no cover
             raise LetsLifecycleError("parent_binding_unavailable")
         try:
             assert self.client is not None
@@ -454,14 +430,6 @@ class LetsLifecycleService:
         operation: AuthorityLifecycleOperation,
         context: LifecycleRecoveryContext | None = None,
     ) -> LifecycleConvergence:
-        """Resume one operation already claimed durably by the reconciler.
-
-        Plane deliberately stores only neutral request fingerprints. Deep's
-        durable agent graph supplies the parent binding for SPAWN and the
-        reviewed reason for REVOKE through ``LifecycleRecoveryContext``. No
-        value is guessed when that context is unavailable.
-        """
-
         if self.config.mode == "off":
             return LifecycleConvergence(protected=False)
         if (
@@ -566,7 +534,7 @@ class LetsLifecycleService:
                     lease_id=binding.lease_id,
                     agent_id=binding.agent_id,
                 )
-            else:  # pragma: no cover - enum exhaustiveness guard.
+            else:  # pragma: no cover
                 raise LetsLifecycleError("unknown_lifecycle_operation")
             return await asyncio.to_thread(
                 self._finish_existing,
@@ -699,7 +667,7 @@ class LetsLifecycleService:
                     lease_id=binding.lease_id,
                     agent_id=binding.agent_id,
                 )
-            else:  # pragma: no cover - callers enumerate the closed set above.
+            else:  # pragma: no cover
                 raise LetsLifecycleError("unknown_lifecycle_operation")
             return await asyncio.to_thread(
                 self._finish_existing,
@@ -1078,6 +1046,7 @@ class LetsLifecycleService:
             result_sha256=digest,
         )
 
+    # Parent must stay RECONCILING until this commit lands
     def _finish_spawn_grant(
         self,
         initial_binding: AgentAuthorityBinding,
@@ -1085,13 +1054,6 @@ class LetsLifecycleService:
         initial_parent: AgentAuthorityBinding,
         grant: LeaseGrant,
     ) -> LifecycleConvergence:
-        """Activate a child and advance/unfence its parent in one Plane commit.
-
-        LETS atomically increments the parent sequence when it creates a child.
-        Keeping the parent in ``RECONCILING`` from durable intent through this
-        commit prevents any physical effect from using its now-stale sequence.
-        """
-
         if not isinstance(grant, LeaseGrant):
             raise LetsLifecycleError("invalid_lifecycle_response")
         if grant.parent_id != initial_parent.lease_id:
@@ -1510,8 +1472,6 @@ class LetsLifecycleService:
         kind: AuthorityLifecycleKind,
         state: AuthorityBindingState,
     ) -> AuthorityBindingState | None:
-        """Return a known pre-call stable state safe to restore on a hard denial."""
-
         if kind is AuthorityLifecycleKind.RECONCILE:
             return None
         if state in {_ACTIVE, _QUIESCENT}:
@@ -1569,20 +1529,6 @@ class LetsLifecycleService:
 
 
 class GovernedLifecycleCoordinator:
-    """Map committed Astral runtime events onto one current LETS binding.
-
-    The low-level service above deliberately requires explicit durable request
-    identities.  Host lifecycle code should not duplicate the rules for
-    locating the current owner-scoped binding, advancing runtime generations,
-    or deciding whether a reconnect may resume an existing lease.  This bridge
-    centralizes those rules while still allocating a fresh operation identity
-    for every *new* physical lifecycle mutation.
-
-    Ambiguous mutations are never replaced with a new request: they leave the
-    binding in a fenced state for :class:`LetsLifecycleReconciler` to resume
-    using the already-persisted operation identity.
-    """
-
     def __init__(
         self,
         service: LetsLifecycleService,
@@ -1601,8 +1547,6 @@ class GovernedLifecycleCoordinator:
         agent_id: str,
         population: AuthorityPopulation,
     ) -> AgentAuthorityBinding | None:
-        """Return the latest owner-scoped generation through Plane's public API."""
-
         if self.service.config.mode == "off" or not self._cohort_enabled(
             agent_id,
             population,
@@ -1627,14 +1571,6 @@ class GovernedLifecycleCoordinator:
         declared_scopes: Sequence[str],
         executor_conformant: bool = True,
     ) -> LifecycleConvergence:
-        """Close the prior generation and issue a root for one new runtime.
-
-        Runtime generations are derived from Plane rather than process-local
-        counters, so a host restart cannot accidentally reuse an old receipt
-        generation.  A nonterminal predecessor must close successfully before
-        the successor intent can be created.
-        """
-
         probe = GovernedRuntime(
             owner_id=owner_id,
             agent_id=agent_id,
@@ -1678,8 +1614,6 @@ class GovernedLifecycleCoordinator:
         self,
         runtime: GovernedRuntime,
     ) -> LifecycleConvergence:
-        """Resume an exact quiesced generation or admit a newer generation."""
-
         if not self.service.governs(runtime):
             return LifecycleConvergence(protected=False)
         try:
@@ -1735,8 +1669,6 @@ class GovernedLifecycleCoordinator:
         agent_id: str,
         population: AuthorityPopulation,
     ) -> LifecycleConvergence:
-        """Fence dispatch for pause, disconnect, or host loss."""
-
         binding = await self._current_or_none(owner_id, agent_id, population)
         if binding is None:
             return LifecycleConvergence(protected=False)
@@ -1757,8 +1689,6 @@ class GovernedLifecycleCoordinator:
         agent_id: str,
         population: AuthorityPopulation,
     ) -> LifecycleConvergence:
-        """Drain and terminalize the current runtime generation."""
-
         binding = await self._current_or_none(owner_id, agent_id, population)
         if binding is None:
             return LifecycleConvergence(protected=False)
@@ -1781,16 +1711,6 @@ class GovernedLifecycleCoordinator:
         runtime_generation: int,
         population: AuthorityPopulation,
     ) -> LifecycleConvergence:
-        """Close only the exact current runtime generation.
-
-        Successor admission closes its predecessor before provisioning the new
-        binding.  Cleanup of that predecessor can run later, after the
-        successor is already current; it must therefore never translate into
-        ``close_current`` and accidentally close the successor.  A request for
-        an older generation is an idempotent no-op, while a same/newer but
-        mismatched identity remains a fail-closed lifecycle conflict.
-        """
-
         if not isinstance(runtime_id, str) or not runtime_id:
             raise ValueError("runtime_id must be non-empty")
         if type(runtime_generation) is not int or runtime_generation < 1:
@@ -1824,8 +1744,6 @@ class GovernedLifecycleCoordinator:
         population: AuthorityPopulation,
         reason_code: str,
     ) -> LifecycleConvergence:
-        """Revoke the current branch for deletion, compromise, or ownership loss."""
-
         binding = await self._current_or_none(owner_id, agent_id, population)
         if binding is None:
             return LifecycleConvergence(protected=False)
@@ -1847,8 +1765,6 @@ class GovernedLifecycleCoordinator:
         now_ns: int,
         renewal_window_ns: int,
     ) -> LifecycleConvergence:
-        """Renew one active/quiescent lease only inside a bounded due window."""
-
         if type(now_ns) is not int or now_ns < 0:
             raise ValueError("now_ns must be non-negative")
         if type(renewal_window_ns) is not int or renewal_window_ns < 0:

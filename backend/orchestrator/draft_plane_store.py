@@ -1,10 +1,6 @@
-"""AstralPlane-backed compatibility seam for draft-agent orchestration.
-
-The lifecycle and guided-authoring state machines are Deep product policy.  All
-durable draft, identity, ownership, and permission state belongs to Plane.  This
-adapter preserves the small dictionary-shaped surface those state machines use
-while ensuring every mutation is owner-scoped and revision-fenced inside one
-caller-owned Plane transaction.
+"""AstralPlane-backed adapter giving Deep's draft-agent lifecycle and guided-authoring
+state machines their dictionary-shaped surface, keeping every mutation owner-scoped
+and revision-fenced inside one Plane transaction.
 """
 
 from __future__ import annotations
@@ -30,8 +26,6 @@ def _now_ms() -> int:
 
 
 def _stable_target_agent_id(draft_id: str) -> str:
-    """Derive a replay-stable UUID4-shaped target from the immutable draft id."""
-
     digest = hashlib.sha256(
         b"astraldeep.draft-target/v1\0" + draft_id.encode("utf-8")
     ).digest()
@@ -52,8 +46,6 @@ def _canonical_uuid(value: object, field: str) -> str:
 
 
 def draft_record_to_dict(record: DraftAgentRecord) -> dict[str, Any]:
-    """Return the legacy detached mapping without exposing mutable row state."""
-
     if not isinstance(record, DraftAgentRecord):
         raise TypeError("record must be a DraftAgentRecord")
     result = {field.name: getattr(record, field.name) for field in fields(record)}
@@ -63,8 +55,6 @@ def draft_record_to_dict(record: DraftAgentRecord) -> dict[str, Any]:
 
 
 class PlaneDraftStore:
-    """Synchronous typed persistence used only from Deep worker-thread seams."""
-
     def __init__(
         self,
         *,
@@ -210,8 +200,6 @@ class PlaneDraftStore:
         return [draft_record_to_dict(record) for record in records]
 
     def get_decidable_drafts(self, user_id: str) -> list[dict[str, Any]]:
-        """Return the owner's bounded non-live decision inventory."""
-
         with self._runtime.transaction() as transaction:
             records = self._drafts.list_drafts(
                 transaction,
@@ -233,8 +221,6 @@ class PlaneDraftStore:
         )
 
     def list_relaunchable_drafts(self) -> list[dict[str, Any]]:
-        """Return bounded live server-hosted drafts for boot reconciliation."""
-
         with self._runtime.transaction() as transaction:
             records = self._drafts.list_drafts_for_administration(
                 transaction,
@@ -286,8 +272,6 @@ class PlaneDraftStore:
         after_generation_claim_expires_at: datetime | None = None,
         after_draft_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return Plane's bounded DB-time inventory of expired generation claims."""
-
         with self._runtime.transaction() as transaction:
             records = self._drafts.list_expired_generation_claims_for_administration(
                 transaction,
@@ -378,10 +362,7 @@ class PlaneDraftStore:
             log.append({"message": message, "timestamp": _now_ms()})
             generation_log = json.dumps(log)
             if active_claim_id is not None:
-                # Progress logging is evidence about the claimed generation,
-                # not a semantic draft edit. Advancing state_revision here
-                # would invalidate the exact revision fence that must later
-                # terminalize the claim.
+                # Never bump state_revision here: breaks the terminal fence
                 try:
                     self._drafts.replace_generation_log_for_claim(
                         transaction,
@@ -438,14 +419,6 @@ class PlaneDraftStore:
         claim_id: str,
         lease_seconds: int = 300,
     ) -> dict[str, Any] | None:
-        """Renew one exact live generation claim without advancing its revision.
-
-        Long-running model calls may outlive the initial lease.  Plane's
-        database clock is authoritative for both expiry and renewal, and an
-        expired or superseded claim is deliberately returned as a conflict
-        instead of being resurrected by product code.
-        """
-
         try:
             with self._runtime.transaction() as transaction:
                 record = self._drafts.renew_generation_claim(
@@ -468,8 +441,6 @@ class PlaneDraftStore:
         expected_preclaim_revision: int,
         claim_id: str,
     ) -> dict[str, Any] | None:
-        """Resolve the exact live post-claim row after acknowledgement loss."""
-
         with self._runtime.transaction() as transaction:
             record = self._drafts.get_exact_live_generation_claim(
                 transaction,
@@ -489,8 +460,6 @@ class PlaneDraftStore:
         claim_id: str,
         lease_seconds: int = 300,
     ) -> dict[str, Any] | None:
-        """Reselect an expired exact claim and fence the prior worker revision."""
-
         try:
             with self._runtime.transaction() as transaction:
                 record = self._drafts.reclaim_expired_generation_claim(
@@ -545,8 +514,6 @@ class PlaneDraftStore:
         transition_kind: str,
         expected_revision: int,
     ) -> tuple[int, str] | None:
-        """Read one exact prior transition without borrowing an observer fence."""
-
         if (
             not isinstance(draft_id, str)
             or not draft_id
@@ -563,10 +530,6 @@ class PlaneDraftStore:
         except ValueError:
             return None
 
-        # This is deliberately a normal Plane read transaction. The operation
-        # fence that authorized the original mutation remains immutable evidence
-        # on the transition row; a later observer operation need not impersonate
-        # that fence merely to verify the idempotency identity.
         with self._runtime.transaction() as transaction:
             current = self._drafts.get_draft(
                 transaction,
@@ -772,8 +735,6 @@ class PlaneDraftStore:
         }
 
     def set_agent_visibility(self, agent_id: str, is_public: bool) -> bool:
-        """Update visibility under the ownership identity locked in Plane."""
-
         with self._runtime.transaction() as transaction:
             current = self._agents.get_ownership(
                 transaction,
@@ -870,29 +831,12 @@ class PlaneDraftStore:
         *,
         marked_by: str = "system",
     ) -> dict[str, int]:
-        """Remove ownership + policy rows keyed by EXACTLY the given agent ids.
-
-        Every match is by string equality against ``agent_ids`` — never a
-        prefix/suffix pattern — so a runtime id such as ``weather-1`` is
-        untouched when ``weather`` is the target. Repeat-safe: a second run
-        finds no rows and writes nothing. Touches, in one transaction:
-
-        * ``agent_ownership`` — every row for a target id (any owner_email);
-        * ``agent_scopes`` / ``tool_overrides`` / legacy ``tool_permissions`` —
-          every owner's rows for a target id, plus ownerless ``tool_overrides``
-          rows (no scope row to enumerate an owner from);
-        * ``agent_trust`` — Plane exposes no delete verb, so a target row that
-          is currently ``is_safe`` is neutralised to ``False`` (only then, so
-          repeat boots do not rewrite ``marked_at``).
-        """
         targets = sorted({a for a in agent_ids if isinstance(a, str) and a.strip()})
         removed = {"agent_ownership": 0, "policy_rows": 0, "agent_trust_neutralised": 0}
         if not targets:
             return removed
         with self._runtime.transaction() as transaction:
             for agent_id in targets:
-                # Exact-id lookup (agent_id is the ownership key), so the sweep
-                # is independent of table size and never pages past a target.
                 record = self._agents.get_ownership(transaction, agent_id=agent_id)
                 if record is not None:
                     removed["agent_ownership"] += int(
@@ -902,9 +846,7 @@ class PlaneDraftStore:
                             owner_email=record.owner_email,
                         )
                     )
-                # The inventory verb is suffix-based ("...ends with"); using the
-                # full id as the suffix over-matches (e.g. "x-weather"), so the
-                # exact-equality filter below is what authorises each delete.
+                # Suffix match over-matches — exact filter gates the delete
                 owners = self._tool_policy.list_scoped_agent_owners_for_administration(
                     transaction,
                     agent_id_suffix=agent_id,

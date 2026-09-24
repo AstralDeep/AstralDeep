@@ -1,14 +1,8 @@
-"""REST router for scheduled jobs (feature 025, US5/T048).
-
-Manages job definitions: list / inspect (+ run history) / create / pause /
-resume / delete. Create enforces explicit consent, scope-bounding (consented
-scopes ⊆ the user's current scopes), governance (per-user cap + interval
-floor), and timezone-aware next-run computation.
-
-NOTE: unattended *execution* (the scheduler loop + offline-grant mint +
-delegated run) is gated OFF by default pending the T057 security review;
-this router only manages job definitions and run history.
+"""REST router for scheduled-job definitions: list/inspect/create/pause/resume/delete,
+enforcing consent scope-bounding and governance.py's caps via scheduler/store.py. Job
+execution itself lives in scheduler/runner.py and loop.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,9 +31,6 @@ logger = logging.getLogger("Scheduler.API")
 
 schedule_router = APIRouter(prefix="/api/schedule", tags=["Schedule"])
 
-# Canonical scope vocabulary (six entries) — see scheduler/runner.py. The stale
-# four-entry copy that used to live here rejected valid create requests naming
-# tools:files or tools:execute with HTTP 400.
 _VALID_SCOPES = set(_CANONICAL_SCOPES)
 
 
@@ -127,7 +118,6 @@ async def create_job(body: ScheduleCreateRequest, request: Request,
     orch = _orch(request)
     store = _store(request)
 
-    # Scope-bounding: consented scopes can never exceed the user's CURRENT scopes.
     bad = [s for s in body.consented_scopes if s not in _VALID_SCOPES]
     if bad:
         raise HTTPException(status_code=400, detail=f"invalid scopes: {bad}")
@@ -138,7 +128,6 @@ async def create_job(body: ScheduleCreateRequest, request: Request,
             raise HTTPException(status_code=403,
                                 detail=f"consented scopes exceed your current grants: {exceeds}")
 
-    # Governance + schedule validation.
     try:
         active_job_count = await asyncio.to_thread(store.count_active, user_id)
         validate_new_job(
@@ -168,7 +157,7 @@ async def create_job(body: ScheduleCreateRequest, request: Request,
         agent_id=body.agent_id,
         target_chat_id=body.target_chat_id,
         next_run_at=next_run,
-        offline_grant_id=None,  # set by the consent-capture flow (T042)
+        offline_grant_id=None,
     )
     await record_generic(claims=payload, event_class="schedule", action_type="schedule.create",
                          description=f"Created scheduled job '{body.name}'",
@@ -184,8 +173,6 @@ async def run_job_now(
     user_id: str = Depends(require_user_id),
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Materialize one idempotent manual occurrence under scheduler authority."""
-
     if not flags.is_enabled("scheduler_execution"):
         return JSONResponse(
             status_code=409,

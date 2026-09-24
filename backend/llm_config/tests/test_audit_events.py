@@ -1,12 +1,8 @@
-"""T016 (006) + 054 — audit-event helper unit tests.
-
-Verifies that the helpers reject any payload that contains an API key,
-either as a literal ``api_key`` field or as a key-shaped substring in a
-free-form value, and that they emit the right shape via the recorder.
-Feature 054 deltas: the ``scope`` field ("user"|"system"), the
-``discarded_undecryptable`` action, the AIza (Gemini) key pattern, and
-the SYSTEM credential-source label on ``llm_call``.
+"""Tests for llm_config/audit_events.py: the API-key guard rejects literal and
+key-shaped-substring payloads across providers, and each helper emits the right
+recorder shape for every action/scope/credential-source combination.
 """
+
 from __future__ import annotations
 
 from typing import List
@@ -42,19 +38,14 @@ class TestAssertNoApiKey:
         _assert_no_api_key({"action": "created", "base_url": "https://x.example/v1", "model": "m"})
 
     def test_short_strings_starting_with_sk_dash_are_not_flagged(self):
-        # The pattern requires {20,} chars after the prefix to avoid
-        # over-zealous matches on benign words like "sk-test".
         _assert_no_api_key({"note": "sk-test"})
 
     def test_raises_on_google_aiza_key(self):
-        # Feature 054: the Gemini preset means AIza... keys flow through
-        # the dialog — the guard's pattern set includes them.
         with pytest.raises(ValueError, match="API key"):
             _assert_no_api_key(
                 {"description": "key AIzaSyA1234567890abcdefghijk-xyz here"})
 
     def test_raises_on_anthropic_sk_ant_key(self):
-        # sk-ant-... keys match the sk- pattern.
         with pytest.raises(ValueError, match="API key"):
             _assert_no_api_key(
                 {"description": "sk-ant-api03-abcdef1234567890abcdef"})
@@ -90,7 +81,7 @@ class TestRecordLLMConfigChange:
         assert ev.inputs_meta == {
             "action": "created",
             "transport": "ws",
-            "scope": "user",  # feature 054: scope defaults to "user"
+            "scope": "user",
             "base_url": "https://x.example/v1",
             "model": "model-a",
         }
@@ -135,7 +126,7 @@ class TestRecordLLMConfigChange:
                 fake_recorder,
                 actor_user_id="u",
                 auth_principal="u",
-                action="rotated",  # not in the allowed set
+                action="rotated",
                 base_url="x",
                 model="m",
                 transport="ws",
@@ -181,13 +172,12 @@ class TestRecordLLMConfigChange:
                 base_url="x",
                 model="m",
                 transport="ws",
-                scope="global",  # not in {"user", "system"}
+                scope="global",
             )
         assert _captured_events(fake_recorder) == []
 
     @pytest.mark.asyncio
     async def test_discarded_undecryptable_action_allowed(self, fake_recorder):
-        """Feature 054 FR-010: key rotation/corruption ⇒ discard + audit."""
         await record_llm_config_change(
             fake_recorder,
             actor_user_id="u1",
@@ -247,8 +237,6 @@ class TestRecordLLMCall:
 
     @pytest.mark.asyncio
     async def test_system_source_failure_records_error_class(self, fake_recorder):
-        # Feature 054: SYSTEM replaces the retired OPERATOR_DEFAULT for
-        # all new events.
         await record_llm_call(
             fake_recorder,
             actor_user_id="system",
@@ -268,7 +256,6 @@ class TestRecordLLMCall:
 
     @pytest.mark.asyncio
     async def test_system_source_description_label(self, fake_recorder):
-        """The src label vocabulary handles SYSTEM (feature 054)."""
         await record_llm_call(
             fake_recorder,
             actor_user_id="system",

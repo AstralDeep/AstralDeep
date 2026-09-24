@@ -1,40 +1,8 @@
-"""Feature 088 SC-002 — one Send starts one turn, with zero mandatory preflight.
-
-SC-002 reads: automated ordinary-chat and public-research journeys require
-exactly one submission action after valid input, with zero mandatory preflight
-dialogs; effect/publication approval remains separately verified.
-
-This is the server-side pin for that claim. The journeys run through the real
-finite socket ingress (``_serve_ui_frames`` -> bounded enqueue -> PostgreSQL
-admission -> lane dispatch -> ``handle_chat_message``) of the 088 harness, with
-``FF_USER_SKILLS`` ON — the real product posture, which makes the turn depend on
-the human socket read registration captured at ingress. Synthetic here: the
-transport, the provider reply, the tool dispatch, and the conversation
-publication / history / canvas seams — each of which has its own full-path
-qualification, and none of which is what SC-002 claims.
-
-What is pinned:
-
-* one ``chat_message`` frame -> exactly ONE turn start, and a duplicate of the
-  same submission starts no second turn;
-* no ``chrome_render`` / ``chrome_surface`` / approval-proposal frame reaches the
-  client BEFORE the turn starts — no mandatory preflight dialog stands between
-  valid input and the turn;
-* the turn's ordinary gates still run inside that single send — the feature-054
-  LLM preflight, the feature-030 PHI notice, the per-tool permission predicate
-  behind the tool list, and guidance/slash expansion;
-* Send is NOT approval: a consequential effect reached inside an attended turn
-  still produces the durable proposal card and refuses, exactly as the
-  feature-063/076 confirmation gate does on first reach.
-
-The chat journeys stop at the provider seam with a fixed script; nothing here is
-evidence of a model completion, a publication or an external call.
-
-Platform note: the two chat journeys need the guidance catalog's legacy-file
-capture, which opens a directory with ``os.O_DIRECTORY`` — a POSIX-only
-constant. They therefore run on Linux/CI (and in the container) but raise on a
-Windows host, exactly like the neighbouring guidance-ingress suites.
+"""Tests that one Send starts one turn with zero mandatory preflight
+(orchestrator/async_tasks.py, remote_confirmation.py, user_skills.py) over the real
+socket-to-dispatch path, and that a mid-turn effect still needs separate approval.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,8 +30,6 @@ pytestmark = pytest.mark.asyncio
 
 RESEARCH_AGENT = "web-research-1"
 RESEARCH_TOOL = "web_search"
-# Frames that would constitute a mandatory preflight dialog standing between a
-# valid Send and the turn it submits.
 PREFLIGHT_TYPES = {"chrome_render", "chrome_surface", "chrome_modal"}
 
 
@@ -82,7 +48,6 @@ def _tool_call(name=RESEARCH_TOOL, call_id="c1", arguments="{}"):
 
 
 def send(state, **payload):
-    """Post exactly ONE ordinary chat submission on the registered socket."""
     request = str(uuid4())
     state.socket.feed(json.dumps({
         "type": "ui_event", "action": "chat_message",
@@ -99,7 +64,6 @@ async def terminal(state):
 
 
 def _preflight_frames(payloads):
-    """Frames a person would have to act on before their turn could start."""
     found = []
     for value in payloads:
         if value.get("type") in PREFLIGHT_TYPES:
@@ -111,7 +75,6 @@ def _preflight_frames(payloads):
 
 @pytest.fixture
 async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
-    """One registered human socket, ready to submit a single ordinary turn."""
     state, _, _ = metadata
     orch = state.orch
     owner = fixture[1]
@@ -127,7 +90,6 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
     orch._workspace_locks = {}
     orch._chain_budgets = {}
     orch.token_usage = {}
-    # The production default (delimit untrusted tool output, never mutate it).
     orch._datamark_sanitize_spans = False
     orch.task_manager = TaskManager(orch.work_admission)
     orch.async_task_manager = BackgroundTaskManager(orch.work_admission)
@@ -135,9 +97,6 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
                                  plane_repositories=runtime.repositories)
     chat = str(uuid4())
 
-    # Conversation publication, history persistence and canvas delivery each have
-    # their own full-path qualification. This probe creates no commit and no
-    # workspace mutation; it observes the submission-to-turn contract only.
     async def no_stage(*_args, **_kwargs):
         return None, None, None
 
@@ -168,8 +127,6 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
     monkeypatch.setattr(orch, "_send_or_replace_components", AsyncMock(return_value=[]))
     monkeypatch.setattr(orch, "_emit_llm_usage_report", AsyncMock(), raising=False)
 
-    # A registered research provider so the per-tool permission predicate has a
-    # real pair to decide on; its dispatch is scripted, not executed.
     orch.agent_cards[RESEARCH_AGENT] = AgentCard(
         name="Web research", description="public research", agent_id=RESEARCH_AGENT,
         skills=[AgentSkill(name="search", description="search the public web",
@@ -190,9 +147,6 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
 
     monkeypatch.setattr(orch, "handle_chat_message", turn)
 
-    # The feature-054 preflight's own refusal behaviour is qualified by its
-    # suite; this harness's Orchestrator carries no credential store, so the
-    # seam is recorded to prove the gate is REACHED inside the single send.
     async def resolve(websocket, *_args, **_kwargs):
         observed.llm_preflight.append(websocket)
         return SimpleNamespace(client=None)
@@ -228,7 +182,6 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
 
 
 def _script(observed, replies):
-    """Bind the provider and dispatch seams to a fixed script; no external call."""
     remaining = list(replies)
 
     async def call_llm(websocket, messages, tools_desc=None, temperature=None,
@@ -257,12 +210,9 @@ async def test_one_ordinary_send_starts_one_turn_with_no_preflight_dialog(journe
 
     assert result["state"] == "completed"
     assert result["request_generation"] == generation
-    # Exactly one submission action produced exactly one turn.
     assert journey.turn_starts == ["what is on my plate today?"]
-    # Nothing a person had to dismiss stood between Send and that turn.
     assert journey.preflight_at_start == [[]]
     assert not _preflight_frames(state.socket.payloads())
-    # ...and the ordinary gates all still ran inside that single send.
     assert len(journey.llm_preflight) == 1, "feature-054 LLM preflight must still gate"
     assert journey.phi and journey.phi[0][2] == "what is on my plate today?", (
         "feature-030 PHI notice must still see the turn's saved text")
@@ -290,9 +240,7 @@ async def test_one_research_send_starts_one_turn_with_no_preflight_dialog(journe
     assert journey.turn_starts == [ask], "research needs no second submission"
     assert journey.preflight_at_start == [[]]
     assert not _preflight_frames(state.socket.payloads())
-    # The research tool was reached from inside the same single send...
     assert len(journey.tool_dispatches) == 1
-    # ...through the ordinary gates, not around them.
     assert len(journey.llm_preflight) == 1
     assert journey.phi and journey.phi[0][2] == ask
     assert journey.expansions == [ask]
@@ -300,7 +248,6 @@ async def test_one_research_send_starts_one_turn_with_no_preflight_dialog(journe
 
 
 async def test_duplicate_submission_of_the_same_input_starts_no_second_turn(journey):
-    """One Send is enough AND is all that is honoured — the twin is not a turn."""
     state = journey.state
     _script(journey, [_assistant(content="Here is the answer.")])
     await registered(state)
@@ -318,12 +265,7 @@ async def test_duplicate_submission_of_the_same_input_starts_no_second_turn(jour
     assert not _preflight_frames(state.socket.payloads())
 
 
-# ── Send is not approval: the consequential effect still needs its own card ────
-
-
 class _Rows:
-    """Mutable state owned by the in-memory typed proposal repositories."""
-
     def __init__(self):
         self.rows: dict = {}
 
@@ -339,7 +281,6 @@ def _confirmation_orchestrator(db):
 
 
 async def test_send_does_not_approve_a_consequential_effect_reached_in_the_turn():
-    """SC-002's carve-out: approval stays separate from submission."""
     db = _Rows()
     orch = _confirmation_orchestrator(db)
     args = {"machine_id": "m", "path": "/data", "recursive": True}

@@ -1,8 +1,8 @@
-"""``python -m astral_sdk ...`` run as a REAL separate OS process against the
-local fake server — this is the exact invocation shape
-``backend/tests/test_framework_conformance_088.py`` uses against the real
-Deep server.
+"""Tests for astral_sdk.__main__: python -m astral_sdk run as a real subprocess against
+the local fake server, the same invocation shape
+backend/tests/test_framework_conformance_088.py uses against the real server.
 """
+
 from __future__ import annotations
 
 import json

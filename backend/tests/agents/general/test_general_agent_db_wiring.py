@@ -1,4 +1,6 @@
-"""General Agent reuses one explicitly injected AstralPlane runtime."""
+"""Tests that agents/general/general_agent.py reuses one explicitly injected AstralPlane
+runtime for file_tools, and refuses to construct when Plane dependencies are missing.
+"""
 
 import sys
 from pathlib import Path

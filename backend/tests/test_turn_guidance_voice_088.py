@@ -1,9 +1,8 @@
-"""Proof-admitted local/remote voice guidance over actual current Plane rows.
-
-Only the guidance boundary is exercised: real recognition/proof or local
-registry, operation admission and message acceptance precede a catalog read.
-No microphone, external issuer, model or speech worker is contacted.
+"""Tests for proof-admitted voice guidance in orchestrator/turn_guidance_authority.py
+over real Plane rows: only current original authority is read, the database clock
+governs expiry, and a reversed writer refuses without deadlocking.
 """
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -198,8 +197,6 @@ async def test_voice_reverse_order_writer_refuses_promptly_then_recovers(
                     with pytest.raises(AssignmentError):
                         await module.acquire_turn_guidance_reader(expected_orchestrator=state.orch,
                             websocket=state.socket,chat_id=binding.chat_id)
-                # The reader must release its session lock after refusal. A
-                # normal turn→session writer can finish without a deadlock.
                 runtime.repositories.history.sessions.bound_request_execution_waits(writer)
                 writer.fetch_one('SELECT session_id FROM voice_session WHERE session_id=%s FOR UPDATE', (binding.voice.turn.session_id,))
             reader = await module.acquire_turn_guidance_reader(expected_orchestrator=state.orch,

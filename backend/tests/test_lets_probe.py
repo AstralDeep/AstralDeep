@@ -1,9 +1,6 @@
-"""Bounded, cached LETS warden reachability probe (``orchestrator.lets_probe``).
-
-Pins: success / failure / timeout map to readiness states with the probe time
-as ``observed_at_ns``; the cache honors its TTL and forces; a slow warden
-never blocks a caller longer than the wait bound; the interval knob is
-validated; nothing from the probe path is ever a value.
+"""Tests for orchestrator/lets_probe.py: success/failure/timeout map to readiness states
+stamped with probe time, the TTL/force cache, a bounded wait so a slow warden never
+blocks a caller, and no secret ever surfaces.
 """
 
 from __future__ import annotations
@@ -125,8 +122,6 @@ def test_slow_warden_never_blocks_past_the_wait_bound_and_late_answer_lands() ->
 
     probe = _probe(slow, clock, wait_seconds=0.1)
     observation = probe.refresh_if_due()
-    # Timed out inside the bound: honest retryable unavailable, cache marked
-    # checked so repeated callers do not spawn a second in-flight probe.
     assert observation is not None
     assert observation.status == "unavailable"
     assert observation.retryable is True

@@ -1,4 +1,7 @@
-"""Deep attachment identity behavior at Plane's streaming capability boundary."""
+"""Tests for orchestrator/attachments/blob_access.py: canonical owner-fenced metadata
+keys, locator-drift and invalid-metadata fail-closed handling, and blob-store
+resolution precedence between injection and app composition.
+"""
 
 from __future__ import annotations
 
@@ -35,8 +38,6 @@ class _Reader:
 
 
 class _RecordingBlobs:
-    """Explicit fake for Deep's argument mapping, not Plane storage mechanics."""
-
     def __init__(self, payload: bytes = b"trusted parser input") -> None:
         self.payload = payload
         self.reader_calls: list[dict[str, object]] = []

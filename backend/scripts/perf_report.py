@@ -1,9 +1,6 @@
-"""Summarize perf_span log lines into per-span P50/P95 (feature 052, T003).
-
-Reads log text from stdin or the files given as arguments, extracts lines of
-the form ``perf <name> duration_ms=<int> ...``, and prints count/P50/P95/max
-per span name. Used by the measurement protocol in
-specs/052-perf-comment-hygiene/quickstart.md.
+"""Aggregates `perf <name> duration_ms=<int> ...` log lines from stdin or files into
+per-span count/P50/P95/max; CLI counterpart to shared/perf.py's perf_span(), run
+manually per the measurement protocol.
 """
 
 import fileinput
@@ -15,7 +12,6 @@ _LINE = re.compile(r"perf (\S+) duration_ms=(\d+)")
 
 
 def percentile(sorted_values, fraction):
-    """Nearest-rank percentile of an already-sorted list."""
     if not sorted_values:
         return 0
     rank = max(0, min(len(sorted_values) - 1, round(fraction * (len(sorted_values) - 1))))
@@ -23,7 +19,6 @@ def percentile(sorted_values, fraction):
 
 
 def main():
-    """Aggregate perf lines from stdin/args and print a per-span summary table."""
     spans = defaultdict(list)
     for line in fileinput.input():
         match = _LINE.search(line)

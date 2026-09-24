@@ -1,4 +1,7 @@
-"""Closed manual-owner wake request semantics; no route or dispatch exposure."""
+"""Tests for the closed manual-owner wake request contract
+(backend/orchestrator/work_submit.py): field validation and rejection of untrusted
+event or authority fields.
+"""
 
 import importlib
 from uuid import uuid4

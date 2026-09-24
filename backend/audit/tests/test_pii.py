@@ -1,4 +1,8 @@
-"""Pure unit tests for the PII helpers — no DB required."""
+"""Tests for audit/pii.py and audit/schemas.py: extension normalization,
+filename/payload stripping, HMAC digest determinism, and AuditEventCreate's rejection
+of oversize or payload-shaped input.
+"""
+
 from __future__ import annotations
 
 import os
@@ -18,9 +22,7 @@ def test_normalize_extension_rejects_pathological_inputs():
     assert normalize_extension("") is None
     assert normalize_extension(None) is None
     assert normalize_extension("no_dot") is None or len(normalize_extension("no_dot") or "") <= 16
-    # 17+ chars: rejected
     assert normalize_extension("file." + "a" * 17) is None
-    # Punctuation: rejected
     assert normalize_extension("file.tar.gz!") is None
 
 
@@ -44,7 +46,7 @@ def test_strip_filename_drops_filename_keys_and_payload_keys():
 def test_strip_filename_handles_non_dict_input():
     from audit.pii import strip_filename
     assert strip_filename(None) == {}  # type: ignore[arg-type]
-    assert strip_filename([]) == {}    # type: ignore[arg-type]
+    assert strip_filename([]) == {}  # type: ignore[arg-type]
 
 
 def test_hmac_digest_is_deterministic_per_key():
@@ -55,7 +57,6 @@ def test_hmac_digest_is_deterministic_per_key():
 
 
 def test_hmac_digest_changes_with_key():
-    """Different key_ids produce different digests, even for the same input."""
     from audit.pii import hmac_digest
     os.environ["AUDIT_HMAC_SECRET_KX"] = "alternate-secret-for-test"
     a, _ = hmac_digest(b"same", key_id="k1")
@@ -70,7 +71,6 @@ def test_hmac_digest_rejects_non_bytes():
 
 
 def test_audit_event_create_drops_payload_shaped_fields():
-    """FR-004 final safety net at the schema layer."""
     from datetime import datetime, timezone
     from audit.schemas import AuditEventCreate
 

@@ -1,13 +1,7 @@
-"""Feature 057 — the baked agent-constitution copy must match the specs source.
-
-The runtime Analyze gate reads ``backend/agent_constitution/agent_constitution.md``
-(baked into the image); the authoritative source is
-``specs/057-byo-client-agents/agent-constitution.md``. They MUST be byte-identical.
-
-The ``specs/`` copy is NOT present in the runtime image (Dockerfile bakes only
-``backend/``), so this test skips when the source is absent (in-image pytest) and
-enforces identity on host / CI checkout, where both exist.
+"""Confirms the baked backend/agent_constitution/agent_constitution.md matches the specs
+source byte for byte, skipping when the specs copy is absent from the runtime image.
 """
+
 from __future__ import annotations
 
 import os

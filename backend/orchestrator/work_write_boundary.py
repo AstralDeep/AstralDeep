@@ -1,4 +1,8 @@
-"""Shared private Work request snapshots and bounded raw-body framing."""
+"""Freezes transport state and bounds/validates raw request bytes shared by every Work
+write route, before any route authenticates or a cookie can change. Used by
+work_api.py, work_admission_api.py, and work_control_authority.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +18,6 @@ BODY_SECONDS = 15
 
 
 def freeze_work_request(request: Request) -> Request:
-    """Copy transport selection before awaits, discarding unverified state/cache."""
     try:
         if not isinstance(request, Request):
             raise ValueError
@@ -40,7 +43,6 @@ def freeze_work_request(request: Request) -> Request:
 
 
 def work_content_length(request: Request) -> int | None:
-    """Reject ambiguous or excessive framing before consuming a raw stream."""
     lengths = request.headers.getlist("content-length")
     if len(lengths) > 1 or (
         lengths and re.fullmatch(r"[0-9]{1,10}", lengths[0]) is None
@@ -55,13 +57,12 @@ def work_content_length(request: Request) -> int | None:
 
 
 async def read_work_body(request: Request, expected: int | None, *, seconds=BODY_SECONDS) -> bytes:
-    """Bound bytes/time on raw ASGI frames; preserve the admission wire policy."""
     data = bytearray()
     try:
         async with asyncio.timeout(seconds):
             while True:
                 message = await request.receive()
-                # Yield even for empty frames; an eager peer cannot starve timeout.
+                # Yield even when empty, or an eager peer starves the timeout
                 await asyncio.sleep(0)
                 if type(message) is not dict:
                     raise AssignmentError("work_body_invalid", 400)
@@ -85,12 +86,6 @@ async def read_work_body(request: Request, expected: int | None, *, seconds=BODY
 
 
 async def cache_work_write_body(request: Request) -> None:
-    """Bound and validate JSON before FastAPI parses a control request model.
-
-    The route must freeze and authenticate first so cookie issuance cannot change
-    during the receive wait. Admission retains its existing later intent parser;
-    only control writes use this duplicate-key/finite-number preparse.
-    """
     raw = await read_work_body(request, work_content_length(request), seconds=BODY_SECONDS)
 
     def pairs(items):
@@ -113,7 +108,6 @@ async def cache_work_write_body(request: Request) -> None:
     try:
         parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
                             parse_float=number, parse_constant=constant)
-        # JSON escapes can spell lone surrogates even in a valid UTF-8 stream.
         json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (ValueError, UnicodeError, RecursionError):
         raise AssignmentError("work_body_invalid", 400) from None

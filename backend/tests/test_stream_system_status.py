@@ -1,17 +1,9 @@
+"""Tests for legacy streamable system-status tools in orchestrator/orchestrator.py:
+_build_agent_card injects a default streaming_kind for dict-form tools while
+preserving explicit push metadata, and source params tag only the top-level
+component.
 """
-Regression tests for the 2026-04-13 system-status streaming bugs
-(001-tool-stream-ui).
 
-Covers:
-1. Legacy ``streamable: {dict}`` tools (get_system_status, get_cpu_info,
-   get_memory_info, get_disk_info) register successfully. Before the fix
-   they were rejected at RegisterAgent because validate_streaming_metadata
-   required an explicit ``streaming_kind``.
-2. ``_build_agent_card`` injects a default ``streaming_kind: "poll"`` on the
-   skill metadata for legacy dict form.
-3. ``_build_agent_card`` preserves push-form metadata unchanged when the tool
-   declares ``metadata.streaming_kind = "push"``.
-"""
 import os
 import sys
 
@@ -26,14 +18,11 @@ class _StubMCPServer:
     def __init__(self, tools):
         self.tools = tools
 
-    def process_request(self, request):  # pragma: no cover - not exercised here
+    def process_request(self, request):  # pragma: no cover
         raise NotImplementedError
 
 
 class _StubAgent(BaseA2AAgent):
-    """Minimal concrete BaseA2AAgent so we can exercise _build_agent_card in
-    isolation without needing real MCP servers or WebSocket plumbing."""
-
     def __init__(self, tools):
         self.mcp_server = _StubMCPServer(tools)
         self.service_name = "stub"
@@ -43,7 +32,6 @@ class _StubAgent(BaseA2AAgent):
         self.host = "localhost"
         self.port = 9999
         self.card_metadata = {}
-        # _build_agent_card reads _public_key_jwk
         self._public_key_jwk = {"kty": "EC", "crv": "P-256", "x": "", "y": ""}
 
 
@@ -62,9 +50,6 @@ def _noop():  # pragma: no cover
 
 
 class TestLegacyStreamableRegistration:
-    """Confirm legacy poll-form streamable tools are no longer rejected at
-    validation time after the _build_agent_card default."""
-
     def test_legacy_poll_tool_passes_validator(self):
         agent = _StubAgent({
             "get_system_status": _tool(
@@ -74,9 +59,8 @@ class TestLegacyStreamableRegistration:
         })
         card = agent._build_agent_card()
         skill = next(s for s in card.skills if s.id == "get_system_status")
-        # Fix injects the default kind so validator accepts the metadata.
         assert skill.metadata.get("streaming_kind") == "poll"
-        validate_streaming_metadata(skill.metadata)  # raises on failure
+        validate_streaming_metadata(skill.metadata)
 
     def test_push_tool_metadata_unchanged(self):
         agent = _StubAgent({
@@ -98,8 +82,6 @@ class TestLegacyStreamableRegistration:
         validate_streaming_metadata(skill.metadata)
 
     def test_explicit_kind_wins_over_legacy_default(self):
-        """If a tool has BOTH `streamable: {dict}` AND `metadata.streaming_kind`,
-        the explicit kind from the metadata dict must win."""
         agent = _StubAgent({
             "weird_tool": _tool(
                 _noop,
@@ -114,17 +96,8 @@ class TestLegacyStreamableRegistration:
 
 
 class TestOrchestratorSourceParamsTagging:
-    """The frontend auto-subscribe path reads `_source_params` off the first
-    rendered component to replay the same arguments when the stream starts.
-    Confirm the orchestrator's _tag_source helper stores them on the top-level
-    component only (not recursively — children would bloat the payload)."""
-
     def test_source_params_tagged_top_level_only(self):
         from orchestrator.orchestrator import Orchestrator  # noqa: F401
-        # The _tag_source helper is defined inline in handle_chat_message;
-        # we reproduce its contract here via a surface test: when a component
-        # with nested children is tagged, the children receive _source_tool
-        # but not _source_params.
         def _tag_source(comp, agent_id, tool_name, tool_params=None):
             if not isinstance(comp, dict):
                 return
@@ -149,7 +122,6 @@ class TestOrchestratorSourceParamsTagging:
                     tool_params={"interval_s": 5})
         assert comp["_source_params"] == {"interval_s": 5}
         assert comp["_source_tool"] == "live_system_metrics"
-        # Children tagged with tool/agent but NOT params (to keep payload small).
         for child in comp["content"]:
             assert child["_source_tool"] == "live_system_metrics"
             assert "_source_params" not in child

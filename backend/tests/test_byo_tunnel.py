@@ -1,6 +1,8 @@
-"""Feature 058 — user-agent Mode-1 tunnel: owner-bound registration, outbound
-frame wrap, honest-offline on disconnect. Exercises the whole server-side tunnel
-path with a fake UI socket (only the real Windows host needs a live client)."""
+"""Tests for the BYO Mode-1 tunnel (backend/orchestrator/orchestrator.py): owner-bound
+registration, outbound frame wrapping, honest-offline on disconnect, the ingress cap,
+host-only delivery, and soft delete.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,12 +26,10 @@ from shared.protocol import AgentCard, AgentSkill, RegisterAgent  # noqa: E402
 
 
 async def _t(fn, *a, **k):
-    """Run a synchronous (DB-touching) helper off the event loop (052)."""
     return await asyncio.to_thread(fn, *a, **k)
 
 
 def _isolated_mock_identity(prefix: str) -> tuple[str, str]:
-    """Build a unique mock-auth subject without touching ``test_user``."""
     user_id = f"{prefix}-{uuid.uuid4().hex}"
     claims = {
         "sub": user_id,
@@ -47,8 +47,6 @@ def _isolated_mock_identity(prefix: str) -> tuple[str, str]:
 
 
 class FakeUI:
-    """A UI websocket that captures frames the orchestrator sends to the client."""
-
     def __init__(self):
         self.sent = []
 
@@ -82,7 +80,6 @@ def tunnel_ids():
 
 
 async def _soft_tombstone_agent(orch, ids):
-    """Retire only this fixture's unique user-agent identity through Plane."""
     registry = orch.user_agent_registry
     row = await _t(ua.get_user_agent, registry, ids.agent_id)
     if row is not None and row.get("deleted_at") is None:
@@ -138,12 +135,12 @@ async def test_owner_tunnel_registers_and_goes_live(orch, tunnel_ids):
         orch.user_agent_registry,
         tunnel_ids.agent_id,
     )
-    assert row["status"] == "live"           # go_live ran
+    assert row["status"] == "live"
     own = await _t(
         orch.user_agent_registry.get_agent_ownership,
         tunnel_ids.agent_id,
     )
-    assert own is not None and bool(own["is_public"]) is False   # private companion row
+    assert own is not None and bool(own["is_public"]) is False
 
 
 async def test_foreign_owner_registration_refused(orch, tunnel_ids):
@@ -170,7 +167,7 @@ async def test_offline_on_disconnect_yields_honest_offline(orch, tunnel_ids):
     orch.ui_sessions[ws] = {"sub": tunnel_ids.owner}
     await _tunnel(orch, ws, _reg_frame(tunnel_ids.agent_id), tunnel_ids)
     assert tunnel_ids.agent_id in orch.agents
-    await orch._teardown_owner_tunnels(ws)   # client disconnects
+    await orch._teardown_owner_tunnels(ws)
     assert tunnel_ids.agent_id not in orch.agents
     resp = await orch._dispatch_tool_call(
         tunnel_ids.agent_id,
@@ -191,8 +188,6 @@ async def test_flag_off_tunnel_is_inert(orch, monkeypatch, tunnel_ids):
 
 
 async def test_no_delegation_token_handed_to_tunnel_agent(orch, tunnel_ids):
-    # T014: a user-hosted (tunnel) agent is untrusted — the delegation-token
-    # bytes are never attached to its dispatch args; the boundary re-authorizes.
     ws = FakeUI()
     orch.ui_sessions[ws] = {"sub": tunnel_ids.owner, "_raw_token": "tok"}
     await _tunnel(orch, ws, _reg_frame(tunnel_ids.agent_id), tunnel_ids)
@@ -222,24 +217,19 @@ async def test_per_owner_ingress_cap_isolates_a_flooding_owner(
     monkeypatch,
     tunnel_ids,
 ):
-    # T013 (FR-017/SC-008): a flooding owner is capped after the window budget;
-    # a different owner has an independent budget and is unaffected.
     monkeypatch.setattr(type(orch), "_TUNNEL_MAX_FRAMES_PER_WINDOW", 5)
     over = [orch._tunnel_ingress_over_cap(tunnel_ids.owner) for _ in range(8)]
-    assert over[:5] == [False] * 5            # first 5 within budget
-    assert all(over[5:])                       # 6th+ dropped (over cap)
+    assert over[:5] == [False] * 5
+    assert all(over[5:])
     assert orch._tunnel_ingress_over_cap(tunnel_ids.foreign) is False
 
 
 def _as_host(orch, ws, session):
-    """Mark a UI socket as a desktop AGENT HOST (what register_ui does when the
-    client declares ``agent_host``)."""
     orch._agent_host_sockets[id(ws)] = session
     return ws
 
 
 async def test_deliver_bundle_to_owner_host(orch, tunnel_ids):
-    # T006: bundle is pushed to the owner's desktop host over its UI socket.
     ws = _as_host(orch, FakeUI(), tunnel_ids.host_session_id)
     orch.ui_sessions[ws] = {"sub": tunnel_ids.owner}
     orch.ui_clients.append(ws)
@@ -250,13 +240,10 @@ async def test_deliver_bundle_to_owner_host(orch, tunnel_ids):
         "0.1.0",
     )
     assert n == 1
-    # The delivery frame is present (an audit_append metadata frame may follow it
-    # now that delivery is audited — find the bundle frame by type, not position).
     frames = [json.loads(f) for f in ws.sent]
     env = next(f for f in frames if f["type"] == "agent_bundle_deliver")
     assert env["agent_id"] == tunnel_ids.agent_id
     assert env["files"] == {"greeter_agent.py": "code"} and env["constitution_version"] == "0.1.0"
-    # No host online for a different owner → delivered to 0 sockets.
     assert await orch.deliver_agent_bundle(
         tunnel_ids.foreign,
         tunnel_ids.agent_id,
@@ -266,16 +253,11 @@ async def test_deliver_bundle_to_owner_host(orch, tunnel_ids):
 
 
 async def test_bundle_is_never_pushed_to_a_browser_tab(orch, tunnel_ids):
-    """A browser tab cannot run a child process. Counting it as 'delivered' both
-    lied to the user and sprayed their generated code into the browser."""
-    tab = FakeUI()                      # a plain UI socket — NOT a desktop host
+    tab = FakeUI()
     orch.ui_sessions[tab] = {"sub": tunnel_ids.owner}
     orch.ui_clients.append(tab)
 
     def _code_frames(sock):
-        # The security guarantee is that no CODE bundle reaches the tab. A delivery
-        # is audited, and an audit_append metadata frame legitimately fans out to
-        # the owner's UI sockets (incl. the tab) — that is not the user's code.
         return [f for f in sock.sent
                 if json.loads(f)["type"] == "agent_bundle_deliver"]
 
@@ -285,8 +267,8 @@ async def test_bundle_is_never_pushed_to_a_browser_tab(orch, tunnel_ids):
         {"mcp_tools.py": "secret code"},
         "0.1.0",
     )
-    assert n == 0                        # honest 'no_host'
-    assert _code_frames(tab) == []       # and no code went to the tab
+    assert n == 0
+    assert _code_frames(tab) == []
 
     host = _as_host(orch, FakeUI(), tunnel_ids.host_session_id)
     orch.ui_sessions[host] = {"sub": tunnel_ids.owner}
@@ -297,12 +279,11 @@ async def test_bundle_is_never_pushed_to_a_browser_tab(orch, tunnel_ids):
         {"mcp_tools.py": "c"},
         "0.1.0",
     ) == 1
-    assert _code_frames(tab) == []       # still no code to the tab
-    assert len(_code_frames(host)) == 1  # the host got the bundle
+    assert _code_frames(tab) == []
+    assert len(_code_frames(host)) == 1
 
 
 async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids):
-    """The host capability is an EXPLICIT, additive register_ui declaration."""
     import asyncio as _asyncio
     import uuid as _uuid
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
@@ -333,7 +314,7 @@ async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids):
     try:
         await _t(o._llm_store.set_sync, user_id, provider="custom",
                  base_url="http://t.invalid/v1", model="m", api_key="k")
-        tab = await _register()                               # a browser tab
+        tab = await _register()
         host = await _register(
             agent_host=True,
             host_session_id=tunnel_ids.host_session_id,
@@ -349,7 +330,6 @@ async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids):
 
 
 async def test_delete_user_agent_soft_deletes_and_stops_host(orch, tunnel_ids):
-    # T028/FR-027: soft delete — stop host, drop routing, retain row + audit.
     ws = FakeUI()
     orch.ui_sessions[ws] = {"sub": tunnel_ids.owner}
     await _tunnel(orch, ws, _reg_frame(tunnel_ids.agent_id), tunnel_ids)
@@ -366,9 +346,8 @@ async def test_delete_user_agent_soft_deletes_and_stops_host(orch, tunnel_ids):
         orch.user_agent_registry,
         tunnel_ids.agent_id,
     )
-    assert row["status"] == "disabled" and row["deleted_at"] is not None   # soft-deleted, retained
-    assert any(json.loads(f).get("type") == "agent_stop" for f in ws.sent)  # host told to stop
-    # A different user cannot delete it.
+    assert row["status"] == "disabled" and row["deleted_at"] is not None
+    assert any(json.loads(f).get("type") == "agent_stop" for f in ws.sent)
     assert await orch.delete_user_agent(
         tunnel_ids.foreign,
         tunnel_ids.agent_id,
@@ -376,7 +355,6 @@ async def test_delete_user_agent_soft_deletes_and_stops_host(orch, tunnel_ids):
 
 
 async def test_list_owner_agents_excludes_foreign_and_deleted(orch, tunnel_ids):
-    # T026 data path: list returns only the owner's non-deleted agents.
     ws = FakeUI()
     orch.ui_sessions[ws] = {"sub": tunnel_ids.owner}
     await _tunnel(orch, ws, _reg_frame(tunnel_ids.agent_id), tunnel_ids)

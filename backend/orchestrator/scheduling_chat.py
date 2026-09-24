@@ -1,23 +1,9 @@
-"""Feature 030 — scheduling recurring work from chat.
-
-The 030 walkthrough found that asking for recurring work ("Every Monday,
-compile new publications into a digest") was flatly DENIED by the chat LLM
-("I cannot schedule recurring background tasks") even though feature-025
-scheduled jobs exist — they were only reachable through Settings →
-Personalization → Schedule, invisible from the conversation.
-
-This module makes scheduling reachable from chat with the same consent
-posture as the REST API (``scheduler/api.py`` hard-requires explicit
-consent): the LLM calls the ``schedule_recurring_task`` meta-tool, the
-handler VALIDATES the proposal through the existing governance/cron path and
-replies with a consent card — nothing is created until the user clicks
-"Create schedule" (the explicit grant), which routes through
-``handle_decision`` with the exact scope-bounding rules of the REST flow.
-
-Pattern mirrors feature 027 (``agentic_creation``): a pseudo-agent id keeps
-the meta-tool outside every real-agent permission/credential gate, and the
-decision card updates over ``send_ui_render(target="chat")``.
+"""Exposes recurring-job scheduling as a chat meta-tool: the LLM proposes via
+schedule_recurring_task, validation reuses scheduler/governance.py and cron.py, and
+nothing is created until the user's explicit consent card is approved via
+handle_decision.
 """
+
 import asyncio
 import logging
 import math
@@ -33,8 +19,6 @@ logger = logging.getLogger("Orchestrator.SchedulingChat")
 
 META_AGENT_ID = "__scheduler__"
 
-#: Consent cards die with the proposal cache (in-memory, no schema): after
-#: this many seconds an un-actioned proposal is refused and must be re-asked.
 PROPOSAL_TTL_S = 900
 
 _VALID_KINDS = ("one_shot", "interval", "cron")
@@ -54,7 +38,6 @@ RECURRING / SCHEDULED WORK (schedule_recurring_task):
 
 
 def meta_tool_definitions() -> List[Dict[str, Any]]:
-    """OpenAI-style tool definition for the scheduling meta-tool."""
     return [
         {
             "type": "function",
@@ -84,7 +67,6 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
 
 
 def should_inject(draft_agent_id: Optional[str]) -> bool:
-    """Offered on normal chat turns only — same exclusions as feature 027."""
     return flags.is_enabled("scheduling_chat") and not draft_agent_id
 
 
@@ -92,7 +74,6 @@ async def _audit(user_id: str, action_type: str, description: str,
                  correlation_id: str, outcome: str = "success",
                  chat_id: Optional[str] = None,
                  inputs_meta: Optional[Dict] = None) -> None:
-    """Record a ``schedule`` audit event (best-effort, never raises)."""
     try:
         from datetime import datetime, timezone
 
@@ -118,15 +99,12 @@ async def _audit(user_id: str, action_type: str, description: str,
 
 
 def _proposals(orch) -> Dict[str, Dict[str, Any]]:
-    """Lazy per-process proposal cache: proposal_id -> validated args."""
     if not hasattr(orch, "_schedule_proposals"):
         orch._schedule_proposals = {}
     return orch._schedule_proposals
 
 
 def _scheduler_store(orch):
-    """Bind scheduling policy to the one application Plane runtime."""
-
     from scheduler.store import ScheduledJobStore
 
     injected = getattr(orch, "scheduled_job_store", None)
@@ -141,7 +119,6 @@ def _scheduler_store(orch):
 
 
 def human_cadence(schedule_kind: str, schedule_expr: str, tz: str) -> str:
-    """Plain-language cadence line for the consent card."""
     if schedule_kind == "interval":
         return f"every {schedule_expr} ({tz})"
     if schedule_kind == "cron":
@@ -150,13 +127,6 @@ def human_cadence(schedule_kind: str, schedule_expr: str, tz: str) -> str:
 
 
 def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
-    """Server-side validation of the LLM-supplied proposal.
-
-    Returns (cleaned_args, next_run_ms) or raises ValueError with a
-    user-readable message. Reuses the EXACT governance/cron validators the
-    REST create path uses (``scheduler/api.py``) so chat cannot schedule
-    anything the API would refuse.
-    """
     from agentic_settings import (SCHEDULE_MAX_ACTIVE_JOBS_PER_USER,
                                   SCHEDULE_MIN_INTERVAL_SECONDS)
     from scheduler.cron import ScheduleError, compute_next_run_ms
@@ -201,8 +171,6 @@ def _validate_proposal(orch, user_id: str, args: Dict[str, Any]):
 
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: str, chat_id: Optional[str], websocket):
-    """Dispatch the scheduling meta-tool: validate, cache a proposal, return
-    the consent card. Nothing is persisted until the user approves."""
     from shared.protocol import MCPResponse
 
     if tool_name != "schedule_recurring_task":
@@ -232,9 +200,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                   "you currently grant it)." if cleaned["agent_id"]
                   else "Runs as a normal assistant turn that may use whichever of "
                        "your enabled agents' tools the request needs.")
-    # 056 US2 (FR-011): approving this card creates DURABLE consent, so the card
-    # must state exactly what is being granted, that it persists, and how to
-    # revoke it. No durable consent is ever created without this explicit step.
     card_content = [
         Text(content=cleaned["instruction"]),
         Text(content=(f"Runs {human_cadence(cleaned['schedule_kind'], cleaned['schedule_expr'], cleaned['timezone'])}. "
@@ -242,14 +207,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                       "Nothing is scheduled until you approve."),
              variant="caption"),
     ]
-    # EFFECTIVE scopes (see the matching note at the capture step below):
-    # a raw agent_scopes read reports nothing for a safe-baseline user, so
-    # this card used to promise "no scopes yet" to someone whose tools run
-    # fine — misdescribing the very grant it is asking them to approve.
-    # An agent-less job is NOT exempt: every machine turn needs a grant
-    # (MachineTurnAuthority.derive is agent-independent), and its tool calls
-    # route across all of the user's enabled agents, so the card names that
-    # union rather than pretending the run has no tools.
     granting = await _consented_scopes_for(orch, user_id, cleaned["agent_id"] or None)
     subject = (f"**{cleaned['agent_id']}**" if cleaned["agent_id"]
                else "this job (any of your enabled agents' tools)")
@@ -281,20 +238,6 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
 
 async def _consented_scopes_for(orch, user_id: str,
                                 agent_id: Optional[str]) -> List[str]:
-    """EFFECTIVE scopes a schedule consent covers (card + capture).
-
-    Agent-bound: ``get_enabled_scope_names`` for that agent — exactly as
-    before (a derivation error propagates and no job is created). Agent-less:
-    the union of the same over every agent chat may offer this user
-    (:func:`orchestrator.tool_visibility.enabled_scope_union`, shared with
-    ``MachineTurnAuthority.derive``), because the run is an ordinary assistant
-    turn whose tool calls route across all of them — MINUS the mutating scopes
-    the unattended scheduler refuses to run (``tools:write``/``tools:execute``,
-    ``scheduler.runner._UNREVIEWED_MUTATING_SCOPES``): consenting to them
-    would make ``assess_job`` mark the job ineligible and silently never
-    materialise it, while narrowing consent is always safe (FR-012). The
-    union fails closed to ``[]``.
-    """
     if agent_id:
         names = await asyncio.to_thread(
             orch.tool_permissions.get_enabled_scope_names, user_id, agent_id)
@@ -311,17 +254,6 @@ async def _consented_scopes_for(orch, user_id: str,
 
 async def _capture_consent(orch, user_id: str, agent_id: Optional[str],
                           consented: List[str], *, selected_session=None):
-    """Prepare the consent that will commit atomically with its job (056 FR-011).
-
-    ``agent_id`` is ``None`` for an agent-less job: the grant is user-wide
-    (``OfflineGrantStore.capture`` accepts that) and ``consented`` is the
-    union across the user's enabled agents.
-
-    Resolve and encrypt the approving socket's exact server-selected session.
-    This preparation writes nothing. SchedulerStore rechecks the same consent
-    and socket registration around the single grant-plus-job transaction.
-    Absent qualified consent produces a job without unattended authority.
-    """
     try:
         from orchestrator.session_consent import ConsentSession
         if not isinstance(selected_session, ConsentSession):
@@ -333,18 +265,11 @@ async def _capture_consent(orch, user_id: str, agent_id: Optional[str],
         return await asyncio.to_thread(
             grants.prepare_capture, user_id, selected_session, agent_id)
     except Exception:
-        # Fail-closed on the AUTHORITY (no grant), fail-open on the job.
         logger.warning("consent preparation unavailable user=%s agent=%s", user_id, agent_id)
         return None
 
 
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
-    """ui_event ``schedule_decision`` — the explicit user grant (or refusal).
-
-    Approval re-derives consented scopes from the user's CURRENT grants for
-    the chosen agent (never wider — the REST flow's scope-bounding rule) and
-    creates the job with the same store call as ``scheduler/api.py``.
-    """
     proposal_id = str(payload.get("proposal_id") or "")
     decision = str(payload.get("decision") or "")
     prop = _proposals(orch).get(proposal_id)
@@ -387,35 +312,15 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if not current_registration():
         return
     try:
-        # Re-validate at approval time (caps/cadence may have changed since
-        # the proposal) and recompute the first run.
         cleaned, next_run = await asyncio.to_thread(_validate_proposal, orch, user_id, args)
     except ValueError as exc:
         _proposals(orch).pop(proposal_id, None)
         await _say(f"That schedule can no longer be created: {exc}", "warning")
         return
 
-    # EFFECTIVE scopes, matching the approval card and the dispatch gate.
-    # A raw agent_scopes read only sees explicit rows, so a user running on
-    # feature 040's safe baseline captured an EMPTY consented list — and an
-    # empty list is not "deny everything" downstream, it is read as "no
-    # constraint" by MachineTurnAuthority.derive. Capturing the effective
-    # set makes the containment real for exactly the users who never
-    # granted a scope explicitly. Agent-less jobs get the union across the
-    # user's enabled agents (their tool calls route across all of them).
     consented: List[str] = await _consented_scopes_for(
         orch, user_id, cleaned["agent_id"] or None)
 
-    # 056 US2 (FR-011/D8): the EXPLICIT durable-consent capture step. The
-    # approval card the user just confirmed named the scopes below, its durable
-    # (365-day-capped) nature, and how to revoke it — so this is the one moment
-    # a durable grant may be created. Nothing is captured implicitly: capture
-    # runs only here, only on approval. EVERY machine turn needs a grant —
-    # derive() is agent-independent — so agent-less jobs capture too (before
-    # this, they were created with no grant and every run settled
-    # skipped_auth/missing_consent). A capture failure is NOT fatal — the job
-    # is still created, it simply cannot run unattended (its first run records
-    # an authority skip and pauses, which is the honest fail-closed outcome).
     if not current_registration():
         return
     prepared = await _capture_consent(
@@ -483,6 +388,4 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         Button(label="Manage schedules", action="chrome_open",
                payload={"surface": "personalization"}, variant="secondary").to_dict(),
     ], target="chat")
-    # Keep any open personalization surfaces in sync is the surface's own
-    # concern; the dashboards don't show jobs, so no broadcast needed here.
     await asyncio.sleep(0)

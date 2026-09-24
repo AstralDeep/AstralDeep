@@ -1,4 +1,7 @@
-"""Fixed-origin, DNS-pinned speech HTTP egress tests for Feature 065."""
+"""Tests for shared/streaming_egress.py and voice_agent/speech_adapters.py: DNS pinning,
+TLS/SNI, distinct timeout classes, response-framing bounds, and fail-closed
+resolution/connection/protocol errors.
+"""
 
 from __future__ import annotations
 

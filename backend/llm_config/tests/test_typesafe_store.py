@@ -1,11 +1,6 @@
-"""Feature 089 (T009): the TypeSafe credential facade.
-
-The store's job is narrow and its failure modes matter more than its happy
-path, so most of these tests are about what happens when something is wrong:
-an undecryptable row, a durable read failure mid-turn, an outcome that arrives
-after the user replaced their key.
-
-Every key value here is synthetic.
+"""Tests for typesafe_store.py's TypeSafeCredentialStore: encrypted round trips,
+status/usability semantics, save/clear/outcome recording, undecryptable-row handling,
+and read-through cache invalidation.
 """
 
 from __future__ import annotations
@@ -35,9 +30,6 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-# -- fingerprint ---------------------------------------------------------
-
-
 def test_fingerprint_is_twelve_lowercase_hex_characters() -> None:
     fingerprint = key_fingerprint(KEY)
     assert len(fingerprint) == 12
@@ -52,9 +44,6 @@ def test_fingerprint_is_stable_and_distinguishes_keys() -> None:
 
 def test_fingerprint_does_not_contain_the_key() -> None:
     assert KEY[:8] not in key_fingerprint(KEY)
-
-
-# -- status --------------------------------------------------------------
 
 
 def test_unset_status_for_a_user_with_no_row(typesafe_store) -> None:
@@ -86,8 +75,6 @@ def test_a_rejected_key_is_not_usable_but_an_unavailable_one_is(typesafe_store) 
     typesafe_store.record_outcome_sync(USER, "unavailable", fingerprint)
     unavailable = typesafe_store.status_sync(USER)
     assert unavailable.name == "unavailable"
-    # Unavailable describes TypeSafe, not the credential: the circuit breaker
-    # is what stops retries, not the status.
     assert unavailable.is_usable is True
 
 
@@ -96,9 +83,6 @@ def test_status_carries_no_key_material(typesafe_store) -> None:
     rendered = repr(typesafe_store.status_sync(USER))
     assert KEY not in rendered
     assert key_fingerprint(KEY) not in rendered
-
-
-# -- save / get ----------------------------------------------------------
 
 
 def test_round_trip_returns_the_key_and_its_fingerprint(typesafe_store) -> None:
@@ -156,15 +140,11 @@ def test_surrounding_whitespace_is_stripped_before_storage(typesafe_store) -> No
     assert stored.fingerprint == key_fingerprint(KEY)
 
 
-# -- clear ---------------------------------------------------------------
-
-
 def test_clear_removes_the_key_and_is_idempotent(typesafe_store) -> None:
     typesafe_store.save_sync(USER, KEY)
     assert typesafe_store.clear_sync(USER) is True
     assert typesafe_store.get_key_sync(USER) is None
     assert typesafe_store.status_sync(USER).name == "not_set"
-    # A second Remove on an already-clean page is a no-op, not an error.
     assert typesafe_store.clear_sync(USER) is False
 
 
@@ -173,9 +153,6 @@ def test_clear_is_owner_scoped(typesafe_store) -> None:
     typesafe_store.save_sync(OTHER_USER, OTHER_KEY)
     typesafe_store.clear_sync(USER)
     assert typesafe_store.get_key_sync(OTHER_USER).api_key == OTHER_KEY
-
-
-# -- outcome recording ---------------------------------------------------
 
 
 def test_an_outcome_on_a_replaced_key_updates_nothing(typesafe_store) -> None:
@@ -208,18 +185,13 @@ def test_outcome_recording_never_raises(typesafe_store, monkeypatch) -> None:
 
     monkeypatch.setattr(typesafe_store._repository.repository, "record_outcome", _explode)
 
-    # Bookkeeping must never be able to take a turn down.
     assert typesafe_store.record_outcome_sync(USER, "valid", key_fingerprint(KEY)) is False
-
-
-# -- undecryptable rows --------------------------------------------------
 
 
 def test_an_undecryptable_row_is_discarded_and_reads_as_absent(
     typesafe_store, credential_plane, monkeypatch
 ) -> None:
     typesafe_store.save_sync(USER, KEY)
-    # Simulate a rotated encryption key: the ciphertext no longer opens.
     monkeypatch.setattr(typesafe_store, "_fernet", Fernet(Fernet.generate_key()))
     typesafe_store.invalidate(USER)
 
@@ -243,28 +215,20 @@ def test_a_discarded_row_leaves_other_users_alone(
     assert OTHER_USER in credential_plane.typesafe
 
 
-# -- durable failure -----------------------------------------------------
-
-
 def test_a_repository_read_failure_is_treated_as_no_key(typesafe_store, monkeypatch) -> None:
     def _explode(*args: object, **kwargs: object) -> None:
         raise RepositoryError("plane is unreachable")
 
     monkeypatch.setattr(typesafe_store._repository.repository, "get_user", _explode)
 
-    # A turn must fall back to standard routing, not fail.
     assert typesafe_store.get_key_sync(USER) is None
     assert typesafe_store.status_sync(USER).name == "not_set"
-
-
-# -- cache ---------------------------------------------------------------
 
 
 def test_reads_are_cached_and_writes_invalidate(typesafe_store, credential_plane) -> None:
     typesafe_store.save_sync(USER, KEY)
     assert typesafe_store.get_key_sync(USER).api_key == KEY
 
-    # Mutate behind the store's back: a cached read still sees the old value.
     credential_plane.typesafe.pop(USER)
     assert typesafe_store.get_key_sync(USER) is not None
 
@@ -273,7 +237,7 @@ def test_reads_are_cached_and_writes_invalidate(typesafe_store, credential_plane
 
 
 def test_save_invalidates_the_cache_immediately(typesafe_store) -> None:
-    assert typesafe_store.status_sync(USER).name == "not_set"  # caches the miss
+    assert typesafe_store.status_sync(USER).name == "not_set"
     typesafe_store.save_sync(USER, KEY)
     assert typesafe_store.status_sync(USER).name == "active"
 
@@ -283,9 +247,6 @@ def test_clear_invalidates_the_cache_immediately(typesafe_store) -> None:
     assert typesafe_store.status_sync(USER).name == "active"
     typesafe_store.clear_sync(USER)
     assert typesafe_store.status_sync(USER).name == "not_set"
-
-
-# -- async wrappers ------------------------------------------------------
 
 
 def test_the_async_wrappers_mirror_the_sync_core(typesafe_store) -> None:
@@ -305,13 +266,9 @@ def test_the_async_wrappers_mirror_the_sync_core(typesafe_store) -> None:
     _run(_scenario())
 
 
-# -- isolation from the LLM gate ----------------------------------------
-
-
 def test_the_typesafe_store_shares_the_llm_encryption_key(
     typesafe_store, store, fernet_key
 ) -> None:
-    """One credential key covers both stores, so one rotation covers both."""
     assert typesafe_store._fernet._signing_key == store._fernet._signing_key
 
 
@@ -360,7 +317,6 @@ def test_clearing_the_typesafe_key_leaves_the_llm_configuration(
 
 
 def test_the_store_exposes_no_system_scope() -> None:
-    """FR-005: a deployment-wide TypeSafe key must not be representable."""
     names = dir(TypeSafeCredentialStore)
     assert not [name for name in names if "system" in name.lower()]
 

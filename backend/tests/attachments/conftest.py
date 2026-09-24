@@ -1,7 +1,6 @@
-"""Shared fixtures for attachments tests.
-
-Putting `backend/` on sys.path mirrors the pattern in `backend/tests/test_backend.py`
-so attachment consumer modules resolve during focused tests.
+"""Shared pytest fixtures for the attachments test suite: an isolated blob-root
+filesystem, an in-memory StubDatabase, and helpers to seed or soft-delete attachment
+rows through the explicit Plane repository double.
 """
 
 from __future__ import annotations
@@ -19,31 +18,15 @@ from typing import List, Optional, Tuple
 import pytest
 from astralplane.repositories.artifacts import AttachmentRecord
 
-# Ensure backend/ is on sys.path
 _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _BACKEND not in sys.path:
     sys.path.insert(0, _BACKEND)
 
 
-# ---------------------------------------------------------------------------
-# Filesystem fixture
-# ---------------------------------------------------------------------------
-
 @pytest.fixture
 def upload_root(tmp_path: Path) -> Path:
-    """Isolated absolute Plane blob root for attachment tests."""
     return tmp_path / "uploads"
 
-
-# ---------------------------------------------------------------------------
-# In-memory DB stub
-# ---------------------------------------------------------------------------
-#
-# The production Database is PostgreSQL-only. For unit-level repository tests
-# we stub the four methods the repository actually uses (`execute`, `fetch_one`,
-# `fetch_all`, plus the `_translate_query` no-op) with a tiny in-memory store.
-# This keeps the repository test free of a real DB while still exercising every
-# branch of the SQL-shaped logic.
 
 class _StubCursor:
     def __init__(self, rowcount: int = 0):
@@ -51,16 +34,12 @@ class _StubCursor:
 
 
 class _AttachmentPlaneRepository:
-    """Typed in-memory test double injected through the Plane catalog seam."""
-
     def __init__(self) -> None:
         self.records: list[AttachmentRecord] = []
         self.materializations = self
         self.attachments = self
 
     def seed_for_test(self, record: AttachmentRecord) -> AttachmentRecord:
-        """Seed detached metadata without imitating a production write API."""
-
         if any(item.attachment_id == record.attachment_id for item in self.records):
             raise ValueError("attachment fixture identity already exists")
         self.records.append(record)
@@ -154,10 +133,7 @@ class _AttachmentPlaneRepository:
 
 
 class StubDatabase:
-    """In-memory stand-in for the attachment persistence adapter."""
-
     def __init__(self) -> None:
-        # Single-table model: list of dicts.
         self.rows: List[dict] = []
         self.plane_repositories = SimpleNamespace(
             artifacts=_AttachmentPlaneRepository()
@@ -185,7 +161,6 @@ class StubDatabase:
             })
             return _StubCursor(rowcount=1)
         if q.startswith("update user_attachments"):
-            # Two shapes: soft_delete (1 id) and soft_delete_all_for_user.
             if "attachment_id = ?" in q:
                 deleted_at, attachment_id, user_id = params
                 count = 0
@@ -229,7 +204,6 @@ class StubDatabase:
         raise NotImplementedError(query)
 
     def fetch_all(self, query: str, params: Tuple = ()) -> List[dict]:
-        # Listing query — emulate filtering and ordering well enough to test it.
         q = query.strip().lower()
         if not q.startswith("select * from user_attachments"):
             raise NotImplementedError(query)
@@ -242,7 +216,7 @@ class StubDatabase:
             category = params_list.pop(0)
         if "or (created_at = ?" in q:
             cursor_created_at = params_list.pop(0)
-            _ = params_list.pop(0)  # repeated
+            _ = params_list.pop(0)
             cursor_id = params_list.pop(0)
         limit = params_list.pop(0)
         rows = [r for r in self.rows
@@ -258,7 +232,6 @@ class StubDatabase:
                 )
             ]
         rows.sort(key=lambda r: (-r["created_at"], r["attachment_id"]), reverse=False)
-        # Match the SQL "ORDER BY created_at DESC, attachment_id DESC".
         rows = sorted(rows, key=lambda r: (r["created_at"], r["attachment_id"]), reverse=True)
         return [dict(r) for r in rows[:limit]]
 
@@ -269,8 +242,6 @@ def stub_db() -> StubDatabase:
 
 
 class AttachmentPlaneRuntime:
-    """Minimal caller-transaction runtime for typed attachment test doubles."""
-
     def __init__(self, repositories) -> None:
         self.repositories = repositories
 
@@ -281,18 +252,12 @@ class AttachmentPlaneRuntime:
 
 
 def attachment_plane_source(database):
-    """Return an explicit app-Plane-shaped source for an attachment fixture."""
-
     runtime = AttachmentPlaneRuntime(database.plane_repositories)
     return SimpleNamespace(
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
     )
 
-
-# ---------------------------------------------------------------------------
-# Helpers used by multiple test files
-# ---------------------------------------------------------------------------
 
 def seed_attachment_for_test(
     repo,
@@ -308,8 +273,6 @@ def seed_attachment_for_test(
     storage_path: str | None = None,
     created_at: int | None = None,
 ) -> AttachmentRecord:
-    """Seed metadata through the explicit in-memory repository double only."""
-
     fake = repo._artifacts.repository.materializations
     seed = getattr(fake, "seed_for_test", None)
     if seed is None:
@@ -338,8 +301,6 @@ def soft_delete_attachment_for_test(
     user_id: str,
     deleted_at: int | None = None,
 ) -> bool:
-    """Hide one record through the explicit fake's typed repository method."""
-
     fake = repo._artifacts.repository.attachments
     record = fake.soft_delete(
         object(),
@@ -351,7 +312,6 @@ def soft_delete_attachment_for_test(
 
 def insert_sample(repo, *, user_id: str, category: str = "document",
                   extension: str = "pdf", filename: Optional[str] = None) -> str:
-    """Seed an explicit in-memory attachment fake and return its id."""
     aid = str(uuid.uuid4())
     stored_filename = filename or f"{aid[:8]}.{extension}"
     seed_attachment_for_test(
@@ -365,6 +325,5 @@ def insert_sample(repo, *, user_id: str, category: str = "document",
         size_bytes=1234,
         sha256="0" * 64,
     )
-    # Spread out timestamps so ordering tests are deterministic.
     time.sleep(0.001)
     return aid

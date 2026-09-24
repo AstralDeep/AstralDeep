@@ -1,4 +1,6 @@
-"""Missing or inaccessible chat writes must fail instead of reporting success."""
+"""Tests confirming a missing or inaccessible owner-scoped chat fails a history write
+instead of reporting success (orchestrator/history.py).
+"""
 
 from contextlib import nullcontext
 from types import SimpleNamespace

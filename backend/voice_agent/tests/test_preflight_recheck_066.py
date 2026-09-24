@@ -1,10 +1,5 @@
-"""Feature-066 (FR-036) pins for the bounded speech-preflight re-check.
-
-Before this, a speech service that was briefly missing its models or routes
-killed the worker at startup: the preflight raised, nothing caught it, and
-the process exited 78 — silently, because the package logs nothing before
-admission. Under ``restart: "no"`` (staging) the worker then stayed dead
-until an operator noticed. That is the exact failure FR-036 removes.
+"""Tests for voice_agent/main.py's speech-preflight retry loop: recovers from a
+transient outage without a process restart, fails fast on bad credentials.
 """
 
 from __future__ import annotations
@@ -19,14 +14,12 @@ from voice_agent.speech_adapters import SpeechPreflightError
 
 @pytest.fixture(autouse=True)
 def _fast_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the bounded backoff, remove the wall-clock wait."""
     monkeypatch.setattr(main_module, "_PREFLIGHT_RETRY_INITIAL_SECONDS", 0.001)
     monkeypatch.setattr(main_module, "_PREFLIGHT_RETRY_MAX_SECONDS", 0.002)
 
 
 @pytest.mark.asyncio
 async def test_recovers_without_a_restart(monkeypatch, capsys) -> None:
-    """A transient speech outage heals in-process instead of exiting."""
     attempts = {"n": 0}
 
     async def flaky(config):
@@ -41,7 +34,6 @@ async def test_recovers_without_a_restart(monkeypatch, capsys) -> None:
     assert await main_module.preflight_until_ready(object(), stop) is True
     assert attempts["n"] == 3
 
-    # Every attempt says WHY, so an operator can see it in `docker logs`.
     err = capsys.readouterr().err
     assert "voice_worker_preflight:asr_unavailable attempt=1" in err
     assert "voice_worker_preflight:asr_unavailable attempt=2" in err
@@ -63,7 +55,6 @@ async def test_ready_on_the_first_attempt_logs_once(monkeypatch, capsys) -> None
 
 @pytest.mark.asyncio
 async def test_a_credential_fault_still_fails_fast(monkeypatch) -> None:
-    """Waiting cannot heal a misconfigured credential — keep failing closed."""
     calls = {"n": 0}
 
     async def bad_credential(config):
@@ -74,13 +65,11 @@ async def test_a_credential_fault_still_fails_fast(monkeypatch) -> None:
 
     with pytest.raises(SpeechPreflightError):
         await main_module.preflight_until_ready(object(), asyncio.Event())
-    assert calls["n"] == 1  # never retried
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
 async def test_shutdown_stops_the_retry_loop(monkeypatch) -> None:
-    """A stop request wins over an unavailable speech service."""
-
     async def never_ready(config):
         raise SpeechPreflightError("tts_unavailable")
 

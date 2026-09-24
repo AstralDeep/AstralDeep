@@ -1,8 +1,6 @@
-"""Transactional personal-agent runtime fencing tests for feature 060.
-
-The suite creates a throwaway PostgreSQL database.  It never mutates the
-configured development database and deliberately exercises repository
-reconstruction so PostgreSQL, not process-local state, remains authoritative.
+"""Tests for BYO runtime fencing (backend/orchestrator/agent_lifecycle.py) over a
+throwaway PostgreSQL database: owner-scoped hydration, sticky host failover,
+inventory reconciliation, and durable fencing before any state change.
 """
 
 from __future__ import annotations
@@ -503,12 +501,6 @@ def test_restarted_desktop_gets_its_agent_back_through_sticky_reselection(
     repository: PersonalAgentRuntimeRepository,
     clean_database: PlaneTestRuntime,
 ) -> None:
-    """Feature 077 live finding: with ONE desktop, losing its session cleared
-    the agent's host selection and nothing re-made it — the restarted client
-    reconciled its retained bundle as keep_stopped/host_not_selected forever.
-    A live agent whose selected session is gone is re-selected (same host id
-    first) both when the host frame adapter asks which entries need a delivery
-    fence and inside reconciliation, so the retained bundle starts."""
     revision = _agent_revision(repository, clean_database)
     host_id = "33333333-3333-4333-8333-333333333333"
     host_a1 = _host(repository, host_id=host_id)
@@ -526,12 +518,11 @@ def test_restarted_desktop_gets_its_agent_back_through_sticky_reselection(
         (revision.revision_id, revision.revision_id, _AGENT),
     )
     disconnected = repository.disconnect_host_session(host_a1.fence, failure_code="host_lost")
-    assert disconnected.selected_sessions.get(_AGENT) is None       # nobody else to fail over to
+    assert disconnected.selected_sessions.get(_AGENT) is None
     pointer = clean_database.fetch_one(
         "SELECT selected_host_session_id FROM user_agent WHERE agent_id = ?", (_AGENT,))
     assert pointer["selected_host_session_id"] is None
 
-    # the same desktop comes back as a new session of the same host id
     host_a2 = _host(repository, host_id=host_id)
     assert host_a2.host_session_id != host_a1.host_session_id
     selected = repository.get_selected_session_revision(host_a2.fence, agent_id=_AGENT)
@@ -893,10 +884,6 @@ def test_first_starting_frame_reads_revision_metadata_before_the_process_binds(
     repository: PersonalAgentRuntimeRepository,
     clean_database: PlaneTestRuntime,
 ) -> None:
-    """Feature 077 live finding: the host's first ``starting`` frame carries the
-    process it spawned while the durable instance is still pre-launch, and the
-    server reads revision metadata under that fence BEFORE binding the process
-    — an exact-fence read refused every real first start as stale."""
     revision = _agent_revision(repository, clean_database)
     host = _host(repository)
     host = repository.mark_inventory_reconciled(host.fence)
@@ -918,14 +905,11 @@ def test_first_starting_frame_reads_revision_metadata_before_the_process_binds(
     )
     assert instance.fence.process_id is None
     spawned = dataclasses.replace(instance.fence, process_id=str(uuid.uuid4()))
-    # the metadata read admits the spawned process on a pre-launch instance …
     assert repository.get_runtime_revision(spawned).revision_id == revision.revision_id
-    # … but any other dimension is still stale
     with pytest.raises(StaleRuntimeGenerationError):
         repository.get_runtime_revision(
             dataclasses.replace(spawned, lifecycle_generation=spawned.lifecycle_generation + 1)
         )
-    # and once bound, a different process is stale as before
     bound = repository.bind_runtime_process(
         instance.fence, process_id=spawned.process_id,
         expected_state_revision=instance.state_revision,
@@ -1478,8 +1462,6 @@ def _seed_candidate_provenance(
     database: PlaneTestRuntime,
     request: CandidatePreparation,
 ) -> None:
-    """Mirror Plane publication before lifecycle delivery consumes the revision."""
-
     metadata = request.agent_metadata
     observed_at = int(time.time() * 1000)
     plan = {
@@ -1563,8 +1545,6 @@ def _promoted_active_replay(
     repository: PersonalAgentRuntimeRepository,
     database: PlaneTestRuntime,
 ) -> tuple[PostgresPersonalAgentRevisionStore, ActiveRevisionReplay, str, str]:
-    """Promote one exact candidate and return its immutable replay identity."""
-
     previous_revision, host, previous_runtime = _runtime(
         repository,
         database,
@@ -1627,8 +1607,6 @@ def _replace_replay_draft_evidence(
     *,
     updates: dict[str, object],
 ) -> ActiveRevisionReplay:
-    """CAS draft evidence and bind the forged replay to its new revision."""
-
     with database.transaction() as transaction:
         drafts = database.repositories.draft_agents
         draft = drafts.get_draft(
@@ -1666,8 +1644,6 @@ def _mutate_active_replay_identity(
     previous_revision_id: str,
     previous_runtime_instance_id: str,
 ) -> ActiveRevisionReplay:
-    """Perturb exactly one persisted or presented replay-authority seam."""
-
     if mismatch == "draft_state_revision":
         return dataclasses.replace(
             replay,
@@ -1840,7 +1816,6 @@ def _mutate_active_replay_identity(
             )
             assert runtime is not None
             if mismatch == "runtime_revision":
-                # Revision identity is immutable and has no typed mutation API.
                 transaction.execute(
                     "UPDATE agent_runtime_instance SET revision_id = %s "
                     "WHERE runtime_instance_id = %s",
@@ -2997,10 +2972,6 @@ def test_postgres_staged_failure_survives_disconnect_and_exact_recovery(
     ):
         asyncio.run(activator.reconcile_after_crash(_OWNER, _AGENT))
 
-    # A disconnected/superseded session is not exact process-exit proof. The
-    # semantic failure remains immutable on the delivery operation while the
-    # process-bearing runtime stays discoverable cleanup debt. In particular,
-    # recovery must neither fail the revision early nor allocate another child.
     assert stop_attempts == [candidate.runtime_instance_id]
 
     pending_revision = clean_database.fetch_one(
@@ -3022,9 +2993,6 @@ def test_postgres_staged_failure_survives_disconnect_and_exact_recovery(
         replay_plan.finalize_runtime_instance_ids
     )
 
-    # A later full-fence exit frame upgrades only the runtime's physical fact.
-    # Once operation retention purges the FK, recovery still derives the
-    # immutable activation meaning from the mutable revision marker.
     exact_exit = repository.record_runtime_physical_exit(
         disconnected.fence,
         proof_code="child_exited",

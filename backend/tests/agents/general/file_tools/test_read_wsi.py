@@ -1,4 +1,7 @@
-"""read_wsi + extract_wsi_region: pyramidal TIFF through OpenSlide."""
+"""Tests for agents/general/file_tools/medical/read_wsi.py and extract_wsi_region.py:
+pyramidal-TIFF level reporting, region extraction to PNG, and oversize-region
+capping.
+"""
 
 from __future__ import annotations
 

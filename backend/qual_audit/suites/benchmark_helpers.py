@@ -1,4 +1,7 @@
-"""Timing utilities and statistics helpers for transport benchmarks."""
+"""Timing and statistics helpers (BenchmarkResult with a 95% confidence interval, a
+context-manager Timer) shared by qual_audit/suites/test_transport_comparison.py's
+latency benchmarks.
+"""
 
 import time
 from dataclasses import dataclass, field
@@ -9,8 +12,6 @@ import numpy as np
 
 @dataclass
 class BenchmarkResult:
-    """Aggregated benchmark statistics for a transport test."""
-
     transport: str
     sample_count: int
     latencies_ms: List[float] = field(default_factory=list)
@@ -47,7 +48,6 @@ class BenchmarkResult:
         }
 
     def confidence_interval_95(self) -> tuple:
-        """Return (lower, upper) 95% confidence interval for the mean."""
         if len(self.latencies_ms) < 2:
             return (self.mean, self.mean)
         from scipy import stats
@@ -61,8 +61,6 @@ class BenchmarkResult:
 
 
 class Timer:
-    """Simple context-manager timer returning elapsed milliseconds."""
-
     def __init__(self):
         self.elapsed_ms: float = 0.0
 

@@ -1,12 +1,8 @@
-"""Feature 063 — the defensive guards on the small cross-module deltas.
-
-Each 063 entry point outside the verb libraries carries one guard the behaviour
-suites never trip, because it fires only when a dependency is broken: a flag
-helper that raises or a sign-out with no principal. Those guards decide whether a partial failure degrades or takes down
-a boot / a sign-out, so each is pinned to the direction it must degrade —
-fail-CLOSED for the feature's visibility, fail-OPEN for the surrounding flow.
-Hermetic: no DB connection, no network, no agent instantiation.
+"""Tests for small cross-module guards outside the main remote-machine verb libraries
+(local_agents.py, web_auth.py, chrome/menu_model.py): a failing remote flag check
+degrades the fleet/menu safely, and credential destruction needs a principal.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,8 +14,6 @@ import pytest
 def _unavailable(*_a, **_k):
     raise RuntimeError("feature-flag store unavailable")
 
-
-# ── local_agents: a broken flag check must not take down the boot ──────────────
 
 async def test_register_built_ins_survives_a_failing_remote_flag_check(monkeypatch):
     from orchestrator import local_agents
@@ -51,12 +45,8 @@ async def test_register_built_ins_survives_a_failing_remote_flag_check(monkeypat
         register_agent=None,
         runtime_composition=SimpleNamespace(plane=plane),
     )
-    # Fail-closed on the remote agent (it is never loaded), but the fleet
-    # registration itself still returns normally.
     assert await local_agents.register_built_ins(orch) == []
 
-
-# ── menu_model: an unreadable flag hides the surface (fail-closed) ─────────────
 
 def test_remote_machines_menu_item_is_absent_when_the_flag_cannot_be_read(monkeypatch):
     from shared.feature_flags import flags
@@ -66,8 +56,6 @@ def test_remote_machines_menu_item_is_absent_when_the_flag_cannot_be_read(monkey
     model = menu_model.menu_model_dict(roles=["user", "admin"])
     assert "remote_machines" not in json.dumps(model)
 
-
-# ── web_auth: a sign-out with no principal touches nothing ─────────────────────
 
 async def test_machine_credential_destruction_is_a_noop_without_a_principal(monkeypatch):
     from orchestrator import web_auth

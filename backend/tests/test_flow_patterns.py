@@ -1,10 +1,8 @@
-"""Feature 033 (capability C-S1) — security-by-construction flow patterns.
-
-Covers the feature flag, turn classification (incl. precedence:
-PARSER > MULTI_TOOL > READ_ONLY > DEFAULT, and attachment forcing PARSER), the
-per-pattern constraints table, the plan-then-execute out-of-plan refusal
-invariant, and the per-pattern tool budget.
+"""Tests for security-by-construction flow patterns (orchestrator/flow_patterns.py): the
+enabling flag, turn classification precedence, per-pattern constraints, out-of-plan
+refusal, and tool-budget boundaries.
 """
+
 from __future__ import annotations
 
 import sys
@@ -17,9 +15,6 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from orchestrator import flow_patterns as fp  # noqa: E402
-
-
-# ───────────────────────── flag ──────────────────────────────────────────────
 
 
 def test_flag_off_by_default(monkeypatch):
@@ -39,11 +34,7 @@ def test_flag_off_falsey_spellings(monkeypatch):
         assert fp.flow_patterns_enabled() is False, val
 
 
-# ───────────────────────── classify_flow ─────────────────────────────────────
-
-
 def test_classify_attachment_forces_parser():
-    # Even though this is phrased as a multi-step lookup, the attachment wins.
     assert (
         fp.classify_flow(
             "what is this then summarize it",
@@ -64,13 +55,10 @@ def test_classify_lookup_question_is_read_only():
     assert fp.classify_flow("what is the capital of France?") == fp.READ_ONLY
     assert fp.classify_flow("Who owns this agent") == fp.READ_ONLY
     assert fp.classify_flow("list my chats", tool_count=1) == fp.READ_ONLY
-    # Trailing '?' alone qualifies even without a lookup leader.
     assert fp.classify_flow("really?") == fp.READ_ONLY
 
 
 def test_classify_lookup_with_two_tools_is_multi_tool():
-    # A question that the caller already resolved to >=2 tools is multi-tool,
-    # not read-only (most-constrained wins, and read-only caps at one tool).
     assert (
         fp.classify_flow("what changed across these repos?", tool_count=2)
         == fp.MULTI_TOOL
@@ -91,8 +79,6 @@ def test_classify_tool_count_two_is_multi_tool():
 
 
 def test_classify_multi_tool_outranks_read_only():
-    # Phrased as a question AND ends with '?', but the multi-step keyword and
-    # high tool_count push it to MULTI_TOOL (precedence over READ_ONLY).
     assert (
         fp.classify_flow("how do I build then ship this?", tool_count=4)
         == fp.MULTI_TOOL
@@ -107,9 +93,6 @@ def test_classify_plain_statement_is_default():
 def test_classify_empty_request_is_default():
     assert fp.classify_flow("") == fp.DEFAULT
     assert fp.classify_flow("   ") == fp.DEFAULT
-
-
-# ───────────────────────── constraints_for ───────────────────────────────────
 
 
 def test_constraints_read_only():
@@ -161,9 +144,6 @@ def test_constraints_are_frozen():
         c.max_tools = 99  # type: ignore[misc]
 
 
-# ───────────────────────── refuse_out_of_plan ────────────────────────────────
-
-
 def test_refuse_out_of_plan_in_plan_allowed():
     assert fp.refuse_out_of_plan(["search", "fetch_page"], "fetch_page") is False
 
@@ -180,9 +160,6 @@ def test_refuse_out_of_plan_empty_plan_refuses_everything():
 def test_refuse_out_of_plan_case_insensitive():
     assert fp.refuse_out_of_plan(["Search", "Fetch_Page"], "search") is False
     assert fp.refuse_out_of_plan(["search"], "  SEARCH  ") is False
-
-
-# ───────────────────────── within_tool_budget ────────────────────────────────
 
 
 def test_within_tool_budget_read_only_boundary():

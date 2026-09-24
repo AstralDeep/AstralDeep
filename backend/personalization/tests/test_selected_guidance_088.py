@@ -1,4 +1,7 @@
-"""Pure selected guidance uses real crypto and the complete fixed request body."""
+"""Tests for personalization/selected_guidance.py: exact bounded request-byte limits,
+skill/agent snapshot validation, note reuse and reference checks, opaque envelope
+integrity, and refusal of tampered, mismatched, or oversized selections.
+"""
 
 from dataclasses import asdict, replace
 from datetime import UTC, datetime

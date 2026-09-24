@@ -1,4 +1,6 @@
-"""read_dicom: metadata, PHI stripping, thumbnail."""
+"""Tests for agents/general/file_tools/medical/read_dicom.py: default PHI stripping,
+opt-in PHI fields, thumbnail generation, and not-found handling.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +30,7 @@ def test_read_dicom_strips_phi_by_default(repo, upload_root):
     meta = out["metadata"]
     assert meta["Modality"] == "CT"
     assert meta["Rows"] == 32 and meta["Columns"] == 32
-    # PHI must not leak into the default-safe metadata block.
+    # PHI must never leak into the default metadata block
     for banned in ("PatientName", "PatientID", "PatientBirthDate",
                     "ReferringPhysicianName", "InstitutionName",
                     "AccessionNumber", "StudyDate"):

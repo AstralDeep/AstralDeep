@@ -1,4 +1,7 @@
-"""Bounded deterministic interpretation of untrusted observations/proposals."""
+"""Bounded, deterministic interpretation of untrusted model observations/proposals into
+revision text and validated task plans/steps; used across execution.py, runner.py and
+dispatch_context.py, and 50+ orchestrator/persistent_agents call sites.
+"""
 
 from __future__ import annotations
 
@@ -30,21 +33,14 @@ def digest(value: Any) -> str:
 
 
 def bounded_context(context: dict[str, Any]) -> dict[str, Any]:
-    """Fit evidence into a durable request, retaining owner instructions intact.
-
-    An explicit excerpt identifies omitted evidence. Original completed results
-    and their digests remain in Plane; this does not silently summarize them.
-    """
     return _bounded_context(context, (4096, 2048, 1024, 512, 256, 128, 64, 32))
 
 
 def legacy_bounded_context(context: dict[str, Any]) -> dict[str, Any]:
-    """Preserve original intent binding and the fallback for serialized requests."""
     return _bounded_context(context, (512, 256, 128, 64, 32))
 
 
 def _bounded_context(context: dict[str, Any], limits: tuple[int, ...]) -> dict[str, Any]:
-    """Apply reviewed excerpt sizes while preserving the 5,500-byte ceiling."""
     context = thaw(context)
     if len(canonical(context).encode("utf-8")) <= 5500:
         return context
@@ -97,8 +93,6 @@ def extract_result(response: Any) -> dict[str, Any]:
     elif isinstance(result, Mapping):
         walk(result)
     text = "\n".join(dict.fromkeys(parts)).strip()
-    # Reader tools may return structured records without UI. Keep their actual
-    # data in the revision too, omitting UI-only metadata with unstable IDs.
     data = thaw(result.get("_data", result)) if isinstance(result, Mapping) else None
     if not text and not data:
         raise ValueError("assignment_source_empty")
@@ -147,8 +141,6 @@ def parse_plan(text: str, allowed: set[str], maximum: int) -> list[dict[str, Any
                 or any(not isinstance(d, str) for d in dependencies)
                 or not set(dependencies) <= seen or len(set(dependencies)) != len(dependencies)):
             raise ValueError("assignment_task_plan_invalid")
-        # Topological order is part of this bounded contract: cycles, forward
-        # references and missing dependencies all fail before a plan is stored.
         seen.add(identity)
     return tasks
 

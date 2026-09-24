@@ -1,17 +1,8 @@
-"""A fixed-destination stdio bridge exposing Astral's Work tools to an MCP host.
-
-Many agent frameworks and IDE-integrated assistants (Claude Desktop, Cursor,
-...) speak MCP over stdio to a LOCAL process rather than an SDK function call.
-``Bridge`` is that local process: it owns one :class:`~astral_sdk.client.AstralClient`
-pointed at exactly one Deep instance and one framework credential, and
-forwards ``tools/list``/``tools/call`` requests read from stdin to it,
-writing newline-delimited JSON-RPC responses to stdout.
-
-The official ``mcp`` package (an optional extra: ``pip install astral-sdk[mcp]``)
-is never imported at module load — only inside :meth:`Bridge.serve_with_official_sdk`,
-so importing this module (or using :meth:`Bridge.serve_stdio`, which needs
-nothing but the stdlib + httpx) never requires it.
+"""Bridge exposes Astral's Work tools to a local MCP host over stdio JSON-RPC through
+one AstralClient; serve_stdio() needs only httpx, while serve_with_official_sdk()
+lazily imports the optional mcp package.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,8 +18,6 @@ _INTERNAL_ERROR = -32603
 
 
 class Bridge:
-    """Owns one Astral client; translates local stdio JSON-RPC to Astral tool calls."""
-
     def __init__(self, client: AstralClient) -> None:
         self._client = client
 
@@ -39,10 +28,7 @@ class Bridge:
     def close(self) -> None:
         self._client.close()
 
-    # -- one request/response pair -----------------------------------------
-
     def handle(self, request: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Handle one parsed JSON-RPC request; ``None`` for a notification (no ``id``)."""
         request_id = request.get("id")
         method = request.get("method")
         is_notification = "id" not in request
@@ -94,10 +80,7 @@ class Bridge:
         value = factory()
         return asdict(value)
 
-    # -- stdio loop (no third-party dependency) ------------------------------
-
     def serve_stdio(self, in_stream: IO[str] = sys.stdin, out_stream: IO[str] = sys.stdout) -> None:
-        """Read one newline-delimited JSON-RPC request per line until EOF."""
         for line in in_stream:
             line = line.strip()
             if not line:
@@ -115,14 +98,7 @@ class Bridge:
                 out_stream.write(json.dumps(response) + "\n")
                 out_stream.flush()
 
-    # -- optional: the official `mcp` SDK's stdio server ---------------------
-
     def serve_with_official_sdk(self) -> None:
-        """Serve using the official ``mcp`` package's stdio server (extra: ``mcp``).
-
-        Imported lazily so neither importing this module nor calling
-        :meth:`serve_stdio` ever requires the ``mcp`` package to be installed.
-        """
         try:
             import mcp.server.stdio  # noqa: F401
             from mcp.server import Server
@@ -135,7 +111,7 @@ class Bridge:
         server = Server("astral-sdk-bridge")
 
         @server.list_tools()
-        async def _list_tools():  # pragma: no cover - exercised only with the real `mcp` extra
+        async def _list_tools():  # pragma: no cover
             return all_function_schemas()
 
         @server.call_tool()

@@ -1,18 +1,8 @@
-"""Chrome dispatch surface for declarative agents (feature 088 T032/T037).
-
-Exercises the actual ``chrome_declarative_view``/``chrome_declarative_command``
-HANDLERS entries and the "agent_authoring" surface's ``render``/``components``
-declarative sub-view, over the SAME real IAM/Plane/audit qualified by
-``test_declarative_agent_lifecycle_postgres_088`` — never a synthetic caller,
-and never the service layer directly for the behaviors under test here.
-
-The two wire actions are DEFINED in ``authoring.py`` but REGISTERED in
-``guidance.HANDLERS`` (test_declarative_agent_definition_088.py pins
-``authoring.HANDLERS`` to name no "declarative" action — see the comment at
-the registration site in guidance.py for why); ``chrome_events.
-collect_handlers()`` aggregates every surface module by action name alone, so
-this is a dispatch-transparent relocation, not a behavior change.
+"""Tests for the declarative-agent chrome dispatch surface
+(orchestrator/projection_surfaces/authoring.py, guidance.py): the view/command
+handlers over real IAM, owner scoping, and exact-receipt replay.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -29,18 +19,14 @@ from tests.test_declarative_agent_lifecycle_postgres_088 import (
     signing_key as signing_key, source_service as source_service,
 )
 
-# pytest.ini sets asyncio_mode = auto: async tests below need no marker.
-
 
 @pytest.fixture
 def wired(declarations):
-    """The fixture under test: what orchestrator boot wires next to explicit_notes."""
     declarations.api.orch.declarative_agents = declarations.service
     return declarations
 
 
 async def dispatch(state, fn, payload, *, owner_caller=None, user_id=None):
-    """Bind one authenticated caller and invoke a HANDLERS-contract function."""
     current = owner_caller or await caller(state)
     with bind_human_caller(current):
         return await fn(state.api.orch, None, user_id or current.owner_id, [], payload)
@@ -59,8 +45,7 @@ async def components_declarative(state, params, *, owner_caller=None):
 
 
 def test_handlers_are_registered_under_their_wire_names():
-    # Registered in guidance.HANDLERS, not authoring.HANDLERS — see the
-    # module docstring above and the registration comment in guidance.py.
+    # Registered in guidance.HANDLERS, not authoring.HANDLERS
     assert "chrome_declarative_view" not in authoring.HANDLERS
     assert "chrome_declarative_command" not in authoring.HANDLERS
     assert guidance.HANDLERS["chrome_declarative_view"] is authoring._h_declarative_view
@@ -154,7 +139,6 @@ async def test_history_activate_archive_delete_round_trip_through_the_handler(wi
         agent_id=agent_id, state_revision=row["state_revision"])), "delete").model_dump()
     surface, params, notice = await dispatch(state, authoring._h_declarative_command, delete)
     assert "Agent deleted." in notice
-    # create + activate + archive + delete = 4 receipts and 4 audit rows.
     assert counts(state) == (1, 1, 4, 4)
 
 
@@ -177,11 +161,6 @@ async def test_declarative_link_appears_on_the_ordinary_home_page(
     declarations, monkeypatch, user_skills_disabled,
 ):
     from orchestrator import agent_authoring as aa
-    # The step-editor session list needs a Plane draft store this lightweight
-    # test double never wires; stubbing it is orthogonal to what is under test
-    # here (that the new nav entry point renders on the ordinary home page).
-    # ``user_skills_disabled`` sidesteps the skills catalog's os.O_DIRECTORY
-    # capture, which the pinned test suite runs under Linux only.
     monkeypatch.setattr(aa, "list_sessions", lambda *_a, **_k: [])
     current = await caller(declarations)
     with bind_human_caller(current):

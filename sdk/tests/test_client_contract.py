@@ -1,10 +1,8 @@
-"""AstralClient/AsyncAstralClient against the local fake MCP server.
-
-No network access, no real Deep backend — see ``sdk/tests/fake_server.py``
-for exactly what wire behavior is emulated. Genuine end-to-end conformance
-against the REAL server lives in
-``backend/tests/test_framework_conformance_088.py``.
+"""Tests for astral_sdk.client.AstralClient/AsyncAstralClient:
+submit/get/list/poll/cancel round trips, idempotent replay, retry-then-succeed, and
+auth-error mapping against sdk/tests/fake_server.py.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -27,7 +25,7 @@ def test_submit_then_get_round_trips(fake_server):
         assert op.disposition == "queued"
         fetched = client.get_operation(op.id)
         assert fetched.id == op.id
-        assert fetched.created is None  # get never claims "created"
+        assert fetched.created is None
     finally:
         client.close()
 
@@ -68,7 +66,7 @@ def test_cancel_applies_once_and_a_stale_revision_conflicts(fake_server):
         assert first.applied is True
         assert first.operation.disposition == "cancelled"
         with pytest.raises(AstralConflictError):
-            client.cancel_operation(op.id, expected_revision=op.revision)  # now stale
+            client.cancel_operation(op.id, expected_revision=op.revision)
 
 
 def test_get_artifact(fake_server):
@@ -92,8 +90,6 @@ def test_invalid_token_raises_auth_error_with_the_challenge_code(fake_server):
     with AstralClient(fake_server.base_url, "afk_wrong-token") as client:
         with pytest.raises(AstralAuthError) as excinfo:
             client.get_operation("does-not-matter")
-        # The JSON body only ever says "MCP authorization failed" — the real
-        # machine-readable code rides the WWW-Authenticate challenge header.
         assert excinfo.value.code == "invalid_token"
         assert excinfo.value.status_code == 401
 
@@ -135,8 +131,6 @@ def test_empty_token_is_rejected_before_any_request():
         AstralClient("http://example.invalid", "")
 
 
-# -- async twin -------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_async_client_submit_and_get(fake_server):
     client = AsyncAstralClient(fake_server.base_url, fake_server.state.valid_token)
@@ -162,7 +156,6 @@ async def test_async_client_wait_for_terminal(fake_server):
     async with AsyncAstralClient(fake_server.base_url, fake_server.state.valid_token) as client:
         op = await client.submit_operation(idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
         await client.pause_operation(op.id, expected_revision=op.revision)
-        # pausing is not terminal; cancel it next and confirm wait_for_terminal returns.
         paused = await client.get_operation(op.id)
         await client.cancel_operation(op.id, expected_revision=paused.revision)
         terminal = await client.wait_for_terminal(op.id, poll_interval_seconds=0.01, timeout_seconds=5)

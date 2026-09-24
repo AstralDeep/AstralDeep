@@ -1,6 +1,8 @@
+"""MCP server for the General agent: dispatches tools/list and tools/call to
+mcp_tools.py's TOOL_REGISTRY, including draining a @streaming_tool async generator to
+its first chunk for callers on the non-streaming snapshot path.
 """
-MCP Server — dispatches tool calls to registered tool functions.
-"""
+
 import asyncio
 import inspect
 import os
@@ -15,10 +17,9 @@ from agents.general.mcp_tools import TOOL_REGISTRY
 
 logger = logging.getLogger('MCPServer')
 
-# Exceptions that indicate a transient/network issue worth retrying
 RETRYABLE_EXCEPTIONS = (
     ConnectionError, TimeoutError, json.JSONDecodeError,
-    OSError,  # covers socket errors
+    OSError,
 )
 
 try:
@@ -29,18 +30,14 @@ try:
 except ImportError:
     pass
 
-# Exceptions that indicate bad arguments / logic errors — never retry
 NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class MCPServer:
-    """Simple MCP server that routes tool/call requests to registered functions."""
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 
     def get_tool_list(self) -> list:
-        """Return list of available tools with their schemas."""
         return [
             {
                 "name": name,
@@ -52,16 +49,13 @@ class MCPServer:
 
     @staticmethod
     def _classify_error(exc: Exception) -> bool:
-        """Return True if the error is retryable (transient), False otherwise."""
         if isinstance(exc, RETRYABLE_EXCEPTIONS):
             return True
         if isinstance(exc, NON_RETRYABLE_EXCEPTIONS):
             return False
-        # Default: mark unknown errors as retryable to give them a chance
         return True
 
     def process_request(self, request: MCPRequest) -> MCPResponse:
-        """Process an MCP request and return a response."""
         if request.method == "tools/list":
             return MCPResponse(
                 request_id=request.request_id,
@@ -82,17 +76,6 @@ class MCPServer:
             try:
                 tool_fn = self.tools[tool_name]["function"]
 
-                # 001-tool-stream-ui: a streaming tool (async generator
-                # decorated with @streaming_tool) called via the snapshot
-                # path. This happens when:
-                #   1. FF_TOOL_STREAMING is OFF and the LLM picks a streaming
-                #      tool from tools/list (the SDK still registers them).
-                #   2. The user calls a streaming tool directly without the
-                #      _stream=True flag.
-                # In either case, drain the generator to its FIRST yielded
-                # chunk and return that as the MCPResponse — the user gets
-                # a working snapshot. The generator's `finally` cleanup
-                # runs on aclose() so no upstream subscriptions leak.
                 if inspect.isasyncgenfunction(tool_fn):
                     return self._drain_streaming_tool_to_snapshot(
                         request.request_id, tool_name, tool_fn, arguments,
@@ -103,16 +86,13 @@ class MCPServer:
                 if isinstance(result, dict) and isinstance(result.get("_error"), dict):
                     return MCPResponse(request_id=request.request_id, error=result["_error"])
 
-                # Check if the tool itself returned an error via UI components
                 if isinstance(result, dict) and "_ui_components" in result:
                     ui_comps = result["_ui_components"]
-                    # Detect tool-level errors (Alert with variant="error")
                     has_error = any(
                         isinstance(c, dict) and c.get("variant") == "error"
                         for c in ui_comps
                     )
                     if has_error:
-                        # Extract the error message from the alert
                         error_msg = "Tool returned an error"
                         for c in ui_comps:
                             if isinstance(c, dict) and c.get("variant") == "error":
@@ -160,21 +140,6 @@ class MCPServer:
         tool_fn: Any,
         arguments: Dict[str, Any],
     ) -> MCPResponse:
-        """Drain a @streaming_tool async generator to its first yielded
-        StreamComponents and return that as a single MCPResponse.
-
-        Used when the LLM picks a streaming tool from `tools/list` but the
-        request comes through the normal snapshot path (FF_TOOL_STREAMING off,
-        or _stream flag not set). The user sees a one-shot snapshot — exactly
-        the behavior of the equivalent non-streaming tool — without breaking
-        when the tool happens to be an async generator.
-
-        The agent's regular streaming dispatch in BaseA2AAgent still handles
-        the full async-generator path when FF_TOOL_STREAMING is on AND
-        _stream=True. This method is the fallback for the snapshot case.
-        """
-        # The MCPServer is invoked from a worker thread (asyncio.to_thread).
-        # We need our own loop here to drive the async generator.
         loop = asyncio.new_event_loop()
         try:
             agen = tool_fn(arguments, {})
@@ -191,15 +156,11 @@ class MCPServer:
                     ui_components=[],
                 )
             finally:
-                # Always close the generator so its `finally` block runs
-                # to release upstream subscriptions / file handles / etc.
                 try:
                     loop.run_until_complete(agen.aclose())
                 except Exception:
                     pass
 
-            # first_chunk is a StreamComponents instance — extract its
-            # components and raw data into the snapshot wire shape.
             components = list(getattr(first_chunk, "components", []) or [])
             raw = getattr(first_chunk, "raw", None)
             return MCPResponse(

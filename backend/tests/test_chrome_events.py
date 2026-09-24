@@ -1,9 +1,8 @@
-"""Feature 027 — T019/T027/T029: chrome dispatcher, convergence, admin gating.
-
-DB-free: a fake orchestrator + a stub surface module exercise routing,
-re-render-with-notice, error paths, admin DOM/action gating, and the
-chat↔drafts-surface convergence (SC-007).
+"""Tests for the chrome dispatcher (backend/orchestrator/chrome_events.py): surface
+routing, re-render-with-notice, error handling, admin gating, and chat-created drafts
+converging into projection_surfaces/drafts.py.
 """
+
 import asyncio
 import json
 import sys
@@ -19,11 +18,6 @@ class FakeWS:
 
 
 class FakeOrch:
-
-    # 056 US2: machine-turn classes derive their root authority at the
-    # orchestrator's shared seam; a stand-in must model it. No durable consent
-    # exists in these tests, so the honest answer is an AuthoritySkip (the turn
-    # runs unbound, exactly as it does in dev posture today).
     async def derive_machine_authority(self, **kwargs):
         from orchestrator.chain_authority import AuthoritySkip
         return AuthoritySkip("missing_consent", "test double")
@@ -49,7 +43,6 @@ def run(coro):
 
 @pytest.fixture
 def stub_surface(monkeypatch):
-    """Register a stub surface module under key 'stub' and reset the cache."""
     mod = types.ModuleType("tests.stub_surface")
     mod.TITLE = "Stub"
 
@@ -79,10 +72,6 @@ def _last_modal(orch):
     return frames[-1]["html"]
 
 
-# ---------------------------------------------------------------------------
-# T019 — dispatcher routing
-# ---------------------------------------------------------------------------
-
 def test_chrome_open_renders_surface_into_modal(stub_surface):
     orch = FakeOrch()
     handled = run(chrome_events.handle_chrome_event(
@@ -90,7 +79,7 @@ def test_chrome_open_renders_surface_into_modal(stub_surface):
     assert handled is True
     html = _last_modal(orch)
     assert 'id="stub-body"' in html and '"x": 1' in html
-    assert 'role="dialog"' in html and "Stub" in html  # modal shell + title
+    assert 'role="dialog"' in html and "Stub" in html
 
 
 def test_chrome_open_accepts_json_string_params(stub_surface):
@@ -131,8 +120,8 @@ def test_handler_tuple_rerenders_with_notice(stub_surface):
     orch = FakeOrch()
     run(chrome_events.handle_chrome_event(orch, orch.ws, "chrome_stub_save", {}, "u1"))
     html = _last_modal(orch)
-    assert "astral-chrome-notice" in html  # notice prepended
-    assert '"saved": true' in html  # re-rendered with handler params
+    assert "astral-chrome-notice" in html
+    assert '"saved": true' in html
 
 
 def test_handler_exception_renders_error_block(stub_surface):
@@ -144,8 +133,6 @@ def test_handler_exception_renders_error_block(stub_surface):
 
 
 def _native(orch):
-    """Give a FakeOrch a native (windows) ROTE profile so error notices take
-    the chrome_surface path (feature 044 — surface_key assertions)."""
     from rote.capabilities import DeviceProfile
     profile = DeviceProfile.from_dict({"device_type": "windows"})
     orch.rote = types.SimpleNamespace(get_profile=lambda ws: profile)
@@ -197,10 +184,6 @@ def test_creation_actions_registered():
         assert action in handlers, f"missing handler: {action}"
 
 
-# ---------------------------------------------------------------------------
-# T029 — admin gating (US4)
-# ---------------------------------------------------------------------------
-
 def test_admin_surface_denied_for_non_admin():
     chrome_events._HANDLERS = None
     orch = FakeOrch(roles=("user",))
@@ -239,10 +222,6 @@ def test_roles_extracted_from_resource_access_too():
     orch.ui_sessions[orch.ws] = {"resource_access": {"astral": {"roles": ["admin"]}}}
     assert "admin" in chrome_events._roles(orch, orch.ws)
 
-
-# ---------------------------------------------------------------------------
-# T027 — convergence: chat-created drafts are first-class in the drafts surface
-# ---------------------------------------------------------------------------
 
 class _ConvDB:
     def __init__(self):
@@ -330,7 +309,6 @@ def test_chat_created_draft_appears_in_drafts_surface_and_discards(monkeypatch):
             {"type": "card", "title": "ok", "content": [{"type": "text", "content": "fine"}]}]})
     orch.handle_chat_message = handle_chat_message
 
-    # 056 US2: the self-test is a machine turn — model the authority seam.
     async def derive_machine_authority(**kwargs):
         from orchestrator.chain_authority import AuthoritySkip
         return AuthoritySkip("missing_consent", "test double")
@@ -338,7 +316,6 @@ def test_chat_created_draft_appears_in_drafts_surface_and_discards(monkeypatch):
     orch._bind_machine_turn = lambda vws, authority: None
     orch._unbind_machine_turn = lambda vws: None
 
-    # 1. Created from chat
     res = run(ac.handle_meta_tool(
         orch, "create_capability",
         {"agent_name": "Conv Agent", "description": "does convergence things",
@@ -347,14 +324,12 @@ def test_chat_created_draft_appears_in_drafts_surface_and_discards(monkeypatch):
         user_id="u1", chat_id="c1"))
     assert res.result["status"] == "created"
 
-    # 2. Appears in the drafts surface with its origin badge + decisions
     html = run(drafts_surface.render(orch, "u1", [], {}))
     assert "Conv Agent" in html and "from chat" in html
     detail = run(drafts_surface.render(orch, "u1", [], {"draft_id": "d-conv"}))
     assert 'data-ui-action="draft_approve"' in detail
     assert 'data-ui-action="draft_discard"' in detail
 
-    # 3. Discardable from the surface via the SAME handler chat uses (SC-007)
     run(ac.HANDLERS["draft_discard"](orch, FakeWS(), "u1", [], {"draft_id": "d-conv"}))
     assert ("delete", "d-conv") in lifecycle_calls
     html_after = run(drafts_surface.render(orch, "u1", [], {}))

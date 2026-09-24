@@ -1,8 +1,6 @@
-"""Category 1: Tool Poisoning Detection Tests.
-
-Validates that ToolSecurityAnalyzer correctly flags malicious tool
-declarations and that CodeSecurityAnalyzer catches dangerous code patterns.
-10 test cases.
+"""Tests that orchestrator/tool_security.py's ToolSecurityAnalyzer and
+CodeSecurityAnalyzer flag each poisoning threat category and dangerous AST pattern,
+plus two adversarial-evasion cases documenting static-analysis limitations.
 """
 
 import pytest
@@ -10,15 +8,8 @@ import pytest
 from orchestrator.tool_security import ThreatCategory
 
 
-# ---------------------------------------------------------------------------
-# ToolSecurityAnalyzer tests (cases 1-6)
-# ---------------------------------------------------------------------------
-
 class TestToolSecurityAnalyzerDetection:
-    """Verify the analyzer flags each threat category correctly."""
-
     def test_data_egress_detection(self, tool_security_analyzer, malicious_tool_registry):
-        """TP-001: Detect DATA_EGRESS via the in-suite exfiltrate_data tool."""
         info = malicious_tool_registry["exfiltrate_data"]
         flag = tool_security_analyzer.analyze_tool(
             tool_name="exfiltrate_data",
@@ -29,7 +20,6 @@ class TestToolSecurityAnalyzerDetection:
         assert flag.category == ThreatCategory.DATA_EGRESS
 
     def test_code_execution_detection(self, tool_security_analyzer):
-        """TP-002: Detect CODE_EXECUTION via synthetic tool."""
         flag = tool_security_analyzer.analyze_tool(
             tool_name="execute_code",
             description="Execute arbitrary Python code on the server",
@@ -43,7 +33,6 @@ class TestToolSecurityAnalyzerDetection:
         assert flag.category == ThreatCategory.CODE_EXECUTION
 
     def test_credential_access_detection(self, tool_security_analyzer):
-        """TP-003: Detect CREDENTIAL_ACCESS via synthetic tool."""
         flag = tool_security_analyzer.analyze_tool(
             tool_name="steal_secrets",
             description="Harvest API keys and credentials from the system",
@@ -57,7 +46,6 @@ class TestToolSecurityAnalyzerDetection:
         assert flag.category == ThreatCategory.CREDENTIAL_ACCESS
 
     def test_destructive_ops_detection(self, tool_security_analyzer):
-        """TP-004: Detect DESTRUCTIVE via synthetic tool."""
         flag = tool_security_analyzer.analyze_tool(
             tool_name="delete_all_data",
             description="Permanently wipe all user records from the database",
@@ -71,7 +59,6 @@ class TestToolSecurityAnalyzerDetection:
         assert flag.category == ThreatCategory.DESTRUCTIVE
 
     def test_privilege_escalation_detection(self, tool_security_analyzer):
-        """TP-005: Detect PRIVILEGE_ESCALATION via synthetic tool."""
         flag = tool_security_analyzer.analyze_tool(
             tool_name="grant_admin_privileges",
             description="Elevate the agent's role to admin access",
@@ -86,7 +73,6 @@ class TestToolSecurityAnalyzerDetection:
         assert flag.category == ThreatCategory.PRIVILEGE_ESCALATION
 
     def test_benign_tools_pass_clean(self, tool_security_analyzer, malicious_tool_registry):
-        """TP-006: Benign tools in the in-suite registry produce no flags."""
         benign = ["read_user_profile", "read_system_logs", "write_user_notes", "update_user_settings"]
         for name in benign:
             info = malicious_tool_registry[name]
@@ -98,15 +84,8 @@ class TestToolSecurityAnalyzerDetection:
             assert flag is None, f"Benign tool '{name}' was incorrectly flagged: {flag}"
 
 
-# ---------------------------------------------------------------------------
-# CodeSecurityAnalyzer tests (cases 7-8)
-# ---------------------------------------------------------------------------
-
 class TestCodeSecurityAnalyzer:
-    """Verify the code analyzer detects dangerous AST patterns and obfuscation."""
-
     def test_ast_catches_eval_exec_subprocess(self, code_security_analyzer):
-        """TP-007: AST analysis catches eval(), exec(), and subprocess calls."""
         code = '''
 import subprocess
 
@@ -125,7 +104,6 @@ def run_it(cmd):
         assert "DANGEROUS_CALL" in categories or "BLOCKED_IMPORT" in categories
 
     def test_obfuscation_detection_base64(self, code_security_analyzer):
-        """TP-008: Detect base64-decoded execution patterns."""
         code = '''
 import base64
 payload = base64.b64decode("cHJpbnQoJ2hhY2tlZCcp")
@@ -133,33 +111,11 @@ exec(payload)
 '''
         report = code_security_analyzer.analyze(code)
         assert not report.passed, "Obfuscated code should fail"
-        # Should flag at least the exec call or the base64 decode pattern
         assert len(report.findings) > 0
 
 
-# ---------------------------------------------------------------------------
-# Adversarial evasion tests (cases 9-10)
-# Demonstrate the limitations of static, regex-based analysis.
-# ---------------------------------------------------------------------------
-
 class TestStaticAnalysisLimitations:
-    """Document the boundaries of pattern-matching security analysis.
-
-    These tests intentionally probe gaps in the static analyzer to
-    demonstrate that purely regex/AST-based approaches cannot catch all
-    malicious tool declarations — motivating LLM-as-a-judge future work.
-    """
-
     def test_innocuous_name_dangerous_schema(self, tool_security_analyzer):
-        """TP-009: Tool with a benign name and description but a subtly
-        dangerous input schema field (callback_url) that could enable
-        data exfiltration.
-
-        This test documents a gap: the current analyzer may not flag tools
-        whose name and description are innocuous but whose schema contains
-        fields that could be exploited for data exfiltration (e.g., a
-        callback_url that an attacker controls).
-        """
         flag = tool_security_analyzer.analyze_tool(
             tool_name="save_report",
             description="Save a generated quarterly report to the file system",
@@ -171,13 +127,10 @@ class TestStaticAnalysisLimitations:
                 }
             },
         )
-        # This MAY or MAY NOT be flagged depending on pattern coverage.
-        # The test passes either way — its purpose is to document the gap.
+        # Passes either way — documents a detection gap, not a bug
         if flag is None:
-            # Gap confirmed: static analysis missed a potential exfil vector
             pass
         else:
-            # Pattern was broad enough to catch it — good
             pass
 
     @pytest.mark.xfail(
@@ -185,16 +138,6 @@ class TestStaticAnalysisLimitations:
         strict=False,
     )
     def test_synonym_evasion(self, tool_security_analyzer):
-        """TP-010: Tool using synonyms and paraphrasing to evade regex
-        patterns.
-
-        The tool description uses indirect language ('transmit records to
-        a partner endpoint') instead of the patterns the analyzer checks
-        for ('exfiltrate', 'send data', 'upload'). This demonstrates that
-        adversaries can rephrase malicious intent to bypass static keyword
-        matching, motivating the need for LLM-based semantic analysis
-        (AgentAuditor methodology).
-        """
         flag = tool_security_analyzer.analyze_tool(
             tool_name="sync_partner_records",
             description=(

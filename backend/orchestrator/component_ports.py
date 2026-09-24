@@ -1,10 +1,6 @@
-"""Host-neutral component ports owned by the AstralDeep composition layer.
-
-These structural contracts let the orchestrator depend on presentation and
-durable-state capabilities without importing either component's implementation
-types.  Boundary records intentionally contain only standard-library values.
-They carry identity for owner-scoped operations, but never constitute proof of
-authorization: Deep must construct them only after its normal security gates.
+"""Host-neutral structural ports the orchestrator uses for presentation and
+durable-state access without importing implementations; records carry identity but
+never prove authorization, consumed by projection_controllers.py.
 """
 
 from __future__ import annotations
@@ -125,15 +121,13 @@ def _freeze_mapping(value: object, name: str) -> BoundaryMapping:
     if not isinstance(value, Mapping):
         raise ValueError(f"{name} must be a host-neutral mapping")
     frozen = _freeze_value(value, name)
-    if not isinstance(frozen, Mapping):  # pragma: no cover - guarded above
+    if not isinstance(frozen, Mapping):  # pragma: no cover
         raise ValueError(f"{name} must be a host-neutral mapping")
     return frozen
 
 
 @dataclass(frozen=True, slots=True)
 class PresentationContext:
-    """Authenticated subject identifiers supplied by a Deep controller."""
-
     owner_id: str
     actor_id: str
     correlation_id: str
@@ -149,8 +143,6 @@ class PresentationContext:
 
 @dataclass(frozen=True, slots=True)
 class PresentationQuery:
-    """One authorized request for supplied-state presentation data."""
-
     surface: str
     operation: str
     context: PresentationContext
@@ -170,8 +162,6 @@ class PresentationQuery:
 
 @dataclass(frozen=True, slots=True)
 class PresentationView:
-    """Plain immutable model returned for rendering by the presentation owner."""
-
     surface: str
     revision: int | None = None
     model: BoundaryMapping = field(default_factory=_empty_mapping)
@@ -184,8 +174,6 @@ class PresentationView:
 
 @dataclass(frozen=True, slots=True)
 class PresentationCommand:
-    """One controller-authorized mutation originating from a presentation."""
-
     surface: str
     action: str
     context: PresentationContext
@@ -210,8 +198,6 @@ class PresentationCommand:
 
 @dataclass(frozen=True, slots=True)
 class PresentationCommandResult:
-    """Safe result of an attempted presentation command."""
-
     accepted: bool
     code: str
     revision: int | None = None
@@ -227,22 +213,16 @@ class PresentationCommandResult:
 
 @runtime_checkable
 class PresentationQueryPort(Protocol):
-    """Structural presentation-query boundary consumed by Deep."""
-
     def query(self, query: PresentationQuery, /) -> PresentationView: ...
 
 
 @runtime_checkable
 class PresentationCommandPort(Protocol):
-    """Structural presentation-command boundary consumed by Deep."""
-
     def execute(self, command: PresentationCommand, /) -> PresentationCommandResult: ...
 
 
 @dataclass(frozen=True, slots=True)
 class DurableOwner:
-    """Explicit durable owner namespace and identifier."""
-
     namespace: str
     owner_id: str
 
@@ -253,8 +233,6 @@ class DurableOwner:
 
 @dataclass(frozen=True, slots=True)
 class DurableStateQuery:
-    """Host request for owner-scoped durable records."""
-
     domain: str
     operation: str
     owner: DurableOwner
@@ -282,8 +260,6 @@ class DurableStateQuery:
 
 @dataclass(frozen=True, slots=True)
 class DurableStateRecord:
-    """Detached immutable durable record; no driver row or cursor may escape."""
-
     domain: str
     record_id: str
     owner: DurableOwner
@@ -301,8 +277,6 @@ class DurableStateRecord:
 
 @dataclass(frozen=True, slots=True)
 class DurableStatePage:
-    """One detached page of durable records."""
-
     records: tuple[DurableStateRecord, ...] = ()
     next_cursor: str | None = None
 
@@ -317,8 +291,6 @@ class DurableStatePage:
 
 @dataclass(frozen=True, slots=True)
 class DurableStateCommand:
-    """One owner-scoped durable mutation requested by Deep."""
-
     domain: str
     operation: str
     owner: DurableOwner
@@ -339,8 +311,6 @@ class DurableStateCommand:
 
 @dataclass(frozen=True, slots=True)
 class DurableStateCommandResult:
-    """Detached result metadata for one durable mutation."""
-
     applied: bool
     code: str
     revision: int | None = None
@@ -357,8 +327,6 @@ class DurableStateCommandResult:
 
 @runtime_checkable
 class DurableStateTransaction(Protocol):
-    """Caller-owned durable transaction with no implicit nested commit."""
-
     def fetch_one(self, query: DurableStateQuery, /) -> DurableStateRecord | None: ...
 
     def fetch_page(self, query: DurableStateQuery, /) -> DurableStatePage: ...
@@ -368,8 +336,6 @@ class DurableStateTransaction(Protocol):
 
 @runtime_checkable
 class DurableStateService(Protocol):
-    """Factory for explicit caller-owned durable transactions."""
-
     def transaction(
         self, *, read_only: bool = False
     ) -> ContextManager[DurableStateTransaction]: ...

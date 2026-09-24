@@ -1,4 +1,7 @@
-"""``astral_sdk.mcp_bridge.Bridge`` against the local fake server (no `mcp` package)."""
+"""Tests for astral_sdk.mcp_bridge.Bridge: tools/list, tools/call, JSON-RPC error
+mapping, and the stdio request/response loop against the local fake server.
+"""
+
 from __future__ import annotations
 
 import io

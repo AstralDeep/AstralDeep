@@ -1,4 +1,8 @@
-"""Feature-060 authenticated operation reconciliation API contracts (T030)."""
+"""Tests for the authenticated operation-reconciliation API
+(backend/orchestrator/api.py, auth.py, work_admission.py): safe field projection,
+owner scoping, not-found parity for unknown/cross-owner access, and admin-gated
+metrics export.
+"""
 
 from __future__ import annotations
 
@@ -291,10 +295,7 @@ def test_openapi_documents_both_authenticated_reconciliation_paths() -> None:
 
 def test_authenticated_metrics_export_refreshes_effective_admission_gauges() -> None:
     client = _client(_coordinator())
-    # Feature 080 gates deployment diagnostics behind the existing verified-admin
-    # role.  Override only the verified-payload boundary so the genuine
-    # ``verify_admin`` role check runs against a synthetic admin principal; never
-    # override ``verify_admin`` itself or weaken the owner-isolation fixtures.
+    # Override only the payload — the real verify_admin check still runs
     client.app.dependency_overrides[get_current_user_payload] = lambda: {
         "sub": "owner-a",
         "realm_access": {"roles": ["admin", "user"]},

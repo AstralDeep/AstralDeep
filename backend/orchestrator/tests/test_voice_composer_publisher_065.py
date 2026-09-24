@@ -1,4 +1,7 @@
-"""Server-owned composer projections after registration and REST mutations."""
+"""Tests for server-owned voice composer projections (orchestrator.py,
+voice_control_binding.py, voice_runtime.py) after registration and REST mutations:
+ownership-gated readiness/controls, mute independence, and takeover offers.
+"""
 
 from __future__ import annotations
 

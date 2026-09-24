@@ -1,13 +1,8 @@
-"""Server-generated onboarding personalization panels (feature 025, T019).
-
-Each step renders as a ParamPicker primitive (FR-001/031). On submit the
-frontend interpolates ``submit_message_template`` and sends it as a chat
-message; the orchestrator interprets it and persists via the personalization
-tools/endpoints. Returns the standard ``create_ui_response`` envelope so the
-panels render through the existing DynamicRenderer with no new frontend code.
-
-Pure functions — unit-testable without the stack.
+"""Builds ParamPicker onboarding panels for profession, skills, and personality as
+create_ui_response envelopes, rendered by the existing DynamicRenderer with no new
+frontend code; skill recommendations come from skills_reco.py.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -36,13 +31,6 @@ def build_profession_panel(profile: Optional[Dict[str, Any]] = None) -> Dict[str
 
 
 def build_skills_panel(recommendations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Render a checklist of recommended skills (agent tools).
-
-    ``recommendations`` come from ``recommend_skills``. Tools the user is not
-    authorized for are shown but disabled with a reason (FR-011); here we
-    surface them as non-default options labelled with their scope so the
-    orchestrator can refuse to enable an unauthorized one.
-    """
     if not recommendations:
         return create_ui_response([
             Alert(

@@ -1,36 +1,8 @@
-"""Owner-issued framework credentials (feature 088 T046-T048).
-
-A framework credential lets an owner mint a durable, independently-lifetimed
-bearer token for their OWN external tooling (an SDK script, an MCP client, an
-A2A caller) while their interactive session is live, WITHOUT handing that
-tooling their real session or a delegation chain. Unlike a delegation, an
-issued credential carries no parent binding: its scopes and expiry are fixed
-at mint time from the owner's own current authority and it is never
-attenuated from another issued credential (see
-``astralplane.repositories.framework_credentials`` and
-``docs/credentials-and-grants.md`` "Framework credentials (088.008)").
-
-Plane never sees the plaintext token or the token's structure — only a
-SHA-256 hex digest and a short non-secret display prefix are ever persisted.
-This module owns the token's actual shape:
-
-    afk_<base64url(owner_id)>.<credential_id>.<random secret>
-
-Both ``owner_id`` and ``credential_id`` are cleartext in the presented
-bearer — neither is confidential (a JWT's ``sub`` claim is no more secret),
-and Plane's ``assert_current_execution`` requires the caller to already know
-both before it will re-verify a credential under lock. All authority rests
-on the high-entropy secret segment: its SHA-256 hash is what Plane stores and
-what Plane re-checks, fresh, on every use.
-
-Issuance reuses the SAME ``SessionConsentObservation``/``assert_current_consent``
-discipline as ``offline_grant.OfflineGrantStore`` and
-``orchestrator.human_request_authority.CurrentHumanCaller`` — a bare Bearer
-caller (no live cookie session) can never mint or revoke a credential, and a
-live session that is concurrently revoked or retired loses the mint race
-instead of winning it (closing the donor reference implementation's
-pre-lock-authority defect; see the Plane module docstring).
+"""Lets an owner mint durable, independently-lived bearer tokens for their own external
+tooling (SDK/MCP/A2A callers) without sharing their session; Plane persists only a
+hash and display prefix, never the token.
 """
+
 from __future__ import annotations
 
 import base64
@@ -62,14 +34,13 @@ from persistent_agents.models import AssignmentError
 
 _TOKEN_PREFIX = "afk_"
 _OBSERVATION_WINDOW = timedelta(seconds=15)
-_MIN_TTL_SECONDS = 300           # 5 minutes
-_MAX_TTL_SECONDS = 90 * 86400    # 90 days
+_MIN_TTL_SECONDS = 300
+_MAX_TTL_SECONDS = 90 * 86400
 _NAME_MAX = 128
 _UUID4_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 _OWNER_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-]{1,700}")
-# Belt-and-suspenders bound on a bearer's total length before any parsing.
 _MAX_TOKEN_LENGTH = 2048
 
 
@@ -79,14 +50,9 @@ def _now() -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class FrameworkCaller:
-    """A resolved, currently-valid framework bearer. Never the plaintext token."""
-
     owner_id: str
     credential_id: str
     scopes: frozenset[str]
-    # Carried only so a writer can re-derive a fresh execution observation
-    # immediately before its own write transaction (see ``fresh_observation``);
-    # never logged and never re-derivable from anything but the original bearer.
     _token_hash: str = field(repr=False)
 
     def has_scope(self, scope: str) -> bool:
@@ -143,13 +109,6 @@ def _validate_admissions(value: object) -> int:
 
 
 def _view_row(record: FrameworkCredentialRecord) -> dict:
-    """Project one credential row for the Connections surface. Never the secret.
-
-    ``revision`` has no independent meaning to Plane (revocation is a CAS on
-    ``revoked_at IS NULL``, not a numbered generation) — it exists only so the
-    Projection row shape's optimistic-concurrency field is populated with a
-    monotonically-non-decreasing value the UI can echo back on Revoke.
-    """
     now = _now().timestamp()
     return {
         "credential_id": record.credential_id,
@@ -167,13 +126,6 @@ def _view_row(record: FrameworkCredentialRecord) -> dict:
 
 
 class FrameworkCredentialService:
-    """Issue/list/revoke owner framework credentials; resolve a bearer to a caller.
-
-    ``audit`` must be a real ``audit.repository.AuditRepository`` bound to the
-    SAME Plane runtime — mint and revoke are security-sensitive and refuse to
-    run unaudited, mirroring ``orchestrator.work_control_audit.WorkControlAudit``.
-    """
-
     def __init__(
         self,
         *,
@@ -203,8 +155,6 @@ class FrameworkCredentialService:
     def plane_runtime(self):
         return self._credentials.plane_runtime
 
-    # -- writes ---------------------------------------------------------
-
     def issue(
         self,
         *,
@@ -215,14 +165,6 @@ class FrameworkCredentialService:
         expires_in_seconds: int,
         max_admissions: int,
     ) -> tuple[dict, str]:
-        """Mint one credential; return ``(view_row, plaintext_token)`` once.
-
-        The plaintext is generated in memory, never persisted or logged, and
-        returned to the caller exactly once, only after the mint has
-        committed. ``caller`` must be a fresh (<=15s) ``SessionConsentObservation``
-        naming ``owner_id`` — a bare-Bearer request (no live cookie session)
-        can never reach this method with one.
-        """
         if not isinstance(owner_id, str) or not owner_id:
             raise AssignmentError("framework_credential_authority_required", 401)
         if not isinstance(caller, SessionConsentObservation) or caller.credential.owner_id != owner_id:
@@ -306,8 +248,6 @@ class FrameworkCredentialService:
             raise AssignmentError("framework_credential_invalid", 422) from exc
         return _view_row(record)
 
-    # -- reads ------------------------------------------------------------
-
     def list(self, *, owner_id: str) -> list[dict]:
         if not isinstance(owner_id, str) or not owner_id:
             raise AssignmentError("framework_credential_authority_required", 401)
@@ -316,15 +256,7 @@ class FrameworkCredentialService:
         )
         return [_view_row(record) for record in records]
 
-    # -- bearer resolution (MCP/A2A/SDK ingress) --------------------------
-
     def resolve_bearer(self, token: object) -> Optional[FrameworkCaller]:
-        """Resolve a presented bearer to a currently-valid ``FrameworkCaller``.
-
-        Returns ``None`` for anything that is not a plausible/valid/current
-        framework credential — never raises for a merely-unrecognized token,
-        so a caller can cleanly fall back to another credential class.
-        """
         parsed = self._parse_token(token)
         if parsed is None:
             return None
@@ -372,13 +304,6 @@ class FrameworkCredentialService:
         )
 
     def consume_admission(self, transaction, *, owner_id: str, credential_id: str):
-        """Charge exactly one admission inside the caller's OWN transaction.
-
-        Exposed so a framework-authorized write (e.g. Work submission) can
-        settle its allowance atomically with its own mutation — never call
-        this outside a transaction the caller already owns and will commit or
-        roll back as one unit with the work it guards.
-        """
         try:
             return self._credentials.repository.consume_admission(
                 transaction, owner_id=owner_id, credential_id=credential_id,
@@ -387,12 +312,6 @@ class FrameworkCredentialService:
             raise AssignmentError("credential_allowance_exhausted", 409) from exc
 
     def assert_execution(self, transaction, observation: FrameworkCredentialObservation):
-        """Re-verify one observation, under lock, inside the caller's transaction.
-
-        Thin pass-through to the Plane execution-authority guard so a writer
-        (e.g. Work submission/control) never has to reach into this service's
-        private repository binding.
-        """
         try:
             return self._credentials.repository.assert_current_execution(
                 transaction, observation=observation,
@@ -401,17 +320,6 @@ class FrameworkCredentialService:
             raise AssignmentError("framework_credential_authority_unavailable", 409) from exc
 
     def fresh_observation(self, caller: FrameworkCaller):
-        """Re-read the current row and build a fresh (<=15s) observation.
-
-        ``caller`` must be a ``FrameworkCaller`` this process already produced
-        via ``resolve_bearer`` in this same request — its ``_token_hash`` is
-        never re-derived from anything the caller supplies now. A writer calls
-        this immediately before its own write transaction (Plane's execution
-        guard re-verifies it, under lock, inside that same transaction).
-        Returns ``None`` when the credential is no longer resolvable at all
-        (deleted between resolution and use) rather than raising, so the
-        caller can produce one honest refusal.
-        """
         if not isinstance(caller, FrameworkCaller):
             return None
         try:
@@ -439,8 +347,6 @@ class FrameworkCredentialService:
             return None
         now = _now()
         return FrameworkCredentialObservation(fence, now, now + _OBSERVATION_WINDOW)
-
-    # -- internals ----------------------------------------------------------
 
     def _parse_token(self, token: object) -> Optional[tuple[str, str, str]]:
         if (not isinstance(token, str) or not token.startswith(_TOKEN_PREFIX)

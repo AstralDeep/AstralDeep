@@ -1,17 +1,8 @@
-"""Shared fixtures for the llm_config test suite (feature 054-byo-llm-setup).
-
-The persisted store consumes the application Plane runtime and its typed
-``encrypted_llm_config`` repository.  These tests use a narrow in-memory
-implementation of that exact repository contract; no SQL or retired Deep
-database facade is present in the fixture.
-
-Feature 089 adds the sibling ``encrypted_typesafe_credential`` repository to
-the same fixture catalog, including the fingerprint condition on
-``record_outcome`` -- the behavior the store's idempotency depends on.
-
-``CREDENTIAL_ENCRYPTION_KEY`` is monkeypatched to a per-test generated
-Fernet key so no dev key file is ever written by the suite.
+"""Shared fixtures for the llm_config test suite: in-memory Plane repository doubles for
+the encrypted LLM/TypeSafe/data-sharing tables, a generated-per-test Fernet key, and
+store/recorder fixtures built on them.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -41,8 +32,6 @@ def _stored_time(value: object | None) -> datetime:
 
 
 class InMemoryEncryptedLLMConfigRepository:
-    """Typed Plane repository double with inspectable encrypted state."""
-
     def __init__(self, storage: "CredentialPlaneFixture") -> None:
         self._storage = storage
 
@@ -169,8 +158,6 @@ class InMemoryEncryptedLLMConfigRepository:
 
 
 class InMemoryTypeSafeCredentialRepository:
-    """Typed Plane double for the 089.001 TypeSafe credential table."""
-
     def __init__(self, storage: "CredentialPlaneFixture") -> None:
         self._storage = storage
 
@@ -241,8 +228,6 @@ class InMemoryTypeSafeCredentialRepository:
         expected_fingerprint: str,
     ) -> bool:
         row = self._storage.typesafe.get(owner_id)
-        # The fingerprint is the whole point: an outcome observed on a key the
-        # owner has since replaced must update nothing.
         if row is None or row["key_fingerprint"] != expected_fingerprint:
             return False
         row["last_verification_outcome"] = outcome
@@ -255,8 +240,6 @@ class InMemoryTypeSafeCredentialRepository:
 
 
 class InMemoryDataSharingRepository:
-    """Typed Plane double for the 089.001 data-sharing acknowledgment table."""
-
     def __init__(self, storage: "CredentialPlaneFixture") -> None:
         self._storage = storage
 
@@ -296,8 +279,6 @@ class InMemoryDataSharingRepository:
 
 
 class CredentialPlaneFixture:
-    """Minimal application Plane runtime/catalog for credential-store tests."""
-
     def __init__(self) -> None:
         self.users: dict[str, dict[str, Any]] = {}
         self.system: dict[str, Any] | None = None
@@ -322,7 +303,6 @@ class CredentialPlaneFixture:
 
 @pytest.fixture
 def fernet_key(monkeypatch) -> str:
-    """Set CREDENTIAL_ENCRYPTION_KEY to a fresh Fernet key (no key file)."""
     key = Fernet.generate_key().decode()
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", key)
     return key
@@ -335,8 +315,6 @@ def credential_plane() -> CredentialPlaneFixture:
 
 @pytest.fixture
 def fake_db(credential_plane) -> CredentialPlaneFixture:
-    """Inspectable ciphertext state retained for existing security assertions."""
-
     return credential_plane
 
 
@@ -350,7 +328,6 @@ def store(fernet_key, credential_plane) -> UserLLMConfigStore:
 
 @pytest.fixture
 def typesafe_store(fernet_key, credential_plane):
-    """A TypeSafe credential store over the same in-memory Plane fixture."""
     from llm_config.typesafe_store import TypeSafeCredentialStore
 
     return TypeSafeCredentialStore(
@@ -361,7 +338,6 @@ def typesafe_store(fernet_key, credential_plane):
 
 @pytest.fixture
 def data_sharing_store(credential_plane):
-    """A data-sharing store over the same in-memory Plane fixture."""
     from llm_config.data_sharing import DataSharingStore
 
     return DataSharingStore(

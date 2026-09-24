@@ -1,10 +1,8 @@
-"""Feature 060 BYO revision generation, activation, and crash recovery.
-
-The tests use a deterministic transactional fake for the activation coordinator.
-PostgreSQL transition details remain covered by the runtime repository suite; this
-module stresses the lifecycle rule at every externally visible boundary without
-turning timing or process scheduling into test authority.
+"""Tests for BYO revision generation, activation, and crash recovery
+(backend/orchestrator/agent_lifecycle.py): lifecycle rules at every externally
+visible boundary, driven by a deterministic transactional fake store.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -288,12 +286,10 @@ def test_digest_changes_for_every_file_and_not_for_mapping_order():
 
 
 class SimulatedCrash(BaseException):
-    """Power loss: bypass ordinary Exception cleanup and preserve durable state."""
+    pass
 
 
 class _TransactionalRevisionStore:
-    """Small deterministic implementation of the lifecycle store protocol."""
-
     def __init__(self) -> None:
         self.active_revision_id = OLD_REVISION
         self.last_known_good_revision_id = OLD_REVISION
@@ -357,8 +353,6 @@ class _TransactionalRevisionStore:
         return candidate
 
     def promote_candidate(self, candidate: CandidateRevision) -> PromotionCommit:
-        # Snapshot + restore models one database transaction. Every injected
-        # failure before commit leaves all authoritative pointers untouched.
         before = (
             self.active_revision_id,
             self.last_known_good_revision_id,
@@ -757,8 +751,6 @@ async def test_preparation_or_start_failure_never_stops_working_runtime():
     assert store.active_revision_id == OLD_REVISION
     assert store.authoritative_runtime_id == OLD_RUNTIME
     assert store.invocable_runtime_ids == {OLD_RUNTIME}
-    # A refused start has no durable process identity, so there is nothing
-    # exact to stop; cleanup still finalizes the prelaunch runtime atomically.
     assert stopped == []
     assert request.revision_id in store.failed_revision_ids
 
@@ -945,7 +937,7 @@ async def test_finalization_failure_retries_stop_before_terminalizing_candidate(
 
     assert stopped == [candidate.runtime_instance_id, candidate.runtime_instance_id]
     assert request.revision_id in store.failed_revision_ids
-    assert finalize_calls == 1  # Recovery uses the generic exact-runtime finalizer.
+    assert finalize_calls == 1
 
 
 async def test_stop_receipt_is_released_only_after_durable_finalization():
@@ -1167,8 +1159,6 @@ async def test_retryable_state_cannot_erase_staged_permanent_failure_intent():
     candidate = store.prepare_candidate(_preparation(str(uuid.UUID(int=6254))))
     store.mark_candidate_starting(candidate)
     assert store.stage_candidate_failure(candidate, "child_registration_timeout")
-    # Model a legacy outer settlement/lease expiry after cleanup staging. The
-    # persisted runtime failure code remains the permanent disposition source.
     store.operation_states[candidate.runtime_instance_id] = OperationState.RETRYABLE
 
     with pytest.raises(
@@ -1202,7 +1192,6 @@ async def test_terminal_host_cleanup_recovers_permanent_operation_disposition():
     candidate = store.prepare_candidate(_preparation(str(uuid.UUID(int=6255))))
     store.mark_candidate_starting(candidate)
     assert store.stage_candidate_failure(candidate, "child_registration_timeout")
-    # Model disconnect/re-register cleanup winning before lifecycle finalization.
     store.terminal_runtime_ids.add(candidate.runtime_instance_id)
     store.process_runtime_ids.discard(candidate.runtime_instance_id)
     store.runtime_failure_codes[candidate.runtime_instance_id] = "host_lost"
@@ -1239,9 +1228,6 @@ async def test_revision_disposition_survives_operation_purge_and_physical_proof(
         == "child_registration_timeout"
     )
 
-    # Plane's exact exit reducer owns the physical fact, while retention later
-    # clears the delivery-operation FK. The mutable revision remains the
-    # self-contained semantic authority for recovery.
     store.terminal_runtime_ids.add(candidate.runtime_instance_id)
     store.process_runtime_ids.discard(candidate.runtime_instance_id)
     store.runtime_failure_codes[candidate.runtime_instance_id] = "child_exited"
@@ -1366,8 +1352,6 @@ async def test_terminal_process_candidate_still_requires_exact_stop_proof():
     candidate = store.prepare_candidate(_preparation(str(uuid.UUID(int=6258))))
     store.mark_candidate_starting(candidate)
     assert store.stage_candidate_failure(candidate, "child_registration_timeout")
-    # A generic terminal state can win before the host's full-fence exit frame;
-    # retain the process identity so recovery must obtain the exact proof.
     store.terminal_runtime_ids.add(candidate.runtime_instance_id)
     stop_calls: list[str] = []
     released: list[str] = []
@@ -1761,8 +1745,6 @@ async def test_cancel_during_promotion_ambiguity_never_stops_unknown_winner():
     ],
 )
 async def test_one_hundred_fault_boundaries_preserve_one_durable_authority(boundary):
-    # Nine boundaries x twelve deterministic trials = 108, satisfying SC-004's
-    # minimum while covering both sides of the database commit.
     elapsed_ms = []
     outcomes = {"prior_authority": 0, "candidate_authority": 0}
     for trial in range(12):
@@ -1815,8 +1797,6 @@ async def test_crash_recovery_follows_durable_pointer_and_stops_candidates():
     with pytest.raises(SimulatedCrash):
         await activator.activate(request)
 
-    # A second candidate was durable but never promoted. Recovery must not infer
-    # authority from recency or readiness; only the committed active pointer wins.
     orphan = store.prepare_candidate(
         _preparation(str(uuid.UUID(int=5000)))
     )

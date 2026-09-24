@@ -1,11 +1,8 @@
-"""Feature 054 — UserLLMConfigStore / PersistedLLMConfig unit tests.
-
-Successor to the retired feature-006 ``test_session_creds.py`` (the
-per-WebSocket in-memory ``SessionCredentialStore`` no longer exists).
-Covers the persisted per-user + system store: encrypted-at-rest round
-trips, clear semantics, keyless saves, TTL cache behaviour, and the
-FR-010 undecryptable-row discard path.
+"""Tests for user_store.py's UserLLMConfigStore: encrypted-at-rest round trips, clear
+semantics, partial-submission rejection, TTL cache invalidation, and
+undecryptable-row discard for both per-user and system records.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -21,8 +18,6 @@ from llm_config.user_store import (
 
 
 class _Clock:
-    """Fake ``time`` module for the store (monotonic + time)."""
-
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now
 
@@ -34,8 +29,6 @@ class _Clock:
 
 
 class TestPersistedLLMConfigRepr:
-    """__repr__ / __str__ MUST elide the api_key (FR-006)."""
-
     def test_repr_omits_api_key(self):
         cfg = PersistedLLMConfig(
             provider="openai",
@@ -72,20 +65,17 @@ class TestSetGetRoundTrip:
             model="gpt-4o-mini",
             api_key=plaintext,
         )
-        # At rest: ciphertext only, never the plaintext key.
         enc = fake_db.users["alice"]["api_key_enc"]
         assert enc is not None
         assert enc != plaintext
         assert plaintext not in enc
-        # ...and it is genuinely Fernet ciphertext under the env key.
         assert Fernet(fernet_key.encode()).decrypt(enc.encode()).decode() == plaintext
 
-        # Force a DB read (bypass the write-through cache) — full round trip.
         store.invalidate("alice")
         got = store.get_sync("alice")
         assert got is not None
         assert got.provider == "openai"
-        assert got.base_url == "https://api.openai.com/v1"  # trailing slash stripped
+        assert got.base_url == "https://api.openai.com/v1"
         assert got.model == "gpt-4o-mini"
         assert got.api_key == plaintext
         assert got.updated_at is not None
@@ -123,8 +113,6 @@ class TestKeylessSave:
 
 
 class TestPartialSubmissions:
-    """FR: partial records must never be stored (empty base_url/model)."""
-
     def test_empty_base_url_raises(self, store, fake_db):
         with pytest.raises(ValueError, match="base_url"):
             store.set_sync("u", provider="custom", base_url="",
@@ -172,7 +160,6 @@ class TestCacheInvalidation:
         store.set_sync("u", provider="openai",
                        base_url="https://api.openai.com/v1", model="m1",
                        api_key="k")
-        # Mutate the DB behind the store's back — a cached read won't see it.
         fake_db.users["u"]["model"] = "sneaky-change"
         assert store.get_sync("u").model == "m1"
 
@@ -181,11 +168,10 @@ class TestCacheInvalidation:
                        base_url="https://api.openai.com/v1", model="m1",
                        api_key="k")
         fake_db.users["u"]["model"] = "sneaky-change"
-        assert store.get_sync("u").model == "m1"  # still cached
+        assert store.get_sync("u").model == "m1"
         store.set_sync("u", provider="openai",
                        base_url="https://api.openai.com/v1", model="m2",
                        api_key="k")
-        # The write-through replaced the stale entry, not left "m1".
         assert store.get_sync("u").model == "m2"
 
     def test_clear_takes_effect_immediately(self, store, fake_db):
@@ -193,8 +179,6 @@ class TestCacheInvalidation:
                        base_url="https://api.openai.com/v1", model="m",
                        api_key="k")
         store.clear_sync("u")
-        # Absence is observed at once (gate transitions are immediate),
-        # even if a row sneaks back into the DB out-of-band.
         fake_db.users["u"] = {
             "provider": "openai", "base_url": "https://api.openai.com/v1",
             "model": "m", "api_key_enc": None, "updated_at": 1.0,
@@ -218,30 +202,25 @@ class TestCacheTTL:
                        base_url="https://api.openai.com/v1", model="m1",
                        api_key="")
         fake_db.users["u"]["model"] = "changed-in-db"
-        # Within the TTL: still the cached value.
         clock.now += _CACHE_TTL_SECONDS - 0.5
         assert store.get_sync("u").model == "m1"
-        # Past the TTL: the store re-reads the DB.
         clock.now += 1.0
         assert store.get_sync("u").model == "changed-in-db"
 
     def test_absence_is_cached_with_ttl_too(self, monkeypatch, store, fake_db):
         clock = _Clock(1000.0)
         monkeypatch.setattr(user_store_mod, "time", clock)
-        assert store.get_sync("u") is None  # caches the miss
+        assert store.get_sync("u") is None
         fake_db.users["u"] = {
             "provider": "openai", "base_url": "https://api.openai.com/v1",
             "model": "m", "api_key_enc": None, "updated_at": 1.0,
         }
-        assert store.get_sync("u") is None  # still the cached miss
+        assert store.get_sync("u") is None
         clock.now += _CACHE_TTL_SECONDS + 1.0
-        assert store.get_sync("u") is not None  # TTL elapsed — fresh read
+        assert store.get_sync("u") is not None
 
 
 class TestUndecryptableRow:
-    """FR-010: an undecryptable row is discarded, treated as absent,
-    and queued for the discarded_undecryptable audit."""
-
     def _plant_garbage_row(self, fake_db, user_id):
         wrong_key_fernet = Fernet(Fernet.generate_key())
         fake_db.users[user_id] = {
@@ -255,9 +234,7 @@ class TestUndecryptableRow:
     def test_undecryptable_user_row_discarded_and_absent(self, store, fake_db):
         self._plant_garbage_row(fake_db, "victim")
         assert store.get_sync("victim") is None
-        # The unusable row was deleted (re-gate, no partial state)...
         assert "victim" not in fake_db.users
-        # ...and the audit note queued for the orchestrator's drain.
         assert store.pop_discard_note() == ("user", "victim")
         assert store.pop_discard_note() is None
 
@@ -346,8 +323,7 @@ class TestAsyncWrappers:
 class TestNoKeyFileWritten:
     def test_env_key_prevents_key_file_creation(self, fernet_key, fake_db,
                                                 tmp_path):
-        # With CREDENTIAL_ENCRYPTION_KEY set, the dev key-file fallback
-        # must not be touched even when a data_dir is supplied.
+        # Env key must win over the dev key-file even with data_dir
         UserLLMConfigStore(
             data_dir=str(tmp_path),
             plane_runtime=fake_db,

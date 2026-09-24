@@ -1,4 +1,8 @@
-"""079: one durable credential family across browser and background consumers."""
+"""Tests for one durable credential family shared across browser and background
+consumers (orchestrator/offline_grant.py, session_store.py, web_auth.py): serialized
+rotation, cancellation safety, and revocation during rotation.
+"""
+
 import asyncio
 import json
 import time
@@ -93,7 +97,6 @@ def test_deleted_session_cannot_be_resurrected_by_late_rotation(stores):
 
 
 def test_replaced_session_with_reused_generation_rejects_late_refresh(stores, runtime):
-    """A new ciphertext family cannot inherit the old family's remote result."""
     sessions, _, owner, sid = stores
     replacement = None
 
@@ -219,7 +222,6 @@ def test_parallel_sibling_grants_survive_repeated_rotation_and_restart(stores, r
     assert set(asyncio.run(scenario())) == {"access-1", "access-2"}
     assert asyncio.run(grants.mint_access_token(grant_ids[0], user_id=owner)) == "access-3"
     assert seen == ["refresh-initial", "refresh-1", "refresh-2"]
-    # Even a previously warm cache reads the canonical rotated credential.
     assert sessions.get(sid)["refresh_token"] == "refresh-3"
 
 
@@ -504,7 +506,6 @@ def test_browser_and_assignment_refresh_share_the_actual_canonical_family(stores
     assert minted in {"access-1", "access-2"}
     assert browser["access_token"] in {"access-1", "access-2"}
     assert seen == ["refresh-initial", "refresh-1"]
-    # A subsequent cookie lookup cannot send a stale token to logout/refresh.
     assert web_auth._session_by_sid(sid)["refresh_token"] == "refresh-2"
 
 

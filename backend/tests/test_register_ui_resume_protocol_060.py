@@ -1,4 +1,7 @@
-"""Feature-060 RegisterUI connection and resume-locator validation."""
+"""Tests for backend/shared/protocol.py's RegisterUI connection and resume fields:
+legacy registrations without generation/resume still round-trip, and resume locators
+require canonical UUIDs and an exact schema.
+"""
 
 from __future__ import annotations
 

@@ -1,17 +1,8 @@
-"""Owner review and exact Save of a completed research result into a canvas.
-
-A proposal is review-only: it records the exact reviewed stage (digests and
-identities, never result text) as a closed ``result_publication`` action and
-returns the reconstructed public excerpt for the owner to read. Save consumes
-that proposal once with an explicit approval bound to the proposal digest.
-
-Deep never trusts caller-supplied bytes. Both steps rebuild the bounded public
-result from the settled ledger (``work_result.project_research_result``), rebase
-the current destination canvas and recompute every digest inside the same Plane
-transaction that audits and commits. Every miss requires the operation's
-original session, refreshed through the ordinary session authority, plus the
-current human caller; an accepted receipt replays with normal owner IAM only.
+"""Owner review-and-save of a completed research result into a canvas: propose records a
+reviewed digest, save consumes it once. Rebuilds the result via work_result.py inside
+one Plane transaction. Used by work_api.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,13 +44,6 @@ _PROPOSAL_FIELDS = ("action_id", "result_action_id", "result_digest", "publicati
 
 
 class WorkResultProposalRequest(WorkControlRequest):
-    """Review one completed result against an exact current destination head.
-
-    ``submission_id`` becomes the proposal's stable action identity. The
-    destination revision/publication pair is the owner's observed canvas head;
-    a changed head refuses the proposal instead of silently rebasing it.
-    """
-
     version: int = Field(ge=1, le=1)
     publication_id: str = Field(min_length=36, max_length=36)
     conversation_id: str = Field(min_length=1, max_length=512)
@@ -85,8 +69,6 @@ class WorkResultProposalRequest(WorkControlRequest):
 
 
 class WorkResultSaveRequest(WorkControlRequest):
-    """An explicit owner approval of exactly one reviewed proposal digest."""
-
     version: int = Field(ge=1, le=1)
     proposal_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
@@ -100,16 +82,10 @@ def _conflict(code="assignment_publication_conflict", status=409):
 
 
 def component_id(assignment_id):
-    """Explicit author identity: a re-save of the same result supersedes in place."""
     return "au_work_result_" + _identity(assignment_id)
 
 
 def result_component(record, content):
-    """Deterministic astralprims card of the exact public excerpt, nothing else.
-
-    Only the already proven public content and the operation's public title
-    enter the payload; no instructions, guidance, provider or key material.
-    """
     from astralprims import Card, KeyValue, Text
 
     source = content["source"]
@@ -128,12 +104,10 @@ def result_component(record, content):
 
 
 def _row_id(publication_id, identity):
-    # A retry must re-create the same reviewed rows; UUID5 keeps them stable per publication.
     return str(uuid5(UUID(publication_id), identity))
 
 
 def rebase(destination, *, publication_id, identity, payload, title):
-    """Copy the complete current destination into the new publication, plus the result."""
     ordered = sorted(destination.components, key=lambda item: (item.position, item.component_id))
     components, replaced = [], False
     for entry in ordered:
@@ -169,7 +143,6 @@ def precondition_digest(record, *, result_action_id, result_digest, conversation
 
 
 def _completed_context(value, owner_id, assignment_id):
-    """Only a completed, retained interactive research operation can be saved."""
     selected = session_authority._operation_reference(value, owner_id, assignment_id)
     record = selected[0]
     if (record.lifecycle != "completed" or value.disposition != "completed"
@@ -202,13 +175,6 @@ def _receipt(value, owner, identity, action_id):
 
 
 class WorkPublicationService(WorkControlService):
-    """Propose and Save through the shared caller fences and atomic audit.
-
-    Both commands keep the ordinary Work write boundary: the route's frozen,
-    authenticated caller is the only principal, the same Plane composition is
-    rechecked around every transaction, and no route-level shortcut exists.
-    """
-
     def _owner(self, caller):
         if type(caller) is not WorkCallerAuthority:
             _unauthenticated()
@@ -217,7 +183,6 @@ class WorkPublicationService(WorkControlService):
         return owner
 
     async def _original(self, caller, record):
-        """Refresh the operation's original session; adopt its rotated fence for caller B."""
         consent = caller.require_session()
         binding = caller._binding
         reference = record.operation["authority"]["reference_id"]
@@ -257,12 +222,6 @@ class WorkPublicationService(WorkControlService):
 
     @staticmethod
     def _selected_current(tx, repository, owner, read, action):
-        """Refuse a selection whose reviewed head was revised, disabled or forgotten.
-
-        The proposal bound a digest of the exact selected metadata; the current
-        metadata must still equal it and every referenced agent/skill/note head
-        must still be current. Plane repeats this after the final commit wait.
-        """
         record = read.assignment
         selected = _method(repository, "get_selected_input")(
             tx, owner_id=owner, assignment_id=record.assignment_id)
@@ -277,7 +236,6 @@ class WorkPublicationService(WorkControlService):
 
     def _content(self, tx, repository, owner, read, *, conversation_id, base_render_revision,
                  base_publication_id, publication_id):
-        """Rebuild the exact public result and complete destination inside this transaction."""
         result = project_research_result(tx, repository, owner_id=owner, read=read)
         if result["available"] is not True:
             raise AssignmentError("work_result_unavailable", 409)
@@ -327,7 +285,6 @@ class WorkPublicationService(WorkControlService):
         }
 
     async def propose(self, identity, body: WorkResultProposalRequest, *, caller):
-        """Record a review-only proposal of the exact public result; never publish."""
         owner = self._owner(caller)
         body = _request(body, WorkResultProposalRequest)
         identity = _identity(identity)
@@ -339,9 +296,6 @@ class WorkPublicationService(WorkControlService):
             existing = _method(repository, "get_action")(tx, owner_id=owner, assignment_id=identity,
                                                          action_id=body.submission_id)
             if existing is not None:
-                # Receipt-first: the stable submission identity replays its own
-                # review with ordinary owner IAM, even after the put bumped the
-                # revision. A reused identity for anything else is a conflict.
                 if _stored_proposal(existing) is None or existing.state != "proposed":
                     _conflict("assignment_idempotency_conflict")
                 return read.assignment, existing
@@ -387,8 +341,6 @@ class WorkPublicationService(WorkControlService):
                 base_render_revision=body.expected_workspace_revision,
                 base_publication_id=body.expected_workspace_publication_id)
             if action is not None:
-                # Same stable action identity: the stored proposal must describe
-                # this exact request and content, and still await its decision.
                 stored = _stored_proposal(action)
                 current = (body.submission_id, read.result_reference, result_digest, body.publication_id,
                            body.conversation_id, reviewed.component_id, body.expected_workspace_revision,
@@ -430,7 +382,6 @@ class WorkPublicationService(WorkControlService):
         return result
 
     async def save(self, identity, action_id, body: WorkResultSaveRequest, *, caller):
-        """Consume one reviewed proposal exactly once; replay is a read of its receipt."""
         owner = self._owner(caller)
         body = _request(body, WorkResultSaveRequest)
         identity, action_id = _identity(identity), _identity(action_id)
@@ -448,8 +399,6 @@ class WorkPublicationService(WorkControlService):
             if type(action) is not AssignmentActionRecord or _stored_proposal(action) is None:
                 raise AssignmentError("work_not_found", 404)
             if action.state == "succeeded":
-                # Receipt-first: an accepted Save replays with ordinary owner IAM,
-                # without the retired original session or any authority.
                 prepared = _prepared(_sync(_method(repository, "prepare_result_publication")(
                     tx, owner_id=owner, assignment_id=identity, action_id=action_id,
                     decision=decision_for(action), expected_state_version=body.expected_revision,
@@ -467,9 +416,6 @@ class WorkPublicationService(WorkControlService):
                 _conflict()
             if _stored_proposal(action).expires_at <= datetime.now(UTC):
                 _conflict("work_proposal_expired")
-            # T036 before any refresh: the selected agent/skill/note head reviewed
-            # with the proposal must be the exact current selection and still
-            # current (not revised, disabled, archived or forgotten since).
             self._selected_current(tx, repository, owner, read, action)
             return read.assignment
 
@@ -504,7 +450,6 @@ class WorkPublicationService(WorkControlService):
             proposal = prepared.proposal
             if proposal.expires_at <= datetime.now(UTC):
                 _conflict("work_proposal_expired")
-            # Current policy: the same permission and precondition the review saw.
             if permission_digest(read.assignment, scopes) != prepared.action.intent.permission_digest:
                 raise AssignmentError("assignment_scope_changed", 403)
             content, reviewed, result_digest = self._content(tx, repository, owner, read,
@@ -534,8 +479,6 @@ class WorkPublicationService(WorkControlService):
                     or receipt.committed_render_revision != proposal.base_render_revision + 1):
                 raise AssignmentError("work_control_unavailable", 503)
             updated = _owned_operation(tx, repository, owner, identity)
-            # Final guard after the last caller SQL wait: exact selection, returned
-            # counters and the combined original/caller/proposal cutoff on one DB clock.
             _method(repository, "assert_selected_input_current")(
                 tx, owner_id=owner, assignment_id=identity,
                 expected_instruction_revision=receipt.instruction_revision,

@@ -1,14 +1,8 @@
-"""Real-Postgres framework-caller compatibility for Work (feature 088 T049).
-
-Exercises ``orchestrator.work_operations.FrameworkWorkOperations`` end to end
-against a real Plane schema: issue a credential (via
-``orchestrator.framework_credentials.FrameworkCredentialService``), resolve
-its bearer, then submit/read/cancel through the SAME repository the
-interactive REST router uses. No HTTP layer, MCP transport or A2A executor is
-exercised here (those are thin routers over this same facade); this proves
-the facade's own admission, idempotency, scope, and human-only-refusal
-behavior against real Postgres.
+"""Tests for orchestrator/work_operations.py's FrameworkWorkOperations against real
+Plane: credential-scoped submit/read/cancel through the same repository the REST
+router uses, idempotent replay, and refusal of not-yet-wired or human-only commands.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -81,8 +75,6 @@ def _caller(credentials, token):
     return caller
 
 
-# --- submit / get -------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_framework_submit_creates_a_readable_one_shot_operation(ops, credentials, session, runtime):
     store, owner, sid = session
@@ -123,8 +115,6 @@ async def test_read_commands_require_the_read_scope(ops, credentials, session):
         await ops.get(caller, str(uuid.uuid4()))
 
 
-# --- idempotent replay / conflict ---------------------------------------------
-
 @pytest.mark.asyncio
 async def test_same_key_replay_returns_the_original_with_no_new_row(ops, credentials, session, runtime):
     store, owner, sid = session
@@ -153,8 +143,6 @@ async def test_a_different_credential_on_the_same_key_conflicts(ops, credentials
         await ops.submit(caller2, idempotency_key=key, name="A", instructions="B")
 
 
-# --- allowance is consumed exactly once per genuine create --------------------
-
 @pytest.mark.asyncio
 async def test_admission_is_consumed_once_per_create_never_on_replay(ops, credentials, session):
     store, owner, sid = session
@@ -162,7 +150,7 @@ async def test_admission_is_consumed_once_per_create_never_on_replay(ops, creden
     caller = _caller(credentials, token)
     key = str(uuid.uuid4())
     await ops.submit(caller, idempotency_key=key, name="A", instructions="B")
-    await ops.submit(caller, idempotency_key=key, name="A", instructions="B")  # replay
+    await ops.submit(caller, idempotency_key=key, name="A", instructions="B")
     rows = credentials.list(owner_id=owner)
     row = next(r for r in rows if r["credential_id"] == view["credential_id"])
     assert row["consumed_admissions"] == 1
@@ -173,8 +161,6 @@ async def test_admission_is_consumed_once_per_create_never_on_replay(ops, creden
     with pytest.raises(AssignmentError, match="credential_allowance_exhausted"):
         await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="E", instructions="F")
 
-
-# --- revocation ends further use ----------------------------------------------
 
 @pytest.mark.asyncio
 async def test_revoked_credential_refuses_a_new_submission(ops, credentials, session):
@@ -193,12 +179,8 @@ async def test_revoked_credential_ends_further_polling(ops, credentials, session
     caller = _caller(credentials, token)
     await ops.submit(caller, idempotency_key=str(uuid.uuid4()), name="A", instructions="B")
     credentials.revoke(owner_id=owner, credential_id=view["credential_id"])
-    # Reads go through the SAME resolve_bearer path a real MCP/A2A caller
-    # would take on its NEXT request; a revoked credential resolves to nothing.
     assert credentials.resolve_bearer(token) is None
 
-
-# --- cancel / pause: applied once, idempotent, scope-gated --------------------
 
 @pytest.mark.asyncio
 async def test_cancel_requires_the_control_scope(ops, credentials, session):
@@ -245,8 +227,6 @@ async def test_cancel_on_a_foreign_operation_is_not_found(ops, credentials, sess
         await ops.cancel(caller2, result["id"], submission_id=str(uuid.uuid4()), expected_revision=1)
 
 
-# --- human-only commands refuse before any read or mutation -------------------
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["decide", "reconcile", "delete"])
 async def test_human_only_commands_refuse_before_any_mutation(ops, credentials, session, runtime, command):
@@ -262,8 +242,6 @@ async def test_human_only_commands_refuse_before_any_mutation(ops, credentials, 
     assert unchanged["disposition"] == result["disposition"]
 
 
-# --- not-yet-wired controls refuse honestly, never silently no-op ------------
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["resume", "wait", "wake"])
 async def test_resume_wait_wake_are_not_yet_wired_for_framework_callers(ops, credentials, session, command):
@@ -274,8 +252,6 @@ async def test_resume_wait_wake_are_not_yet_wired_for_framework_callers(ops, cre
     with pytest.raises(AssignmentError, match="framework_control_unavailable"):
         await getattr(ops, command)(caller, result["id"])
 
-
-# --- these are never advertised as MCP tools ----------------------------------
 
 def test_not_yet_wired_names_are_absent_from_the_dispatchable_and_projected_sets():
     from orchestrator.mcp_projection import _WORK_TOOL_SPECS, project_tools

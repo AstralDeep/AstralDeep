@@ -1,4 +1,7 @@
-"""Focused contract tests for Deep's typed AstralPlane repository adapters."""
+"""Contract tests for Deep's typed AstralPlane repository adapters
+(credential_manager.py, offline_grant.py, remote_machines.py, tool_permissions.py,
+artifact_share.py, chat_steps.py): owner scoping and isolation per adapter.
+"""
 
 from __future__ import annotations
 

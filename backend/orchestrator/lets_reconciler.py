@@ -1,4 +1,7 @@
-"""Bounded startup/background recovery for durable LETS lifecycle intents."""
+"""Bounded startup and background recovery for durable LETS lifecycle and effect intents
+left pending by a crash or lost lease, claiming rows under AstralPlane locks and
+replaying only exact safe requests. Used by lets_composition.py.
+"""
 
 from __future__ import annotations
 
@@ -46,8 +49,6 @@ _PRE_EXECUTION_EFFECT_STATES = frozenset(
 
 
 class LifecycleRecoveryResolver(Protocol):
-    """Resolve host-owned context from Deep's durable agent/runtime graph."""
-
     def __call__(
         self,
         operation: AuthorityLifecycleOperation,
@@ -57,8 +58,6 @@ class LifecycleRecoveryResolver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class EffectRecoveryResolution:
-    """Known domain outcome supplied by a Deep-owned idempotency resolver."""
-
     outcome: Literal["succeeded", "effect_failed"]
     error_code: str | None = None
 
@@ -74,8 +73,6 @@ class EffectRecoveryResolution:
 
 
 class EffectRecoveryResolver(Protocol):
-    """Resolve an executing/uncertain effect from domain idempotency evidence."""
-
     def __call__(
         self,
         operation: ProtectedEffectOperation,
@@ -84,8 +81,6 @@ class EffectRecoveryResolver(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class LifecycleRecoveryBatch:
-    """Redacted result of one bounded owner-scoped recovery pass."""
-
     owner_id: str
     selected: int
     claimed: int
@@ -96,8 +91,6 @@ class LifecycleRecoveryBatch:
 
 @dataclass(frozen=True, slots=True)
 class EffectRecoveryBatch:
-    """Redacted result of one owner-scoped stale-effect recovery pass."""
-
     owner_id: str
     selected: int
     transitioned: int
@@ -109,8 +102,6 @@ class EffectRecoveryBatch:
 
 
 class LetsLifecycleReconciler:
-    """Claim due operations under row locks, then replay exact safe requests."""
-
     def __init__(
         self,
         *,
@@ -131,8 +122,6 @@ class LetsLifecycleReconciler:
         due_at: datetime | None = None,
         limit: int = 50,
     ) -> LifecycleRecoveryBatch:
-        """Recover at most ``limit`` due operations for exactly one owner."""
-
         selected_at = datetime.now(UTC) if due_at is None else due_at
         if selected_at.tzinfo is None or selected_at.utcoffset() != timedelta(0):
             raise LetsLifecycleError("invalid_recovery_due_at")
@@ -147,9 +136,7 @@ class LetsLifecycleReconciler:
         errors: list[str] = []
         selected_count = 0
 
-        # list_recoverable_lifecycle_operations uses FOR UPDATE SKIP LOCKED.
-        # Every selected row is transitioned before this transaction releases
-        # its lock, so multiple workers cannot perform the same recovery call.
+        # Row-locked: must transition every row before releasing
         with self._plane.transaction() as transaction:
             operations = self._repository.list_recoverable_lifecycle_operations(
                 transaction,
@@ -236,8 +223,6 @@ class LetsLifecycleReconciler:
         interval_seconds: float = 15.0,
         limit_per_owner: int = 50,
     ) -> None:
-        """Run serialized bounded passes until the host signals shutdown."""
-
         if interval_seconds < 1.0 or interval_seconds > 300.0:
             raise LetsLifecycleError("invalid_recovery_interval")
         while not stop.is_set():
@@ -289,8 +274,6 @@ class LetsLifecycleReconciler:
 
 
 class LetsEffectReconciler:
-    """Fail closed or resolve stale authorization/effect checkpoints."""
-
     def __init__(
         self,
         *,
@@ -310,14 +293,6 @@ class LetsEffectReconciler:
         stale_after: timedelta = timedelta(minutes=1),
         limit: int = 50,
     ) -> EffectRecoveryBatch:
-        """Recover one bounded owner partition under Plane row locks.
-
-        Pre-execution rows are safe to fail closed because no actuator began.
-        An abandoned ``executing`` row becomes ``outcome_uncertain`` unless a
-        Deep-owned domain resolver proves a known result. Existing uncertainty
-        is never rewritten as failure merely because no resolver is available.
-        """
-
         if not isinstance(stale_after, timedelta) or stale_after <= timedelta(0):
             raise LetsLifecycleError("invalid_effect_recovery_staleness")
         selected_at = _now_utc()
@@ -385,7 +360,7 @@ class LetsEffectReconciler:
                         now=selected_at,
                     )
                     resolved += 1
-                else:  # pragma: no cover - Plane query validates exhaustiveness.
+                else:  # pragma: no cover
                     deferred += 1
                     errors.append("effect_recovery_state_unsupported")
                     continue
@@ -416,8 +391,6 @@ class LetsEffectReconciler:
         stale_after: timedelta = timedelta(minutes=1),
         limit_per_owner: int = 50,
     ) -> None:
-        """Run bounded synchronous Plane recovery passes off the event loop."""
-
         if interval_seconds < 1.0 or interval_seconds > 300.0:
             raise LetsLifecycleError("invalid_recovery_interval")
         while not stop.is_set():

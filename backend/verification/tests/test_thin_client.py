@@ -1,10 +1,8 @@
-"""US3 — backend-only UI / near-zero-logic client (T023).
-
-Drives one tabular persona, then asserts every delivered component is in the
-published vocabulary and arrives as server HTML (SC-008), device differences come
-from the backend adapter, actions are backend intent, and the client surface has
-no construction logic and no rendering framework.
+"""Tests for backend-only-UI checks (backend/verification/checks/thin_client.py,
+drivers/in_process.py, AstralProjection webrender): the real client.js has no
+construction logic, and delivered components stay in the published vocabulary.
 """
+
 from __future__ import annotations
 
 from verification.checks.thin_client import build_us3_checks, inspect_client_surface
@@ -40,7 +38,6 @@ def _verdict(check, ev):
 
 
 def test_client_surface_has_no_construction_logic():
-    """Static, evidence-free measurement of the real client.js (FR-025)."""
     insp = inspect_client_surface()
     assert insp.get("readable"), f"client.js unreadable: {insp}"
     assert not insp["framework_import"], "client must not import a rendering framework"
@@ -53,7 +50,6 @@ def test_us3_backend_only_ui(run_config):
     ev = _run_everyday(run_config)
     checks = build_us3_checks()
     results = {c.check_id: _verdict(c, ev) for c in checks}
-    # No FAIL among US3 checks; the structural ones must PASS.
     fails = {k: v[1] for k, v in results.items() if v[0] == Outcome.FAIL}
     assert not fails, f"US3 FAIL verdicts: {fails}"
     for required in ("us3.no_client_construction", "us3.server_markup_present", "vocabulary_ok"):
@@ -61,7 +57,6 @@ def test_us3_backend_only_ui(run_config):
             f"{required}: {results[required][1]}"
         )
 
-    # SC-008: zero out-of-vocabulary components.
     from webrender import allowed_primitive_types
 
     allowed = set(allowed_primitive_types())

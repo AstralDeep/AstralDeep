@@ -1,4 +1,7 @@
-"""Feature 075 C# producer tests for the shared changed-line coverage gate."""
+"""Tests for the C# producer path in scripts/check_changed_coverage.py: target/profile
+classification, Cobertura path mapping to composed sources, and the 90% changed-line
+gate.
+"""
 
 from __future__ import annotations
 

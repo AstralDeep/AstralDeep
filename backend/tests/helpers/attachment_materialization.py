@@ -1,11 +1,5 @@
-"""Safe attachment publication helpers for focused Deep tests.
-
-Production upload policy lives in
-``orchestrator.attachments.materialization``.  Tests that need a real Plane
-row and real blob bytes still have to use Plane's public pending -> staged ->
-ready lifecycle; they must not recreate the retired blob-first publication
-path.  Historical orphan fixtures write only inside their isolated temporary
-root; Plane intentionally exposes no unfenced writer or physical delete helper.
+"""Publishes a small fixture attachment through AstralPlane's real pending-to-ready
+lifecycle for tests, instead of constructing a blob directly.
 """
 
 from __future__ import annotations
@@ -38,8 +32,6 @@ def publish_attachment_for_test(
     max_bytes: int,
     created_at: int | None = None,
 ):
-    """Publish one small fixture through Plane's complete durable lifecycle."""
-
     materializations = create_attachment_materialization_coordinator(
         database=runtime,
         materializations=repositories.artifacts.materializations,

@@ -1,7 +1,6 @@
-"""Opt-in finite research acceptance against actual encrypted config and Plane.
-
-No source/model dispatch exists in this service. JWT/refresh replies are the
-existing synthetic fixture; all acceptance, config locks and audits use real PG.
+"""Tests for orchestrator/work_submit.py's opt-in finite research acceptance against
+real encrypted config and Plane: budget refusal precedes config capture, config stays
+locked through the atomic audit, and replay ignores later changes.
 """
 
 import asyncio
@@ -129,7 +128,6 @@ async def test_unsupported_user_config_never_admits_or_falls_back(
 ):
     service = research_service
     store = service.research_preflight.config_store
-    # Populate the legacy cache and system selection; neither may rescue refusal.
     await store.get(fixture[1])
     await store.set_system(
         provider="openai",
@@ -240,7 +238,7 @@ async def test_key_loss_during_audit_rolls_back_operation_receipt_and_audit(
 async def test_accepted_replay_ignores_new_config_key_and_budget_policy(
     source_service, fixture, runtime, research_service, monkeypatch
 ):
-    body = command()  # Historical source-only budget remains replayable.
+    body = command()
     first = await source_service.submit(await context(fixture, runtime), body)
     with runtime.transaction() as tx:
         runtime.repositories.encrypted_llm_config.delete_user(tx, owner_id=fixture[1])
@@ -293,7 +291,6 @@ async def test_foreign_runtime_and_prepared_owner_are_refused(
     research_service, fixture, runtime
 ):
     service = research_service
-    # A valid capture must remain tied to the current composition; no alias lookup.
     selected = await context(fixture, runtime)
     definition = SimpleNamespace(
         limits=json.loads(research_command(service))["limits"],

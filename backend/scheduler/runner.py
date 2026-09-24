@@ -1,17 +1,6 @@
-"""Executes a due scheduled job under fresh, scope-bounded authority (feature 025, US5).
-
-SECURITY-CRITICAL: touches the offline-grant path — covered by the T057 review.
-
-Per run (FR-021/FR-024/SC-008):
-  1. start a ``job_run`` (correlation id for audit grouping),
-  2. validate + mint a fresh access token from the offline grant; on any
-     revocation/expiry/refresh failure → record ``skipped_auth``, pause the job,
-     notify in-app, and STOP (never run with stale authority),
-  3. intersect the job's consented scopes with the user's CURRENT scopes,
-  4. execute the instruction as a normal chat turn via ``BackgroundTaskManager``
-     + ``VirtualWebSocket`` so outputs persist to chat history (in-app only),
-  5. finish the run, recompute ``next_run_at`` (or complete one-shots), and emit
-     an in-app ``notification``.
+"""Executes one due scheduled job under fresh, scope-bounded delegated authority: mints
+a token, intersects consented and current scopes, runs the instruction as a chat
+turn, and reschedules; called by scheduler/loop.py against store.py.
 """
 
 from __future__ import annotations
@@ -57,16 +46,12 @@ _REVIEWED_EFFECT_KINDS = frozenset(
 
 
 class HandlerIdempotencyBoundary(str, Enum):
-    """Reviewed durable boundaries eligible for unattended execution."""
-
     ASTRALDEEP_TRANSACTION = "astraldeep_transaction"
     DOWNSTREAM_IDEMPOTENCY_KEY = "downstream_idempotency_key"
 
 
 @dataclass(frozen=True)
 class ScheduledHandlerDeclaration:
-    """Static unattended-handler eligibility declaration."""
-
     supports_unattended: bool
     idempotency_boundary: HandlerIdempotencyBoundary | None
     effect_kinds: tuple[str, ...]
@@ -91,8 +76,6 @@ class ScheduledHandlerDeclaration:
 
 @dataclass(frozen=True)
 class HandlerEligibilityDecision:
-    """Non-sensitive schedule-acceptance decision."""
-
     eligible: bool
     code: str | None
     retryable: bool
@@ -101,8 +84,6 @@ class HandlerEligibilityDecision:
 def assess_unattended_handler(
     declaration: ScheduledHandlerDeclaration | None,
 ) -> HandlerEligibilityDecision:
-    """Fail closed unless the handler declares a reviewed effect boundary."""
-
     if (
         declaration is None
         or not declaration.supports_unattended
@@ -114,8 +95,6 @@ def assess_unattended_handler(
 
 @dataclass(frozen=True)
 class OccurrenceRunResult:
-    """Safe result consumed by the fenced scheduler loop."""
-
     outcome: str
     summary: str | None
     auth_ref: str | None
@@ -140,14 +119,6 @@ _DEFAULT_HANDLER_DECLARATIONS = MappingProxyType(
 )
 _UNREVIEWED_MUTATING_SCOPES = frozenset({"tools:write", "tools:execute"})
 
-# ``VALID_SCOPES`` is the canonical scope vocabulary (six entries since 027/039
-# added tools:files and tools:execute), imported from tool_permissions so a
-# scheduled job never silently loses a scope the user actually granted. The
-# stale four-entry copy that used to live here dropped tools:files/tools:execute,
-# pausing legitimate jobs with a false "permissions no longer enabled" notice
-# and 400-ing the REST create path.
-
-#: Honest, actionable copy per authority-skip reason (056 FR-013).
 _SKIP_SUMMARY = {
     "missing_consent": "no durable authorization on record",
     "revoked_or_expired": "authorization revoked or expired",
@@ -179,26 +150,11 @@ _SKIP_BODY = {
 
 def default_monitoring_dispatcher(transaction: Any, job: Dict[str, Any],
                                    prior_assignment_id: str | None) -> str:
-    """Continue a policy job's already-bound monitoring episode; never creates one.
-
-    Called inside the SAME transaction as :meth:`ScheduledJobStore.admit_episode`
-    (088.007's ``admit_assignment_episode`` requires the episode's persistent
-    assignment to already be created or locked before admission). This default
-    supports only the *continues* half of that contract — it reuses the
-    assignment the most recent successful admission bound (``last_assignment_id``
-    on the policy). Minting the FIRST assignment for a policy job with none
-    bound yet needs real owner authority/claims the unattended scheduler does
-    not hold; that creation path is wired by a ``monitoring_dispatcher``
-    supplied to :class:`JobRunner`, never by this default.
-    """
-
     if not prior_assignment_id:
         raise ScheduleActionError("monitoring_assignment_unbound")
     return prior_assignment_id
 
 
-#: Refusal reasons that stop a policy job outright (pause + one notice),
-#: as opposed to a transient refusal that only retries the next tick.
 _MONITORING_TERMINAL_REASONS = frozenset(
     {"allowance_exhausted", "terminal_stop", "monitoring_assignment_unbound"}
 )
@@ -215,27 +171,13 @@ _MONITORING_PAUSE_BODY = {
 }
 
 
-#: Retry cap per occurrence (pre-fix: a retryable failure was re-claimed
-#: every tick FOREVER — ``next_attempt_at = now + 1s`` with no ceiling).
-#: Counts GENUINE run failures only (see ``JobRunner._failures``).
 DEFAULT_MAX_ATTEMPTS = 3
-#: Hard ceiling multiplier on Plane's ``attempt_count`` (which is bumped on
-#: EVERY re-claim — admission refusal, lease loss, ``claim_lost`` — not only on
-#: failures). ``max_attempts() * CLAIM_LOOP_MULTIPLIER`` re-claims of one
-#: occurrence is a pathological loop, settled ``claim_loop_exhausted``.
 CLAIM_LOOP_MULTIPLIER = 10
-#: Catch-up storm guard: a RECURRING occurrence whose ``scheduled_for`` is
-#: older than this many seconds when it is finally run, and which still has
-#: backlog behind it, is completed as ``skipped_stale`` without an LLM turn.
-#: ``0`` (or negative) disables the guard. One-shots are never skipped.
 DEFAULT_STALE_GRACE_SECONDS = 2 * 60 * 60
-#: Upper bound on the cadence walk that estimates a backlog size.
 _MAX_BACKLOG_ESTIMATE = 10_000
 
 
 def _env_int(name: str, default: int, *, minimum: int) -> int:
-    """Read an integer knob per call (no import-time capture) with a floor."""
-
     raw = (os.getenv(name) or "").strip()
     if not raw:
         return default
@@ -248,30 +190,22 @@ def _env_int(name: str, default: int, *, minimum: int) -> int:
 
 
 def max_attempts() -> int:
-    """``SCHEDULER_MAX_ATTEMPTS`` (default 3, floor 1), read per call."""
-
     return _env_int("SCHEDULER_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, minimum=1)
 
 
 def stale_grace_seconds() -> int:
-    """``SCHEDULER_STALE_GRACE_SECONDS`` (default 2h; <= 0 disables)."""
-
     return _env_int(
         "SCHEDULER_STALE_GRACE_SECONDS", DEFAULT_STALE_GRACE_SECONDS, minimum=0
     )
 
 
 def claim_loop_ceiling() -> int:
-    """Hard re-claim ceiling: ``max_attempts() * CLAIM_LOOP_MULTIPLIER``."""
-
     return max_attempts() * CLAIM_LOOP_MULTIPLIER
 
 
 def occurrence_age_seconds(
     scheduled_for: datetime, *, now: datetime | None = None
 ) -> float:
-    """Seconds since ``scheduled_for`` (naive timestamps are read as UTC)."""
-
     if scheduled_for.tzinfo is None:
         scheduled_for = scheduled_for.replace(tzinfo=UTC)
     current = now or datetime.now(UTC)
@@ -281,8 +215,6 @@ def occurrence_age_seconds(
 
 
 def occurrence_is_stale(scheduled_for: datetime, *, now: datetime | None = None) -> bool:
-    """True when ``scheduled_for`` is older than the stale-grace window."""
-
     grace = stale_grace_seconds()
     if grace <= 0:
         return False
@@ -290,14 +222,6 @@ def occurrence_is_stale(scheduled_for: datetime, *, now: datetime | None = None)
 
 
 def estimate_missed_runs(job: Dict[str, Any], scheduled_for: datetime, now_ms: int) -> int:
-    """Count the cadence steps from ``scheduled_for`` that the backlog will skip.
-
-    Walks the job's own cadence forward from the first stale occurrence; every
-    step that still has a further step at or before ``now`` is one that the
-    stale guard skips (the last catch-up runs). Bounded and fail-open: an
-    unparseable cadence counts as one missed run.
-    """
-
     if scheduled_for.tzinfo is None:
         scheduled_for = scheduled_for.replace(tzinfo=UTC)
     cursor = int(scheduled_for.timestamp() * 1000)
@@ -322,7 +246,6 @@ def estimate_missed_runs(job: Dict[str, Any], scheduled_for: datetime, now_ms: i
 def _intersect_scopes(
     consented: List[str], current_enabled: Dict[str, bool]
 ) -> List[str]:
-    """Authority can never exceed the user's CURRENT scopes (SC-008)."""
     return [s for s in consented if s in VALID_SCOPES and current_enabled.get(s, False)]
 
 
@@ -340,35 +263,14 @@ class JobRunner:
         self.store = store
         self.grants = offline_grants
         self._coordinator: WorkAdmissionCoordinator | None = None
-        # 088.007: resolves/creates the persistent assignment a policy job's
-        # occurrence admits into, inside the SAME transaction as admission.
-        # Unset (default) means only already-bound policy jobs can run
-        # (``default_monitoring_dispatcher``); a legacy job with no policy
-        # row is entirely unaffected either way.
         self._monitoring_dispatcher = monitoring_dispatcher or default_monitoring_dispatcher
         self._handler_declarations = dict(
             _DEFAULT_HANDLER_DECLARATIONS
             if handler_declarations is None
             else handler_declarations
         )
-        # 056 FR-013 (notification fatigue): job ids already notified about an
-        # authority skip. Pausing the job is the structural collapse (a paused
-        # job is not "due" again), but this makes the one-notification-per-
-        # paused-job rule hold even if a job re-fires while still un-consented.
-        # Cleared when the job next runs successfully, and re-armed when the
-        # store reports the job back at ``active`` (the owner resumed it) so a
-        # resume → exhaust cycle notifies again instead of pausing silently.
         self._skip_notified: set = set()
-        # Genuine run-failure count per occurrence id (PER-PROCESS). Plane's
-        # ``attempt_count`` is bumped on every re-claim (admission refusal,
-        # lease loss, claim_lost), so it cannot drive the failure cap without
-        # pausing healthy jobs; the occurrence row has no failure counter
-        # (``last_error_code`` keeps only the latest code), so the count lives
-        # here. A restart resets it: the occurrence may then retry up to the
-        # cap once more, bounded by ``claim_loop_ceiling()``.
         self._failures: Dict[str, int] = {}
-        # Job ids already told about a skipped backlog (one notice per job per
-        # backlog); cleared when a run of that job completes.
         self._stale_notified: set = set()
 
     _FAILURE_MEMO_LIMIT = 10_000
@@ -385,8 +287,6 @@ class JobRunner:
         self._failures.pop(str(attempt.claim.occurrence_id), None)
 
     def _fresh_job(self, job: Dict[str, Any]) -> Dict[str, Any] | None:
-        """Re-read the job row from the store (``None`` when unavailable)."""
-
         get_job = getattr(self.store, "get_job", None)
         if get_job is None:
             return None
@@ -404,12 +304,6 @@ class JobRunner:
         return str(row["status"])
 
     def _current_next_run_at(self, job: Dict[str, Any]) -> int | None:
-        """The job's CURRENT ``next_run_at`` (already advanced by the materializer).
-
-        Falls back to the claim-time snapshot, which the Plane materializer
-        projects AFTER advancing the cadence in the same transaction.
-        """
-
         row = self._fresh_job(job)
         value = (row if row is not None else job).get("next_run_at")
         return None if value is None else int(value)
@@ -420,8 +314,6 @@ class JobRunner:
         coordinator: WorkAdmissionCoordinator,
         store,
     ) -> None:
-        """Bind the same coordinator/store used by the durable scheduler loop."""
-
         if self._coordinator is not None and self._coordinator is not coordinator:
             raise RuntimeError("cannot replace the scheduler operation coordinator")
         if store is not self.store:
@@ -429,8 +321,6 @@ class JobRunner:
         self._coordinator = coordinator
 
     def assess_job(self, job: Dict[str, Any]) -> HandlerEligibilityDecision:
-        """Resolve one job's static declaration before materialization."""
-
         handler_kind = job.get("handler_kind")
         if handler_kind is None:
             handler_kind = (
@@ -471,8 +361,6 @@ class JobRunner:
         *,
         result_code: str | None = None,
     ) -> None:
-        """Record one bounded scheduler event without affecting execution."""
-
         observability = getattr(self.orch, "runtime_observability", None)
         if observability is None:
             return
@@ -492,8 +380,6 @@ class JobRunner:
         effect_kind: str,
         result_code: str | None = None,
     ) -> None:
-        """Record one bounded effect event without exposing an effect key."""
-
         observability = getattr(self.orch, "runtime_observability", None)
         if observability is None:
             return
@@ -516,7 +402,6 @@ class JobRunner:
         job_id: Optional[str],
         chat_id: Optional[str],
     ) -> None:
-        """Best-effort in-app notification (FR-022). No external channel exists."""
         try:
             await self.orch.notify_user(
                 user_id,
@@ -530,11 +415,10 @@ class JobRunner:
                     "body": body,
                 },
             )
-        except Exception:  # pragma: no cover - notification is best-effort
+        except Exception:  # pragma: no cover
             logger.debug("scheduler notify failed (non-fatal)", exc_info=True)
 
     async def _run_dreaming(self, job: Dict[str, Any], correlation_id: str) -> str:
-        """Run a per-user dreaming consolidation sweep (025 T053). No grant needed."""
         user_id = job["user_id"]
         job_id = job["id"]
         run_id = self.store.start_run(job_id, user_id, correlation_id)
@@ -546,7 +430,6 @@ class JobRunner:
             from dreaming.consolidation import run_sweep
 
             repo = self.orch.personalization_service.repo
-            # Defense in depth: honor a since-flipped dreaming_enabled flag.
             profile = repo.get_profile(user_id) or {}
             if not bool(profile.get("dreaming_enabled", True)):
                 self.store.finish_run(
@@ -585,8 +468,6 @@ class JobRunner:
 
     @staticmethod
     def _effect_digest(*, job: Dict[str, Any], effect_kind: str) -> str:
-        """Hash normalized effect identity without persisting instruction data."""
-
         instruction_digest = hashlib.sha256(
             str(job.get("instruction") or "").encode("utf-8")
         ).hexdigest()
@@ -610,8 +491,6 @@ class JobRunner:
         title: str,
         body: str,
     ) -> None:
-        """Deliver one deduplicated transient notification for an occurrence."""
-
         digest = hashlib.sha256(
             json.dumps(
                 {"level": level, "title": title, "body": body},
@@ -658,21 +537,6 @@ class JobRunner:
         result_code: str,
         notify: bool = True,
     ) -> None:
-        """Pause the job and deliver ONE owner notification (056 FR-013 shape).
-
-        Shared by the authority-skip and attempts-exhausted paths: pausing is
-        the structural collapse (a paused job is never due again) and the
-        ``_skip_notified`` set keeps the one-notification-per-pause rule even
-        if the same occurrence is settled twice. The dedupe is keyed on the
-        PAUSE TRANSITION: when the store reports the job ``active`` again (the
-        owner resumed it via the REST API or the schedule surface, both of
-        which only call ``set_status(..., "active")``), the marker is re-armed
-        so the next pause notifies again instead of silently re-pausing.
-
-        ``notify=False`` pauses without an owner notice (``__dreaming__``
-        maintenance jobs the owner never scheduled).
-        """
-
         job = attempt.job
         user_id = str(job["user_id"])
         job_id = str(job["id"])
@@ -695,8 +559,6 @@ class JobRunner:
         last_code: str,
         failures: int,
     ) -> OccurrenceRunResult:
-        """Terminal, NON-retryable settlement once the genuine-failure cap is hit."""
-
         job = attempt.job
         limit = max_attempts()
         logger.warning(
@@ -737,14 +599,6 @@ class JobRunner:
     async def _exhaust_claim_loop(
         self, attempt: ScheduledAttempt
     ) -> OccurrenceRunResult:
-        """Terminal settlement for a pathological re-claim loop.
-
-        Reached only when Plane's ``attempt_count`` — bumped on EVERY re-claim,
-        including admission refusals and lease losses that are not the job's
-        fault — passes ``claim_loop_ceiling()``. Distinct code and copy: the
-        job did not fail; the scheduler could not get it to settle.
-        """
-
         job = attempt.job
         ceiling = claim_loop_ceiling()
         logger.warning(
@@ -865,8 +719,6 @@ class JobRunner:
             )
         except Exception:
             logger.exception("dreaming sweep failed", extra={"job_id": str(job["id"])})
-            # The output boundary may have partially committed.  Keep the
-            # reservation ambiguous so recovery never blindly repeats it.
             self._observe_scheduler(
                 "terminal", job, result_code="operation_failed"
             )
@@ -891,22 +743,9 @@ class JobRunner:
         )
 
     async def _admit_monitoring_episode(self, attempt: ScheduledAttempt) -> bool:
-        """Admit a claimed occurrence into its policy's episode allowance, if any.
-
-        Returns ``False`` for a legacy job with no policy row: existing
-        recurrence semantics are entirely untouched. For a policy job, the
-        episode's assignment is resolved/continued and admitted together in
-        ONE transaction (088.007); ``True`` means this occurrence was just
-        admitted. Every refusal raises :class:`ScheduleActionError` (its
-        ``code`` is the typed admission reason) — the occurrence is never
-        dispatched into ``run_scheduled_turn`` on a refusal.
-        """
-
         job = attempt.job
         get_job_policy = getattr(self.store, "get_job_policy", None)
         if get_job_policy is None:
-            # A store double that predates 088.007 (or a test fake) has no
-            # policy concept at all: behave exactly as a legacy job would.
             return False
         user_id, job_id = str(job["user_id"]), str(job["id"])
         policy = await asyncio.to_thread(get_job_policy, user_id, job_id)
@@ -933,8 +772,6 @@ class JobRunner:
     async def _refuse_monitoring_admission(
         self, attempt: ScheduledAttempt, *, code: str
     ) -> OccurrenceRunResult:
-        """Release a claimed occurrence a policy refused; never dispatches the turn."""
-
         job = attempt.job
         if code in _MONITORING_TERMINAL_REASONS:
             self._forget_failures(attempt)
@@ -953,9 +790,6 @@ class JobRunner:
                 False,
                 code,
             )
-        # A transient refusal (an outstanding episode still resolving, or a
-        # policy read racing a concurrent Stop): retry the next tick, the
-        # job itself did not fail and is never paused for this.
         self._observe_scheduler("terminal", job, result_code=code)
         return OccurrenceRunResult(
             "failure",
@@ -966,8 +800,6 @@ class JobRunner:
         )
 
     def _should_skip_stale(self, job: Dict[str, Any], scheduled_for: datetime) -> bool:
-        """Stale guard decision (see the policy comment in ``run_occurrence``)."""
-
         if job.get("schedule_kind") == "one_shot":
             return False
         now = datetime.now(UTC)
@@ -979,8 +811,6 @@ class JobRunner:
         return next_run_at <= int(now.timestamp() * 1000)
 
     async def _notify_stale_backlog_once(self, attempt: ScheduledAttempt) -> None:
-        """ONE owner notice per job per backlog: skipped N missed runs."""
-
         job = attempt.job
         job_id = str(job["id"])
         if job_id in self._stale_notified:
@@ -1005,8 +835,6 @@ class JobRunner:
         *,
         claim_lost: asyncio.Event,
     ) -> OccurrenceRunResult:
-        """Execute one started occurrence without ever re-emitting ambiguity."""
-
         decision = self.assess_job(attempt.job)
         if not decision.eligible:
             self._observe_scheduler(
@@ -1030,12 +858,7 @@ class JobRunner:
             self._observe_scheduler(
                 "claim_recovered", attempt.job, result_code="claim_recovered"
             )
-        # Entry guard, hard ceiling only: Plane bumps attempt_count on EVERY
-        # re-claim (retryable failure, lease loss, admission refusal,
-        # claim_lost), so it is NOT a failure count — a healthy job that was
-        # merely refused admission a few times must still run. Genuine
-        # failures are counted in ``_failures``; attempt_count only stops a
-        # pathological loop that never settles.
+        # attempt_number counts every re-claim, not just failures
         if attempt.claim.attempt_number > claim_loop_ceiling():
             return await self._exhaust_claim_loop(attempt)
         if attempt.job.get("agent_id") == "__dreaming__":
@@ -1050,30 +873,10 @@ class JobRunner:
         user_id = str(job["user_id"])
         job_id = str(job["id"])
 
-        # Catch-up storm guard: a job whose next_run_at is far in the past
-        # materializes one occurrence per missed cadence (one per tick; the
-        # Plane materializer advances next_run_at one step each time). Firing
-        # N real turns (each an IdP mint + LLM turn + chat output) into the
-        # user's chat is never what they want, so stale occurrences are
-        # skipped — but ONLY when more backlog follows. Policy:
-        #   (a) one_shot jobs are NEVER skipped: a deliberate single task runs
-        #       when the service comes back;
-        #   (b) a recurring occurrence is skipped only while the job's CURRENT
-        #       next_run_at is still in the past; once it is in the future this
-        #       occurrence is the last catch-up and runs normally, so a daily
-        #       09:00 job that fell inside an outage still produces today's
-        #       output once;
-        #   (c) the owner gets ONE notice per job per backlog, not silence.
-        # Checked BEFORE authority derivation so a stale backlog costs no IdP
-        # round-trips either.
+        # Catch-up guard: one-shot occurrences are never skipped
         scheduled_for = attempt.claim.scheduled_for
-        # The decision re-reads the job row (sync Plane round-trip): keep it
-        # off the event loop like the surrounding store calls.
         skip_stale = await asyncio.to_thread(self._should_skip_stale, job, scheduled_for)
         if not skip_stale:
-            # Any occurrence of this job that proceeds past the guard ends the
-            # current backlog, so the NEXT backlog notifies again — regardless
-            # of how this run settles (success, failure, or an auth pause).
             self._stale_notified.discard(job_id)
         if skip_stale:
             age_s = int(occurrence_age_seconds(scheduled_for))
@@ -1129,9 +932,6 @@ class JobRunner:
                 "authorization_unavailable",
             )
 
-        # A job without an explicitly selected chat owns a stable UUID4 chat
-        # equal to its already-UUID4 job identity. This keeps fallback chats
-        # compatible with the canonical conversation locator/snapshot wire.
         effect_key = str(job.get("target_chat_id") or job["id"])
         digest = self._effect_digest(job=job, effect_kind="chat_history")
         try:
@@ -1205,7 +1005,7 @@ class JobRunner:
                 from llm_config import LLMUnavailable
 
                 llm_unavailable = isinstance(exc, LLMUnavailable)
-            except Exception:  # pragma: no cover - defensive import guard
+            except Exception:  # pragma: no cover
                 llm_unavailable = False
             logger.exception("scheduled job execution failed", extra={"job_id": job_id})
             result_code = "llm_unavailable" if llm_unavailable else "operation_failed"
@@ -1216,7 +1016,6 @@ class JobRunner:
             )
             failures = self._record_failure(attempt)
             if failures >= max_attempts():
-                # Bounded retries: this was the last permitted GENUINE failure.
                 return await self._exhaust_attempts(
                     attempt,
                     last_failure=failure_summary,
@@ -1253,26 +1052,15 @@ class JobRunner:
         )
 
     async def run_job(self, job: Dict[str, Any]) -> str:
-        """Execute one due job. Returns the run outcome."""
         user_id = job["user_id"]
         job_id = job["id"]
         correlation_id = str(uuid.uuid4())
 
-        # 030 (025 T053): dreaming/consolidation jobs run a local sweep — no
-        # offline grant or delegated authority needed (in-DB, non-PHI, no
-        # external calls). Routed before the grant gate below.
         if job.get("agent_id") == "__dreaming__":
             return await self._run_dreaming(job, correlation_id)
 
         run_id = self.store.start_run(job_id, user_id, correlation_id)
 
-        # 1-3. Authority (056 US2, FR-012/FR-013): ONE shared derivation seam —
-        # validate the durable consent (revocation re-checked HERE, not only at
-        # expiry), mint a fresh token for THIS run, and narrow to
-        # (consented ∩ the user's CURRENT grants). Any failure is fail-closed:
-        # zero real-agent dispatch, a recorded skipped_auth outcome, the job
-        # paused, and ONE actionable notification (collapsed — a paused job
-        # does not re-notify on every firing).
         agent_id = job.get("agent_id")
         from orchestrator.chain_authority import AuthoritySkip, MachineTurnAuthority
 
@@ -1302,8 +1090,6 @@ class JobRunner:
             )
             if not already_notified:
                 self._skip_notified.add(job_id)
-                # Notification fatigue (spec edge case): notify on the
-                # TRANSITION into paused, not once per scheduled firing.
                 await self._notify(
                     user_id,
                     level="warning",
@@ -1320,15 +1106,10 @@ class JobRunner:
         access_token = authority.access_token
         allowed_scopes = authority.allowed_scopes
 
-        # 4. Execute as a background chat turn (in-app delivery via VirtualWebSocket).
         outcome = "success"
         summary = None
         llm_unavailable = False
         try:
-            # 056 US2: the derived root is threaded INTO the turn (it used to be
-            # dropped here), so real-agent tools dispatch delegated under the
-            # user's consent in production, and any hop the turn starts mints
-            # children off that root.
             summary = await self.orch.run_scheduled_turn(
                 user_id=user_id,
                 chat_id=job.get("target_chat_id"),
@@ -1340,13 +1121,11 @@ class JobRunner:
                 authority=authority,
             )
         except Exception as exc:
-            # Feature 054 (FR-020): a run whose AI was unavailable is a
-            # FAILURE, reported honestly — never the old silent "success".
             try:
                 from llm_config import LLMUnavailable
 
                 llm_unavailable = isinstance(exc, LLMUnavailable)
-            except Exception:  # pragma: no cover - defensive import guard
+            except Exception:  # pragma: no cover
                 llm_unavailable = False
             if llm_unavailable:
                 logger.warning(
@@ -1366,7 +1145,6 @@ class JobRunner:
             run_id, outcome=outcome, summary=summary, auth_ref=correlation_id
         )
 
-        # 5. Reschedule (or complete one-shot) and notify.
         import time
 
         now_ms = int(time.time() * 1000)
@@ -1381,7 +1159,6 @@ class JobRunner:
             job_id, last_run_at=now_ms, next_run_at=next_run, completed=completed
         )
 
-        # 030 FR-017: structured observability for scheduled runs.
         logger.info(
             "scheduler.run_finished",
             extra={
@@ -1394,7 +1171,6 @@ class JobRunner:
         )
 
         if outcome == "success":
-            # A healthy run re-arms the skip notification for this job.
             self._skip_notified.discard(job_id)
             await self._notify(
                 user_id,
@@ -1405,8 +1181,6 @@ class JobRunner:
                 chat_id=job.get("target_chat_id"),
             )
         elif llm_unavailable:
-            # Feature 054 (US4-AS1): the owner is told the AI was unavailable
-            # — the run must never read as "finished".
             await self._notify(
                 user_id,
                 level="error",

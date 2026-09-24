@@ -1,4 +1,7 @@
-"""Tests for owner-scoped attachment readers and parser leases."""
+"""Tests for shared/attachment_resolver.py: owner isolation before blob access,
+bounded/digest-fenced readers, parser-capability lease revocation, and fail-closed
+Plane runtime registration.
+"""
 
 from __future__ import annotations
 
@@ -49,8 +52,6 @@ class _FixtureParserCapability(os.PathLike[str]):
 
 
 class _FixtureBlobStore:
-    """Reader-only test double; fixture publication never bypasses Plane storage."""
-
     def __init__(self, root: Path) -> None:
         self._root = root
         self._payloads: dict[tuple[str, str], bytes] = {}

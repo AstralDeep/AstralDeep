@@ -1,8 +1,7 @@
-"""Behaviour tests for the 4 read verbs added in feature 063 (remote-observe-1):
-job_status, job_history, list_directory, list_processes — plus their pure parsers.
-
-Transport seam + monkeypatched machine resolution; no DB / SSH / network.
+"""Tests for agents/remote_observe/mcp_tools.py: job_status, job_history,
+list_directory, list_processes, and their pure parsers, via the FakeTransport seam.
 """
+
 from __future__ import annotations
 
 import json
@@ -46,8 +45,6 @@ def _verdict(res):
     return (res.get("_data") or {}).get("verdict")
 
 
-# ── pure parsers ─────────────────────────────────────────────────────────────
-
 def test_parse_sacct_json_extracts_typed_fields():
     doc = {"jobs": [{"job_id": 50, "name": "train", "state": {"current": ["COMPLETED"]},
                      "time": {"elapsed": 120}, "exit_code": {"return_code": {"number": 0}},
@@ -73,8 +70,6 @@ def test_parse_ps_rows_convert_rss_to_bytes():
     assert procs[1]["comm"] == "bash"
 
 
-# ── job_status ────────────────────────────────────────────────────────────────
-
 def test_job_status_live_queue_hit():
     doc = {"jobs": [{"job_id": 123, "name": "train", "job_state": "RUNNING",
                      "partition": "gpu", "node_count": 2, "state_reason": "None"}]}
@@ -88,7 +83,6 @@ def test_job_status_falls_back_to_accounting_then_not_found():
     t = _fake(command_stdout='{"jobs":[]}', command_exit=0)
     res = obs.job_status(user_id=USER, machine_id="dgx", job_id="123")
     assert _verdict(res) == Verdict.NOT_FOUND.value
-    # both the live queue AND the accounting DB were consulted
     assert _argvs(t) == [["squeue", "--job", "123", "--json"], ["sacct", "-j", "123", "--json", "-X"]]
 
 
@@ -98,19 +92,15 @@ def test_job_status_rejects_non_numeric():
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and _argvs(t) == []
 
 
-# ── job_history ───────────────────────────────────────────────────────────────
-
 def test_job_history_clamps_days_and_queries_sacct():
     doc = {"jobs": [{"job_id": 7, "name": "j", "state": {"current": ["FAILED"]},
                      "time": {"elapsed": 5}, "exit_code": {"return_code": {"number": 1}}}]}
     t = _fake(command_stdout=json.dumps(doc), command_exit=0)
     res = obs.job_history(user_id=USER, machine_id="dgx", days=999)
-    assert res["_data"]["days"] == 30  # clamped to the max
+    assert res["_data"]["days"] == 30
     argv = _argvs(t)[0]
     assert argv[0] == "sacct" and "now-30days" in argv
 
-
-# ── list_directory ──────────────────────────────────────────────────────────
 
 def test_list_directory_lists_entries():
     t = _fake(command_stdout="d\t4096\t1700000000\tsub\nf\t10\t1700000001\ta.txt\n", command_exit=0)
@@ -126,14 +116,12 @@ def test_list_directory_rejects_relative_path():
     assert _verdict(res) == Verdict.INVALID_ARGUMENT.value and _argvs(t) == []
 
 
-# ── list_processes ────────────────────────────────────────────────────────────
-
 def test_list_processes_own_only_uses_username():
     t = _fake(command_stdout="1234 me 1.0 0.5 2048 python\n", command_exit=0)
     res = obs.list_processes(user_id=USER, machine_id="dgx", own_only=True)
     assert res["_data"]["processes"] == 1
     argv = _argvs(t)[0]
-    assert argv[0:3] == ["ps", "-u", "me"]  # target.username
+    assert argv[0:3] == ["ps", "-u", "me"]
 
 
 def test_list_processes_all_uses_eo():
@@ -141,8 +129,6 @@ def test_list_processes_all_uses_eo():
     obs.list_processes(user_id=USER, machine_id="dgx", own_only=False)
     assert _argvs(t)[0][0:2] == ["ps", "-eo"]
 
-
-# ── read_job_output (US4 — bounded tail of a tracked job's output) ────────────
 
 def test_read_job_output_from_tracked_job(monkeypatch):
     from orchestrator import remote_jobs
@@ -156,11 +142,6 @@ def test_read_job_output_from_tracked_job(monkeypatch):
 
 
 def test_read_job_output_tail_reaches_the_model_tier(monkeypatch):
-    # The orchestrator's two-tier rule shows the LLM ONLY `_data`
-    # (`_tool_result_to_llm_content`); the CodeBlock in `_ui_components` is
-    # render-only. Without the tail in `_data` the model is blind to the very
-    # output it was asked to interpret — live-found 2026-07-28: it re-submitted
-    # `cat` jobs for content the canvas already showed.
     from orchestrator import remote_jobs
     monkeypatch.setattr(remote_jobs, "get_by_job",
                         lambda db, uid, jid: {"output_path": "/home/me/.astral_jobs/x.out"})
@@ -185,17 +166,7 @@ def test_read_job_output_explicit_path(monkeypatch):
     assert _argvs(t)[0][-1] == "/abs/out.log" and "line1" in str(res["_ui_components"][0])
 
 
-# ── resolution + degraded paths: every outcome maps to the vocabulary ─────────
-#
-# The verbs never raise at the model: an unknown machine, a missing credential,
-# an undecryptable one, a dead transport or unparseable output each become a
-# named verdict (FR-034 / SC-011).
-
 class _SeqTransport(FakeTransport):
-    """FakeTransport whose run() outcomes advance per call. Each outcome is either
-    ``(stdout, exit)`` — a transport-level success — or a bare ``Verdict``, a
-    transport-level failure (unreachable/timeout/…) for the legs that must degrade."""
-
     def __init__(self, outcomes, **kw):
         super().__init__(**kw)
         self._outcomes = list(outcomes)
@@ -217,7 +188,6 @@ def _seq(outcomes):
 
 
 def _rows(res):
-    """The first Table's rows inside the rendered component tree."""
     def walk(node):
         if isinstance(node, dict):
             if "rows" in node:
@@ -248,8 +218,6 @@ def test_sanitize_none_is_the_empty_string():
 
 
 def test_verbs_refuse_without_a_signed_in_principal():
-    # No principal → the vocabulary's no-live-human verdict, never a bare
-    # permission_denied (SC-011).
     t = _fake()
     for res in (obs.list_machines(), obs.list_queue(machine_id="dgx"),
                 obs.job_status(machine_id="dgx", job_id="1"),
@@ -295,10 +263,8 @@ def test_credential_failures_map_to_the_vocabulary(monkeypatch, exc, verdict):
     t = _fake()
     res = obs.list_directory(user_id=USER, machine_id="dgx", path="/tmp")
     assert _verdict(res) == verdict.value
-    assert _argvs(t) == []   # no connection is opened for an unusable credential
+    assert _argvs(t) == []
 
-
-# ── list_machines / probe_machine ────────────────────────────────────────────
 
 def test_list_machines_empty_inventory_says_so(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.list_machines", lambda db, uid: [])
@@ -338,8 +304,6 @@ def test_probe_machine_unreachable_survives_a_failed_verdict_write(monkeypatch):
                                       machine_id="dgx")) == Verdict.UNREACHABLE.value
 
 
-# ── pure parsers + formatters ────────────────────────────────────────────────
-
 def test_parse_squeue_json_bad_input_is_none():
     assert obs._parse_squeue_json("not json") is None
     assert obs._parse_squeue_json("") is None
@@ -358,7 +322,6 @@ def test_fmt_uptime_renders_each_magnitude():
 
 
 def test_fmt_bytes_tops_out_at_tib():
-    # The TiB guard always returns, so the loop never falls through.
     assert obs._fmt_bytes(512) == "512.0 B"
     assert obs._fmt_bytes(5 * 1024 ** 5) == "5120.0 TiB"
 
@@ -373,7 +336,7 @@ def test_parse_proc_skips_unparseable_uptime_and_meminfo():
 
 
 def test_parse_find_skips_short_lines_and_unparseable_sizes():
-    entries = obs._parse_find("f\t512\n"                       # too few columns
+    entries = obs._parse_find("f\t512\n"
                               "f\tnot-a-number\t170\todd.txt\n"
                               "f\t10\t171\tgood.txt\n")
     assert [e["name"] for e in entries] == ["odd.txt", "good.txt"]
@@ -381,14 +344,12 @@ def test_parse_find_skips_short_lines_and_unparseable_sizes():
 
 
 def test_parse_ps_skips_short_lines_and_unparseable_rss():
-    procs = obs._parse_ps("1 me 0.0 0.0 1024\n"                # too few columns
+    procs = obs._parse_ps("1 me 0.0 0.0 1024\n"
                           "2 me 0.0 0.0 notanumber python\n"
                           "3 me 0.0 0.0 2048 bash\n")
     assert [p["pid"] for p in procs] == ["2", "3"]
     assert procs[0]["rss_bytes"] is None and procs[1]["rss_bytes"] == 2048 * 1024
 
-
-# ── transport failures inside each leg degrade honestly ──────────────────────
 
 def test_list_queue_transport_failure_is_a_verdict():
     _fake(force_verdict=Verdict.TIMEOUT)
@@ -396,7 +357,6 @@ def test_list_queue_transport_failure_is_a_verdict():
 
 
 def test_list_queue_fallback_transport_failure_is_a_verdict():
-    # --json refused (old scheduler), then the delimited retry never lands.
     t = _seq([("squeue: unrecognized option", 1), Verdict.UNREACHABLE])
     assert _verdict(obs.list_queue(user_id=USER,
                                    machine_id="dgx")) == Verdict.UNREACHABLE.value
@@ -410,8 +370,6 @@ def test_host_facts_transport_failure_is_a_verdict():
 
 
 def test_host_facts_unreadable_role_skips_the_cluster_gpu_leg(monkeypatch):
-    # The GPU leg keys off the inventory row's declared role; if that lookup
-    # fails the leg is skipped rather than guessed at (never nvidia-smi).
     calls = {"n": 0}
 
     def _resolve(db, uid, ref):
@@ -426,8 +384,6 @@ def test_host_facts_unreadable_role_skips_the_cluster_gpu_leg(monkeypatch):
     assert res["_data"]["uptime"] == "2h 0m"
     assert res["_data"]["omitted"] == ["disk usage"]
 
-
-# ── job_status / job_history degraded legs ───────────────────────────────────
 
 def test_job_status_live_leg_failure_is_a_verdict():
     _fake(force_verdict=Verdict.TIMEOUT)
@@ -474,8 +430,6 @@ def test_job_history_bounds_rows_and_marks_truncation():
     assert "Showing 200 of 201" in str(res["_ui_components"])
 
 
-# ── list_directory / list_processes degraded legs ────────────────────────────
-
 def test_list_directory_transport_failure_is_a_verdict():
     _fake(force_verdict=Verdict.TIMEOUT)
     assert _verdict(obs.list_directory(user_id=USER, machine_id="dgx",
@@ -501,8 +455,6 @@ def test_list_processes_no_matches_is_reported_not_blank():
     assert res["_data"] == {"processes": 0}
     assert "No matching processes." in str(res["_ui_components"])
 
-
-# ── read_job_output degraded legs ────────────────────────────────────────────
 
 def test_read_job_output_unreadable_tracking_row_falls_back_to_the_path(monkeypatch):
     from orchestrator import remote_jobs

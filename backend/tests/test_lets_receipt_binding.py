@@ -1,4 +1,7 @@
-"""Feature 074 T174: every receipt field is bound at the last effect seam."""
+"""Tests for orchestrator/lets_gateway.py: every receipt field is bound and verified at
+the final effect seam, rejecting field tamper, signature tamper, and replay after one
+claimed effect.
+"""
 
 from __future__ import annotations
 

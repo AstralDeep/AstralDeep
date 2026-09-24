@@ -1,19 +1,8 @@
-"""Feature 076 — registry of the user's controllable desktops ("computer hosts").
-
-A desktop client whose owner switched on "Allow remote control" announces a
-:class:`shared.protocol.ComputerHostDescriptor` on its authenticated UI socket
-(``register_ui.computer_host``, or a later ``computer_event: announce``). This
-module keeps the owner-scoped registry keyed ``(owner_sub, host_id)``, pushes
-presence to the owner's other clients, and correlates every
-``computer_request`` push with its ``computer_response`` reply
-(``request_id → Future``, the same shape as ``Orchestrator.pending_requests``).
-
-Trust posture (spec FR-020/FR-022): the owner is ALWAYS the socket's verified
-session ``sub``; a response is accepted only from the socket the request went
-to; frames are size- and rate-capped per owner; results are untrusted data.
-Nothing here persists — a host exists while its client is connected, plus a
-last-seen cache so the surface can say "offline, last seen …" (D7).
+"""Owner-scoped registry of a user's remote-controllable desktop clients, correlating
+computer_request/computer_response frames and pushing presence; backs the My
+Computers surface and computer_sessions.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,14 +19,10 @@ from shared.protocol import COMPUTER_HOST_VERBS, ComputerHostDescriptor
 logger = logging.getLogger("ComputerHosts")
 
 MAX_FRAME_BYTES = int(os.getenv("COMPUTER_HOST_MAX_FRAME_BYTES", str(4 * 1024 * 1024)))
-#: Offline hosts stay listed this long after their last sighting.
 LAST_SEEN_TTL_S = int(os.getenv("COMPUTER_HOST_LAST_SEEN_TTL_S", str(24 * 3600)))
 
 
 class ComputerHostError(Exception):
-    """A typed failure the agent turns into a typed result (never a raise
-    into the chat). ``code`` is one of the result-vocabulary codes."""
-
     def __init__(self, code: str, message: str, *, candidates: Optional[List[str]] = None):
         super().__init__(message)
         self.code = code
@@ -84,8 +69,6 @@ class ComputerHost:
 
 
 class ComputerHostRegistry:
-    """Owner-scoped, in-process registry + request/response correlation."""
-
     def __init__(self, orch):
         self._orch = orch
         self._hosts: Dict[Tuple[str, str], ComputerHost] = {}
@@ -94,13 +77,8 @@ class ComputerHostRegistry:
         self._pending: Dict[str, Tuple[asyncio.Future, str, str, int]] = {}
         self._dropped_frames = 0
 
-    # ── registration / presence ───────────────────────────────────────────────
-
     def register(self, owner_sub: str, websocket, descriptor: ComputerHostDescriptor | Dict[str, Any]
                  ) -> Tuple[ComputerHost, Optional[ComputerHost]]:
-        """Register (or refresh) a host. Returns ``(host, superseded)`` where
-        ``superseded`` is the previous record when a *different* socket held the
-        same ``(owner, host_id)`` — the caller ends that record's session."""
         desc = descriptor.to_dict() if isinstance(descriptor, ComputerHostDescriptor) else dict(descriptor)
         key = (owner_sub, str(desc["host_id"]))
         superseded = None
@@ -108,7 +86,6 @@ class ComputerHostRegistry:
         if previous is not None and previous.websocket is not websocket:
             superseded = previous
             self._by_ws.pop(id(previous.websocket), None)
-        # One socket announces at most one host: drop a stale key for this socket.
         stale_key = self._by_ws.get(id(websocket))
         if stale_key is not None and stale_key != key:
             self._hosts.pop(stale_key, None)
@@ -121,8 +98,6 @@ class ComputerHostRegistry:
         return host, superseded
 
     def withdraw(self, owner_sub: str, host_id: str) -> Optional[ComputerHost]:
-        """Consent revoked while connected: forget the host entirely (it is not
-        listed as offline — the owner chose to remove it)."""
         key = (owner_sub, host_id)
         host = self._hosts.pop(key, None)
         if host is not None:
@@ -131,8 +106,6 @@ class ComputerHostRegistry:
         return host
 
     def forget(self, owner_sub: str, host_id: str) -> bool:
-        """Owner action from the surface: drop the last-seen record of an
-        offline host. An online host is not forgettable (withdraw it first)."""
         return self._offline.pop((owner_sub, host_id), None) is not None
 
     def on_socket_closed(self, websocket) -> Optional[ComputerHost]:
@@ -144,7 +117,6 @@ class ComputerHostRegistry:
             return None
         host.last_seen = time.time()
         self._offline[key] = host
-        # Fail every request still waiting on this socket.
         for request_id, (fut, owner, host_id, _size) in list(self._pending.items()):
             if (owner, host_id) == key and not fut.done():
                 fut.set_exception(ComputerHostError("host_offline", f"{host.name} went offline"))
@@ -175,8 +147,6 @@ class ComputerHostRegistry:
         return out
 
     def resolve(self, owner_sub: str, ref: Optional[str]) -> ComputerHost:
-        """Resolve a host id or (unique, case-insensitive) name; with no
-        reference, the owner's single online host."""
         online = self.online_for_owner(owner_sub)
         if ref is None or str(ref).strip() == "":
             if len(online) == 1:
@@ -210,12 +180,8 @@ class ComputerHostRegistry:
             "computer_unavailable", f"no computer called {wanted!r} is online",
             candidates=[h.name for h in online])
 
-    # ── request / response correlation ────────────────────────────────────────
-
     async def request(self, host: ComputerHost, session_id: str, verb: str,
                       args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
-        """Push one ``computer_request`` and await its correlated response.
-        Raises :class:`ComputerHostError` (typed) — never returns None."""
         if verb not in COMPUTER_HOST_VERBS:
             raise ComputerHostError("unsupported", f"{verb!r} is not a host verb")
         if verb not in host.verbs:
@@ -252,9 +218,6 @@ class ComputerHostRegistry:
         raise ComputerHostError(code, message)
 
     def handle_response(self, websocket, owner_sub: str, payload: Dict[str, Any]) -> bool:
-        """Resolve the future for a ``computer_response``. Accepted only from
-        the socket that holds the host the request went to (a phone, or a
-        second desktop, can never answer for a host). Returns True if consumed."""
         request_id = str(payload.get("request_id") or "")
         entry = self._pending.get(request_id)
         if entry is None:
@@ -272,8 +235,6 @@ class ComputerHostRegistry:
         fut.set_result(payload)
         return True
 
-    # ── caps ──────────────────────────────────────────────────────────────────
-
     def over_size_cap(self, raw_len: int) -> bool:
         if raw_len > MAX_FRAME_BYTES:
             self._dropped_frames += 1
@@ -283,8 +244,6 @@ class ComputerHostRegistry:
     @property
     def dropped_frames(self) -> int:
         return self._dropped_frames
-
-    # ── presence pushes ───────────────────────────────────────────────────────
 
     async def push_presence(self, host: ComputerHost, state: str) -> None:
         frame = json.dumps({
@@ -301,5 +260,5 @@ class ComputerHostRegistry:
                 if self._orch._get_user_id(ws) != host.owner_sub:
                     continue
                 await self._orch._safe_send(ws, frame)
-            except Exception:  # noqa: BLE001 — best-effort presence
+            except Exception:  # noqa: BLE001
                 logger.debug("076: presence push failed", exc_info=True)

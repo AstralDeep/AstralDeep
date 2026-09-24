@@ -1,4 +1,8 @@
-"""Focused app-Plane proofs for Orchestrator's former Database callers."""
+"""Tests for Orchestrator's former Database callers now on AstralPlane
+(backend/orchestrator/history.py, orchestrator.py): preferences/identity in one
+transaction, readiness gating, bounded background replay, and no legacy JSON history
+import.
+"""
 
 from __future__ import annotations
 

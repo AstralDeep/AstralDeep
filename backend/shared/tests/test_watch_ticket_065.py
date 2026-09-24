@@ -1,4 +1,7 @@
-"""Purpose-bound one-time Watch bridge ticket tests for Feature 065."""
+"""Tests for shared/watch_ticket.py: deterministic nonce re-minting,
+tampering/expiry/wrong-worker rejection, and binding of the nonce to device,
+connection, and revision.
+"""
 
 from __future__ import annotations
 

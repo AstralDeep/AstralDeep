@@ -1,21 +1,8 @@
-"""Feature 063 T075 — FR-049 secret-leak sweep across register → probe → verb →
-failure paths.
-
-Registers a machine with a distinctive fake PEM, key passphrase, and password
-(unique sentinel strings), then drives the REAL paths — the remote-machines
-surface HANDLERS (chrome_machine_add / probe / delete), the remote-observe read
-verbs, and the tracked-job poller (component refresh + finish notification) —
-over the FakeTransport seam, with the real CredentialManager (real Fernet) and
-the real ``build_target`` decrypt, so the sentinels genuinely flow through the
-system (positive controls assert they reach the decrypted MachineTarget).
-
-Every output channel is captured and swept: audit events emitted, every log
-record (DEBUG up, message + args + tracebacks), every returned dict / notice /
-rendered payload, notifications, and workspace upserts. No sentinel may appear
-in any of them; the stored credential row itself must be Fernet ciphertext that
-round-trips through the key. Hermetic: in-memory DB double, no postgres, no
-network (same posture as test_remote_confirmation_063.py).
+"""Tests that remote-machine credentials never leak (orchestrator/credential_manager.py,
+remote_jobs.py, projection_surfaces/remote_machines.py): sweeps logs, audit events,
+and rendered payloads for planted secrets.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,8 +23,6 @@ from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 USER = "user-1"
 
-# Distinctive, never-legitimate strings. The PEM body sentinel stands in for
-# "private-key bytes"; any one of these appearing in an output channel is a leak.
 SENTINEL_KEY = "ASTRAL063LEAKSENTINELPRIVATEKEYBYTES"
 FAKE_PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
             f"{SENTINEL_KEY}\n"
@@ -50,8 +35,6 @@ _SQUEUE_FAILED = ('{"jobs":[{"job_id":42,"job_state":"FAILED","name":"train",'
                   '"partition":"gpu","node_count":1,"state_reason":"None"}]}')
 
 
-# ── in-memory DB double (matches the modules' exact queries) ──────────────────
-
 class _Cur:
     def __init__(self, rowcount: int = 1):
         self.rowcount = rowcount
@@ -59,9 +42,9 @@ class _Cur:
 
 class _MemDB:
     def __init__(self):
-        self.machines: dict = {}      # machine_id -> remote_machine row
-        self.credentials: dict = {}   # machine_id -> machine_credential row
-        self.jobs: dict = {}          # tracked_job_id -> tracked_job row
+        self.machines: dict = {}
+        self.credentials: dict = {}
+        self.jobs: dict = {}
 
     def fetch_one(self, q, params=None):
         s = " ".join(q.split())
@@ -139,7 +122,7 @@ class _MemDB:
             r = self.machines.get(mid)
             if r and r["owner_user_id"] == uid:
                 del self.machines[mid]
-                self.credentials.pop(mid, None)  # FK cascade
+                self.credentials.pop(mid, None)
             return _Cur()
         if s.startswith("UPDATE tracked_job SET state="):
             if "notified=?" in s:
@@ -192,8 +175,6 @@ class _AuditRecorder:
 
 
 class _Async:
-    """Recording async callable (workspace.aupsert / send_ui_upsert / notify_user)."""
-
     def __init__(self, result=None):
         self.calls = []
         self.result = result
@@ -202,8 +183,6 @@ class _Async:
         self.calls.append((a, k))
         return self.result
 
-
-# ── capture / sweep helpers ───────────────────────────────────────────────────
 
 def _dump(obj) -> str:
     return json.dumps(obj, default=repr, ensure_ascii=False)
@@ -230,7 +209,7 @@ def _audit_text(recorder) -> str:
         if callable(dump):
             try:
                 parts.append(_dump(dump()))
-            except Exception:  # noqa: BLE001 — repr above already captured it
+            except Exception:  # noqa: BLE001
                 pass
     return "\n".join(parts)
 
@@ -242,12 +221,9 @@ def _assert_clean(pieces):
 
 
 def _channel_pieces(env):
-    """The always-swept channels: every log record and every audit event."""
     return [("log records", _log_text(env.caplog)),
             ("audit events", _audit_text(env.audit))]
 
-
-# ── environment ───────────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def env(monkeypatch, caplog):
@@ -281,8 +257,6 @@ def env(monkeypatch, caplog):
 
 
 async def _register(env, *, cred_type: str = "ssh_key", label: str = "dgx"):
-    """Drive chrome_machine_add exactly as a client submit does — every credential
-    field present (legacy clients render them all), the handler reads by cred_type."""
     before = set(env.db.machines)
     fields = {"label": label, "address": "10.0.0.5", "port": "22", "username": "me",
               "os_family": "linux", "role": "cluster", "cred_type": cred_type,
@@ -293,17 +267,12 @@ async def _register(env, *, cred_type: str = "ssh_key", label: str = "dgx"):
     return mid, ("chrome_machine_add return", _dump(ret))
 
 
-# ── the sweep must itself be able to catch a leak (tripwires) ─────────────────
-
 def test_sweep_helper_detects_a_planted_leak():
     with pytest.raises(AssertionError, match="leaked into planted"):
         _assert_clean([("planted", f"prefix {FAKE_PEM} suffix")])
 
 
 async def test_sweep_catches_a_leak_planted_in_a_driven_path(env, monkeypatch):
-    # End-to-end negative control: a log line emitted INSIDE a driven code path
-    # must reach the sweep's capture — otherwise every "clean" result above
-    # would be vacuous.
     set_transport(FakeTransport())
     real = CredentialManager.set_machine_credential
 
@@ -317,17 +286,12 @@ async def test_sweep_catches_a_leak_planted_in_a_driven_path(env, monkeypatch):
         _assert_clean(_channel_pieces(env))
 
 
-# ── register → probe → render (happy path) ────────────────────────────────────
-
 async def test_register_probe_and_rendered_surfaces_leak_nothing(env):
     set_transport(FakeTransport())
     pieces = []
     mid, add_piece = await _register(env)
     pieces.append(add_piece)
 
-    # Positive control: the sentinels really are in play — stored, decrypted, and
-    # flowing into the MachineTarget the transport sees (otherwise this whole
-    # sweep would pass vacuously).
     cred = env.credmgr.get_machine_credential(mid, USER)
     assert SENTINEL_KEY in cred["secret"] and cred["passphrase"] == SENTINEL_PASSPHRASE
 
@@ -340,8 +304,6 @@ async def test_register_probe_and_rendered_surfaces_leak_nothing(env):
     pieces.extend(_channel_pieces(env))
     _assert_clean(pieces)
 
-
-# ── read verbs over the real resolve/decrypt path ─────────────────────────────
 
 async def test_read_verb_results_leak_nothing(env):
     set_transport(FakeTransport())
@@ -363,14 +325,12 @@ async def test_read_verb_results_leak_nothing(env):
     _assert_clean(pieces)
 
 
-# ── induced failures: wrong credential / unreachable / undecryptable ──────────
-
 async def test_wrong_credential_failure_leaks_nothing(env):
     set_transport(FakeTransport(authenticated=False))
     pieces = []
-    mid, add_piece = await _register(env)  # add's immediate probe fails auth
+    mid, add_piece = await _register(env)
     pieces.append(add_piece)
-    assert "auth_failed" in add_piece[1]  # the failure path actually ran
+    assert "auth_failed" in add_piece[1]
     pieces.append(("verb auth_failed result",
                    _dump(obs.list_directory(user_id=USER, machine_id=mid, path="/x"))))
     pieces.extend(_channel_pieces(env))
@@ -394,7 +354,6 @@ async def test_undecryptable_credential_failure_leaks_nothing(env):
     pieces = []
     mid, add_piece = await _register(env)
     pieces.append(add_piece)
-    # Simulate a rotated encryption key: ciphertext under a key we no longer hold.
     env.db.credentials[mid]["encrypted_secret"] = (
         Fernet(Fernet.generate_key()).encrypt(FAKE_PEM.encode()).decode())
     probe_ret = await surface._h_machine_probe(env.orch, None, USER, ["user"],
@@ -406,8 +365,6 @@ async def test_undecryptable_credential_failure_leaks_nothing(env):
     pieces.extend(_channel_pieces(env))
     _assert_clean(pieces)
 
-
-# ── password credential + delete ──────────────────────────────────────────────
 
 async def test_password_credential_and_delete_leak_nothing(env):
     set_transport(FakeTransport())
@@ -422,12 +379,10 @@ async def test_password_credential_and_delete_leak_nothing(env):
     _assert_clean(pieces)
 
 
-# ── tracked-job poller: component refresh + finish notification (FR-045) ──────
-
 async def test_job_poller_component_and_notification_leak_nothing(env):
     set_transport(FakeTransport())
     mid, add_piece = await _register(env)
-    assert env.db.machines[mid]["host_key_fingerprint"]  # pinned → poller may run
+    assert env.db.machines[mid]["host_key_fingerprint"]
 
     env.db.jobs["t1"] = {
         "tracked_job_id": "t1", "owner_user_id": USER, "machine_id": mid,
@@ -451,7 +406,7 @@ async def test_job_poller_component_and_notification_leak_nothing(env):
 
     await rj.poll_once(orch)
 
-    assert len(orch.notify_user.calls) == 1  # the notification path actually ran
+    assert len(orch.notify_user.calls) == 1
     assert len(orch.workspace.aupsert.calls) == 1
     pieces = [
         add_piece,
@@ -464,14 +419,12 @@ async def test_job_poller_component_and_notification_leak_nothing(env):
     _assert_clean(pieces)
 
 
-# ── at rest: the credential row is Fernet ciphertext, not the sentinel ────────
-
 async def test_credential_row_is_fernet_ciphertext_at_rest(env):
     set_transport(FakeTransport())
     mid, _ = await _register(env)
     row = env.db.credentials[mid]
     _assert_clean([("stored machine_credential row", _dump(row))])
-    assert row["encrypted_secret"].startswith("gAAAA")  # Fernet token, not encoding
+    assert row["encrypted_secret"].startswith("gAAAA")
     assert row["encrypted_passphrase"].startswith("gAAAA")
     f = Fernet(os.environ["CREDENTIAL_ENCRYPTION_KEY"].encode())
     assert f.decrypt(row["encrypted_secret"].encode()).decode() == FAKE_PEM + "\n"

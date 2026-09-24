@@ -1,4 +1,7 @@
-"""Feature 074 T173: every Astral refusal remains ahead of LETS."""
+"""Tests for orchestrator/governed_dispatch.py: every existing Astral refusal (security,
+identity, permission, policy, taint, confirmation, HITL, PHI, delegation, owner
+isolation, audit) still runs ahead of LETS authorization.
+"""
 
 from __future__ import annotations
 

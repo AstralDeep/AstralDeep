@@ -1,4 +1,8 @@
-"""Feature-065 deterministic recap and sensitive-output tests."""
+"""Tests for orchestrator/voice_recap.py's deterministic spoken recap:
+authoritative-summary precedence, visible-only fallback excluding secret fields,
+sanitizing markup/URLs/credentials, and fail-closed handling of unknown or errored
+PHI checks.
+"""
 
 from __future__ import annotations
 
@@ -121,7 +125,6 @@ def test_non_english_result_preserves_text_but_speaks_only_safe_notice(language)
         committed_components=_visible_components(),
         detected_language=language,
     )
-    # Canonical English tags are case-normalized; EN-us-x is still en-*.
     if language == "EN-us-x":
         assert recap.source == "authoritative_summary"
     else:

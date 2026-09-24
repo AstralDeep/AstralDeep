@@ -1,29 +1,8 @@
-"""Server-side OIDC Authorization-Code flow (feature 026 FR-009, upgraded by 028).
-
-The orchestrator drives login server-side: ``/auth/login`` → Keycloak
-authorize (PKCE), ``/auth/callback`` → token exchange (confidential
-client_secret stays server-side), ``/auth/session`` → hands the access token
-to the WS ``register_ui`` handshake, ``/auth/logout`` → revocation +
-Keycloak end-session. Tokens stay server-side in a signed-cookie session.
-
-Feature 028 (workspace-auth-revival, Part A) adds the full session
-lifecycle on top of the 026 flow:
-
-* **Durable sessions** — ``web_session`` Postgres rows (Fernet-encrypted at
-  rest) survive restarts/multi-instance deploys; the module-level
-  ``_SESSIONS`` dict remains as the in-process cache and the dev/mock
-  fallback (FR-008, research D3).
-* **Silent refresh** — :func:`ensure_session` renews the access token at
-  Keycloak when it nears expiry. Refresh NEVER moves the 365-day
-  interactive-login anchor (016 FR-001); at the hard cap the session dies
-  and interactive login is required (FR-006/FR-007, research D2).
-* **Shell gate** — :func:`shell_gate` gives ``GET /`` its redirect-to-login
-  decision with a validated ``next`` destination (FR-001..FR-003, D1).
-* **Sign-out revocation** — logout revokes the refresh token at Keycloak,
-  revokes feature-025 offline grants, and completes locally even offline
-  (queued retries — FR-012/FR-013, D5); a different user signing in on the
-  same browser revokes the prior session first (FR-014, D6).
+"""Server-side OIDC login, session cookie issuance, silent refresh, and revocation for
+the web shell, plus device-flow kiosk sign-in. Backed by session_store.py, consumed
+by auth.py and orchestrator.py across the authenticated surface.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,41 +22,25 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-import shared  # noqa: F401 — normalizes USE_MOCK_AUTH/KEYCLOAK_* env aliases (post-VITE rename)
+import shared  # noqa: F401
 
 logger = logging.getLogger("orchestrator.web_auth")
 
 web_auth_router = APIRouter()
 
-# In-process session cache + dev/mock fallback: sid -> {access_token,
-# refresh_token, sub, created_at, resumed}. The durable source of truth is
-# the web_session table (session_store.WebSessionStore); rows are mirrored
-# here on read so the hot path stays dict-cheap.
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_CACHE_LOCK = threading.RLock()
-# Pending logins: state -> {code_verifier, created_at, next}
 _PENDING: Dict[str, Dict[str, Any]] = {}
-# sid -> why the session died ('hard_cap'), so /auth/session can report the
-# contracted reason (auth-session.md) instead of a generic refresh_failed.
 _DEATH_REASONS: Dict[str, str] = {}
 
 HARD_MAX_SECONDS = int(os.getenv("OFFLINE_GRANT_MAX_DAYS", "365")) * 24 * 60 * 60
 COOKIE_NAME = "astral_session"
-# One-shot cookie binding an in-flight login to THIS browser: /auth/login mints
-# it alongside the CSRF/PKCE state and /auth/callback refuses any state that
-# does not match it. Scoped to /auth (the only two routes that touch it), so it
-# is independent of the path="/" session cookie.
 STATE_COOKIE_NAME = "astral_oidc_state"
 STATE_COOKIE_PATH = "/auth"
-# The same _PENDING lifetime the pruning sweep in auth_login enforces.
 _STATE_COOKIE_MAX_AGE = 600
-# Deliberately identical for every callback refusal: the page must not tell a
-# forger which check rejected them.
 _INVALID_CALLBACK = "Sign-in could not be completed (invalid callback). Please try again."
 _SCOPE = "openid profile email offline_access"
-# Refresh when the access token has less than this many seconds left (D2).
 _REFRESH_WINDOW_SECONDS = 60
-# ±5 min JWT clock-skew tolerance (016 clarification).
 _CLOCK_SKEW_SECONDS = 300
 
 _PROCESS_SECRET = secrets.token_hex(32)
@@ -88,8 +51,6 @@ _CREDENTIAL_MANAGER = None
 
 
 def bind_session_store(store) -> None:
-    """Bind the one application-scoped Plane-backed web-session store."""
-
     global _STORE, _STORE_FAILED
     if store is None:
         raise ValueError("session store binding is required")
@@ -98,8 +59,6 @@ def bind_session_store(store) -> None:
 
 
 def unbind_session_store(store) -> None:
-    """Release only the exact application-scoped session-store binding."""
-
     global _STORE, _STORE_FAILED
     if _STORE is None:
         return
@@ -110,8 +69,6 @@ def unbind_session_store(store) -> None:
 
 
 def bind_credential_manager(manager) -> None:
-    """Bind the orchestrator's Plane-backed credential manager for logout cleanup."""
-
     global _CREDENTIAL_MANAGER
     if manager is None:
         raise ValueError("credential manager binding is required")
@@ -119,8 +76,6 @@ def bind_credential_manager(manager) -> None:
 
 
 def unbind_credential_manager(manager) -> None:
-    """Release only the exact application-scoped credential-manager binding."""
-
     global _CREDENTIAL_MANAGER
     if _CREDENTIAL_MANAGER is None:
         return
@@ -134,15 +89,6 @@ def _is_mock() -> bool:
 
 
 def _secret() -> bytes:
-    """Cookie-signing key. Must be identical across workers/restarts (FR-008):
-    falls back through every documented session key before the per-process
-    random secret (which only suits single-process dev).
-
-    A dedicated ``WEB_SESSION_SECRET`` is used verbatim. When only an
-    *encryption* key is available (``WEB_SESSION_ENC_KEY`` /
-    ``OFFLINE_GRANT_ENC_KEY``), it is NOT used raw for signing — it is run
-    through HKDF so the cookie-signing key is cryptographically separated from
-    the at-rest encryption key (key separation)."""
     explicit = os.getenv("WEB_SESSION_SECRET")
     if explicit:
         return explicit.encode()
@@ -172,42 +118,22 @@ def _unsign(value: str) -> Optional[str]:
 
 
 def _cookie_secure(request: Request) -> bool:
-    """Production posture: always mark auth cookies Secure, even if the request
-    scheme reads as http behind a TLS-terminating proxy. Development keeps the
-    scheme-derived value so http://localhost still works."""
     from orchestrator.session_store import is_dev_mode
     return (not is_dev_mode()) or str(request.base_url).startswith("https")
 
 
 def _clear_state_cookie(resp: Response) -> Response:
-    """Drop the one-shot login-state cookie. ``delete_cookie`` only matches when
-    given the SAME path it was set with."""
     resp.delete_cookie(STATE_COOKIE_NAME, path=STATE_COOKIE_PATH)
     return resp
 
 
 def _state_is_bound(request: Request, state: str) -> bool:
-    """True when the callback's ``state`` matches the signed cookie that
-    ``/auth/login`` minted for this browser.
-
-    ``_sign`` emits ASCII only, so a non-ASCII cookie value cannot be valid and
-    is refused before ``_unsign`` — whose ``hmac.compare_digest`` raises on
-    non-ASCII ``str``. The state comparison runs over bytes for the same reason:
-    ``state`` is attacker-supplied query text.
-    """
     raw = request.cookies.get(STATE_COOKIE_NAME, "") or ""
     bound = (_unsign(raw) if raw.isascii() else None) or ""
     return bool(state) and bool(bound) and hmac.compare_digest(bound.encode(), state.encode())
 
 
 def _get_store():
-    """Return the application-bound durable store (None when unavailable).
-
-    The fail-closed production boot check lives in the orchestrator startup
-    (FR-015).  This module never constructs a database or a second Plane
-    runtime; mock-auth tests and explicit development mode may still exercise
-    the process-local cache without a binding.
-    """
     global _STORE, _STORE_FAILED
     if _STORE is not None:
         return _STORE
@@ -220,7 +146,6 @@ def _get_store():
 
 
 def reset_store_for_tests() -> None:
-    """Test helper: drop the cached store so monkeypatched envs re-init."""
     global _STORE, _STORE_FAILED, _IDP_OK_UNTIL
     _STORE = None
     _STORE_FAILED = False
@@ -229,7 +154,6 @@ def reset_store_for_tests() -> None:
 
 
 def _keycloak_config():
-    """Reuse the existing helper (authority, client_id, client_secret)."""
     try:
         from orchestrator.auth import _get_keycloak_config
         return _get_keycloak_config()
@@ -242,7 +166,6 @@ def _keycloak_config():
 
 
 def _validate_next(nxt: Optional[str]) -> str:
-    """Open-redirect guard (D1): same-origin relative paths only."""
     nxt = (nxt or "").strip()
     if not nxt.startswith("/") or nxt.startswith("//") or "\\" in nxt or ":" in nxt.split("?", 1)[0]:
         return "/"
@@ -250,7 +173,6 @@ def _validate_next(nxt: Optional[str]) -> str:
 
 
 def _jwt_payload(token: str) -> Dict[str, Any]:
-    """Best-effort, non-validating JWT payload decode ('' claims on failure)."""
     try:
         part = token.split(".")[1]
         part += "=" * (-len(part) % 4)
@@ -267,10 +189,6 @@ def _token_expires_at(token: str) -> Optional[int]:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Session lookup (cache → durable store) + silent refresh
-# ---------------------------------------------------------------------------
-
 def _record_death(sid: str, reason: str) -> None:
     if len(_DEATH_REASONS) > 256:
         _DEATH_REASONS.clear()
@@ -283,7 +201,6 @@ def _same_incarnation(first: dict | None, second: dict | None) -> bool:
 
 
 def _evict_session_observation(sid: str, observed: dict | None) -> bool:
-    """Atomically retire A's cache entry without evicting a later same-SID B."""
     with _SESSION_CACHE_LOCK:
         current = _SESSIONS.get(sid)
         if current is observed or _same_incarnation(current, observed):
@@ -293,7 +210,6 @@ def _evict_session_observation(sid: str, observed: dict | None) -> bool:
 
 
 def _session_from_row(row: dict, previous: dict | None = None) -> dict:
-    """Return a detached issued-session observation with unchanged wire fields."""
     return {
         "sid": row["sid"], "incarnation_id": row["incarnation_id"],
         "access_token": row["access_token"], "refresh_token": row["refresh_token"],
@@ -316,7 +232,7 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
         return sess
     if store is None:
         return None
-    row = store.get(sid)  # enforces the hard cap itself
+    row = store.get(sid)
     if row is None:
         _evict_session_observation(sid, sess)
         reason = None
@@ -328,8 +244,6 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
             _record_death(sid, reason)
         return None
     updated = _session_from_row(row, sess)
-    # Never mutate a dict already held by an awaiting HTTP request. A read of
-    # replacement B must not turn that request's original A into B in place.
     with _SESSION_CACHE_LOCK:
         current = _SESSIONS.get(sid)
         if current is sess or _same_incarnation(current, updated):
@@ -338,10 +252,6 @@ def _session_by_sid(sid: str) -> Optional[Dict[str, Any]]:
 
 
 def get_session(request: Request) -> Optional[Dict[str, Any]]:
-    """Return the live session dict for a request, enforcing the 365-day cap.
-
-    Does NOT refresh — callers needing a guaranteed-fresh access token use
-    :func:`ensure_session` (async)."""
     raw = request.cookies.get(COOKIE_NAME)
     if not raw:
         return None
@@ -355,32 +265,18 @@ def get_session(request: Request) -> Optional[Dict[str, Any]]:
 
 
 async def aget_session(request: Request) -> Optional[Dict[str, Any]]:
-    """Async twin of :func:`get_session` — the durable-store read (cache miss)
-    is a blocking DB call, so async handlers run it off the event loop."""
     return await asyncio.to_thread(get_session, request)
 
 
 async def _asession_by_sid(sid: str) -> Optional[Dict[str, Any]]:
-    """Async twin of :func:`_session_by_sid`, run off the event loop."""
     return await asyncio.to_thread(_session_by_sid, sid)
 
 
 def _session_client_id(sess: Dict[str, Any]) -> str:
-    """The OIDC client that minted this session's tokens, from the ``azp`` claim.
-
-    Ordinary web sessions come from the confidential web client, but a session
-    can be minted by a different (public) first-party client — the device grant
-    used by the watch broker is one such path. Keycloak only refreshes or
-    revokes a token for its ISSUING client, so presenting such a refresh token
-    as the web client yields ``invalid_grant``: silent refresh would kill the
-    session, and sign-out would silently fail to revoke. Empty string means
-    "unknown", and callers fall back to the configured web client.
-    """
     return str(_jwt_payload(sess.get("access_token", "")).get("azp", "") or "").strip()
 
 
 async def _exchange_session_refresh(refresh_token: str, prior_access: str) -> dict:
-    """The existing bounded Keycloak exchange, without session fallback policy."""
     authority, web_client_id, client_secret = _keycloak_config()
     from orchestrator.session_store import SessionRefreshUnavailable
     if not authority:
@@ -411,7 +307,6 @@ async def _post_session_refresh(refresh_token, authority, client_id, client_secr
 
 
 def _bound_session_destination(issuer, client_id):
-    """Resolve an explicit stored destination without a token-derived fallback."""
     from orchestrator.session_store import SessionRefreshUnavailable, _binding_string
     from shared.auth_clients import allowed_azps
     authority, web_client, secret = _keycloak_config()
@@ -423,7 +318,6 @@ def _bound_session_destination(issuer, client_id):
 
 
 async def _exchange_bound_session_refresh(refresh_token, identity):
-    """Verify the exact issuing identity before the rotated credential is stored."""
     from orchestrator import auth
     from orchestrator.session_store import (
         SessionIssuingIdentity, SessionRefreshUnavailable, _valid_token,
@@ -431,8 +325,6 @@ async def _exchange_bound_session_refresh(refresh_token, identity):
     if type(identity) is not SessionIssuingIdentity:
         raise SessionRefreshUnavailable("bound session authority unavailable")
     destination = _bound_session_destination(identity.issuer, identity.client_id)
-    # The store also caps the enclosing claim/exchange/settlement. This bound
-    # covers slow streaming and JWT/JWKS work when this transport is used alone.
     async with asyncio.timeout(10):
         try:
             payload = await _post_session_refresh(refresh_token, *destination)
@@ -458,12 +350,6 @@ async def _exchange_bound_session_refresh(refresh_token, identity):
 
 
 async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -> Optional[Dict[str, Any]]:
-    """Silent refresh at Keycloak (D2). Returns the refreshed session or None.
-
-    Never moves the interactive anchor. Explicit IdP refusal kills the session;
-    unknown outcomes retain usable access while the durable refresh claim stays
-    fenced. Successful tokens are returned only after canonical settlement.
-    """
     authority, _, _ = _keycloak_config()
     store = _get_store()
     if not authority or store is None:
@@ -478,7 +364,6 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
             bound_exchange=_exchange_bound_session_refresh,
             expected_incarnation_id=observed["incarnation_id"])
     except httpx.HTTPStatusError:
-        # Keycloak refused the refresh token (revoked/expired) — dead session.
         logger.info("web_auth: refresh refused for session %s — clearing", sid[:8])
         retired = await _kill_session(sid, observed, audit_action="token_refresh_failed",
                                       description="Silent token refresh refused by the identity provider")
@@ -486,9 +371,6 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
             await on_retired()
         return None
     except Exception:
-        # Unknown HTTP/claim outcomes retain offline tolerance only while the
-        # original issuance still exists. A known replacement cannot inherit A's
-        # returned access, and this read never adopts B or its credentials.
         observed["refresh_token"] = ""
         try:
             current = await asyncio.to_thread(
@@ -510,18 +392,13 @@ async def _refresh_session(sid: str, sess: Dict[str, Any], *, on_retired=None) -
 async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optional[str] = None,
                         description: str = "", outcome: str = "failure",
                         request_execution: bool = False) -> bool:
-    """Delete the original issued session; return no credential on stale cleanup."""
     incarnation = sess.get("incarnation_id")
     _evict_session_observation(sid, sess)
     store = _get_store()
-    # A process-only login has no durable issuance to retire. Losing access to
-    # a formerly durable store is uncertain, not permission to revoke its row.
     retired = store is None and incarnation is None
     if store is None and not retired:
         sess["refresh_token"] = ""
     if store is not None:
-        # Clearing before the await also prevents an uncertain local deletion
-        # from revoking a credential now owned by a replacement incarnation.
         sess["refresh_token"] = ""
         try:
             from orchestrator.session_store import _valid_incarnation
@@ -542,8 +419,6 @@ async def _kill_session(sid: str, sess: Dict[str, Any], *, audit_action: Optiona
 
 
 async def _end_voice_session(request: Request, user_id: str, reason: str) -> None:
-    """Best-effort identity media fence; durable auth teardown stays primary."""
-
     app_state = getattr(getattr(request, "app", None), "state", None)
     voice_services = getattr(
         getattr(app_state, "orchestrator", None), "voice_services", None
@@ -566,11 +441,6 @@ async def _end_voice_session(request: Request, user_id: str, reason: str) -> Non
 
 
 async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
-    """Session for this request with a guaranteed-usable access token.
-
-    Refreshes silently when the access token is inside the refresh window.
-    Returns None when there is no session, the hard cap is reached, or the
-    refresh was refused (interactive login required)."""
     if _is_mock():
         return {"access_token": "dev-token", "refresh_token": "", "sub": "test_user",
                 "created_at": time.time(), "resumed": True, "sid": "mock"}
@@ -581,29 +451,19 @@ async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
     exp = _token_expires_at(sess.get("access_token", ""))
     if exp is None or (exp - time.time()) < _REFRESH_WINDOW_SECONDS:
         async def on_retired():
-            # Existing voice cleanup is owner-wide. Only a successful exact
-            # retirement may trigger it; a stale or uncertain failure cannot.
             await _end_voice_session(request, sess.get("sub", ""), "auth_expired")
 
         refreshed = await _refresh_session(sid, sess, on_retired=on_retired)
         if refreshed is None:
             return None
         sess = refreshed
-        # If the IdP was unreachable and the token is hard-expired (beyond
-        # skew), the session can't serve this request.
         exp2 = _token_expires_at(sess.get("access_token", ""))
         if exp2 is not None and (time.time() - exp2) > _CLOCK_SKEW_SECONDS:
-            # An uncertain refresh outcome is not proof of session retirement.
             return None
     return sess
 
 
 def shell_gate(request: Request) -> Optional[str]:
-    """FR-001: redirect target for unauthenticated shell requests, else None.
-
-    Cheap synchronous check (no refresh): a session that merely needs a
-    refresh is allowed through — the client's ``/auth/session`` fetch
-    refreshes before the WS handshake. Only a missing/dead session gates."""
     if _is_mock():
         return None
     if get_session(request) is not None:
@@ -616,7 +476,6 @@ def shell_gate(request: Request) -> Optional[str]:
 
 
 def session_token(request: Request) -> str:
-    """Access token for the WS register_ui handshake ('' if unauthenticated)."""
     if _is_mock():
         return "dev-token"
     sess = get_session(request)
@@ -624,13 +483,6 @@ def session_token(request: Request) -> str:
 
 
 def session_resumed_flag(request: Request) -> bool:
-    """Is this page load a silent resume of an existing session?
-
-    False only for the load immediately following interactive sign-in
-    (one-shot — consuming it flips the session to resumed). The shell injects
-    this for the client to echo into register_ui's ``resumed`` field, so
-    ``auth.session_resumed`` keeps its 016 meaning instead of the client
-    guessing from per-page-load connection state (FR-011)."""
     sess = get_session(request)
     if sess is None:
         return True
@@ -649,14 +501,6 @@ def session_resumed_flag(request: Request) -> bool:
 
 
 def session_roles(request: Request) -> list:
-    """Feature 027 — roles for shell-render UX gating (settings menu groups).
-
-    Mock auth mirrors the WS/REST mock principal (admin + user). For real
-    sessions the roles are read from the access token's claims WITHOUT
-    signature verification — this gates only what the shell renders; every
-    admin action is still enforced server-side by the validated-JWT role
-    checks (Constitution VII / spec FR-014).
-    """
     if _is_mock():
         return ["admin", "user"]
     sess = get_session(request)
@@ -664,39 +508,17 @@ def session_roles(request: Request) -> list:
 
 
 def session_subject(request: Request) -> str:
-    """The signed-in subject id, or "" when there is no session.
-
-    Mock auth has no cookie to read, so :func:`get_session` returns None for
-    it; without this the shell would decide a development session has no user
-    and render an empty agent directory.
-    """
     if _is_mock():
         return "test_user"
     return str((get_session(request) or {}).get("sub", "") or "")
 
 
-#: The neutral identity shown when nothing better can be derived. Never an
-#: empty widget and never a raw subject id.
 ANONYMOUS_IDENTITY = {"name": "Signed in", "role": "Guest", "initials": "A"}
 
-#: What a development session is called on screen.
 MOCK_IDENTITY = {"name": "Local operator", "role": "Development session", "initials": "LO"}
 
 
 def identity_from_claims(payload: dict, roles=None) -> dict:
-    """Display name, role line and initials from a token's claims.
-
-    The ONE derivation, shared by the shell's own render and by the settings
-    dialog's account block, so the two can never disagree about who is signed
-    in. Display only: every authorization decision is still made from the
-    validated JWT server-side, and this never renders a subject id or an
-    email address.
-
-    Args:
-        payload: the token's claims (already decoded; not re-verified here).
-        roles: the session's roles, when the caller has already extracted
-            them. Absent, they are read from the claims.
-    """
     payload = payload if isinstance(payload, dict) else {}
     name = str(
         payload.get("name")
@@ -718,12 +540,6 @@ def identity_from_claims(payload: dict, roles=None) -> dict:
 
 
 def session_identity(request: Request) -> dict:
-    """Feature 089 — the display name, role line and initials for the shell.
-
-    Read from the access token's claims WITHOUT signature verification, the
-    same way :func:`session_roles` is: this decides what is displayed,
-    nothing more.
-    """
     if _is_mock():
         return dict(MOCK_IDENTITY)
     token = (get_session(request) or {}).get("access_token", "") or ""
@@ -731,7 +547,6 @@ def session_identity(request: Request) -> dict:
 
 
 def _roles_from_token(token: str) -> list:
-    """Realm + client roles from a JWT's claims (non-validating decode)."""
     payload = _jwt_payload(token)
     if not payload:
         return []
@@ -752,13 +567,6 @@ def _redirect_uri(request: Request) -> str:
     return f"{base}/auth/callback"
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-# Positive IdP reachability result cached briefly so the happy path stays a
-# single redirect (FR-004: an unreachable IdP must yield the bounded error
-# page with a retry link, never a raw browser connection error).
 _IDP_OK_UNTIL = 0.0
 
 
@@ -779,10 +587,8 @@ async def _idp_reachable(authority: str) -> bool:
 
 @web_auth_router.get("/auth/login")
 async def auth_login(request: Request):
-    """Begin the OIDC Authorization-Code flow (PKCE)."""
     nxt = _validate_next(request.query_params.get("next", "/"))
     if _is_mock():
-        # Dev/mock: mint a local session immediately, no Keycloak round-trip.
         return _establish_session(request, {"access_token": "dev-token", "refresh_token": "", "sub": "test_user"}, nxt)
     authority, client_id, _secret_unused = _keycloak_config()
     if not authority:
@@ -792,9 +598,6 @@ async def auth_login(request: Request):
                                 "Please try again in a moment.", status=503)
     verifier, challenge = _pkce_pair()
     state = secrets.token_urlsafe(24)
-    # Bound the pending-auth table: expire stale CSRF/PKCE states (a login that
-    # was started but never returned to the callback) and cap total size so a
-    # flood of /auth/login hits can't grow it without limit.
     _now = time.time()
     for _stale in [k for k, v in _PENDING.items() if _now - v.get("created_at", 0) > 600]:
         _PENDING.pop(_stale, None)
@@ -809,9 +612,7 @@ async def auth_login(request: Request):
         "code_challenge": challenge, "code_challenge_method": "S256",
     })
     resp = RedirectResponse(f"{authority}/protocol/openid-connect/auth?{params}")
-    # Bind the state to THIS browser so only the agent that started the login
-    # can finish it. SameSite MUST stay 'lax': the callback is a cross-site
-    # top-level GET from Keycloak and 'strict' would drop the cookie there.
+    # Must stay lax - Keycloak's callback is a cross-site GET
     resp.set_cookie(STATE_COOKIE_NAME, _sign(state), httponly=True, samesite="lax",
                     secure=_cookie_secure(request), max_age=_STATE_COOKIE_MAX_AGE,
                     path=STATE_COOKIE_PATH)
@@ -820,42 +621,23 @@ async def auth_login(request: Request):
 
 @web_auth_router.get("/auth/callback")
 async def auth_callback(request: Request):
-    """Exchange the authorization code for tokens, establish a session, audit
-    ``auth.login_interactive``. A valid cookie belonging to a DIFFERENT user
-    triggers user-switch revocation of the prior session first (016 FR-008)."""
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    # PEEK (do not consume yet): an unbound hit on this URL — a prefetcher, a
-    # corporate URL scanner, or a replay that lacks the astral_oidc_state cookie
-    # — must not pop the pending PKCE entry, or the real browser arriving later
-    # with the correct cookie finds nothing and its legitimate login is DoSed.
-    # The entry is consumed only after the browser-binding check passes below.
     pending = _PENDING.get(state) if state else None
-    # Recover the destination BEFORE any error exit — FR-003: a deep link is
-    # never silently dropped, even on a denied/failed callback.
     nxt = _validate_next((pending or {}).get("next", "/"))
     idp_error = request.query_params.get("error")
     if idp_error:
-        # OIDC error response (e.g. access_denied when the user cancels at the
-        # IdP) — bounded recoverable page, retry preserves the destination.
         desc = request.query_params.get("error_description") or idp_error
         logger.info("web_auth: IdP returned error at callback: %s", idp_error)
         return _clear_state_cookie(
             _error_page(nxt, f"Sign-in was not completed ({desc[:160]}). Please try again."))
     if not code or not pending:
         return _clear_state_cookie(_error_page(nxt, _INVALID_CALLBACK))
-    # The state must be bound to this browser by the cookie /auth/login set.
-    # This runs BEFORE the token exchange and BEFORE the user-switch revocation
-    # below, so a forged callback can neither spend an authorization code nor
-    # destroy the session of whoever is signed in here.
+    # Must run before token exchange and user-switch revocation
     if not _state_is_bound(request, state or ""):
         logger.warning("web_auth: callback state is not bound to this browser — refused")
         return _clear_state_cookie(_error_page(nxt, _INVALID_CALLBACK))
-    # Bound and valid — NOW consume the one-shot entry (a replay of this exact
-    # bound callback finds nothing and is refused above).
     _PENDING.pop(state, None)
-    # The cookie selects its prior issuance before remote work. A delayed
-    # callback must not resolve and retire a newer same-SID session afterward.
     prior = await aget_session(request)
     authority, client_id, client_secret = _keycloak_config()
     data = {
@@ -876,8 +658,6 @@ async def auth_callback(request: Request):
             _error_page(nxt, "The identity provider rejected the sign-in. Please try again."))
     sub = _sub_from_jwt(tok.get("access_token", ""))
 
-    # D6 — user-switch revocation: a live session for someone else on this
-    # browser is revoked (session + refresh token) before the new one starts.
     if prior and prior.get("sub") and prior["sub"] != sub:
         prior_sid = prior.get("sid", "")
         logger.info("web_auth: user switch %s -> %s — revoking prior session", prior["sub"], sub)
@@ -888,9 +668,6 @@ async def auth_callback(request: Request):
             await _revoke_session_or_queue(prior, legacy_default_client=True)
             await _end_voice_session(request, prior.get("sub", ""), "logout")
 
-    # FR-005: entry requires a Keycloak-issued 'user' or 'admin' role. An
-    # authenticated account with neither gets an explicit no-access outcome —
-    # no session is established and the refresh credential is revoked.
     roles = _roles_from_token(tok.get("access_token", ""))
     if "user" not in roles and "admin" not in roles:
         await _revoke_or_queue(sub, tok.get("refresh_token", ""))
@@ -906,23 +683,10 @@ async def auth_callback(request: Request):
         {"access_token": tok.get("access_token", ""), "refresh_token": tok.get("refresh_token", ""), "sub": sub},
         nxt,
     )
-    # After _establish_session so the session cookie stays the FIRST Set-Cookie.
     return _clear_state_cookie(resp)
 
 
 def _advertise_native_custody(resp: JSONResponse) -> JSONResponse:
-    """Advertise feature-088 native session custody on ``/auth/session`` (T014).
-
-    The native clients probe the ANONYMOUS reply for the
-    ``X-Astral-Session-Custody: server_v1`` header before they offer the
-    custody exchange (``POST /auth/token`` with the same header); a reply
-    without it makes the client silently stay in legacy token-holding mode,
-    so the whole feature is unreachable end-to-end. The header is protocol
-    discovery only — it carries no session data, and the body shapes stay
-    byte-identical (the Android probe pins the exact key sets). It is never
-    advertised under mock auth: every custody route refuses there (503).
-    """
-    # Lazy: native_session_custody imports this module at load time.
     from orchestrator.native_session_custody import HEADER, MODE
     resp.headers[HEADER] = MODE
     return resp
@@ -930,9 +694,6 @@ def _advertise_native_custody(resp: JSONResponse) -> JSONResponse:
 
 @web_auth_router.get("/auth/session")
 async def auth_session(request: Request):
-    """Report the current session/token for the WS handshake — refresh-aware
-    (D2/D4): an access token inside the refresh window is renewed before
-    being handed out, so reconnects after the token TTL recover silently."""
     if _is_mock():
         return JSONResponse({"authenticated": True, "access_token": "dev-token", "resumed": True})
     sess = await ensure_session(request)
@@ -940,15 +701,10 @@ async def auth_session(request: Request):
         raw = request.cookies.get(COOKIE_NAME, "")
         sid = _unsign(raw) or ""
         reason = _DEATH_REASONS.pop(sid, None) or ("refresh_failed" if raw else "no_session")
-        # Anonymous discovery: no session storage is read before this reply
-        # (ensure_session returns without a cookie), and no cookie is set.
         return _advertise_native_custody(JSONResponse(
             {"authenticated": False, "access_token": "", "resumed": False, "reason": reason}))
     resumed = bool(sess.get("resumed", True))
     if not resumed:
-        # One-shot: only the fetch immediately following interactive login
-        # reports resumed=false; every later page load is a silent resume
-        # (016 audit semantics — the client echoes this in register_ui).
         sess["resumed"] = True
         store = _get_store()
         if store is not None and sess.get("sid"):
@@ -958,7 +714,6 @@ async def auth_session(request: Request):
                     await store.amark_resumed(sess["sid"], expected_incarnation_id=sess["incarnation_id"])
             except Exception:
                 logger.debug("web_auth: mark_resumed failed", exc_info=True)
-    # Harmless on the authenticated branch: same discovery header, same body.
     return _advertise_native_custody(JSONResponse({
         "authenticated": True,
         "access_token": sess.get("access_token", ""),
@@ -970,13 +725,6 @@ async def auth_session(request: Request):
 @web_auth_router.post("/auth/logout")
 @web_auth_router.get("/auth/logout")
 async def auth_logout(request: Request):
-    """Sign-out with server-side invalidation (FR-012/FR-013, research D5).
-
-    Order: end the server session unconditionally → best-effort refresh-token
-    revocation at Keycloak (queued for retry when offline) → revoke the
-    user's feature-025 offline grants → destroy the user's feature-063
-    machine credentials → audit → Keycloak end-session redirect
-    (best-effort). Local sign-out never blocks on the IdP."""
     raw = request.cookies.get(COOKIE_NAME)
     sess = None
     if raw:
@@ -989,8 +737,6 @@ async def auth_logout(request: Request):
         user_id = sess.get("sub", "")
         await _end_voice_session(request, user_id, "logout")
     if sess and not _is_mock():
-        # Revoke as the issuing client — a session minted by a public
-        # first-party client cannot be revoked as the confidential web client.
         revocation = await _revoke_session_or_queue(sess)
         try:
             from orchestrator.offline_grant import get_offline_grant_store
@@ -1020,15 +766,12 @@ async def auth_logout(request: Request):
 
 @web_auth_router.get("/auth/error")
 async def auth_error(request: Request):
-    """Bounded, ungated sign-in error page (FR-004) — never auto-redirects."""
     nxt = _validate_next(request.query_params.get("next", "/"))
     reason = (request.query_params.get("reason") or "Sign-in failed.")[:300]
     return _error_page(nxt, reason)
 
 
 def _no_access_page() -> HTMLResponse:
-    """FR-005: explicit, bounded no-access outcome for a signed-in account
-    holding neither the 'user' nor the 'admin' role. Ungated, no loop."""
     body = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>AstralDeep — no access</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"></head>
@@ -1058,19 +801,8 @@ def _error_page(nxt: str, reason: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(body, status_code=status)
 
 
-# ---------------------------------------------------------------------------
-# Revocation (D5) — best-effort with offline-tolerant queue
-# ---------------------------------------------------------------------------
-
 async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None,
                                 *, issuing_issuer: str | None = None) -> bool:
-    """POST the refresh token to Keycloak's RFC 7009 revocation endpoint.
-
-    ``client_id`` overrides the configured web client for tokens minted to a
-    different first-party client (feature 044 native logout): Keycloak only
-    revokes a token for its issuing client, and the native clients
-    (astral-desktop / astral-mobile) are PUBLIC clients — no secret is sent
-    for them."""
     if issuing_issuer is not None:
         from orchestrator.session_store import _valid_token
         if not _valid_token(refresh_token):
@@ -1095,8 +827,6 @@ async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None
                 if issuing_issuer is not None:
                     async with client.stream("POST", f"{authority}/protocol/openid-connect/revoke",
                                              data=data, follow_redirects=False) as resp:
-                        # Revocation needs only the status. Never retain a remote
-                        # response body or treat a redirect as acknowledged.
                         return 200 <= resp.status_code < 300
                 resp = await client.post(f"{authority}/protocol/openid-connect/revoke", data=data)
         return resp.status_code < 400
@@ -1106,11 +836,6 @@ async def _revoke_refresh_token(refresh_token: str, client_id: str | None = None
 
 async def _revoke_or_queue(user_id: str, refresh_token: str,
                            client_id: str | None = None, *, issuing_issuer: str | None = None) -> str:
-    """Revoke now or queue for the background retrier.
-
-    Returns the closed outcome ``"revoked" | "queued" | "failed" | "noop"``.
-    Local retirement does not imply remote confirmation. Unreadable or
-    in-flight bound credentials cannot be recovered or queued here."""
     if issuing_issuer is not None:
         from orchestrator.session_store import _valid_token
         if not _valid_token(refresh_token):
@@ -1133,7 +858,6 @@ async def _revoke_or_queue(user_id: str, refresh_token: str,
 
 
 async def _revoke_session_or_queue(sess, *, legacy_default_client=False):
-    """Revoke only the issuing identity returned by exact-incarnation retirement."""
     issuer, client = sess.get("issuing_issuer"), sess.get("issuing_client_id")
     if issuer is None and client is None:
         return await _revoke_or_queue(sess.get("sub", ""), sess.get("refresh_token", ""),
@@ -1148,10 +872,6 @@ async def _revoke_session_or_queue(sess, *, legacy_default_client=False):
 
 
 async def _destroy_machine_credentials(user_id: str, context: str) -> None:
-    """Feature 063 FR-015: a sign-out destroys the user's stored remote-machine
-    credentials, riding the same revocation flow as the refresh token and the
-    feature-025 offline grants. Fail-open — credential cleanup must never
-    block a local sign-out. Shared by the web and 044 native logout legs."""
     if not user_id:
         return
     try:
@@ -1174,8 +894,6 @@ _MAX_REVOCATION_ATTEMPTS = 30
 
 
 async def process_revocation_queue_once() -> int:
-    """Drain pending offline revocations (called by the orchestrator's
-    background worker). Returns how many were resolved this pass."""
     from orchestrator.session_store import SessionRevocationPageUnavailable
     store = _get_store()
     if store is None:
@@ -1199,8 +917,6 @@ async def _process_revocation_page(store, pending):
             resolved += 1
         elif item["attempts"] >= _MAX_REVOCATION_ATTEMPTS:
             if issuer is not None:
-                # Missing realm/client, unreadable ciphertext or a failed HTTP
-                # attempt is not confirmation. Paging keeps later rows eligible.
                 continue
             logger.warning("web_auth: dropping revocation for %s after %d attempts "
                            "(token will die at its natural expiry)", item["user_id"], item["attempts"])
@@ -1210,17 +926,7 @@ async def _process_revocation_page(store, pending):
     return resolved
 
 
-# ---------------------------------------------------------------------------
-# Internals
-# ---------------------------------------------------------------------------
-
 def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -> str:
-    """Mint the durable session for ``payload`` and set the signed cookie on ``resp``.
-
-    Split out of :func:`_establish_session` so a redirect flow and a JSON flow
-    can share ONE copy of the cookie policy rather than restating it. Returns
-    the new session id. Blocking (durable persist) — call it off the event loop.
-    """
     sid = secrets.token_urlsafe(24)
     previous = _SESSIONS.get(sid)
     cached = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
@@ -1245,7 +951,6 @@ def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -
 
 
 def _attach_stored_session_cookie(request: Request, row: dict, resp: Response) -> None:
-    """Attach only an already verified durable native issuance, never create it."""
     resp.set_cookie(COOKIE_NAME, _sign(row["sid"]), httponly=True, samesite="lax",
                     secure=_cookie_secure(request),
                     max_age=max(0, int(row["hard_expires_at"] - time.time())), path="/")
@@ -1258,14 +963,10 @@ def _establish_session(request: Request, payload: Dict[str, Any], nxt: str) -> R
 
 
 def _sub_from_jwt(token: str) -> str:
-    """Best-effort, non-validating sub extraction (validation happens via JWKS
-    in validate_token when register_ui arrives)."""
     return _jwt_payload(token).get("sub", "anonymous") or "anonymous"
 
 
 async def _audit(action: str, sub: str, description: str, *, outcome: str = "success") -> None:
-    """Record an auth lifecycle event (fixes the 026 signature mismatch that
-    silently dropped ``auth.login_interactive`` from this module)."""
     try:
         from audit.hooks import record_auth_event
         await record_auth_event(
@@ -1278,58 +979,20 @@ async def _audit(action: str, sub: str, description: str, *, outcome: str = "suc
         logger.debug("web_auth: audit hook unavailable for %s", action, exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Feature 068 — kiosk sign-in (browser terminals with no keyboard)
-#
-# A second, flag-gated entry point beside /auth/login. It shows an RFC 8628
-# device code as a QR — the same broker the watch uses, unchanged — next to the
-# ordinary Keycloak redirect, so a terminal that cannot type is signed in from
-# a phone. GET / is untouched: feature 028's redirect-straight-to-Keycloak
-# posture is byte-identical, and with the flag off this router is never
-# included at all.
-#
-# Two invariants make this safe to expose on an unattended public terminal:
-#
-#   1. The device handle NEVER reaches the browser. /api/auth/device/poll
-#      relays raw access/refresh tokens to its caller by design (the watch is
-#      native and keeps them in the keychain). Here the handle is held
-#      server-side and referenced by a signed, HttpOnly, SameSite=Strict
-#      cookie, so page script cannot redeem it for tokens.
-#   2. The browser only ever receives a status. On approval the session is
-#      minted server-side through the same helper /auth/callback uses.
-# ---------------------------------------------------------------------------
-
 kiosk_router = APIRouter()
 
 KIOSK_COOKIE = "astral_kiosk"
 _KIOSK_FLOW_TTL_SECONDS = 900
 _KIOSK_FLOW_MAX = 512
 
-# flow_id -> {"handle": str, "created_at": float}. Process-local, like the
-# broker's own poll state and the _PENDING login table above.
 _KIOSK_FLOWS: Dict[str, Dict[str, Any]] = {}
 
 
 def _kiosk_client_id() -> str:
-    """The PUBLIC device-grant client the kiosk signs in with.
-
-    Defaults to ``astral-watch`` — the watch's client is already a public
-    device-grant client in both allow-lists, so the kiosk needs no new realm
-    configuration. Set ``KIOSK_DEVICE_CLIENT`` to a dedicated client to make
-    kiosk and watch sessions separately revocable and distinguishable in audit.
-
-    Whatever it is, it must appear in BOTH ``KEYCLOAK_DEVICE_CLIENTS`` and
-    ``KEYCLOAK_ALLOWED_AZP`` (the broker requires the intersection, and the
-    WebSocket handshake would refuse the resulting token), and it can never be
-    the confidential web client — the device grant refuses that by construction.
-    """
-    # Strip BEFORE falling back: a whitespace-only value must not resolve to an
-    # empty client id, which the broker would refuse as unknown_client.
     return (os.getenv("KIOSK_DEVICE_CLIENT", "") or "").strip() or "astral-watch"
 
 
 def _kiosk_prune() -> None:
-    """Bound the in-flight flow table (mirrors the _PENDING sweep)."""
     now = time.time()
     for stale in [k for k, v in _KIOSK_FLOWS.items()
                   if now - v.get("created_at", 0) > _KIOSK_FLOW_TTL_SECONDS]:
@@ -1342,7 +1005,6 @@ def _kiosk_prune() -> None:
 
 
 def _kiosk_flow_handle(request: Request) -> Optional[str]:
-    """The live device handle bound to this browser, or None."""
     raw = request.cookies.get(KIOSK_COOKIE, "") or ""
     flow_id = (_unsign(raw) if raw.isascii() else None) or ""
     entry = _KIOSK_FLOWS.get(flow_id) if flow_id else None
@@ -1355,8 +1017,6 @@ def _kiosk_flow_handle(request: Request) -> Optional[str]:
 
 
 def _kiosk_template_resource():
-    """Return the Projection-owned kiosk template without a Deep path guess."""
-
     from astralprojection import template_path
 
     return template_path("kiosk.html")
@@ -1364,7 +1024,6 @@ def _kiosk_template_resource():
 
 @kiosk_router.get("/kiosk", response_class=HTMLResponse)
 async def kiosk_page(request: Request):
-    """The two-column kiosk sign-in page. Unauthenticated by definition."""
     if await aget_session(request):
         return RedirectResponse("/", status_code=303)
     try:
@@ -1379,7 +1038,6 @@ async def kiosk_page(request: Request):
 
 @kiosk_router.post("/auth/kiosk/start")
 async def kiosk_start(request: Request):
-    """Begin a device flow and bind it to this browser. Returns display fields only."""
     from orchestrator import device_login
     ip = request.client.host if request.client else "unknown"
     try:
@@ -1406,10 +1064,6 @@ async def kiosk_start(request: Request):
 
 @kiosk_router.post("/auth/kiosk/poll")
 async def kiosk_poll(request: Request):
-    """Poll the bound device flow; on approval mint the cookie session here.
-
-    The browser receives a status and nothing else — never token material.
-    """
     from orchestrator import device_login
     handle = _kiosk_flow_handle(request)
     if not handle:
@@ -1419,7 +1073,6 @@ async def kiosk_poll(request: Request):
     try:
         result = await device_login.poll(handle, ip)
     except device_login.DeviceLoginError as exc:
-        # A consumed or unknown handle just means "start over" for a kiosk.
         code = getattr(exc, "code", "device_login_error")
         if code in ("invalid_handle", "rate_limited"):
             return JSONResponse({"status": "restart"})
@@ -1439,8 +1092,6 @@ async def kiosk_poll(request: Request):
     access_token = str(tokens.get("access_token", ""))
     sub = _sub_from_jwt(access_token)
 
-    # A kiosk is a shared browser by definition — retire a live session that
-    # belongs to somebody else before minting this one (mirrors /auth/callback).
     if prior and prior.get("sub") and prior["sub"] != sub:
         retired = await _kill_session(prior.get("sid", ""), prior, audit_action="logout",
                             description="Prior session revoked by user switch at the kiosk",

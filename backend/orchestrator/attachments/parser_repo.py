@@ -1,10 +1,6 @@
-"""Product adapter for Plane's global auto-parser registry.
-
-Feature 031-attachment-upload-parsing. One row per file-type gap, keyed by a
-unique ``gap_fingerprint`` so the same unreadable type never spawns a second
-draft while one is pending/live (FR-018). Carries the dedup key, lifecycle
-status, the backing draft/live agent + tool, and provenance (who requested it,
-which attachment/chat triggered it, which admin approved it).
+"""Adapter over Plane's global auto-parser registry: one row per file-type gap keyed by
+gap_fingerprint so a pending or live parser is never drafted twice; used by
+agentic_creation.py and attachment_autoparse.py.
 """
 
 from __future__ import annotations
@@ -18,7 +14,6 @@ from orchestrator.plane_repository_context import (
     repository_from,
 )
 
-# Lifecycle states for a registry row.
 STATUS_PENDING = "pending"
 STATUS_LIVE = "live"
 STATUS_FAILED = "failed"
@@ -26,8 +21,6 @@ STATUS_DISCARDED = "discarded"
 
 
 class AttachmentParserRepository:
-    """Product-shape adapter over Plane's owner-safe parser registry."""
-
     def __init__(
         self,
         db=None,
@@ -51,8 +44,6 @@ class AttachmentParserRepository:
 
     @classmethod
     def from_plane_source(cls, source) -> "AttachmentParserRepository":
-        """Bind to an application-scoped Plane runtime/catalog source."""
-
         runtime = getattr(source, "plane_runtime", None) or getattr(source, "runtime", None)
         repositories = getattr(source, "plane_repositories", None) or getattr(
             source, "repositories", None
@@ -90,8 +81,6 @@ class AttachmentParserRepository:
         return value
 
     def get_by_gap(self, gap_fingerprint: str) -> Optional[dict]:
-        """Return only non-sensitive global coverage for one format gap."""
-
         record = self._parsers.call(
             self._parsers.repository.get_coverage,
             gap_fingerprint=gap_fingerprint,
@@ -105,8 +94,6 @@ class AttachmentParserRepository:
         owner_user_id: Optional[str] = None,
         for_administration: bool = False,
     ) -> Optional[dict]:
-        """Return provenance only under an owner or authorized-admin context."""
-
         if for_administration:
             operation = self._parsers.repository.get_by_draft_for_administration
             kwargs = {"draft_agent_id": draft_agent_id}
@@ -132,12 +119,6 @@ class AttachmentParserRepository:
         source_chat_id: Optional[str],
         requested_by: Optional[str],
     ) -> dict:
-        """Insert a new ``pending`` registry row and return it.
-
-        Idempotent against the unique ``gap_fingerprint``: if a row already
-        exists for this gap it is returned unchanged (the caller treats that as
-        a dedup hit and does NOT create a second draft).
-        """
         if not requested_by:
             raise ValueError("parser claims require an owner")
         now_ms = int(time.time() * 1000)
@@ -164,7 +145,6 @@ class AttachmentParserRepository:
         tool_name: str,
         approved_by: Optional[str],
     ) -> None:
-        """Promote a registry row to ``live`` (global coverage)."""
         if not approved_by:
             raise ValueError("parser promotion requires an approving administrator")
         coverage = self._parsers.call(
@@ -199,7 +179,6 @@ class AttachmentParserRepository:
         *,
         owner_user_id: str,
     ) -> None:
-        """Set the lifecycle *status* (``failed``/``discarded``/``pending``)."""
         record = self._parsers.call(
             self._parsers.repository.get_owner_claim_by_gap,
             owner_id=owner_user_id,
@@ -226,8 +205,6 @@ class AttachmentParserRepository:
         owner_user_id: Optional[str] = None,
         for_administration: bool = False,
     ) -> List[dict]:
-        """List owner claims, or global provenance after admin authorization."""
-
         if for_administration:
             operation = self._parsers.repository.list_by_status_for_administration
             kwargs = {"status": status, "limit": 1000}
@@ -243,29 +220,23 @@ class AttachmentParserRepository:
         records = self._parsers.call(operation, **kwargs)
         return [self._record_dict(record) for record in records]
 
-    # ── async facade (event-loop-safe twins of the sync methods above) ────
     async def aget_by_gap(self, gap_fingerprint: str) -> Optional[dict]:
-        """Async twin of :meth:`get_by_gap`, run off the event loop."""
         return await asyncio.to_thread(self.get_by_gap, gap_fingerprint)
 
     async def aget_by_draft(self, draft_agent_id: str, **kwargs) -> Optional[dict]:
-        """Async twin of :meth:`get_by_draft`, run off the event loop."""
         return await asyncio.to_thread(self.get_by_draft, draft_agent_id, **kwargs)
 
     async def acreate_pending(self, **kwargs) -> dict:
-        """Async twin of :meth:`create_pending`, run off the event loop."""
         return await asyncio.to_thread(self.create_pending, **kwargs)
 
     async def amark_live(self, gap_fingerprint: str, *, live_agent_id: str,
                          tool_name: str, approved_by: Optional[str]) -> None:
-        """Async twin of :meth:`mark_live`, run off the event loop."""
         return await asyncio.to_thread(
             self.mark_live, gap_fingerprint, live_agent_id=live_agent_id,
             tool_name=tool_name, approved_by=approved_by,
         )
 
     async def amark_status(self, gap_fingerprint: str, status: str, **kwargs) -> None:
-        """Async twin of :meth:`mark_status`, run off the event loop."""
         return await asyncio.to_thread(
             self.mark_status,
             gap_fingerprint,
@@ -274,7 +245,6 @@ class AttachmentParserRepository:
         )
 
     async def alist_by_status(self, status: str, **kwargs) -> List[dict]:
-        """Async twin of :meth:`list_by_status`, run off the event loop."""
         return await asyncio.to_thread(self.list_by_status, status, **kwargs)
 
 

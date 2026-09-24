@@ -1,4 +1,7 @@
-"""Summarizer's own fetch and LLM errors stay short through MCP dispatch."""
+"""Tests for agents/summarizer/mcp_tools.py and mcp_server.py: fetch and LLM failures
+stay short, terminal, and never echo upstream HTML or peer error details.
+"""
+
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock

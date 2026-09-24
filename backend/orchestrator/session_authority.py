@@ -1,11 +1,9 @@
-"""088 private session authority prerequisites; no route or runner activation.
-
-Web requests select a signed cookie; continuations retain the original operation's
-issued incarnation. Future write callers must retain normal authentication,
-origin and CSRF gates. Version-2 credential fences retain that original issuance
-through refresh and normal IAM verification. These observations grant no work by
-themselves; committing Plane operations must recheck them in their transactions.
+"""Private prerequisites for refreshing an operation's or web request's execution
+session without granting work by themselves; callers such as work_publication.py and
+persistent_agents/runner.py must still recheck authority inside their own Plane
+transaction.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,13 +29,11 @@ _TIME_LIMIT_SECONDS = 15
 
 
 class SessionAuthorityUnavailable(Exception):
-    """Closed, data-free refusal; never evidence that an issued permit was unused."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class OperationExecutionAuthority:
-    """Ephemeral verified dispatcher input; no standalone dispatch authority."""
-
     record: AssignmentRecord = field(repr=False)
     observation: SessionExecutionObservation = field(repr=False)
     _claims_json: str = field(repr=False)
@@ -46,14 +42,11 @@ class OperationExecutionAuthority:
 
     @property
     def claims(self) -> dict:
-        """Detach every caller's claims, including nested role containers."""
         return json.loads(self._claims_json)
 
 
 @dataclass(frozen=True, slots=True)
 class _OperationRefresh:
-    """Private verified material; only the selecting adapter grants its type."""
-
     record: AssignmentRecord = field(repr=False)
     observation: SessionExecutionObservation = field(repr=False)
     claims_json: str = field(repr=False)
@@ -76,7 +69,6 @@ def _uuid4(value) -> bool:
 
 
 def _operation_reference(value, owner_id, assignment_id):
-    """Validate immutable v2 identity; callers separately restrict lifecycle."""
     if not isinstance(value, AssignmentOperationRead) or value.continuation_supported is not True:
         _unavailable()
     record = value.assignment
@@ -116,13 +108,6 @@ async def _refresh_operation_session(
     operation_context, expected_record=None, request_expires_at=None, request_check=None,
     expected_session_credential: SessionCredentialFence | None = None,
 ) -> _OperationRefresh:
-    """Share exact original refresh and post-wait checks across private adapters.
-
-    The adapter supplies its closed lifecycle policy, never request-provided
-    callbacks. Optional request checks can only narrow the existing observation.
-    This material is not an execution or control authority until wrapped by that
-    adapter. All remote calls remain outside bounded Plane transactions.
-    """
     try:
         async with asyncio.timeout(_TIME_LIMIT_SECONDS):
             if (os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}
@@ -149,8 +134,6 @@ async def _refresh_operation_session(
                     type(expected_session_credential) is not SessionCredentialFence
                     or json.dumps(asdict(reference.state.credential), sort_keys=True, allow_nan=False)
                     != json.dumps(asdict(expected_session_credential), sort_keys=True, allow_nan=False)):
-                # A caller may advance its own selected fence only through this
-                # exact capture/CAS. Another refresh cannot be adopted by SID.
                 _unavailable()
             if request_check is not None:
                 request_check(reference.state.observed_at)
@@ -176,9 +159,6 @@ async def _refresh_operation_session(
                     repository.assert_current_execution(transaction, observation=observation)
                     current, _, _, _ = operation_context(assignments.get_operation(
                         transaction, owner_id=owner_id, assignment_id=assignment_id), owner_id, assignment_id)
-                    # A timestamp alone is not an authority generation. Every
-                    # authority, version, lifecycle and other record value must
-                    # still belong to the original captured generation.
                     if not _same_operation(current, original):
                         _unavailable()
                     state = repository.assert_current_execution(transaction, observation=observation)
@@ -196,14 +176,6 @@ async def _refresh_operation_session(
 async def refresh_operation_execution_authority(
     *, owner_id: str, assignment_id: str, sessions: WebSessionStore, plane_runtime,
 ) -> OperationExecutionAuthority:
-    """Refresh an active operation's original session without activating work.
-
-    The active-only policy is unchanged. Final session checks bracket the exact
-    operation reread; the caller must still recheck in its mutation/permit
-    transaction. Cancellation propagates and unknown refresh is never retried.
-    SQL caps bound contention separately from pool/network waits; the coroutine
-    deadline does not guarantee physical termination of a worker thread.
-    """
     result = await _refresh_operation_session(owner_id=owner_id,
         assignment_id=assignment_id, sessions=sessions, plane_runtime=plane_runtime,
         operation_context=_operation_context)
@@ -216,7 +188,6 @@ def _cookie_reference(request: Request) -> str:
             or "token" in request.query_params
             or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
         _unavailable()
-    # Ambiguous duplicate cookies must not let parser ordering select authority.
     cookies = [part.strip() for header in request.headers.getlist("cookie")
                for part in header.split(";")]
     selected = [part.split("=", 1)[1] for part in cookies
@@ -232,19 +203,6 @@ def _cookie_reference(request: Request) -> str:
 async def refresh_web_execution_authority(
     request: Request, *, principal: dict,
 ) -> SessionExecutionObservation:
-    """Force refresh, verify normal IAM, then fence the exact persisted generation.
-
-    No token/claims are returned or added to the caller's request state. Remote
-    calls run outside Plane transactions. The returned observation is bounded by
-    the original database-clock sample and must be checked again in the mutation
-    transaction. Missing authority must never bypass authentic permit settlement.
-
-    Plane caps each request-only SQL statement/lock wait, so cancellation of a
-    thread await does not leave ordinary database contention unbounded. Pool
-    checkout (default 30 seconds), connection establishment (default 10 seconds),
-    and server/network failures are separate: this coroutine's 15-second timeout
-    is not a physical worker-termination guarantee.
-    """
     try:
         async with asyncio.timeout(_TIME_LIMIT_SECONDS):
             sid = _cookie_reference(request)
@@ -259,8 +217,6 @@ async def refresh_web_execution_authority(
             candidate = await store.refresh_for_execution(
                 reference, exchange=web_auth._exchange_session_refresh,
                 bound_exchange=web_auth._exchange_bound_session_refresh)
-            # Reuse the actual IAM verifier without altering the original request's
-            # delegation subject token/audit claims, including on a late refusal.
             verification_request = Request({**request.scope, "state": {}})
             payload = await auth.get_current_user_payload(
                 verification_request, HTTPAuthorizationCredentials(
@@ -279,6 +235,5 @@ async def refresh_web_execution_authority(
             await asyncio.to_thread(store.assert_execution_observation, observation)
             return observation
     except Exception:
-        # Network/JWT/repository errors can carry sensitive transport diagnostics.
-        # Cancellation is BaseException and propagates, with no authority returned.
+        # from None: transport errors may carry sensitive diagnostics
         raise SessionAuthorityUnavailable("session_authority_unavailable") from None

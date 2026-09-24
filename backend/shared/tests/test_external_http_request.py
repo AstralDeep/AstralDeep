@@ -1,4 +1,8 @@
-"""Unit tests for shared.external_http.request — error mapping + bearer + size cap."""
+"""Tests for shared/external_http.request: bearer-auth header handling, error-code
+mapping across auth/rate-limit/5xx/4xx/timeout, response size cap, and
+content-encoding enforcement.
+"""
+
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +32,6 @@ def rmock():
 
 @pytest.fixture(autouse=True)
 def stub_dns():
-    """Pretend SAFE_HOST resolves to a public IP so SSRF guard passes."""
     import socket
     def _fake(host, *_a, **_kw):
         if host == SAFE_HOST:
@@ -51,11 +54,9 @@ def test_authorization_header_is_bearer(rmock: HttpMock) -> None:
     assert rmock.calls[0]["headers"]["Authorization"] == "Bearer sentinel-api-key-deadbeef"
 
 
+# Some origins 400 on any Bearer header — omit it when keyless
 @pytest.mark.parametrize("blank_key", ["", "   ", "\t\n"])
 def test_blank_api_key_sends_no_authorization_header(rmock: HttpMock, blank_key: str) -> None:
-    """Keyless callers (summarizer/web_research/journal_review pass ``""``)
-    must not emit a malformed ``Authorization: Bearer `` — some origins
-    (Wikipedia, verified live) answer ANY bearer header with 400."""
     rmock.add("GET", SAFE_URL, status=200, body=b"{}")
     ext_request("GET", SAFE_URL, api_key=blank_key)
     sent = rmock.calls[0]["headers"]
@@ -82,7 +83,6 @@ def test_non_empty_api_key_merges_extra_headers(rmock: HttpMock) -> None:
 
 
 def test_extra_headers_may_override_authorization(rmock: HttpMock) -> None:
-    """``extra_headers`` merge AFTER the bearer (pre-existing precedence)."""
     rmock.add("GET", SAFE_URL, status=200, body=b"{}")
     ext_request("GET", SAFE_URL, api_key="sk-live",
                 extra_headers={"Authorization": "Basic abc"})

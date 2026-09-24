@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Validate local targets in Git-tracked Markdown without network access."""
+"""Validates local file/directory/anchor targets in Git-tracked Markdown without network
+access; run as a pre-commit and CI check via maintained_markdown_files() and
+git_candidate_files().
+"""
 
 from __future__ import annotations
 
@@ -30,27 +33,21 @@ _EXTERNAL_SCHEMES = frozenset(
 
 
 class GitInventoryError(RuntimeError):
-    """Raised when the tracked-file inventory cannot be read safely."""
+    pass
 
 
 @dataclass(frozen=True, order=True)
 class LinkIssue:
-    """One invalid local Markdown target."""
-
     source: str
     line: int
     target: str
     reason: str
 
     def render(self) -> str:
-        """Return a stable compiler-style diagnostic."""
-
         return f"{self.source}:{self.line}: {self.reason}: {self.target}"
 
 
 def git_tracked_files(repo_root: Path) -> tuple[PurePosixPath, ...]:
-    """Return the repository's tracked files using Git's NUL-safe format."""
-
     completed = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "-z"],
         check=False,
@@ -71,14 +68,6 @@ def git_tracked_files(repo_root: Path) -> tuple[PurePosixPath, ...]:
 
 
 def git_candidate_files(repo_root: Path) -> tuple[PurePosixPath, ...]:
-    """Return tracked plus non-ignored candidate files for pre-commit checks.
-
-    Sources remain restricted to tracked Markdown. Including non-ignored
-    worktree targets lets a feature validate a newly added target before its
-    eventual commit; CI's clean checkout then proves that target was actually
-    included in the candidate.
-    """
-
     completed = subprocess.run(
         [
             "git",
@@ -102,9 +91,6 @@ def git_candidate_files(repo_root: Path) -> tuple[PurePosixPath, ...]:
     except UnicodeDecodeError as exc:
         raise GitInventoryError("git candidate inventory returned non-UTF-8 paths") from exc
     candidates = tuple(sorted(PurePosixPath(value) for value in values if value))
-    # ``--cached`` includes tracked paths deleted by an uncommitted cutover.
-    # Validate the live candidate tree: removed sources disappear, while links
-    # from surviving documents to those removed targets still fail normally.
     return tuple(
         path for path in candidates if repo_root.joinpath(*path.parts).exists()
     )
@@ -114,8 +100,6 @@ def tracked_markdown_files(
     repo_root: Path,
     requested: Sequence[str] = (),
 ) -> tuple[PurePosixPath, ...]:
-    """Select tracked Markdown sources, optionally restricted by path prefix."""
-
     tracked = git_tracked_files(repo_root)
     markdown = tuple(path for path in tracked if path.suffix.lower() == ".md")
     if not requested:
@@ -141,15 +125,6 @@ def tracked_markdown_files(
 def maintained_markdown_files(
     tracked_files: Iterable[PurePosixPath],
 ) -> tuple[PurePosixPath, ...]:
-    """Select current product/operator docs from a tracked-file inventory.
-
-    Numbered ``specs/`` are immutable design history and intentionally retain
-    links to files that existed at that feature's point in time. Generated
-    agent/Spec-Kit instructions and ``CLAUDE.md`` are likewise not current
-    operator documentation. ``--all`` remains available for an explicit
-    historical audit.
-    """
-
     excluded_roots = frozenset({".agents", ".specify", "specs"})
     return tuple(
         path
@@ -161,8 +136,6 @@ def maintained_markdown_files(
 
 
 def extract_markdown_targets(text: str) -> tuple[tuple[int, str], ...]:
-    """Extract inline/image and reference-definition targets outside fences."""
-
     found: list[tuple[int, str]] = []
     in_fence = False
     fence_marker = ""
@@ -190,8 +163,6 @@ def extract_markdown_targets(text: str) -> tuple[tuple[int, str], ...]:
 
 
 def markdown_anchors(text: str) -> frozenset[str]:
-    """Return GitHub-style heading anchors and explicit HTML IDs."""
-
     anchors: set[str] = set()
     occurrences: dict[str, int] = {}
     in_fence = False
@@ -233,13 +204,6 @@ def validate_markdown_links(
     sources: Iterable[PurePosixPath],
     tracked_files: Iterable[PurePosixPath] | None = None,
 ) -> tuple[LinkIssue, ...]:
-    """Validate local file/directory/anchor targets for selected sources.
-
-    HTTP and other explicitly external schemes are intentionally not contacted.
-    A local target must stay inside ``repo_root`` and exist in Git's tracked
-    inventory, which makes the same link reproducible in a clean checkout.
-    """
-
     root = repo_root.resolve()
     tracked = frozenset(
         tracked_files if tracked_files is not None else git_tracked_files(root)
@@ -286,7 +250,7 @@ def _validate_target(
     if not raw_target:
         return LinkIssue(source_text, line, raw_target, "empty target")
     if raw_target.startswith("/"):
-        return None  # application route, resolved by the deployed origin
+        return None
     parsed = urlsplit(raw_target)
     scheme = parsed.scheme.lower()
     if scheme:
@@ -305,9 +269,6 @@ def _validate_target(
     except ValueError:
         return LinkIssue(source_text, line, raw_target, "target escapes repository")
 
-    # Some historical project documents use repository-root-relative paths
-    # without a leading slash. Accept that form only when the normal Markdown
-    # relative target does not exist.
     if path_text and not resolved.exists():
         root_candidate = (root / path_text).resolve()
         if root_candidate.is_relative_to(root) and root_candidate.exists():
@@ -332,8 +293,6 @@ def _validate_target(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the command-line parser."""
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--repo-root",
@@ -355,8 +314,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run tracked-Markdown validation and return a process exit code."""
-
     args = build_parser().parse_args(argv)
     repo_root = args.repo_root.resolve()
     try:
@@ -369,9 +326,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path for path in tracked if path.suffix.lower() == ".md"
             )
         else:
-            # Include non-ignored candidates so a newly authored guide is
-            # validated before its first commit. CI runs from a clean checkout,
-            # where the same files necessarily come from the tracked inventory.
             sources = maintained_markdown_files(candidate_files)
         issues = validate_markdown_links(repo_root, sources, candidate_files)
     except GitInventoryError as exc:

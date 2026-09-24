@@ -1,9 +1,8 @@
-"""Unit tests for the ML Services agent's CLASSify tool slice.
-
-Ported from ``agents/classify/tests/test_credentials_check.py`` (feature 029
-consolidation). The five formerly-colliding verbs carry the ``classify_``
-prefix; everything else is behavior-identical to the original suite.
+"""Tests for ml_services/classify_tools.py: credential checks, get_ml_options rendering,
+dataset submission (file-handle and inline-data paths), column typing, training-job
+start/poll/results, output log, and dataset deletion.
 """
+
 import json
 import socket
 from unittest.mock import patch
@@ -46,22 +45,15 @@ def stub_dns():
 
 @pytest.fixture(autouse=True)
 def clear_report_path_cache():
-    """Isolate the report-to-attachment identity cache across tests."""
     mcp_tools._REPORT_ATTACHMENTS.clear()
     yield
     mcp_tools._REPORT_ATTACHMENTS.clear()
-
-
-# ---------------------------------------------------------------------------
-# _credentials_check (CLASSify bundle probe)
-# ---------------------------------------------------------------------------
 
 
 def test_credentials_check_ok(rmock: HttpMock) -> None:
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {}})
     result = mcp_tools._credentials_check(_credentials=GOOD_CREDS)
     assert result == {"credential_test": "ok"}
-    # Confirms we hit the right path with the expected query string.
     assert rmock.calls[-1]["url"] == ML_OPTS_URL
     assert rmock.calls[-1].get("params") == {"unsstate": 0}
 
@@ -90,11 +82,6 @@ def test_credentials_check_partial_creds() -> None:
     assert result["credential_test"] == "unexpected"
 
 
-# ---------------------------------------------------------------------------
-# get_ml_options
-# ---------------------------------------------------------------------------
-
-
 def test_get_ml_options_renders_card(rmock: HttpMock) -> None:
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {"train_group": {"default": ["randomforest"]}}})
     result = mcp_tools.get_ml_options(_credentials=GOOD_CREDS)
@@ -104,7 +91,6 @@ def test_get_ml_options_renders_card(rmock: HttpMock) -> None:
 
 
 def test_get_ml_options_renders_parameter_table(rmock: HttpMock) -> None:
-    """Each parameter must become a row in a Table component, not a JSON dump."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "success": True,
         "message": "",
@@ -123,7 +109,6 @@ def test_get_ml_options_renders_parameter_table(rmock: HttpMock) -> None:
     })
     result = mcp_tools.get_ml_options(_credentials=GOOD_CREDS)
     card = result["_ui_components"][0]
-    # Card.content holds [Text(header), Table(params)]
     contents = card.get("content", [])
     types = [c.get("type") for c in contents if isinstance(c, dict)]
     assert "table" in types
@@ -131,23 +116,18 @@ def test_get_ml_options_renders_parameter_table(rmock: HttpMock) -> None:
     assert table["headers"] == ["Parameter", "Type", "Default", "Applies to", "Description"]
     row_names = [r[0] for r in table["rows"]]
     assert row_names == ["parameter_tune", "num_clusters"]
-    # Default rendering: bool → "True", int → "2"
     defaults_by_name = {r[0]: r[2] for r in table["rows"]}
     assert defaults_by_name["parameter_tune"] == "True"
     assert defaults_by_name["num_clusters"] == "2"
-    # "Applies to" gets a truncation marker only when > 3 entries; both
-    # rows here have ≤ 3 models, so no "and N more" suffix.
     applies_by_name = {r[0]: r[3] for r in table["rows"]}
     assert "and " not in applies_by_name["parameter_tune"]
 
 
 def test_get_ml_options_falls_back_when_no_parameters(rmock: HttpMock) -> None:
-    """Unexpected response shape should fall back to the JSON-dump rendering."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={"success": False, "message": "no opts"})
     result = mcp_tools.get_ml_options(_credentials=GOOD_CREDS)
     contents = result["_ui_components"][0].get("content", [])
     types = [c.get("type") for c in contents if isinstance(c, dict)]
-    # Fallback rendering uses only a Text component, no Table.
     assert "table" not in types
     assert "text" in types
 
@@ -163,11 +143,6 @@ def test_get_ml_options_passes_unsstate(rmock: HttpMock) -> None:
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {}})
     mcp_tools.get_ml_options(unsstate=1, _credentials=GOOD_CREDS)
     assert rmock.calls[-1].get("params") == {"unsstate": 1}
-
-
-# ---------------------------------------------------------------------------
-# classify_submit_dataset
-# ---------------------------------------------------------------------------
 
 
 def test_submit_dataset_returns_uuid(rmock: HttpMock, tmp_path) -> None:
@@ -208,30 +183,21 @@ def test_submit_dataset_missing_user_id_returns_error(rmock: HttpMock, tmp_path)
     csv = tmp_path / "data.csv"
     csv.write_text("a\n1\n")
     result = mcp_tools.classify_submit_dataset(file_handle=str(csv), _credentials=GOOD_CREDS)
-    # No user_id → ValueError → rendered as error Alert
     assert result["_ui_components"][0]["variant"] == "error"
-
-
-# ---------------------------------------------------------------------------
-# classify_submit_dataset — inline_data (pasted-in-chat) path
-# ---------------------------------------------------------------------------
 
 
 INLINE_CSV = "Week,Enrollment,Cohort\n1,40,A\n2,42,A\n3,45,B\n"
 
 
 def test_submit_dataset_inline_data_materializes_and_uploads(rmock: HttpMock, tmp_path) -> None:
-    """inline_data is materialized into a real attachment for the
-    AUTHENTICATED user, then the flow proceeds exactly as if that handle
-    had been passed."""
     materialized = tmp_path / "inline.csv"
 
     def fake_materialize(text, user_id, *, extension="csv"):
-        assert user_id == "alice"  # orchestrator-injected identity, not model-supplied
+        assert user_id == "alice"
         assert "Week,Enrollment" in text
         assert extension == "csv"
         materialized.write_text(text)
-        return str(materialized)  # resolver honors existing absolute paths
+        return str(materialized)
 
     rmock.add("POST", SUBMIT_URL, status=200, json={
         "report_uuid": "rpt-inline",
@@ -248,7 +214,6 @@ def test_submit_dataset_inline_data_materializes_and_uploads(rmock: HttpMock, tm
     call = rmock.calls[-1]
     assert call["url"] == SUBMIT_URL
     assert "file" in (call.get("files") or {})
-    # Only the typed attachment and owner identities survive the parser lease.
     assert mcp_tools._REPORT_ATTACHMENTS["rpt-inline"] == (
         str(materialized),
         "alice",
@@ -256,8 +221,6 @@ def test_submit_dataset_inline_data_materializes_and_uploads(rmock: HttpMock, tm
 
 
 def test_submit_dataset_inline_data_requires_user_id(rmock: HttpMock) -> None:
-    """No authenticated user → error BEFORE any materialization happens
-    (user_id is never model-suppliable)."""
     with patch.object(mcp_tools, "materialize_text_attachment") as mock_mat:
         result = mcp_tools.classify_submit_dataset(
             inline_data=INLINE_CSV, _credentials=GOOD_CREDS,
@@ -275,7 +238,6 @@ def test_submit_dataset_requires_handle_or_inline(rmock: HttpMock) -> None:
 
 
 def test_submit_dataset_file_handle_wins_over_inline(rmock: HttpMock, tmp_path) -> None:
-    """When both are supplied, the real attachment wins and nothing is materialized."""
     csv = tmp_path / "real.csv"
     csv.write_text("a,b,target\n1,2,X\n")
     rmock.add("POST", SUBMIT_URL, status=200, json={
@@ -312,11 +274,6 @@ def test_submit_dataset_schema_offers_inline_data() -> None:
     assert "NEVER invent" in entry["description"]
 
 
-# ---------------------------------------------------------------------------
-# set_column_types
-# ---------------------------------------------------------------------------
-
-
 def test_set_column_types_posts_form_encoded(rmock: HttpMock) -> None:
     rmock.add("POST", SET_COLS_URL, status=200, json={"ok": True})
     column_changes = [
@@ -330,7 +287,6 @@ def test_set_column_types_posts_form_encoded(rmock: HttpMock) -> None:
     )
     call = rmock.calls[-1]
     assert call["url"] == SET_COLS_URL
-    # Form-encoded body — column_changes must be a JSON string, not nested JSON.
     sent = call.get("data") or {}
     assert sent.get("report_uuid") == "rpt-1"
     parsed = json.loads(sent["column_changes"])
@@ -339,7 +295,6 @@ def test_set_column_types_posts_form_encoded(rmock: HttpMock) -> None:
 
 def test_set_column_types_auto_flags_class_column(rmock: HttpMock) -> None:
     rmock.add("POST", SET_COLS_URL, status=200, json={"ok": True})
-    # Note: no entry has 'class: True' — set_column_types should add it.
     column_changes = [
         {"column": "a", "data_type": "integer", "checked": True},
         {"column": "target", "data_type": "string", "checked": True},
@@ -362,12 +317,9 @@ def test_set_column_types_rejects_non_list() -> None:
 
 
 def test_set_column_types_auto_builds_from_pandas(rmock: HttpMock, tmp_path) -> None:
-    """Auto-build path mirrors submission_example.startJob lines 19-31: re-reads
-    the CSV with pandas, flags missing='synthetic' on columns containing nulls,
-    leaves missing=None on complete columns, and sets class:True on the class column."""
     rmock.add("POST", SET_COLS_URL, status=200, json={"ok": True})
     csv_path = tmp_path / "tiny.csv"
-    csv_path.write_text("a,b,target\n1,,x\n2,3,y\n")  # column 'b' has a NaN
+    csv_path.write_text("a,b,target\n1,,x\n2,3,y\n")
     column_types = {"a": "integer", "b": "integer", "target": "string"}
 
     result = mcp_tools.set_column_types(
@@ -421,9 +373,6 @@ def test_set_column_types_auto_build_respects_excluded_and_constant(rmock: HttpM
 
 
 def test_set_column_types_auto_build_requires_path_or_handle() -> None:
-    """Without a prior classify_submit_dataset call (no stashed path) and no
-    file_handle, set_column_types should error out cleanly instead of silently
-    mis-resolving."""
     result = mcp_tools.set_column_types(
         report_uuid="rpt-1", class_column="target",
         _credentials=GOOD_CREDS, user_id="dev",
@@ -433,8 +382,6 @@ def test_set_column_types_auto_build_requires_path_or_handle() -> None:
 
 def test_set_column_types_uses_path_stashed_by_submit_dataset(rmock: HttpMock,
                                                               tmp_path) -> None:
-    """classify_submit_dataset stashes report_uuid -> local_path; set_column_types
-    then reads the CSV from that path without the LLM passing file_handle."""
     csv_path = tmp_path / "uploaded.csv"
     csv_path.write_text("a,b,target\n1,,x\n2,3,y\n")
     rmock.add("POST", SUBMIT_URL, status=200, json={
@@ -449,7 +396,6 @@ def test_set_column_types_uses_path_stashed_by_submit_dataset(rmock: HttpMock,
     )
     assert submit_result["_data"]["report_uuid"] == "rpt-cached"
 
-    # NOTE: no file_handle here — the agent's stashed path is the only source.
     result = mcp_tools.set_column_types(
         report_uuid="rpt-cached", class_column="target",
         column_types=submit_result["_data"]["column_types"],
@@ -481,11 +427,6 @@ def test_delete_dataset_clears_stashed_attachment(rmock: HttpMock, tmp_path) -> 
     assert "rpt-del" not in mcp_tools._REPORT_ATTACHMENTS
 
 
-# ---------------------------------------------------------------------------
-# classify_start_training_job
-# ---------------------------------------------------------------------------
-
-
 class _FakeRuntime:
     def __init__(self):
         self.scheduled = []
@@ -505,33 +446,26 @@ def test_start_training_job_returns_report_uuid_and_starts_poller(rmock: HttpMoc
     assert result["_data"]["report_uuid"] == "rpt-1"
     assert result["_data"]["status"] == "started"
     assert len(runtime.scheduled) == 1
-    # Verify required entries (report_uuid, class_column, supervised, autodetermineclusters)
-    # are appended to the options list before being sent upstream.
     sent_options = json.loads(rmock.calls[-1]["data"]["options"])
     names_to_values = {entry["name"]: entry["value"] for entry in sent_options}
     assert names_to_values["report_uuid"] == "rpt-1"
     assert names_to_values["class_column"] == "target"
-    # supervised/autodetermineclusters are sent as strings to mirror submission_example.py
     assert names_to_values["supervised"] == "True"
     assert names_to_values["autodetermineclusters"] == "False"
     assert names_to_values["parameter_tune"] is False
 
 
 def test_start_training_job_without_runtime_still_returns_ack(rmock: HttpMock) -> None:
-    # Auto-build path now fetches /reports/get-ml-opts before posting the job.
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {}})
     rmock.add("POST", START_JOB_URL, status=200, json={})
     result = mcp_tools.classify_start_training_job(
         report_uuid="rpt-1", class_column="target",
-        _credentials=GOOD_CREDS,  # no _runtime
+        _credentials=GOOD_CREDS,
     )
     assert result["_data"]["status"] == "started"
 
 
 def test_start_training_job_auto_filters_train_group(rmock: HttpMock) -> None:
-    """Auto-build path mirrors submission_example.startJob: fetches get-ml-opts,
-    filters train_group to models_to_train, forces parameter_tune=False, and
-    sends supervised/autodetermineclusters as the strings 'True'/'False'."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {
@@ -564,9 +498,6 @@ def test_start_training_job_auto_filters_train_group(rmock: HttpMock) -> None:
 
 def test_start_training_job_falls_back_when_train_group_intersection_empty(
         rmock: HttpMock) -> None:
-    """If /get-ml-opts returns no train_group (or its default list doesn't
-    intersect models_to_train), seed train_group from models_to_train so the
-    upstream never receives a job request without any models selected."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "parameter_tune": {"default": True},
@@ -584,12 +515,9 @@ def test_start_training_job_falls_back_when_train_group_intersection_empty(
 
 def test_start_training_job_falls_back_when_models_dont_match_upstream(
         rmock: HttpMock) -> None:
-    """If upstream train_group.default uses different model names than
-    models_to_train, still emit the requested models so the job has something
-    to train."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
-            "train_group": {"default": ["xgboost", "lightgbm"]},  # no overlap
+            "train_group": {"default": ["xgboost", "lightgbm"]},
         },
     })
     rmock.add("POST", START_JOB_URL, status=200, json={})
@@ -604,8 +532,6 @@ def test_start_training_job_falls_back_when_models_dont_match_upstream(
 
 
 def test_propose_training_config_returns_param_picker(rmock: HttpMock) -> None:
-    """The form should include one field per upstream parameter, plus the two
-    top-level toggles (__supervised__, __autodetermineclusters__)."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {"type": "string",
@@ -631,9 +557,6 @@ def test_propose_training_config_returns_param_picker(rmock: HttpMock) -> None:
     assert "rpt-pp" in component["submit_message_template"]
     assert "{train_group}" in component["submit_message_template"]
     assert "{__values_json__}" in component["submit_message_template"]
-    # 029 consolidation: the picker's submit message must trigger the
-    # service-prefixed verb, since bare start_training_job no longer exists
-    # in the union registry.
     assert "call classify_start_training_job" in component["submit_message_template"]
 
     by_name = {f["name"]: f for f in component["fields"]}
@@ -642,26 +565,19 @@ def test_propose_training_config_returns_param_picker(rmock: HttpMock) -> None:
     assert by_name["__autodetermineclusters__"]["kind"] == "boolean"
     assert by_name["__autodetermineclusters__"]["default"] is False
 
-    # train_group special-cased: options = upstream list, default = pre-selected
-    # script defaults (intersected with what upstream allows).
     assert by_name["train_group"]["kind"] == "checklist"
     assert by_name["train_group"]["options"] == ["randomforest", "gradientboosting", "xgboost"]
     assert by_name["train_group"]["default"] == ["randomforest", "gradientboosting"]
 
-    # parameter_tune is a boolean even though upstream default is True
     assert by_name["parameter_tune"]["kind"] == "boolean"
     assert by_name["parameter_tune"]["default"] is True
 
-    # n_iter is a number with the upstream default
     assert by_name["n_iter"]["kind"] == "number"
     assert by_name["n_iter"]["default"] == 100
 
-    # loss is a free-form string field
     assert by_name["loss"]["kind"] == "text"
     assert by_name["loss"]["default"] == "squared_error"
 
-    # parameter_goal has the upstream-keyed shape: render as a single-choice
-    # select with options = the goal names and default = 'f1_macro'.
     assert by_name["parameter_goal"]["kind"] == "select"
     assert by_name["parameter_goal"]["options"] == \
         ["f1_macro", "precision_macro", "recall_macro", "accuracy"]
@@ -686,8 +602,6 @@ def test_propose_training_config_handles_empty_parameters(rmock: HttpMock) -> No
         report_uuid="rpt", class_column="target",
         _credentials=GOOD_CREDS,
     )
-    # No params → cannot build a useful form → return an error Alert instead
-    # of an empty picker the user could submit by accident.
     assert result["_ui_components"][0]["variant"] == "error"
 
 
@@ -698,8 +612,6 @@ def test_propose_training_config_registered_as_read_scope() -> None:
 
 
 def test_start_training_job_supervised_uses_unsstate_1(rmock: HttpMock) -> None:
-    """unsstate=1 selects supervised params, unsstate=0 selects clustering —
-    matches the live deployment and the published API docs example."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {"train_group": {"default": ["randomforest"]}},
     })
@@ -727,7 +639,6 @@ def test_start_training_job_unsupervised_uses_unsstate_0(rmock: HttpMock) -> Non
 
 
 def test_start_training_job_unsstate_override_respected(rmock: HttpMock) -> None:
-    """Explicit unsstate wins over the auto-derived value."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {}})
     rmock.add("POST", START_JOB_URL, status=200, json={})
     mcp_tools.classify_start_training_job(
@@ -741,7 +652,6 @@ def test_start_training_job_unsstate_override_respected(rmock: HttpMock) -> None
 
 
 def test_start_training_job_parameter_overrides_win(rmock: HttpMock) -> None:
-    """parameter_overrides should beat both upstream defaults and the parameter_tune knob."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {"default": ["randomforest"]},
@@ -770,7 +680,6 @@ _PARAMETER_GOAL_META = {
 
 
 def test_start_training_job_parameter_goal_uses_override(rmock: HttpMock) -> None:
-    """When parameter_overrides specifies a valid goal, the value is forwarded."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {"default": ["randomforest"]},
@@ -789,7 +698,6 @@ def test_start_training_job_parameter_goal_uses_override(rmock: HttpMock) -> Non
 
 
 def test_start_training_job_parameter_goal_defaults_to_f1_macro(rmock: HttpMock) -> None:
-    """No override → fall back to 'f1_macro' (matches the docs example)."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {"default": ["randomforest"]},
@@ -807,7 +715,6 @@ def test_start_training_job_parameter_goal_defaults_to_f1_macro(rmock: HttpMock)
 
 
 def test_start_training_job_parameter_goal_invalid_override_falls_back(rmock: HttpMock) -> None:
-    """An override that isn't in the upstream goal keys → fall back to 'f1_macro'."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={
         "parameters": {
             "train_group": {"default": ["randomforest"]},
@@ -823,11 +730,6 @@ def test_start_training_job_parameter_goal_invalid_override_falls_back(rmock: Ht
     sent_options = json.loads(rmock.calls[-1]["data"]["options"])
     by_name = {e["name"]: e["value"] for e in sent_options if e["name"] != "train_group"}
     assert by_name["parameter_goal"] == "f1_macro"
-
-
-# ---------------------------------------------------------------------------
-# _make_status_poll
-# ---------------------------------------------------------------------------
 
 
 def test_status_poll_processed_fetches_results(rmock: HttpMock) -> None:
@@ -866,13 +768,7 @@ def test_status_poll_unknown_status_treated_as_failure(rmock: HttpMock) -> None:
     assert "bad CSV" in out["message"]
 
 
-# ---------------------------------------------------------------------------
-# classify_get_results, get_output_log, classify_delete_dataset
-# ---------------------------------------------------------------------------
-
-
 def test_get_results_renders_flat_metrics_table(rmock: HttpMock) -> None:
-    """Flat {metric: value} dict → two-column Metric|Value Table."""
     rmock.add("GET", RESULTS_URL, status=200, json={"accuracy": 0.85, "f1": 0.81})
     result = mcp_tools.classify_get_results(report_uuid="rpt-1", _credentials=GOOD_CREDS)
     assert result["_ui_components"][0].get("variant") != "error"
@@ -887,7 +783,6 @@ def test_get_results_renders_flat_metrics_table(rmock: HttpMock) -> None:
 
 
 def test_get_results_renders_per_model_table(rmock: HttpMock) -> None:
-    """Per-model dict → rows = models, columns = union of metric keys."""
     rmock.add("GET", RESULTS_URL, status=200, json={
         "randomforest":    {"accuracy": 0.92, "f1": 0.91},
         "gradientboosting": {"accuracy": 0.88, "f1": 0.87, "roc_auc": 0.95},
@@ -896,16 +791,13 @@ def test_get_results_renders_per_model_table(rmock: HttpMock) -> None:
     card = result["_ui_components"][0]
     contents = card.get("content", [])
     table = next(c for c in contents if isinstance(c, dict) and c.get("type") == "table")
-    # Headers: "Model" + sorted metric keys (union).
     assert table["headers"] == ["Model", "accuracy", "f1", "roc_auc"]
     rows_by_model = {r[0]: r[1:] for r in table["rows"]}
     assert rows_by_model["randomforest"][0] == "0.9200"
-    # Missing roc_auc for randomforest → rendered as the str of None ("None")
     assert rows_by_model["randomforest"][2] in ("None", "—")
 
 
 def test_get_results_falls_back_on_non_dict(rmock: HttpMock) -> None:
-    """Non-JSON / non-dict response → falls back to Text dump (no Table)."""
     rmock.add("GET", RESULTS_URL, status=200, body=b"raw text output, not JSON")
     result = mcp_tools.classify_get_results(report_uuid="rpt-1", _credentials=GOOD_CREDS)
     card = result["_ui_components"][0]
@@ -921,10 +813,9 @@ def test_get_output_log_truncates_long_text(rmock: HttpMock) -> None:
     result = mcp_tools.get_output_log(report_uuid="rpt-1", _credentials=GOOD_CREDS)
     rendered = result["_ui_components"][0]
     text_blocks = rendered.get("content", []) if isinstance(rendered, dict) else []
-    # The card content was truncated to ~4 KB
     if text_blocks and isinstance(text_blocks, list):
         rendered_text = next((b.get("content", "") for b in text_blocks if isinstance(b, dict)), "")
-        assert len(rendered_text) <= 4100  # 4000 + truncation marker tolerance
+        assert len(rendered_text) <= 4100
 
 
 def test_delete_dataset_posts_report_uuid(rmock: HttpMock) -> None:
@@ -933,11 +824,6 @@ def test_delete_dataset_posts_report_uuid(rmock: HttpMock) -> None:
     call = rmock.calls[-1]
     assert call["url"] == DELETE_URL
     assert call.get("data") == {"report_uuid": "rpt-1"}
-
-
-# ---------------------------------------------------------------------------
-# Registry / metadata invariants (CLASSify slice)
-# ---------------------------------------------------------------------------
 
 
 def test_long_running_tools_set_correct() -> None:
@@ -967,7 +853,6 @@ def test_get_job_status_renders_card(rmock: HttpMock) -> None:
 
 
 def test_no_api_key_in_response_data(rmock: HttpMock) -> None:
-    """Constitution Principle X / SC-006 — API key never reaches response payload."""
     rmock.add("GET", ML_OPTS_URL, status=200, json={"parameters": {}})
     result = mcp_tools.get_ml_options(_credentials=GOOD_CREDS)
     serialized = str(result)

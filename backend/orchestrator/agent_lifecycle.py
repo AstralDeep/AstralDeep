@@ -1,13 +1,8 @@
+"""Manages the agent lifecycle from draft to live: code generation, security analysis,
+subprocess supervision, and a two-phase revision-activation/crash-recovery
+coordinator for BYO runtimes. Driven by agent_authoring.py and orchestrator.py.
 """
-Agent Lifecycle Manager for AstralDeep.
 
-Manages the full lifecycle of user-created agents:
-  pending → generating → generated → testing → analyzing →
-  approved/pending_review/rejected → live
-
-Handles code generation, security analysis, file I/O,
-subprocess management, and approval flow.
-"""
 import ast
 import asyncio
 from dataclasses import dataclass
@@ -86,8 +81,6 @@ logger = logging.getLogger("AgentLifecycle")
 
 
 def _json_mapping_default(value: object) -> dict[str, object]:
-    """Thaw Plane's detached immutable JSON mappings for canonical encoding."""
-
     if isinstance(value, Mapping):
         return dict(value)
     raise TypeError(f"unsupported manifest value: {type(value).__name__}")
@@ -97,8 +90,6 @@ def _attach_generated_publication(
     state: Mapping[str, Any],
     result: GeneratedAgentPublicationResult,
 ) -> Dict[str, Any]:
-    """Attach re-opened Plane bundle evidence to one detached draft result."""
-
     if not isinstance(result, GeneratedAgentPublicationResult):
         raise TypeError("generated publication result is required")
     published = result.published
@@ -124,8 +115,6 @@ def _attach_generated_publication(
 async def _join_task_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[Any, Optional[asyncio.CancelledError]]:
-    """Join one retained task while recording repeated caller cancellation."""
-
     result, error, cancellation = await _join_task_outcome_through_cancellation(
         task
     )
@@ -137,8 +126,6 @@ async def _join_task_through_cancellation(
 async def _join_task_outcome_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[Any, BaseException | None, Optional[asyncio.CancelledError]]:
-    """Join a task and retain caller cancellation even when the task fails."""
-
     cancellation: Optional[asyncio.CancelledError] = None
     while not task.done():
         try:
@@ -159,7 +146,6 @@ async def _join_task_outcome_through_cancellation(
     except BaseException as error:
         return None, error, cancellation
 
-# Statuses
 PENDING = "pending"
 GENERATING = "generating"
 GENERATED = "generated"
@@ -174,21 +160,12 @@ ERROR = "error"
 
 _GENERATION_CLAIM_RENEW_INTERVAL_SECONDS = 60.0
 
-# Generation targets (058 T008)
-BACKEND_TARGET = "backend"   # 027: server-hosted, run here as a subprocess
-BYO_TARGET = "byo"           # 058: self-contained bundle, run on the owner's desktop
+BACKEND_TARGET = "backend"
+BYO_TARGET = "byo"
 
-#: ``draft_agents.origin`` of a user-authored, client-hosted agent. Its code is
-#: NEVER executed on this host (058 SC-002) — the draft row exists only to carry
-#: the authoring journey.
 BYO_ORIGIN = "byo_client"
 
-#: Junk ``agent_ownership`` ids observed on the production database
-#: (created 2026-08-03, seconds before the real ``<slug>-1`` rows, by a
-#: seeding path that no longer exists in Deep or Plane): one public ownership
-#: row per ``backend/agents/<dir>`` keyed by the DIRECTORY name instead of the
-#: agent's runtime id, ``agents/tests`` included. These are EXACT literal ids —
-#: the boot sweep never matches by pattern, so ``weather-1`` etc. are untouched.
+# Exact literal ids only — the sweep never matches by pattern
 LEGACY_DIRECTORY_AGENT_IDS = frozenset({
     "connectors",
     "dice_roller",
@@ -223,8 +200,6 @@ def canonical_agent_lifecycle(
     reason_code: Optional[str] = None,
     updated_at: Optional[datetime] = None,
 ) -> AgentLifecycle:
-    """Build and validate one canonical personal-agent lifecycle projection."""
-
     timestamp = updated_at or datetime.now(UTC)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
@@ -248,16 +223,6 @@ async def publish_agent_lifecycle(
     owner_user_id: str,
     **projection: Any,
 ) -> int:
-    """Publish one validated lifecycle frame only to the owning user's UIs.
-
-    Durable runtime/revision state remains authoritative; this function never
-    allocates or increments a generation. Callers pass the committed fence and
-    state revision after their database transaction succeeds.
-
-    Returns:
-        Number of owner sockets that accepted the projection.
-    """
-
     if not isinstance(owner_user_id, str) or not owner_user_id:
         raise ValueError("owner_user_id must be non-empty")
     frame = canonical_agent_lifecycle(**projection)
@@ -275,21 +240,17 @@ async def publish_agent_lifecycle(
 
 
 class RevisionActivationError(RuntimeError):
-    """Safe terminal failure while preparing or promoting one BYO revision."""
-
     @property
     def code(self) -> str:
         return str(self)
 
 
 class RevisionActivationRecoveryPendingError(RevisionActivationError):
-    """Promotion authority could not be resolved after a lost acknowledgement."""
+    pass
 
 
 @dataclass(frozen=True)
 class CandidateAgentMetadata:
-    """Server-approved agent metadata committed only with revision authority."""
-
     draft_id: str
     draft_state_revision: int
     display_name: str
@@ -340,8 +301,6 @@ class CandidateAgentMetadata:
 
     @property
     def canonical_digest(self) -> str:
-        """Bind delivery idempotency to the exact candidate metadata."""
-
         payload = json.dumps(
             {
                 "constitution_version": self.constitution_version,
@@ -365,8 +324,6 @@ class CandidateAgentMetadata:
 
 @dataclass(frozen=True)
 class CandidatePreparation:
-    """Immutable inputs needed to durably prepare one candidate revision."""
-
     owner_user_id: str
     agent_id: str
     revision_id: str
@@ -382,8 +339,6 @@ class CandidatePreparation:
 
 @dataclass(frozen=True)
 class ActiveRevisionReplay:
-    """Exact immutable identity required to acknowledge an active replay."""
-
     owner_user_id: str
     agent_id: str
     revision_id: str
@@ -398,8 +353,6 @@ class ActiveRevisionReplay:
 
 @dataclass(frozen=True)
 class CandidateRevision:
-    """Durable candidate and the authority that existed before preparation."""
-
     owner_user_id: str
     agent_id: str
     revision_id: str
@@ -412,8 +365,6 @@ class CandidateRevision:
 
 @dataclass(frozen=True)
 class PromotionCommit:
-    """Result of the single transaction that changes routing authority."""
-
     owner_user_id: str
     agent_id: str
     revision_id: str
@@ -424,8 +375,6 @@ class PromotionCommit:
 
 @dataclass(frozen=True)
 class RecoveryPlan:
-    """Actions derived only from durable active/authoritative pointers."""
-
     owner_user_id: str
     agent_id: str
     active_revision_id: Optional[str]
@@ -438,8 +387,6 @@ class RecoveryPlan:
 
 @dataclass(frozen=True)
 class RevisionRecoveryStatus:
-    """Owner-locked durable state used to decide whether replay may recover."""
-
     owner_user_id: str
     agent_id: str
     revision_id: str
@@ -452,8 +399,6 @@ class RevisionRecoveryStatus:
 
 @dataclass(frozen=True)
 class PhysicalStopReceipt:
-    """Exact host-stop acknowledgement retained until Plane finalization."""
-
     runtime_instance_id: str
     release: Callable[[], Awaitable[Any] | Any]
 
@@ -470,16 +415,12 @@ class PhysicalStopReceipt:
 
 @dataclass(frozen=True)
 class RevisionActivationResult:
-    """Committed activation plus best-effort post-commit cleanup status."""
-
     commit: PromotionCommit
     prior_runtime_stopped: bool
     cleanup_pending: bool
 
 
 class RevisionActivationStore(Protocol):
-    """Narrow durable seam used by the two-phase revision coordinator."""
-
     def prepare_candidate(self, request: CandidatePreparation) -> CandidateRevision: ...
 
     def mark_candidate_starting(self, candidate: CandidateRevision) -> None: ...
@@ -521,14 +462,6 @@ class RevisionActivationStore(Protocol):
 
 @dataclass
 class PostgresPersonalAgentRevisionStore:
-    """Durable revision activation adapter over the feature-060 repository.
-
-    ``PersonalAgentRuntimeRepository`` remains the owner of host/runtime fences.
-    This adapter owns only the revision/pointer transaction that the repository
-    intentionally does not expose.  It uses the repository's transaction and
-    owner-lock seams so selection, runtime, and promotion serialize together.
-    """
-
     _SHA256 = re.compile(r"[0-9a-f]{64}")
     _SAFE_FAILURE = re.compile(r"[a-z][a-z0-9_]{0,127}")
     _PERMANENT_ACTIVATION_FAILURES = frozenset(
@@ -667,8 +600,6 @@ class PostgresPersonalAgentRevisionStore:
         self,
         request: ActiveRevisionReplay,
     ) -> None:
-        """Authenticate a committed delivery replay before route projection."""
-
         _manifest, canonical_manifest = self._validate_candidate_identity(request)
         runtime_instance_id = self._uuid_text(
             request.runtime_instance_id,
@@ -754,8 +685,6 @@ class PostgresPersonalAgentRevisionStore:
         agent_id: str,
         revision_id: str,
     ) -> Optional[RevisionRecoveryStatus]:
-        """Read the exact candidate/operation disposition under the owner lock."""
-
         owner_user_id = self._required_text(owner_user_id, "owner_user_id", 255)
         agent_id = self._required_text(agent_id, "agent_id", 255)
         revision_id = self._uuid_text(revision_id, "revision_id")
@@ -986,8 +915,6 @@ class PostgresPersonalAgentRevisionStore:
         revision_id: str,
         metadata: CandidateAgentMetadata,
     ) -> Any:
-        """Prove candidate metadata from the exact published draft revision."""
-
         draft = self._drafts.get_draft(
             transaction,
             owner_id=owner_user_id,
@@ -1125,15 +1052,6 @@ class PostgresPersonalAgentRevisionStore:
     def _recover_committed_prelaunch_instance(
         self, request: CandidatePreparation
     ) -> Optional[str]:
-        """Recover an exact runtime when its create commit acknowledgement was lost.
-
-        ``create_prelaunch_instance`` owns a separate Plane transaction from the
-        immutable revision insert.  A transport/driver error can therefore be
-        raised after that transaction committed.  Only the sole nonterminal row
-        bound to this exact host and delivery-operation fence is valid evidence
-        that the create succeeded; every other durable shape fails closed.
-        """
-
         operation_id = str(request.operation_fence.operation_id)
         operation_generation = request.operation_fence.execution_generation
         with self._runtime._agents.transaction() as transaction:
@@ -1220,8 +1138,6 @@ class PostgresPersonalAgentRevisionStore:
             return runtime.runtime_instance_id
 
     def prepare_candidate(self, request: CandidatePreparation) -> CandidateRevision:
-        """Insert immutable revision metadata, then reserve its runtime fence."""
-
         _manifest, canonical_manifest = self._validate_preparation(request)
         promotion_token: Optional[str] = None
         previous_revision_id: Optional[str] = None
@@ -1523,8 +1439,6 @@ class PostgresPersonalAgentRevisionStore:
         return candidate
 
     def promote_candidate(self, candidate: CandidateRevision) -> PromotionCommit:
-        """Atomically move every authoritative pointer to one ready candidate."""
-
         with self._runtime._agents.transaction() as transaction:
             repository = self._runtime._agents.repository
             repository.lock_owner(transaction, owner_id=candidate.owner_user_id)
@@ -1758,8 +1672,6 @@ class PostgresPersonalAgentRevisionStore:
         *,
         owner_user_id: str,
     ) -> Any:
-        """Load and authenticate the delivery operation bound to one runtime."""
-
         if runtime.operation_id is None:
             raise StaleRuntimeGenerationError(
                 "candidate delivery operation is unavailable"
@@ -1788,14 +1700,6 @@ class PostgresPersonalAgentRevisionStore:
         *,
         owner_user_id: str,
     ) -> Any | None:
-        """Load a delivery operation when its retention FK still exists.
-
-        Plane intentionally clears ``agent_runtime_instance.operation_id`` when
-        the terminal operation reaches its retention deadline.  Recovery must
-        therefore authenticate a retained operation when present, while using
-        the independently persisted revision disposition after that purge.
-        """
-
         if runtime.operation_id is None:
             return None
         return self._runtime_operation(
@@ -1805,8 +1709,6 @@ class PostgresPersonalAgentRevisionStore:
         )
 
     def _mutable_revision_disposition(self, revision: Any) -> Optional[str]:
-        """Validate the self-contained semantic marker on a mutable revision."""
-
         if revision.state not in {"prepared", "starting", "ready"}:
             return None
         disposition = revision.failure_code
@@ -1827,8 +1729,6 @@ class PostgresPersonalAgentRevisionStore:
         operation: Any | None,
         revision: Any | None = None,
     ) -> Optional[str]:
-        """Recover one unambiguous permanent activation disposition."""
-
         operation_code = (
             operation.terminal_code
             if operation is not None
@@ -1865,16 +1765,6 @@ class PostgresPersonalAgentRevisionStore:
         runtime: Any,
         revision_runtimes: Sequence[Any],
     ) -> Optional[tuple[Any, Any, bool]]:
-        """Fail closed when terminal-operation retention won the crash race.
-
-        A terminal delivery operation may be purged before Deep persists its
-        semantic marker on the mutable revision.  The absent FK proves neither
-        RETRYABLE nor a particular terminal code, so recovery converges only an
-        exact latest attempt whose authority and history are unambiguous.  The
-        returned flag names a process-bearing runtime that still needs exact
-        physical-exit proof before revision finalization.
-        """
-
         if not (
             revision.state in {"prepared", "starting", "ready"}
             and revision.failure_code is None
@@ -1980,7 +1870,7 @@ class PostgresPersonalAgentRevisionStore:
                     runtime_instance_id=runtime.runtime_instance_id,
                     for_update=True,
                 )
-                if updated_runtime is None:  # pragma: no cover - same transaction
+                if updated_runtime is None:  # pragma: no cover
                     raise RepositoryConflictError(
                         "purged-operation runtime disappeared"
                     )
@@ -2018,8 +1908,6 @@ class PostgresPersonalAgentRevisionStore:
         operation: Any | None,
         revision: Any | None = None,
     ) -> Optional[str]:
-        """Return the immutable failure disposition for a terminal attempt."""
-
         permanent_failure_code = self._permanent_runtime_failure_code(
             runtime, operation, revision
         )
@@ -2045,15 +1933,6 @@ class PostgresPersonalAgentRevisionStore:
     def stage_candidate_failure(
         self, candidate: CandidateRevision, failure_code: str
     ) -> bool:
-        """Persist cleanup intent without terminalizing a possibly-live child.
-
-        The returned flag is true only when Plane has an exact process identity
-        that must be stopped. Runtime and revision terminal state is deliberately
-        deferred until :meth:`fail_candidate`. The exact delivery operation is
-        failed in this staging transaction so lease expiry or an outer retryable
-        settlement cannot erase a known-permanent activation disposition.
-        """
-
         if (
             self._SAFE_FAILURE.fullmatch(failure_code or "") is None
             or failure_code not in self._PERMANENT_ACTIVATION_FAILURES
@@ -2210,8 +2089,6 @@ class PostgresPersonalAgentRevisionStore:
     def fail_candidate(
         self, candidate: CandidateRevision, failure_code: str
     ) -> None:
-        """Finalize a staged candidate only after exact physical cleanup."""
-
         if (
             self._SAFE_FAILURE.fullmatch(failure_code or "") is None
             or failure_code not in self._PERMANENT_ACTIVATION_FAILURES
@@ -2329,8 +2206,6 @@ class PostgresPersonalAgentRevisionStore:
                 ) from exc
 
     def recovery_plan(self, owner_user_id: str, agent_id: str) -> RecoveryPlan:
-        """Stage durable cleanup debt without claiming a process has stopped."""
-
         owner_user_id = self._required_text(owner_user_id, "owner_user_id", 255)
         agent_id = self._required_text(agent_id, "agent_id", 255)
         with self._runtime._agents.transaction() as transaction:
@@ -2665,7 +2540,7 @@ class PostgresPersonalAgentRevisionStore:
                                 raise StaleRuntimeGenerationError(
                                     "terminal candidate recovery disposition is unavailable"
                                 )
-                        else:  # pragma: no cover - guarded by the outer runtime
+                        else:  # pragma: no cover
                             continue
                         if selected_failure_code not in (
                             self._PERMANENT_ACTIVATION_FAILURES
@@ -2709,9 +2584,7 @@ class PostgresPersonalAgentRevisionStore:
                             OperationState.RUNNING,
                             OperationState.RETRYABLE,
                         }:
-                            # Another exact revision activation/retry owns this
-                            # mutable attempt. Agent-wide active replay cleanup
-                            # must never consume it.
+                            # Owned by another activation/retry — must not be consumed
                             continue
                         if operation.state not in {
                             OperationState.FAILED,
@@ -2812,8 +2685,6 @@ class PostgresPersonalAgentRevisionStore:
     def finalize_recovery_runtime(
         self, owner_user_id: str, agent_id: str, runtime_instance_id: str
     ) -> None:
-        """Finalize one staged loser after exact physical-stop confirmation."""
-
         owner_user_id = self._required_text(owner_user_id, "owner_user_id", 255)
         agent_id = self._required_text(agent_id, "agent_id", 255)
         runtime_instance_id = self._uuid_text(
@@ -2990,8 +2861,6 @@ class PostgresPersonalAgentRevisionStore:
     def stage_retryable_candidate_reset(
         self, owner_user_id: str, agent_id: str, revision_id: str
     ) -> str:
-        """Stage an exact RETRYABLE attempt for physical process cleanup."""
-
         owner_user_id = self._required_text(owner_user_id, "owner_user_id", 255)
         agent_id = self._required_text(agent_id, "agent_id", 255)
         revision_id = self._uuid_text(revision_id, "revision_id")
@@ -3191,8 +3060,6 @@ class PostgresPersonalAgentRevisionStore:
         revision_id: str,
         runtime_instance_id: str,
     ) -> None:
-        """Fence a RETRYABLE runtime only after exact physical-stop proof."""
-
         owner_user_id = self._required_text(owner_user_id, "owner_user_id", 255)
         agent_id = self._required_text(agent_id, "agent_id", 255)
         revision_id = self._uuid_text(revision_id, "revision_id")
@@ -3331,8 +3198,6 @@ class PostgresPersonalAgentRevisionStore:
 
 
 async def _await_if_needed(value: Any) -> Any:
-    """Await callback results while permitting synchronous durable test seams."""
-
     if inspect.isawaitable(value):
         return await value
     return value
@@ -3340,14 +3205,6 @@ async def _await_if_needed(value: Any) -> Any:
 
 @dataclass
 class AgentRevisionActivator:
-    """Coordinate prepare/start/ready/promote without risking the old runtime.
-
-    All pre-commit failures terminalize only the candidate.  The old runtime is
-    not stopped until :meth:`RevisionActivationStore.promote_candidate` returns,
-    which is the durable commit boundary.  A process crash is recovered from the
-    store's active pointer rather than from whichever candidate was newest.
-    """
-
     store: RevisionActivationStore
     start_candidate: Callable[[CandidateRevision], Awaitable[str] | str]
     await_candidate_ready: Callable[
@@ -3388,14 +3245,6 @@ class AgentRevisionActivator:
         callback: Callable[..., Any],
         *args: Any,
     ) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
-        """Run one synchronous Plane-backed store call without blocking ASGI.
-
-        The retained worker is always joined before cancellation is observed by
-        the state machine.  That makes a committed CAS result authoritative
-        even when the requesting task is cancelled while the database response
-        is in flight.
-        """
-
         task = asyncio.create_task(
             asyncio.to_thread(callback, *args),
             name=f"agent-revision-store-{getattr(callback, '__name__', 'call')}",
@@ -3427,9 +3276,6 @@ class AgentRevisionActivator:
             if released is False:
                 raise RuntimeError("runtime stop receipt release was refused")
         except Exception:
-            # Plane is already authoritative at every call site. Retaining the
-            # exact waiter is safer than allowing a late duplicate exit frame to
-            # enter the generic RETRYABLE reducer.
             logger.exception(
                 "runtime stop receipt release failed after durable finalization",
                 extra={"runtime_instance_id": receipt.runtime_instance_id},
@@ -3489,8 +3335,6 @@ class AgentRevisionActivator:
     async def reset_retryable_candidate(
         self, owner_user_id: str, agent_id: str, revision_id: str
     ) -> str:
-        """Physically stop, then durably fence, one RETRYABLE child attempt."""
-
         remembered_cancellation: asyncio.CancelledError | None = None
         runtime_instance_id, error, cancellation = await self._store_call(
             self._store.stage_retryable_candidate_reset,
@@ -3576,8 +3420,6 @@ class AgentRevisionActivator:
     async def activate(
         self, request: CandidatePreparation
     ) -> RevisionActivationResult:
-        """Prepare and activate one revision through a single commit boundary."""
-
         candidate: Optional[CandidateRevision] = None
         commit: Optional[PromotionCommit] = None
         phase = "preparation"
@@ -3669,11 +3511,7 @@ class AgentRevisionActivator:
                 candidate,
             )
             if error is not None:
-                # Domain errors are raised from inside the transaction and are
-                # therefore known pre-commit failures. An infrastructure error
-                # can instead be a lost commit acknowledgement. Replay the exact
-                # idempotent promotion after the retained worker exits so an
-                # already-active candidate is recovered as the commit winner.
+                # An infra error may hide a committed write — replay, don't fail
                 if not isinstance(
                     error,
                     (RevisionActivationError, StaleRuntimeGenerationError),
@@ -3713,8 +3551,7 @@ class AgentRevisionActivator:
             if committed and commit is not None:
                 remembered_cancellation = cancellation
             elif promotion_ambiguous:
-                # Authority could already be committed. Recovery, not local
-                # candidate failure/stop, owns convergence in this state.
+                # Re-raised: recovery owns convergence here, not this caller
                 raise
             else:
                 cleanup_error: BaseException | None = None
@@ -3741,17 +3578,12 @@ class AgentRevisionActivator:
                 raise
         except Exception as exc:
             if committed and commit is not None:
-                # The database is already authoritative.  A local observer/fault
-                # hook cannot truthfully turn that into promotion failure; carry
-                # on to post-commit cleanup and let crash recovery retry it.
                 logger.exception(
                     "post-commit revision observer failed; promotion remains active",
                     extra={"revision_id": commit.revision_id},
                 )
             else:
                 if isinstance(exc, RevisionActivationRecoveryPendingError):
-                    # Neither failure cleanup nor runtime stop is safe while the
-                    # durable promotion winner cannot be read authoritatively.
                     raise
                 if candidate is not None:
                     failure_code = {
@@ -3789,7 +3621,7 @@ class AgentRevisionActivator:
                 }[phase]
                 raise RevisionActivationError(code) from exc
 
-        if commit is None:  # pragma: no cover - defensive invariant
+        if commit is None:  # pragma: no cover
             raise RuntimeError("revision activation lost its promotion commit")
 
         previous_runtime = commit.previous_runtime_instance_id
@@ -3847,8 +3679,6 @@ class AgentRevisionActivator:
     async def reconcile_after_crash(
         self, owner_user_id: str, agent_id: str
     ) -> RecoveryPlan:
-        """Stop every non-authoritative candidate named by durable recovery."""
-
         plan, error, cancellation = await self._store_call(
             self._store.recovery_plan,
             owner_user_id,
@@ -3945,8 +3775,6 @@ class AgentRevisionActivator:
 
 
 class AgentLifecycleManager:
-    """Manages draft agent creation, testing, approval, and promotion to live."""
-
     def __init__(
         self,
         db=None,
@@ -3964,11 +3792,6 @@ class AgentLifecycleManager:
         ) = None,
         governed_lifecycle: Optional[GovernedLifecycleCoordinator] = None,
     ):
-        """
-        Args:
-            db: Explicit test-only draft-store double retained for compatibility.
-            orchestrator: Orchestrator instance (for LLM client reuse and WS broadcasts)
-        """
         if draft_store is not None and db is not None:
             raise ValueError("bind either draft_store or db, not both")
         if draft_store is None and plane_runtime is not None:
@@ -3984,15 +3807,8 @@ class AgentLifecycleManager:
         if draft_store is None:
             raise ValueError("draft persistence must be explicitly injected")
         self.draft_store = draft_store
-        # Temporary internal alias while the policy state machine keeps its
-        # long-standing method names. Production binds PlaneDraftStore here;
-        # no Database pool or SQL surface reaches this manager.
         self.db = draft_store
         self.orchestrator = orchestrator
-        # Feature 054: agent codegen is a system-context flow — it resolves
-        # the admin-managed system LLM credential per generation call (no
-        # env fallback exists anymore), so an admin save takes effect
-        # without a restart.
         _llm_store = getattr(orchestrator, '_llm_store', None)
         self.generator = AgentCodeGenerator(
             config_resolver=(_llm_store.get_system_sync if _llm_store is not None else None),
@@ -4014,7 +3830,7 @@ class AgentLifecycleManager:
             generated_agent_publication_service
         )
         self.governed_lifecycle = governed_lifecycle
-        self._draft_processes: Dict[str, Any] = {}  # draft_id -> supervised process
+        self._draft_processes: Dict[str, Any] = {}
         self._agents_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), '..', 'agents')
         )
@@ -4023,14 +3839,9 @@ class AgentLifecycleManager:
         self,
         coordinator: GovernedLifecycleCoordinator,
     ) -> None:
-        """Install the composed Plane/LETS lifecycle boundary atomically."""
-
         if not isinstance(coordinator, GovernedLifecycleCoordinator):
             raise TypeError("governed lifecycle coordinator is required")
         self.governed_lifecycle = coordinator
-        # Boot is the one moment no server_dynamic child of a previous
-        # orchestrator process can be alive, so retention-expired per-runtime
-        # executor roots are swept here.
         self.sweep_dynamic_runtime_roots()
 
     def _active_governed_lifecycle(self) -> GovernedLifecycleCoordinator | None:
@@ -4050,8 +3861,6 @@ class AgentLifecycleManager:
 
     @staticmethod
     def _declared_scopes_from_tools_file(tools_file: str) -> tuple[str, ...]:
-        """Extract literal TOOL_REGISTRY scopes without executing generated code."""
-
         try:
             with open(tools_file, "r", encoding="utf-8") as handle:
                 tree = ast.parse(handle.read(), filename=tools_file)
@@ -4088,16 +3897,6 @@ class AgentLifecycleManager:
         tools_file: str,
         base_env: Mapping[str, str] | None = None,
     ) -> tuple[LifecycleConvergence, Dict[str, str] | None]:
-        """Admit the runtime to LETS and build its process-environment hand-off.
-
-        Returns the convergence plus, when an ACTIVE binding exists, the exact
-        child environment carrying that binding, a PER-RUNTIME executor
-        audience and private executor roots (design §7.9).  The same audience
-        is published to final dispatch so the receipts the orchestrator
-        requests for this runtime verify inside the child.  ``None`` means
-        the child must be spawned with its pre-existing environment.
-        """
-
         coordinator = self._active_governed_lifecycle()
         if coordinator is None:
             return LifecycleConvergence(protected=False), None
@@ -4149,22 +3948,13 @@ class AgentLifecycleManager:
                 authority_root=authority_root,
             )
         except DynamicRuntimeAuthorityError as exc:
-            # No process ever held the roots prepared so far: drop them now
-            # rather than leaving an orphan for the retention sweep.
             await asyncio.to_thread(remove_dynamic_runtime_roots, config, runtime_id)
             if enforce:
-                # Fail-closed: a runtime that cannot claim its receipts must
-                # not start.  The lease was already granted; release it so the
-                # refused runtime never holds authority nothing can claim.
                 try:
                     await self._close_dynamic_runtime(draft)
                 except Exception:
                     logger.exception("LETS: close after refused hand-off failed")
                 raise LetsLifecycleError(exc.code) from None
-            # Shadow must NOT lose coverage: the child still spawns with its
-            # pre-existing environment AND the DispatchRuntime is registered
-            # under the SHARED audience (pre-§7.9 behaviour), so would-deny
-            # telemetry keeps observing what enforce would refuse.
             logger.warning(
                 "LETS shadow: dynamic runtime authority hand-off skipped "
                 "(%s); runtime %s registered with the shared audience "
@@ -4217,11 +4007,6 @@ class AgentLifecycleManager:
         runtime_id: str,
         code: str,
     ) -> None:
-        """Append a value-free ``lets.would_deny`` row for a shadow hand-off miss.
-
-        Non-strict: shadow telemetry must never fail the spawn it observes.
-        """
-
         try:
             from orchestrator.lets_audit import LetsAuditObserver
 
@@ -4248,12 +4033,6 @@ class AgentLifecycleManager:
             logger.warning("LETS shadow: hand-off would-deny audit failed", exc_info=True)
 
     def sweep_dynamic_runtime_roots(self) -> int:
-        """Boot-time retention sweep of per-runtime executor roots (§7.9).
-
-        See ``dynamic_runtime_authority`` for why roots are retained past
-        lease close and only swept here.  Best-effort; never raises.
-        """
-
         coordinator = self.governed_lifecycle
         config = getattr(getattr(coordinator, "service", None), "config", None)
         if config is None or getattr(config, "mode", "off") == "off":
@@ -4329,11 +4108,8 @@ class AgentLifecycleManager:
             )
         return result
 
-    # Progress Callback
-
     async def _send_progress(self, websocket, draft_id: str, step: str,
                               message: str, status: str, detail: Dict = None):
-        """Send progress update to the UI client."""
         if websocket:
             try:
                 payload = {
@@ -4358,8 +4134,6 @@ class AgentLifecycleManager:
         expected_revision: int | None = None,
         claim_id: str | None = None,
     ) -> bool:
-        """Append a message to the draft's generation_log."""
-
         fence_values = (owner_user_id, expected_revision, claim_id)
         has_fence = all(value is not None for value in fence_values)
         if any(value is not None for value in fence_values) and not has_fence:
@@ -4394,7 +4168,6 @@ class AgentLifecycleManager:
         )
 
     def _extract_required_credentials(self, tools_code: str) -> list:
-        """Extract REQUIRED_CREDENTIALS from generated mcp_tools.py using AST (no exec)."""
         try:
             tree = ast.parse(tools_code)
             for node in ast.walk(tree):
@@ -4406,8 +4179,6 @@ class AgentLifecycleManager:
             logger.warning(f"Failed to extract REQUIRED_CREDENTIALS: {e}")
         return []
 
-    # Spec Validation
-
     async def _validate_and_fix(self, draft_id: str, slug: str,
                                  tools_code: str, agent_name: str,
                                  description: str, websocket=None,
@@ -4417,16 +4188,6 @@ class AgentLifecycleManager:
                                  append_generation_log: Optional[
                                      Callable[[str], Awaitable[None]]
                                  ] = None) -> tuple:
-        """Run spec validation with auto-fix retry loop.
-
-        ``static_only`` (BYO, 058 G1/SC-002): the code under test is USER-AUTHORED
-        and must never run on this host, so it is validated by pure AST inspection
-        — registry shape, return contract, import allowlist. The orchestrator does
-        not import it, exec it, or call its tools. Runtime behavior is the desktop
-        host's business.
-
-        Returns (final_code, validation_report).
-        """
         for attempt in range(max_retries + 1):
             await self._send_progress(
                 websocket, draft_id, "validating",
@@ -4456,7 +4217,6 @@ class AgentLifecycleManager:
                 return tools_code, report
 
             if attempt < max_retries:
-                # Build fix prompt from validation errors
                 error_lines = []
                 for f in report.findings:
                     if f.severity == "error":
@@ -4489,11 +4249,6 @@ class AgentLifecycleManager:
                     await append_generation_log(log_message)
 
                 try:
-                    # The candidate is NOT promoted until it compiles. Assigning
-                    # it to ``tools_code`` first meant a syntax-broken refinement
-                    # (whose `continue` skips the disk write) became the value the
-                    # function RETURNS — and on the BYO path that in-memory value
-                    # is exactly what ships to the owner's host.
                     candidate = await self.generator.refine_tools_file(
                         current_code=tools_code,
                         user_message=fix_prompt,
@@ -4503,7 +4258,6 @@ class AgentLifecycleManager:
                         config_resolver=config_resolver,
                     )
 
-                    # Syntax check the fix
                     try:
                         compile(candidate, f"{slug}/mcp_tools.py", "exec")
                     except SyntaxError as e:
@@ -4516,13 +4270,8 @@ class AgentLifecycleManager:
                             )
                         else:
                             await append_generation_log(log_message)
-                        continue  # Try again — keep the last COMPILING code
+                        continue
 
-                    # Re-run the nefarious-activity gate on the refined bytes.
-                    # The auto-fix loop used to be the one path where NEW code
-                    # reached validator.validate() (which executes it) with a
-                    # syntax check only — an LLM "fix" is exactly as untrusted
-                    # as the original generation.
                     fix_report = self.security.analyze(
                         candidate, filename=f"{slug}/mcp_tools.py"
                     )
@@ -4544,10 +4293,6 @@ class AgentLifecycleManager:
 
                     tools_code = candidate
 
-                    # Server-hosted drafts retain their legacy editable working
-                    # directory. BYO bytes stay in memory until the dedicated
-                    # immutable publication seam has validated and committed the
-                    # complete three-file revision.
                     if not static_only:
                         tools_file = os.path.join(
                             self._agents_dir, slug, "mcp_tools.py"
@@ -4571,7 +4316,6 @@ class AgentLifecycleManager:
 
     @staticmethod
     def _byo_import_violations(files: Dict[str, str]) -> List[str]:
-        """Forbidden backend-coupling imports found anywhere in a BYO bundle."""
         from orchestrator.agent_generator import byo_import_violations
         found = []
         for fname, code in files.items():
@@ -4580,34 +4324,26 @@ class AgentLifecycleManager:
         return found
 
     def _remove_draft_marker(self, slug: str):
-        """Remove the .draft marker file when an agent is promoted to live."""
         marker = os.path.join(self._agents_dir, slug, ".draft")
         if os.path.exists(marker):
             os.remove(marker)
             logger.info(f"Removed .draft marker for {slug}")
 
-    # Slug Sanitization
-
     def _sanitize_slug(self, name: str) -> str:
-        """Convert agent name to a safe directory slug. Alphanumeric + underscores only."""
         slug = re.sub(r'[^a-z0-9]+', '_', name.lower().strip())
         slug = slug.strip('_')
         if not slug:
             slug = 'custom_agent'
-        # Prevent path traversal
         slug = slug.replace('..', '').replace('/', '').replace('\\', '')
         return slug
 
     def _ensure_unique_slug(self, slug: str) -> str:
-        """Ensure slug doesn't conflict with existing agent directories."""
         base_slug = slug
         counter = 1
         while os.path.exists(os.path.join(self._agents_dir, slug)):
             slug = f"{base_slug}_{counter}"
             counter += 1
         return slug
-
-    # Create Draft
 
     async def create_draft(
         self,
@@ -4627,8 +4363,6 @@ class AgentLifecycleManager:
         plan_json: Optional[str] = None,
         constitution_version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new draft agent record."""
-        # Validate
         if not agent_name or len(agent_name.strip()) < 2:
             raise ValueError("Agent name must be at least 2 characters")
         if not description or len(description.strip()) < 10:
@@ -4637,10 +4371,6 @@ class AgentLifecycleManager:
             raise ValueError("Agent name must be under 100 characters")
 
         draft_id = str(uuid.uuid4())
-        # The storage slug is deliberately identity-suffixed. A filesystem
-        # exists-check followed by insert is not an allocation primitive: two
-        # replicas could observe the same free name. The immutable UUID suffix
-        # makes same-name draft storage collision-free without a shared lock.
         slug_base = self._sanitize_slug(agent_name)[:48]
         slug = f"{slug_base}_{draft_id.replace('-', '')[:12]}"
 
@@ -4671,45 +4401,16 @@ class AgentLifecycleManager:
         logger.info(f"Created draft agent '{agent_name}' (id={draft_id}, slug={slug}) for user {user_id}")
         return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-    # Generate Code
-
     async def generate_code(self, draft_id: str, websocket=None, *,
                             target: str = BACKEND_TARGET,
                             agent_id: Optional[str] = None,
                             expected_state_revision: Optional[int] = None,
                             generation_claim_id: Optional[str] = None) -> Dict[str, Any]:
-        """Generate the complete executable file set for a draft.
-
-        Args:
-            target: ``backend`` (027 — server-hosted: agent.py + mcp_server.py +
-                mcp_tools.py, run as a subprocess here) or ``byo`` (060 — the
-                self-contained desktop bundle: agent_main.py +
-                astralprims_ui.py + protected_executor.py + mcp_tools.py plus
-                its deterministic runtime manifest, delivered to the owner's
-                host and never run here).
-            agent_id: the identity to bake into the generated card. BYO must use
-                the immutable ``target_agent_id`` persisted on the draft; only
-                legacy server-hosted drafts retain the slug-derived default.
-            expected_state_revision: revision the caller observed. A stale value
-                returns the current revision and a ``refresh`` action without
-                running generation.
-            generation_claim_id: optional UUID4 idempotency identity. Retries may
-                reuse it only while the same live claim and revision remain.
-
-        Returns the draft row, plus a ``files`` key holding the FINAL bundle
-        (post auto-fix) on success. Callers deliver from that key — the generated
-        source is otherwise only reachable off disk.
-        """
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
 
-        # 058 SC-002 — the sandbox/exec decision is a property of the ROW, not of
-        # the caller's argument. Keying it on ``target`` alone let any caller that
-        # omits it (e.g. the REST endpoint POST /api/agents/drafts/{id}/generate)
-        # run a BYO draft's user-authored code in-process. Derive it from origin,
-        # and refuse target=backend for a BYO draft outright — the same structural
-        # refusal start_draft_agent/approve_agent make.
+        # Keyed off the row, not the arg — an omitted target must not run user code
         is_byo_origin = draft.get("origin") == BYO_ORIGIN
         if is_byo_origin and target != BYO_TARGET:
             raise ValueError(
@@ -4753,11 +4454,6 @@ class AgentLifecycleManager:
         owner_user_id = str(draft.get("user_id") or "")
         draft_uuid = str(draft.get("draft_uuid") or draft_id)
         if is_byo:
-            # A lost response retry supplies the original observed revision and
-            # claim id. Plane increments the draft revision exactly once when
-            # that claim is acquired, so the durable journal source is the next
-            # revision. Re-open exact published bytes before attempting a new
-            # claim or invoking the model again.
             replay_source_revision = expected_state_revision + 1
             replay_identity = generated_agent_publication_identity(
                 owner_id=owner_user_id,
@@ -4859,11 +4555,6 @@ class AgentLifecycleManager:
                 raise cancellation from claim_error
             raise
         except Exception as claim_error:
-            # A database/network acknowledgement can be lost after the claim
-            # transaction commits.  Resolve that ambiguity from the durable
-            # owner+draft+claim identity before invoking the model; abandoning
-            # an exact committed claim here would leave a live ``generating``
-            # row that no publication-journal reconciler can yet discover.
             lookup_task = asyncio.create_task(
                 asyncio.to_thread(
                     self.db.get_exact_live_draft_generation_claim,
@@ -4933,9 +4624,6 @@ class AgentLifecycleManager:
             )
             return current
 
-        # Every byte and every policy decision below is derived from the exact
-        # claimed row. An edit increments state_revision and makes both artifact
-        # publication and terminalization fail closed.
         draft = dict(claimed)
         claimed_revision = int(draft["state_revision"])
         claim_resolved = False
@@ -4984,9 +4672,6 @@ class AgentLifecycleManager:
             except asyncio.CancelledError:
                 raise
             except BaseException:
-                # The terminal database transition below remains the authority
-                # check.  If renewal actually lost the claim it returns a
-                # conflict; a completed heartbeat worker is never left behind.
                 logger.warning(
                     "draft generation claim heartbeat stopped with an error",
                     exc_info=True,
@@ -5090,8 +4775,6 @@ class AgentLifecycleManager:
                 if draft.get("packages")
                 else []
             )
-            # BYO codegen uses the OWNER's LLM, not the admin-managed system
-            # credential. Owner context is resolved for each interactive call.
             codegen_resolver = None
             if (
                 is_byo
@@ -5115,7 +4798,6 @@ class AgentLifecycleManager:
 
             await append_generation_log("Starting code generation...")
 
-            # Step 1: Generate template files (no LLM needed)
             await self._send_progress(websocket, draft_id, "generating_template",
                                        "Generating agent template files...", GENERATING)
             await append_generation_log("Generating template files...")
@@ -5149,19 +4831,14 @@ class AgentLifecycleManager:
                     agent_id=agent_id,
                 )
 
-            # Step 2: Generate tools via LLM
             await self._send_progress(websocket, draft_id, "generating_tools",
                                        "Generating tool implementations with AI...", GENERATING)
             await append_generation_log("Generating tool implementations...")
 
-            # Inject knowledge context if available
             knowledge_context = ""
             if hasattr(self.orchestrator, 'knowledge_index'):
                 knowledge_context = self.orchestrator.knowledge_index.get_generation_context(description)
 
-            # C-N4 evolutionary archive: condition codegen on past successful
-            # exemplars for a similar capability gap. Flag-gated + fail-open —
-            # OFF / empty archive leaves knowledge_context byte-identical.
             try:
                 from orchestrator import draft_archive
                 if draft_archive.archive_enabled():
@@ -5171,7 +4848,7 @@ class AgentLifecycleManager:
                         fp,
                         owner_user_id=owner_user_id,
                     )
-            except Exception:  # pragma: no cover — conditioning is best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("draft-archive: codegen conditioning skipped", exc_info=True)
 
             tools_code = await self.generator.generate_tools_file(
@@ -5187,7 +4864,6 @@ class AgentLifecycleManager:
 
             all_files = {**template_files, "mcp_tools.py": tools_code}
 
-            # Step 2.5: Syntax validation on ALL generated files
             await self._send_progress(websocket, draft_id, "syntax_check",
                                        "Validating Python syntax...", GENERATING)
             await append_generation_log("Validating syntax of generated files...")
@@ -5206,9 +4882,6 @@ class AgentLifecycleManager:
                                                error_msg, ERROR)
                     return state
 
-            # Step 2.6 (BYO): the bundle must be self-contained — the desktop host
-            # ships no backend package, so a `from shared…` import is a dead agent
-            # on the user's machine. Gate the LLM's file, don't just ask for it.
             if is_byo:
                 bad = self._byo_import_violations(all_files)
                 if bad:
@@ -5220,22 +4893,16 @@ class AgentLifecycleManager:
                                                error_msg, ERROR)
                     return state
 
-            # Step 3: Security analysis
             await self._send_progress(websocket, draft_id, "security_scan",
                                        "Running security analysis...", GENERATING)
             await append_generation_log("Running security analysis on generated code...")
 
             report = self.security.analyze(tools_code, filename=f"{slug}/mcp_tools.py")
 
-            # Pre-execution nefarious-activity gate: HIGH (os.environ access,
-            # globals()/setattr tricks, obfuscation) blocks alongside CRITICAL
-            # — nothing below this line may run code the analyzer flagged.
             if blocks_execution(report):
                 await append_generation_log(
                     f"Security analysis FAILED: {report.recommendation}"
                 )
-                # 077: name the findings — "blocking issues" alone left the
-                # person with nothing to change in their description.
                 blocking = [f for f in report.findings
                             if f.severity in EXECUTION_BLOCKING_SEVERITIES][:3]
                 named = "; ".join(
@@ -5252,10 +4919,6 @@ class AgentLifecycleManager:
                                            ERROR, detail=report.to_dict())
                 return state
 
-            # Step 4: Write server-hosted draft working files to disk. BYO
-            # executable bytes are not written into the shared slug directory;
-            # they remain in memory until the immutable revision publisher
-            # commits the complete, validated bundle below.
             assert_generation_claim()
             await self._send_progress(websocket, draft_id, "writing_files",
                                        "Writing agent files...", GENERATING)
@@ -5265,7 +4928,6 @@ class AgentLifecycleManager:
                 agent_dir = os.path.join(self._agents_dir, slug)
                 os.makedirs(agent_dir, exist_ok=True)
 
-                # Write draft marker — start.py skips directories with .draft
                 with open(
                     os.path.join(agent_dir, ".draft"), "w", encoding="utf-8"
                 ) as marker_file:
@@ -5282,10 +4944,6 @@ class AgentLifecycleManager:
                     with open(filepath, "w", encoding="utf-8") as generated_file:
                         generated_file.write(content)
 
-            # Step 5: Spec validation (with auto-fix retry). The 027 validator
-            # RUNS the generated tools; BYO (user-authored) code is validated
-            # STATICALLY and is never imported, exec'd, or called on this host
-            # (058 G1/SC-002).
             tools_code, validation_report = await self._validate_and_fix(
                 draft_id=draft_id, slug=slug, tools_code=tools_code,
                 agent_name=agent_name, description=description,
@@ -5295,8 +4953,6 @@ class AgentLifecycleManager:
             )
             assert_generation_claim()
 
-            # An auto-fix round could reintroduce a backend import — re-gate the
-            # code we are actually about to hand the host.
             if is_byo:
                 bad = self._byo_import_violations({"mcp_tools.py": tools_code})
                 if bad:
@@ -5308,7 +4964,6 @@ class AgentLifecycleManager:
                                                error_msg, ERROR)
                     return state
 
-            # Step 5.5: Extract required credentials declared by LLM
             required_creds = self._extract_required_credentials(tools_code)
             if required_creds:
                 await append_generation_log(
@@ -5321,9 +4976,6 @@ class AgentLifecycleManager:
                     detail={"required_credentials": required_creds},
                 )
 
-            # Step 6: Finalize and durably publish the exact BYO revision before
-            # reporting generation success. Runtime start/ready/promotion remains
-            # a separate lifecycle transaction owned by AgentRevisionActivator.
             assert_generation_claim()
             update_kwargs = {
                 "security_report": (
@@ -5364,7 +5016,7 @@ class AgentLifecycleManager:
                 if publication_identity is None:
                     raise RuntimeError("publication identity was not derived")
                 service = self.generated_agent_publication_service
-                if service is None:  # pragma: no cover - checked before claim.
+                if service is None:  # pragma: no cover
                     raise RuntimeError(
                         "Plane generated-agent publication service is unavailable"
                     )
@@ -5438,9 +5090,6 @@ class AgentLifecycleManager:
                                            "validation": validation_report.to_dict(),
                                        })
 
-            # Hand the caller the re-opened immutable bundle (mcp_tools.py may
-            # have been auto-fixed since first generation). The manifest is
-            # metadata about Plane's exact immutable executable-file set.
             if is_byo:
                 if finalized is None or published_result is None:
                     raise RuntimeError("immutable BYO publication was not completed")
@@ -5453,9 +5102,6 @@ class AgentLifecycleManager:
             await terminalize_cancelled_claim(cancellation)
             raise
         except GeneratedAgentPublicationRecoveryPendingError:
-            # A durable nonterminal journal row retains the claim. Returning a
-            # generic draft conflict would hide the recovery obligation from
-            # readiness and from the next bounded reconciliation pass.
             raise
         except Exception as e:
             logger.exception("Code generation failed for draft %s: %s", draft_id, e)
@@ -5471,14 +5117,10 @@ class AgentLifecycleManager:
         finally:
             await stop_generation_claim_heartbeat()
 
-    # Start Draft Agent for Testing
-
     def _find_next_port(self) -> int:
-        """Find the next available port for a draft agent."""
         start_port = int(os.environ.get("AGENT_PORT", 8003))
         max_agents = int(os.environ.get("MAX_AGENTS", 10))
 
-        # Collect ports in use by connected agents
         used_ports = set()
         if self.orchestrator:
             for agent_id, url in getattr(self.orchestrator, 'agent_urls', {}).items():
@@ -5488,16 +5130,12 @@ class AgentLifecycleManager:
                 except (ValueError, IndexError):
                     pass
 
-        # Also check ports used by other draft agents
         for draft_id, proc in self._draft_processes.items():
-            if proc.poll() is None:  # still running
+            if proc.poll() is None:
                 draft = self.db.get_draft_agent(draft_id)
                 if draft and draft.get("port"):
                     used_ports.add(draft["port"])
 
-        # Find first available port, starting after the static agents range
-        # Static agents use start_port to start_port + max_agents
-        # Draft agents start after that
         search_start = start_port + max_agents
         for port in range(search_start, search_start + 50):
             if port not in used_ports:
@@ -5507,22 +5145,11 @@ class AgentLifecycleManager:
 
     async def start_draft_agent(self, draft_id: str, websocket=None,
                                 align_scopes: bool = True) -> Dict[str, Any]:
-        """Start a draft agent subprocess for testing.
-
-        ``align_scopes=False`` starts the process WITHOUT rewriting ownership
-        or enabling all scopes — used when restarting an already-live agent
-        (startup relaunch, revision swap), where the testing-mode defaults
-        would clobber the user's saved permissions and reset a public agent to
-        private.
-        """
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
 
-        # 058 SC-002 — a BYO agent's code is the USER'S, and it runs on the
-        # user's desktop host. Refuse structurally rather than trusting every
-        # call site (the boot relaunch nearly Popen'd these): there is no
-        # legitimate path that starts a byo_client draft on this host.
+        # Refused structurally — no legitimate path starts BYO code here
         if draft.get("origin") == BYO_ORIGIN:
             raise ValueError(
                 f"Refusing to start BYO agent draft {draft_id} on the orchestrator "
@@ -5539,7 +5166,6 @@ class AgentLifecycleManager:
         if not os.path.exists(agent_script):
             raise FileNotFoundError(f"Agent script not found: {agent_script}")
 
-        # Stop existing process if any
         await self.stop_draft_agent(draft_id)
 
         port = await asyncio.to_thread(self._find_next_port)
@@ -5549,10 +5175,6 @@ class AgentLifecycleManager:
                                    f"Starting agent on port {port}...", TESTING)
         await asyncio.to_thread(self._append_log, draft_id, f"Starting agent on port {port}...")
 
-        # When enabled, wrap the generated-code child in an OS-level sandbox —
-        # resource limits (fork-time preexec), a temp-scoped filesystem, and a
-        # secret-scrubbed env. Flag-gated + fail-open: off / non-POSIX / any
-        # setup error launches exactly as before.
         sandbox_kwargs: Dict[str, Any] = {}
         try:
             from orchestrator import sandbox as _sandbox
@@ -5578,10 +5200,6 @@ class AgentLifecycleManager:
                 base_env=sandbox_kwargs.get("env"),
             )
         except LetsLifecycleError as exc:
-            # Pre-spawn refusal gets the same UX as a child that died after
-            # spawn: the draft row records the error and the client receives
-            # the ``agent_creation_progress`` error frame.  Still raised so
-            # callers see the fail-closed refusal.
             error_msg = f"Agent runtime refused by LETS before start: {exc.code}"
             logger.error(error_msg)
             await asyncio.to_thread(
@@ -5591,9 +5209,6 @@ class AgentLifecycleManager:
             await asyncio.to_thread(self._append_log, draft_id, f"ERROR: {error_msg}")
             raise
         if lets_env is not None:
-            # LETS hand-off (design §7.9): the child receives its admitted
-            # binding and per-runtime executor identity at spawn.  Without an
-            # active binding the kwargs are exactly what they were above.
             sandbox_kwargs["env"] = lets_env
         try:
             proc = self.process_supervisor.spawn(
@@ -5610,16 +5225,13 @@ class AgentLifecycleManager:
 
         await asyncio.to_thread(self.db.update_draft_agent, draft_id, status=TESTING, port=port)
 
-        # Wait for agent to start up, then actively discover it with the orchestrator
         agent_id = f"{slug.replace('_', '-')}-1"
         agent_url = f"http://localhost:{port}"
         discovered = False
 
         if self.orchestrator:
-            # Retry discovery a few times — the subprocess needs time to bind the port
             for attempt in range(6):
                 await asyncio.sleep(2)
-                # Check if process is still alive
                 if proc.poll() is not None:
                     snapshot = await asyncio.to_thread(proc.wait)
                     stderr_out = b"\n".join(snapshot.stderr.lines).decode(
@@ -5646,28 +5258,17 @@ class AgentLifecycleManager:
         else:
             await asyncio.sleep(2)
 
-        # Set ownership to creator (private by default). Skipped on relaunch
-        # (align_scopes=False) so a user-set public flag is not reset.
         if align_scopes:
             user = await asyncio.to_thread(self.db.get_user, draft["user_id"])
             owner_email = user.get("email", draft["user_id"]) if user else draft["user_id"]
             await asyncio.to_thread(self.db.set_agent_ownership, agent_id, owner_email=owner_email, is_public=False)
 
-        # Draft agents: all scopes ENABLED so the user can test tools.
-        # Scopes get disabled when the agent is approved/moved to live.
         if self.orchestrator and align_scopes:
             await asyncio.to_thread(
                 self.orchestrator.tool_permissions.set_agent_scopes,
                 draft["user_id"], agent_id,
                 {"tools:read": True, "tools:write": True, "tools:search": True, "tools:system": True}
             )
-            # Per-(tool, kind) rows added by the permissions endpoint backfill
-            # take priority over agent_scopes in is_tool_allowed. If the user
-            # opened the permissions modal BEFORE starting the draft (when
-            # scopes default to False), those rows would be False and would
-            # shadow the True scope state we just wrote — leaving the user with
-            # "scopes are enabled" but tools still blocked. Force the per-tool
-            # rows to match the draft's True scope state so both layers agree.
             try:
                 tool_scope_map = await asyncio.to_thread(self.orchestrator.tool_permissions.get_tool_scope_map, agent_id)
                 for tool_name, required_scope in tool_scope_map.items():
@@ -5675,7 +5276,7 @@ class AgentLifecycleManager:
                         self.orchestrator.tool_permissions.set_tool_permission,
                         draft["user_id"], agent_id, tool_name, required_scope, True
                     )
-            except Exception as e:  # pragma: no cover — defensive
+            except Exception as e:  # pragma: no cover
                 logger.warning(f"Per-tool alignment failed for draft={agent_id}: {e}")
 
         if discovered:
@@ -5692,22 +5293,16 @@ class AgentLifecycleManager:
         return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
     async def stop_draft_agent(self, draft_id: str) -> None:
-        """Stop a running draft agent subprocess and unregister from orchestrator."""
-        # Unregister from orchestrator so re-discovery works after refinement
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if draft:
-            # The durable quiesce intent must commit before routing is removed
-            # or the physical process begins termination.
             await self._quiesce_dynamic_runtime(draft)
         if draft and self.orchestrator:
             slug = draft["agent_slug"]
             agent_id = f"{slug.replace('_', '-')}-1"
             port = draft.get("port")
-            # Remove from orchestrator's registries
             self.orchestrator.agents.pop(agent_id, None)
             if port:
                 agent_url = f"http://localhost:{port}"
-                # Clean up agent_urls
                 urls_to_remove = [k for k, v in self.orchestrator.agent_urls.items() if v == agent_url]
                 for k in urls_to_remove:
                     del self.orchestrator.agent_urls[k]
@@ -5725,11 +5320,8 @@ class AgentLifecycleManager:
                 self._draft_processes.pop(draft_id, None)
             logger.info(f"Stopped draft agent process for {draft_id}")
 
-    # Refine Agent
-
     async def refine_agent(self, draft_id: str, user_message: str,
                             websocket=None) -> Dict[str, Any]:
-        """Refine an agent's tools based on user feedback."""
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
@@ -5741,15 +5333,12 @@ class AgentLifecycleManager:
         if not os.path.exists(tools_file):
             raise FileNotFoundError("Agent tools file not found. Generate code first.")
 
-        # Stop running agent (a BYO draft never has one — start_draft_agent
-        # refuses byo_client origin — but the call is a harmless no-op).
         await self.stop_draft_agent(draft_id)
 
         await asyncio.to_thread(self.db.update_draft_agent, draft_id, status=GENERATING)
         await self._send_progress(websocket, draft_id, "refining",
                                    "Refining agent based on your feedback...", GENERATING)
 
-        # Update refinement history
         history = json.loads(draft.get("refinement_history") or "[]")
         history.append({
             "role": "user",
@@ -5758,11 +5347,9 @@ class AgentLifecycleManager:
         })
 
         try:
-            # Read current code
             with open(tools_file, "r", encoding="utf-8") as f:
                 current_code = f.read()
 
-            # Refine via LLM
             await self._send_progress(websocket, draft_id, "generating_tools",
                                        "Generating updated tool implementations...", GENERATING)
 
@@ -5774,7 +5361,6 @@ class AgentLifecycleManager:
                 self_contained=is_byo,
             )
 
-            # Syntax validation
             try:
                 compile(new_code, f"{slug}/mcp_tools.py", "exec")
             except SyntaxError as e:
@@ -5788,13 +5374,11 @@ class AgentLifecycleManager:
                                            error_msg, ERROR)
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-            # Security analysis
             await self._send_progress(websocket, draft_id, "security_scan",
                                        "Running security analysis on updated code...", GENERATING)
 
             report = self.security.analyze(new_code, filename=f"{slug}/mcp_tools.py")
 
-            # Pre-execution gate: HIGH blocks alongside CRITICAL (H4).
             if blocks_execution(report):
                 await asyncio.to_thread(
                     self.db.update_draft_agent,
@@ -5809,14 +5393,9 @@ class AgentLifecycleManager:
                                            ERROR, detail=report.to_dict())
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-            # Write updated code
             with open(tools_file, "w", encoding="utf-8") as f:
                 f.write(new_code)
 
-            # Spec validation on refined code. The 027 validator EXECUTES the
-            # tools, so a BYO draft's (user-authored) code gets the STATIC
-            # validator instead — this entry point is reachable with any draft id
-            # its owner holds, and user code never runs on this host (058 G1).
             if is_byo:
                 validation_report = self.validator.validate_static(new_code, slug)
             else:
@@ -5839,7 +5418,6 @@ class AgentLifecycleManager:
                 "timestamp": int(time.time() * 1000),
             })
 
-            # Re-extract credentials from refined code
             required_creds = self._extract_required_credentials(new_code)
 
             await asyncio.to_thread(
@@ -5877,18 +5455,13 @@ class AgentLifecycleManager:
                                        f"Refinement failed: {e}", ERROR)
             return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-    # Auto-Fix Tool Errors
-
     def _find_draft_by_agent_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Look up a draft record by runtime agent_id (e.g. 'etf-agent-1'), any status."""
-        # agent_id format is "{slug_with_hyphens}-1", reverse to get slug
         if not agent_id.endswith("-1"):
             return None
-        slug = agent_id[:-2].replace('-', '_')  # "etf-agent" -> "etf_agent"
+        slug = agent_id[:-2].replace('-', '_')
         return self.db.get_draft_agent_by_slug(slug)
 
     def _get_draft_by_agent_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Draft lookup gated to states where auto-fix is meaningful."""
         draft = self._find_draft_by_agent_id(agent_id)
         if draft and draft["status"] in (TESTING, GENERATED, LIVE):
             return draft
@@ -5896,15 +5469,10 @@ class AgentLifecycleManager:
 
     async def auto_fix_tool_error(self, agent_id: str, tool_name: str,
                                    error_message: str, websocket=None) -> bool:
-        """Automatically attempt to fix a tool error by refining the generated code.
-
-        Returns True if a fix was attempted, False if this agent isn't a draft.
-        """
         draft = self._get_draft_by_agent_id(agent_id)
         if not draft:
             return False
 
-        # Auto-fix is only allowed for draft agents, not live ones
         if draft["status"] == LIVE:
             logger.info(f"Auto-fix skipped for live agent {agent_id} (tool '{tool_name}')")
             return False
@@ -5918,7 +5486,6 @@ class AgentLifecycleManager:
 
         logger.info(f"Auto-fix triggered for draft {draft_id}: tool '{tool_name}' error: {error_message}")
 
-        # Build a targeted refinement message from the error
         fix_message = (
             f"The tool '{tool_name}' is failing with this error:\n"
             f"  {error_message}\n\n"
@@ -5934,14 +5501,11 @@ class AgentLifecycleManager:
         self._append_log(draft_id, f"Auto-fix triggered for '{tool_name}': {error_message[:200]}")
 
         try:
-            # Stop the running agent
             await self.stop_draft_agent(draft_id)
 
-            # Read current code
             with open(tools_file, "r", encoding="utf-8") as f:
                 current_code = f.read()
 
-            # Refine via LLM
             new_code = await self.generator.refine_tools_file(
                 current_code=current_code,
                 user_message=fix_message,
@@ -5949,7 +5513,6 @@ class AgentLifecycleManager:
                 description=draft["description"],
             )
 
-            # Syntax validation
             try:
                 compile(new_code, f"{slug}/mcp_tools.py", "exec")
             except SyntaxError as e:
@@ -5957,12 +5520,9 @@ class AgentLifecycleManager:
                 await self._send_progress(websocket, draft_id, "auto_fix_failed",
                                            "Auto-fix produced invalid code (syntax error). Manual refinement needed.",
                                            TESTING)
-                # Restart original agent
                 await self.start_draft_agent(draft_id, websocket)
                 return True
 
-            # Security analysis — pre-execution gate: HIGH blocks alongside
-            # CRITICAL (H4).
             report = self.security.analyze(new_code, filename=f"{slug}/mcp_tools.py")
             if blocks_execution(report):
                 logger.error("Auto-fix produced code with blocking security issues")
@@ -5972,11 +5532,9 @@ class AgentLifecycleManager:
                 await self.start_draft_agent(draft_id, websocket)
                 return True
 
-            # Write fixed code
             with open(tools_file, "w", encoding="utf-8") as f:
                 f.write(new_code)
 
-            # Update refinement history
             history = json.loads(draft.get("refinement_history") or "[]")
             history.append({
                 "role": "system",
@@ -5985,7 +5543,6 @@ class AgentLifecycleManager:
             })
             self.db.update_draft_agent(draft_id, refinement_history=json.dumps(history))
 
-            # Restart agent with fixed code
             await self.start_draft_agent(draft_id, websocket)
 
             await self._send_progress(websocket, draft_id, "auto_fix_complete",
@@ -5998,25 +5555,17 @@ class AgentLifecycleManager:
             logger.error(f"Auto-fix failed for draft {draft_id}: {e}")
             await self._send_progress(websocket, draft_id, "auto_fix_failed",
                                        f"Auto-fix failed: {e}", TESTING)
-            # Try to restart the original agent
             try:
                 await self.start_draft_agent(draft_id, websocket)
             except Exception:
                 pass
             return True
 
-    # Approve Agent
-
     async def approve_agent(self, draft_id: str, websocket=None) -> Dict[str, Any]:
-        """Run comprehensive analysis and approve/reject the agent."""
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
 
-        # 058 — a BYO agent does not go live through the server-side approval
-        # flow (it goes live when the owner's host registers it inward), and this
-        # path both exec's the tools in-process and Popens them. Refuse: the draft
-        # id is the user's own, so this entry point is otherwise reachable.
         if draft.get("origin") == BYO_ORIGIN:
             raise ValueError(
                 f"Draft {draft_id} is a BYO agent — it goes live by registering "
@@ -6035,7 +5584,6 @@ class AgentLifecycleManager:
         await asyncio.to_thread(self._append_log, draft_id, "Starting approval analysis...")
 
         try:
-            # Step 1: Full code security analysis
             await self._send_progress(websocket, draft_id, "code_analysis",
                                        "Analyzing generated code...", ANALYZING)
 
@@ -6044,7 +5592,6 @@ class AgentLifecycleManager:
 
             report = self.security.analyze(tools_code, filename=f"{slug}/mcp_tools.py")
 
-            # Step 2: Verify code is syntactically valid and imports work
             await self._send_progress(websocket, draft_id, "syntax_check",
                                        "Verifying code syntax...", ANALYZING)
 
@@ -6061,14 +5608,7 @@ class AgentLifecycleManager:
                                            f"Code has syntax errors: {e}", REJECTED)
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-            # Step 3: Decision based on security findings — BEFORE spec
-            # validation, because the 027 validator EXECUTES the tools
-            # in-process. Flagged code must be refused or parked for admin
-            # review without ever running (H4: the verdict used to be
-            # computed here but enforced only after validate()).
             if report.max_severity == Severity.CRITICAL:
-                # Critical findings are compromise events. Revoke any
-                # previously admitted branch before reporting rejection.
                 await self.stop_draft_agent(draft_id)
                 await self._revoke_dynamic_runtime(
                     draft,
@@ -6098,8 +5638,6 @@ class AgentLifecycleManager:
                 await asyncio.to_thread(self._append_log, draft_id, "Sent to admin review queue (high-severity findings)")
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-            # Step 4: Spec validation (executes the tools; only reached by
-            # code the security gate cleared).
             await self._send_progress(websocket, draft_id, "spec_validation",
                                        "Validating tools against spec...", ANALYZING)
 
@@ -6131,23 +5669,15 @@ class AgentLifecycleManager:
                 return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
             else:
-                # Clean or medium/low only → auto-approve
                 self._remove_draft_marker(slug)
                 agent_id = f"{slug.replace('_', '-')}-1"
 
-                # Ensure agent process is running. Note: start_draft_agent
-                # writes status=TESTING + sets ownership + populates
-                # orchestrator.agents via discover_agent. We call it FIRST so
-                # those side-effects happen, then restore status=LIVE below
-                # (otherwise the TESTING write inside start_draft_agent would
-                # clobber the LIVE flip on the auto-approval path).
+                # Must run first, or the TESTING write clobbers the LIVE restore
                 start_failed = False
                 if draft_id not in self._draft_processes or \
                    self._draft_processes[draft_id].poll() is not None:
                     try:
                         started_state = await self.start_draft_agent(draft_id, websocket)
-                        # start_draft_agent doesn't raise on subprocess crash —
-                        # it writes status=ERROR and returns. Detect that here.
                         if started_state and started_state.get("status") == ERROR:
                             start_failed = True
                             logger.warning(
@@ -6162,10 +5692,6 @@ class AgentLifecycleManager:
                             f"({e}); leaving draft in error state."
                         )
 
-                # If we couldn't bring the agent process up, do NOT promote to
-                # LIVE — that would produce a phantom-live entry the user can't
-                # actually use. Leave the draft in its current (error) state and
-                # surface the failure.
                 if start_failed:
                     await self._send_progress(
                         websocket, draft_id, "error",
@@ -6176,21 +5702,16 @@ class AgentLifecycleManager:
                     await asyncio.to_thread(self._append_log, draft_id, "APPROVE: subprocess failed to start; left in error state")
                     return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-                # Re-assert ownership in case start_draft_agent was skipped
-                # (process already running) — ownership must always exist
-                # for a live agent so it shows up in send_dashboard.
                 user = await asyncio.to_thread(self.db.get_user, draft["user_id"])
                 owner_email = user.get("email", draft["user_id"]) if user else draft["user_id"]
                 await asyncio.to_thread(self.db.set_agent_ownership, agent_id, owner_email=owner_email, is_public=False)
 
-                # Restore LIVE status (guaranteed final write in this branch)
                 await asyncio.to_thread(
                     self.db.update_draft_agent,
                     draft_id, status=LIVE,
                     security_report=json.dumps(report.to_dict()) if report.findings else None,
                 )
 
-                # Live agents: all scopes DISABLED — user must explicitly enable
                 if self.orchestrator:
                     await asyncio.to_thread(
                         self.orchestrator.tool_permissions.set_agent_scopes,
@@ -6207,10 +5728,6 @@ class AgentLifecycleManager:
                     f"agent_id={agent_id} owner={owner_email}"
                 )
 
-                # Broadcast updated dashboard + agent_list to all UI clients
-                # of the owning user so the live agents UI updates without a
-                # manual page reload. Mirrors the per-user broadcast pattern
-                # used elsewhere in orchestrator.py for permission updates.
                 if self.orchestrator:
                     target_user_id = draft["user_id"]
                     for client in list(getattr(self.orchestrator, 'ui_clients', [])):
@@ -6239,11 +5756,8 @@ class AgentLifecycleManager:
                                        f"Approval analysis failed: {e}", ERROR)
             return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
 
-    # Admin Review
-
     async def admin_review(self, draft_id: str, decision: str, admin_user_id: str,
                             notes: str = None, websocket=None) -> Dict[str, Any]:
-        """Admin approves or rejects a draft agent pending review."""
         draft = self.db.get_draft_agent(draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
@@ -6257,7 +5771,6 @@ class AgentLifecycleManager:
                 review_notes=notes or "Approved by admin",
             )
             self._remove_draft_marker(draft["agent_slug"])
-            # Live agents: all scopes DISABLED — user must explicitly enable
             agent_id = f"{draft['agent_slug'].replace('_', '-')}-1"
             if self.orchestrator:
                 self.orchestrator.tool_permissions.set_agent_scopes(
@@ -6266,7 +5779,6 @@ class AgentLifecycleManager:
                 )
             self._append_log(draft_id, f"Admin approved by {admin_user_id}")
 
-            # Start agent if not running
             if draft_id not in self._draft_processes or \
                self._draft_processes[draft_id].poll() is not None:
                 await self.start_draft_agent(draft_id, websocket)
@@ -6287,23 +5799,15 @@ class AgentLifecycleManager:
         else:
             raise ValueError(f"Invalid decision: {decision}. Must be 'approve' or 'reject'.")
 
-    # Delete Draft
-
     async def delete_draft(self, draft_id: str) -> bool:
-        """Delete a draft agent — stops process, removes files, deletes DB record."""
         draft = self.db.get_draft_agent(draft_id)
         if not draft:
             return False
 
-        # Stop process and wait for it to fully terminate
         await self.stop_draft_agent(draft_id)
-        # Enforced deletion aborts before local state is removed unless the
-        # current external authority branch is durably revoked.
         await self._revoke_dynamic_runtime(draft, reason_code="agent_deleted")
-        # Give the OS time to release file handles (Windows is slow to release)
         await asyncio.sleep(0.5)
 
-        # Remove files — retry on Windows where handles may linger
         slug = draft["agent_slug"]
         agent_dir = os.path.join(self._agents_dir, slug)
         if os.path.exists(agent_dir):
@@ -6318,7 +5822,6 @@ class AgentLifecycleManager:
                         await asyncio.sleep(1)
                     else:
                         logger.warning(f"Could not fully remove {agent_dir}: {e}")
-                        # Force-remove individual files then try the directory
                         for root, dirs, files in os.walk(agent_dir, topdown=False):
                             for name in files:
                                 try:
@@ -6335,14 +5838,9 @@ class AgentLifecycleManager:
                         except OSError:
                             logger.warning(f"Directory still locked: {agent_dir}")
 
-        # Delete DB record
         self.db.delete_draft_agent(draft_id)
 
-        # Purge the permission/ownership rows the test flow created for the
-        # draft's runtime agent id. Without this they leak after discard: a
-        # discarded draft's all-scopes-enabled rows persist, so its broken
-        # generated tools keep dispatching in normal chats and shadow
-        # first-party tools.
+        # Without this, a discarded draft's broad scopes outlive it
         runtime_agent_id = slug.replace("_", "-") + "-1"
         self._purge_agent_permission_rows(
             runtime_agent_id,
@@ -6358,8 +5856,6 @@ class AgentLifecycleManager:
         *,
         owner_user_id: str,
     ) -> None:
-        """Remove owner-scoped policy and legacy ownership through Plane."""
-
         try:
             self.draft_store.purge_agent_state(
                 owner_user_id=owner_user_id,
@@ -6374,20 +5870,6 @@ class AgentLifecycleManager:
             )
 
     def reconcile_orphaned_draft_permissions(self, agent_ids=None) -> int:
-        """Boot-time sweep: purge permission rows leaked by drafts discarded
-        before the delete-time purge ran.
-
-        An agent id is an orphaned draft when (a) no ``draft_agents`` row
-        maps to it (approved-live agents keep their row with status
-        ``live``) AND (b) its slug directory is either gone or still carries
-        a ``.draft`` marker (a real bundled agent's directory exists without
-        one). Live first-party agents are protected by (b); nothing else is
-        touched. Returns the number of agent ids purged.
-
-        Args:
-            agent_ids: optional restriction of the candidate set (tests use
-                this to stay scoped); None sweeps every scoped agent id.
-        """
         purged = 0
         try:
             rows = [
@@ -6410,7 +5892,7 @@ class AgentLifecycleManager:
                 agent_dir = os.path.join(self._agents_dir, slug)
                 dir_exists = os.path.isdir(agent_dir)
                 if dir_exists and not os.path.exists(os.path.join(agent_dir, ".draft")):
-                    continue  # real (bundled/approved) agent directory
+                    continue
                 self._purge_agent_permission_rows(
                     agent_id,
                     owner_user_id=str(row["user_id"]),
@@ -6423,21 +5905,6 @@ class AgentLifecycleManager:
         return purged
 
     def reconcile_legacy_directory_ownership(self, agent_ids=None) -> dict:
-        """Boot-time sweep: delete the junk ownership/permission rows that the
-        removed legacy filesystem discovery keyed by agents/ DIRECTORY names.
-
-        Guarded + idempotent + repeat-safe: only an ``agent_id`` that is
-        string-equal to one of :data:`LEGACY_DIRECTORY_AGENT_IDS` is touched
-        (never a pattern, so real ``<slug>-1`` runtime ids are untouched), and
-        a boot that finds nothing writes nothing. All row removal goes through
-        Plane (``PlaneDraftStore.purge_exact_agent_ids``); no SQL lives here.
-        Returns the per-table removal counts (all zero when nothing matched).
-
-        Args:
-            agent_ids: optional restriction of the candidate set (tests use
-                this to stay scoped); it is intersected with the literal
-                allow-list so a caller can never widen the sweep.
-        """
         targets = set(LEGACY_DIRECTORY_AGENT_IDS)
         if agent_ids is not None:
             targets &= {str(a) for a in agent_ids}

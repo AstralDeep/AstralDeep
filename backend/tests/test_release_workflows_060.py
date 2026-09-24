@@ -1,10 +1,7 @@
-"""Contract tests for Spec 060's release-trust workflow set (T103/T119).
-
-The six release workflows asserted here are authored by later waves (T107,
-T119, T120) AGAINST these tests; until they land, each workflow-file test
-fails with a message naming the missing workflow. The policy tests at the
-bottom drive the already-landed ``scripts/validate_release_evidence.py``
-and pass today.
+"""Contract tests for the release-trust workflow set (release-readiness,
+release-trusted-builder, release-windows plus its publisher/controller,
+release-evidence-exception): checkout provenance, permission scoping, and evidence
+policy enforcement.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if not (
     (REPO_ROOT / ".github").is_dir() and (REPO_ROOT / "scripts").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -76,8 +73,6 @@ RELEASE_WORKFLOW_FILES = (
     PUBLISHER,
 )
 
-# Producer jobs inside release-readiness.yml. windows-candidate reuses the
-# feature-068 build-once workflow; the other eight upload evidence-<platform>.
 EVIDENCE_PRODUCER_JOBS = (
     "backend-producer",
     "web-producer",
@@ -106,7 +101,6 @@ PRODUCER_JOBS = (
     "windows-candidate",
 )
 
-# The one action new to this repository; the design doc pins the exact line.
 ATTEST_ACTION = (
     "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1"
 )
@@ -136,8 +130,6 @@ def contract_examples() -> Any:
 
 @pytest.fixture(scope="module")
 def evidence_examples() -> Any:
-    """The sibling validator-test module, reused for its evidence-set builders."""
-
     return _load_module("release_workflows_evidence_examples_060", VALIDATOR_TEST_PATH)
 
 
@@ -177,8 +169,6 @@ def _assert_immediate_exact_component_checkout(
     checkout_name: str = "Check out the exact candidate",
     expected_ref: str = "ref: ${{ inputs.candidate_sha }}",
 ) -> None:
-    """Require an exact recursive checkout followed immediately by verification."""
-
     marker = f"- name: {checkout_name}"
     assert marker in job
     checkout_and_tail = job.partition(marker)[2]
@@ -193,8 +183,6 @@ def _assert_immediate_exact_component_checkout(
 
 
 def _permission_lines(scope: str) -> set[str]:
-    """Every ``<scope-key>: read|write`` grant appearing in the given text."""
-
     return {
         f"{key}: {value}"
         for key, value in re.findall(
@@ -215,26 +203,6 @@ def _write_grants(scope: str) -> set[str]:
 
 
 def _bridge_is_live() -> bool:
-    """True only while release-windows.yml carries the feature-060 bridge.
-
-    cc15b033 (PR #168, 2026-08-07) deliberately swapped the protected bridge for
-    the feature-039 DIRECT tag-push release path, and Windows client v0.4.0
-    shipped on it that day. The bridge-topology tests below describe a workflow
-    that does not currently exist — never-rebuild, decision-verified
-    consumption, zero write authority, candidate-code isolation — and no
-    build-and-publish-in-one-job workflow can satisfy them.
-
-    They are PARKED, not deleted, so restoring the bridge re-arms them unchanged.
-    The predicate keys on the ``bridge-sign`` job id, a structural marker only
-    the bridge has (asserted by the parked identity test itself), rather than an
-    env var or a hand-toggled flag — so it cannot silently stay skipped after a
-    revival.
-
-    Recoverable at: ``git show d3cb9a51:.github/workflows/release-windows.yml``
-    Decision, revival conditions, and the requirements the shipping path does
-    NOT meet: specs/060-runtime-reliability-hardening/verification/
-    release-trust-bootstrap.md
-    """
     return "\n  bridge-sign:\n" in _workflow_text(BRIDGE)
 
 
@@ -246,11 +214,6 @@ bridge_parked = pytest.mark.skipif(
         "reliability-hardening/verification/release-trust-bootstrap.md"
     ),
 )
-
-
-# ---------------------------------------------------------------------------
-# release-readiness.yml
-# ---------------------------------------------------------------------------
 
 
 def test_release_readiness_identity_triggers_and_read_only_top_level() -> None:
@@ -271,14 +234,6 @@ def test_release_readiness_identity_triggers_and_read_only_top_level() -> None:
 
 
 def test_candidate_ci_checks_out_the_exact_source_run_head() -> None:
-    """PR image/coverage artifacts must represent workflow_run.head_sha.
-
-    ``actions/checkout`` otherwise selects GitHub's synthetic pull-request merge
-    ref while the protected caller binds artifacts to the source run's head SHA.
-    Every candidate CI checkout therefore uses one explicit expression that is
-    also correct for the default-branch push event.
-    """
-
     workflow = _workflow_text(CI_WORKFLOW)
     checkout = (
         "uses: actions/checkout@"
@@ -305,8 +260,6 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
         assert job_id in job_ids, f"release-readiness.yml lacks job {job_id}"
 
     stage = _workflow_job(workflow, "stage-deploy")
-    # Credentialed staging is default-branch controlled, reviewer gated, and
-    # runs only on the labeled persistent media host.
     assert "runs-on: [self-hosted, astral-staging]" in stage
     assert "environment: release-readiness-staging" in stage
     assert "ASTRAL_STAGING_ENDPOINT" in stage
@@ -643,15 +596,11 @@ def test_android_workflow_binds_exact_tested_artifact_and_real_staging(
 def test_release_readiness_component_consumers_verify_exact_initialized_gitlinks(
     job_id: str,
 ) -> None:
-    """A component consumer must not execute against an empty gitlink directory."""
-
     workflow = _workflow_text(READINESS)
     _assert_immediate_exact_component_checkout(_workflow_job(workflow, job_id))
 
 
 def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> None:
-    """The replayed Plane-owned migration test must exist inside the container."""
-
     backend = _workflow_job(_workflow_text(READINESS), "backend-producer")
     assert (
         '-v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro"'
@@ -660,8 +609,6 @@ def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> N
 
 
 def test_delegated_component_consumers_verify_exact_initialized_gitlinks() -> None:
-    """Reusable Windows and Apple jobs must enforce the same candidate composition."""
-
     windows = _workflow_job(_workflow_text(WINDOWS_CANDIDATE), "windows-candidate")
     _assert_immediate_exact_component_checkout(
         windows,
@@ -690,7 +637,6 @@ def test_release_readiness_candidate_jobs_never_carry_write_authority() -> None:
     for job_id in ("stage-deploy", *PRODUCER_JOBS, "stage-cleanup"):
         grants = _write_grants(_workflow_job(workflow, job_id))
         assert not grants, f"candidate-facing job {job_id} must stay read-only: {sorted(grants)}"
-    # The two protected trust jobs carry narrowly scoped attestation authority.
     decision = _permission_lines(_workflow_job(workflow, "protected-decision"))
     assert decision == {
         "id-token: write",
@@ -717,10 +663,7 @@ def test_release_readiness_protected_decision_runs_pinned_policy_only() -> None:
     assert '--signer-digest "$RELEASE_TRUSTED_BUILDER_SHA"' in decision
     assert '--cert-identity "$RELEASE_TRUSTED_BUILDER_IDENTITY"' in decision
     assert "release-trusted-builder.yml" in decision
-    # Debt-ledger head is read before AND after policy evaluation.
     assert "release-evidence-debt" in decision
-    # The policy copy is extracted from the pinned builder commit, never the
-    # candidate checkout.
     assert "git archive" in decision
     assert "RELEASE_TRUSTED_BUILDER_SHA" in decision
     assert "vars.RELEASE_TRUSTED_BUILDER_SHA" in workflow
@@ -786,10 +729,6 @@ def test_release_readiness_binds_voice_runtime_to_protected_staging() -> None:
         in publish
     )
 
-    # The exact media identities are obtained before the candidate staging
-    # driver runs and are carried into its trusted stage manifest. Speech and
-    # media credentials are step-scoped to the probe/deploy steps, never the
-    # candidate-facing producer jobs.
     assert "deploy/livekit/livekit.staging.yaml" in stage
     assert "VOICE_SPEECH_BASE_URL" in stage
     assert "VOICE_SPEECH_API_KEY" in stage
@@ -885,8 +824,6 @@ def test_release_readiness_protected_coverage_includes_voice_worker_report() -> 
         "--windows-product-evidence-dir build/060/coverage-inputs/windows"
         in decision
     )
-    # The policy itself remains candidate-independent. A candidate checkout is
-    # present for the diff, but the executable policy bytes have one source.
     policy_step = decision.partition("- name: Extract the pinned protected policy")[2]
     policy_step = policy_step.partition("- name: Run the protected changed-code coverage gate")[0]
     assert 'git archive "$RELEASE_TRUSTED_BUILDER_SHA"' in policy_step
@@ -894,7 +831,6 @@ def test_release_readiness_protected_coverage_includes_voice_worker_report() -> 
 
 
 def _assert_release_policy_archive_inventory(workflow: str) -> None:
-    """Require one pinned archive containing the full verdict/normalizer policy."""
     decision = _workflow_job(workflow, "protected-decision")
     policy_step = decision.partition("- name: Extract the pinned protected policy")[2]
     policy_step = policy_step.partition(
@@ -1069,11 +1005,6 @@ def test_protected_python_launches_cannot_import_candidate_sitecustomize(
     )
 
 
-# ---------------------------------------------------------------------------
-# release-trusted-builder.yml
-# ---------------------------------------------------------------------------
-
-
 def test_release_trusted_builder_is_a_single_attest_job_with_exact_grants() -> None:
     workflow = _workflow_text(TRUSTED_BUILDER)
     head = _workflow_head(workflow)
@@ -1092,8 +1023,6 @@ def test_release_trusted_builder_is_a_single_attest_job_with_exact_grants() -> N
 
     body = _workflow_job(workflow, "attest")
     assert "runs-on: ubuntu-latest" in body
-    # Identities are reconstructed from the SHARED run's API state, never from
-    # producer-uploaded bytes.
     assert "github.run_id" in body
     assert "/jobs" in body
     assert "/artifacts" in body
@@ -1133,11 +1062,6 @@ def test_release_trusted_builder_is_a_single_attest_job_with_exact_grants() -> N
     assert guard.index("GITHUB_WORKFLOW_SHA") < guard.index("Reconstruct producer identities")
 
 
-# ---------------------------------------------------------------------------
-# release-evidence-exception.yml
-# ---------------------------------------------------------------------------
-
-
 def test_release_evidence_exception_registrar_is_environment_gated() -> None:
     workflow = _workflow_text(EXCEPTION)
     head = _workflow_head(workflow)
@@ -1172,11 +1096,8 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
         "id-token: write",
         "attestations: write",
     }
-    # Self-approval is structurally refused: the recorded requester must differ
-    # from the dispatching approver.
     assert "requester_login" in workflow
     assert "github.actor" in workflow
-    # Bounded debt lifetime and create-only append on the protected ledger branch.
     assert "expires_at" in workflow
     assert "release-evidence-debt" in workflow
     assert "debts/" in workflow
@@ -1186,38 +1107,18 @@ def test_release_evidence_exception_registrar_is_environment_gated() -> None:
     assert "trusted_debt_resolution" in workflow
     assert ATTEST_ACTION in workflow
     assert "release-evidence-exception-" in register
-    # Non-waivable checks are enforced in-job, mirroring the validator policy.
     assert "apple_first_login_llm" in workflow
     assert "candidate_staging" in workflow
 
 
-# ---------------------------------------------------------------------------
-# release-windows.yml — the exact-byte-pinned v0.3.0-compatible bridge signer
-# ---------------------------------------------------------------------------
-
-
 def test_release_windows_signing_identity_surface_matches_the_shipped_client() -> None:
-    """The Fulcio SAN the ALREADY-SHIPPED v0.3.0 updater pins must not drift.
-
-    components/AstralProjection/windows-client/astral_client/integrity.py hard-codes the signing workflow
-    path and fails closed, so the workflow FILE PATH, its ``name:``, and the
-    fact that signing runs at a TAG ref are load-bearing for clients already in
-    the field — a drift here bricks updates for every installed client.
-
-    This is the LIVE half of the parked
-    test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority:
-    it survives the bridge/direct split unchanged, and until now nothing
-    asserted the release side of the identity contract at all (only the client
-    side was pinned).
-    """
     workflow = _workflow_text(BRIDGE)
     head = _workflow_head(workflow)
 
     assert BRIDGE.name == "release-windows.yml"
     assert re.search(r"(?m)^name: Release Windows client$", head)
 
-    # Signing must run at the tag ref; that is what makes the SAN end
-    # "@refs/tags/<tag>" rather than "@refs/heads/main".
+    # Must trigger on tag push — branch push would change the cert SAN
     assert re.search(r'(?m)^on:$', head)
     assert re.search(r'(?m)^  push:$', head)
     assert re.search(r'(?m)^    tags: \["v\*"\]$', head)
@@ -1231,7 +1132,6 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
         "--cert-oidc-issuer https://token.actions.githubusercontent.com" in workflow
     )
 
-    # Both halves of the contract must name the same workflow.
     integrity = (
         REPO_ROOT
         / "components"
@@ -1252,7 +1152,6 @@ def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() 
     workflow = _workflow_text(BRIDGE)
     head = _workflow_head(workflow)
 
-    # integrity.py's SAN pins this workflow path AND this name stays stable.
     assert re.search(r"(?m)^name: Release Windows client$", head)
     assert "release-windows-bridge ${{ inputs.tag }}" in head
     assert "readiness-${{ inputs.readiness_run_id }}" in head
@@ -1271,7 +1170,6 @@ def test_release_windows_bridge_keeps_pinned_identity_with_no_write_authority() 
         "attestations: read",
         "id-token: write",
     }
-    # No job anywhere in the bridge may widen that grant.
     assert _permission_lines(workflow) == {
         "contents: read",
         "actions: read",
@@ -1291,8 +1189,6 @@ def test_release_windows_bridge_isolates_candidate_checkout_from_signer_runtime(
     assert "candidate-source/.github/workflows/release-windows.yml" in workflow
     assert "working-directory: candidate-source" not in workflow
     assert re.search(r"(?m)^\s*(?:cd|pushd)\s+candidate-source(?:/|\s|$)", workflow) is None
-    # Every repository-authored Python command is isolated from environment,
-    # user-site, and current-directory import injection.
     assert re.search(r"(?m)^\s*python3\s+(?!-I(?:\s|$))", workflow) is None
 
 
@@ -1301,12 +1197,10 @@ def test_release_windows_bridge_never_rebuilds_and_never_mutates_releases() -> N
     workflow = _workflow_text(BRIDGE)
     lower = workflow.lower()
 
-    # No rebuild: the bridge signs the exact archived build-once bytes.
     assert "pyinstaller" not in lower
     assert "astraldeep.spec" not in lower
     assert re.search(r"pip install[^\n]*requirements", workflow) is None
     assert "- name: Build the exe" not in workflow
-    # Consumption is by exact artifact id recorded in the trusted decision.
     assert "trusted-release-decision" in workflow
     assert "RELEASE_TRUSTED_BUILDER_SHA" in workflow
     assert '[[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]' in workflow
@@ -1359,22 +1253,15 @@ def test_release_windows_bridge_never_rebuilds_and_never_mutates_releases() -> N
     assert re.search(r"gh api[^\n]*artifacts", workflow)
     assert "/zip" in workflow
     assert "executable_sha256" in workflow
-    # Detached sigstore signature under the legacy v0.3.0 identity policy.
     assert "sigstore" in lower
     assert "cosign.bundle" in workflow
     assert "token.actions.githubusercontent.com" in workflow
     assert "rebuild_performed" in workflow
     assert "executable_bytes_modified" in workflow
-    # Output is ONLY a run artifact; the bridge never touches releases.
     assert "windows-bridge-signing-" in workflow
     assert "softprops" not in lower
     assert "gh release" not in workflow
     assert "/releases" not in workflow
-
-
-# ---------------------------------------------------------------------------
-# release-windows-publisher-controller.yml
-# ---------------------------------------------------------------------------
 
 
 def test_release_windows_publisher_controller_verifies_decision_read_only() -> None:
@@ -1439,11 +1326,6 @@ def test_release_windows_publisher_controller_verifies_decision_read_only() -> N
     assert "attestations: read" in publish
 
 
-# ---------------------------------------------------------------------------
-# release-windows-publisher.yml — the ONLY write authority in the release path
-# ---------------------------------------------------------------------------
-
-
 def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> None:
     workflow = _workflow_text(PUBLISHER)
     head = _workflow_head(workflow)
@@ -1473,7 +1355,6 @@ def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> N
         "attestations: read",
         "deployments: read",
     }
-    # Built-in short-lived token only — no App/installation/broker credential.
     secret_refs = set(re.findall(r"secrets\.([A-Za-z_0-9]+)", body))
     assert secret_refs <= {"GITHUB_TOKEN"}, f"unexpected secrets: {sorted(secret_refs)}"
     assert "GH_TOKEN: ${{ github.token }}" in body
@@ -1483,7 +1364,6 @@ def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> N
     assert 'test "$GITHUB_WORKFLOW_SHA" = "$RELEASE_TRUSTED_BUILDER_SHA"' in body
     assert "publisher mode must be exactly disposable or official" in body
 
-    # Defense in depth: the publisher re-verifies the decision itself.
     assert "gh attestation verify" in body
     assert "RELEASE_TRUSTED_BUILDER_SHA" in body
     assert '[[ "$RELEASE_TRUSTED_BUILDER_SHA" =~ ^[0-9a-f]{40}$ ]]' in body
@@ -1492,12 +1372,9 @@ def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> N
         in body
     )
     assert '--signer-digest "$RELEASE_TRUSTED_BUILDER_SHA"' in body
-    # Create-only tag at the decision SHA via the git data API.
     assert re.search(r"git/refs", body)
-    # The signed bytes come from the bridge run artifact, never a rebuild.
     assert "windows-bridge-signing-" in body
     assert "pyinstaller" not in body.lower()
-    # Exactly the three assets, uploaded create-only to a DRAFT release.
     for asset in ("AstralDeep.exe", "SHA256SUMS", "cosign.bundle"):
         assert asset in body, f"missing draft asset {asset}"
     assert re.search(r"(?m)\S+  AstralDeep\.exe", body), "SHA256SUMS line format"
@@ -1505,16 +1382,12 @@ def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> N
     assert "prerelease" in body
     assert "--clobber" not in body
     assert "softprops" not in workflow.lower()
-    # Re-download all three by their numeric asset database ids.
     assert "assets/" in body
-    # /releases/latest confirmation with the shipped updater parser runs ONLY
-    # in official mode; disposable mode force-cleans and never publishes.
     assert "releases/latest" in body
     assert re.search(r"mode\s*==\s*'official'", body)
     assert re.search(r"mode\s*==\s*'disposable'", body)
     assert "always()" in body
     assert "delete" in body.lower()
-    # Draft provenance record with the schema-pinned publisher constants.
     assert "windows_draft_verification_provenance" in body
     assert "windows-draft-provenance" in body
     assert "make_latest_on_publish" in body
@@ -1525,8 +1398,6 @@ def test_release_windows_publisher_publishes_draft_only_with_exact_assets() -> N
 def test_release_windows_publisher_safely_binds_evidence_and_bridge_archives() -> None:
     body = _workflow_job(_workflow_text(PUBLISHER), "publish")
 
-    # No archive is expanded by the platform unzip utility before its trusted
-    # member or exact producer identity has been checked.
     assert "unzip" not in body.lower()
     assert "RELEASE_ARTIFACT_EXTRACTOR" in body
 
@@ -1646,17 +1517,12 @@ def test_release_windows_publisher_rechecks_decision_before_each_mutation() -> N
     )
 
 
-# ---------------------------------------------------------------------------
-# Supply-chain pinning across the whole release workflow set
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("path", RELEASE_WORKFLOW_FILES, ids=lambda p: p.name)
 def test_every_third_party_action_is_sha_pinned_with_version_comment(path: Path) -> None:
     workflow = _workflow_text(path)
     for value in re.findall(r"(?m)^\s*(?:-\s+)?uses:\s*(.+?)\s*$", workflow):
         if value.startswith("./"):
-            continue  # Local reusable workflows are pinned by the repo commit.
+            continue
         assert "app-token" not in value, (
             f"{path.name} must not mint App/installation tokens: {value}"
         )
@@ -1664,11 +1530,6 @@ def test_every_third_party_action_is_sha_pinned_with_version_comment(path: Path)
             r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}\s+# v\d+(?:\.\d+)*",
             value,
         ), f"{path.name} action is not SHA-pinned with a version comment: {value}"
-
-
-# ---------------------------------------------------------------------------
-# ci.yml — caller job and release-tooling test coverage
-# ---------------------------------------------------------------------------
 
 
 def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
@@ -1831,8 +1692,6 @@ def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
                 f"{path.name}:{job_id} can run from a candidate dispatch ref"
             )
 
-    # The readiness matrix is reachable only through the default-branch
-    # workflow_run caller; it deliberately exposes no manual dispatch surface.
     assert "workflow_dispatch:" not in _workflow_head(_workflow_text(READINESS))
 
 
@@ -1852,19 +1711,12 @@ def test_mac_store_resource_repair_uses_exported_package_before_upload() -> None
     assert "--deep" not in repair_body
 
 
-# ---------------------------------------------------------------------------
-# Policy: local parsing is diagnostic-only; CI never trusts a local verdict
-# ---------------------------------------------------------------------------
-
-
 def _diagnostic_argv(
     validator: Any,
     evidence_set: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> list[str]:
-    """Install the same seams the sibling validator test uses for main()."""
-
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
     for name in ("provenance", "approvals", "resolutions", "attestations"):
@@ -2003,7 +1855,6 @@ def test_substituted_local_verdict_cannot_mint_a_trusted_decision(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     evidence_set = evidence_examples._passing_set(contract_examples)
-    # The substituted local verdict: the pushed set already claims "passed".
     assert evidence_set["decision"] == "passed"
     argv = _diagnostic_argv(validator, evidence_set, monkeypatch, tmp_path)
 
@@ -2012,8 +1863,6 @@ def test_substituted_local_verdict_cannot_mint_a_trusted_decision(
     assert diagnostic["decision"] == "diagnostic_policy_passed"
     assert diagnostic["protected_release_authorization"] is False
 
-    # Asking the same CLI for a trusted decision outside the protected job is
-    # refused fail-closed and writes nothing.
     decision_path = tmp_path / "protected-decision" / "trusted-release-decision.json"
     protected_argv = [
         *argv,
@@ -2031,8 +1880,6 @@ def test_substituted_local_verdict_cannot_mint_a_trusted_decision(
     assert "prefetched product artifact" in capsys.readouterr().err
     assert not decision_path.exists()
 
-    # A same-name check in CI but from any job other than protected-decision is
-    # equally refused.
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("GITHUB_JOB", "release-tooling-tests")
     assert validator.main(protected_argv) == 2
@@ -2139,7 +1986,6 @@ def test_windows_draft_provenance_binds_identical_digests_and_rejects_rebuild(
         document, trusted_decision=decision, now=now, resolver=resolver
     )
 
-    # A draft asset whose digest differs from the matrix-tested EXE is a rebuild.
     mutated = copy.deepcopy(document)
     mutated["draft_executable"]["sha256"] = "0" * 64
     with pytest.raises(validator.PolicyError, match="rebuilt or modified"):
@@ -2147,7 +1993,6 @@ def test_windows_draft_provenance_binds_identical_digests_and_rejects_rebuild(
             mutated, trusted_decision=decision, now=now, resolver=resolver
         )
 
-    # The publisher must record the SAME bridge workflow byte hash the signer saw.
     moved_bridge = copy.deepcopy(document)
     moved_bridge["signing"]["bridge_workflow_sha256"] = "e" * 64
     with pytest.raises(validator.PolicyError, match="bridge bytes differ"):
@@ -2155,7 +2000,6 @@ def test_windows_draft_provenance_binds_identical_digests_and_rejects_rebuild(
             moved_bridge, trusted_decision=decision, now=now, resolver=resolver
         )
 
-    # A re-downloaded SHA256SUMS that does not bind the EXE bytes is refused.
     substituted = copy.deepcopy(document)
     substituted["draft_checksum_manifest"] = {
         "immutable_reference": "gh://AstralDeep/AstralDeep/releases/10/assets/14",
@@ -2166,8 +2010,6 @@ def test_windows_draft_provenance_binds_identical_digests_and_rejects_rebuild(
             substituted, trusted_decision=decision, now=now, resolver=resolver
         )
 
-    # The signing record's schema consts pin rebuild_performed and
-    # executable_bytes_modified to false — a true value never validates.
     schema = validator.load_json_document(CONTRACT_ROOT / "release-evidence.schema.json")
     signing_schema = schema["$defs"]["windows_draft_verification_provenance"][
         "properties"
@@ -2265,7 +2107,6 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
 
 
 def _assert_apple_normalizer_python_is_protected(text: str) -> None:
-    """All Python entry points use isolated pinned policy or the reviewed inline code."""
     entries = re.findall(r"\bpython(?:3(?:\.\d+)?)?\s+(\S+)\s+(\S+)", text)
     assert entries
     for isolated, entry in entries:
@@ -2366,7 +2207,6 @@ def _assert_ios_native_domains_are_protected_and_reconstructed(text):
         in text
     )
     assert '--repo "$PWD" --platform ios --output "$raw" --report "$report"' in text
-    # Legacy platforms have neither an iOS witness nor a new tail acceptance.
     assert (
         'else\n          python3 -I protected-policy/scripts/export_xccov_line_coverage.py --repo "$PWD"'
         in text

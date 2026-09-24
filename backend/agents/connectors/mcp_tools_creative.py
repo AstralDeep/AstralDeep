@@ -1,13 +1,8 @@
+"""Creative/design connector tools: Adobe CC IMS token validation and Canva Connect API
+calls when credentials are configured, plus no-network Artifacts/Graphs/Design spec
+generators; Blender is a stub pending a public cloud API.
 """
-Creative/Design tools for the Claude Connectors Agent — US-22.
 
-- Blender: deferred — no public cloud API; the stub points operators at the
-  self-hosted Blender-server pattern.
-- Adobe CC: IMS server-to-server token validation against the real Adobe IMS
-  endpoint when ADOBE_CLIENT_ID/ADOBE_CLIENT_SECRET are configured.
-- Canva: real Canva Connect API call when CANVA_API_KEY is configured.
-- Artifacts / Graphs / Design: functional spec generators, no external calls.
-"""
 import logging
 from typing import Dict, Any
 
@@ -23,10 +18,6 @@ from agents.connectors._external import verdict_for_exception, user_facing_error
 
 logger = logging.getLogger("Connectors.Creative")
 
-
-# ---------------------------------------------------------------------------
-# Blender — deferred (no public cloud API)
-# ---------------------------------------------------------------------------
 
 _BLENDER_METADATA = {
     "name": "blender_tool",
@@ -69,10 +60,6 @@ def handle_blender(args: Dict[str, Any]) -> Dict[str, Any]:
     ])
 
 
-# ---------------------------------------------------------------------------
-# Adobe CC — IMS server-to-server token validation
-# ---------------------------------------------------------------------------
-
 _ADOBE_IMS_TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3"
 
 _ADOBE_METADATA = {
@@ -92,14 +79,8 @@ _ADOBE_METADATA = {
 }
 
 
+# Uses requests directly for IMS's form auth; SSRF check still applies
 def _exchange_adobe_ims_token(client_id: str, client_secret: str) -> requests.Response:
-    """Exchange Adobe IMS server-to-server credentials for a bearer token.
-
-    Uses ``requests`` directly (not ``shared.external_http``) because that
-    helper assumes a bearer-token request — IMS instead expects a form body
-    with no Authorization header. SSRF policy is still enforced via
-    ``validate_egress_url``.
-    """
     validate_egress_url(_ADOBE_IMS_TOKEN_URL)
     return requests.post(
         _ADOBE_IMS_TOKEN_URL,
@@ -222,10 +203,6 @@ def handle_adobe_credentials_check(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"credential_test": "unexpected", "detail": f"HTTP {resp.status_code}"}
 
 
-# ---------------------------------------------------------------------------
-# Canva — Connect API
-# ---------------------------------------------------------------------------
-
 _CANVA_BASE = "https://api.canva.com/rest/v1"
 
 _CANVA_METADATA = {
@@ -336,17 +313,7 @@ def handle_canva_credentials_check(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"credential_test": "unexpected", "detail": f"HTTP {resp.status_code}"}
 
 
-# ---------------------------------------------------------------------------
-# Interactive Artifacts / Dashboards
-# ---------------------------------------------------------------------------
-
 def _ui(components) -> Dict[str, Any]:
-    """create_ui_response for a mix of primitives and plain dicts.
-
-    Plain dicts let these tools emit primitive types newer than the
-    container's installed astralprims (e.g. hero/timeline/keyvalue from
-    0.2.0) — the renderer consumes dicts either way.
-    """
     return {
         "_ui_components": [c if isinstance(c, dict) else c.to_dict() for c in components],
         "_data": None,
@@ -357,12 +324,10 @@ _SAMPLE_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 
 def _sample_series(seed: int, n: int = 6) -> list:
-    """Deterministic, pleasant-looking placeholder series."""
     return [((seed * 7 + k * 5) % 17) + 4 for k in range(n)]
 
 
 def _artifact_widget(section: Dict[str, Any], i: int) -> Dict[str, Any]:
-    """One real, immediately-renderable widget per dashboard section."""
     wtype = section.get("widget_type", "text")
     title = section.get("title", f"Widget {i + 1}")
     source = section.get("data_source")
@@ -403,7 +368,6 @@ def _artifact_widget(section: Dict[str, Any], i: int) -> Dict[str, Any]:
         return {"type": "keyvalue", "title": f"{title} (map preview)",
                 "items": items, "columns": 2}
 
-    # "text" and anything unrecognized
     return {"type": "card", "title": title, "content": [
         {"type": "text", "variant": "markdown",
          "content": section.get("description") or subtitle},
@@ -473,10 +437,6 @@ def handle_artifacts(args: Dict[str, Any]) -> Dict[str, Any]:
     return _ui(components)
 
 
-# ---------------------------------------------------------------------------
-# Visual Graph Networks
-# ---------------------------------------------------------------------------
-
 _GRAPHS_METADATA = {
     "name": "visual_graphs",
     "description": "Generate Obsidian-style visual graph network data from entities and relationships.",
@@ -516,10 +476,6 @@ def handle_graphs(args: Dict[str, Any]) -> Dict[str, Any]:
     return create_ui_response(components)
 
 
-# ---------------------------------------------------------------------------
-# Design
-# ---------------------------------------------------------------------------
-
 _DESIGN_METADATA = {
     "name": "claude_design",
     "description": "UI/UX design suggestions. Get design recommendations for layout, color, typography.",
@@ -552,7 +508,6 @@ def handle_design(args: Dict[str, Any]) -> Dict[str, Any]:
         {"type": "hero", "title": "Design recommendations",
          "eyebrow": context, "subtitle": f"Aesthetic direction: {style_key}",
          "variant": "subtle", "badges": [style_key, context]},
-        # Equal slices colored by the palette itself — a real swatch wheel.
         {"type": "pie_chart", "title": f"Color palette — {style_key}",
          "labels": list(palette), "data": [1] * len(palette), "colors": list(palette)},
         {"type": "keyvalue", "title": "Foundations", "columns": 3, "items": [
@@ -567,10 +522,6 @@ def handle_design(args: Dict[str, Any]) -> Dict[str, Any]:
     ]
     return _ui(components)
 
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 CREATIVE_TOOL_REGISTRY = {
     "blender_tool": {"function": handle_blender, **_BLENDER_METADATA},

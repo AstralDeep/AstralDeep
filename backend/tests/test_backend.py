@@ -1,6 +1,8 @@
+"""Tests for the core backend: protocol message serialization, astralprims primitives,
+MCP tool dispatch and error classification, Orchestrator's retry wrapper, and mocked
+LLM tool routing.
 """
-Backend Unit Tests — Protocol, Primitives, Tools, and Orchestrator.
-"""
+
 import os
 import sys
 import asyncio
@@ -10,12 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-# =============================================================================
-# PROTOCOL TESTS
-# =============================================================================
 class TestProtocolMessages:
-    """Tests for protocol message types and serialization."""
-
     def test_mcp_request_structure(self):
         from shared.protocol import MCPRequest
         req = MCPRequest(
@@ -105,12 +102,7 @@ class TestProtocolMessages:
         assert isinstance(render, UIRender)
 
 
-# =============================================================================
-# PRIMITIVES TESTS
-# =============================================================================
 class TestPrimitives:
-    """Tests for UI Primitives serialization."""
-
     def test_text_serialization(self):
         from astralprims import Text
         t = Text(content="Hello", variant="h1", id="t1")
@@ -195,18 +187,13 @@ class TestPrimitives:
         assert c.content == "Hi"
 
 
-# =============================================================================
-# TOOLS TESTS
-# =============================================================================
 class TestMCPTools:
-    """Tests for MCP tool functions."""
-
     def test_search_patients_all(self):
         from agents.medical.mcp_tools import search_patients
         result = search_patients()
         assert "_ui_components" in result
         assert "_data" in result
-        assert result["_data"]["total"] == 10  # All mock patients
+        assert result["_data"]["total"] == 10
 
     def test_search_patients_age_filter(self):
         from agents.medical.mcp_tools import search_patients
@@ -219,7 +206,6 @@ class TestMCPTools:
         from agents.medical.mcp_tools import search_patients
         result = search_patients(min_age=200)
         assert "_ui_components" in result
-        # Should contain an alert
         comp = result["_ui_components"][0]
         assert comp["type"] == "alert"
 
@@ -284,12 +270,7 @@ class TestMCPTools:
             assert "input_schema" in TOOL_REGISTRY[name]
 
 
-# =============================================================================
-# MCP SERVER TESTS
-# =============================================================================
 class TestMCPServer:
-    """Tests for MCP Server dispatch."""
-
     def test_tools_list(self):
         from agents.general.mcp_server import MCPServer
         from shared.protocol import MCPRequest
@@ -297,12 +278,9 @@ class TestMCPServer:
         req = MCPRequest(request_id="r1", method="tools/list", params={})
         resp = server.process_request(req)
         assert resp.result is not None
-        # Registry grows over time as new tools are added; assert the
-        # expected core tools are present rather than a fixed count.
         names = {t["name"] for t in resp.result["tools"]}
         for required in {
             "generate_dynamic_chart", "get_system_status",
-            # File-upload tools (feature 002-file-uploads)
             "read_document", "read_spreadsheet", "read_presentation",
             "read_text", "read_image", "list_attachments",
         }:
@@ -347,20 +325,12 @@ class TestMCPServer:
         assert resp.error.get("retryable") is False
 
 
-# =============================================================================
-# MCP SERVER ERROR CLASSIFICATION TESTS
-# =============================================================================
 class TestMCPServerErrorClassification:
-    """Tests for MCP server error classification (retryable vs non-retryable)."""
-
     def test_retryable_connection_error(self):
-        """ConnectionError should be classified as retryable."""
         from agents.general.mcp_server import MCPServer
         from shared.protocol import MCPRequest
         server = MCPServer()
-        # Register a mock tool that raises ConnectionError.
-        # server.tools IS the module-level TOOL_REGISTRY — pop the key after,
-        # or the pollution fails test_no_behavior_change's registry guard.
+        # server.tools is the global TOOL_REGISTRY; must pop after
         server.tools["failing_tool"] = {
             "function": lambda: (_ for _ in ()).throw(ConnectionError("Connection refused")),
             "description": "A tool that fails with ConnectionError",
@@ -376,7 +346,6 @@ class TestMCPServerErrorClassification:
             server.tools.pop("failing_tool", None)
 
     def test_non_retryable_type_error(self):
-        """TypeError should be classified as non-retryable."""
         from agents.general.mcp_server import MCPServer
         from shared.protocol import MCPRequest
         server = MCPServer()
@@ -395,12 +364,10 @@ class TestMCPServerErrorClassification:
             server.tools.pop("bad_args_tool", None)
 
     def test_tool_alert_error_detection(self):
-        """Tool returning Alert with variant='error' should be detected as an error."""
         from agents.general.mcp_server import MCPServer
         from shared.protocol import MCPRequest
         from astralprims import Alert, create_ui_response
         server = MCPServer()
-        # Register a tool that returns an error alert (like Wikipedia does on failure)
         server.tools["alert_tool"] = {
             "function": lambda: create_ui_response([
                 Alert(message="Something went wrong", variant="error", title="Error")
@@ -419,32 +386,20 @@ class TestMCPServerErrorClassification:
             server.tools.pop("alert_tool", None)
 
     def test_classify_error_static_method(self):
-        """Test the _classify_error static method directly."""
         from agents.general.mcp_server import MCPServer
         assert MCPServer._classify_error(ConnectionError()) is True
         assert MCPServer._classify_error(TimeoutError()) is True
         assert MCPServer._classify_error(TypeError()) is False
         assert MCPServer._classify_error(KeyError()) is False
         assert MCPServer._classify_error(ValueError()) is False
-        # Unknown errors default to retryable
         assert MCPServer._classify_error(RuntimeError()) is True
 
 
-# =============================================================================
-# ORCHESTRATOR RETRY TESTS
-# =============================================================================
 class TestOrchestratorRetry:
-    """Tests for the orchestrator retry wrapper."""
-
     @pytest.fixture
     def orchestrator(self):
-        """Create a minimal orchestrator for retry testing."""
         from orchestrator.orchestrator import Orchestrator
 
-        # The retry wrapper is a unit seam: constructing the full application
-        # graph here binds process-global Plane consumers that these tests do
-        # not exercise. Keep the fake exact to the state this method reads so
-        # repeated cases cannot leak one test's runtime binding into the next.
         orch = Orchestrator.__new__(Orchestrator)
         orch.MAX_RETRIES = 3
         orch.RETRY_BACKOFF = (0.001, 0.001, 0.001)
@@ -453,7 +408,6 @@ class TestOrchestratorRetry:
 
     @pytest.mark.asyncio
     async def test_retry_success_on_second_attempt(self, orchestrator):
-        """Tool succeeds on second attempt after first failure."""
         from shared.protocol import MCPResponse
 
         call_count = 0
@@ -478,7 +432,6 @@ class TestOrchestratorRetry:
 
     @pytest.mark.asyncio
     async def test_retry_exhausted(self, orchestrator):
-        """All 3 attempts fail — returns last error."""
         from shared.protocol import MCPResponse
 
         call_count = 0
@@ -500,7 +453,6 @@ class TestOrchestratorRetry:
 
     @pytest.mark.asyncio
     async def test_non_retryable_stops_immediately(self, orchestrator):
-        """Non-retryable error stops after first attempt."""
         from shared.protocol import MCPResponse
 
         call_count = 0
@@ -519,7 +471,6 @@ class TestOrchestratorRetry:
 
     @pytest.mark.asyncio
     async def test_retry_sends_status_updates(self, orchestrator):
-        """UI should receive 'retrying' status messages during retries."""
         from shared.protocol import MCPResponse
 
         call_count = 0
@@ -534,30 +485,22 @@ class TestOrchestratorRetry:
 
         orchestrator.execute_tool_and_wait = mock_execute
         ws = AsyncMock()
-        # _safe_send checks for send_text (FastAPI WebSocket) first
         ws.send_text = AsyncMock()
 
         result = await orchestrator._execute_with_retry(ws, "agent-1", "test_tool", {},
                                                          max_retries=3)
         assert result.error is None
 
-        # Check that ws.send_text was called with retrying status
         status_calls = [
             call for call in ws.send_text.call_args_list
             if '"retrying"' in str(call)
         ]
-        assert len(status_calls) == 2  # Two retries before success
+        assert len(status_calls) == 2
 
 
-# =============================================================================
-# WIKIPEDIA HTTP ERROR TEST
-# =============================================================================
 class TestWikipediaRobustness:
-    """Tests for Wikipedia tool HTTP error handling."""
-
     @patch('agents.general.mcp_tools.requests.get')
     def test_wikipedia_http_500(self, mock_get):
-        """HTTP 500 error should raise an exception."""
         from agents.general.mcp_tools import search_wikipedia
         mock_resp = MagicMock()
         mock_resp.status_code = 500
@@ -572,7 +515,6 @@ class TestWikipediaRobustness:
 
     @patch('agents.general.mcp_tools.requests.get')
     def test_wikipedia_success(self, mock_get):
-        """Successful Wikipedia response should return proper UI components."""
         from agents.general.mcp_tools import search_wikipedia
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -592,26 +534,17 @@ class TestWikipediaRobustness:
         assert result["_data"]["results"][0]["title"] == "Test Article"
 
 
-# =============================================================================
-# LLM ROUTING TESTS (mocked)
-# =============================================================================
 class TestLLMRouting:
-    """Tests for LLM-powered tool routing with mocked OpenAI client."""
-
     @pytest.fixture
     def orchestrator(self):
-        """Create an orchestrator with mocked LLM client."""
         from orchestrator.orchestrator import Orchestrator
 
-        # These tests cover only tool metadata and pending-request bookkeeping;
-        # keep them independent of the application-scoped Plane runtime.
         orch = Orchestrator.__new__(Orchestrator)
         orch.agent_cards = {}
         orch.agent_capabilities = {}
         orch.agents = {}
         orch.pending_requests = {}
 
-        # Register a fake agent with capabilities
         from shared.protocol import AgentCard, AgentSkill
         card = AgentCard(
             name="Test Agent", description="Test", agent_id="test-1",
@@ -629,12 +562,10 @@ class TestLLMRouting:
             {"name": "graph_patient_data", "description": "Graph patient data",
              "input_schema": {"type": "object", "properties": {"metric": {"type": "string"}}}},
         ]
-        # Register connected agent mock (required for handle_chat_message tool building)
         orch.agents["test-1"] = MagicMock()
         return orch
 
     def test_tool_definitions_built_correctly(self, orchestrator):
-        """Verify the orchestrator builds correct OpenAI tool definitions."""
         tools_desc = []
         for agent_id, card in orchestrator.agent_cards.items():
             for skill in card.skills:
@@ -651,7 +582,6 @@ class TestLLMRouting:
         assert tools_desc[1]["function"]["name"] == "graph_patient_data"
 
     def test_pending_request_lifecycle(self, orchestrator):
-        """Test that pending requests can be created and resolved."""
         loop = asyncio.new_event_loop()
         try:
             future = loop.create_future()

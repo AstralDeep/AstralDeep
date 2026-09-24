@@ -1,3 +1,6 @@
+# PowerShell preflight for the migration: checks exact repo root, branch, and clean index, and
+# rejects reparse points beneath the working tree before a migration commit.
+
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -116,8 +119,7 @@ function Assert-NoReparsePoints {
         throw "repository root is a reparse point: $Root"
     }
 
-    # Get-ChildItem does not follow directory links unless -FollowSymlink is
-    # requested. It therefore inventories the boundary without traversing it.
+    # Get-ChildItem won't follow links without -FollowSymlink
     $reparsePoints = @(
         Get-ChildItem -LiteralPath $Root -Force -Recurse -ErrorAction Stop |
             Where-Object {

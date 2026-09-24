@@ -1,16 +1,8 @@
-"""Deterministic pre-action policy engine.
-
-One ordered, fail-closed rule chain evaluated before a tool runs. Each rule is
-DATA — a ``when`` predicate over the call context (tool, agent, roles, args) and
-an ``effect`` (allow / deny / confirm / rewrite) — so an operator extends policy
-without code (``POLICY_RULES`` env JSON). The first matching terminal rule
-(deny/confirm/allow) wins; rewrite rules accumulate (e.g. redact a secret arg)
-and evaluation continues; with no match the default is allow, so the engine is a
-strictly ADDITIVE gate on top of the existing PHI/scope checks.
-
-Pure + deterministic; a malformed rule never blocks (it just doesn't match), so
-a bad config degrades to today's behavior.
+"""Deterministic pre-action policy engine: evaluates ordered, data-driven rules
+(POLICY_RULES) against a tool call's context and returns allow/deny/confirm/rewrite.
+Consulted by orchestrator.py's gate stack.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -24,8 +16,6 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("orchestrator.policy")
 
 ALLOW, DENY, CONFIRM, REWRITE = "allow", "deny", "confirm", "rewrite"
-#: A terminal effect requiring the call to carry a valid single-use transaction
-#: token (verified+consumed at dispatch by ``transaction_token``).
 REQUIRE_TOKEN = "require_token"
 _EFFECTS = (ALLOW, DENY, CONFIRM, REWRITE, REQUIRE_TOKEN)
 
@@ -35,13 +25,10 @@ class PolicyDecision:
     effect: str = ALLOW
     reason: str = ""
     rule_id: str = ""
-    args: Optional[Dict[str, Any]] = None  # rewritten args when changed, else None
+    args: Optional[Dict[str, Any]] = None
 
 
 def policy_enabled() -> bool:
-    """FF_POLICY_ENGINE feature flag. Off means the engine is not consulted
-    (today's behavior); on evaluates ``POLICY_RULES`` before each tool call.
-    Additive — with no rules every call is allowed."""
     return os.getenv("FF_POLICY_ENGINE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -50,8 +37,6 @@ def _glob(pattern: Any, value: Any) -> bool:
 
 
 def _matches(when: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
-    """Declarative predicate (AND over the keys present). Unknown keys are
-    ignored so forward-compatible configs don't crash."""
     if not isinstance(when, dict):
         return False
     roles = {str(r).lower() for r in (ctx.get("roles") or [])}
@@ -83,8 +68,6 @@ def _apply_rewrite(spec: Any, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any]) -> PolicyDecision:
-    """Evaluate the ordered rule chain. Returns the terminal decision (with any
-    accumulated rewrites applied to ``args``)."""
     base_args = context.get("args") or {}
     args = dict(base_args)
     ctx = {**context, "args": args}
@@ -97,7 +80,7 @@ def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any]) -> Pol
         try:
             if not _matches(rule.get("when") or {}, ctx):
                 continue
-        except Exception:  # a buggy rule must never block every call
+        except Exception:
             logger.debug("policy: rule %r failed to evaluate — skipping",
                          rule.get("id"), exc_info=True)
             continue
@@ -111,15 +94,10 @@ def evaluate_policy(rules: List[Dict[str, Any]], context: Dict[str, Any]) -> Pol
     return PolicyDecision(effect=ALLOW, args=(args if args != base_args else None))
 
 
-#: Default rule set — empty so the engine is purely additive until an operator
-#: configures rules. (The PHI gate and scope check remain enforced separately;
-#: expressing them as seed rules here is a follow-on.)
 _SEED_RULES: List[Dict[str, Any]] = []
 
 
 def load_rules() -> List[Dict[str, Any]]:
-    """The active rule chain: ``POLICY_RULES`` env JSON (a list of rule dicts),
-    else the seed set. An unparseable/out-of-shape value falls back to seeds."""
     raw = os.getenv("POLICY_RULES")
     if not raw:
         return list(_SEED_RULES)

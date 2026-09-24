@@ -1,14 +1,8 @@
+"""REST mirror of the WebSocket orchestrator actions — chat, components, agents, drafts,
+sharing, exports — for non-WebSocket frontends. Delegates to orchestrator.py and the
+Plane repositories; WebSocket remains the primary real-time channel.
 """
-REST API routes for the AstralDeep backend.
 
-Provides HTTP endpoints that mirror the WebSocket actions, enabling
-any frontend (PHP, Flutter, other JS frameworks) to interact with
-the orchestrator without implementing the WebSocket protocol.
-
-WebSocket remains the primary channel for real-time features (streaming
-chat responses, live status updates). These REST endpoints provide
-request/response access for CRUD operations.
-"""
 import asyncio
 import csv
 import io
@@ -68,15 +62,9 @@ voice_router = _voice_control_router
 
 logger = logging.getLogger("API")
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
 def _get_orchestrator(request: Request):
-    """Retrieve the shared Orchestrator instance from app state."""
     orch = getattr(request.app.state, "orchestrator", None)
     if orch is None:
-        # Walk up to parent app if mounted as sub-app
         root_app = getattr(request.app, "_root_app", None) or request.app
         orch = getattr(root_app.state, "orchestrator", None)
     if orch is None:
@@ -85,8 +73,6 @@ def _get_orchestrator(request: Request):
 
 
 def _plane_boundary(orch):
-    """Return the one application-scoped Plane runtime and repository catalog."""
-
     composition = getattr(orch, "runtime_composition", None)
     plane = getattr(composition, "plane", None)
     runtime = getattr(plane, "runtime", None)
@@ -103,19 +89,9 @@ def _request_dispatch_identity(
     request: Request,
     user_id: str,
 ) -> tuple[Dict[str, Any], Optional[str]]:
-    """Return only transport-verified REST identity for internal dispatch.
-
-    Authentication dependencies store claims and the short-lived subject
-    token on ``request.state``.  Keeping the bearer separate prevents audit
-    serialization while still allowing the normal RFC 8693 gate to run.
-    """
-
     state = getattr(request, "state", None)
     claims = getattr(state, "audit_claims", None)
     if not isinstance(claims, dict):
-        # Direct unit invocations do not execute FastAPI dependencies.  Their
-        # explicit ``user_id`` remains the already-resolved dependency value;
-        # production requests always take the state-backed branch above.
         claims = {"sub": user_id}
     if claims.get("sub") != user_id:
         raise HTTPException(status_code=401, detail="Invalid dispatch identity")
@@ -132,15 +108,10 @@ async def _run_atomic_canvas_mutation(
     user_id: str,
     mutation,
 ):
-    """Use the production publication boundary while keeping narrow test fakes usable."""
-
     runner = getattr(
         type(orchestrator), "run_detached_conversation_mutation", None
     )
     if runner is None:
-        # Endpoint unit tests intentionally use a minimal SimpleNamespace or
-        # MagicMock. Exercise the same durable repository boundary without
-        # requiring the entire socket/delivery surface on that fake.
         from orchestrator.conversation_publication import (
             ConversationPublicationStage,
             activate_conversation_publication,
@@ -241,8 +212,6 @@ async def _refresh_saved_component_rows(
     ops: List[Dict[str, Any]],
     user_id: str,
 ) -> List[Dict[str, Any]]:
-    """Replace staged physical row ids with the authoritative published ids."""
-
     refreshed = []
     for row, op in zip(rows, ops):
         current = await orchestrator.workspace.aget_by_component_id(
@@ -260,14 +229,7 @@ async def _refresh_saved_component_rows(
     return refreshed
 
 
-# =============================================================================
-# Durable Operation Reconciliation Router (Feature 060 / T030)
-# =============================================================================
-
-
 class SafeOperationResponse(BaseModel):
-    """Payload-free owner-visible operation projection."""
-
     operation_id: str
     operation_kind: str
     admission_class: str
@@ -309,8 +271,6 @@ OperationSubmissionResponse = Union[
 
 
 class RuntimeMetricResponse(BaseModel):
-    """One payload-free, low-cardinality runtime metric sample."""
-
     name: str
     value: Union[int, float]
     labels: Dict[str, str]
@@ -336,8 +296,6 @@ def _utc_json(value: datetime | None) -> str | None:
 
 
 def _safe_operation_json(operation: SafeOperationProjection) -> dict[str, Any]:
-    """Serialize exactly the reviewed public operation fields."""
-
     return {
         "operation_id": str(operation.operation_id),
         "operation_kind": operation.operation_kind,
@@ -375,8 +333,6 @@ def _safe_operation_json(operation: SafeOperationProjection) -> dict[str, Any]:
 
 
 def _authenticated_owner_partitions(user_id: str) -> tuple[OperationOwner, ...]:
-    """Partitions an authenticated user may reconcile through the REST API."""
-
     return tuple(
         OperationOwner(
             owner_scope=scope,
@@ -429,17 +385,12 @@ _ADMISSION_OPERATION_KINDS = {
 
 
 def _refresh_runtime_admission_metrics(orchestrator) -> None:
-    """Refresh configured admission gauges without blocking the event loop."""
-
     coordinator = orchestrator.work_admission
     observability = orchestrator.runtime_observability
     for admission_class, operation_kind in _ADMISSION_OPERATION_KINDS.items():
         try:
             class_status = coordinator.inspect_admission_class(admission_class)
         except AdmissionConfigurationError:
-            # Tests and intentionally reduced deployments may configure only
-            # the classes they execute. An absent class is not reported as a
-            # misleading zero-capacity class.
             continue
         observability.observe_admission(
             class_status,
@@ -448,8 +399,6 @@ def _refresh_runtime_admission_metrics(orchestrator) -> None:
 
 
 def _runtime_metric_snapshot(orchestrator) -> tuple[Any, ...]:
-    """Merge the runtime and voice collectors into one de-duplicated export."""
-
     primary = orchestrator.runtime_observability
     voice_services = getattr(orchestrator, "voice_services", None)
     voice = getattr(voice_services, "observability", None)
@@ -589,10 +538,6 @@ async def get_runtime_reliability_metrics(
     }
 
 
-# =============================================================================
-# Chat Router
-# =============================================================================
-
 chat_router = APIRouter(prefix="/api/chats", tags=["Chat"])
 
 
@@ -679,15 +624,10 @@ async def delete_chat(
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The chat transaction already durably fenced the voice rows.
-            # Short-lived grants and the lease sweep remain cleanup backstops.
             logger.warning(
                 "voice_chat_media_cleanup_unavailable",
                 exc_info=True,
             )
-    # Feature 028 (spec edge case): another tab time-traveling through this
-    # chat must have its historical view ended gracefully, not left staring
-    # at a snapshot of a chat that no longer exists.
     for ws in list(getattr(orch, "ui_clients", []) or []):
         try:
             if (orch._get_user_id(ws) == user_id
@@ -726,19 +666,10 @@ async def get_chat_steps(
     response: Response,
     user_id: str = Depends(require_user_id),
 ):
-    """Return all chat_steps rows for ``chat_id``, redacted and ordered.
-
-    Read-time healing: any row with ``status='in_progress'`` older than
-    30 seconds for which no active task exists is reported as
-    ``status='interrupted'`` (FR-021 reconnect path). The healing is not
-    persisted on this read; an orphaned-row sweep happens elsewhere.
-    """
     orch = _get_orchestrator(request)
 
-    # Ownership + existence check (matches the get_chat pattern).
     chat = await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id)
     if not chat:
-        # Try to differentiate "exists for another user" vs "does not exist".
         plane_runtime, plane_repositories = _plane_boundary(orch)
 
         def _exists_for_administration() -> bool:
@@ -766,9 +697,6 @@ async def get_chat_steps(
             user_id,
         )
 
-        # Read-time healing: orphan in-progress rows older than 30 s when
-        # there is no active task on this chat — only mutate the response,
-        # not the DB.
         import time as _time
         now_ms = int(_time.time() * 1000)
         active = orch.task_manager.get_active_task(chat_id)
@@ -782,8 +710,6 @@ async def get_chat_steps(
                 and now_ms - record.started_at > 30_000
             ):
                 status_value = "interrupted"
-            # Defense-in-depth re-redaction on every field that could
-            # ever contain PHI.
             args_text, _ = redact(record.args_truncated, kind="args")
             result_text, _ = redact(record.result_summary, kind="result")
             error_text, _ = redact(record.error_message, kind="error")
@@ -805,7 +731,7 @@ async def get_chat_steps(
         return {"chat_id": chat_id, "steps": steps}
     except HTTPException:
         raise
-    except Exception as exc:  # pragma: no cover — defensive
+    except Exception as exc:  # pragma: no cover
         logger.error("Failed to load chat steps: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to load steps")
 
@@ -845,14 +771,12 @@ async def send_message(
             claims = caller.claims
         else:
             claims = await get_current_user_payload(request, credentials)
-        # Preserve ordinary profile persistence using these already verified claims.
         user_id = await require_user_id(request, claims)
         message, display_message = body.message, body.display_message
         if not await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id):
             await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=user_id)
         if caller is not None:
             await caller.verify_delivery()
-        # This socket selects delivery only; it never supplies the HTTP origin.
         websocket = next((ws for ws in orch.ui_clients
                           if orch.ui_sessions.get(ws, {}).get("sub") == user_id), None)
 
@@ -870,7 +794,6 @@ async def send_message(
                     origin.close()
 
         def settled(task):
-            # Also releases custody when a queued task is cancelled before entry.
             if origin is not None:
                 origin.close()
             if not task.cancelled() and task.exception() is not None:
@@ -917,10 +840,6 @@ async def get_chat_usage(
     return JSONResponse(content={"chat_id": chat_id, "usage": usage})
 
 
-# =============================================================================
-# Component Router
-# =============================================================================
-
 component_router = APIRouter(prefix="/api", tags=["Components"])
 
 
@@ -956,10 +875,6 @@ async def save_component(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    # Feature 028 (D18/FR-026): explicit saves are a deprecated alias — route
-    # dict payloads through the workspace so the row gets a stable identity
-    # and every connected client sees the mutation (ui_upsert), mirroring the
-    # WS save_component reconciliation.
     if not isinstance(body.component_data, dict):
         raise HTTPException(
             status_code=400,
@@ -1018,9 +933,6 @@ async def delete_component(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    # Feature 028 (D18/FR-026): resolve the row first so the workspace
-    # identity can be removed on every client and the removal snapshotted +
-    # audited — a REST delete must not mutate the workspace invisibly.
     row = await asyncio.to_thread(orch.history.get_component_by_id, component_id, user_id=user_id)
     ws_component_id = None
     chat_id_for_row = row.get("chat_id") if row else None
@@ -1228,10 +1140,6 @@ async def condense_components(
     )
 
 
-# =============================================================================
-# Agent Router
-# =============================================================================
-
 agent_router = APIRouter(prefix="/api/agents", tags=["Agents"])
 
 
@@ -1269,7 +1177,6 @@ async def start_external_identity_link(
     provider: str,
     user_id: str = Depends(require_user_id_or_web_session),
 ):
-    """Bind a short-lived state token to this Astral browser session."""
     orch = _get_orchestrator(request)
     card = orch.agent_cards.get(agent_id)
     declaration = _external_identity_metadata(card, provider) if card else None
@@ -1306,7 +1213,6 @@ async def complete_external_identity_link(
     assertion: str,
     user_id: str = Depends(require_user_id_or_web_session),
 ):
-    """Verify the PanAtlas handoff, persist it, and refresh live sessions."""
     orch = _get_orchestrator(request)
     card = orch.agent_cards.get(agent_id)
     declaration = _external_identity_metadata(card, provider) if card else None
@@ -1395,7 +1301,6 @@ async def list_agents(
     ownership_map, disabled_set = await asyncio.to_thread(_read_agent_index)
     agents = []
     for agent_id, card in orch.agent_cards.items():
-        # Hide draft agents that aren't live yet
         if await asyncio.to_thread(orch._is_draft_agent, agent_id):
             continue
         ownership = ownership_map.get(agent_id)
@@ -1431,18 +1336,13 @@ async def get_agent_permissions(
     card = orch.agent_cards.get(agent_id)
     if not card:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
-    # Feature 013 / FR-015: on first read after the migration ships, lazily
-    # backfill per-tool rows from the legacy scope state so users don't
-    # have to re-toggle previously consented permissions. Idempotent —
-    # subsequent reads insert nothing.
     available_tools = [s.id for s in card.skills]
     tool_descriptions = {s.id: s.description for s in card.skills}
 
     def _read_permission_state():
-        """Backfill + resolve all permission views off the event loop."""
         try:
             orch.tool_permissions.backfill_per_tool_rows(user_id, agent_id)
-        except Exception as e:  # pragma: no cover — defensive logging only
+        except Exception as e:  # pragma: no cover
             logger.warning(f"Per-tool backfill failed for user={user_id} agent={agent_id}: {e}")
         return (
             orch.tool_permissions.get_agent_scopes(user_id, agent_id),
@@ -1484,12 +1384,6 @@ async def set_agent_permissions(
     if not card:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found")
 
-    # Feature 057 (finding: private-agent grant hole): a caller may manage
-    # permissions only on an agent they are allowed to use. A user-created agent
-    # is private to its owner — without this, another user could grant THEMSELVES
-    # scopes on it and then invoke it, running the owner's device-hosted tool as
-    # themselves (a cross-user break, SC-003). Non-user-agents (built-ins/public)
-    # are unaffected: can_user_use_agent returns True for them.
     from orchestrator.user_agents import can_user_use_agent
     if not await asyncio.to_thread(
         can_user_use_agent,
@@ -1506,11 +1400,7 @@ async def set_agent_permissions(
         body.scopes is not None or body.tool_overrides is not None
     )
 
-    # Feature 013 / preferred shape: per-tool, per-kind toggles.
     if body.per_tool_permissions is not None:
-        # Validate every (tool, kind) pair is applicable to that tool
-        # (FR-014). Reject the whole payload on any mismatch so partial
-        # writes never leave a half-applied state.
         for tool_name, kind_map in body.per_tool_permissions.items():
             required = tool_scope_map.get(tool_name)
             if required is None:
@@ -1528,15 +1418,11 @@ async def set_agent_permissions(
                         ),
                     )
         def _apply_per_tool():
-            """Write per-tool rows and mirror them into agent_scopes off-loop."""
             for tool_name, kind_map in body.per_tool_permissions.items():
                 for kind, enabled in kind_map.items():
                     orch.tool_permissions.set_tool_permission(
                         user_id, agent_id, tool_name, kind, bool(enabled)
                     )
-            # Mirror up to the agent_scopes layer so the legacy filter path
-            # remains coherent: a scope is enabled at the legacy layer iff at
-            # least one tool of that kind is now enabled per-tool.
             scope_state = orch.tool_permissions.get_agent_scopes(user_id, agent_id)
             derived: Dict[str, bool] = {**scope_state}
             per_tool = orch.tool_permissions.get_effective_tool_permissions(user_id, agent_id)
@@ -1548,16 +1434,12 @@ async def set_agent_permissions(
 
         await asyncio.to_thread(_apply_per_tool)
 
-    # Legacy shape for transitional clients — write scopes, then reflect
-    # the change into per-tool rows so the new model stays in sync.
     elif legacy_payload:
         def _apply_legacy():
-            """Write legacy scope state and re-derive per-tool rows off-loop."""
             if body.scopes is not None:
                 orch.tool_permissions.set_agent_scopes(user_id, agent_id, body.scopes)
             if body.tool_overrides is not None:
                 orch.tool_permissions.set_tool_overrides(user_id, agent_id, body.tool_overrides)
-            # Re-derive per-tool rows from the new scope+override state.
             for tool_name, required_scope in tool_scope_map.items():
                 scope_enabled = orch.tool_permissions.is_scope_enabled(
                     user_id, agent_id, required_scope
@@ -1585,7 +1467,6 @@ async def set_agent_permissions(
     tool_descriptions = {s.id: s.description for s in card.skills}
 
     def _read_back():
-        """Re-read the resolved permission views off the event loop."""
         return (
             orch.tool_permissions.get_agent_scopes(user_id, agent_id),
             orch.tool_permissions.get_effective_permissions(user_id, agent_id, available_tools),
@@ -1614,11 +1495,6 @@ async def set_agent_permissions(
         security_flags=orch.security_flags.get(agent_id, {}),
     )
 
-
-# ── Feature 013: User Tool-Selection Preference ──────────────────────────
-# Per-user, per-agent in-chat tool-picker selection. Persisted as a JSON
-# value under user_preferences.tool_selection.<agent_id>. The orchestrator
-# narrows the LLM's tool list to this subset on each chat dispatch.
 
 user_router = APIRouter(prefix="/api/users/me", tags=["User"])
 
@@ -1667,8 +1543,6 @@ async def set_user_tool_selection(
     card = orch.agent_cards.get(body.agent_id)
     if not card:
         raise HTTPException(status_code=404, detail=f"Agent '{body.agent_id}' not found")
-    # FR-021 defensive check — UI blocks send when zero, but a stray
-    # empty PUT still must be rejected.
     if not body.selected_tools:
         raise HTTPException(
             status_code=400, detail="empty_selection_not_allowed"
@@ -1773,9 +1647,6 @@ async def set_user_agent_enabled(
     return AgentEnabledResponse(agent_id=body.agent_id, enabled=body.enabled)
 
 
-# ── Agent Visibility ──────────────────────────────────────────────────
-
-
 @agent_router.put(
     "/{agent_id}/visibility",
     summary="Toggle agent public/private visibility",
@@ -1816,9 +1687,6 @@ async def set_agent_visibility(
     if result == "forbidden":
         raise HTTPException(status_code=403, detail="Only the agent owner can change visibility")
     return {"agent_id": agent_id, "is_public": body.is_public}
-
-
-# ── Agent Credentials ──────────────────────────────────────────────────
 
 
 @agent_router.get(
@@ -1874,9 +1742,6 @@ async def set_agent_credentials(
         required_credentials=required,
     )
 
-    # Save-time credential probe (FR-008): if the agent exposes a
-    # `_credentials_check` tool, invoke it immediately so the user gets a
-    # success/auth-failed/unreachable verdict back in the same response.
     skill_names = {getattr(s, "name", None) for s in getattr(card, "skills", [])}
     if "_credentials_check" in skill_names:
         try:
@@ -1903,7 +1768,6 @@ async def set_agent_credentials(
             response.credential_test = verdict
             response.credential_test_detail = detail
         except Exception as e:
-            # A failed probe must not block the credential save; surface it as unreachable.
             response.credential_test = "unreachable"
             response.credential_test_detail = f"Credential probe failed: {e}"
 
@@ -1932,15 +1796,10 @@ async def delete_agent_credential(
     return CredentialDeleteResponse(message=f"Credential '{credential_key}' deleted for agent '{agent_id}'")
 
 
-# =============================================================================
-# Draft Agent Router
-# =============================================================================
-
 draft_router = APIRouter(prefix="/api/agents/drafts", tags=["Draft Agents"])
 
 
 def _get_lifecycle(request: Request):
-    """Retrieve the AgentLifecycleManager from app state."""
     orch = _get_orchestrator(request)
     lifecycle = getattr(orch, 'lifecycle_manager', None)
     if lifecycle is None:
@@ -1957,7 +1816,6 @@ def _draft_store(orch):
 
 
 def _find_user_websocket(orch, user_id: str):
-    """Find the WebSocket connection for a given user_id (for progress updates)."""
     for ws, session in orch.ui_sessions.items():
         if session.get("user_id") == user_id:
             return ws
@@ -1965,7 +1823,6 @@ def _find_user_websocket(orch, user_id: str):
 
 
 def _parse_json_field(value):
-    """Parse a JSON string field, returning None if empty/null."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -1977,9 +1834,8 @@ def _parse_json_field(value):
 
 
 def _backfill_validation_tools(validation_report: dict, slug: str, orch) -> dict:
-    """Backfill 'tools' into a validation report from the orchestrator's agent cards."""
     if not validation_report or validation_report.get("tools"):
-        return validation_report  # already has tools or no report
+        return validation_report
     agent_id = f"{slug.replace('_', '-')}-1"
     card = orch.agent_cards.get(agent_id) if orch else None
     if not card:
@@ -2009,7 +1865,6 @@ def _backfill_validation_tools(validation_report: dict, slug: str, orch) -> dict
 
 
 def _draft_to_response(draft: dict, orch=None) -> DraftAgentResponse:
-    """Convert a raw draft dict to a DraftAgentResponse with parsed JSON fields."""
     validation_report = _parse_json_field(draft.get("validation_report"))
     if validation_report and orch:
         validation_report = _backfill_validation_tools(
@@ -2176,10 +2031,6 @@ async def generate_draft(
     if not draft:
         raise HTTPException(status_code=404, detail="Draft agent not found")
 
-    # 058 SC-002 — this endpoint generates for the SERVER-HOSTED (027) target,
-    # which validates by executing the generated tools here. A BYO draft's code
-    # is the user's and never runs on this host: it is generated + delivered
-    # through the authoring flow (chrome_author_generate) only.
     from orchestrator.agent_lifecycle import BYO_ORIGIN
     if draft.get("origin") == BYO_ORIGIN:
         raise HTTPException(
@@ -2189,7 +2040,6 @@ async def generate_draft(
                     "run on the server."))
 
     lifecycle = _get_lifecycle(request)
-    # Find user's WebSocket for progress updates
     ws = _find_user_websocket(orch, user_id)
     result = await lifecycle.generate_code(draft_id, websocket=ws)
     return _draft_to_response(result, orch)
@@ -2331,7 +2181,7 @@ async def admin_review(
 
     lifecycle = _get_lifecycle(request)
     orch = _get_orchestrator(request)
-    ws = None  # Could look up draft owner's WS for notification
+    ws = None
     try:
         result = await lifecycle.admin_review(
             draft_id, body.decision, admin_user_id=user_id,
@@ -2341,8 +2191,6 @@ async def admin_review(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-# ─── Draft Agent Credentials ─────────────────────────────────────────────────
 
 @draft_router.get(
     "/{draft_id}/credentials",
@@ -2414,10 +2262,6 @@ async def set_draft_credentials(
     }
 
 
-# =============================================================================
-# Dashboard Router
-# =============================================================================
-
 dashboard_router = APIRouter(prefix="/api", tags=["System"])
 
 
@@ -2434,7 +2278,6 @@ async def get_dashboard(
     orch = _get_orchestrator(request)
 
     def _build_dashboard():
-        """Resolve per-agent effective permissions off the event loop."""
         agents = []
         total_tools = 0
         for agent_id, card in orch.agent_cards.items():
@@ -2462,16 +2305,10 @@ async def get_dashboard(
     )
 
 
-# =============================================================================
-# Chrome Router  (Feature 042 — server-owned menu model, consumed by native clients)
-# =============================================================================
-
 chrome_router = APIRouter(prefix="/api/chrome", tags=["Chrome"])
 
 
 def _roles_from_payload(payload: dict) -> list:
-    """Realm + client roles from a validated JWT payload dict (mirrors
-    web_auth._roles_from_token / chrome_events._roles, but on a payload)."""
     roles = list(((payload or {}).get("realm_access") or {}).get("roles") or [])
     for client in ((payload or {}).get("resource_access") or {}).values():
         roles.extend((client or {}).get("roles") or [])
@@ -2493,11 +2330,7 @@ def _roles_from_payload(payload: dict) -> list:
 async def get_chrome_menu(payload: dict = Depends(get_current_user_payload)):
     from orchestrator.chrome_availability import projection_chrome_availability
     from webrender.chrome.menu_model import menu_model_dict
-    # Native clients consume this — ADMIN TOOLS is web-only (include_admin=False)
-    # and "Take the tour" is web-only (include_tour=False, feature 043).
     availability = projection_chrome_availability()
-    # Legacy REST callers negotiate no Work read-response correlation. Updated
-    # natives receive it on their capability-bound registered WebSocket instead.
     availability["work_enabled"] = False
     availability["notes_enabled"] = False
     return menu_model_dict(
@@ -2540,10 +2373,6 @@ async def get_chrome_commands(request: Request):
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
 
 
-# =============================================================================
-# Task Router — Re-Act task state inspection
-# =============================================================================
-
 task_router = APIRouter(prefix="/api/tasks", tags=["Tasks"])
 
 
@@ -2558,11 +2387,6 @@ async def get_task_state(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    # 073: this route had no auth dependency and no ownership check, so
-    # possession of a chat_id was enough to read another user's task state
-    # including its step history. Task carries user_id, so filter on it rather
-    # than trusting chat_id possession; a non-owner sees the same "none" a
-    # stranger chat returns, which keeps the response non-disclosing.
     task = orch.task_manager.get_active_task(chat_id)
     if task and task.user_id == user_id:
         return task.to_dict()
@@ -2574,10 +2398,6 @@ async def get_task_state(
         return latest.to_dict()
     return {"state": "none", "chat_id": chat_id}
 
-
-# =============================================================================
-# 020-async-queries: Background task status endpoints
-# =============================================================================
 
 async_task_router = APIRouter(prefix="/api/async-tasks", tags=["AsyncTasks"])
 
@@ -2594,8 +2414,6 @@ async def get_async_task(
 ):
     orch = _get_orchestrator(request)
     bg_task = await orch.async_task_manager.get(task_id)
-    # 073: unknown and non-owned identities share one non-disclosing response,
-    # so possession of a task_id never confirms that it exists.
     if bg_task is None or bg_task.user_id != user_id:
         from fastapi.responses import JSONResponse
         return JSONResponse(
@@ -2623,11 +2441,6 @@ async def list_async_tasks(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    # 073: this previously called get_current_user_id(request) without await.
-    # That helper is async AND a FastAPI dependency, so the call passed the
-    # Request in as `payload` and bound a coroutine object to user_id. The
-    # filter could therefore never match a real user, and the route had no auth
-    # dependency at all. Resolving the identity through Depends fixes both.
     tasks = await orch.async_task_manager.list_for_user(user_id, limit=20)
     return {
         "tasks": [
@@ -2655,8 +2468,6 @@ async def cancel_async_task(
     user_id: str = Depends(require_user_id),
 ):
     orch = _get_orchestrator(request)
-    # 073: ownership is checked BEFORE cancelling, otherwise any caller holding
-    # a task_id could cancel another user's running background work.
     bg_task = await orch.async_task_manager.get(task_id)
     if bg_task is None or bg_task.user_id != user_id:
         from fastapi.responses import JSONResponse
@@ -2674,18 +2485,12 @@ async def cancel_async_task(
     return {"status": "cancelled", "task_id": task_id}
 
 
-# =============================================================================
-# 055-uniform-artifacts US5 (T043): Export Router — FF_ARTIFACT_EXPORT
-# =============================================================================
-
 export_router = APIRouter(prefix="/api/export", tags=["Export"])
 
 export_router.include_router(workspace_export_router)
 
 
 class _ExportError(Exception):
-    """CSV full-export refusal carrying the contract's `{error, detail?}` body."""
-
     def __init__(self, status_code: int, error: str, detail: Optional[str] = None):
         super().__init__(error)
         self.status_code = status_code
@@ -2700,8 +2505,6 @@ class _ExportError(Exception):
 
 
 def _flag_404(flag: str) -> None:
-    """Contract (rest-endpoints.md): flag off ⇒ 404 as if the route were
-    absent — the body matches FastAPI's unknown-path default, never a 500."""
     if not flags.is_enabled(flag):
         raise HTTPException(status_code=404, detail="Not Found")
 
@@ -2713,8 +2516,6 @@ def _export_filename(stem: str, ext: str) -> str:
 
 def _csv_body(headers: List[Any], rows: List[Any]) -> str:
     def guard(cell: Any) -> str:
-        # OWASP CSV-injection rule: neutralize leading formula triggers so a
-        # spreadsheet opening the download treats the cell as text.
         s = "" if cell is None else str(cell)
         return "'" + s if s[:1] in ("=", "+", "-", "@") else s
 
@@ -2729,10 +2530,6 @@ def _csv_body(headers: List[Any], rows: List[Any]) -> str:
 
 
 def _render_export_html(components: List[Dict[str, Any]], title: str) -> str:
-    """Standalone export/share rendition (research D11): charts degrade down
-    their table/text fallback ladder (a static file runs no Plotly), the
-    workspace renders non-interactively (no buttons/chrome, provenance footer
-    kept), and the whole page is the self-contained export document."""
     from rote.adapter import ComponentAdapter
     from rote.capabilities import DeviceProfile
     from webrender import (
@@ -2758,10 +2555,6 @@ def _render_export_html(components: List[Dict[str, Any]], title: str) -> str:
 
 async def _full_table_rows(orch, request: Request, user_id: str, chat_id: str,
                            cd: Dict[str, Any], total: int):
-    """Re-invoke a paginated table's recorded source tool for the complete
-    row set — the component_action gate sequence (retired/merged-agent
-    handling, security flags + per-user permission, credential injection)
-    without its canvas write-back: the export is serve-only."""
     from orchestrator.orchestrator import RETIRED_AGENT_IDS, remap_merged_source
 
     agent_id = cd.get("_source_agent") or ""
@@ -2776,7 +2569,6 @@ async def _full_table_rows(orch, request: Request, user_id: str, chat_id: str,
     if not allowed:
         raise _ExportError(403, "forbidden", deny_reason)
     args = dict(cd.get("_source_params") or {})
-    # Full-range paging under the same param names the pagination footer patches.
     args.update({"limit": int(total), "offset": 0})
     try:
         claims, subject_token = _request_dispatch_identity(request, user_id)
@@ -2825,8 +2617,6 @@ async def export_component_csv(
 ):
     _flag_404("artifact_export")
     orch = _get_orchestrator(request)
-    # The (chat_id, user_id)-scoped lookup IS the ownership check: foreign or
-    # unknown components are indistinguishable (uniform 404).
     row = await orch.workspace.aget_by_component_id(chat_id, user_id, component_id)
     if row is None or not isinstance(row.get("component_data"), dict):
         raise HTTPException(status_code=404, detail="Component not found")
@@ -2870,7 +2660,6 @@ async def export_component_csv(
 
 
 def _export_canvas_revision(orch, chat_id: str, user_id: str) -> int:
-    """Read an owner-scoped revision through the public Plane repository."""
     runtime, repositories = _plane_boundary(orch)
     with runtime.transaction() as transaction:
         record = repositories.history.conversations.get(
@@ -2898,8 +2687,6 @@ async def export_canvas_html(
         current = await asyncio.to_thread(_export_canvas_revision, orch, chat_id, user_id)
         if current != render_revision:
             raise HTTPException(status_code=409, detail="Canvas changed; reload before exporting")
-    # Materialized designed layouts, (chat_id, user_id)-scoped — an unowned
-    # chat and an empty canvas are indistinguishable (uniform 404).
     components = await asyncio.to_thread(orch._canvas_components, chat_id, user_id)
     if not components:
         raise HTTPException(status_code=404, detail="Nothing to export for this chat")
@@ -2926,11 +2713,6 @@ async def export_canvas_html(
                  f'attachment; filename="{_export_filename("canvas-" + chat_id, "html")}"'},
     )
 
-
-# =============================================================================
-# 055-uniform-artifacts US5 (T044): Share Router — FF_ARTIFACT_SHARING
-# (DEFAULT OFF, fail-closed: every route 404s while the flag is off)
-# =============================================================================
 
 share_router = APIRouter(tags=["Share"])
 
@@ -3009,8 +2791,6 @@ async def create_share(
     except ValueError as e:
         return JSONResponse(status_code=422, content={
             "error": "invalid_request", "detail": str(e)})
-    # The raw token appears exactly once — inside share_url; it is never
-    # recoverable from storage or the owner listing.
     return {"id": minted["id"], "share_url": minted["share_url"],
             "created_at": minted["created_at"], "expires_at": minted["expires_at"]}
 
@@ -3044,8 +2824,6 @@ async def revoke_share(share_id: int, user_id: str = Depends(require_user_id_or_
 
 @share_router.get("/share/{token}", include_in_schema=False)
 async def serve_share(token: str):
-    """PUBLIC (unauthenticated) snapshot serve. Uniform 404 for unknown,
-    revoked, expired, and flag-off — indistinguishable from an absent route."""
     _flag_404("artifact_sharing")
     from orchestrator.artifact_share import get_share_store
     store = get_share_store()
@@ -3053,7 +2831,5 @@ async def serve_share(token: str):
     if grant is None:
         raise HTTPException(status_code=404, detail="Not Found")
     if not await store.record_open(grant):
-        # The digest was revoked or expired after resolution but before the
-        # open-count fence. Never serve through that revocation race.
         raise HTTPException(status_code=404, detail="Not Found")
     return HTMLResponse(content=grant["snapshot_html"], headers=_SHARE_PUBLIC_HEADERS)

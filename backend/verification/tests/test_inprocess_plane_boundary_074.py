@@ -1,4 +1,8 @@
-"""Static and wiring checks for the qualification driver's Plane boundary."""
+"""Tests for the in-process driver's Plane boundary
+(backend/verification/drivers/in_process.py): blob-owner namespacing per execution,
+fail-closed teardown without a composed application Plane, and graph close ordering
+after cleanup failure.
+"""
 
 from __future__ import annotations
 
@@ -182,8 +186,6 @@ def test_run_scenario_uses_one_execution_identity_at_every_boundary(
 
     driver.upload_as = upload_as  # type: ignore[method-assign]
 
-    # This unit checks one execution owner at each driver boundary. The persona
-    # integration tests exercise the actual signed registered socket handoff.
     async def register_session(principal, chat_id):
         from verification.drivers.in_process import CaptureSocket
 

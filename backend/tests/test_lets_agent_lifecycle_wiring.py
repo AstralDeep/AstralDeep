@@ -1,3 +1,8 @@
+"""Tests for orchestrator/agent_lifecycle.py and lets_lifecycle.py: dynamic admission
+commits before process spawn, pause fences authority before unregister/stop, and
+delete revokes before local record and permission removal.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

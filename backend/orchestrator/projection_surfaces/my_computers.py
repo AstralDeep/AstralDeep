@@ -1,13 +1,8 @@
-"""Deep-owned host adapter for the "My computers" surface (feature 076).
-
-Surface key ``my_computers``. Lists the owner's desktops that announced
-"Allow remote control", their presence and any running remote-control
-session, and offers the session controls: Control this computer, Pause,
-Resume, Stop, Forget. Web ``render()`` + native ``components()`` share the
-same handler keys and payload shapes, so every client gets the surface with
-zero per-client code (Constitution XII). Owner-scoped throughout; every entry
-point re-checks ``FF_COMPUTER_USE`` (flag-off byte-identity, FR-004).
+"""Renders the 'My computers' surface listing the owner's remote-control-enabled
+desktops and their session controls (start/pause/resume/stop/forget). Shares handler
+keys between web render() and native components(), gated by FF_COMPUTER_USE.
 """
+
 from __future__ import annotations
 
 import time
@@ -50,8 +45,6 @@ def _ago(ts: int) -> str:
 
 
 def _this_computer(orch, user_id: str, params: Any) -> Optional[Dict[str, Any]]:
-    """For the desktop that is asking: whether it can host and whether its
-    consent switch is on (it is a registered host). Phones/web get None."""
     from orchestrator.chrome_events import current_surface_socket
     ws = current_surface_socket.get()
     if ws is None:
@@ -81,8 +74,6 @@ def _session_line(h: Dict[str, Any]) -> str:
         return f"paused ({s.get('pause_reason') or 'someone is using it'}) · from your {s['controller_label']}"
     return f"session active · from your {s['controller_label']} · {s['verbs_run']} actions"
 
-
-# ── web ───────────────────────────────────────────────────────────────────────
 
 def _host_html(h: Dict[str, Any]) -> str:
     hid = esc(h["host_id"])
@@ -149,8 +140,6 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f'{_this_computer_html(_this_computer(orch, user_id, params))}{body}</div>')
 
 
-# ── native SDUI ───────────────────────────────────────────────────────────────
-
 async def components(orch: Any, user_id: str, roles: Any, params: Any):
     from webrender.chrome.surfaces import _sdui
 
@@ -212,8 +201,6 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         out.append(_sdui.card(h["name"], [badge, facts, _sdui.container(buttons, direction="row")]))
     return out
 
-
-# ── handlers ──────────────────────────────────────────────────────────────────
 
 def _owned_session(orch, user_id: str, payload):
     session_id = str((payload or {}).get("session_id") or "")

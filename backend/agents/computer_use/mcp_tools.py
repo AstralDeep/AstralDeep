@@ -1,18 +1,8 @@
-"""computer-use-1 verb library (feature 076, spec contracts/verbs.md).
-
-Every verb runs in the agent's worker thread (``process_request`` is called via
-``asyncio.to_thread``) and bridges to the orchestrator loop with
-``run_coroutine_threadsafe`` to push a ``computer_request`` to the owner's host
-and await the correlated ``computer_response``. The registry declares scope,
-tier, timeout and the SAME destructive classification object the dispatch gate
-reads (``orchestrator.computer_use_policy``) so verb + gate cannot drift.
-
-Result contract (two tiers): ``_data`` is the small typed digest the model reads;
-``_ui_components`` is renderer-only; ``_images`` (screenshot only) becomes image
-parts for the model. Typed failures are Alerts with ``variant="error"`` — the
-MCP server turns them into error responses whose message names the code and
-the next action, so the model can recover and never sees a traceback.
+"""Verb library for the computer-use agent: each verb runs in a worker thread, bridging
+to the orchestrator's loop to reach the owner's host; scope and destructive tier are
+shared with orchestrator/computer_use_policy so the gate can't drift.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,14 +40,11 @@ _LOOP = None
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _KEY_CHORD = re.compile(r"^[a-z0-9+_\- ]{1,64}$", re.IGNORECASE)
 _APP_NAME = re.compile(r"^[\w .+\-]{1,80}$")
-#: A launchable path: a drive-rooted or UNC Windows path made of safe characters
-#: (no shell metacharacters, no wildcards, no redirection).
+# Blocks shell metacharacters/wildcards in launched paths
 _APP_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)[\w \\/:.\-()+~]{1,1000}$")
 
 
 def register_deps(orchestrator) -> None:
-    """Bind the in-process orchestrator (host registry + session manager) and
-    remember its event loop when we are called from inside it (boot)."""
     global _ORCH, _LOOP
     _ORCH = orchestrator
     try:
@@ -67,8 +54,6 @@ def register_deps(orchestrator) -> None:
 
 
 def _loop(kwargs: Dict[str, Any]):
-    """The orchestrator loop to bridge into: the per-request runtime's loop
-    (always the orchestrator's for an in-process agent), else the boot loop."""
     runtime = kwargs.get("_runtime")
     return getattr(runtime, "loop", None) or _LOOP
 
@@ -80,8 +65,6 @@ def _registry():
 def _sessions():
     return getattr(_ORCH, "computer_sessions", None)
 
-
-# ── result helpers ────────────────────────────────────────────────────────────
 
 def _sanitize(value: Any, limit: int = 500) -> str:
     if value is None:
@@ -112,10 +95,7 @@ def _host_error(exc: ComputerHostError) -> Dict[str, Any]:
     return _fail(exc.code, exc.message, next_action=hint, **extra)
 
 
-# ── context resolution ────────────────────────────────────────────────────────
-
 def _bridge(coro, timeout: float, loop=None):
-    """Run an orchestrator coroutine from the worker thread."""
     loop = loop or _LOOP
     if loop is None:
         coro.close()
@@ -124,8 +104,6 @@ def _bridge(coro, timeout: float, loop=None):
 
 
 def _resolve_host(user_id: str, chat_id: Optional[str], ref: Optional[str]):
-    """The host a verb targets: an explicit reference wins; otherwise the live
-    session bound to this chat; otherwise the owner's single online host."""
     registry, sessions = _registry(), _sessions()
     if registry is None or sessions is None:
         raise ComputerHostError("computer_unavailable", "remote control is not enabled on this server")
@@ -154,8 +132,6 @@ def _require_session(user_id: str, host) -> Tuple[Any, Optional[Dict[str, Any]]]
 
 
 def _ctx(kwargs: Dict[str, Any]):
-    """Common preamble for HOST verbs: (user_id, chat_id, host, session) or a
-    failure dict in the fourth slot."""
     user_id = kwargs.get("user_id")
     if not user_id:
         return None, None, None, _fail("unattended_refused", "sign in to control your computer")
@@ -171,8 +147,6 @@ def _ctx(kwargs: Dict[str, Any]):
 
 
 def _run(host, session, verb: str, args: Dict[str, Any], loop=None):
-    """Push the request through the session lock and return the raw result or
-    a failure dict."""
     registry, sessions = _registry(), _sessions()
     timeout = TIMEOUTS[verb]
 
@@ -190,7 +164,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None):
         return _bridge(_go(), timeout, loop), None
     except ComputerHostError as exc:
         return None, _host_error(exc)
-    except Exception as exc:  # noqa: BLE001 — typed, never a traceback into chat
+    except Exception as exc:  # noqa: BLE001
         logger.warning("076: %s failed: %s", verb, exc)
         return None, _fail("failed", f"{verb} failed: {exc}")
 
@@ -208,8 +182,6 @@ def _int(value: Any, name: str, lo: int, hi: int) -> int:
 def _xy(kwargs: Dict[str, Any], xk: str = "x", yk: str = "y") -> Tuple[int, int]:
     return _int(kwargs.get(xk), xk, 0, 32767), _int(kwargs.get(yk), yk, 0, 32767)
 
-
-# ── session verbs ─────────────────────────────────────────────────────────────
 
 def list_computers(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -306,9 +278,6 @@ def resume_session(**kwargs) -> Dict[str, Any]:
 
     async def _resume_and_verify():
         await _sessions().resume(session)
-        # The desktop re-pauses within a presence poll or two when the person
-        # at the PC is still active; report what actually held rather than
-        # the optimistic state, so the model waits instead of looping.
         await asyncio.sleep(RESUME_SETTLE_SECONDS)
         return session.state
 
@@ -321,15 +290,12 @@ def resume_session(**kwargs) -> Dict[str, Any]:
     return _data({"state": state, "computer": host.name})
 
 
+# Only runs post-approval; the gate already checked
 def confirm_action(**kwargs) -> Dict[str, Any]:
-    """Reached only AFTER the owner approved the proposal card (the gate refuses
-    the first reach with the card). Returning approved lets the model continue."""
     summary = _sanitize(kwargs.get("summary"), MAX_SUMMARY_CHARS)
     return _data({"approved": True, "summary": summary},
                  [Text(content=f"Approved: {summary}", variant="caption")])
 
-
-# ── observe verbs ─────────────────────────────────────────────────────────────
 
 def screenshot(**kwargs) -> Dict[str, Any]:
     user_id, chat_id, host, ctx = _ctx(kwargs)
@@ -431,9 +397,6 @@ def list_dir(**kwargs) -> Dict[str, Any]:
 
 
 def wait(**kwargs) -> Dict[str, Any]:
-    """Sleep server-side and report the live session state. Deliberately NOT
-    a host round-trip and NOT gated on an *active* session: waiting is the one
-    thing the model is told to do while the person at the PC is active."""
     user_id = kwargs.get("user_id")
     if not user_id:
         return _fail("unattended_refused", "sign in to control your computer")
@@ -458,8 +421,6 @@ def wait(**kwargs) -> Dict[str, Any]:
         out["next_action"] = "call resume_session when the person at the computer has stopped"
     return _data(out)
 
-
-# ── input verbs ───────────────────────────────────────────────────────────────
 
 def _pointer(verb: str, kwargs: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
@@ -606,8 +567,6 @@ def set_clipboard(**kwargs) -> Dict[str, Any]:
     return _data({"computer": host.name, "chars": len(text)})
 
 
-# ── consequential verbs (gated on every reach by the confirmation mechanism) ─
-
 def write_file(**kwargs) -> Dict[str, Any]:
     _u, _c, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
@@ -639,8 +598,6 @@ def delete_path(**kwargs) -> Dict[str, Any]:
         return err
     return _data({"computer": host.name, "path": path, "deleted": bool(result.get("deleted"))})
 
-
-# ── registry ──────────────────────────────────────────────────────────────────
 
 _COMPUTER = {"computer": {"type": "string",
                           "description": "Which computer (name or id from list_computers). Optional "

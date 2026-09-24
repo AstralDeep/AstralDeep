@@ -1,14 +1,8 @@
-"""Typed views over Deep's Work-over-MCP contract.
-
-Every field name here matches ``sdk/astral_sdk/work_contract.json`` (itself
-exported from the server's own ``orchestrator.work_service._public``,
-``orchestrator.mcp_projection`` and ``orchestrator.work_operations`` —
-see ``scripts/export_work_contract.py``). These classes never invent a field
-the server does not send; an operation dict may have MORE keys than a given
-server revision defines (additive-only wire evolution) and those extra keys
-are preserved on ``Operation.raw`` even though a specific dataclass field for
-them may not exist yet.
+"""Typed dataclass views (Operation, Event, Artifact, ControlResult, RetryPolicy) over
+Deep's Work-over-MCP wire contract, matching astral_sdk/work_contract.json field for
+field, with unknown extra keys preserved on Operation.raw.
 """
+
 from __future__ import annotations
 
 import random
@@ -18,8 +12,6 @@ from typing import Any, Optional
 
 @dataclass(frozen=True)
 class Operation:
-    """One Work operation as the server projects it (submit/get/list/poll/cancel/pause)."""
-
     id: str
     revision: int
     instruction_revision: int
@@ -36,10 +28,7 @@ class Operation:
     schema_supported: bool
     safe_error_code: Optional[str]
     usage: dict[str, Any]
-    #: True only on a freshly created (not replayed) submission.
     created: Optional[bool] = None
-    #: The exact server dict this was built from — never dropped, so a caller
-    #: can read a field a newer server added before this SDK release knew its name.
     raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
@@ -72,8 +61,6 @@ class Operation:
 
 @dataclass(frozen=True)
 class OperationList:
-    """The result of ``astral_list_operations``."""
-
     operations: tuple[Operation, ...]
     next_cursor: Optional[str]
     page_full: bool
@@ -91,8 +78,6 @@ class OperationList:
 
 @dataclass(frozen=True)
 class Event:
-    """The result of one ``astral_get_operation_events`` poll."""
-
     revision: int
     changed: bool
     resync_required: bool
@@ -111,8 +96,6 @@ class Event:
 
 @dataclass(frozen=True)
 class Artifact:
-    """The result of ``astral_get_artifact`` — one operation's retained result."""
-
     operation_id: str
     revision: int
     result: dict[str, Any]
@@ -128,8 +111,6 @@ class Artifact:
 
 @dataclass(frozen=True)
 class ControlResult:
-    """The result of ``astral_cancel_operation``/``astral_pause_operation``."""
-
     operation: Operation
     applied: bool
 
@@ -140,19 +121,11 @@ class ControlResult:
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    """A bounded exponential backoff with jitter for idempotent SDK calls.
-
-    Only requests the SDK itself knows are safe to repeat are retried: reads
-    (get/list/poll/result), and submit/cancel/pause when the caller supplies
-    its own idempotency/submission key — never a bare, un-keyed mutation.
-    """
-
     max_attempts: int = 4
     base_delay_seconds: float = 0.25
     max_delay_seconds: float = 8.0
     multiplier: float = 2.0
     jitter_seconds: float = 0.1
-    #: HTTP statuses worth a retry — network/timeout errors are always retried.
     retryable_status_codes: frozenset[int] = field(
         default_factory=lambda: frozenset({408, 409, 429, 500, 502, 503, 504})
     )
@@ -164,7 +137,6 @@ class RetryPolicy:
             raise ValueError("delays must be non-negative")
 
     def delay_for(self, attempt: int) -> float:
-        """Seconds to wait before the given 1-indexed retry attempt."""
         raw = self.base_delay_seconds * (self.multiplier ** max(0, attempt - 1))
         bounded = min(raw, self.max_delay_seconds)
         return bounded + random.uniform(0, self.jitter_seconds)

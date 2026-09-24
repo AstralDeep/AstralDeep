@@ -1,4 +1,8 @@
-"""Public location queries, account notice choices, and mandatory PHI storage gates."""
+"""Tests for personalization/chat_notices.py: public-location queries never trigger a
+PHI notice while storage stays gated, notice-once-per-chat behavior, preference
+scoping, and a real Plane round-trip for stored notice choices.
+"""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -124,7 +128,6 @@ def test_opt_out_during_analysis_is_respected(monkeypatch):
 
 
 def test_notice_choice_persists_through_plane_and_preserves_other_preferences():
-    """Exercise the real owner-keyed JSON update on an isolated PostgreSQL DB."""
     from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
     with isolated_plane_runtime("notice_review") as runtime:

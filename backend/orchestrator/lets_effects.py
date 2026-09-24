@@ -1,9 +1,6 @@
-"""Plane-backed checkpoints for LETS-governed physical effects.
-
-The public LETS verifier owns signature, freshness, replay, clock, and
-rollback-authority checks. AstralPlane owns neutral owner-scoped records. This
-module joins those two public contracts without moving product policy into the
-data plane or storing tool arguments, credentials, receipts, or result bodies.
+"""Plane-backed checkpoints for LETS-governed physical effects, joining the public LETS
+verifier's checks with AstralPlane's neutral owner-scoped records, without storing
+tool arguments, credentials, or result bodies. Used by lets_composition.py.
 """
 
 from __future__ import annotations
@@ -46,14 +43,10 @@ _PRE_EXECUTION = frozenset(
 
 
 class PlaneEffectRuntime(Protocol):
-    """The explicit transaction seam used by the neutral Plane repository."""
-
     def transaction(self, **options: object): ...
 
 
 class ProtectedPermit(Protocol):
-    """Structural permit view, avoiding a component-private gateway dependency."""
-
     binding_id: str
     owner_id: str
     runtime_generation: int
@@ -65,8 +58,6 @@ class ProtectedPermit(Protocol):
 
 
 class ExecutorReplayStatusView(Protocol):
-    """Public LETS status fields required after a local replay claim."""
-
     rollback_protected: bool
     authority_healthy: bool
     identity: object
@@ -76,8 +67,6 @@ class ExecutorReplayStatusView(Protocol):
 
 
 class LetsEffectError(RuntimeError):
-    """Stable content-free persistence/gateway refusal."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -151,8 +140,6 @@ def _same_intent(
 
 
 class PlaneProtectedEffectCoordinator:
-    """Persist exact effect intent, claim, sequence, and redacted outcome fences."""
-
     def __init__(
         self,
         *,
@@ -168,8 +155,6 @@ class PlaneProtectedEffectCoordinator:
         binding: AgentAuthorityBinding,
         context: ProtectedDispatchContext,
     ) -> ProtectedEffectOperation:
-        """Commit an exact Astral-authorized intent before contacting LETS."""
-
         if not isinstance(binding, AgentAuthorityBinding):
             raise LetsEffectError("invalid_authority_binding")
         if not isinstance(context, ProtectedDispatchContext):
@@ -252,8 +237,6 @@ class PlaneProtectedEffectCoordinator:
         context: ProtectedDispatchContext,
         envelope: ProtectedPermit,
     ) -> ProtectedEffectOperation:
-        """Persist validated receipt metadata without storing signed receipt bytes."""
-
         receipt = envelope.receipt
         if (
             envelope.owner_id != binding.owner_id
@@ -303,19 +286,13 @@ class PlaneProtectedEffectCoordinator:
         except Exception:
             raise LetsEffectError("effect_persistence_unavailable", retryable=True) from None
 
+    # Caller must hold the binding-scoped executor lock
     def claim_for_execution(
         self,
         *,
         envelope: ProtectedPermit,
         replay_status: ExecutorReplayStatusView,
     ) -> ProtectedEffectOperation:
-        """Commit Plane claim + sequence + executing fences after LETS claims locally.
-
-        This method must be called while the binding-scoped executor lock is
-        still held. If it fails, the caller omits the physical effect; it must
-        never replay a locally consumed receipt merely to repair Plane evidence.
-        """
-
         if not isinstance(getattr(envelope, "receipt", None), Receipt):
             raise LetsEffectError("invalid_protected_permit")
         try:
@@ -499,8 +476,6 @@ class PlaneProtectedEffectCoordinator:
         error_code: str,
         denied: bool = False,
     ) -> ProtectedEffectOperation:
-        """Terminally refuse a known pre-execution intent without false success."""
-
         try:
             with self._plane.transaction() as transaction:
                 operation = self._require_effect(
@@ -542,8 +517,6 @@ class PlaneProtectedEffectCoordinator:
         outcome: str,
         error_code: str | None = None,
     ) -> ProtectedEffectOperation:
-        """Persist a redacted known/uncertain outcome after an execution claim."""
-
         targets = {
             "succeeded": ProtectedEffectStatus.SUCCEEDED,
             "effect_failed": ProtectedEffectStatus.EFFECT_FAILED,

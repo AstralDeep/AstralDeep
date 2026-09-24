@@ -1,4 +1,6 @@
-"""Static ownership guard for Plane-owned generated-agent bundle mechanics."""
+"""Static test confirming generated-agent bundle publication is Plane-owned, with no
+second filesystem publication engine coordinated by Deep itself.
+"""
 
 from __future__ import annotations
 
@@ -50,8 +52,6 @@ def _legacy_importers() -> list[str]:
 
 
 def test_generated_agent_filesystem_publication_is_plane_owned() -> None:
-    """Deep retains policy coordination, never a second immutable FS engine."""
-
     assert not (
         ROOT / "backend" / "orchestrator" / "artifact_publication.py"
     ).exists()

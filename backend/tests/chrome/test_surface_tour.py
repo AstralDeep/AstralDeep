@@ -1,12 +1,8 @@
-"""Feature 027 — T017: ``tour`` surface render + ``chrome_tour_event`` handler.
-
-Structural/behavioral tests against a minimal fake orchestrator (no
-Postgres): the render path mirrors ``GET /api/tutorial/steps`` (audience
-filtering, escaped ``data-tour-steps`` JSON holder) and the handler
-mirrors the onboarding-state endpoint internals (replay/in_progress,
-completed, skipped, dismiss). Audit recorder calls are monkeypatched at
-the surface module's namespace and asserted per event transition.
+"""Tests for orchestrator/projection_surfaces/tour.py: onboarding step rendering and
+audience filtering, and the chrome_tour_event handler's state transitions and audit
+calls.
 """
+
 import html
 import json
 import re
@@ -16,10 +12,6 @@ import pytest
 
 from orchestrator.projection_surfaces import tour
 
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
 
 def _step(i, slug, audience="user", title=None, body=None,
           target_kind="static", target_key=None):
@@ -32,8 +24,6 @@ def _step(i, slug, audience="user", title=None, body=None,
 
 
 class FakeRepo:
-    """Just the OnboardingRepository surface area tour.py touches."""
-
     def __init__(self, steps=None, state_status="not_started",
                  prior_status="not_started", audiences=None):
         self.steps = steps or []
@@ -74,8 +64,6 @@ def _orch(repo):
 
 
 class _AuditSpy:
-    """Capture the onboarding audit-recorder calls tour.py makes."""
-
     def __init__(self, monkeypatch):
         self.events = []
         for name in ("record_onboarding_replayed", "record_onboarding_started",
@@ -100,10 +88,6 @@ def _holder_json(rendered):
 WS = object()
 
 
-# ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
-
 def test_module_contract():
     assert tour.TITLE == "Take the tour"
     assert getattr(tour, "ADMIN_ONLY", False) is False
@@ -117,7 +101,6 @@ async def test_render_intro_and_step_holder():
     assert "<p" in out and "guided tour" in out
     steps = _holder_json(out)
     assert [s["slug"] for s in steps] == ["welcome", "settings"]
-    # Exactly the contracted fields, audience filtered server-side.
     assert set(steps[0]) == {"id", "slug", "title", "body", "target_kind",
                              "target_key", "display_order"}
     assert steps[0]["target_key"] == "topbar.brand"
@@ -138,7 +121,7 @@ async def test_render_escapes_step_content_and_round_trips():
     repo = FakeRepo(steps=[_step(1, "s", title=evil, body="it's & <b>fine</b>")])
     out = await tour.render(_orch(repo), "u1", ["user"], {})
     assert "<script>" not in out
-    steps = _holder_json(out)  # client JSON.parse sees the original text
+    steps = _holder_json(out)
     assert steps[0]["title"] == evil
     assert steps[0]["body"] == "it's & <b>fine</b>"
 
@@ -155,16 +138,12 @@ async def test_render_without_repo_renders_error_notice():
     assert "unavailable" in out
 
 
-# ---------------------------------------------------------------------------
-# chrome_tour_event handler
-# ---------------------------------------------------------------------------
-
 async def test_started_records_replay_and_transitions_in_progress(monkeypatch):
     spy = _AuditSpy(monkeypatch)
     repo = FakeRepo(state_status="not_started", prior_status="not_started")
     res = await tour.HANDLERS["chrome_tour_event"](
         _orch(repo), WS, "u1", ["user"], {"event": "started"})
-    assert res is None  # tour runs outside the modal — no re-render
+    assert res is None
     assert ("upsert_state", "u1", "in_progress", None) in repo.calls
     assert spy.names() == ["record_onboarding_replayed", "record_onboarding_started"]
     assert spy.events[0][1]["prior_status"] == "not_started"
@@ -172,7 +151,6 @@ async def test_started_records_replay_and_transitions_in_progress(monkeypatch):
 
 
 async def test_started_from_terminal_state_keeps_replay_only(monkeypatch):
-    """PUT's terminal -> in_progress 409 guard becomes a no-op upsert here."""
     spy = _AuditSpy(monkeypatch)
     repo = FakeRepo(state_status="completed")
     res = await tour.HANDLERS["chrome_tour_event"](
@@ -224,7 +202,7 @@ async def test_dismissed_uses_dismiss_internals(monkeypatch):
     assert res is None
     assert ("record_dismissal", "u1", 2) in repo.calls
     assert not any(c[0] == "upsert_state" for c in repo.calls)
-    assert spy.names() == []  # dismissal audits nothing, like POST /dismiss
+    assert spy.names() == []
 
 
 async def test_unknown_or_missing_event_is_dropped(monkeypatch):
@@ -246,19 +224,16 @@ async def test_missing_repo_drops_event_without_raising(monkeypatch):
 
 async def test_step_id_validated_like_put_state(monkeypatch):
     _AuditSpy(monkeypatch)
-    # Valid user-audience step id passes through to the upsert.
     repo = FakeRepo(prior_status="in_progress", audiences={7: "user"})
     await tour.HANDLERS["chrome_tour_event"](
         _orch(repo), WS, "u1", ["user"], {"event": "completed", "step_id": 7})
     assert ("upsert_state", "u1", "completed", 7) in repo.calls
 
-    # Unknown/archived step id is dropped, not raised (mid-tour resilience).
     repo = FakeRepo(prior_status="in_progress", audiences={})
     await tour.HANDLERS["chrome_tour_event"](
         _orch(repo), WS, "u1", ["user"], {"event": "completed", "step_id": 99})
     assert ("upsert_state", "u1", "completed", None) in repo.calls
 
-    # Admin-only step id is dropped for a non-admin, kept for an admin.
     repo = FakeRepo(prior_status="in_progress", audiences={5: "admin"})
     await tour.HANDLERS["chrome_tour_event"](
         _orch(repo), WS, "u1", ["user"], {"event": "skipped", "step_id": 5})
@@ -268,7 +243,6 @@ async def test_step_id_validated_like_put_state(monkeypatch):
         _orch(repo), WS, "a1", ["admin"], {"event": "skipped", "step_id": 5})
     assert ("upsert_state", "a1", "skipped", 5) in repo.calls
 
-    # Non-integer step id is dropped.
     repo = FakeRepo(prior_status="in_progress", audiences={})
     await tour.HANDLERS["chrome_tour_event"](
         _orch(repo), WS, "u1", ["user"], {"event": "skipped", "step_id": "abc"})

@@ -1,7 +1,6 @@
-"""Fixed research result incorporation through the actual one-shot lifecycle.
-
-External IAM and source/provider responses are synthetic. The real PostgreSQL
-ledger, encrypted configuration, dispatcher and both execution fences run.
+"""Tests for persistent_agents/research_episode.py's one-shot lifecycle: exact
+attributed results commit and retire leases, empty selection yields explicit
+insufficient evidence, and results cannot be incorporated after the source changes.
 """
 
 import asyncio
@@ -78,7 +77,6 @@ async def test_fixed_episode_commits_exact_attributed_result_and_retires_leases(
     op = research
     before = await current(op)
     runner, result = await outcome(op)
-    # A handler result alone cannot make a result visible or retire its capacity.
     assert (await current(op)).checkpoint == before.checkpoint
     assert (await admission(op)).state == OperationState.RUNNING
     final = await runner._finish_operation(op.executor, result)

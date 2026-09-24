@@ -1,15 +1,6 @@
-"""Feature 089 (T064): the data-sharing notice and its acknowledgment.
-
-Two requirements shape every test here.
-
-**It gates the save, never the chat.** The acknowledgment is checked as the
-first step of a credential save -- before validation and before any provider
-request -- and is never consulted during a turn. A user mid-conversation must
-not be interrupted by a consent prompt.
-
-**The wording is pinned to a version.** Changing the text without bumping
-``NOTICE_VERSION`` would silently reuse consent the user gave to different
-words, so a test fails when the strings move and the version does not.
+"""Tests for llm_config/data_sharing.py and its rendering in projection_surfaces/llm.py:
+the acknowledgment gates credential save, never a chat turn, before validation or any
+provider request, and the notice text is pinned by digest.
 """
 
 from __future__ import annotations
@@ -31,8 +22,7 @@ from orchestrator.projection_surfaces import llm as llm_surface  # noqa: E402
 
 USER = "ack-user"
 
-#: The text as it stands at NOTICE_VERSION. If you change the wording, bump the
-#: version and update this digest in the same change -- that is the whole point.
+# Changing this text requires bumping NOTICE_VERSION too
 PINNED_TEXT_DIGEST = hashlib.sha256(
     "\n".join([ds.NOTICE_TITLE, ds.NOTICE_BODY, ds.CHECKBOX_LABEL]).encode("utf-8")
 ).hexdigest()
@@ -42,11 +32,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-# -- the pinned text ------------------------------------------------------
-
-
 def test_the_notice_text_is_pinned_to_its_version() -> None:
-    """Fails when the wording changes. Bump NOTICE_VERSION and this digest."""
     current = hashlib.sha256(
         "\n".join([ds.NOTICE_TITLE, ds.NOTICE_BODY, ds.CHECKBOX_LABEL]).encode("utf-8")
     ).hexdigest()
@@ -57,7 +43,6 @@ def test_the_notice_text_is_pinned_to_its_version() -> None:
 
 
 def test_the_notice_says_what_actually_leaves() -> None:
-    """A warning that does not name the thing being shared is not a warning."""
     body = ds.NOTICE_BODY.lower()
     assert "content of your requests" in body
     assert "messages" in body and "conversation context" in body
@@ -68,9 +53,6 @@ def test_the_notice_says_what_actually_leaves() -> None:
 def test_the_version_looks_like_a_dated_version() -> None:
     assert ds.NOTICE_VERSION
     assert ds.NOTICE_VERSION[0].isdigit()
-
-
-# -- the tri-state check --------------------------------------------------
 
 
 def test_an_unacknowledged_save_is_blocked(data_sharing_store) -> None:
@@ -94,7 +76,6 @@ def test_a_stored_acknowledgment_allows_a_later_save(data_sharing_store) -> None
 
 
 def test_an_explicit_false_blocks_even_after_acknowledging(data_sharing_store) -> None:
-    """Unticking the box is the user's most recent statement, and it wins."""
     ds.require_acknowledgment(data_sharing_store, USER, True)
     result = ds.require_acknowledgment(data_sharing_store, USER, False)
     assert result.blocked
@@ -133,7 +114,6 @@ def test_the_first_acknowledgment_time_survives_a_version_bump(
 def test_the_legacy_path_gets_a_message_that_says_where_to_go(
     data_sharing_store,
 ) -> None:
-    """The WS path has no field to attach an error to."""
     result = ds.require_acknowledgment(data_sharing_store, USER, None, legacy=True)
     assert result.error == ds.LEGACY_ERROR
     assert "Settings" in result.error
@@ -142,8 +122,6 @@ def test_the_legacy_path_gets_a_message_that_says_where_to_go(
 def test_a_broken_store_reads_as_unacknowledged_rather_than_allowing(
     monkeypatch, data_sharing_store
 ) -> None:
-    """Fail closed: a durable read failure must not let a save through."""
-
     def _explode(*args, **kwargs):
         raise RuntimeError("plane is unreachable")
 
@@ -151,9 +129,6 @@ def test_a_broken_store_reads_as_unacknowledged_rather_than_allowing(
         data_sharing_store._repository.repository, "get_user", _explode  # noqa: SLF001
     )
     assert ds.require_acknowledgment(data_sharing_store, USER, None).blocked
-
-
-# -- audit ----------------------------------------------------------------
 
 
 def test_an_acknowledgment_is_audited() -> None:
@@ -190,9 +165,6 @@ def test_a_missing_recorder_is_not_an_error() -> None:
     run(ds.record_acknowledged(None, actor_user_id=USER, auth_principal=USER))
 
 
-# -- placement in the rendered surfaces ----------------------------------
-
-
 def _orch(data_sharing_store=None, typesafe_store=None):
     return SimpleNamespace(
         _llm_store=None,
@@ -223,7 +195,6 @@ def test_the_warning_and_checkbox_render_on_the_web_surface(
 
 
 def test_the_checkbox_is_described_by_the_warning(data_sharing_store) -> None:
-    """Web a11y: the label is associated and the warning is referenced."""
     html = _render(_orch(data_sharing_store))
     assert f'aria-describedby="{ds.WARNING_ELEMENT_ID}"' in html
     assert f'id="{ds.CHECKBOX_ELEMENT_ID}"' in html
@@ -233,15 +204,6 @@ def test_the_checkbox_is_described_by_the_warning(data_sharing_store) -> None:
 def test_the_checkbox_sits_below_the_credentials_and_above_the_actions(
     data_sharing_store, typesafe_store
 ) -> None:
-    """A person reads the notice after the fields it is about and before the
-    button that acts on them.
-
-    Feature 089 moved the actions into the dialog's footer, which the shell
-    renders after the body, so "above the actions" is now a fact about the
-    composed dialog rather than about the body alone. It is asserted on the
-    composed dialog for exactly that reason -- asserting it on the body would
-    stop checking anything at all.
-    """
     from webrender.chrome import render_modal_shell
 
     body = _render(_orch(data_sharing_store, typesafe_store))
@@ -257,7 +219,6 @@ def test_the_checkbox_sits_below_the_credentials_and_above_the_actions(
 
 
 def test_the_warning_renders_during_first_run_too(data_sharing_store) -> None:
-    """First run is the moment a user hands over their first credential."""
     html = _render(_orch(data_sharing_store), {"first_run": True})
     assert ds.NOTICE_TITLE in html
     assert f'name="{ds.FIELD_NAME}"' in html
@@ -295,12 +256,8 @@ def test_the_inline_error_renders_when_a_save_was_blocked(data_sharing_store) ->
 
 
 def test_a_missing_store_still_renders_the_warning() -> None:
-    """The notice is not conditional on the store being wired."""
     html = _render(_orch(None))
     assert ds.NOTICE_TITLE in html
-
-
-# -- the checkbox is read as a tri-state from a payload ------------------
 
 
 @pytest.mark.parametrize(
@@ -316,16 +273,11 @@ def test_the_submitted_value_is_read_as_a_tri_state(raw, expected) -> None:
 
 
 def test_an_absent_field_reads_as_none_not_false() -> None:
-    """A client that has not been updated must keep working."""
     assert llm_surface._submitted_acknowledgment({"fields": {}}) is None  # noqa: SLF001
     assert llm_surface._submitted_acknowledgment({}) is None  # noqa: SLF001
 
 
-# -- chat never consults the store ---------------------------------------
-
-
 def test_the_turn_path_never_reads_the_acknowledgment_store() -> None:
-    """An existing user must never be interrupted mid-conversation."""
     import ast
     import pathlib
 
@@ -342,20 +294,8 @@ def test_the_turn_path_never_reads_the_acknowledgment_store() -> None:
             assert "_data_sharing_store" not in body
             assert "require_acknowledgment" not in body
 
-# -- the durable credential path is gated too ----------------------------
-
 
 def test_the_durable_credential_operation_applies_the_gate() -> None:
-    """The gate must run where the web client's save actually executes.
-
-    A credential save is not handled by the surface handler in a browser: it
-    is admitted as a durable operation and executed by
-    ``_handle_llm_credential_operation``. The gate lived only in the surface
-    handlers, so an ordinary browser save skipped it entirely -- a
-    never-acknowledged user could store provider credentials, and the endpoint
-    probe reached the provider before anything checked. Both credential
-    actions travel that path, so the gate belongs at the top of it.
-    """
     import ast
     import inspect
     import pathlib as _p
@@ -380,8 +320,6 @@ def test_the_durable_credential_operation_applies_the_gate() -> None:
         "the durable credential path must run the data-sharing gate"
     )
 
-    # And it must run BEFORE the key is resolved, so no provider request is
-    # made on the way to a refusal.
     def line_of(name):
         return min((n.lineno for n in ast.walk(target)
                     if isinstance(n, ast.Call)
@@ -394,4 +332,4 @@ def test_the_durable_credential_operation_applies_the_gate() -> None:
         assert gate < resolve, (
             "the gate must run before the API key is resolved and probed"
         )
-    _ = inspect  # the import documents that this is a source-level contract
+    _ = inspect

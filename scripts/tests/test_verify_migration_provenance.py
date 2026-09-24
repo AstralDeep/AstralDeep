@@ -1,4 +1,7 @@
-"""Adversarial tests for the feature-074 migration provenance verifier."""
+"""Adversarial tests for the migration provenance verifier: canonical remote/URL
+matching, ancestry and force-divergence detection, manifest/schema tamper rejection,
+and gitlink-to-composition-pin binding.
+"""
 
 from __future__ import annotations
 

@@ -1,23 +1,8 @@
-"""Feature 055 (US5, T043) — export REST routes.
-
-``GET /api/export/component/{id}.csv`` and ``GET /api/export/canvas/{chat_id}.html``
-behind ``FF_ARTIFACT_EXPORT``:
-
-* ownership via the (chat_id, user_id)-scoped workspace lookup (uniform 404);
-* CSV of the stored rows, OWASP formula-injection guard on leading ``=+-@``;
-* paginated tables re-invoke the recorded source tool through the
-  component_action gate sequence (permission check, full-range ``limit/offset``,
-  credential injection) — ``?stored_only=1`` skips the re-invoke, a failed or
-  retired source maps to 503 "partial data available";
-* canvas export materializes ``_canvas_components``, degrades charts down the
-  ROTE fallback ladder, and wraps the static rendition in the self-contained
-  export document (provenance note + generation date stamped);
-* flag off ⇒ 404 with FastAPI's route-absent body; missing auth ⇒ 401.
-
-Routes are exercised over a real FastAPI app + TestClient with a mocked
-orchestrator (test_rest_api.py pattern) — no DB rows are touched, so the
-feature-052 loop guard sees no synchronous Database calls at all.
+"""Tests for orchestrator/api.py's export routes (component CSV, canvas HTML) behind
+FF_ARTIFACT_EXPORT: ownership scoping, OWASP formula-injection guarding, paginated
+re-invoke via the component_action gate, and auth/flag gating.
 """
+
 from __future__ import annotations
 
 import os
@@ -112,9 +97,6 @@ def _csv_get(client, component_id="wc_tbl1", **params):
                       params=query, headers=AUTH)
 
 
-# ───────────────────────── CSV: stored rows ──────────────────────────────────
-
-
 def test_csv_stored_table(client, orch):
     orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
     r = _csv_get(client)
@@ -122,7 +104,6 @@ def test_csv_stored_table(client, orch):
     assert r.headers["content-type"].startswith("text/csv")
     assert r.headers["content-disposition"] == 'attachment; filename="wc_tbl1.csv"'
     assert r.text.splitlines() == ["name,amount", "alice,1", "bob,2"]
-    # A complete stored table never re-invokes the source.
     orch._execute_with_retry.assert_not_awaited()
     orch.workspace.aget_by_component_id.assert_awaited_once_with(
         CHAT_ID, USER_ID, "wc_tbl1")
@@ -161,9 +142,6 @@ def test_csv_requires_chat_id_query(client, orch):
     assert r.status_code == 422
 
 
-# ───────────────────────── CSV: paginated full-data re-invoke ────────────────
-
-
 def _paginated_cd():
     return _table_cd(total_rows=5, page_size=2, page_offset=0)
 
@@ -183,7 +161,6 @@ def test_csv_paginated_reinvokes_source_full_range(client, orch):
     assert r.status_code == 200
     lines = r.text.splitlines()
     assert len(lines) == 6 and lines[-1] == "erin,5"
-    # Same gate + params the component_action pipeline applies.
     orch._component_action_allowed.assert_called_once_with(
         USER_ID, "data-agent-1", "list_rows")
     call = orch.execute_authorized_tool.await_args.kwargs
@@ -197,7 +174,7 @@ def test_csv_stored_only_skips_reinvoke(client, orch):
     orch.workspace.aget_by_component_id.return_value = _row(_paginated_cd())
     r = _csv_get(client, stored_only=1)
     assert r.status_code == 200
-    assert len(r.text.splitlines()) == 3  # header + the stored page only
+    assert len(r.text.splitlines()) == 3
     orch._execute_with_retry.assert_not_awaited()
 
 
@@ -245,9 +222,6 @@ def test_csv_export_audited(client, orch, monkeypatch):
     assert kwargs["chat_id"] == CHAT_ID and kwargs["component_id"] == "wc_tbl1"
 
 
-# ───────────────────────── Canvas HTML export ────────────────────────────────
-
-
 def _canvas():
     return [
         _table_cd(),
@@ -269,13 +243,10 @@ def test_canvas_export_standalone_document(client, orch):
     html = r.text
     assert html.startswith("<!DOCTYPE html>")
     assert "<script" not in html
-    # Components arrive under their identities.
     for cid in ("wc_tbl1", "wc_ch", "wc_card"):
         assert f'data-component-id="{cid}"' in html
-    # The chart degraded down its fallback ladder — a table, not a live mount.
     assert 'class="astral-chart"' not in html
     assert ">x<" in html and ">y<" in html
-    # Provenance + date stamped.
     assert 'class="astral-provenance astral-provenance--grounded' not in html
     assert "tool data" not in html
     assert "2 grounded" in html and "1 generated" in html
@@ -333,9 +304,6 @@ def test_visual_canvas_export_rejects_invalid_revision(client, orch, revision):
     orch._canvas_components.assert_not_called()
 
 
-# ───────────────────────── Flag + auth gates ─────────────────────────────────
-
-
 def test_flag_off_both_routes_404_route_absent_body(client, orch):
     orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
     orch._canvas_components.return_value = _canvas()
@@ -343,13 +311,11 @@ def test_flag_off_both_routes_404_route_absent_body(client, orch):
     r1 = _csv_get(client)
     r2 = client.get(f"/api/export/canvas/{CHAT_ID}.html", headers=AUTH)
     assert (r1.status_code, r2.status_code) == (404, 404)
-    # Body indistinguishable from an unregistered route.
     assert r1.json() == {"detail": "Not Found"}
     assert r2.json() == {"detail": "Not Found"}
 
 
 def _no_session(monkeypatch):
-    """No astral_session cookie resolves (real deployments without a login)."""
     async def _none(request):
         return None
     monkeypatch.setattr(web_auth, "ensure_session", _none)
@@ -366,8 +332,6 @@ def test_unauthenticated_api_requests_are_401(client, orch, monkeypatch):
 
 
 def test_unauthenticated_browser_navigation_redirects_to_login(client, monkeypatch):
-    """Middle-click / system-browser open with no session: 302 to login with
-    next= carrying the export path+query, never a 'not authenticated' page."""
     from urllib.parse import quote
     _no_session(monkeypatch)
     accept = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
@@ -382,8 +346,6 @@ def test_unauthenticated_browser_navigation_redirects_to_login(client, monkeypat
 
 
 def test_cookie_session_mock_mode_serves_export(client, orch):
-    """No Authorization header at all — the astral_session cookie path
-    (USE_MOCK_AUTH=true makes ensure_session return the test_user session)."""
     orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
     r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID})
     assert r.status_code == 200
@@ -393,8 +355,6 @@ def test_cookie_session_mock_mode_serves_export(client, orch):
 
 
 def test_cookie_session_real_mode_serves_export(client, orch, monkeypatch):
-    """Non-mock: the faked session's access token flows through the SAME JWKS
-    verification path as a Bearer token (test_download_auth.py pattern)."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")

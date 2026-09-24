@@ -1,4 +1,7 @@
-"""Authenticated API contracts for feature-060 schedule actions."""
+"""Tests for the authenticated schedule-action API (backend/scheduler/api.py): auth
+enforcement, owner isolation, feature-flag refusal, and the atomic cancellation seam
+behind pause/delete/resume.
+"""
 
 from __future__ import annotations
 

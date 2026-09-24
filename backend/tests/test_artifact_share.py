@@ -1,35 +1,19 @@
-"""Feature 055 (US5) — share-grant store unit tests (T042).
-
-Exercises ``orchestrator.artifact_share.ShareGrantStore`` against the live
-Postgres ``share_grant`` table and the REAL ``audit.hooks`` recording path
-(no monkeypatched hooks):
-
-* mint — token returned exactly once, only its SHA-256 stored, snapshot
-  html+json immutably captured, ``share.minted`` audited;
-* PHI gate FAIL-CLOSED at mint — prefilter hit, analyzer hit, and
-  analyzer-unavailable all refuse with ``share.refused_phi`` and write no row;
-* list — owner-scoped metadata only, never token/snapshot material;
-* revoke — immediate (a revoked grant never resolves again), idempotent,
-  owner-scoped, ``share.revoked`` audited once;
-* resolve — uniform None for unknown/revoked/expired tokens;
-* record_open — increments ``open_count`` and audits ``share.opened`` with
-  principal ``share:<id>``.
-
-Store methods run inside ``asyncio.run`` from sync test bodies; all DB
-asserts happen off-loop, keeping the feature-052 loop guard satisfied.
-Every test uses uuid-unique user ids and purges its own rows on teardown
-(audit_events is append-only behind a trigger — purge requires the
-``audit.allow_purge`` GUC, mirroring the retention CLI).
+"""Tests for orchestrator.artifact_share.py's ShareGrantStore against live Postgres
+and audit.hooks, including contextual PHI decisions, public snapshot extraction,
+analyzer failures, and owner-scoped link lifecycle.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +30,7 @@ from orchestrator.artifact_share import (  # noqa: E402
     ShareGrantStore,
     SharePHIRefusedError,
     SharingDisabledError,
+    _share_screen_text,
     get_share_store,
     hash_token,
     set_share_store,
@@ -55,23 +40,20 @@ from shared.feature_flags import flags  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
-
 class _CleanAnalyzer:
-    """Presidio stand-in that never reports entities."""
-
     def analyze(self, text, language, entities, score_threshold):
         return []
 
 
 class _HitAnalyzer:
-    """Presidio stand-in that always reports a PHI entity."""
-
     def analyze(self, text, language, entities, score_threshold):
         return [{"entity_type": "PERSON"}]
+
+
+class _NameAnalyzer:
+    def analyze(self, text, **kwargs):
+        return [SimpleNamespace(entity_type="PERSON", start=match.start(), end=match.end(), score=0.85)
+                for match in re.finditer("Jane Doe", text)]
 
 
 CLEAN_SNAPSHOT = [{"type": "card", "title": "Quarterly revenue", "content": "Up and to the right"}]
@@ -95,8 +77,6 @@ def store(plane_runtime):
 
 @pytest.fixture()
 def recorder(plane_runtime, tmp_path):
-    """A REAL Recorder over the live audit_events table, wired into the
-    process-global slot that audit.hooks reads."""
     prev = get_recorder()
     rec = Recorder(
         AuditRepository(
@@ -120,8 +100,6 @@ def sharing_enabled():
 
 @pytest.fixture(autouse=True)
 def clean_phi_gate():
-    """Default every test to a gate whose analyzer reports no entities;
-    individual tests override for hit / fail-closed paths."""
     set_phi_gate(PHIGate(analyzer=_CleanAnalyzer(), build_if_missing=False))
     yield
     set_phi_gate(None)
@@ -184,11 +162,6 @@ def _mint(store, user_id, **overrides):
     return asyncio.run(store.mint(**kwargs))
 
 
-# ---------------------------------------------------------------------------
-# Mint
-# ---------------------------------------------------------------------------
-
-
 def test_mint_stores_hash_only_and_snapshots(plane_runtime, store, recorder, user):
     res = _mint(store, user)
 
@@ -200,10 +173,8 @@ def test_mint_stores_hash_only_and_snapshots(plane_runtime, store, recorder, use
     rows = _grant_rows(plane_runtime, user)
     assert len(rows) == 1
     row = rows[0]
-    # Only the digest is persisted — the raw token appears in no column.
     assert row["token_sha256"] == hash_token(res["token"])
     assert all(res["token"] not in str(v) for v in row.values())
-    # Snapshot captured at mint (html verbatim, json round-tripped by JSONB).
     assert row["snapshot_html"] == CLEAN_HTML
     assert row["snapshot_json"] == CLEAN_SNAPSHOT
     assert row["scope"] == "canvas"
@@ -232,7 +203,7 @@ def test_mint_argument_validation(store, user):
     with pytest.raises(ValueError):
         _mint(store, user, scope="everything")
     with pytest.raises(ValueError):
-        _mint(store, user, scope="component")  # no component_id
+        _mint(store, user, scope="component")
     with pytest.raises(ValueError):
         _mint(store, user, snapshot_html="")
 
@@ -244,13 +215,7 @@ def test_mint_refused_when_flag_off(plane_runtime, store, user):
     assert _grant_rows(plane_runtime, user) == []
 
 
-# ---------------------------------------------------------------------------
-# PHI gate — fail-closed at mint
-# ---------------------------------------------------------------------------
-
-
 def test_mint_refuses_phi_prefilter_hit(plane_runtime, store, recorder, user):
-    """An SSN in the snapshot trips the regex prefilter: no row, audited refusal."""
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user, snapshot_json=PHI_SNAPSHOT)
 
@@ -259,14 +224,12 @@ def test_mint_refuses_phi_prefilter_hit(plane_runtime, store, recorder, user):
     assert len(refused) == 1
     assert refused[0]["event_class"] == "conversation"
     assert refused[0]["outcome"] == "failure"
-    # Refusal rows carry scope metadata but never snapshot content.
     assert refused[0]["inputs_meta"]["scope"] == "canvas"
     assert "123-45-6789" not in str(refused[0])
     assert _audit_rows(plane_runtime, user, "share.minted") == []
 
 
 def test_mint_refuses_phi_analyzer_hit(plane_runtime, store, recorder, user):
-    """Content clean of prefilter patterns still refuses when Presidio flags it."""
     set_phi_gate(PHIGate(analyzer=_HitAnalyzer(), build_if_missing=False))
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user)
@@ -275,17 +238,11 @@ def test_mint_refuses_phi_analyzer_hit(plane_runtime, store, recorder, user):
 
 
 def test_mint_fail_closed_when_analyzer_unavailable(plane_runtime, store, recorder, user):
-    """No analyzer ⇒ clean content is still refused — never mint blind."""
     set_phi_gate(PHIGate(analyzer=None, build_if_missing=False))
     with pytest.raises(SharePHIRefusedError):
         _mint(store, user)
     assert _grant_rows(plane_runtime, user) == []
     assert len(_audit_rows(plane_runtime, user, "share.refused_phi")) == 1
-
-
-# ---------------------------------------------------------------------------
-# List
-# ---------------------------------------------------------------------------
 
 
 def test_list_grants_owner_scoped_metadata_only(store, recorder, user):
@@ -295,7 +252,6 @@ def test_list_grants_owner_scoped_metadata_only(store, recorder, user):
     grants = asyncio.run(store.list_grants(user))
     assert [g["id"] for g in grants] == sorted([a["id"], b["id"]], reverse=True)
     for g in grants:
-        # Never token material or snapshot payloads (contract: GET /api/share).
         assert "token_sha256" not in g
         assert "snapshot_html" not in g and "snapshot_json" not in g
         assert set(g) == {"id", "chat_id", "scope", "component_id",
@@ -303,11 +259,6 @@ def test_list_grants_owner_scoped_metadata_only(store, recorder, user):
 
     other = f"pytest-share-{uuid.uuid4().hex[:12]}"
     assert asyncio.run(store.list_grants(other)) == []
-
-
-# ---------------------------------------------------------------------------
-# Resolve / revoke / open-count
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_serves_snapshot_and_refuses_unknown(store, recorder, user):
@@ -337,26 +288,21 @@ def test_revoke_is_immediate_owner_scoped_and_idempotent(
 ):
     res = _mint(store, user)
 
-    # A stranger cannot revoke; the grant keeps serving.
     stranger = f"pytest-share-{uuid.uuid4().hex[:12]}"
     assert asyncio.run(store.revoke(stranger, res["id"])) is False
     assert asyncio.run(store.resolve(res["token"])) is not None
 
     assert asyncio.run(store.revoke(user, res["id"])) is True
-    # Revoked grants never serve again.
     assert asyncio.run(store.resolve(res["token"])) is None
     first_revoked_at = _grant_rows(plane_runtime, user)[0]["revoked_at"]
     assert first_revoked_at is not None
 
-    # Idempotent: second revoke succeeds, keeps the original timestamp,
-    # and does not audit a second transition.
     assert asyncio.run(store.revoke(user, res["id"])) is True
     assert _grant_rows(plane_runtime, user)[0]["revoked_at"] == first_revoked_at
     revoked = _audit_rows(plane_runtime, user, "share.revoked")
     assert len(revoked) == 1
     assert revoked[0]["inputs_meta"]["share_id"] == res["id"]
 
-    # Unknown id → False.
     assert asyncio.run(store.revoke(user, 999_999_999)) is False
 
 
@@ -373,15 +319,9 @@ def test_record_open_increments_and_audits_share_principal(
     opened = _audit_rows(plane_runtime, user, "share.opened")
     assert len(opened) == 2
     for row in opened:
-        # Actor = share owner; principal identifies the grant, not a visitor.
         assert row["actor_user_id"] == user
         assert row["auth_principal"] == f"share:{res['id']}"
         assert row["event_class"] == "conversation"
-
-
-# ---------------------------------------------------------------------------
-# Singleton accessor
-# ---------------------------------------------------------------------------
 
 
 def test_get_share_store_singleton_and_override(store):
@@ -393,3 +333,121 @@ def test_get_share_store_singleton_and_override(store):
         assert get_share_store() is store
     finally:
         set_share_store(None)
+
+
+def test_dashboard_dates_metrics_chart_configuration_and_metadata_are_shareable(
+    plane_runtime, store, recorder, user
+):
+    snapshot = [{
+        "type": "card", "title": "Lexington weather and research outlook",
+        "component_id": "dash_1234567890", "css": {"color": "#12345678"},
+        "_renderer": {"digest": "1234567890"}, "provenance": "grounded",
+        "children": [{"type": "table", "columns": ["Date", "Population", "Rainfall"],
+                      "rows": [["2026-09-23", 12345678, 72.1234567], ["09/24/2026", None, True]]}],
+        "data": {"labels": ["Ada Lovelace", "Kentucky"], "values": [1234567890]},
+    }]
+    html = '<style>.card{color:#12345678}</style><h1>Lexington weather</h1><p>2026-09-23: 12345678</p>'
+    minted = _mint(store, user, snapshot_json=snapshot, snapshot_html=html)
+    row = _grant_rows(plane_runtime, user)[0]
+    assert row["snapshot_json"] == snapshot
+    assert row["snapshot_html"] == html
+    assert asyncio.run(store.resolve(minted["token"]))["snapshot_html"] == html
+    assert len(_audit_rows(plane_runtime, user, "share.minted")) == 1
+
+
+@pytest.mark.parametrize("html", [
+    "<div>SSN 123-<strong>45</strong>-6789</div>",
+    '<a href="https://example.org/?mrn%3D0099123">Record</a>',
+    '<img src="https://example.org/?contact=jane%40example.com" alt="Diagram">',
+    '<div data-context="MRN: A00123">Summary</div>',
+    '<div title="DOB: 1980-04-12">Summary</div>',
+    '<div style="background-image:url(https://example.org/?mrn=0099123)">Summary</div>',
+    '<style>.card{background:url(https://example.org/?mrn=0099123)}</style>Summary',
+])
+def test_public_markup_identifiers_are_refused_even_when_structured_content_is_clean(
+    plane_runtime, store, recorder, user, html
+):
+    with pytest.raises(SharePHIRefusedError):
+        _mint(store, user, snapshot_html=html)
+    assert _grant_rows(plane_runtime, user) == []
+    refusal = _audit_rows(plane_runtime, user, "share.refused_phi")
+    assert len(refusal) == 1
+    assert "0099123" not in str(refusal)
+    assert "123-45-6789" not in str(refusal)
+    assert "jane" not in str(refusal)
+
+
+def test_screening_excludes_component_metadata_but_keeps_displayed_rows_and_attributes():
+    snapshot = [{"type": "table", "component_id": "private-renderer-id", "css": {"color": "#fff"},
+                 "_digest": "private-renderer-digest", "rows": [{"id": "MRN: A01234"}],
+                 "content": "<b>Visible</b>", "values": (True, 5.25, None)}]
+    text = _share_screen_text(snapshot, '<table class="layout" id="internal"><tr><td>Visible</td></tr></table>')
+    assert "private-renderer" not in text
+    assert "#fff" not in text
+    assert "MRN: A01234" in text
+    assert "Visible" in text
+    assert "5.25" in text
+    assert "layout" not in text
+    assert "internal" not in text
+
+
+@pytest.mark.parametrize("snapshot,html", [
+    ([{"type": "card", "data": object()}], CLEAN_HTML),
+    ([{"type": "card", 12: "invalid key"}], CLEAN_HTML),
+    (CLEAN_SNAPSHOT, "<script>unsafe()</script>"),
+    (CLEAN_SNAPSHOT, "<style>.card{display:none}"),
+    (CLEAN_SNAPSHOT, 42),
+    (CLEAN_SNAPSHOT, "x" * (8 * 1024 * 1024 + 1)),
+])
+def test_unscannable_snapshots_fail_closed_with_audit(
+    plane_runtime, store, recorder, user, snapshot, html
+):
+    with pytest.raises(SharePHIRefusedError):
+        _mint(store, user, snapshot_json=snapshot, snapshot_html=html, scope="component", component_id="wc_test")
+    assert _grant_rows(plane_runtime, user) == []
+    refusal = _audit_rows(plane_runtime, user, "share.refused_phi")
+    assert len(refusal) == 1
+    assert refusal[0]["inputs_meta"]["component_id"] == "wc_test"
+
+
+def test_recursive_or_excessive_snapshot_data_is_refused():
+    recursive = []
+    recursive.append(recursive)
+    for snapshot in (recursive, [None] * 50_001):
+        with pytest.raises(ValueError, match="share_screen_limit"):
+            _share_screen_text(snapshot, CLEAN_HTML)
+
+
+def test_analyzer_error_refuses_mint_without_persistence(plane_runtime, store, recorder, user):
+    class UnavailableAnalyzer:
+        def analyze(self, **kwargs):
+            raise RuntimeError("screen unavailable")
+
+    set_phi_gate(PHIGate(analyzer=UnavailableAnalyzer()))
+    with pytest.raises(SharePHIRefusedError):
+        _mint(store, user)
+    assert _grant_rows(plane_runtime, user) == []
+    assert len(_audit_rows(plane_runtime, user, "share.refused_phi")) == 1
+
+
+@pytest.mark.parametrize("snapshot,html", [
+    ([{"type": "table", "headers": ["Patient name", "Age"], "rows": [["Jane Doe", 42]]}], CLEAN_HTML),
+    ([{"type": "table", "headers": ["Name", "Diagnosis"], "rows": [["Jane Doe", "asthma"]]}], CLEAN_HTML),
+    ([{"type": "table", "rows": [{"name": "Jane Doe", "medication": "insulin"}]}], CLEAN_HTML),
+    (CLEAN_SNAPSHOT, "<table><tr><th>Patient name</th><th>Age</th></tr><tr><td>Jane <b>Doe</b></td><td>42</td></tr></table>"),
+    (CLEAN_SNAPSHOT, "<table><tr><th>Name</th><th>Diagnosis</th></tr><tr><td>Jane Doe</td><td>asthma</td></tr></table>"),
+])
+def test_patient_tables_preserve_identity_context(plane_runtime, store, recorder, user, snapshot, html):
+    set_phi_gate(PHIGate(analyzer=_NameAnalyzer()))
+    with pytest.raises(SharePHIRefusedError):
+        _mint(store, user, snapshot_json=snapshot, snapshot_html=html)
+    assert _grant_rows(plane_runtime, user) == []
+    assert len(_audit_rows(plane_runtime, user, "share.refused_phi")) == 1
+
+
+def test_research_author_table_remains_shareable(store, recorder, user):
+    set_phi_gate(PHIGate(analyzer=_NameAnalyzer()))
+    snapshot = [{"type": "table", "headers": ["Author", "Diagnosis studied"],
+                 "rows": [["Jane Doe", "asthma"]]}]
+    html = "<table><tr><th>Author</th><th>Diagnosis studied</th></tr><tr><td>Jane Doe</td><td>asthma</td></tr></table>"
+    assert _mint(store, user, snapshot_json=snapshot, snapshot_html=html)["share_url"].startswith("/share/")

@@ -1,10 +1,8 @@
-"""Feature 063 US1 — cross-user machine isolation (T021, SC-012/FR-010/FR-018).
-
-User B can neither list, name, address, probe, nor act on user A's registered
-machine through ANY verb path. The fixture injects the same typed Plane
-repository boundary production uses; transport is the FakeTransport seam, and
-the sweep asserts a foreign-machine attempt performs ZERO transport operations.
+"""Tests for cross-user machine isolation (orchestrator/remote_machines.py,
+remote_transport.py): user B can never list, resolve, or act on user A's machine
+through any verb, with zero transport calls.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -36,8 +34,6 @@ def db():
 
 @pytest.fixture
 def machines(db):
-    """A owns 'dgx' + 'edge'; B owns their OWN machine also labelled 'dgx'
-    (label collision must still resolve within the caller's inventory)."""
     a_dgx = remote_machines.create_machine(db, USER_A, "dgx", "10.0.0.5", 22, "alice", "linux", "cluster")
     a_edge = remote_machines.create_machine(
         db,
@@ -66,8 +62,6 @@ def _verdict(res):
     return (res.get("_data") or {}).get("verdict")
 
 
-# ── inventory-layer scoping (the SQL itself) ──────────────────────────────────
-
 def test_list_machines_is_owner_scoped(db, machines):
     assert {r["machine_id"] for r in remote_machines.list_machines(db, USER_A)} \
         == {machines["a_dgx"], machines["a_edge"]}
@@ -76,13 +70,10 @@ def test_list_machines_is_owner_scoped(db, machines):
 
 
 def test_resolve_machine_never_crosses_owners(db, machines):
-    # B cannot resolve A's machine by id, label, or address …
     assert remote_machines.resolve_machine(db, USER_B, machines["a_edge"]) is None
     assert remote_machines.resolve_machine(db, USER_B, "edge") is None
     assert remote_machines.resolve_machine(db, USER_B, "10.0.0.5") is None
-    # … a colliding label resolves to B's OWN row …
     assert remote_machines.resolve_machine(db, USER_B, "dgx")["machine_id"] == machines["b_dgx"]
-    # … and A still resolves their own by all three forms.
     for ref in (machines["a_dgx"], "dgx", "10.0.0.5"):
         assert remote_machines.resolve_machine(db, USER_A, ref)["machine_id"] == machines["a_dgx"]
 
@@ -96,12 +87,9 @@ def test_delete_and_probe_record_by_non_owner_are_noops(db, machines):
     assert remote_machines.delete_machine(db, USER_B, machines["a_dgx"]) is False
     remote_machines.record_probe(db, USER_B, machines["a_dgx"], "ok")
     row = remote_machines.get_machine(db, USER_A, machines["a_dgx"])
-    assert row is not None and row["last_verdict"] is None  # untouched
+    assert row is not None and row["last_verdict"] is None
 
 
-# ── verb-layer sweep: every verb, every addressing form, zero connects ────────
-
-# Valid-shaped extra args per verb so the ONLY failure is machine resolution.
 _EXTRA_ARGS = {
     "probe_machine": {},
     "list_queue": {},
@@ -124,18 +112,16 @@ _EXTRA_ARGS = {
 
 
 def test_every_verb_refuses_a_foreign_machine_and_never_connects(db, machines, transport):
-    """SC-012: B addresses A's machine by id, label, and address through every
-    registered verb — the not_found verdict every time, zero transport ops."""
     verbs = {v: e for v, e in unified.TOOL_REGISTRY.items() if v != "list_machines"}
-    assert set(verbs) == set(_EXTRA_ARGS)  # a new verb must join this sweep
+    assert set(verbs) == set(_EXTRA_ARGS)
     attempts = 0
     for verb, entry in verbs.items():
         for ref in (machines["a_dgx"], "edge", "10.0.0.5"):
             res = entry["function"](user_id=USER_B, machine_id=ref, **_EXTRA_ARGS[verb])
             assert _verdict(res) == "not_found", f"{verb} addressed at {ref!r}"
             attempts += 1
-    assert attempts >= 10  # SC-012's "at least 10 attempts"
-    assert transport.calls == []  # never probed, ran, stat'ed, or uploaded
+    assert attempts >= 10
+    assert transport.calls == []
 
 
 def test_list_machines_verb_shows_only_the_callers_rows(db, machines, transport):
@@ -146,11 +132,8 @@ def test_list_machines_verb_shows_only_the_callers_rows(db, machines, transport)
 
 
 def test_owner_path_still_works(db, machines, transport):
-    """Control case: the same wiring lets the OWNER reach their own machine —
-    proving the sweep's refusals come from owner scoping, not a dead fixture."""
     res = obs.probe_machine(user_id=USER_A, machine_id="edge")
     assert res["_data"]["verdict"] == "ok" and res["_data"]["authenticated"] is True
     assert [c["op"] for c in transport.calls] == ["probe"]
-    # First contact recorded the probe verdict on A's row, via A's own scope.
     row = remote_machines.get_machine(db, USER_A, machines["a_edge"])
     assert row["last_verdict"] == "ok"

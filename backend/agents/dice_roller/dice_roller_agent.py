@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""
-Dice Roller — A2A-compliant agent.
-
-Rolls N six-sided dice and reports each roll and the total.
+"""A2A-compliant Dice Roller agent: rolls N six-sided dice and reports each roll plus
+the total, dispatched through mcp_server.py.
 """
 import asyncio
 import os
@@ -19,8 +17,6 @@ logging.basicConfig(level=logging.INFO,
 
 
 class DiceRollerAgent(BaseA2AAgent):
-    """Rolls N six-sided dice and reports each roll and the total."""
-
     agent_id = "dice-roller-1"
     service_name = "Dice Roller"
     description = (

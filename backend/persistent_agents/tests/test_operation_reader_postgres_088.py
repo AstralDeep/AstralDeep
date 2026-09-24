@@ -1,10 +1,8 @@
-"""Unregistered durable readers: actual session/JWT/Plane and ordinary dispatch.
-
-The task, session, permissions, admission, action and audit stores are real
-PostgreSQL. Only institutional refresh/JWKS/delegation replies, empty external
-credential lookup and the final reader transport are synthetic. No runner ticks,
-model calls, one-shot ingress, external IAM or application data are involved.
+"""Tests for persistent_agents dispatch readers against real Postgres, session and JWT:
+settlement, cached-result reload, scope-change and policy-rewrite refusal,
+cancellation-after-permit charging, and encrypted-credential handling.
 """
+
 import asyncio
 import hashlib
 import json
@@ -98,8 +96,6 @@ async def operation(runtime, fixture, gate_orchestrator, monkeypatch, tmp_path, 
         page.url, page.status_code = args["url"], 200
         page.headers["Content-Type"] = "text/plain; charset=utf-8"
         page.encoding, page._content = "utf-8", b"Public release 088"
-        # Keep the actual fixed reader/extractor and its factual envelope. Only
-        # its external response is synthetic, as before for this dispatch fixture.
         with patch.object(page_tools, "_fetch_url", return_value=page):
             return MCPResponse(result=page_tools.fetch_page(url=args["url"]))
 
@@ -283,8 +279,6 @@ async def test_loss_after_delegation_refuses_permit_and_releases_unstarted(opera
         await op.executor.action("read", REQUEST)
     assert len(op.delegations) == 1 and op.physical == []
     if loss == "owner":
-        # No permit existed, so deliberate retirement can cancel and purge this
-        # fully understood unbegun row; it must not manufacture a liability.
         assert await op.executor.store.call("get_operation", owner_id=op.owner,
             assignment_id=op.executor.record.assignment_id) is None
         return
@@ -293,7 +287,6 @@ async def test_loss_after_delegation_refuses_permit_and_releases_unstarted(opera
     assert all(attempt.get("dispatch_token") is None for attempt in action.attempts)
     assert all(value == 0 for value in (await current(op)).usage["outstanding"].values())
     if loss == "private-context":
-        # The adapter must not remove a replacement mapping it did not install.
         replacement = [key for key, value in op.executor.orch.ui_sessions.items()
                        if value == {"sub": "replacement"}]
         assert len(replacement) == 1
@@ -342,7 +335,6 @@ async def test_cancellation_after_permit_charges_before_releasing_private_contex
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    # The shielded observer finishes independently of the cancelled transport.
     for _ in range(100):
         [action] = await actions(op)
         if action.state == "failed":
@@ -366,8 +358,6 @@ async def test_live_consented_scope_change_denies_old_intent_and_cached_content(
     permissions.register_tool_scopes("web-research-1", {"fetch_page": "tools:search"})
     await asyncio.to_thread(permissions.set_agent_scopes, op.owner, "web-research-1",
                             {"tools:read": True, "tools:search": True})
-    # Consent alone cannot expand this closed profile. The changed scope must
-    # be refused before an authority refresh or reuse of the stored action.
     with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
         await op.executor.refresh(REQUEST)
     with pytest.raises(DispatchDenied, match="assignment_operation_profile_unavailable"):
@@ -511,8 +501,6 @@ async def test_required_governed_adapter_refusal_prevents_reader_permit(operatio
 @pytest.mark.asyncio
 async def test_genuine_v1_ledger_refuses_new_reader_but_authentic_settlement_charges_once(operation):
     op = operation
-    # Exact historical 718 public API output, also used by Plane's migration
-    # and legacy settlement tests. This does not mint v1 work through new APIs.
     relative = "tests/fixtures/session_incarnation_088001.json"
     candidates = [Path(__file__).parents[3] / "components/AstralPlane" / relative,
                   Path(astralplane.__file__).resolve().parents[2] / relative]

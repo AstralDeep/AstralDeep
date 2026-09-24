@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Run every backend/module suite in isolated processes and retain honest results.
-
-This is a CI test producer, not a production-readiness decision. Live-provider,
-real-authentication, LETS-enforce and media acceptance remain staging gates.
-The caller must provision a disposable PostgreSQL server; no default DSN exists.
+"""Runs every backend/module test suite in isolated processes against a
+caller-provisioned disposable PostgreSQL server and writes JUnit results; a CI test
+producer only, not a production-readiness decision.
 """
 
 from __future__ import annotations
@@ -24,7 +22,6 @@ POLICY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def source_identity(root: Path) -> str:
-    """Bind a clean checkout; a commit ID alone cannot identify local edits."""
     result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
                             capture_output=True, text=True, check=True)
     import re
@@ -51,12 +48,11 @@ def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
 
 
 def suite_paths(root: Path) -> list[Path]:
-    """Discover nested suites that backend/pytest.ini does not collect."""
     suites = set()
     for test in (root / "backend").rglob("test_*.py"):
         relative = test.relative_to(root / "backend")
         if relative.parts[0] == "voice_agent":
-            continue  # Dedicated locked worker image; not a backend dependency.
+            continue
         for index, part in enumerate(relative.parts[:-1]):
             if part in {"tests", "suites"}:
                 suites.add(Path(*relative.parts[: index + 1]))
@@ -69,7 +65,6 @@ def suite_paths(root: Path) -> list[Path]:
 
 
 def require_isolated_postgres(environ: dict[str, str]) -> None:
-    """Refuse absent, mismatched or non-disposable database targets."""
     import psycopg2
 
     url = environ.get("DATABASE_URL", "")
@@ -93,7 +88,6 @@ def require_isolated_postgres(environ: dict[str, str]) -> None:
 
 
 def junit_result(path: Path) -> dict:
-    """Keep every skip visible; database-unavailable skips can never pass CI."""
     document = ET.parse(path).getroot()
     cases = document.findall(".//testcase")
     skipped = []
@@ -122,7 +116,6 @@ def junit_result(path: Path) -> dict:
 
 
 def verify_inventory(path: Path, junit: Path, *, source_commit: str, suite: str) -> None:
-    """Require the completed JUnit cases to equal the pre-execution collection."""
     inventory = json.loads(path.read_text(encoding="utf-8"))
     if (type(inventory) is not dict
             or set(inventory) != {"schema_version", "suite", "source_commit", "tests"}
@@ -140,7 +133,6 @@ def verify_inventory(path: Path, junit: Path, *, source_commit: str, suite: str)
 
 @contextmanager
 def isolated_suite_database(environ: dict[str, str]):
-    """Give each process a new database; never reuse another suite's fixtures."""
     import psycopg2
     from psycopg2 import sql
 
@@ -175,14 +167,11 @@ def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
     environ.update({
         "PYTHON_DOTENV_DISABLED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
-        # The producer and immediate-failure plugin come from the separately
-        # mounted protected policy when this is a protected qualification run.
         "PYTHONPATH": os.pathsep.join((str(POLICY_ROOT / "scripts"),
                                       str(root / "backend"), str(root))),
         "COVERAGE_FILE": str(output / ".coverage"),
         "ASTRAL_ENV": "development",
     })
-    # A fresh report is mandatory, even when reusing the output directory.
     subprocess.run([sys.executable, "-m", "coverage", "erase"], env=environ, check=True)
     results = []
     plan = {"schema_version": 1, "source_commit": source_commit,
@@ -194,7 +183,7 @@ def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
     for cwd, suite, name in commands:
         name = name.replace("\\", "-")
         junit = output / f"{name}.xml"
-        # Prevent a failed producer from reusing the previous run's result.
+        # Deleted first: a crash must not reuse the old result
         junit.unlink(missing_ok=True)
         inventory = output / f"{name}.inventory.json"
         inventory.unlink(missing_ok=True)

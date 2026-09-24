@@ -1,10 +1,5 @@
-"""Product adapter for Plane-owned per-turn attachment links.
-
-Feature 031-attachment-upload-parsing. Records which attachments a user
-included on a sent chat turn so the orchestrator can (a) deliver structured
-references to the handling agent and (b) re-hydrate them on ``load_chat``.
-
-All reads are user-scoped; a caller only ever sees its own links.
+"""Records which attachments a user attached to a sent chat turn, and re-hydrates them
+on load, for orchestrator.py; all reads are scoped to the requesting user.
 """
 
 from __future__ import annotations
@@ -32,8 +27,6 @@ def _to_dict(record) -> dict:
 
 
 class MessageAttachmentRepository:
-    """Product-shape adapter over Plane's message-attachment repository."""
-
     def __init__(
         self,
         db=None,
@@ -58,8 +51,6 @@ class MessageAttachmentRepository:
 
     @classmethod
     def from_plane_source(cls, source) -> "MessageAttachmentRepository":
-        """Bind to an application-scoped Plane runtime/catalog source."""
-
         runtime = getattr(source, "plane_runtime", None) or getattr(source, "runtime", None)
         repositories = getattr(source, "plane_repositories", None) or getattr(
             source, "repositories", None
@@ -76,7 +67,6 @@ class MessageAttachmentRepository:
         user_id: str,
         message_id: Optional[str] = None,
     ) -> str:
-        """Insert one turn→attachment link and return its row id."""
         row_id = str(uuid.uuid4())
         now_ms = max(int(time.time() * 1000), self._last_created_at + 1)
         self._last_created_at = now_ms
@@ -92,7 +82,6 @@ class MessageAttachmentRepository:
         return row_id
 
     def list_for_chat(self, chat_id: str, user_id: str) -> List[dict]:
-        """All attachment links for *chat_id* owned by *user_id*, oldest first."""
         records = self._artifacts.call(
             self._artifacts.repository.message_attachments.list_for_conversation,
             owner_id=user_id,
@@ -101,7 +90,6 @@ class MessageAttachmentRepository:
         return [_to_dict(record) for record in records]
 
     def list_for_message(self, message_id: str, user_id: str) -> List[dict]:
-        """All attachment links for a specific persisted user message."""
         records = self._artifacts.call(
             self._artifacts.repository.message_attachments.list_for_message,
             owner_id=user_id,
@@ -109,7 +97,6 @@ class MessageAttachmentRepository:
         )
         return [_to_dict(record) for record in records]
 
-    # ── async facade (event-loop-safe twins of the sync methods above) ────
     async def ainsert(
         self,
         *,
@@ -118,18 +105,15 @@ class MessageAttachmentRepository:
         user_id: str,
         message_id: Optional[str] = None,
     ) -> str:
-        """Async twin of :meth:`insert`, run off the event loop."""
         return await asyncio.to_thread(
             self.insert, chat_id=chat_id, attachment_id=attachment_id,
             user_id=user_id, message_id=message_id,
         )
 
     async def alist_for_chat(self, chat_id: str, user_id: str) -> List[dict]:
-        """Async twin of :meth:`list_for_chat`, run off the event loop."""
         return await asyncio.to_thread(self.list_for_chat, chat_id, user_id)
 
     async def alist_for_message(self, message_id: str, user_id: str) -> List[dict]:
-        """Async twin of :meth:`list_for_message`, run off the event loop."""
         return await asyncio.to_thread(self.list_for_message, message_id, user_id)
 
 

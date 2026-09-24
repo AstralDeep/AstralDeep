@@ -1,4 +1,7 @@
-"""Application-scoped AstralPlane and LETS composition for AstralDeep."""
+"""Composes AstralPlane and LETS adapters into one application-scoped runtime graph for
+AstralDeep, binding component seams only once every dependency is ready and tearing
+them down in dependency order on close.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +24,6 @@ from orchestrator.plane_composition import (
 
 @dataclass(slots=True)
 class AstralRuntimeComposition:
-    """One initialized data plane and its product-owned LETS adapters."""
-
     plane: InitializedPlaneComposition
     lets: LetsRuntimeComposition
     _bound: bool = False
@@ -34,8 +35,6 @@ class AstralRuntimeComposition:
     )
 
     def bind(self, orchestrator: Any) -> None:
-        """Publish component seams only after every dependency is ready."""
-
         if self._lifecycle_state != "open":
             raise RuntimeError("runtime composition is closing")
         if self._bound:
@@ -63,8 +62,6 @@ class AstralRuntimeComposition:
         self._bound = True
 
     def start(self) -> tuple[object, ...]:
-        """Start bounded recovery only after local binding is complete."""
-
         if self._lifecycle_state != "open":
             raise RuntimeError("runtime composition is closing")
         if not self._bound:
@@ -73,8 +70,6 @@ class AstralRuntimeComposition:
         return (*tuple(self.lets.start_reconcilers()), purge_task)
 
     def abort(self) -> None:
-        """Synchronously release a graph that never entered background work."""
-
         if self._lifecycle_state == "closed":
             return
         if self._lifecycle_state != "open":
@@ -107,8 +102,6 @@ class AstralRuntimeComposition:
         self._lifecycle_state = "closed"
 
     async def close(self) -> None:
-        """Join one cancellation-safe teardown shared by every close caller."""
-
         loop = asyncio.get_running_loop()
         task = self._close_task
         if task is None:
@@ -125,8 +118,6 @@ class AstralRuntimeComposition:
         await _join_close_through_cancellation(task)
 
     async def _close_components(self) -> None:
-        """Close the graph in dependency order without blocking the event loop."""
-
         current = asyncio.current_task()
         errors: list[BaseException] = []
         try:
@@ -162,8 +153,6 @@ class AstralRuntimeComposition:
 
 
 def _unbind_plane_consumers(plane: InitializedPlaneComposition) -> None:
-    """Release process bindings owned by this exact application composition."""
-
     from agents.general.file_tools import unregister_plane_dependencies
     from shared.attachment_materializer import unregister_materialization_service
     from shared.attachment_resolver import unregister_plane_runtime
@@ -195,8 +184,6 @@ def _raise_cleanup_errors(message: str, errors: list[BaseException]) -> None:
 
 
 async def _run_sync_close(callback: Any) -> None:
-    """Run final blocking Plane/blob/pool teardown on its own one-shot lane."""
-
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(
         max_workers=1,
@@ -205,15 +192,10 @@ async def _run_sync_close(callback: Any) -> None:
     try:
         await loop.run_in_executor(executor, callback)
     finally:
-        # The submitted callback has completed before this boundary, so this
-        # never waits on the event-loop thread.  A dedicated lane prevents
-        # shutdown from consuming the shared default executor used elsewhere.
         executor.shutdown(wait=False, cancel_futures=False)
 
 
 async def close_blocking_component(callback: Any) -> None:
-    """Join one blocking component close through repeated task cancellation."""
-
     task = asyncio.create_task(
         _run_sync_close(callback),
         name="astral-blocking-component-close",
@@ -222,8 +204,6 @@ async def close_blocking_component(callback: Any) -> None:
 
 
 async def _join_close_through_cancellation(task: asyncio.Task[None]) -> None:
-    """Observe the shared teardown before propagating repeated cancellation."""
-
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -240,8 +220,6 @@ def compose_astral_runtime(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> AstralRuntimeComposition:
-    """Construct the full component graph without leaking a partial Plane."""
-
     plane = compose_plane_from_environment(manifest_path, environ=environ)
     try:
         lets = compose_lets_runtime(

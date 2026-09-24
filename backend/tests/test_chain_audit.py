@@ -1,10 +1,8 @@
-"""T018 (056-delegated-agent-chaining): paired hop provenance records.
-
-Every hop emits a ``delegation.hop.mint`` / ``delegation.hop.enforce`` pair
-under the ``delegation`` event class, sharing one correlation id with the
-hop's own ``tool.<name>.start/end`` pair — and NEVER carrying token bytes
-(FR-028).
+"""Tests for delegated-hop audit provenance (backend/orchestrator/delegation.py,
+audit/recorder.py): paired hop mint/enforce records share the tool call's correlation
+id, exclude token bytes, and cover gate refusals.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,9 +44,6 @@ def orch():
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    # These tests exercise the real delegation and dispatch methods while
-    # replacing every external collaborator.  Avoid composing the
-    # application-scoped Plane graph for this pure unit boundary.
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}
@@ -123,13 +118,10 @@ async def test_paired_hop_records_share_one_correlation(orch, captured):
     assert hop_rows[1].outcome == "success"
     corr = {r.correlation_id for r in hop_rows}
     assert len(corr) == 1
-    # The hop's tool.start/end pair shares the SAME correlation id (SC-003).
     tool_rows = [r for r in rows if r.event_class == "agent_tool_call"]
     assert {r.correlation_id for r in tool_rows} == corr
     assert [r.action_type for r in tool_rows] == [
         "tool.peer_tool.start", "tool.peer_tool.end"]
-    # Hop rows attribute the human authorizer + the acting agent; tool rows
-    # name the initiating agent as the RFC 8693 actor.
     for r in hop_rows:
         assert r.actor_user_id == "u1"
         assert r.auth_principal == "agent:callee-1"
@@ -151,15 +143,12 @@ async def test_hop_records_carry_metadata_never_token_bytes(orch, captured):
     assert meta["actor_chain"] == ["agent:callee-1", "agent:initiator-1"]
     assert "granted_scopes" in meta and "requested_scopes" in meta
     serialized = json.dumps([r.model_dump(mode="json") for r in rows], default=str)
-    # FR-028: no token material anywhere in any record.
     assert token not in serialized
-    assert token.split(".")[2] not in serialized  # nor its signature segment
+    assert token.split(".")[2] not in serialized
 
 
 @pytest.mark.asyncio
 async def test_gate_refused_hop_is_audited(orch, captured):
-    """SC-002: a hop refused by a gate that fires BEFORE the delegation step
-    (here: the explicit per-user opt-out) still carries audit evidence."""
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=False)
     resp, _ = await _hop(orch, _parent())
     assert "restricted for this agent" in (resp.error or {}).get("message", "")
@@ -183,8 +172,6 @@ async def test_refused_hop_audits_failure_with_scope_evidence(orch, captured):
     assert r.action_type == "delegation.hop.mint"
     assert r.outcome == "failure"
     assert r.outcome_detail == "empty_intersection"
-    # FR-005: requested-vs-granted recorded.
     assert r.inputs_meta["requested_scopes"]
     assert r.inputs_meta["granted_scopes"] == []
-    # No tool dispatch happened, so no agent_tool_call rows.
     assert not [x for x in rows if x.event_class == "agent_tool_call"]

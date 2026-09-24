@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""
-Journal Review Agent — A2A-compliant specialist for evaluating scientific journals
-and recommending optimal publication venues for research papers.
-
-Provides tools for:
-- Finding matching journals for a paper's topic, keywords, and abstract
-- Detailed journal profiles (impact, scope, timelines, submission info)
-- Side-by-side journal comparisons on key metrics
-- Paper-to-journal fit scoring and analysis
-- Field landscape overviews (top journals by discipline)
+"""A2A-compliant Journal Review agent: matches papers to journals, profiles and compares
+journals, and surveys a field's publishing landscape, dispatched through
+mcp_server.py.
 """
 import asyncio
 import os
@@ -25,8 +18,6 @@ logging.basicConfig(level=logging.INFO,
 
 
 class JournalReviewAgent(BaseA2AAgent):
-    """Specialist agent for evaluating scientific journals and recommending publication venues."""
-
     agent_id = "journal-review-1"
     service_name = "Journal Review Agent"
     description = (

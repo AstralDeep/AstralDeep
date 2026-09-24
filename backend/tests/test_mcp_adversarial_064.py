@@ -1,3 +1,8 @@
+"""Tests for orchestrator/mcp_server_endpoint.py and mcp_projection.py: the shared
+destructive-tool gate covers every adversarial category over MCP, and delegation
+mints fresh credentials without an inbound bearer.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,9 +33,6 @@ ADVERSARIAL_CATEGORIES = {
 
 
 def test_all_fr056_adversarial_categories_have_cases():
-    # Endpoint cases live in test_mcp_endpoint_064; this guard keeps the named
-    # FR-056 inventory explicit so a future test refactor cannot silently lose
-    # an entire attack category.
     covered = {
         "unknown_field_tolerance": 20,
         "foreign_audience_refusal": 20,

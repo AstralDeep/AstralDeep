@@ -1,22 +1,8 @@
-"""FR-019 regression test (feature 054 successor of the 006 FR-009 rule):
-no runtime fallback ACROSS credential contexts, in either direction.
-
-Feature 006's rule was "a user's failed call never silently retries on the
-operator `.env` default". Feature 054 removed the operator default entirely;
-the successor invariant is stricter and structural:
-
-* A **user-context** resolution (live user socket) reads ONLY the caller's
-  persisted ``user_llm_config`` record. When that record is absent, the
-  resolution raises :class:`LLMUnavailable` — it must NEVER consult or
-  consume the admin-managed system record, even when one exists.
-* A **system-context** resolution (``websocket is None`` / scheduled-turn
-  ``VirtualWebSocket``) reads ONLY the system record and never any user's.
-
-The tests bind the REAL ``Orchestrator._resolve_llm_client_for`` /
-``_llm_context_user_id`` onto a bare instance with an instrumented store,
-so the invariant is proven against the shipped resolution code without a
-database or network.
+"""Tests for orchestrator/orchestrator.py's _resolve_llm_client_for: a user-context
+resolution reads only that user's llm_config, a system-context (no websocket)
+resolution reads only the system record, and neither ever falls back to the other.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -48,7 +34,6 @@ def _user_config() -> PersistedLLMConfig:
 
 
 def _bare_orch(*, user_record=None, system_record=None):
-    """A bare Orchestrator with the real resolver and a spy store."""
     orch = Orchestrator.__new__(Orchestrator)
     orch._CredentialSource = CredentialSource
     orch._LLMUnavailable = LLMUnavailable
@@ -70,8 +55,6 @@ def _user_ws(orch, user_id="u1"):
 
 @pytest.mark.asyncio
 async def test_user_context_without_record_never_falls_back_to_system():
-    """Seed ONLY the system record: resolving for a live user socket raises
-    LLMUnavailable and never even READS the system record."""
     orch = _bare_orch(user_record=None, system_record=_system_config())
     ws = _user_ws(orch)
 
@@ -84,8 +67,6 @@ async def test_user_context_without_record_never_falls_back_to_system():
 
 @pytest.mark.asyncio
 async def test_user_context_resolves_only_the_callers_record():
-    """With a user record present, resolution is tagged USER and carries the
-    user's endpoint/model — the system record stays untouched."""
     orch = _bare_orch(user_record=_user_config(),
                       system_record=_system_config())
     ws = _user_ws(orch)
@@ -100,8 +81,6 @@ async def test_user_context_resolves_only_the_callers_record():
 
 @pytest.mark.asyncio
 async def test_system_context_never_reads_user_records():
-    """websocket=None (background/system work) resolves the SYSTEM record and
-    never touches any per-user record."""
     orch = _bare_orch(user_record=_user_config(),
                       system_record=_system_config())
 
@@ -114,8 +93,6 @@ async def test_system_context_never_reads_user_records():
 
 @pytest.mark.asyncio
 async def test_system_context_without_record_is_unavailable_not_user_fallback():
-    """Seed ONLY a user record: a system-context resolution raises
-    LLMUnavailable rather than borrowing any user's credentials."""
     orch = _bare_orch(user_record=_user_config(), system_record=None)
 
     with pytest.raises(LLMUnavailable):
@@ -125,16 +102,12 @@ async def test_system_context_without_record_is_unavailable_not_user_fallback():
 
 
 def test_factory_refuses_retired_operator_default_source():
-    """No new call may carry the retired OPERATOR_DEFAULT source — the
-    factory itself rejects it, making the old fallback unrepresentable."""
     with pytest.raises(ValueError):
         build_llm_client(_user_config(), CredentialSource.OPERATOR_DEFAULT)
 
 
 @pytest.mark.asyncio
 async def test_scheduled_turn_virtualwebsocket_is_system_context():
-    """A scheduled-turn VirtualWebSocket resolves the SYSTEM record (never a
-    user record), matching the runner's documented context rule."""
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
     orch = _bare_orch(user_record=_user_config(),

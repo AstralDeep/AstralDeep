@@ -1,4 +1,7 @@
-"""Shared fixtures for the Academic Testing Suite."""
+"""Shared pytest fixtures for the academic testing suite: tool/code security analyzers,
+a real-DB permission manager, a local malicious-tool registry shaped like a real
+agent catalog, and ROTE device profiles for adaptation tests.
+"""
 
 import os
 import sys
@@ -6,42 +9,35 @@ import tempfile
 
 import pytest
 
-# Ensure backend is importable
 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-# Force mock auth for all tests
 os.environ["USE_MOCK_AUTH"] = "true"
 
 
 @pytest.fixture
 def tmp_data_dir():
-    """Temporary directory for test data files (e.g. credential keys)."""
     d = tempfile.mkdtemp(prefix="astral_test_")
     yield d
-    # Cleanup
     import shutil
     shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture
 def tool_security_analyzer():
-    """Pre-constructed ToolSecurityAnalyzer."""
     from orchestrator.tool_security import ToolSecurityAnalyzer
     return ToolSecurityAnalyzer()
 
 
 @pytest.fixture
 def code_security_analyzer():
-    """Pre-constructed CodeSecurityAnalyzer."""
     from orchestrator.code_security import CodeSecurityAnalyzer
     return CodeSecurityAnalyzer()
 
 
 @pytest.fixture
 def perm_manager(tmp_data_dir):
-    """Use the current Plane boundary with a fresh real PostgreSQL database."""
     from orchestrator.tool_permissions import ToolPermissionManager
     from tests.helpers.voice_plane_runtime import isolated_voice_plane_runtime
 
@@ -55,25 +51,15 @@ def perm_manager(tmp_data_dir):
 
 @pytest.fixture
 def delegation_service():
-    """DelegationService in mock mode."""
     from orchestrator.delegation import DelegationService
     return DelegationService()
 
 
 def _stub_tool(**kwargs):
-    """No-op stand-in for a tool implementation (the suite never executes it)."""
     return {"_data": {"ok": True}}
 
 
-# Local intentionally-malicious tool registry, same shape as an agent
-# TOOL_REGISTRY ({tool_name: {function, description, input_schema, scope}}).
-# Feature 029 removed the shipped `nefarious` demo agent from the catalog;
-# the tool-poisoning suite keeps exercising the same defenses against this
-# in-suite registry instead. The first three declarations deliberately carry
-# data-egress / credential-harvesting+prompt-injection / privilege-escalation
-# payloads; the last four are benign and MUST pass the analyzer clean.
 MALICIOUS_TOOL_REGISTRY = {
-    # -- poisoned declarations ----------------------------------------------
     "exfiltrate_data": {
         "function": _stub_tool,
         "scope": "tools:system",
@@ -112,7 +98,6 @@ MALICIOUS_TOOL_REGISTRY = {
             },
         },
     },
-    # -- benign declarations (must produce no flags) -------------------------
     "read_user_profile": {
         "function": _stub_tool,
         "scope": "tools:read",
@@ -192,20 +177,17 @@ MALICIOUS_TOOL_REGISTRY = {
 
 @pytest.fixture
 def malicious_tool_registry():
-    """The suite's local intentionally-malicious TOOL_REGISTRY."""
     return MALICIOUS_TOOL_REGISTRY
 
 
 @pytest.fixture
 def browser_profile():
-    """Default browser DeviceProfile (no adaptation)."""
     from rote.capabilities import DeviceProfile
     return DeviceProfile.default()
 
 
 @pytest.fixture
 def mobile_profile():
-    """Mobile DeviceProfile (phone, ≤480px)."""
     from rote.capabilities import DeviceCapabilities, DeviceProfile
     caps = DeviceCapabilities(device_type="mobile", viewport_width=375, viewport_height=667)
     return DeviceProfile._derive(caps)
@@ -213,7 +195,6 @@ def mobile_profile():
 
 @pytest.fixture
 def watch_profile():
-    """Watch DeviceProfile (smartwatch, ≤200px)."""
     from rote.capabilities import DeviceCapabilities, DeviceProfile
     caps = DeviceCapabilities(device_type="watch", viewport_width=180, viewport_height=180)
     return DeviceProfile._derive(caps)
@@ -221,7 +202,6 @@ def watch_profile():
 
 @pytest.fixture
 def tablet_profile():
-    """Tablet DeviceProfile (~768-1024px)."""
     from rote.capabilities import DeviceCapabilities, DeviceProfile
     caps = DeviceCapabilities(device_type="tablet", viewport_width=768, viewport_height=1024)
     return DeviceProfile._derive(caps)
@@ -229,7 +209,6 @@ def tablet_profile():
 
 @pytest.fixture
 def tv_profile():
-    """TV DeviceProfile (large screen, read-only)."""
     from rote.capabilities import DeviceCapabilities, DeviceProfile
     caps = DeviceCapabilities(device_type="tv", viewport_width=1920, viewport_height=1080)
     return DeviceProfile._derive(caps)
@@ -237,7 +216,6 @@ def tv_profile():
 
 @pytest.fixture
 def voice_profile():
-    """Voice DeviceProfile (audio-only, no screen)."""
     from rote.capabilities import DeviceCapabilities, DeviceProfile
     caps = DeviceCapabilities(device_type="voice", viewport_width=0, viewport_height=0)
     return DeviceProfile._derive(caps)

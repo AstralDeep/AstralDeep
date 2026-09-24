@@ -1,3 +1,7 @@
+"""Dice Roller's sole tool: rolls a bounded set of six-sided dice with normalized
+metadata, registered in TOOL_REGISTRY for mcp_server.py.
+"""
+
 import os
 import random
 import sys
@@ -17,23 +21,6 @@ MAX_DICE = 100
 
 
 def roll_dice(n: int = 1, sides: int = DIE_SIDES) -> Dict[str, Any]:
-    """Roll one bounded set of six-sided dice with normalized metadata.
-
-    The tool deliberately supports only d6 rolls. Unsupported quantities or
-    side counts are rejected instead of being silently clamped, so a caller
-    cannot successfully request d20 and then narrate d6 results as d20.
-
-    Args:
-        n: Number of dice, inclusive between ``MIN_DICE`` and ``MAX_DICE``.
-        sides: Side count. The only supported value is ``DIE_SIDES``.
-
-    Returns:
-        A component response plus the normalized input/result record used by
-        release-smoke narrative checks.
-
-    Raises:
-        ValueError: If a quantity or side count is unsupported.
-    """
     if type(n) is not int or not MIN_DICE <= n <= MAX_DICE:
         raise ValueError(
             f"n must be an integer between {MIN_DICE} and {MAX_DICE}"

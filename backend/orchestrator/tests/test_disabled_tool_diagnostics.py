@@ -1,4 +1,9 @@
-"""Tests for Orchestrator._diagnose_disabled_tool and _alert_for_disabled_tool."""
+"""Tests for orchestrator/orchestrator.py's _diagnose_disabled_tool,
+_alert_for_disabled_tool, and leaked tool-name extraction: owner lookup,
+picker/disable priority, machineless remote-verb diagnosis, and DSML/OpenAI/Qwen
+leak-pattern parsing.
+"""
+
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -55,7 +60,6 @@ def _make_orch(cards: dict, *,
                chat_to_agent: dict = None,
                owns_remote_machine: bool = True,
                remote_probe_fails: bool = False) -> Orchestrator:
-    """Build a partially-initialized Orchestrator for unit tests."""
     orch = Orchestrator.__new__(Orchestrator)
     orch.agent_cards = cards
     orch.security_flags = security_flags or {}
@@ -87,9 +91,6 @@ def _make_orch(cards: dict, *,
     return orch
 
 
-# -- _find_tool_owner ---------------------------------------------------------
-
-
 def test_find_tool_owner_returns_owning_agent() -> None:
     orch = _make_orch({
         "general-1": _make_card("general-1", ["read_spreadsheet", "ocr"], display_name="General"),
@@ -108,9 +109,6 @@ def test_find_tool_owner_handles_empty() -> None:
     orch = _make_orch({})
     assert orch._find_tool_owner("") is None
     assert orch._find_tool_owner(None) is None
-
-
-# -- _diagnose_disabled_tool --------------------------------------------------
 
 
 def test_diagnose_unknown_tool() -> None:
@@ -152,7 +150,6 @@ def test_diagnose_disabled_in_picker() -> None:
     orch = _make_orch(
         cards,
         chat_to_agent={"chat-1": "general-1"},
-        # The user picked only "ocr" for this chat; read_spreadsheet is excluded.
         saved_selection={("alice", "general-1"): ["ocr"]},
     )
     diag = orch._diagnose_disabled_tool("read_spreadsheet", "alice", "chat-1")
@@ -173,13 +170,12 @@ def test_diagnose_enabled_when_picker_includes_tool() -> None:
 
 def test_diagnose_enabled_when_no_filters_apply() -> None:
     cards = {"general-1": _make_card("general-1", ["read_spreadsheet"])}
-    orch = _make_orch(cards)  # no disable, no flag, allowed, no saved selection
+    orch = _make_orch(cards)
     diag = orch._diagnose_disabled_tool("read_spreadsheet", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.ENABLED
 
 
 def test_priority_user_disable_beats_picker() -> None:
-    """If the agent is wholly disabled, that beats a per-chat picker subset."""
     cards = {"general-1": _make_card("general-1", ["read_spreadsheet", "ocr"])}
     orch = _make_orch(
         cards,
@@ -192,8 +188,6 @@ def test_priority_user_disable_beats_picker() -> None:
 
 
 def test_diagnose_machineless_remote_verb() -> None:
-    """A remote verb hidden by the machineless subtraction gets the honest
-    diagnosis (register a machine), not the ENABLED format-mismatch alert."""
     cards = {"remote-compute-1": _make_card(
         "remote-compute-1", ["job_status", "list_machines"], display_name="Remote Compute"
     )}
@@ -222,9 +216,6 @@ def test_diagnose_machineless_probe_error_falls_through() -> None:
     orch = _make_orch(cards, remote_probe_fails=True)
     diag = orch._diagnose_disabled_tool("job_status", "alice", "chat-1")
     assert diag.status is ToolDiagnosticStatus.ENABLED
-
-
-# -- _alert_for_disabled_tool -------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -273,9 +264,6 @@ def test_alert_unknown_tool_does_not_require_agent_label() -> None:
     alert = Orchestrator._alert_for_disabled_tool(diag, "wat_tool")
     assert "wat_tool" in alert.message
     assert alert.variant == "error"
-
-
-# -- _tool_names_from_leak ----------------------------------------------------
 
 
 def test_tool_names_from_dsml_invoke() -> None:

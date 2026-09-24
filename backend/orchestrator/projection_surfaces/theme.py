@@ -1,17 +1,8 @@
-"""Deep-owned host adapter for the Theme Projection surface.
-
-Preset cards (midnight / daylight / ocean / sunset / forest) whose swatch
-strips are rendered from a server-side copy of the ``client.js`` ``PRESETS``
-hex maps, plus per-key ``color_picker`` primitives (embedded via
-``render_one`` so the existing client-side ``save_theme`` round-trip and
-``processSideEffects`` wiring keep working — contracts/settings-surfaces.md).
-
-Persistence uses Plane's owner-scoped theme-preference contract.  It replaces
-the bounded ``theme`` document while preserving every unrelated preference.
-Selecting a preset is explicit-save (FR-016), and the re-render notice embeds a
-rendered ``theme_apply`` block so the client applies the CSS variables
-instantly on insert.
+"""Renders the Theme surface: preset color cards plus per-key color pickers, persisted
+through Plane's owner-scoped theme preference and mirrored into client.js's PRESETS
+map. Saving embeds a theme_apply block so the client restyles instantly.
 """
+
 import asyncio
 import json
 import logging
@@ -25,8 +16,6 @@ logger = logging.getLogger("Orchestrator.Chrome")
 
 TITLE = "Theme"
 
-# Server-side duplicate of the client.js PRESETS hex maps (swatch rendering +
-# current-value resolution). Keep in sync with webrender/static/client.js.
 PRESETS = {
     "midnight": {"bg": "#0F1221", "surface": "#1A1E2E", "primary": "#6366F1",
                  "secondary": "#8B5CF6", "text": "#F3F4F6", "muted": "#9CA3AF",
@@ -45,9 +34,8 @@ PRESETS = {
                "accent": "#A3E635"},
 }
 
-_DEFAULT_PRESET = "midnight"  # matches the :root palette in static/astral.css
+_DEFAULT_PRESET = "midnight"
 
-# (key, label) in display order — the seven --astral-* CSS variables.
 _COLOR_KEYS = [
     ("bg", "Background"),
     ("surface", "Surface"),
@@ -62,8 +50,6 @@ _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 
 def _theme_context(orch):
-    """Resolve the owner-scoped Plane theme repository from app composition."""
-
     from orchestrator.plane_repository_context import (
         PlaneRepositoryContext,
         plane_source_from_orchestrator,
@@ -80,7 +66,6 @@ def _theme_context(orch):
 
 
 def _normalize_hex(value) -> str:
-    """Return ``#RRGGBB`` for a valid 6-digit hex string, else ``""``."""
     s = str(value or "").strip()
     if not _HEX_RE.match(s):
         return ""
@@ -88,7 +73,6 @@ def _normalize_hex(value) -> str:
 
 
 def _stored_theme(orch, user_id: str) -> dict:
-    """Persisted ``theme`` dict from user preferences ({} when absent/bad)."""
     try:
         context = _theme_context(orch)
         record = context.call(context.repository.get, owner_id=user_id)
@@ -102,18 +86,11 @@ def _stored_theme(orch, user_id: str) -> dict:
 
 
 def _save_theme(orch, user_id: str, theme: dict) -> None:
-    """Replace the caller's bounded theme document through Plane."""
-
     context = _theme_context(orch)
     context.call(context.repository.put, owner_id=user_id, theme=theme)
 
 
 def _effective_colors(theme: dict) -> dict:
-    """Resolve the per-key hex values the client would currently show.
-
-    Mirrors ``applyTheme`` in client.js (preset > colors > color_key/value),
-    overlaid on the midnight defaults; invalid hex values are ignored.
-    """
     colors = dict(PRESETS[_DEFAULT_PRESET])
     preset = theme.get("preset")
     if isinstance(preset, str) and preset in PRESETS:
@@ -134,7 +111,6 @@ def _effective_colors(theme: dict) -> dict:
 
 
 def _summary_text(theme: dict) -> str:
-    """Human-readable description of the persisted theme."""
     preset = theme.get("preset")
     if isinstance(preset, str) and preset in PRESETS:
         return f"Current theme: {preset.capitalize()} preset (saved)."
@@ -144,7 +120,6 @@ def _summary_text(theme: dict) -> str:
 
 
 def _preset_card(name: str, active: bool) -> str:
-    """One clickable preset card with its seven-color swatch strip."""
     payload = esc(json.dumps({"preset": name}))
     swatches = "".join(
         f'<span class="flex-1 h-6" style="background:{esc(PRESETS[name][key])}"></span>'
@@ -168,7 +143,6 @@ def _preset_card(name: str, active: bool) -> str:
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Render the Theme surface body: summary, preset cards, color pickers."""
     theme = await asyncio.to_thread(_stored_theme, orch, user_id)
     active_preset = theme.get("preset") if theme.get("preset") in PRESETS else None
     colors = _effective_colors(theme)
@@ -193,28 +167,12 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def components(orch, user_id, roles, params):
-    """Feature 043 — the Theme surface as native SDUI components.
-
-    Same data + the SAME ``chrome_theme_preset`` action as ``render()``; the
-    per-key ``color_picker`` primitives are reused verbatim (US3 live restyle is
-    the native client's job — the handler already ships the chosen preset).
-    """
     theme = await asyncio.to_thread(_stored_theme, orch, user_id)
     active = theme.get("preset") if theme.get("preset") in PRESETS else None
     colors = _effective_colors(theme)
 
     out = []
-    # Native live restyle — the twin of the web notice's embedded theme_apply
-    # block: ship the effective theme as a `theme_apply` side-effect component
-    # so applying a preset restyles the RUNNING app immediately (the Android /
-    # Windows renderers consume theme_apply natively; without this the preset
-    # only persisted and the app never changed until restart). Skipped when the
-    # user has never saved a theme, leaving the client default palette alone.
     if theme:
-        # Always ship the fully-resolved channel map (feature 044): clients
-        # apply `colors` directly instead of needing a hand-copied preset hex
-        # table; `preset` rides along as metadata (every client gives a KNOWN
-        # preset precedence, and an unknown one falls through to `colors`).
         spec = {"type": "theme_apply", "message": "Theme applied",
                 "colors": dict(colors)}
         if active:
@@ -249,13 +207,6 @@ async def components(orch, user_id, roles, params):
 
 
 async def _handle_theme_preset(orch, websocket, user_id, roles, payload):
-    """``chrome_theme_preset {preset}`` — persist the preset, re-render.
-
-    Persists ``{"preset": name}`` through Plane's theme-only merge,
-    then returns the surface re-render whose notice embeds a rendered
-    ``theme_apply`` block so client-side ``processSideEffects`` applies the
-    CSS variables instantly.
-    """
     preset = str((payload or {}).get("preset") or "").strip().lower()
     if preset not in PRESETS:
         return ("theme", {}, notice_block("error", f"Unknown theme preset: {preset or '(none)'}"))

@@ -1,8 +1,8 @@
-"""Authenticated one-shot metadata and closed, explicit retained-result reads.
-
-This facade cannot admit, dispatch or control work. It shares the existing
-assignment owner policy and bounded async Plane store.
+"""Read-only facade for one-shot operation metadata, timing/claim measurements, and
+retained results via work_result.py. Cannot admit, dispatch, or control work. Shared
+by work_api.py, work_controls.py, and work_operations.py.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -24,14 +24,9 @@ _DISPOSITIONS = frozenset({
     "completed", "failed", "cancelled", "unsupported_version",
 })
 _USAGE_DIMENSIONS = ("model_calls", "tool_calls", "tokens", "elapsed_ms", "spend_micro_units")
-# Plane's additive charge basis. A dimension is only annotated where its origin
-# is actually known; an absent annotation and an explicit ``None`` both stay as
-# they were written, so an unknown charge can never read as an observed zero.
 _USAGE_BASIS = frozenset({"observed", "estimated", "uncertain", "none"})
 _MONEY_STATUS = frozenset({"unknown", "reported"})
 _TERMINAL_DISPOSITIONS = frozenset({"completed", "failed", "cancelled"})
-# One bounded page each of the action ledger and the activity sequence. A full
-# page is reported as truncated, never silently presented as the whole history.
 MEASUREMENT_PAGE = 100
 
 
@@ -59,7 +54,6 @@ def _time(value):
 
 
 def _basis(basis):
-    """Project Plane's per-dimension charge basis without inventing an origin."""
     if basis is None:
         return None
     if not isinstance(basis, Mapping):
@@ -79,8 +73,6 @@ def _public(read, owner_id):
     if record.owner_id != owner_id or record.execution_profile != "one_shot":
         raise AssignmentError("work_not_found", 404)
     supported = read.continuation_supported is True
-    # Future operation JSON is opaque. Only its already-validated outer
-    # assignment identity/lifecycle may be projected until the schema is known.
     operation = record.operation if supported else {}
     disposition = read.disposition if supported else (
         "cancelled" if record.lifecycle == "stopped" else "unsupported_version"
@@ -105,8 +97,6 @@ def _public(read, owner_id):
         if key not in record.usage:
             continue
         value = record.usage[key]
-        # Absent stays absent and None stays None: neither is a reported value,
-        # and coercing either would claim a disclosure Plane never made.
         if value is not None and (
                 type(value) is not str
                 or (value not in allowed if allowed is not None
@@ -130,7 +120,6 @@ def _public(read, owner_id):
 
 
 def _moment(value):
-    """Return an aware UTC datetime, or None when no instant was recorded."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -141,7 +130,6 @@ def _moment(value):
 
 
 def _span(start, end):
-    """Whole elapsed milliseconds, or None when either bound is unknown."""
     if start is None or end is None:
         return None
     span = int((end - start).total_seconds() * 1000)
@@ -149,7 +137,6 @@ def _span(start, end):
 
 
 def _observed(attempt):
-    """Read one claim's settled elapsed observation, or None when unmeasured."""
     if not isinstance(attempt, Mapping):
         raise ValueError("invalid operation claim")
     outcome = attempt.get("outcome")
@@ -163,12 +150,6 @@ def _observed(attempt):
 
 
 def _task(action):
-    """Project one logical task and the physical claims actually recorded.
-
-    An empty ``attempts`` tuple is reported as zero claims. A task that predates
-    per-claim accounting must not be credited with an attempt that was never
-    written, so nothing here derives a claim from the action's own state.
-    """
     attempts = getattr(action, "attempts", ())
     if type(attempts) is not tuple:
         raise ValueError("invalid operation claims")
@@ -188,15 +169,12 @@ def _task(action):
 
 
 def _intervals(record, activity, terminal):
-    """Split the operation's own window at each recorded activity instant."""
     start = _moment(record.created_at)
     intervals = []
     truncated = False
     for item in activity:
         moment = _moment(item.created_at)
         if moment is None or start is None or moment < start:
-            # An activity row without a usable instant bounds nothing; it is
-            # reported as an unmeasured interval rather than reordered.
             truncated = True
             continue
         intervals.append({"sequence": _integer(item.sequence), "start_at": _time(start),
@@ -210,19 +188,7 @@ def _intervals(record, activity, terminal):
 
 
 def _measurements(public, record, actions, activity):
-    """Join the assignment window, its claim ledger and its activity sequence.
-
-    ``tasks`` are logical (one entry per action the operation actually declared)
-    while ``claims`` counts the physical attempts those tasks recorded, so a
-    single task retried three times reads as 1 task and 3 claims. ``observed_ms``
-    sums only settled claims; ``elapsed_ms`` is the operation's own wall-clock
-    union and stays None while the window is still open. ``incomplete`` marks
-    measurements that do not account for every claim, ``cutoff`` marks a window
-    or page this read could not see the end of.
-    """
     if public["schema_supported"] is not True:
-        # A newer operation's shape is unknown: report no measurement at all
-        # rather than interpreting a future ledger through this vocabulary.
         return {"id": public["id"], "revision": public["revision"],
                 "disposition": public["disposition"], "task_count": None, "claim_count": None,
                 "measured_claim_count": None, "observed_ms": None, "elapsed_ms": None,
@@ -255,16 +221,9 @@ class WorkService:
         self.store = assignments.store
 
     def _owner(self, owner_id, claims):
-        # Reuse the current FF_PERSISTENT_AGENTS, human-owner and private
-        # dispatch-context policy; a second facade must not drift from it.
         self.assignments._owner(owner_id, claims)
 
     async def assert_read_session(self, owner_id, claims, identity):
-        """Recheck the original cookie issuance without cached session lookup.
-
-        This bounded read is the delivery liveness observation, not execution or
-        consent authority. A later retirement can linearize after this read.
-        """
         self._owner(owner_id, claims)
         principal_expiry = claims["exp"]
 
@@ -280,8 +239,6 @@ class WorkService:
                     or (credential.session_id, credential.incarnation_id) != identity
                     or not credential.interactive_anchor <= state.observed_at.timestamp() < cap):
                 raise AssignmentError("work_authentication_required", 401)
-            # The issuance hard cap bounds any longer-lived delivery (SSE); it is
-            # an observation of the stored row, never a renewed credential.
             return float(cap)
 
         return await self.store.transaction(read, bound_session_waits=True)
@@ -314,29 +271,16 @@ class WorkService:
         return await self._read("get_operation", owner_id, assignment_id=_identity(identity))
 
     async def result(self, owner_id, claims, identity):
-        """Read a verified retained result without widening metadata responses."""
         self._owner(owner_id, claims)
         return await self._read("get_operation", owner_id, include_result=True,
                                 assignment_id=_identity(identity))
 
     async def result_view(self, owner_id, claims, identity):
-        """Read presentation metadata and its result from the same operation row.
-
-        This host-only read does not widen the HTTP metadata or result envelopes.
-        Delivery must still recheck the original caller after this transaction.
-        """
         self._owner(owner_id, claims)
         return await self._read("get_operation", owner_id, include_result=True,
                                 include_operation=True, assignment_id=_identity(identity))
 
     async def measurements(self, owner_id, claims, identity):
-        """Read one operation's timing and claim accounting in one transaction.
-
-        Ownership and profile are re-proved by the same public projection every
-        other read uses before the ledger or the activity sequence is touched,
-        so a foreign or persistent assignment is a 404 and never a measurement.
-        Nothing here estimates: an absent observation stays absent.
-        """
         self._owner(owner_id, claims)
         assignment_id = _identity(identity)
 
@@ -349,8 +293,6 @@ class WorkService:
                 raise AssignmentError("work_not_found", 404)
             public = _public(read, owner_id)
             if public["schema_supported"] is not True:
-                # A newer operation's ledger cannot be read through this
-                # vocabulary, so nothing beyond the outer identity is touched.
                 return _measurements(public, read.assignment, (), ())
             actions = repository.list_actions(tx, owner_id=owner_id,
                 assignment_id=assignment_id, limit=MEASUREMENT_PAGE)
@@ -364,7 +306,6 @@ class WorkService:
             raise AssignmentError("work_read_unavailable", 503) from exc
 
     async def _cursor_exists(self, owner_id, after_id):
-        """Resolve a page cursor to a live owned operation without projecting it."""
         def transaction(tx, repository):
             callback = getattr(repository, "get_operation", None)
             if not callable(callback):
@@ -388,14 +329,9 @@ class WorkService:
         if after_id is not None:
             _identity(after_id)
             if not await self._cursor_exists(owner_id, after_id):
-                # The cursor row was deleted (or never belonged to this owner):
-                # the caller's accumulated view is stale, so no page is built on
-                # it. The key is only present when a resync is actually required.
                 return {"operations": [], "next_cursor": None, "page_full": False,
                         "resync_required": True}
         records = await self._read("list_operations", owner_id, limit=limit, after_id=after_id)
-        # A full page offers a continuation probe; it does not assert another
-        # record exists or pretend a concurrent collection has a fixed snapshot.
         full = len(records) == limit
         return {"operations": records, "next_cursor": records[-1]["id"] if full else None,
                 "page_full": full}

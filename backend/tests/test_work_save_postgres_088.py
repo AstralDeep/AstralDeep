@@ -1,8 +1,8 @@
-"""Owner canvas Save through actual IAM, research, publication and audit.
-
-External JWT/JWKS, refresh and source/model replies are signed synthetic fixtures.
-The registered router, completed research proof, sessions and all SQL are real.
+"""Tests for Work Save/publication (backend/orchestrator/work_publication.py,
+work_control_audit.py, AstralPlane workspaces repository): proposal review-then-save,
+digest/revision guards, and refusal on permission or render drift.
 """
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -68,8 +68,6 @@ def _head(value):
     with value.op.runtime.transaction() as tx:
         chat = value.op.runtime.repositories.history.conversations.get(tx,
             owner_id=value.op.owner, conversation_id=value.chat_id)
-    # Plane's ConversationRecord exposes the chat head pointer as
-    # ``publication_id`` (the ``chats.conversation_commit_id`` column).
     return chat.render_revision, chat.publication_id
 
 
@@ -177,7 +175,6 @@ async def test_wrong_digest_stale_revision_and_second_approval_are_refused(saved
     assert response.status_code == 409 and response.json() == {"error": "assignment_publication_conflict"}
     replay = await post(saved, target, approval)
     assert replay.status_code == 200 and replay.json() == {**accepted.json(), "applied": False}
-    # A consumed proposal cannot be re-proposed under the same stable identity.
     again = await post(saved, path(saved), command)
     assert again.status_code == 409 and again.json() == {"error": "assignment_idempotency_conflict"}
     rows = _audit(saved)
@@ -269,8 +266,6 @@ async def test_permission_change_between_review_and_save_is_refused(saved):
     await asyncio.to_thread(orch.tool_permissions.set_agent_scopes, saved.op.owner, "web-research-1",
                             {"tools:read": True, "tools:search": True})
     command, review = await _reviewed(saved)
-    # The same read-only tool now carries a different (still consented) scope:
-    # the reviewed permission digest no longer describes the current policy.
     orch.tool_permissions.register_tool_scopes("web-research-1", {"fetch_page": "tools:search"})
     response = await post(saved, save_path(saved, command), approval_for(review))
     assert response.status_code == 403 and response.json() == {"error": "assignment_scope_changed"}
@@ -363,19 +358,15 @@ async def test_publication_helpers_refuse_malformed_inputs(saved):
             assignment_id=op.completed.assignment_id)
         result = module.project_research_result(tx, op.runtime.repositories.assignments,
             owner_id=op.owner, read=read)
-    # An empty selection renders an honest card, never invented passages.
     empty = {**result["content"], "passages": [], "disposition": "insufficient_evidence"}
     card = module.result_component(read.assignment, empty)
     assert "Insufficient evidence" in json.dumps(card) and "Public release 088" not in json.dumps(card)
-    # Only a completed retained research operation is an original-session context.
     with pytest.raises(SessionAuthorityUnavailable):
         module._completed_context(replace(read, disposition="active"), op.owner, read.assignment.assignment_id)
-    # Foreign action shapes never decode into a proposal; receipts are typed.
     assert module._stored_proposal(NS(action_id="x", intent=NS(request={"kind": "result_publication",
         "version": 1, "proposal": {"action_id": "x"}}))) is None
     with pytest.raises(AssignmentError, match="work_control_unavailable"):
         module._receipt(object(), op.owner, read.assignment.assignment_id, str(uuid4()))
-    # Audit rows are identifiers only; anything else is refused before insert.
     audit = WorkControlAudit(op.executor.service)
     cases = [dict(command="delete", record=read.assignment, action_id=str(uuid4()),
                   publication_id=str(uuid4()), conversation_id=saved.chat_id),

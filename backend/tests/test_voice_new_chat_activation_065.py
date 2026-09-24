@@ -1,4 +1,7 @@
-"""Correlated no-selected-chat activation tests for Feature 065."""
+"""Tests that a correlated new-chat voice activation (orchestrator.py,
+shared/protocol.py) returns the complete strict echo, while the legacy uncorrelated
+new-chat action keeps its old response shape.
+"""
 
 from __future__ import annotations
 

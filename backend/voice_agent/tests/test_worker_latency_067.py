@@ -1,4 +1,7 @@
-"""Worker startup and event-pump latency guards for the 067 remediation."""
+"""Tests for voice_agent/main.py's startup warm cache and event-pump latency: phrase
+cache warming during registration, VAD graph build-once caching, and waiter reuse
+across events.
+"""
 
 from __future__ import annotations
 
@@ -46,9 +49,6 @@ def _fake_onnxruntime(
     monkeypatch.setattr(session_module, "_VAD_INFERENCE_SESSIONS", {})
 
 
-# ---------------------------------------------------------------- V9: TTS warm
-
-
 def test_startup_warm_covers_only_server_owned_phrases() -> None:
     assert set(main_module.WARM_PHRASE_TEXTS) <= SERVER_OWNED_PHRASE_TEXTS
     assert "On it!" in main_module.WARM_PHRASE_TEXTS
@@ -64,7 +64,6 @@ async def test_startup_warm_makes_the_first_acknowledgement_a_cache_hit() -> Non
 
     await tts.synthesize("On it!", max_duration_samples=96_000)
 
-    # The first real acknowledgement pays no synthesis round trip.
     assert inner.calls == list(main_module.WARM_PHRASE_TEXTS)
 
 
@@ -143,13 +142,8 @@ async def test_run_worker_warms_concurrently_with_registration(
     await main_module.run_worker(_config())
 
     assert events == ["preflight", "bridge-start", "run", "bridge-close"]
-    # The warm was in flight while the worker registered, and a warm that never
-    # finishes is cancelled at shutdown instead of holding the process open.
     assert started == ["On it!"]
     assert warmed == []
-
-
-# ------------------------------------------------------------ V3: shared graph
 
 
 def test_vad_graph_is_built_once_per_model_path(
@@ -172,7 +166,6 @@ def test_vad_graph_is_built_once_per_model_path(
 
     assert builds == [str(model)]
     assert first._session is second._session
-    # Recurrent state stays per instance so a shared graph cannot leak a turn.
     assert first._state is not second._state
 
 
@@ -222,7 +215,6 @@ async def test_preload_builds_the_graph_off_the_event_loop(
 
     assert len(build_threads) == 1
     assert build_threads[0] != threading.get_ident()
-    # The first activation then constructs without building anything.
     vad = SileroVad(model_path=model)
     assert len(build_threads) == 1
     assert vad._session is session_module._VAD_INFERENCE_SESSIONS[str(model.resolve())]
@@ -243,9 +235,6 @@ async def test_preload_swallows_a_missing_asset(
     assert session_module._VAD_INFERENCE_SESSIONS == {}
 
 
-# --------------------------------------------------------------- V5: event pump
-
-
 @pytest.mark.asyncio
 async def test_event_pump_reuses_its_waiters_across_events() -> None:
     session = _session(FakeRtcFactory(FakeRoom()))
@@ -262,7 +251,6 @@ async def test_event_pump_reuses_its_waiters_across_events() -> None:
     source, value = await session._next_owned_event()
     assert (source, value["type"]) == ("control", "second")
 
-    # The three losing waiters survived instead of being cancelled and rebuilt.
     assert session._rtc_waiter is rtc_waiter
     assert session._overrun_waiter is overrun_waiter
     assert session._closed_waiter is closed_waiter
@@ -300,7 +288,6 @@ async def test_teardown_discards_the_event_parked_in_a_waiter() -> None:
 
     await session.close("test")
 
-    # A finished waiter holds its value outside the queue the teardown drains.
     assert session._rtc_waiter is None
     assert retained == {}
     assert parked.result().args == ()

@@ -1,10 +1,8 @@
-"""Feature 058 — BYO authoring orchestration: the Analyze gate is structurally
-pre-generation (a violating draft produces NO code) and a passing draft generates
-+ delivers a REAL self-contained bundle to the host (never Popen'd).
+"""Tests for BYO agent authoring: the Analyze gate blocks code generation structurally,
+and a passing draft generates and delivers a real self-contained bundle via
+agent_generator.py and agent_lifecycle.py, never Popen'd on the server.
+"""
 
-The LLM call is stubbed (codegen needs a configured system LLM) but everything
-downstream of it is the real generator + lifecycle: the earlier all-mocked draft
-hid a defect where the delivered bundle was always ``{}``."""
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +45,6 @@ from orchestrator.generated_agent_publication import (  # noqa: E402
 from tests.helpers.draft_store_double import InMemoryDraftStore  # noqa: E402
 from tests.helpers.user_agent_registry import make_user_agent_registry  # noqa: E402
 
-# A plausible LLM output: self-contained, astralprims-only, correct return shape.
 CANNED_TOOLS = '''"""Greeter tools."""
 from astralprims import Card, Text
 
@@ -72,8 +69,6 @@ TOOL_REGISTRY = {
 
 
 class _LifecyclePublicationService:
-    """Narrow typed publisher double; Plane owns its real state-machine tests."""
-
     def __init__(self, draft_store, bundle_store):
         self.draft_store = draft_store
         self.bundle_store = bundle_store
@@ -202,8 +197,6 @@ def _seed_fake_draft(
     declared_egress: list[str] | None = None,
     revises_agent_id: str | None = None,
 ) -> dict:
-    """Persist the owner/target/Analyze facts required by direct spine tests."""
-
     store = orch.lifecycle_manager.draft_store
     tools_spec = [
         {"name": name, "description": "", "scope": "tools:read"}
@@ -260,7 +253,6 @@ def _seed_fake_draft(
 
 @pytest.fixture()
 def real_lifecycle(tmp_path):
-    """A real AgentLifecycleManager whose only stub is the LLM tools call."""
     draft_store = InMemoryDraftStore()
     bundle_store = ImmutableBundleStore(
         tmp_path / "artifacts",
@@ -301,7 +293,7 @@ async def test_analyze_violation_blocks_generation():
         declared_tools=["share_agent"], declared_scopes=["tools:read"])
     assert res["status"] == "analyze_failed"
     principles = {v["principle"] for v in res["violations"]}
-    assert principles & {"K", "D"}                       # share/cross-user caught
+    assert principles & {"K", "D"}
     o.lifecycle_manager.create_draft.assert_awaited_once()
     draft = o.lifecycle_manager.draft_store.get_owned_draft_agent(
         "u-block",
@@ -318,7 +310,7 @@ async def test_analyze_violation_blocks_generation():
         "K",
         "D",
     }
-    o.lifecycle_manager.generate_code.assert_not_awaited() # NO code (FR-003)
+    o.lifecycle_manager.generate_code.assert_not_awaited()
     o.deliver_agent_bundle.assert_not_awaited()
 
 
@@ -370,8 +362,6 @@ async def test_malformed_outer_declarations_are_rejected_before_draft_creation(
     field,
     malformed,
 ):
-    """Strings/mappings must never be coerced into declaration sequences."""
-
     o = _fake_orch()
     kwargs = {
         "declared_tools": ["greet"],
@@ -596,8 +586,6 @@ async def test_same_owner_same_name_drafts_keep_distinct_immutable_targets(
     assert aa.session_agent_id(replay) == first["target_agent_id"]
 
 
-# ── The REAL generate_code → _bundle_files path (the empty-bundle defect) ──────
-
 async def _gen_byo(lm, *, name="Byo Greeter", target_agent_id=None):
     create_kwargs = {}
     if target_agent_id is not None:
@@ -643,8 +631,6 @@ def _write_bundle(tmp_path, files):
 
 
 def _run_bundle(bundle_dir, requests):
-    """Run the bundle exactly as the desktop host does: a child process speaking
-    JSON lines over stdio. Returns the frames it emitted."""
     stdin = "".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in requests)
     child_env = os.environ.copy()
     lets_source = os.path.abspath(
@@ -670,15 +656,11 @@ def _run_bundle(bundle_dir, requests):
 
 
 async def test_real_generate_code_returns_finalized_v3_bundle(real_lifecycle):
-    # The delivered bundle was ALWAYS EMPTY: generate_code returned a draft_agents
-    # row, which has no files/agent_code column, so _bundle_files fell through to {}.
     gen = await _gen_byo(real_lifecycle)
     assert gen["status"] == "generated", gen.get("error_message")
     files = aa._bundle_files(gen)
-    # The v3 artifact digest covers the executable files; manifest.json is
-    # the metadata envelope retained by the legacy flat-file delivery seam.
     assert set(files) == {*BYO_BUNDLE_FILENAMES, "manifest.json"}
-    assert all(files.values())                      # no empty file
+    assert all(files.values())
     assert "TOOL_REGISTRY" in files["mcp_tools.py"]
     manifest = json.loads(files["manifest.json"])
     assert manifest["agent_id"] == gen["target_agent_id"]
@@ -804,14 +786,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     real_lifecycle,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A fresh rendered Generate action must reopen the durable publication.
-
-    The first request can finish publication while no desktop host is connected.
-    The next render carries a new transition UUID, so replay authority comes from
-    the terminal Plane journal/draft pointer rather than from process memory or
-    the first UI mutation id.
-    """
-
     owner_id = "u-byo-authoring-replay"
     monkeypatch.setattr(aa, "byo_enabled", lambda: True)
     orch = MagicMock()
@@ -917,8 +891,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     assert real_lifecycle.generator.generate_tools_file.await_count == 1
     assert publication_service.publish.await_count == 1
 
-    # Lost-response retry: the original render resubmits its stale revision and
-    # stable transition id.  The exact terminal journal publication wins.
     lost_response_retry = await aa.generate_from_session(
         orch,
         owner_id,
@@ -928,8 +900,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     )
     assert lost_response_retry["status"] == "no_host"
 
-    # A different UUID cannot borrow the original stale transition's authority.
-    # It must conflict before the terminal publication is reopened.
     stale_fresh_transition = await aa.generate_from_session(
         orch,
         owner_id,
@@ -940,8 +910,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     assert stale_fresh_transition["status"] == "conflict"
     assert stale_fresh_transition["current_revision"] == terminal_revision
 
-    # No-host retry: a newly rendered action has a fresh transition id and the
-    # current revision, but must still redeliver the same immutable bytes.
     rerender_retry = await aa.generate_from_session(
         orch,
         owner_id,
@@ -970,9 +938,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     assert terminal_failure["failure_code"] == "child_start_failed"
     assert orch.deliver_agent_bundle.await_count == 3
 
-    # A retired immutable revision is its own durable replay authority.  The
-    # delivery operation journal has a shorter retention window, so purging
-    # those terminal records must not make this look like a fresh no-host send.
     replayed_publication.revision.state = "retired"
     replayed_publication.revision.failure_code = None
     retired_before_retention = await aa.generate_from_session(
@@ -988,8 +953,6 @@ async def test_authoring_no_host_retry_redelivers_exact_publication_without_rege
     assert retained_delivery_operations
     assert orch.deliver_agent_bundle.await_count == 3
 
-    # Model a terminal work-operation retention sweep independently removing
-    # every prior delivery record. The Plane revision/publication remains.
     retained_delivery_operations.clear()
     retired_after_retention = await aa.generate_from_session(
         orch,
@@ -1404,7 +1367,6 @@ async def test_v3_authoring_delivery_forwards_immutable_artifact_path():
 
 
 async def test_bundle_is_self_contained(real_lifecycle):
-    # contracts/host-bundle.md §2: the desktop host ships no backend package.
     gen = await _gen_byo(real_lifecycle, name="Byo Selfcontained")
     files = aa._bundle_files(gen)
     assert files
@@ -1414,8 +1376,6 @@ async def test_bundle_is_self_contained(real_lifecycle):
 
 
 async def test_generated_card_agent_id_matches_the_user_agent_row(real_lifecycle, tmp_path):
-    # The registry looks up user_agent[card.agent_id]; a slug-derived '<slug>-1'
-    # finds no row and registration is refused fail-closed (and silently).
     agent_id = str(uuid.uuid4())
     ua.create_user_agent(
         real_lifecycle.user_agent_registry,
@@ -1435,11 +1395,10 @@ async def test_generated_card_agent_id_matches_the_user_agent_row(real_lifecycle
     row = ua.get_user_agent(real_lifecycle.user_agent_registry, agent_id)
     assert card["agent_id"] == row["agent_id"]
     assert [s["name"] for s in card["skills"]] == ["greet"]
-    assert "api_key" not in frames[0]      # authority is the owner's session
+    assert "api_key" not in frames[0]
 
 
 def test_backend_target_agent_id_is_unchanged(real_lifecycle):
-    # 027 must stay byte-identical: the slug-derived id is still the default.
     files = real_lifecycle.generator.generate_template_files(
         agent_name="Legacy", description="d", slug="legacy_thing")
     assert 'agent_id = "legacy-thing-1"' in files["legacy_thing_agent.py"]
@@ -1461,14 +1420,12 @@ async def test_bundle_runner_dispatch_semantics(real_lifecycle, tmp_path):
     assert [t["name"] for t in by_id["r1"]["result"]["tools"]] == ["greet"]
     assert by_id["r2"]["result"] == {"greeted": "Sam"}
     assert by_id["r2"]["ui_components"][0]["type"] == "card"
-    assert by_id["r3"]["error"]["code"] == -32601          # unknown tool
-    assert by_id["r4"]["error"]["code"] == -32601          # unknown method
-    assert len(by_id) == 4                                  # the junk line was discarded
+    assert by_id["r3"]["error"]["code"] == -32601
+    assert by_id["r4"]["error"]["code"] == -32601
+    assert len(by_id) == 4
 
 
 async def test_bundle_runner_maps_a_raised_exception_to_32603(real_lifecycle, tmp_path):
-    # The tool must survive spec validation (which calls it with sample args), so
-    # it only explodes on an explicit mode — otherwise auto-fix rewrites it.
     real_lifecycle.generator.generate_tools_file = AsyncMock(return_value='''
 from astralprims import Text
 
@@ -1496,10 +1453,6 @@ TOOL_REGISTRY = {"boom": {"function": boom, "description": "boom",
 
 async def test_bundle_runner_maps_an_error_alert_to_an_error_response(real_lifecycle,
                                                                       tmp_path):
-    """The tool-error convention the backend MCPServer implements: a tool that
-    handled its own failure returns create_ui_response([Alert(variant='error')]).
-    The BYO runner dropped that check, so a FAILED tool call came back as a
-    SUCCESS mcp_response."""
     real_lifecycle.generator.generate_tools_file = AsyncMock(return_value='''
 from astralprims import Alert, Text, create_ui_response
 
@@ -1527,21 +1480,17 @@ TOOL_REGISTRY = {"risky": {"function": risky, "description": "r",
     assert not by_id["ok"].get("error")
     assert by_id["bad"]["error"]["code"] == -32603
     assert "upstream said no" in by_id["bad"]["error"]["message"]
-    # 064: an error and renderable UI are mutually exclusive on the wire.
     assert "ui_components" not in by_id["bad"]
 
 
 async def test_generate_code_refuses_the_backend_target_for_a_byo_draft(real_lifecycle):
-    """The exec decision is a property of the ROW, not the caller's argument: the
-    REST generate endpoint passes no target, and used to run a BYO draft's code
-    in-process."""
     draft = await real_lifecycle.create_draft(
         user_id="u-byo", agent_name="Byo Rowkeyed",
         description="greets the owner by their name",
         tools_spec=[{"name": "greet", "description": "greet"}],
         origin=BYO_ORIGIN)
     with pytest.raises(ValueError, match="BYO"):
-        await real_lifecycle.generate_code(draft["id"])       # default target=backend
+        await real_lifecycle.generate_code(draft["id"])
 
 
 async def test_backend_coupled_tools_file_is_refused_and_not_delivered(real_lifecycle):
@@ -1551,7 +1500,7 @@ async def test_backend_coupled_tools_file_is_refused_and_not_delivered(real_life
     gen = await _gen_byo(real_lifecycle, name="Byo Coupled")
     assert gen["status"] == "error"
     assert "self-contained" in (gen["error_message"] or "")
-    assert aa._bundle_files(gen) == {}      # nothing to ship
+    assert aa._bundle_files(gen) == {}
 
 
 async def test_authoring_refuses_to_deliver_an_empty_bundle():
@@ -1566,24 +1515,19 @@ async def test_authoring_refuses_to_deliver_an_empty_bundle():
     o.deliver_agent_bundle.assert_not_awaited()
 
 
-# ── G1/SC-002: BYO code is NEVER executed on the server, in ANY process ───────
-
 async def test_byo_validation_never_execs_user_code(real_lifecycle):
     def _boom(*a, **kw):
         raise AssertionError("in-process exec of user code (G1 violation)")
 
-    real_lifecycle.validator.validate = _boom      # the ONLY exec path
+    real_lifecycle.validator.validate = _boom
     gen = await _gen_byo(real_lifecycle, name="Byo Static")
     assert gen["status"] == "generated", gen.get("error_message")
     report = json.loads(gen["validation_report"])
-    assert report["tools_tested"] == 1 and report["passed"]   # it really did validate
+    assert report["tools_tested"] == 1 and report["passed"]
 
 
 def test_static_validation_does_not_import_run_or_touch_the_filesystem(real_lifecycle,
                                                                        tmp_path):
-    """The reviewer's proof-of-exploit, inverted: a module whose import writes a
-    file into the orchestrator's agent tree must not write ANYTHING, because the
-    module is never imported. It is read as text."""
     probe = (tmp_path / "SBX_PROBE.txt").as_posix()
     hostile = (
         "import os, socket\n"
@@ -1596,13 +1540,10 @@ def test_static_validation_does_not_import_run_or_touch_the_filesystem(real_life
         "  'input_schema': {'type': 'object', 'properties': {}}, 'scope': 'tools:read'}}\n")
     report = real_lifecycle.validator.validate_static(hostile, "byo_probe")
     assert not os.path.exists(probe), "BYO code EXECUTED during validation (G1 violation)"
-    assert report.passed and report.tools_tested == 1   # shape is fine; behavior is the host's
+    assert report.passed and report.tools_tested == 1
 
 
 def test_static_validation_refuses_a_non_stdlib_import(real_lifecycle):
-    """The desktop host ships stdlib + astralprims ONLY. An `import requests`
-    bundle dies at import on the user's machine with no register_agent — so it is
-    refused HERE, at generation, not surfaced as a silence timeout."""
     report = real_lifecycle.validator.validate_static(
         "import requests\nfrom astralprims import Text\n\n"
         "def t(**kwargs):\n"
@@ -1635,7 +1576,6 @@ def test_static_validation_catches_registry_and_return_shape(real_lifecycle):
 
 
 async def test_non_stdlib_bundle_is_never_delivered(real_lifecycle):
-    """End-to-end: the import allowlist is a GATE on the generated bundle."""
     from unittest.mock import AsyncMock as _AM
     real_lifecycle.generator.generate_tools_file = _AM(return_value=(
         "import httpx\nfrom astralprims import Text\n\n"
@@ -1650,12 +1590,7 @@ async def test_non_stdlib_bundle_is_never_delivered(real_lifecycle):
     assert any("httpx" in f["message"] for f in report["findings"])
 
 
-# ── The codegen prompt and the BYO gate must never disagree ───────────────────
-
 def test_byo_prompt_required_imports_pass_the_byo_gate():
-    """An obedient LLM emits the prompt's own required-imports block. If the gate
-    rejects that block, BYO codegen can NEVER succeed (it did: the block mandated
-    a sys.path.insert the self-containment gate hard-fails)."""
     from orchestrator.agent_spec import generate_llm_prompt_section, BYO_REQUIRED_IMPORTS_BLOCK
     from orchestrator.agent_generator import byo_import_violations
     from orchestrator.agent_validator import disallowed_imports
@@ -1665,7 +1600,6 @@ def test_byo_prompt_required_imports_pass_the_byo_gate():
 
     byo_prompt = generate_llm_prompt_section(self_contained=True)
     assert "sys.path.insert" not in byo_prompt
-    # The 027 prompt is unchanged (it DOES need the backend shim).
     assert "sys.path.insert" in generate_llm_prompt_section()
 
 
@@ -1682,7 +1616,7 @@ def test_generated_runner_bakes_the_id_it_is_handed(real_lifecycle):
         agent_name="X", description="d", agent_id="ua-x-abc", skill_tags=["t"],
         constitution_version="9.9.9")
     tree = ast.parse(files["agent_main.py"])
-    consts = {t.id: ast.literal_eval(n.value)       # module-level constants only
+    consts = {t.id: ast.literal_eval(n.value)
               for n in tree.body if isinstance(n, ast.Assign)
               for t in n.targets if isinstance(t, ast.Name)}
     assert consts["AGENT_ID"] == "ua-x-abc"
@@ -1690,12 +1624,6 @@ def test_generated_runner_bakes_the_id_it_is_handed(real_lifecycle):
 
 
 async def test_byo_codegen_uses_the_per_call_owner_resolver_over_the_system_one():
-    """Found live 2026-07-14: BYO code generation resolved the admin-managed
-    SYSTEM LLM (feature 054), which is unset on deployments that never configured
-    one — so generation failed 'LLM not configured' even though the owner (who was
-    actively authoring) had a working model. A user authoring their own private
-    agent must generate its code with THEIR LLM. This pins the resolver override
-    precedence _aresolve_client threads through, without a real LLM call."""
     from orchestrator.agent_generator import AgentCodeGenerator
 
     class _Cfg:
@@ -1703,11 +1631,9 @@ async def test_byo_codegen_uses_the_per_call_owner_resolver_over_the_system_one(
         model = "owner-model"
         api_key = "owner-key"
 
-    # System resolver is UNSET (the failing deployment state).
     gen = AgentCodeGenerator(config_resolver=lambda: None)
     assert await gen._aresolve_client() == (None, None)
 
-    # The owner's per-call resolver is used instead, yielding a client + model.
     client, model = await gen._aresolve_client(config_resolver=lambda: _Cfg())
     assert client is not None and model == "owner-model"
     assert str(client.base_url).startswith("http://owner.example")

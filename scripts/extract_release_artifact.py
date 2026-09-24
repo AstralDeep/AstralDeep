@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Safely extract one untrusted GitHub Actions artifact archive.
-
-Release artifacts are candidate-controlled ZIP files even when their metadata
-is selected through GitHub's trusted API.  This helper applies explicit size
-and member-count limits, rejects ambiguous paths and non-regular members, and
-never overwrites an existing file.  Multiple independently selected artifacts
-may share an existing directory, but their file members may not collide.
+"""Safely extracts one untrusted GitHub Actions ZIP artifact with explicit
+size/member/path limits, rejecting ambiguous paths, non-regular members, and
+existing-file overwrites.
 """
 
 from __future__ import annotations
@@ -31,13 +27,11 @@ _EOCD_SIGNATURE = b"PK\x05\x06"
 
 
 class ExtractionError(ValueError):
-    """Raised when an archive cannot be extracted without ambiguity or risk."""
+    pass
 
 
 @dataclass(frozen=True)
 class ExtractionLimits:
-    """Resource bounds applied before and during artifact extraction."""
-
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES
     max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
@@ -45,8 +39,6 @@ class ExtractionLimits:
     max_path_bytes: int = DEFAULT_MAX_PATH_BYTES
 
     def validate(self) -> None:
-        """Reject non-positive limits and incoherent byte bounds."""
-
         values = {
             "max_archive_bytes": self.max_archive_bytes,
             "max_member_bytes": self.max_member_bytes,
@@ -160,8 +152,6 @@ def _preflight_directory_count(
     archive_size: int,
     limits: ExtractionLimits,
 ) -> int:
-    """Read the bounded end records before ``ZipFile`` allocates member objects."""
-
     tail_size = min(archive_size, 22 + 65535)
     with archive_path.open("rb") as handle:
         handle.seek(archive_size - tail_size)
@@ -195,9 +185,7 @@ def _preflight_directory_count(
             or directory_offset == 0xFFFFFFFF
         )
         if sentinel:
-            # The enforced archive/member/count bounds are all below ZIP64's
-            # thresholds, so a ZIP64 end record is unnecessary and only adds
-            # a second parser surface at this trust boundary.
+            # Size bounds stay under ZIP64; avoids a second parser path
             raise ExtractionError("ZIP64 artifact archives are forbidden by the size bounds")
 
     if disk_number != 0 or directory_disk != 0 or disk_members != total_members:
@@ -279,8 +267,6 @@ def _expected_member_set(
     values: Iterable[str] | None,
     limits: ExtractionLimits,
 ) -> frozenset[str] | None:
-    """Validate an optional exact set of canonical regular-file member paths."""
-
     if values is None:
         return None
     if isinstance(values, str):
@@ -328,27 +314,6 @@ def extract_artifact(
     limits: ExtractionLimits | None = None,
     expected_members: Iterable[str] | None = None,
 ) -> list[str]:
-    """Extract an artifact without links, traversal, overwrite, or unbounded output.
-
-    Args:
-        archive_path: ZIP archive downloaded by exact immutable artifact ID.
-        target: Destination directory. Existing directories may be shared by
-            multiple artifacts, but existing file members are never replaced.
-        limits: Optional resource limits, primarily useful for focused tests.
-        expected_members: Optional exact set of canonical regular-file paths.
-            When supplied, every listed member must be present and every
-            archive member must be listed; validation completes before any
-            archive bytes are extracted.
-
-    Returns:
-        Canonical relative member paths written or accepted as directories.
-
-    Raises:
-        ExtractionError: If the archive or target violates a safety invariant.
-        OSError: If a filesystem operation fails.
-        zipfile.BadZipFile: If the input is not a valid ZIP archive.
-    """
-
     effective_limits = limits or ExtractionLimits()
     effective_limits.validate()
     exact_members = _expected_member_set(expected_members, effective_limits)
@@ -427,8 +392,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the bounded extractor CLI."""
-
     options = _parser().parse_args(argv)
     try:
         members = extract_artifact(

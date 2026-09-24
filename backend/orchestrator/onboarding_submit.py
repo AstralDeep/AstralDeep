@@ -1,17 +1,8 @@
-"""030-finish-soul-integration — interpret onboarding ParamPicker submits (025 T021).
-
-Feature 025's onboarding panels (``personalization/panels.py``) render
-ParamPicker forms whose ``submit_message_template`` posts a deterministic chat
-message when the user confirms (e.g. "Save my personalization profile —
-profession: X; goals: Y"). Nothing interpreted those messages, so onboarding
-selections were silently dropped.
-
-Because the templates are fixed strings, this is handled deterministically
-(pre-LLM) rather than via an LLM meta-tool: more reliable, no model dependency.
-The orchestrator calls :func:`is_onboarding_submit` early in the chat path and,
-when it matches, :func:`handle_submit` persists the values through the existing
-personalization repository / tool-permission gates and returns a confirmation.
+"""Interprets the fixed onboarding ParamPicker submit messages for profile, skills, and
+personality, and persists the chosen values through personalization's repository and
+tool-permission gates. Called early in orchestrator.py's chat path.
 """
+
 import logging
 from typing import List, Optional, Tuple
 
@@ -23,7 +14,6 @@ _PERSONALITY_PREFIX = "Set my assistant personality —"
 
 
 def is_onboarding_submit(message: str) -> bool:
-    """True if ``message`` is one of the three onboarding submit templates."""
     m = (message or "").strip()
     return m.startswith(_PROFILE_PREFIX) or m.startswith(_SKILLS_PREFIX) or m.startswith(_PERSONALITY_PREFIX)
 
@@ -33,7 +23,6 @@ def _kv_tail(text: str, prefix: str) -> str:
 
 
 def _parse_fields(tail: str) -> dict:
-    """Parse 'a: x; b: y; c: z' into {a: x, b: y, c: z} (order-independent)."""
     out: dict = {}
     for chunk in tail.split(";"):
         if ":" not in chunk:
@@ -49,9 +38,8 @@ def _split_list(val: str) -> List[str]:
 
 
 def _parse_skill_token(token: str) -> Optional[Tuple[str, str]]:
-    """Parse 'agent-id:tool_name (scope)' -> (agent_id, tool_name)."""
     t = token.strip()
-    if " (" in t:  # drop a trailing " (read)"/"(write)" scope hint
+    if " (" in t:
         t = t[: t.index(" (")].strip()
     if ":" not in t:
         return None
@@ -64,11 +52,6 @@ def _parse_skill_token(token: str) -> Optional[Tuple[str, str]]:
 
 async def handle_submit(orch, websocket, user_id: str, message: str,
                         chat_id: Optional[str], result_sink=None) -> bool:
-    """Persist an onboarding submit. Returns True if handled (caller then stops).
-
-    Never raises — onboarding must not break the chat path; failures surface a
-    warning Alert and return True (handled).
-    """
     from astralprims import Alert
 
     m = (message or "").strip()
@@ -79,7 +62,7 @@ async def handle_submit(orch, websocket, user_id: str, message: str,
         try:
             await orch.send_ui_render(
                 websocket, [Alert(message=text, variant=variant).to_dict()], target="chat")
-        except Exception:  # pragma: no cover - delivery best-effort
+        except Exception:  # pragma: no cover
             logger.debug("onboarding_submit: confirmation send failed", exc_info=True)
 
     try:
@@ -91,7 +74,6 @@ async def handle_submit(orch, websocket, user_id: str, message: str,
             fields = _parse_fields(_kv_tail(m, _PROFILE_PREFIX))
             profession = fields.get("profession") or None
             goals = _split_list(fields.get("goals", "")) or None
-            # Reuse the personalization PHI gate (parity with PUT /api/profile).
             from personalization.phi_gate import get_phi_gate
             gate = get_phi_gate()
             for txt in [profession or ""] + (goals or []):
@@ -133,7 +115,6 @@ async def handle_submit(orch, websocket, user_id: str, message: str,
                 agent_id, tool_name = parsed
                 try:
                     required_scope = tp.get_tool_scope(agent_id, tool_name)
-                    # FR-011: enabling a skill can never exceed the user's grant.
                     if not tp.is_scope_enabled(user_id, agent_id, required_scope):
                         denied.append(tool_name)
                         continue

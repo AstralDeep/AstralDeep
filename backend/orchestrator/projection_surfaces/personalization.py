@@ -1,34 +1,8 @@
-"""Deep-owned host adapter for the Personalization Projection surface.
-
-Tabbed surface mirroring the feature-025 REST routers, calling the SAME
-service/store internals the endpoints call (never HTTP-to-self):
-
-* ``soul`` (default) — profession / goals / personality-notes form →
-  ``chrome_profile_save``. Reuses the exact validation models
-  (``ProfileUpdateRequest`` / ``PersonalitySpec``) and PHI gate
-  (``get_phi_gate()``) of ``PUT /api/personalization/profile``
-  (backend/personalization/api.py).
-* ``memory`` — durable memory list with inline edit (``chrome_memory_update``)
-  and delete (``chrome_memory_delete``) via ``PersonalizationRepository``.
-* ``skills`` — skill catalog (agent tool × scope × availability) with
-  ``chrome_skill_toggle`` via ``ToolPermissionManager`` (FR-011 scope-bounding
-  preserved: enabling can never exceed the user's granted scope).
-* ``schedule`` — scheduled-job list + inline run history with
-  ``chrome_job_pause`` / ``chrome_job_resume`` / ``chrome_job_delete`` /
-  ``chrome_job_run_now`` via ``ScheduledJobStore`` (delete is the soft
-  ``status='disabled'`` the REST endpoint performs). Job creation happens in
-  chat (a hint line is rendered).
-* ``dreaming`` — consolidation opt-out toggle (``chrome_dreaming_toggle``),
-  recent sweeps, and a manual sweep trigger (``chrome_dreaming_trigger``)
-  via ``dreaming.consolidation.run_sweep``.
-
-Every mutating handler is explicit-save: it performs the change, emits the
-same audit event the REST endpoint emits (``record_generic``), and returns
-``(surface_key, params, notice_html)`` so the dispatcher re-renders the tab
-with an inline success/error notice (FR-016). Expected failures (PHI
-rejection, not-found, scope denial, bad input) never raise. Every dynamic
-string is escaped via ``esc()``.
+"""Renders the tabbed Personalization surface (soul, memory, skills, schedule, dreaming)
+by calling the same service/store internals as the feature's REST routers, never
+HTTP-to-self. Skill toggles stay bounded by tool_permissions.py's granted scope.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +38,6 @@ _TABS = (
 )
 _TAB_KEYS = {key for key, _ in _TABS}
 
-# Shared Tailwind class strings (visual language of webrender/renderer.py).
 _BTN_PRIMARY = (
     "px-3 py-1.5 rounded-lg text-xs font-medium bg-astral-primary/20 "
     "text-astral-primary border border-astral-primary/30 hover:bg-astral-primary/30"
@@ -98,18 +71,12 @@ _OUTCOME_COLORS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
-
 def _payload_attr(data) -> str:
-    """JSON-encode ``data`` and escape it for a single-quoted HTML attribute."""
     return esc(json.dumps(data))
 
 
 def _btn(label: str, action: str, payload=None, *, cls: str = _BTN_PRIMARY,
          collect: bool = False) -> str:
-    """Render a ``data-ui-action`` button (optionally form-collecting)."""
     collect_attr = ' data-ui-collect="true"' if collect else ""
     return (
         f'<button type="button" class="{cls}" data-ui-action="{esc(action)}"'
@@ -119,7 +86,6 @@ def _btn(label: str, action: str, payload=None, *, cls: str = _BTN_PRIMARY,
 
 
 def _fmt_ts(ms) -> str:
-    """Format an epoch-milliseconds value as a short UTC timestamp."""
     if not ms:
         return "—"
     try:
@@ -130,23 +96,19 @@ def _fmt_ts(ms) -> str:
 
 
 def _claims(orch, websocket, user_id: str) -> dict:
-    """JWT claims for audit attribution — session claims when available."""
     try:
         sessions = getattr(orch, "ui_sessions", None) or {}
         claims = sessions.get(websocket)
-    except Exception:  # noqa: BLE001 - legacy audit attribution fallback, never assignment authority
+    except Exception:  # noqa: BLE001
         claims = None
     return claims or {"sub": user_id}
 
 
 def _svc(orch):
-    """The orchestrator's PersonalizationService (same as the REST routers)."""
     return getattr(orch, "personalization_service", None)
 
 
 def _job_store(orch):
-    """A ScheduledJobStore over the application Plane runtime, or None."""
-
     from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
     injected = getattr(orch, "scheduled_job_store", None)
@@ -164,19 +126,16 @@ def _job_store(orch):
 
 
 def _params(tab: str, **extra) -> dict:
-    """Params dict for a re-render of this surface on ``tab``."""
     out = {"tab": tab}
     out.update(extra)
     return out
 
 
 def _contains_phi(value) -> bool:
-    """PHI-gate check (may lazily load the analyzer; run off the event loop)."""
     return get_phi_gate().contains_phi(value)
 
 
 def _phi_reject_field(body, notes):
-    """First PHI-rejected soul-form field label, or None (run off the loop)."""
     gate = get_phi_gate()
     if body.profession and gate.contains_phi(body.profession):
         return "profession"
@@ -189,12 +148,10 @@ def _phi_reject_field(body, notes):
 
 
 def _run_manual_sweep(repo, user_id):
-    """Run a manual consolidation sweep (sync + CPU-heavy; run off the loop)."""
     return run_sweep(repo, get_phi_gate(), user_id, trigger="manual")
 
 
 def _phi_notice(field: str) -> str:
-    """Error notice matching the REST PHI-rejection reason text."""
     return notice_block(
         "error",
         f"'{field}' was rejected: it looks like protected health information "
@@ -203,12 +160,10 @@ def _phi_notice(field: str) -> str:
 
 
 def _unavailable(message: str) -> str:
-    """Notice for a missing backend subsystem (mirrors the routers' 503s)."""
     return notice_block("error", message)
 
 
 def _tab_bar(active: str) -> str:
-    """The tab strip — each tab is a ``chrome_open`` button carrying its tab."""
     parts = []
     for key, label in _TABS:
         payload = _payload_attr({"surface": SURFACE_KEY, "params": {"tab": key}})
@@ -236,23 +191,7 @@ def _tab_bar(active: str) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Render
-# ---------------------------------------------------------------------------
-
 async def render(orch, user_id, roles, params) -> str:
-    """Render the personalization surface body for ``params.tab``.
-
-    Args:
-        orch: The orchestrator (service/DB internals are read off it).
-        user_id: The session user (all data strictly user-scoped).
-        roles: Session roles (unused — surface is available to everyone).
-        params: Optional dict; ``tab`` selects the section (default ``soul``)
-            and ``draft`` (soul only) re-fills the form after a failed save.
-
-    Returns:
-        Body HTML (the dispatcher wraps it in the modal shell).
-    """
     params = params or {}
     tab = params.get("tab") or "soul"
     if tab not in _TAB_KEYS:
@@ -275,14 +214,12 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 def _render_soul(orch, user_id: str, params: dict) -> str:
-    """Soul tab: profession / goals / personality-notes explicit-save form."""
     svc = _svc(orch)
     if svc is None:
         return _unavailable("Personalization subsystem is not available.")
     profile = svc.repo.get_profile(user_id) or {}
     draft = params.get("draft") if isinstance(params.get("draft"), dict) else None
     if draft is not None:
-        # FR-016: failed saves preserve the submitted field values.
         profession = str(draft.get("profession") or "")
         goals_text = str(draft.get("goals") or "")
         notes = str(draft.get("personality_notes") or "")
@@ -307,7 +244,6 @@ def _render_soul(orch, user_id: str, params: dict) -> str:
         f'class="{_INPUT_CLS}" placeholder="How should the assistant sound?">'
         f"{esc(notes)}</textarea></div>"
         f'<div class="flex justify-end">{save_btn}</div></div>'
-        # 025 precedence note (FR-015): personality is style-only.
         f'<p class="text-xs text-astral-muted">Personality guides tone and voice only — it '
         f"never overrides the safety, privacy, or HIPAA/compliance rules. Free-text values "
         f"are screened; anything that looks like protected health information is rejected.</p>"
@@ -339,12 +275,10 @@ def _render_chat_notice_preference(orch, user_id):
 
 
 async def _render_memory(orch, user_id: str) -> str:
-    """Memory tab: durable items with inline edit + delete actions."""
     svc = _svc(orch)
     if svc is None:
         return _unavailable("Personalization subsystem is not available.")
     items = await asyncio.to_thread(svc.repo.list_memory, user_id)
-    # The REST GET records a memory.view event — preserve that here.
     await record_generic(
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
@@ -381,12 +315,10 @@ async def _render_memory(orch, user_id: str) -> str:
 
 
 def _render_skills(orch, user_id: str) -> str:
-    """Skills tab: the catalog GET /api/skills builds, with toggles."""
     tp = getattr(orch, "tool_permissions", None)
     if tp is None:
         return _unavailable("Tool permissions are not available.")
     catalog = []
-    # Same enumeration as personalization.api.list_skills (FR-009).
     for agent_id in list(getattr(tp, "_tool_scope_map", {}) or {}):
         scope_map = tp.get_tool_scope_map(agent_id)
         for tool_name, scope in scope_map.items():
@@ -430,7 +362,6 @@ def _render_skills(orch, user_id: str) -> str:
                 f'<span class="text-xs {state_cls}">{state}</span>{toggle}</div>'
             )
         else:
-            # Render unavailable-with-reason; no toggle is offered (FR-011).
             reason = (
                 f"Enable '{entry['scope']}' for this agent in Settings → Agents & permissions."
             )
@@ -443,36 +374,17 @@ def _render_skills(orch, user_id: str) -> str:
 
 
 def _get_job_policy(store, user_id: str, job_id: str) -> Optional[dict]:
-    """Read one job's 088.007 policy row; ``None`` for a store/job without one.
-
-    A store double that predates the policy contract (or one that raises for
-    an unrecognized job id) is treated exactly like a legacy job — the run
-    policy form and Stop control simply do not appear for it.
-    """
     get_job_policy = getattr(store, "get_job_policy", None)
     if get_job_policy is None:
         return None
     try:
         return get_job_policy(user_id, job_id)
-    except Exception:  # noqa: BLE001 - render never fails a tab over policy lookup
+    except Exception:  # noqa: BLE001
         logger.debug("schedule_policy_lookup_failed", exc_info=True)
         return None
 
 
 def _job_policy_html(job_id: str, policy: Optional[dict]) -> str:
-    """088 T040: edit an EXISTING run policy (run limit, monitor-changes) + Stop.
-
-    Never offers to CREATE a fresh policy row from this control: minting the
-    first monitoring episode for a policy job needs real owner authority the
-    unattended scheduler does not hold (``default_monitoring_dispatcher`` in
-    scheduler/runner.py continues an already-bound episode only), so a job
-    with no policy row (every job today) renders nothing here — offering
-    "Save" would let an owner create a policy admission can never satisfy,
-    permanently pausing an otherwise-healthy job on its first occurrence with
-    no UI path to unbrick it. Once a policy row exists, Save only updates the
-    owner-editable fields on it (never rebinds the assignment), and Stop is
-    offered until the job is already stopped.
-    """
     if policy is None:
         return ""
     version = policy["version"]
@@ -520,7 +432,6 @@ def _job_policy_html(job_id: str, policy: Optional[dict]) -> str:
 
 
 def _render_schedule(orch, user_id: str) -> str:
-    """Schedule tab: job list + inline run history; creation happens in chat."""
     store = _job_store(orch)
     if store is None:
         return _unavailable("The scheduler is not available.")
@@ -528,9 +439,6 @@ def _render_schedule(orch, user_id: str) -> str:
         '<p class="text-xs text-astral-muted">New jobs are created in chat — ask the '
         "assistant to schedule a task and it will walk you through consent.</p>"
     )
-    # 030 FR-005: when unattended execution is gated off (pending the
-    # offline-grant security review), say so plainly — jobs can be created but
-    # will not fire until an operator enables FF_SCHEDULER_EXECUTION.
     execution_enabled = flags.is_enabled("scheduler_execution")
     if not execution_enabled:
         hint = (
@@ -540,8 +448,6 @@ def _render_schedule(orch, user_id: str) -> str:
             "administrator enables it (pending a security review). You can still create "
             "and manage jobs.</div>" + hint
         )
-    # 'disabled' is the soft-deleted state the REST delete endpoint sets;
-    # '__dreaming__' jobs are internal consolidation, not user-facing.
     jobs = [j for j in store.list_jobs(user_id)
             if (j.get("status") or "") != "disabled"
             and j.get("agent_id") != "__dreaming__"]
@@ -613,7 +519,6 @@ def _render_schedule(orch, user_id: str) -> str:
 
 
 def _render_dreaming(orch, user_id: str) -> str:
-    """Dreaming tab: opt-out toggle, manual trigger, and recent sweeps."""
     svc = _svc(orch)
     if svc is None:
         return _unavailable("Personalization subsystem is not available.")
@@ -667,18 +572,7 @@ def _render_dreaming(orch, user_id: str) -> str:
     return status_card + sweeps_html
 
 
-# ---------------------------------------------------------------------------
-# Feature 043 — the surface as native SDUI components (one tab at a time, so
-# the per-tab data reads + audit — e.g. memory.view — match render() exactly).
-# ---------------------------------------------------------------------------
-
 async def components(orch, user_id, roles, params):
-    """The personalization surface as native SDUI components, per ``params.tab``.
-
-    Mirrors ``render()``: a tab bar of ``chrome_open`` buttons (re-open on a
-    tab) + only the selected tab's content, so switching tabs re-reads that
-    tab's data (and re-fires its audit) exactly like the web.
-    """
     params = params or {}
     tab = params.get("tab") or "soul"
     if tab not in _TAB_KEYS:
@@ -750,7 +644,6 @@ async def _components_memory(orch, user_id):
     if svc is None:
         return [_sdui.alert("Personalization subsystem is not available.", "warning")]
     items = await asyncio.to_thread(svc.repo.list_memory, user_id)
-    # Preserve the render()-time memory.view audit event.
     await record_generic(
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
@@ -811,12 +704,6 @@ def _components_skills(orch, user_id):
 
 
 def _job_policy_components(job_id: str, policy: Optional[dict]):
-    """Native counterpart of :func:`_job_policy_html` (088 T040).
-
-    Same "no create" rule: nothing renders for a job with no existing policy
-    row (see :func:`_job_policy_html` for why).
-    """
-
     if policy is None:
         return []
     version = policy["version"]
@@ -939,12 +826,7 @@ def _components_dreaming(orch, user_id):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Handlers (explicit-save: change → audit → re-render with notice)
-# ---------------------------------------------------------------------------
-
 async def _handle_profile_save(orch, websocket, user_id, roles, payload):
-    """Save the soul form — same validation/PHI gate/audit as PUT /profile."""
     if "chat_phi_notice_enabled" in payload:
         return await _handle_chat_notice_preference(orch, websocket, user_id, payload)
     svc = _svc(orch)
@@ -962,7 +844,6 @@ async def _handle_profile_save(orch, websocket, user_id, roles, payload):
     draft = {"profession": profession, "goals": goals_text, "personality_notes": notes}
     fail_params = _params("soul", draft=draft)
 
-    # Same Pydantic validation models as the REST endpoint.
     try:
         body = ProfileUpdateRequest(
             profession=profession, goals=goals,
@@ -976,13 +857,10 @@ async def _handle_profile_save(orch, websocket, user_id, roles, payload):
         return (SURFACE_KEY, fail_params,
                 notice_block("error", f"Couldn't save — {loc}: {msg}"))
 
-    # PHI gate on every free-text value before anything persists (FR-017).
     rejected = await asyncio.to_thread(_phi_reject_field, body, notes)
     if rejected:
         return (SURFACE_KEY, fail_params, _phi_notice(rejected))
 
-    # Merge notes into the existing personality so chat-set traits
-    # (tone/directness/humor/verbosity) are preserved by this form.
     existing = await asyncio.to_thread(svc.repo.get_profile, user_id) or {}
     existing_personality = dict(existing.get("personality") or {})
     personality_dict = None
@@ -1033,7 +911,6 @@ async def _handle_chat_notice_preference(orch, websocket, user_id, payload):
 
 
 async def _handle_memory_update(orch, websocket, user_id, roles, payload):
-    """Edit a memory item's value — PHI-gated, mirrors PUT /api/memory/{id}."""
     svc = _svc(orch)
     if svc is None:
         return (SURFACE_KEY, _params("memory"),
@@ -1062,7 +939,6 @@ async def _handle_memory_update(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_memory_delete(orch, websocket, user_id, roles, payload):
-    """Delete a memory item — mirrors DELETE /api/memory/{id}."""
     svc = _svc(orch)
     if svc is None:
         return (SURFACE_KEY, _params("memory"),
@@ -1083,7 +959,6 @@ async def _handle_memory_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_skill_toggle(orch, websocket, user_id, roles, payload):
-    """Enable/disable a skill — scope-bounded exactly like PUT /api/skills."""
     tp = getattr(orch, "tool_permissions", None)
     if tp is None:
         return (SURFACE_KEY, _params("skills"),
@@ -1095,7 +970,6 @@ async def _handle_skill_toggle(orch, websocket, user_id, roles, payload):
         return (SURFACE_KEY, _params("skills"),
                 notice_block("error", "Missing skill identifier."))
     required_scope = tp.get_tool_scope(agent_id, tool_name)
-    # FR-011: enabling a skill can never exceed the user's granted scope.
     if enabled and not await asyncio.to_thread(
             tp.is_skill_authorized, user_id, agent_id, tool_name):
         return (SURFACE_KEY, _params("skills"), notice_block(
@@ -1103,8 +977,6 @@ async def _handle_skill_toggle(orch, websocket, user_id, roles, payload):
             f"This skill needs the '{required_scope}' permission, which you haven't "
             "been granted.",
         ))
-    # 027 fix: write the per-(tool, kind) row that is_tool_allowed actually
-    # honors (the legacy NULL-kind row is outranked whenever a kind row exists).
     await asyncio.to_thread(tp.set_skill_enabled, user_id, agent_id, tool_name, enabled)
     verb = "Enabled" if enabled else "Disabled"
     await record_generic(
@@ -1119,7 +991,6 @@ async def _handle_skill_toggle(orch, websocket, user_id, roles, payload):
 
 async def _job_set_status(orch, websocket, user_id, payload, *, status, action_type,
                           description, success_msg):
-    """Shared pause/resume/delete path — mirrors the /api/schedule endpoints."""
     store = _job_store(orch)
     if store is None:
         return (SURFACE_KEY, _params("schedule"),
@@ -1154,7 +1025,6 @@ async def _job_set_status(orch, websocket, user_id, payload, *, status, action_t
 
 
 async def _handle_job_pause(orch, websocket, user_id, roles, payload):
-    """Pause a scheduled job (POST /api/schedule/{id}/pause internals)."""
     return await _job_set_status(
         orch, websocket, user_id, payload, status="paused",
         action_type="schedule.pause", description="Paused scheduled job",
@@ -1163,7 +1033,6 @@ async def _handle_job_pause(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_job_resume(orch, websocket, user_id, roles, payload):
-    """Resume a paused job (POST /api/schedule/{id}/resume internals)."""
     return await _job_set_status(
         orch, websocket, user_id, payload, status="active",
         action_type="schedule.resume", description="Resumed scheduled job",
@@ -1172,7 +1041,6 @@ async def _handle_job_resume(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_job_delete(orch, websocket, user_id, roles, payload):
-    """Delete (soft-disable) a job (DELETE /api/schedule/{id} internals)."""
     return await _job_set_status(
         orch, websocket, user_id, payload, status="disabled",
         action_type="schedule.delete", description="Deleted scheduled job",
@@ -1181,7 +1049,6 @@ async def _handle_job_delete(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_job_run_now(orch, websocket, user_id, roles, payload):
-    """Materialize one idempotent manual occurrence for the scheduler loop."""
     if not flags.is_enabled("scheduler_execution"):
         return (SURFACE_KEY, _params("schedule"), notice_block(
             "error", "Scheduled execution is currently unavailable."))
@@ -1260,7 +1127,6 @@ async def _handle_job_run_now(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_job_policy_save(orch, websocket, user_id, roles, payload):
-    """088 T040: save the bounded owner-editable run policy (run limit, monitor changes)."""
     store = _job_store(orch)
     if store is None:
         return (SURFACE_KEY, _params("schedule"),
@@ -1308,12 +1174,6 @@ async def _handle_job_policy_save(orch, websocket, user_id, roles, payload):
 
 
 async def _stop_bound_assignment(orch, websocket, user_id, assignment_id: str) -> bool:
-    """Best-effort ``AssignmentControl.STOP`` for one bound monitoring episode.
-
-    Never raises: a bound agent that cannot be stopped this way is reported to
-    the owner as still needing a manual Stop from Ongoing agents — the job
-    policy Stop itself (the caller) has already committed regardless.
-    """
     from persistent_agents.models import AssignmentError, ControlRequest
 
     service = getattr(orch, "persistent_assignments", None)
@@ -1330,7 +1190,7 @@ async def _stop_bound_assignment(orch, websocket, user_id, assignment_id: str) -
         await service.control(user_id, claims, assignment_id, "stop", request)
     except (AssignmentError, ValidationError, ValueError, TypeError, AttributeError):
         return False
-    except Exception:  # noqa: BLE001 - the policy Stop already committed; never re-raise
+    except Exception:  # noqa: BLE001
         logger.error("schedule_stop_bound_assignment_failed")
         return False
     runner = getattr(orch, "persistent_assignment_runner", None)
@@ -1340,14 +1200,6 @@ async def _stop_bound_assignment(orch, websocket, user_id, assignment_id: str) -
 
 
 async def _handle_job_stop(orch, websocket, user_id, roles, payload):
-    """088 T040: terminally stop a policy job, then Stop each bound ongoing agent.
-
-    Routes ``stop_assignment_job`` (refuses future claims, cancels unstarted
-    occurrences, keeps history/charges) and then ``AssignmentControl.STOP``
-    for every still-outstanding episode family it names — never an action the
-    server cannot dispatch: Stop is only ever offered for a job that already
-    carries a policy row (see :func:`_job_policy_html`/`_job_policy_components`).
-    """
     store = _job_store(orch)
     if store is None:
         return (SURFACE_KEY, _params("schedule"),
@@ -1399,7 +1251,6 @@ async def _handle_job_stop(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_dreaming_toggle(orch, websocket, user_id, roles, payload):
-    """Enable/disable dreaming (POST /api/dreaming/{enable,disable} internals)."""
     svc = _svc(orch)
     if svc is None:
         return (SURFACE_KEY, _params("dreaming"),
@@ -1417,7 +1268,6 @@ async def _handle_dreaming_toggle(orch, websocket, user_id, roles, payload):
 
 
 async def _handle_dreaming_trigger(orch, websocket, user_id, roles, payload):
-    """Run a manual sweep (POST /api/dreaming/trigger internals)."""
     svc = _svc(orch)
     if svc is None:
         return (SURFACE_KEY, _params("dreaming"),
@@ -1450,7 +1300,6 @@ _ASSIGNMENT_LABELS = {
 
 
 def _assignment_access(orch, websocket, user_id):
-    """Require the verified human socket; never synthesize claims for controls."""
     from persistent_agents.models import AssignmentError
     if not flags.is_enabled("persistent_agents"):
         raise AssignmentError("assignment_feature_disabled", 503)
@@ -1467,7 +1316,6 @@ def _assignment_access(orch, websocket, user_id):
 
 
 def _assignment_tool_options(orch, service, user_id, claims):
-    """Use the same live catalog as dispatch, including finite operation bounds."""
     from persistent_agents.models import AssignmentError
 
     from orchestrator.tool_visibility import eligible_tool_pairs
@@ -1513,7 +1361,6 @@ def _assignment_limit_fields(limits):
 
 
 def _assignment_row(record):
-    """Project allowlisted durable owner state; heartbeat versions are private."""
     from persistent_agents.service import public_record
     data = public_record(record)
     definition, usage = data["definition"], data.get("usage", {})
@@ -1565,12 +1412,9 @@ def _assignment_approval(action):
         expired = parsed_expiry.tzinfo is None or parsed_expiry.astimezone(UTC) <= datetime.now(UTC)
     except (ValueError, TypeError):
         expired = True
-    # Never expose credential-bearing fields, even from a malformed stored
-    # proposal. An incomplete review cannot be approved through this surface.
     visible = _assignment_review_text(request)
     if visible is None:
         expired = True
-    # JSON is text escaped by Projection and never replacement tool arguments.
     return {key: data.get(key) for key in ("action_id", "instruction_revision", "control_epoch", "state")} | {
         "request_digest": intent["request_digest"], "expires_at": expiry, "expired": expired,
         "tool_label": f"{request.get('agent_id', 'model')}:{request.get('tool_name', request.get('kind', 'operation'))}",
@@ -1604,7 +1448,6 @@ def _assignment_review_text(request):
     if not safe(request):
         return None
     try:
-        # Reuse bounded secret-aware JSON validation, including finite numbers.
         SourceSelection.bounded_arguments(request)
         return json.dumps(request, ensure_ascii=False, sort_keys=True, allow_nan=False)
     except (ValueError, TypeError):
@@ -1612,7 +1455,6 @@ def _assignment_review_text(request):
 
 
 def _assignment_draft(params, definition):
-    """A chat proposal is only a validated form prefill, never consent."""
     from persistent_agents.models import AssignmentError, SourceSelection
     draft = params.get("assignment_draft", {})
     if not isinstance(draft, dict) or set(draft) - {"name", "instructions", "source_url"}:
@@ -1673,7 +1515,7 @@ async def _assignment_state(orch, websocket, user_id, params):
         return state
     except (AssignmentError, ValidationError, ValueError, TypeError):
         return {**state, "error": "This assignment view is unavailable or invalid. Reload Schedule and check your authorization."}
-    except Exception:  # noqa: BLE001 - fail closed without disclosing backend diagnostics
+    except Exception:  # noqa: BLE001
         logger.error("assignment_surface_query_failed")
         return {**state, "error": "The assignment state could not be loaded. Reload Schedule."}
 
@@ -1694,7 +1536,6 @@ def _assignment_integer(value):
 
 
 def _assignment_form(fields):
-    """Strictly convert native/web form values to the one service request model."""
     from persistent_agents.models import AssignmentError
     if not isinstance(fields, dict) or fields.get("consent") is not True:
         raise AssignmentError("assignment_consent_required", 422)
@@ -1759,9 +1600,6 @@ def _assignment_handler(command):
             if not isinstance(payload, dict):
                 raise TypeError("invalid payload")
             body = dict(payload)
-            # Clients echo their transport generation inside chrome payloads.
-            # Validate and discard only that envelope field; it grants no
-            # assignment authority and is not part of a durable owner command.
             if "request_generation" in body:
                 validate_id(body.pop("request_generation"))
             if command != "create":
@@ -1771,7 +1609,6 @@ def _assignment_handler(command):
                 fields = _assignment_form(body.pop("fields", None))
                 if command == "create":
                     request = CreateAssignmentRequest.model_validate({**fields, **body})
-                    # Unknown top-level fields are rejected; none can override reviewed fields.
                     if set(body) != {"submission_id"}:
                         raise ValueError("invalid payload")
                     result = await service.create(user_id, claims, request)
@@ -1803,7 +1640,7 @@ def _assignment_handler(command):
             message = "Invalid assignment request. Reload the current form and review every field."
         except AssignmentError as exc:
             message = f"Assignment request refused ({exc.code}). Reload the current assignment and review your authorization."
-        except Exception:  # noqa: BLE001 - ambiguous outcomes require durable reconciliation
+        except Exception:  # noqa: BLE001
             logger.error("assignment_surface_command_failed")
             message = "The assignment outcome could not be confirmed. Reload activity before retrying; reuse the original submission for a transport retry."
         return SURFACE_KEY, params, notice_block("error", message)
@@ -1819,27 +1656,6 @@ HANDLERS = {
     "chrome_job_resume": _handle_job_resume,
     "chrome_job_delete": _handle_job_delete,
     "chrome_job_run_now": _handle_job_run_now,
-    # 088 T040: ``_handle_job_policy_save``/``_handle_job_stop`` (below) are the
-    # host implementation for the run-policy form and its Stop control, fully
-    # unit-tested directly (backend/tests/chrome/test_surface_assignments.py).
-    # They are deliberately NOT registered here yet and NOT wired into
-    # ``_render_schedule``/``_components_schedule`` (see ``_job_policy_html``/
-    # ``_job_policy_components``): production constructs ``JobRunner`` with no
-    # ``monitoring_dispatcher`` (orchestrator.py), so ``default_monitoring_
-    # dispatcher`` (scheduler/runner.py) can only CONTINUE an already-bound
-    # policy episode, never mint a first one — and nothing today creates a
-    # policy row for a job to be already bound. Exposing "Save run policy" as
-    # a live control before a real dispatcher is wired would let an owner
-    # create a policy that can never be admitted, permanently pausing an
-    # otherwise-healthy job on its very first occurrence
-    # (``monitoring_assignment_unbound``) with no UI path to unbrick it —
-    # exactly the "unimplemented action in the UI" this surface must never
-    # ship. Wiring these two lines back in is a coordinated follow-up once (1)
-    # a real ``monitoring_dispatcher`` is wired at JobRunner construction and
-    # (2) this module's HANDLERS-set contract test
-    # (backend/tests/chrome/test_surface_personalization.py::
-    # test_module_contract_title_and_handlers) is extended to include them —
-    # both outside this workstream's assigned files.
     "chrome_assignment_create": _assignment_handler("create"),
     "chrome_assignment_revise": _assignment_handler("revise"),
     "chrome_assignment_pause": _assignment_handler("pause"),

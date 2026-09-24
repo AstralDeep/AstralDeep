@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""Mutating remote-compute verb library (feature 063).
-
-These verbs are unioned into the single remote-compute-1 agent
-(``agents.remote_compute``); this module is the mutating-tier library, kept
-separate so the risk-bearing verbs stay small and reviewable. Every DESTRUCTIVE
-verb is gated by the durable confirmation mechanism enforced at the shared
-dispatch gate (``orchestrator/remote_confirmation.py``) — the verb functions here
-never see the confirmation flow; by the time one runs, the gate has already
-required and consumed an approval (or classified the call non-destructive).
-
-Invariants shared with the read-only agent (``remote_observe``):
-- No shell strings (FR-022). Every command is a discrete argv vector executed via
-  the transport's login-shell ``exec "$@"`` wrapper.
-- ``machine_id`` references a row in the CALLER'S own inventory; address / port /
-  username come from that row, never from arguments (FR-018).
-- Typed, bounded output only (FR-038/FR-040/FR-041); every outcome maps onto the
-  result vocabulary and names the machine + a next action (FR-034/FR-035).
-- Every verb is **non-retryable** (FR-036): these are consequential, and the
-  transport converts its own timeout into a structured ``unconfirmed`` rather than
-  a silent retry.
-
-The single source of truth for destructive classification is
-``remote_confirmation.DESTRUCTIVE_CLASSIFICATION`` — imported here and stamped onto
-each registry entry so the verb and its classification cannot drift (FR-028); the
-gate reads the same map.
+"""The 9 mutating remote-compute verbs (directory/job/service/package/process/upload
+control) run over orchestrator/remote_transport.py; destructive ones are pre-gated by
+orchestrator/remote_confirmation.py before reaching this module.
 """
 from __future__ import annotations
 
@@ -38,17 +16,16 @@ from orchestrator.remote_confirmation import DESTRUCTIVE_CLASSIFICATION
 from orchestrator.remote_machines import MachineNotFound
 from orchestrator.remote_transport import RemoteResult, Verdict, get_transport
 
-# Dependencies wired by RemoteControlAgent.__init__ (in-process pattern).
 _DB = None
 _CREDMGR = None
 _BLOBS = None
 
 _MAX_FIELD = 256
 _MAX_PATH = 4096
-_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # matches the 031 data/archive attachment cap
+_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x1b]")
-_ABS_PATH = re.compile(r"^/[^\x00]*$")   # absolute, NUL-free (single argv token)
+_ABS_PATH = re.compile(r"^/[^\x00]*$")
 _INT = re.compile(r"^\d+$")
 _NAME = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
@@ -58,12 +35,9 @@ _SIGNALS = ("TERM", "KILL")
 
 
 def register_deps(db, credmgr, blob_store) -> None:
-    """Wire the application Plane source, credentials, and blob store."""
     global _DB, _CREDMGR, _BLOBS
     _DB, _CREDMGR, _BLOBS = db, credmgr, blob_store
 
-
-# ── rendering helpers (mirror remote_observe) ─────────────────────────────────
 
 def _sanitize(value: Any, limit: int = _MAX_FIELD) -> str:
     if value is None:
@@ -79,8 +53,6 @@ def _ui(components: List[Any], data: Optional[Dict] = None) -> Dict[str, Any]:
 
 
 def _ok(title: str, components: List[Any], data: Optional[Dict] = None) -> Dict[str, Any]:
-    """Wrap success in a titled Card so the canvas renders a real workspace
-    component (a bare Text/Table leaks as stray canvas text)."""
     return {"_ui_components": [Card(title=title, content=components).to_dict()], "_data": data}
 
 
@@ -96,15 +68,11 @@ def _result_fail(res: RemoteResult) -> Dict[str, Any]:
 
 
 def _stderr_tail(res: RemoteResult) -> str:
-    """The last non-empty stderr line — the actionable reason a command failed
-    (e.g. sbatch's 'You must specify an -a/--account'). Bounded + sanitized."""
     lines = [ln for ln in (getattr(res, "stderr", "") or "").splitlines() if ln.strip()]
     return _sanitize(lines[-1], 240) if lines else ""
 
 
 def _resolve(user_id: Optional[str], ref: Optional[str]):
-    # No principal on the call → the vocabulary's no-live-human verdict (a bare
-    # "permission_denied" is not in contracts/result-vocabulary.md — SC-011).
     if not user_id:
         return None, _fail(Verdict.UNATTENDED_REFUSED, ref or "?", "sign in to use remote machines")
     if not ref:
@@ -124,9 +92,6 @@ def _resolve(user_id: Optional[str], ref: Optional[str]):
 
 def _finish(res: RemoteResult, target, success_title: str, success_comps: List[Any],
             data: Dict[str, Any], fail_next: str) -> Dict[str, Any]:
-    """Interpret a mutating command's transport result. The transport reports OK
-    when the command RAN; a non-zero exit means the remote REFUSED it, which is a
-    real failure the user must see (stderr is not surfaced — typed output only)."""
     if not res.ok:
         return _result_fail(res)
     if res.exit_status is None:
@@ -140,8 +105,6 @@ def _finish(res: RemoteResult, target, success_title: str, success_comps: List[A
     return _ok(success_title, success_comps, {**data, "exit_status": 0})
 
 
-# ── argument-shape guards (FR-022, US5-3) ─────────────────────────────────────
-
 def _bad_path(p: Any) -> bool:
     return not (isinstance(p, str) and 0 < len(p.encode("utf-8", "ignore")) <= _MAX_PATH
                 and _ABS_PATH.match(p))
@@ -151,8 +114,6 @@ def _int_token(v: Any) -> Optional[str]:
     s = str(v).strip()
     return s if _INT.match(s) else None
 
-
-# ── make_directory (never destructive) ────────────────────────────────────────
 
 def make_directory(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -168,8 +129,6 @@ def make_directory(**kwargs) -> Dict[str, Any]:
                    [Text(content=f"Created (or already present): {_sanitize(path, 200)}", variant="body")],
                    {"path": path}, "check the parent directory exists and is writable")
 
-
-# ── remove_path (always destructive) ──────────────────────────────────────────
 
 def remove_path(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -190,8 +149,6 @@ def remove_path(**kwargs) -> Dict[str, Any]:
                    "the path may need -r (recursive) or you may lack permission")
 
 
-# ── cancel_job (always destructive) ───────────────────────────────────────────
-
 def cancel_job(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
@@ -206,8 +163,6 @@ def cancel_job(**kwargs) -> Dict[str, Any]:
                    [Text(content=f"Requested cancellation of job {job_id}.", variant="body")],
                    {"job_id": job_id}, "the job may be yours to cancel, already gone, or invalid")
 
-
-# ── control_service (destructive iff action ∈ {stop,disable,restart}) ──────────
 
 def control_service(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -228,8 +183,6 @@ def control_service(**kwargs) -> Dict[str, Any]:
                    {"service_name": service, "action": action},
                    "you may lack privileges for this service, or it may not exist")
 
-
-# ── manage_package (destructive iff action == remove) ─────────────────────────
 
 _PKG_MANAGERS = ("apt-get", "dnf", "yum", "zypper")
 
@@ -255,8 +208,6 @@ def manage_package(**kwargs) -> Dict[str, Any]:
         return _fail(Verdict.INVALID_ARGUMENT, target.label,
                      f"action must be one of {', '.join(_PACKAGE_ACTIONS)}")
     transport = get_transport()
-    # Detect an available system package manager (one read round trip). ``which``
-    # prints the path of each argument it finds; the first hit wins.
     probe = transport.run(target, ["which", *_PKG_MANAGERS], timeout=20.0, retryable=True)
     if not probe.ok:
         return _result_fail(probe)
@@ -272,8 +223,6 @@ def manage_package(**kwargs) -> Dict[str, Any]:
                    {"package_name": package, "action": action, "manager": manager},
                    "you likely need elevated privileges to manage system packages")
 
-
-# ── signal_process (always destructive) ───────────────────────────────────────
 
 def signal_process(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -295,10 +244,7 @@ def signal_process(**kwargs) -> Dict[str, Any]:
                    "the process may be gone or owned by another user")
 
 
-# ── submit_job (never destructive — creates new work) ─────────────────────────
-
 def _sbatch_flags(kwargs: Dict[str, Any], label: str):
-    """Build typed sbatch flags from optional args. Returns (flags, error_dict)."""
     flags: List[str] = []
     partition = kwargs.get("partition")
     if partition is not None:
@@ -343,16 +289,10 @@ def _sbatch_flags(kwargs: Dict[str, Any], label: str):
 
 
 def submit_job(**kwargs) -> Dict[str, Any]:
-    """Submit a PRE-EXISTING sbatch script by path — same idempotency + durable
-    tracking posture as run_job (T049/FR-037): the nonce rides sbatch's --comment
-    AND the tracked_job row, a lost/slow submit surfaces the transport's
-    non-retryable ``unconfirmed`` and records NO row (a duplicate is impossible).
-    Unlike run_job the script already lives on the cluster, so there is no
-    controlled --output path (the script's own directives decide)."""
     import uuid as _uuid
 
     user_id = kwargs.get("user_id")
-    chat_id = kwargs.get("session_id")  # dispatch injects the chat id under session_id
+    chat_id = kwargs.get("session_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
     script_path = kwargs.get("script_path")
     job_name = kwargs.get("job_name")
@@ -388,7 +328,7 @@ def submit_job(**kwargs) -> Dict[str, Any]:
             _DB, owner_user_id=user_id, machine_id=target.machine_id, chat_id=chat_id,
             scheduler_job_id=job_id, submit_marker=nonce, output_path=None,
             component_id=component_id, job_name=job_name or "", notify_on_finish=notify)
-    except Exception:  # noqa: BLE001 — the job IS submitted; tracking-row failure is non-fatal
+    except Exception:  # noqa: BLE001
         pass
     card = remote_jobs.render_job_card(
         job_id=job_id, machine_label=target.label, state="submitted", terminal=False,
@@ -398,21 +338,14 @@ def submit_job(**kwargs) -> Dict[str, Any]:
                       "script_path": script_path, "notify_on_finish": notify}}
 
 
-# ── run_job (inline script → sbatch → durable async tracking, US4) ────────────
-
 _MAX_SCRIPT_BYTES = 64 * 1024
 
 
 def run_job(**kwargs) -> Dict[str, Any]:
-    """Submit an INLINE job script (not a pre-existing path), track it durably, and
-    return a live canvas card the background poller updates in place. The script is
-    written to the cluster as DATA via SFTP, then run by a structured ``sbatch``
-    argv — the transport's no-shell-string control-plane invariant still holds. Not
-    destructive (creates new work); consequential and non-retryable."""
     import uuid as _uuid
 
     user_id = kwargs.get("user_id")
-    chat_id = kwargs.get("session_id")  # dispatch injects the chat id under session_id
+    chat_id = kwargs.get("session_id")
     ref = kwargs.get("machine_id") or kwargs.get("machine") or kwargs.get("label")
     script = kwargs.get("script")
     job_name = kwargs.get("job_name")
@@ -425,7 +358,7 @@ def run_job(**kwargs) -> Dict[str, Any]:
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "provide the job's script text")
     if len(script.encode("utf-8", "ignore")) > _MAX_SCRIPT_BYTES:
         return _fail(Verdict.INVALID_ARGUMENT, target.label, "script is too large (max 64 KB)")
-    flags, ferr = _sbatch_flags(kwargs, target.label)  # partition/time/nodes/gpus/job_name/account
+    flags, ferr = _sbatch_flags(kwargs, target.label)
     if ferr:
         return ferr
 
@@ -471,7 +404,8 @@ def run_job(**kwargs) -> Dict[str, Any]:
             _DB, owner_user_id=user_id, machine_id=target.machine_id, chat_id=chat_id,
             scheduler_job_id=job_id, submit_marker=nonce, output_path=output_path,
             component_id=component_id, job_name=job_name or "", notify_on_finish=notify)
-    except Exception:  # noqa: BLE001 — the job IS submitted; tracking-row failure is non-fatal
+    # Job already submitted — a tracking-row failure isn't fatal
+    except Exception:  # noqa: BLE001
         pass
     card = remote_jobs.render_job_card(
         job_id=job_id, machine_label=target.label, state="submitted", terminal=False,
@@ -480,8 +414,6 @@ def run_job(**kwargs) -> Dict[str, Any]:
             "_data": {"job_id": job_id, "state": "submitted", "tracked": True,
                       "output_path": output_path, "notify_on_finish": notify}}
 
-
-# ── upload_file (destructive IFF remote_path already has content) ─────────────
 
 def upload_file(**kwargs) -> Dict[str, Any]:
     user_id = kwargs.get("user_id")
@@ -527,13 +459,6 @@ def upload_file(**kwargs) -> Dict[str, Any]:
                             ["Bytes", str(len(data))]])],
                {"remote_path": remote_path, "bytes": len(data)})
 
-
-# ── registry ──────────────────────────────────────────────────────────────────
-#
-# ``destructive`` on each entry is the SAME object the gate reads
-# (remote_confirmation.DESTRUCTIVE_CLASSIFICATION[verb]) so a reclassification in
-# one place is a reclassification in both (FR-028). ``retryable`` is False on every
-# verb (FR-036). The FR-051 contract test asserts this table exactly.
 
 def _entry(fn, description, input_schema, scope, timeout):
     return {

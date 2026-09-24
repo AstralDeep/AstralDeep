@@ -1,9 +1,9 @@
-"""Unregistered continuation authority through real Plane and production JWT policy.
-
-Operations and initial observations are fixture construction, not evidence of an
-authenticated ingress. Refresh and JWT verification run the real host code with
-synthetic external responses. Every row lives in an isolated test database schema.
+"""Tests for unregistered continuation authority
+(backend/orchestrator/session_authority.py, auth.py, web_auth.py) through real
+AstralPlane and JWT policy: incarnation binding, expiry, refresh causality, and
+session isolation across replacement.
 """
+
 import asyncio
 from contextlib import ExitStack
 from dataclasses import replace
@@ -128,7 +128,6 @@ def test_mock_mode_never_resolves_continuation(fixture, runtime, monkeypatch, mo
 
 
 def set_operation(runtime, record, operation):
-    """Perturb only this fixture's stored envelope to exercise version/refusal paths."""
     runtime.execute("UPDATE persistent_assignment SET data=jsonb_set(data,'{operation}',%s::jsonb) WHERE id=%s",
                     (json.dumps(operation), record.assignment_id))
 
@@ -252,17 +251,13 @@ def test_final_check_preserves_original_operation_and_session_generation(fixture
                 operation["deadline_at"] = (record.created_at + timedelta(seconds=200)).isoformat()
             set_operation(runtime, record, operation)
         elif change == "timestamp-only":
-            # This controlled timestamp-only boundary is not a real lease
-            # renewal: current Plane renewals also increment state_version.
+            # Not a real lease renewal — that also bumps state_version
             runtime.execute("UPDATE persistent_assignment SET data=jsonb_set(data,'{updated_at}',to_jsonb(%s::text)) WHERE id=%s",
                 ((record.updated_at + timedelta(seconds=1)).isoformat(), record.assignment_id))
         else:
             assert change in {"state_version", "control_epoch", "instruction_revision"}
             physical = "state_version=state_version+1," if change == "state_version" else ""
             runtime.execute(f"UPDATE persistent_assignment SET {physical}data=jsonb_set(data,'{{{change}}}',to_jsonb((data->>'{change}')::bigint+1)) WHERE id=%s", (record.assignment_id,))
-        # This callback runs inside JWT error sanitization. Independently prove
-        # its mutation completed, so a fixture SQL failure cannot count as a
-        # successful late-generation refusal.
         with runtime.transaction() as tx:
             current = runtime.repositories.assignments.get_operation(tx,
                 owner_id=record.owner_id, assignment_id=record.assignment_id).assignment

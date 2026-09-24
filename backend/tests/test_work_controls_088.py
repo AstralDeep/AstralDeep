@@ -1,4 +1,8 @@
-"""Fresh human authentication, cookie-write origin checks and bounded commands."""
+"""Tests for orchestrator/work_controls.py's HTTP command shaping: canonical
+revision/UUID validation, origin checks on cookie-authenticated writes, and
+fail-closed handling of unknown commands, with storage and audit mocked.
+"""
+
 from datetime import datetime, timedelta, timezone
 import json
 import time
@@ -27,8 +31,6 @@ def controls(host, monkeypatch):
     repo.apply_control = Mock(return_value=SimpleNamespace(applied=True))
     repo.delete_for_owner = Mock(return_value=True)
     orch.persistent_assignments._audit = AsyncMock()
-    # HTTP/command-shaping unit boundary only. The dedicated PostgreSQL suite
-    # exercises the actual audit repository and mutation rollback together.
     orch.atomic_audit = Mock()
     monkeypatch.setattr("orchestrator.work_control_audit.WorkControlAudit.append", orch.atomic_audit)
     monkeypatch.setattr("orchestrator.work_control_audit.WorkControlAudit.assert_store_current", Mock())
@@ -41,9 +43,6 @@ def controls(host, monkeypatch):
     app.dependency_overrides[get_web_or_bearer_user_payload] = lambda: {
         "sub": "owner", "realm_access": {"roles": ["user"]}}
 
-    # This module tests HTTP/command shape with mocked storage. Mock the new
-    # private auth boundary explicitly; real signed IAM/session/commit races are
-    # covered by test_work_write_http_postgres_088 and the PG control cohorts.
     def local(caller, assignments):
         assignments._owner(caller.context.owner_id, caller.context.claims)
 
@@ -200,9 +199,6 @@ async def test_flag_off_extra_authority_unknown_commands_and_private_errors_fail
     app, orch, read, repo = controls
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         path = f"/api/work/v1/operations/{read.assignment.assignment_id}"
-        # /resume is a registered route (since 85135498), so the old unknown-command
-        # 404 is now the registered route's OWN closed refusal: a cookie-authenticated
-        # write with no Origin header is refused before authority or storage.
         refused = await client.post(path + "/resume", json=body())
         assert refused.status_code == 403 and refused.json() == {"error": "work_origin_refused"}
         assert refused.headers["cache-control"] == "no-store"
@@ -249,7 +245,6 @@ async def test_write_uses_original_credential_verification_on_every_retry(contro
 
     app, _, read, repo = controls
     app.dependency_overrides.clear()
-    # Broad suite collection may enable the development mock in other modules.
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")

@@ -1,20 +1,8 @@
-"""Feature 054 — orchestrator credential-resolution tests.
-
-Like the pre-054 version of this file, this bypasses full Orchestrator
-construction (DB, agents, sockets) and exercises the REAL resolution
-methods — ``Orchestrator._llm_context_user_id``,
-``Orchestrator._resolve_llm_client_for`` and
-``Orchestrator._drain_llm_discard_notes`` — bound onto a minimal stub via
-``types.MethodType``, backed by a real ``UserLLMConfigStore`` over the
-fake DB. Covers:
-
-* user socket → the caller's OWN persisted record (source USER).
-* ``websocket=None`` (background) → the SYSTEM record.
-* scheduled-turn ``VirtualWebSocket`` → the SYSTEM record.
-* no cross-fallback in either direction (gate / honest skip).
-* credential_source audit values "user" / "system".
-* the undecryptable-row drain emits the discarded_undecryptable audit.
+"""Tests for Orchestrator._resolve_llm_client_for and _llm_context_user_id, bound onto a
+minimal stub: user sockets resolve the caller's own record, background/scheduled
+turns resolve the system record, and neither ever falls back to the other.
 """
+
 from __future__ import annotations
 
 import types
@@ -38,12 +26,10 @@ SYSTEM_KEY = "sk-system-1234567890abcdefg"
 
 
 class _FakeWS:
-    """Stands in for a live user WebSocket (hashable, identity-keyed)."""
+    pass
 
 
 def _make_stub(store, recorder):
-    """Minimal orchestrator stub carrying exactly the state the real
-    resolution methods touch, with the REAL unbound methods attached."""
     stub = types.SimpleNamespace()
     stub.ui_sessions = {}
     stub._llm_store = store
@@ -81,11 +67,6 @@ def _seed_system(store):
                           updated_by="admin")
 
 
-# ============================================================================
-# _llm_context_user_id — which context owns the call
-# ============================================================================
-
-
 class TestLLMContextUserId:
     def test_none_websocket_is_system_context(self, store, fake_recorder):
         stub = _make_stub(store, fake_recorder)
@@ -102,16 +83,11 @@ class TestLLMContextUserId:
         assert stub._llm_context_user_id(ws) == ALICE
 
 
-# ============================================================================
-# _resolve_llm_client_for — the four contexts
-# ============================================================================
-
-
 class TestUserSocketResolution:
     async def test_user_socket_resolves_own_record(self, store, fake_recorder):
         stub = _make_stub(store, fake_recorder)
         _seed_alice(store)
-        _seed_system(store)  # present but must NOT be used
+        _seed_system(store)
         ws = _FakeWS()
         _register(stub, ws, ALICE)
         client, source, resolved = await stub._resolve_llm_client_for(ws)
@@ -123,11 +99,10 @@ class TestUserSocketResolution:
 
     async def test_unconfigured_user_is_gated_no_system_fallback(
             self, store, fake_recorder):
-        """FR-019: user calls NEVER fall back to the system credential."""
         stub = _make_stub(store, fake_recorder)
-        _seed_system(store)  # the system record exists...
+        _seed_system(store)
         ws = _FakeWS()
-        _register(stub, ws, "bob-sub")  # ...but bob has no personal record
+        _register(stub, ws, "bob-sub")
         with pytest.raises(LLMUnavailable, match="provider setup"):
             await stub._resolve_llm_client_for(ws)
 
@@ -147,8 +122,6 @@ class TestUserSocketResolution:
         fake_recorder,
         safe_send,
     ):
-        """The tested USER model wins over stale cache and operator tiers."""
-
         store.set_sync(
             ALICE,
             provider="custom",
@@ -272,7 +245,7 @@ class TestSystemContextResolution:
     async def test_websocket_none_resolves_system_record(
             self, store, fake_recorder):
         stub = _make_stub(store, fake_recorder)
-        _seed_alice(store)  # a configured user must NOT be borrowed
+        _seed_alice(store)
         _seed_system(store)
         client, source, resolved = await stub._resolve_llm_client_for(None)
         assert source is CredentialSource.SYSTEM
@@ -283,8 +256,6 @@ class TestSystemContextResolution:
 
     async def test_virtual_websocket_resolves_system_record(
             self, store, fake_recorder):
-        """Scheduled turns run a user's chat but bill the system
-        credential by explicit owner decision (FR-019)."""
         stub = _make_stub(store, fake_recorder)
         _seed_alice(store)
         _seed_system(store)
@@ -296,16 +267,11 @@ class TestSystemContextResolution:
     async def test_no_system_record_degrades_honestly_no_user_fallback(
             self, store, fake_recorder):
         stub = _make_stub(store, fake_recorder)
-        _seed_alice(store)  # users configured, system absent
+        _seed_alice(store)
         with pytest.raises(LLMUnavailable, match="system credential"):
             await stub._resolve_llm_client_for(None)
         with pytest.raises(LLMUnavailable):
             await stub._resolve_llm_client_for(_virtual_ws())
-
-
-# ============================================================================
-# credential_source audit values
-# ============================================================================
 
 
 class TestCredentialSourceAudit:
@@ -336,11 +302,6 @@ class TestCredentialSourceAudit:
         assert sources == ["user", "system"]
 
 
-# ============================================================================
-# Undecryptable-record drain (FR-010)
-# ============================================================================
-
-
 class TestUndecryptableDrain:
     async def test_resolution_discards_audits_and_regates(
             self, store, fake_db, fake_recorder):
@@ -360,9 +321,7 @@ class TestUndecryptableDrain:
         with pytest.raises(LLMUnavailable):
             await stub._resolve_llm_client_for(ws)
 
-        # The unusable row was deleted (re-gate, FR-010)...
         assert ALICE not in fake_db.users
-        # ...and the drain emitted the discarded_undecryptable audit.
         events = [c.args[0] for c in fake_recorder.record.await_args_list]
         assert len(events) == 1
         assert events[0].event_class == "llm_config_change"

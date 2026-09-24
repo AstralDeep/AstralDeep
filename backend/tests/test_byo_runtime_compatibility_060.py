@@ -1,4 +1,7 @@
-"""Neutral backend side of the feature-060 BYO runtime compatibility contract."""
+"""Tests for the BYO runtime compatibility contract
+(backend/orchestrator/agent_generator.py, user_agents.py): the release lock as the
+sole backend runtime identity and its digest-vector agreement with the generator.
+"""
 
 from __future__ import annotations
 

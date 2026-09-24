@@ -1,9 +1,8 @@
-"""Attended HITL decisions bound to one server-held call, never client args.
-
-Requests live for fifteen minutes in the owning process. Restart or eviction
-expires them closed; sensitive arguments are never persisted in UI payloads.
-Approval re-enters the complete dispatcher and only satisfies this HITL gate.
+"""Holds attended human-in-the-loop approvals bound to one server-held pending call for
+fifteen minutes, never client-supplied arguments; handle_decision() re-enters
+evaluate() to release the approved dispatch.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -98,7 +97,6 @@ def _current_session(orch, websocket, call: PendingCall) -> bool:
 
 
 def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
-    """A click is expressed intent only for its exact owner/chat/tool/arguments."""
     approval = _APPROVAL.get()
     if not isinstance(approval, Approval) or approval.orchestrator is not orch or approval.consumed:
         return False
@@ -109,7 +107,6 @@ def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
 
 
 def approved_call(orch, owner, chat, agent, tool) -> bool:
-    """Whether this invocation is the exact target of an attended approval."""
     approval = _APPROVAL.get()
     return (isinstance(approval, Approval) and approval.orchestrator is orch
             and (approval.call.owner, approval.call.chat, approval.call.agent, approval.call.tool)
@@ -117,7 +114,6 @@ def approved_call(orch, owner, chat, agent, tool) -> bool:
 
 
 def effect_refusal(orch, websocket, owner, chat, agent, tool, args, *, start=False) -> MCPResponse | None:
-    """Revalidate the reviewed effect after all awaits, once per physical send."""
     if not approved_call(orch, owner, chat, agent, tool):
         return None
     approval = _APPROVAL.get()
@@ -158,7 +154,6 @@ def _refused(message: str) -> MCPResponse:
 
 
 def _review_summary(args: dict) -> str:
-    """Describe the destination and fields without disclosing their contents."""
     fields = ", ".join(str(key)[:64] for key in args if not str(key).startswith("_"))[:512]
     description = f"Fields supplied: {fields or 'none'}."
     url = args.get("url")
@@ -173,12 +168,6 @@ def _review_summary(args: dict) -> str:
 
 
 def _review_arguments(args: dict) -> tuple[str, bool]:
-    """A complete bounded preview, or a redacted explanation with no approval.
-
-    The existing PHI redactor masks identifiers; credential markers and fields
-    are additionally withheld. If any value is hidden/truncated, the user cannot
-    review the exact effect, so the caller must not offer blind approval.
-    """
     from orchestrator.hitl import _SENSITIVE_INPUT, sensitive_url
     from personalization.phi_gate import get_phi_gate
     from shared.phi_redactor import PHI_FIELD_PATTERNS, redact
@@ -234,7 +223,6 @@ def _review_arguments(args: dict) -> tuple[str, bool]:
 
 
 async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MCPResponse | None:
-    """Consume the exact approved call or return a persistent actionable card."""
     try:
         encoded = _arguments(args)
         if matching_approval(orch, owner, chat, agent, tool, args):
@@ -249,9 +237,6 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
                 return None
         if not chat or not _attended(orch, websocket, owner):
             return _refused("Confirmation requires an interactive signed-in conversation. Reissue the action there.")
-        # Resolve owner-scoped attachment aliases before review. Re-entry maps
-        # these concrete targets idempotently, so benign path resolution cannot
-        # silently change the approved effect or cause an endless review loop.
         try:
             args = await asyncio.to_thread(orch._map_file_paths, chat, json.loads(encoded), user_id=owner)
             encoded = _arguments(args)
@@ -299,7 +284,6 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
 
 
 async def _finish_card(orch, websocket, call, title, message, components=None):
-    """Retire the same workspace card across devices; an old click stays invalid."""
     try:
         cid = f"hitl_{call.request_id}"
         component = Card(id=cid, title=title, content=[Text(content=message)]).to_dict()
@@ -319,7 +303,6 @@ async def _finish_card(orch, websocket, call, title, message, components=None):
 
 
 async def handle_decision(orch, websocket, owner, payload) -> None:
-    """Accept only an opaque request ID and a decision from its attended owner."""
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
@@ -330,7 +313,7 @@ async def handle_decision(orch, websocket, owner, payload) -> None:
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
             "It may have expired or already been handled.", variant="warning").to_dict()], target="chat")
         return
-    # Pop before any await: concurrent clicks cannot both authorize the request.
+    # Pop before the await — blocks a concurrent double-click
     pending.pop(request_id)
     try:
         owned_chat = await asyncio.to_thread(orch.history.get_chat, call.chat, user_id=owner)

@@ -96,6 +96,10 @@ Python 3.11+ (backend); ES5 vanilla JS maintained by the orchestrator render lay
 
 
 <!-- MANUAL ADDITIONS START -->
+## Comments (Constitution VI)
+
+The code documents itself. Each source file opens with a header of at most three sentences on what it does and how it connects to other files (Python: a module docstring). Add no other comments or docstrings except a one-line *why* where absolutely necessary. No spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
+
 ## UI delivery (feature 026)
 
 The UI is **server-driven from the backend** — there is no separate React/Vite frontend.

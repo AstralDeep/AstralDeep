@@ -1,4 +1,7 @@
-"""LiveKit authority-boundary tests for Feature 065."""
+"""Tests for orchestrator/livekit_service.py: fail-closed redacted settings, room/grant
+bounds, least-privilege client vs. worker token grants, identity rotation, cached
+readiness, and typed room-cleanup error handling.
+"""
 
 from __future__ import annotations
 

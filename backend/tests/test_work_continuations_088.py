@@ -1,4 +1,8 @@
-"""Closed manual-event and owner-attestation request vocabulary."""
+"""Tests for orchestrator/work_continuations.py's closed manual-event and
+owner-attestation request vocabulary: no provider evidence or coerced identity is
+accepted, and only an exact owner attestation reconciles.
+"""
+
 from uuid import uuid4
 
 import pytest

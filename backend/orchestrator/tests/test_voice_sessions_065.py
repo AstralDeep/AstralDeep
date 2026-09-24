@@ -1,4 +1,7 @@
-"""Real-PostgreSQL repository tests for Feature 065 voice ownership state."""
+"""Real-Postgres tests for orchestrator/voice_sessions.py and voice_coordinator.py:
+row-locked first-owner creation, generation-CAS takeover, fenced identity end,
+control-lease renewal, turn binding, and idempotent delete of a reaped session.
+"""
 
 from __future__ import annotations
 
@@ -52,8 +55,6 @@ NOW = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
 
 @pytest.fixture(scope="module")
 def database() -> Iterator[VoicePlaneTestRuntime]:
-    """Create an isolated database through the current Plane migration path."""
-
     with isolated_voice_plane_runtime("voice_065") as runtime:
         yield runtime
 
@@ -286,8 +287,6 @@ def test_identity_end_exact_cas_replays_and_rejects_replacement(
 def test_identity_end_unit_cas_is_checked_under_owner_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The exact identity fence is evaluated only after owner serialization."""
-
     expected_session_id = str(uuid.uuid4())
     replacement_session_id = str(uuid.uuid4())
     transaction = object()
@@ -1116,8 +1115,6 @@ def test_ended_session_repairs_and_preserves_exact_committed_result(
     assert repaired[0].state == expected_state
     assert repaired[0].terminal_kind == expected_state
     assert repaired[0].result_commit_id == result_commit_id
-    # The ended media generation cannot truthfully claim that committed
-    # content was extracted or spoken during crash recovery.
     assert repaired[0].recap_source == "terminal_status"
     assert repaired[0].sensitivity == "unknown"
     assert repaired[0].is_foreground is False
@@ -2400,10 +2397,6 @@ def test_constructor_and_input_validation_fail_before_database_use(
 def test_user_delete_of_lease_reaped_session_is_idempotent_066(
     repository: VoiceSessionRepository,
 ) -> None:
-    """Bug B (2026-08-03): a client that stalls stops renewing, the reaper
-    ends its session, and the user's later DELETE must succeed instead of
-    raising session_already_ended (which mapped to a 503 on the wire)."""
-
     create = _create()
     active = _activate_and_sync(repository, create)
     reaped = {
@@ -2413,8 +2406,6 @@ def test_user_delete_of_lease_reaped_session_is_idempotent_066(
     assert active.session_id in reaped
     assert reaped[active.session_id].end_reason == "lease_expired"
 
-    # Same device, rotated binding (bindings rotate every ~2 minutes, so the
-    # DELETE rarely carries the binding stored on the reaped row).
     rotated = _control(
         create,
         binding_id=str(uuid.uuid4()),
@@ -2432,8 +2423,6 @@ def test_user_delete_of_lease_reaped_session_is_idempotent_066(
     assert ended.state == "ended"
     assert ended.end_reason == "lease_expired"
 
-    # A foreign device is still refused, and non-user internal reasons keep
-    # their exact-replay semantics.
     with pytest.raises(VoiceSessionRepositoryError, match="binding_scope_mismatch"):
         repository.end_session(
             user_id=create.user_id,

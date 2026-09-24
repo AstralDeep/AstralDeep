@@ -1,4 +1,8 @@
-"""Private Work caller fences against real Plane and normal signed JWT policy."""
+"""Tests for orchestrator/work_control_authority.py's caller guard against real Plane
+and signed JWT policy: selected-session binding without refresh, bearer/cookie
+precedence, and refusal on session replacement during the guarded transaction.
+"""
+
 import importlib
 import asyncio
 from dataclasses import replace
@@ -110,12 +114,6 @@ async def test_cookie_selection_cannot_adopt_replacement_during_jwt_wait(bound, 
 async def test_bearer_cookie_first_selection_follows_iam_then_never_adopts_again(
     bound, fixture, runtime, monkeypatch,
 ):
-    """Mixed transport authenticates the Bearer before first persisted B capture.
-
-    This preserves admission's established policy: the signed SID is frozen, but
-    no owner/session lookup occurs before verified IAM. Subsequent waits cannot
-    replace this first captured issuance, even for an identical SID/row body.
-    """
     original = auth.verify_production_token
     selected_row = None
 
@@ -189,7 +187,6 @@ async def test_final_guard_rechecks_composition_after_waiting_session_assertion(
 @pytest.mark.parametrize("cookie", [True, False])
 async def test_expiry_after_real_audit_table_wait_rolls_back_prior_write(bound, fixture, runtime, cookie):
     guard = await selected(bound, fixture, cookie=cookie)
-    # Narrow the private attempt lifetime; production's fixed 15 seconds is unchanged.
     guard = replace(guard, _until=datetime.now(timezone.utc) + timedelta(seconds=.08))
     entered = threading.Event()
     def mutation():

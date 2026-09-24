@@ -1,4 +1,7 @@
-"""020-async-queries: Tests for background task infrastructure."""
+"""Tests for orchestrator/async_tasks.py's BackgroundTaskManager: submission,
+cancellation, watcher notification, the Plane compatibility projection, and
+shutdown/observability, against work_admission.py and a fake Plane runtime.
+"""
 
 import asyncio
 import dataclasses
@@ -38,31 +41,19 @@ from orchestrator.work_admission import (
 from shared.feature_flags import flags
 
 
-# The manager only performs the Plane compatibility projection when
-# bg_continuity is enabled; the flags-off SC-009 byte-equivalence run correctly
-# performs no such write, so tests that assert on it skip cleanly there. Flags
-# are read once at import, so this is stable for the whole process.
 _REQUIRES_BG_CONTINUITY = pytest.mark.skipif(
     not flags.is_enabled("bg_continuity"),
     reason="legacy compatibility write requires FF_BG_CONTINUITY",
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 async def _collect(mgr):
-    """Wait for all known tasks in the manager to finish."""
     tasks = [t.asyncio_task for t in mgr._tasks.values() if t.asyncio_task]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _wait_until(predicate, *, timeout=1.0):
-    """Wait for an event-loop-owned predicate without hiding timeouts."""
-
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
         if asyncio.get_running_loop().time() >= deadline:
@@ -237,11 +228,6 @@ def _claim_maintenance(coordinator):
     return claim
 
 
-# ---------------------------------------------------------------------------
-# VirtualWebSocket Tests
-# ---------------------------------------------------------------------------
-
-
 class TestVirtualWebSocket:
     def test_send_text_json(self):
         task = BackgroundTask(task_id="t1", chat_id="c1", user_id="u1")
@@ -281,11 +267,6 @@ class TestVirtualWebSocket:
         assert asyncio.run(vws.receive_json()) == {}
         assert vws.client == ("background", "synthetic")
         assert repr(vws) == "VirtualWebSocket(task=synthetic)"
-
-
-# ---------------------------------------------------------------------------
-# BackgroundTaskManager Tests
-# ---------------------------------------------------------------------------
 
 
 class TestBackgroundTaskManager:
@@ -642,9 +623,6 @@ class TestBackgroundTaskManager:
         cancel_request = None
         dispatcher = None
 
-        # Retain queued callables without starting the normal dispatcher so the
-        # cancellation can snapshot local authority before the forced query
-        # interleaving below acquires the manager lock.
         monkeypatch.setattr(mgr, "_ensure_dispatcher_locked", lambda: None)
 
         async def active(vws):
@@ -787,9 +765,7 @@ class TestBackgroundTaskManager:
             assert current.status is TaskStatus.COMPLETED
             terminal_revision = current._operation.state_revision
 
-            # The manager state lock must not be held by the blocked database
-            # cancellation call. Completion released durable capacity, so an
-            # unrelated successor can be admitted and run before it returns.
+            # Blocked cancel must not hold the lock — successor can still run
             successor = await asyncio.wait_for(
                 mgr.submit("c1", "u1", queued),
                 timeout=1,
@@ -921,9 +897,6 @@ class TestBackgroundTaskManager:
                 mgr._reconcile_operation_projection(task, hidden_payload_swap)
             assert task._operation is full
 
-            # A safe/full pair at the same revision represents the same
-            # authority only when every field exposed by the safe contract is
-            # identical. The existing richer projection is retained.
             assert mgr._reconcile_operation_projection(task, safe) is full
             assert task._operation is full
             for changed_safe in (
@@ -934,8 +907,6 @@ class TestBackgroundTaskManager:
                     mgr._reconcile_operation_projection(task, changed_safe)
                 assert task._operation is full
 
-            # The inverse safe/full ordering is also idempotent-only and must
-            # not upgrade the stored representation at an unchanged revision.
             task._apply_operation(safe)
             assert task._operation is safe
             assert mgr._reconcile_operation_projection(task, full) is safe
@@ -1010,8 +981,7 @@ class TestBackgroundTaskManager:
         notifications = []
 
         class FakeWS:
-            # 055: watcher notification uses send_text (send_json would
-            # double-encode over a real FastAPI socket).
+            # Real sockets use send_text — send_json would double-encode
             async def send_text(self, data):
                 notifications.append(json.loads(data))
 
@@ -1027,7 +997,6 @@ class TestBackgroundTaskManager:
 
     @pytest.mark.asyncio
     async def test_cancel_nonexistent(self):
-        """Cancelling a non-existent task returns False."""
         mgr = _manager()
         result = await mgr.cancel("nonexistent")
         assert result is False
@@ -1072,20 +1041,17 @@ class TestBackgroundTaskManager:
 
     @pytest.mark.asyncio
     async def test_get_nonexistent(self):
-        """Getting a non-existent task returns None."""
         mgr = _manager()
         result = await mgr.get("nonexistent")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_active_for_idle_chat(self):
-        """get_active_for_chat on a chat with no tasks returns None."""
         mgr = _manager()
         result = await mgr.get_active_for_chat("idle-chat")
         assert result is None
 
     def test_background_task_to_dict(self):
-        """BackgroundTask.to_dict produces expected shape."""
         t = BackgroundTask(task_id="t99", chat_id="c99", user_id="u99")
         d = t.to_dict()
         assert d["task_id"] == "t99"
@@ -1929,8 +1895,6 @@ class TestBackgroundTaskManager:
             try:
                 await asyncio.Event().wait()
             finally:
-                # A worker may execute cleanup after cancellation, but it must
-                # no longer be able to publish visible output.
                 await vws.send_json({"type": "late_after_lease_loss"})
 
         try:

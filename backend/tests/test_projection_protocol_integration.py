@@ -1,4 +1,7 @@
-"""Composition-level drift guards against Projection's UI protocol owner."""
+"""Drift guards checking that Projection's UI protocol composition matches its declared
+manifest and parent gitlink, and that every server push literal and UI action is
+declared by Projection, including the separately owned voice-local schema.
+"""
 
 from __future__ import annotations
 
@@ -69,8 +72,6 @@ _CHROME_KEY = re.compile(r'"((?:chrome|draft|revision)_[a-z_]+)"\s*:')
 
 
 def _voice_local_types() -> set[str]:
-    """Read the separately owned speech sideband vocabulary."""
-
     document = json.loads(VOICE_LOCAL_SCHEMA_PATH.read_text(encoding="utf-8"))
     discovered: set[str] = set()
 
@@ -153,9 +154,6 @@ def test_server_push_literals_are_declared_by_projection() -> None:
     }
     declared.update(manifest["component_types"])  # type: ignore[arg-type]
     declared.update(NON_PUSH_TYPES)
-    # Feature 075 speech sideband frames are not Projection UI primitives or
-    # chrome pushes. Their exact vocabulary is owned by the separately pinned
-    # voice-local schema and is still drift-checked here rather than waived.
     declared.update(_voice_local_types())
 
     missing: dict[str, list[str]] = {}

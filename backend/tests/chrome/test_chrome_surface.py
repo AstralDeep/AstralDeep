@@ -1,11 +1,8 @@
-"""Feature 043 — native SDUI settings-surface delivery.
-
-DB-free: a fake orchestrator (with a ROTE profile) + stub surfaces exercise the
-device-target branch in ``chrome_events._render_surface`` (web → ChromeRender
-HTML, native → ChromeSurface components), the not-yet-converted placeholder, the
-native admin gate, the handler re-render-as-ChromeSurface path, the ``_sdui``
-helpers, and the menu-model ``include_tour`` filter (spec FR-009).
+"""DB-free tests for orchestrator/chrome_events.py's device-target rendering: web gets
+ChromeRender HTML, native gets ChromeSurface components, plus admin gating, the
+unconverted-surface placeholder, and the Connections surface.
 """
+
 import asyncio
 import json
 import sys
@@ -49,8 +46,6 @@ def run(coro):
 
 @pytest.fixture
 def stub_surfaces(monkeypatch):
-    """Register two stub surfaces: 'stub_sdui' (has components()) and
-    'stub_html' (render() only — not yet converted)."""
     from webrender.chrome.surfaces import _sdui
 
     sdui_mod = types.ModuleType("tests.stub_sdui_surface")
@@ -77,7 +72,7 @@ def stub_surfaces(monkeypatch):
     async def html_render(orch, user_id, roles, params):
         return "<div id='html-only'>web</div>"
 
-    html_mod.render = html_render  # no components() → not yet converted
+    html_mod.render = html_render
     sys.modules["tests.stub_html_surface"] = html_mod
 
     from orchestrator import projection_surfaces as reg
@@ -98,8 +93,6 @@ def _types(components):
     return [c.get("type") for c in components]
 
 
-# --- the device-target branch (FR-001/FR-002/FR-003) -------------------------
-
 @pytest.mark.parametrize("device", ["windows", "android"])
 def test_native_session_gets_chrome_surface_frame(stub_surfaces, device):
     orch = FakeOrch(device=device)
@@ -111,7 +104,6 @@ def test_native_session_gets_chrome_surface_frame(stub_surfaces, device):
     assert frame["title"] == "Stub SDUI"
     assert frame["region"] == "modal" and frame["admin_only"] is False
     assert "button" in _types(frame["components"])
-    # a native client never gets HTML
     assert not any(f.get("type") == "chrome_render" for f in orch.sent)
 
 
@@ -120,7 +112,7 @@ def test_web_session_still_gets_chrome_render_html(stub_surfaces):
     run(chrome_events.handle_chrome_event(
         orch, orch.ws, "chrome_open", {"surface": "stub_sdui"}, "u1"))
     html = _last(orch, "chrome_render")["html"]
-    assert "stub-html" in html and 'role="dialog"' in html  # modal shell HTML
+    assert "stub-html" in html and 'role="dialog"' in html
     assert not any(f.get("type") == "chrome_surface" for f in orch.sent)
 
 
@@ -130,7 +122,7 @@ def test_unconverted_surface_returns_placeholder_component_on_native(stub_surfac
         orch, orch.ws, "chrome_open", {"surface": "stub_html"}, "u1"))
     frame = _last(orch, "chrome_surface")
     assert frame["surface_key"] == "stub_html"
-    assert _types(frame["components"]) == ["alert"]  # exactly one labeled placeholder
+    assert _types(frame["components"]) == ["alert"]
     assert "isn't available" in frame["components"][0]["message"]
 
 
@@ -157,12 +149,10 @@ def test_handler_rerender_is_chrome_surface_on_native(stub_surfaces):
     run(chrome_events.handle_chrome_event(orch, orch.ws, "chrome_stub_save", {}, "u1"))
     frame = _last(orch, "chrome_surface")
     kinds = _types(frame["components"])
-    assert kinds[0] == "alert"  # the success notice, mapped to a leading Alert
+    assert kinds[0] == "alert"
     assert frame["components"][0]["variant"] == "success"
-    assert "button" in kinds  # plus the re-rendered surface components
+    assert "button" in kinds
 
-
-# --- feature 044: device-aware error/close paths (FR-002/FR-017) -------------
 
 @pytest.mark.parametrize("device", ["windows", "android"])
 def test_unknown_action_is_visible_on_native(stub_surfaces, device):
@@ -220,7 +210,7 @@ def test_chrome_close_clears_native_modal_with_empty_components(stub_surfaces, d
     orch = FakeOrch(device=device)
     run(chrome_events.handle_chrome_event(orch, orch.ws, "chrome_close", {}, "u1"))
     frame = _last(orch, "chrome_surface")
-    assert frame["components"] == []  # documented clear-modal form
+    assert frame["components"] == []
     assert not any(f.get("type") == "chrome_render" for f in orch.sent)
 
 
@@ -230,8 +220,6 @@ def test_chrome_close_still_clears_web_modal_html(stub_surfaces):
     assert _last(orch, "chrome_render")["html"] == ""
 
 
-# --- _sdui helpers (FR + research D2) ----------------------------------------
-
 def test_sdui_form_is_parampicker_action_submit():
     from webrender.chrome.surfaces import _sdui
     f = _sdui.form(
@@ -240,10 +228,10 @@ def test_sdui_form_is_parampicker_action_submit():
         submit_action="chrome_llm_save", submit_label="Save",
         submit_payload={"tab": "soul"})
     assert f["type"] == "param_picker"
-    assert f["submit_action"] == "chrome_llm_save"          # action-submit binding
+    assert f["submit_action"] == "chrome_llm_save"
     assert f["submit_payload"] == {"tab": "soul"}
     assert [x["name"] for x in f["fields"]] == ["base_url", "api_key"]
-    assert f["fields"][1]["kind"] == "password"             # new field kind
+    assert f["fields"][1]["kind"] == "password"
 
 
 def test_sdui_placeholder_is_a_labeled_alert():
@@ -252,8 +240,6 @@ def test_sdui_placeholder_is_a_labeled_alert():
     assert p["type"] == "alert" and "Theme" in p["message"]
 
 
-# --- menu-model: "Take the tour" is web-only on native (FR-009) --------------
-
 def test_native_menu_omits_take_the_tour():
     from webrender.chrome.menu_model import menu_model_dict
     native = menu_model_dict(["user"], include_admin=False, include_tour=False)
@@ -261,17 +247,15 @@ def test_native_menu_omits_take_the_tour():
     assert help_groups, "help group present"
     surfaces = [i["surface"] for g in help_groups for i in g["items"]]
     assert "tour" not in surfaces
-    assert "guide" in surfaces  # the other Help item stays
+    assert "guide" in surfaces
 
 
 def test_web_menu_keeps_take_the_tour():
     from webrender.chrome.menu_model import menu_model_dict
-    web = menu_model_dict(["user"])  # defaults: include_tour=True
+    web = menu_model_dict(["user"])
     surfaces = [i["surface"] for g in web["menu"] for i in g["items"]]
     assert "tour" in surfaces and "guide" in surfaces
 
-
-# --- 088 T048: Connections surface, reached through the REAL registry -------
 
 def test_connections_surface_disabled_by_default_shows_a_plain_message(monkeypatch):
     monkeypatch.delenv("FF_FRAMEWORK_CREDENTIALS", raising=False)
@@ -292,11 +276,9 @@ def test_connections_surface_native_disabled_message_is_a_single_alert(monkeypat
     assert "not enabled" in frame["components"][0]["message"]
 
 
+# Flip the singleton — env vars are cached at import
 @pytest.fixture
 def _connections_on():
-    """Flip the process-wide flag singleton directly (env vars are read once
-    at import — see ``shared/feature_flags.py``), mirroring every other
-    flag-toggling test in this suite (e.g. ``test_artifact_export.py``)."""
     from shared.feature_flags import flags
     prior = flags._flags.get("framework_credentials")
     flags._flags["framework_credentials"] = True
@@ -305,7 +287,7 @@ def _connections_on():
 
 
 def test_connections_surface_enabled_but_unwired_shows_unavailable(_connections_on):
-    orch = FakeOrch(device="browser")  # no .framework_credentials attribute
+    orch = FakeOrch(device="browser")
     run(chrome_events.handle_chrome_event(
         orch, orch.ws, "chrome_open", {"surface": "connections"}, "u1"))
     html = _last(orch, "chrome_render")["html"]
@@ -313,19 +295,13 @@ def test_connections_surface_enabled_but_unwired_shows_unavailable(_connections_
 
 
 class _StubCredentialsForReload:
-    """A minimally-working stub so the post-refusal re-render can list (empty)
-    without crashing — the refusal itself never calls into this."""
-
     def list(self, *, owner_id):
         return []
 
 
 def test_connections_issue_and_revoke_refuse_without_a_live_human_caller(_connections_on):
-    """No ``current_human_caller`` bound (this fake never binds one, exactly
-    like a real socket outside the 076/agentic human-request machinery) —
-    mint/revoke must fail closed, never silently act as some other owner."""
     orch = FakeOrch(device="browser")
-    orch.framework_credentials = _StubCredentialsForReload()  # never called for issue/revoke
+    orch.framework_credentials = _StubCredentialsForReload()
     run(chrome_events.handle_chrome_event(
         orch, orch.ws, "chrome_connection_issue",
         {"fields": {"name": "x", "scopes": ["operations.read"],

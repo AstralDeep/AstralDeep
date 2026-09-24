@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Feature 089 (T057): rehearse 088.008 -> 089.001 on a COPY of the populated
-# candidate database.
-#
-# The rollback is rehearsed on a copy, never on the live one: a rehearsal that
-# can destroy the thing it is rehearsing against is not a rehearsal.
+# Rehearses the guarded migration chain against a disposable copy of the populated candidate
+# database, never the live one, so a destructive rollback can be tested safely.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 

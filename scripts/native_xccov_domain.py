@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Bind native iOS coverage extents to the tested compiler mapping.
-
-LLVM 21 JSON export 3.0.1 supplies function region geometry from the binary.
-Only that geometry is used: empty-profile counters are never observations.
-The original xccov line arrays remain the sole source of execution counts.
-This does not prove that a raw profile came from the retained executable.
+"""Binds native iOS coverage extents to LLVM's compiler-emitted function-region geometry
+from an Xcode export, keeping xccov's line arrays as the sole execution-count source;
+consumed by apple_coverage_artifacts.py.
 """
 
 from __future__ import annotations
@@ -42,29 +39,25 @@ BINARY_MEMBERS = {
 
 
 class DomainError(ValueError):
-    """Data-free native mapping refusal shared by producer and protected policy."""
+    pass
 
 
 def require(condition: Any) -> None:
-    """Reject an invalid domain without returning source or tool output."""
     if not condition:
         raise DomainError("native_xccov_domain_invalid")
 
 
 def canonical(value: Any) -> bytes:
-    """Serialize deterministic data for geometry and semantic identities."""
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
 
 
 def sha256(value: bytes) -> str:
-    """Hash exact bytes without interpreting them as executable input."""
     return hashlib.sha256(value).hexdigest()
 
 
 def strict_json(raw: bytes) -> Any:
-    """Decode bounded UTF-8 JSON with unique keys and finite numbers."""
     require(isinstance(raw, bytes) and 0 < len(raw) <= MAX_MAPPING_BYTES)
 
     def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -114,7 +107,6 @@ def _digest(value: Any) -> str:
 
 
 def source_path(path: Any, prefix: str) -> str:
-    """Accept only one declared root spelling for maintained iOS Swift inputs."""
     require(prefix in SOURCE_PREFIXES)
     path = _text(path)
     require(path.startswith(prefix) and "\\" not in path)
@@ -128,7 +120,6 @@ def source_path(path: Any, prefix: str) -> str:
 
 
 def source_facts(raw: bytes) -> dict[str, Any]:
-    """Record exact source bytes and physical length, never lexical execution guesses."""
     require(isinstance(raw, bytes) and 0 < len(raw) <= 16 * 1024 * 1024)
     lines = raw.count(b"\n") + int(not raw.endswith(b"\n"))
     _integer(lines, minimum=1)
@@ -136,11 +127,6 @@ def source_facts(raw: bytes) -> dict[str, Any]:
 
 
 def ios_macho(raw: bytes, lane: str) -> None:
-    """Require the qualified thin arm64 iOS-simulator image and its load commands.
-
-    LC_BUILD_VERSION platform 7 is iOS Simulator. An arm64 device or macOS
-    image is not interchangeable, and fat images need separate qualification.
-    """
     require(lane in LANES and isinstance(raw, bytes) and len(raw) >= 32)
     magic, cpu, subtype, kind, commands, command_bytes, _flags, reserved = (
         struct.unpack_from("<8I", raw)
@@ -169,7 +155,7 @@ def ios_macho(raw: bytes, lane: str) -> None:
             versions.append(platform)
         require(
             command not in {0x24, 0x25, 0x2F, 0x30}
-        )  # older ambiguous platform commands
+        )
         offset += size
     require(offset == 32 + command_bytes and versions == [7])
 
@@ -182,11 +168,6 @@ def mapping_geometry(
     tracked: set[str],
     lane: str,
 ) -> dict[str, dict[str, Any]]:
-    """Extract complete per-source function regions from fixed-version LLVM JSON.
-
-    Segments depend on coalesced counter values, and summary line totals count
-    nested functions twice. Neither is used to infer the source domain here.
-    """
     require(lane in LANES and prefix in SOURCE_PREFIXES)
     archive_root = _text(archive_root)
     require(
@@ -229,8 +210,6 @@ def mapping_geometry(
         if name in absolute:
             selected_cache[name] = absolute[name]
             return absolute[name]
-        # An alternate checkout/root spelling must not silently become an
-        # ignored external file when it names a maintained source suffix.
         node = suffixes
         for part in reversed(name.split("/")):
             if part not in node:
@@ -290,8 +269,7 @@ def mapping_geometry(
             if path is None:
                 continue
             require(path in regions and kind in {0, 1, 2, 3})
-            # Expansion identities, when present, are source-root normalized;
-            # no foreign header/path can alias a maintained Swift expansion.
+            # No foreign header can alias a maintained Swift expansion
             expansion_path = None
             if kind == 1:
                 expansion_path = source_names[expansion]
@@ -315,7 +293,6 @@ def mapping_geometry(
 
 
 def validate_domain(value: Any) -> dict[str, Any]:
-    """Validate one closed lane witness without trusting its asserted identities."""
     require(
         isinstance(value, dict)
         and set(value)
@@ -398,7 +375,6 @@ def validate_domain(value: Any) -> dict[str, Any]:
 def native_report(
     coverage: Mapping[str, Any], domains: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Bind unchanged native arrays to exact observed lane domains."""
     require(
         isinstance(coverage, dict)
         and coverage
@@ -441,7 +417,6 @@ def native_report(
 
 
 def parse_native_report(value: Any) -> dict[str, Any]:
-    """Refuse altered envelope fields before using any native completeness fact."""
     require(
         isinstance(value, dict)
         and set(value) == {"format", "platform", "coverage", "domains"}
@@ -459,7 +434,6 @@ def make_domain(
     prefix: str,
     lane: str,
 ) -> dict[str, Any]:
-    """Construct a witness from independently read mapping and exact source bytes."""
     sources = {}
     for path, mapping in geometry.items():
         sources[path] = {**source_facts(source_bytes(path)), **mapping}
@@ -481,11 +455,6 @@ def make_domain(
 
 
 def test_identity(summary: Any, tests: Any, lane: str) -> None:
-    """Bind the mapping architecture/platform and lane to native test metadata.
-
-    The protected artifact helper separately enforces the complete required
-    suite inventory. This check is also used by unprivileged local producers.
-    """
     require(lane in LANES and isinstance(summary, dict) and isinstance(tests, dict))
     require(summary.get("result") == "Passed")
     total = _integer(summary.get("totalTestCount"), minimum=1, maximum=50_000)
@@ -557,11 +526,6 @@ def collect_domain(
     summary: Any,
     tests: Any,
 ) -> dict[str, Any]:
-    """Read only the exact selected binary's mapping under the pinned toolchain.
-
-    Callers provide a private immutable copy from the already validated retained
-    artifact. There is no object-list, architecture, filter, or profile override.
-    """
     test_identity(summary, tests, lane)
     ios_macho(binary_bytes, lane)
     require(sha256(binary_bytes) == binary_identity.get("sha256"))

@@ -1,9 +1,6 @@
-"""Typed-versus-voice authorization parity proofs for Feature 065.
-
-These tests intentionally enter the production credential, gate, retry, and
-cancellation seams with two different transport objects.  A voice final is an
-ordinary authenticated user turn after proof verification; it must not gain a
-second authorization path or lose any of the typed path's protections.
+"""Tests proving a voice final enters the same production credential, tool-gate, retry,
+and cancellation seams as a typed turn (orchestrator.py, memory_chat.py,
+async_tasks.py), gaining no separate authorization path.
 """
 
 from __future__ import annotations
@@ -462,9 +459,6 @@ async def test_tool_cancellation_propagates_without_a_voice_retry() -> None:
         for socket in (typed, voice)
     }
     try:
-        # Fail quickly if a stale dispatch fake rejects the current protected
-        # call shape before entering. The unconditional cleanup below keeps
-        # either regression from stranding tasks and hanging the full suite.
         await asyncio.wait_for(
             asyncio.gather(*(event.wait() for event in entered.values())),
             timeout=1.0,

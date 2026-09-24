@@ -1,4 +1,7 @@
-"""Evidence capture, hashing, and tamper detection for the audit trail."""
+"""Hashing and tamper-evidence chain helpers for audit test evidence: canonical-JSON
+hashing, per-case combined hashes, and the previous-hash chain verified by
+verify_chain(). Used by qual_audit/runner.py.
+"""
 
 import hashlib
 import json
@@ -9,7 +12,6 @@ from qual_audit.models import AuditEntry, TestEvidence
 
 
 def hash_data(data: Dict[str, Any]) -> str:
-    """Compute SHA-256 of canonically serialized JSON data."""
     canonical = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -19,7 +21,6 @@ def create_evidence(
     evidence_type: str,
     data: Dict[str, Any],
 ) -> TestEvidence:
-    """Create a TestEvidence instance with computed hash."""
     return TestEvidence(
         case_id=case_id,
         evidence_type=evidence_type,
@@ -30,26 +31,19 @@ def create_evidence(
 
 
 def compute_evidence_hash(evidence_list: List[TestEvidence]) -> str:
-    """Compute a combined hash over all evidence for a test case."""
     combined = "|".join(sorted(ev.sha256 for ev in evidence_list))
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
-
-# ---------------------------------------------------------------------------
-# Audit hash chain
-# ---------------------------------------------------------------------------
 
 _GENESIS_HASH = hashlib.sha256(b"genesis").hexdigest()
 
 
 def compute_chain_hash(entry_id: str, action: str, timestamp: str) -> str:
-    """Compute the hash that the *next* entry stores as previous_hash."""
     payload = f"{entry_id}{action}{timestamp}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def get_previous_hash(last_entry: Optional[AuditEntry]) -> str:
-    """Determine the previous_hash for a new audit entry."""
     if last_entry is None:
         return _GENESIS_HASH
     return compute_chain_hash(
@@ -60,14 +54,6 @@ def get_previous_hash(last_entry: Optional[AuditEntry]) -> str:
 
 
 def verify_chain(entries: List[AuditEntry], require_genesis: bool = True) -> bool:
-    """Verify the tamper-evidence hash chain for a list of audit entries.
-
-    If *require_genesis* is False the first entry's previous_hash is not
-    checked against the genesis constant — useful when verifying a sub-chain
-    that continues from an earlier run's entries.
-
-    Returns True if the chain is intact, False otherwise.
-    """
     if not entries:
         return True
 

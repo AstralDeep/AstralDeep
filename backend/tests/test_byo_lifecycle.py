@@ -1,15 +1,8 @@
-"""Feature 058 (T031) — user-agent lifecycle through the REAL orchestrator.
-
-Unlike ``test_byo_authoring_flow`` (which pins the phase machine), these drive the
-chrome surface's handlers against a live ``Orchestrator``: owner-only listing,
-derived running/offline status, revise-requires-a-fresh-Analyze, delete-stops-the-
-host, and cross-user invisibility. Only LLM-dependent code generation is stubbed;
-draft creation, the tunnel, registration, owner binding, routing, and soft-delete
-paths are the real ones.
-
-Sync (DB-touching) helpers ride ``_t`` (asyncio.to_thread) — feature 052's
-event-loop-blocking detector is CI-enforced with an empty allowlist.
+"""Tests for the BYO user-agent lifecycle through a live Orchestrator: owner-only
+listing, derived running/offline tunnel status, revise-requires-fresh-Analyze, and
+delete stopping the host and soft-deleting.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +78,6 @@ def lifecycle_ids():
 
 
 async def _cleanup(orch, ids):
-    """Tear down only this fixture's typed, owner-scoped Plane records."""
     registry = orch.user_agent_registry
     draft_store = orch.lifecycle_manager.draft_store
     row = await _t(ua.get_user_agent, registry, ids.agent_id)
@@ -109,13 +101,9 @@ async def orch(monkeypatch, lifecycle_ids, tmp_path):
     o = await asyncio.to_thread(Orchestrator)
     identity = FixtureIdentity(lifecycle_ids.owner.rsplit("_", 1)[0])
     o._lifecycle_fixture_identity = identity
-    # Materialization observes an existing stable root, never an absent or
-    # shared developer knowledge directory. This fixture has no legacy skills.
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()
     o.knowledge_index = SimpleNamespace(knowledge_dir=str(knowledge))
-    # Code generation is the only LLM-dependent lifecycle call in this suite.
-    # Draft creation remains real and persists through PlaneDraftStore.
     o.lifecycle_manager.generate_code = AsyncMock(
         side_effect=lambda *a, **k: {
             "status": "generated",
@@ -144,11 +132,6 @@ async def orch(monkeypatch, lifecycle_ids, tmp_path):
 
 
 async def _render(orch, owner, roles, params):
-    """Render through a current signed human caller, including the skills read.
-
-    The local issuer is synthetic. Normal JWT verification, owner selection,
-    Plane catalog access and final delivery checks remain active.
-    """
     _claims, token = orch._lifecycle_fixture_identity.claims_and_token({
         "sub": owner, "realm_access": {"roles": roles},
     })
@@ -174,8 +157,6 @@ def _reg_frame(agent_id, name="Mailer"):
 
 
 async def _connect_host(orch, ids, *, owner=None, agent_id=None):
-    """Bring a user agent live exactly as the desktop host does: tunnel a
-    register_agent frame over the owner's authenticated UI socket."""
     owner = owner or ids.owner
     agent_id = agent_id or ids.agent_id
     ws = FakeUI()
@@ -197,8 +178,6 @@ def _seed_agent(orch, ids, *, owner=None, agent_id=None, name="Mailer"):
     ua.mark_validated(registry, agent_id, "0.1.0")
 
 
-# ── owner-only list + derived running/offline (T026) ─────────────────────────
-
 async def test_list_derives_running_from_a_live_tunnel(orch, lifecycle_ids):
     await _t(_seed_agent, orch, lifecycle_ids)
     html = await _render(orch, lifecycle_ids.owner, ["user"], {})
@@ -208,7 +187,6 @@ async def test_list_derives_running_from_a_live_tunnel(orch, lifecycle_ids):
     assert aa.agent_status(orch, lifecycle_ids.owner, lifecycle_ids.agent_id) == "running"
     html = await _render(orch, lifecycle_ids.owner, ["user"], {})
     assert "running" in html
-    # FR-024: the surface always says where these things actually run.
     assert "desktop host" in html
 
 
@@ -222,7 +200,6 @@ async def test_list_is_owner_only(orch, lifecycle_ids):
         orch.user_agent_registry,
         lifecycle_ids.foreign,
     ) == []
-    # …and the OWNER's own view is unaffected by the other user existing.
     assert "Mailer" in await _render(
         orch,
         lifecycle_ids.owner,
@@ -232,8 +209,6 @@ async def test_list_is_owner_only(orch, lifecycle_ids):
 
 
 async def test_running_status_is_not_leaked_across_owners(orch, lifecycle_ids):
-    """Liveness is keyed by (owner, agent_id): another user asking about the same
-    id must not see it as running."""
     await _t(_seed_agent, orch, lifecycle_ids)
     await _connect_host(orch, lifecycle_ids)
     assert aa.agent_status(
@@ -244,8 +219,6 @@ async def test_running_status_is_not_leaked_across_owners(orch, lifecycle_ids):
     assert aa.host_online(orch, lifecycle_ids.foreign) is False
     assert aa.host_online(orch, lifecycle_ids.owner) is True
 
-
-# ── cross-user invisibility of authoring sessions (FR-016) ───────────────────
 
 async def test_foreign_user_cannot_see_or_drive_a_session(orch, lifecycle_ids):
     session = await aa.start_session(orch, user_id=lifecycle_ids.owner, agent_name="Mailer",
@@ -259,7 +232,6 @@ async def test_foreign_user_cannot_see_or_drive_a_session(orch, lifecycle_ids):
     ) is None
     assert await _t(aa.list_sessions, orch, lifecycle_ids.foreign) == []
 
-    # …and every write path refuses for the non-owner.
     ok, _phase, _msg = await _t(
         aa.advance,
         orch,
@@ -283,8 +255,6 @@ async def test_foreign_user_cannot_see_or_drive_a_session(orch, lifecycle_ids):
     orch.lifecycle_manager.generate_code.assert_not_awaited()
 
 
-# ── delete (T028) ────────────────────────────────────────────────────────────
-
 async def test_delete_stops_the_host_and_soft_deletes(orch, lifecycle_ids):
     await _t(_seed_agent, orch, lifecycle_ids)
     ws = await _connect_host(orch, lifecycle_ids)
@@ -301,14 +271,14 @@ async def test_delete_stops_the_host_and_soft_deletes(orch, lifecycle_ids):
     assert "Deleted" in notice
     assert lifecycle_ids.agent_id not in orch.agents
     assert (lifecycle_ids.owner, lifecycle_ids.agent_id) not in orch._tunnel_sockets
-    assert any(json.loads(f).get("type") == "agent_stop" for f in ws.sent)  # host told
+    assert any(json.loads(f).get("type") == "agent_stop" for f in ws.sent)
 
     row = await _t(
         ua.get_user_agent,
         orch.user_agent_registry,
         lifecycle_ids.agent_id,
     )
-    assert row["status"] == "disabled" and row["deleted_at"] is not None   # retained
+    assert row["status"] == "disabled" and row["deleted_at"] is not None
     assert lifecycle_ids.agent_id not in await _render(
         orch,
         lifecycle_ids.owner,
@@ -336,8 +306,6 @@ async def test_delete_refused_for_a_non_owner(orch, lifecycle_ids):
     assert row["deleted_at"] is None and lifecycle_ids.agent_id in orch.agents
 
 
-# ── revise (T027 authoring half / FR-026) ────────────────────────────────────
-
 async def test_revise_reenters_authoring_and_cannot_ship_without_a_new_analyze(
     orch,
     lifecycle_ids,
@@ -355,17 +323,14 @@ async def test_revise_reenters_authoring_and_cannot_ship_without_a_new_analyze(
     assert "Analyze again" in notice
     draft_id = params["draft_id"]
     session = await _t(aa.get_session, orch, lifecycle_ids.owner, draft_id)
-    assert aa.phase_of(session) == "specify"            # back to the start of the flow
+    assert aa.phase_of(session) == "specify"
     assert session["revises_agent_id"] == lifecycle_ids.agent_id
-    # FR-026: the live version keeps running while the revision is authored.
     assert lifecycle_ids.agent_id in orch.agents
 
-    # The revision cannot generate until IT passes Analyze.
     result = await aa.generate_from_session(orch, lifecycle_ids.owner, draft_id)
     assert result["status"] == "gate_blocked"
     orch.lifecycle_manager.generate_code.assert_not_awaited()
 
-    # Walk it through the gates for real.
     ok, phase, msg = await _t(
         aa.advance, orch, lifecycle_ids.owner, draft_id,
         {"specification": "sends my own mail, now with attachments"})
@@ -403,9 +368,6 @@ async def test_revise_reenters_authoring_and_cannot_ship_without_a_new_analyze(
         orch.user_agent_registry,
         lifecycle_ids.agent_id,
     )
-    # Delivery is stubbed, so the incumbent remains the authoritative live
-    # revision; passing Analyze clears the revalidation fence without taking it
-    # offline while the candidate activation is represented by the mock.
     assert row["status"] == "live" and row["revalidation_required"] is False
 
 
@@ -413,8 +375,6 @@ async def test_revalidation_required_blocks_registration_and_is_surfaced(
     orch,
     lifecycle_ids,
 ):
-    """T029: a constitution bump flags the agent; the boundary refuses it until a
-    fresh Analyze passes, and the surface says so."""
     await _t(_seed_agent, orch, lifecycle_ids)
     await _t(
         ua.mark_revalidation_required,
@@ -429,7 +389,7 @@ async def test_revalidation_required_blocks_registration_and_is_surfaced(
         lifecycle_ids.owner,
         lifecycle_ids.agent_id,
     )
-    assert not ok and "Analyze" in reason               # fail-closed at the boundary
+    assert not ok and "Analyze" in reason
     await _connect_host(orch, lifecycle_ids)
     assert lifecycle_ids.agent_id not in orch.agents
 

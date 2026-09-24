@@ -1,6 +1,7 @@
+"""A2A-compliant Medical agent: exposes synthetic patient-data generation and CSV
+analysis tools via mcp_server.py.
 """
-Medical Agent — A2A-compliant specialist agent for medical professionals.
-"""
+
 import asyncio
 import os
 import sys
@@ -18,8 +19,6 @@ DEFAULT_PORT = 8004
 
 
 class MedicalAgent(BaseA2AAgent):
-    """Specialist agent with medical data generation and analysis capabilities."""
-
     agent_id = "medical-1"
     service_name = "Medical Agent"
     description = (

@@ -1,4 +1,7 @@
-"""030 — knowledge index never surfaces retired/merged agents (US6 / T037)."""
+"""Tests for orchestrator/knowledge_synthesis.py: index updates never surface retired or
+merged agents, even when stale files remain on disk.
+"""
+
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,11 +39,9 @@ def test_retired_stems_cover_029_agents():
 def test_update_index_skips_retired_files(tmp_path):
     caps = tmp_path / "capabilities"
     tech = tmp_path / "techniques"
-    # Retired/merged agents that must NOT be indexed even if files exist on disk.
     for name in ("grants", "classify", "forecaster", "llm_factory"):
         _write(caps, name)
         _write(tech, name)
-    # A live agent that MUST still be indexed.
     _write(caps, "weather")
     _write(tech, "weather")
 
@@ -49,8 +50,6 @@ def test_update_index_skips_retired_files(tmp_path):
         knowledge_dir=str(tmp_path),
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
-        # _update_index is a pure filesystem projection; this focused test
-        # does not create or claim durable maintenance units.
         maintenance_repository=object(),
     )
     synth._update_index()

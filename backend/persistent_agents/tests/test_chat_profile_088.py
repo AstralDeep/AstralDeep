@@ -1,4 +1,7 @@
-"""Closed chat-turn parser and request contracts; no database or network."""
+"""Tests for persistent_agents/chat_episode.py and research_input.py: chat response
+parsing is closed, requests are fixed text-only and bounded, and unusable text or
+non-pre-send transport codes are refused.
+"""
 
 import json
 

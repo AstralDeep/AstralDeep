@@ -1,13 +1,8 @@
-"""Event-loop blocking detector for the test suite (feature 052, FR-017/SC-005).
-
-Wraps the synchronous AstralPlane transaction boundary for the whole pytest
-session so any durable call made from the asyncio event-loop thread is caught. Default is
-report mode: the offending caller site and stack are recorded in ``OFFENDERS``
-and a warning is logged once per unique site — the call still proceeds, so the
-existing suite is unaffected. With ``LOOP_GUARD_ENFORCE=1`` in the environment
-the guard raises ``BlockingDBOnEventLoop`` instead, unless the caller site
-appears in ``tests.loop_guard_allowlist.ALLOWED_SITES``.
+"""Pytest plugin wrapping AstralPlane's synchronous transaction boundary to catch
+database calls made from the asyncio event-loop thread; reports by default, or raises
+under LOOP_GUARD_ENFORCE unless the site is in loop_guard_allowlist.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,11 +26,10 @@ _originals: dict = {}
 
 
 class BlockingDBOnEventLoop(Exception):
-    """A synchronous Plane transaction entered on the asyncio event-loop thread."""
+    pass
 
 
 def _on_event_loop_thread() -> bool:
-    """True when the current thread is running an asyncio event loop."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -44,7 +38,6 @@ def _on_event_loop_thread() -> bool:
 
 
 def _caller_site() -> str:
-    """``module:function`` of the nearest caller outside the DB layer and this guard."""
     frame = sys._getframe(1)
     while frame is not None:
         module = frame.f_globals.get("__name__", "")
@@ -59,7 +52,6 @@ def _caller_site() -> str:
 
 
 def _flag_blocking_call(method_name: str) -> None:
-    """Record or raise for a sync DB call detected on the event-loop thread."""
     site = _caller_site()
     if site in allowed_sites():
         return
@@ -82,7 +74,6 @@ def _flag_blocking_call(method_name: str) -> None:
 
 
 def _wrap(method_name: str, original):
-    """Wrap a sync Plane context manager with the loop-thread check."""
     @contextmanager
     def wrapper(self, *args, **kwargs):
         if _on_event_loop_thread():
@@ -96,12 +87,6 @@ def _wrap(method_name: str, original):
 
 
 def install() -> None:
-    """Idempotently install the guard wrapper on ``PlaneRuntime``.
-
-    The Plane is a composed component: CI lanes that exercise only
-    Deep-owned tooling run a handful of backend tests WITHOUT the
-    component wheels installed, and the guard has nothing to wrap there.
-    """
     try:
         from astralplane import PlaneRuntime
     except ImportError:
@@ -116,7 +101,6 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Restore the original ``PlaneRuntime`` method."""
     if not _originals:
         return
     from astralplane import PlaneRuntime
@@ -129,7 +113,6 @@ def uninstall() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def event_loop_guard():
-    """Session-wide autouse fixture installing the event-loop blocking detector."""
     install()
     yield
     uninstall()

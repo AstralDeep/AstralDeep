@@ -1,4 +1,8 @@
-"""Construction stays off-loop without abandoning its owned runtime graph."""
+"""Tests for the in-process driver's setup/teardown
+(backend/verification/drivers/in_process.py, fixture_identity.py): off-loop
+construction that still owns its runtime graph, and rollback on constructor or start
+failure.
+"""
 
 from __future__ import annotations
 

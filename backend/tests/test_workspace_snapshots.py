@@ -1,11 +1,8 @@
-"""Feature 028 — workspace snapshots / read-only timeline (FR-030..FR-033).
-
-Exercises the snapshot half of backend/orchestrator/workspace.py against a
-real Postgres: full-state capture and immutability (a later live mutation
-does not rewrite history), cause + turn_message_id recording, newest-first
-listing with limit/offset, count, per-user scoping, and chat-delete CASCADE
-removing both snapshots and live workspace rows (research D14).
+"""Tests for workspace snapshots (backend/orchestrator/workspace.py): immutability
+against later live mutation, cause/turn_message_id recording, newest-first listing,
+and per-user scoping.
 """
+
 from __future__ import annotations
 
 import sys
@@ -24,11 +21,6 @@ from tests.helpers.voice_plane_runtime import (  # noqa: E402
     history_manager,
     isolated_voice_plane_runtime,
 )
-
-
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +45,6 @@ def ws(history, plane_runtime):
 
 @pytest.fixture
 def chat(history):
-    """A fresh chat with a unique user per test; CASCADE cleans children."""
     user_id = f"pytest-snap-{uuid.uuid4().hex[:12]}"
     chat_id = history.create_chat(user_id=user_id)
     yield chat_id, user_id
@@ -71,13 +62,7 @@ def _comp(agent, tool, params, **extra):
     return c
 
 
-# ----------------------------------------------------------------------
-# snapshot() / get_snapshot() — full state, immutability
-# ----------------------------------------------------------------------
-
-
 def test_snapshot_records_full_state_and_is_immutable(ws, chat):
-    """028 FR-030/FR-032: snapshot reproduces the workspace exactly; later live changes never mutate it."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [
         _comp("agentX", "toolY", {"q": 1}, body="alpha"),
@@ -94,7 +79,6 @@ def test_snapshot_records_full_state_and_is_immutable(ws, chat):
     assert snap["chat_id"] == chat_id
     assert snap["components"] == before, "snapshot is the exact component list, ids included"
 
-    # Mutate live state AFTER snapshotting — same identity, new content.
     ws.upsert(chat_id, user_id, [_comp("agentX", "toolY", {"q": 1}, body="GAMMA")])
     live = ws.live_components(chat_id, user_id)
     assert any(c.get("body") == "GAMMA" for c in live)
@@ -105,7 +89,6 @@ def test_snapshot_records_full_state_and_is_immutable(ws, chat):
 
 
 def test_snapshot_causes_and_turn_message_id(ws, history, chat):
-    """028 FR-030/FR-039: causes 'turn' and 'component_action' recorded; turn_message_id stored when given."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [_comp("agentX", "toolY", {"q": 1})])
 
@@ -125,13 +108,7 @@ def test_snapshot_causes_and_turn_message_id(ws, history, chat):
     assert action["turn_message_id"] is None
 
 
-# ----------------------------------------------------------------------
-# list_snapshots() / count_snapshots()
-# ----------------------------------------------------------------------
-
-
 def test_list_snapshots_newest_first_with_limit_offset_and_count(ws, chat):
-    """028 FR-031: timeline lists snapshots newest-first with paging; count matches."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [_comp("agentX", "toolY", {"q": 1})])
 
@@ -153,13 +130,7 @@ def test_list_snapshots_newest_first_with_limit_offset_and_count(ws, chat):
     assert ws.list_snapshots(chat_id, user_id, limit=2, offset=3) == []
 
 
-# ----------------------------------------------------------------------
-# user scoping
-# ----------------------------------------------------------------------
-
-
 def test_snapshot_user_scoping(ws, chat):
-    """028 FR-033: another user cannot read someone else's snapshot."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [_comp("agentX", "toolY", {"q": 1})])
     sid = ws.snapshot(chat_id, user_id, cause="turn")
@@ -167,18 +138,11 @@ def test_snapshot_user_scoping(ws, chat):
     other_user = f"pytest-snap-other-{uuid.uuid4().hex[:12]}"
     assert ws.get_snapshot(sid, other_user) is None
     assert ws.get_snapshot(sid, user_id) is not None
-    # listing/counting under the wrong user sees nothing either
     assert ws.list_snapshots(chat_id, other_user) == []
     assert ws.count_snapshots(chat_id, other_user) == 0
 
 
-# ----------------------------------------------------------------------
-# CASCADE on chat delete
-# ----------------------------------------------------------------------
-
-
 def test_delete_chat_cascades_snapshots_and_workspace(ws, history, chat):
-    """028 FR-033: deleting a chat deletes its snapshots and workspace rows."""
     chat_id, user_id = chat
     ws.upsert(chat_id, user_id, [
         _comp("agentX", "toolY", {"q": 1}),

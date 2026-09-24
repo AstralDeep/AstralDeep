@@ -1,13 +1,8 @@
-"""Thin recorder for onboarding lifecycle and admin-edit audit events.
-
-Wraps :mod:`backend.audit.recorder` so feature-005 callers can emit the
-five new event classes (``onboarding_started``, ``onboarding_completed``,
-``onboarding_skipped``, ``onboarding_replayed``, ``tutorial_step_edited``)
-without having to construct ``AuditEventCreate`` payloads inline.
-
-Every event inherits feature 003's per-user hash chain and PII-redaction
-guarantees by virtue of going through the existing recorder.
+"""Wraps audit/recorder.py to emit onboarding's five audit event classes (started,
+completed, skipped, replayed, step_edited) without callers building payloads inline.
+Used by onboarding/api.py and the admin_tools/tour surfaces.
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,10 +13,6 @@ from audit.schemas import AuditEventCreate
 
 logger = logging.getLogger("Onboarding.Recorder")
 
-
-# ---------------------------------------------------------------------------
-# Lifecycle events (one row per user, recorded by the user's own actions)
-# ---------------------------------------------------------------------------
 
 async def record_onboarding_started(
     *,
@@ -128,10 +119,6 @@ async def record_onboarding_replayed(
     )
 
 
-# ---------------------------------------------------------------------------
-# Admin step-edit events
-# ---------------------------------------------------------------------------
-
 async def record_tutorial_step_edited(
     *,
     actor_user_id: str,
@@ -141,11 +128,6 @@ async def record_tutorial_step_edited(
     change_kind: str,
     changed_fields: List[str],
 ) -> None:
-    """Record a ``tutorial_step_edited`` audit event.
-
-    Carries the structured ``changed_fields`` list (no full bodies) — the
-    canonical "what changed" lives in ``tutorial_step_revision``.
-    """
     rec = get_recorder()
     if rec is None:
         return
@@ -163,9 +145,6 @@ async def record_tutorial_step_edited(
                 "step_id": step_id,
                 "step_slug": step_slug,
                 "change_kind": change_kind,
-                # changed_fields is a structured array; store as a single
-                # comma-separated string so it survives metadata size caps
-                # cleanly while remaining query-friendly.
                 "changed_fields": ",".join(changed_fields) if changed_fields else "",
             },
             started_at=started,

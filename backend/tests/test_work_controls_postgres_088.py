@@ -1,4 +1,8 @@
-"""Work controls use real Plane CAS/receipts and preserve unresolved effects."""
+"""Tests that orchestrator/work_controls.py's owner controls use real Plane CAS and
+receipts: replay/stale/terminal-delete contracts, linearized concurrent pause/cancel,
+and atomic decide/approve without dispatch.
+"""
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -81,7 +85,6 @@ async def test_owner_controls_replay_stale_and_terminal_delete_contract(records)
     with pytest.raises(AssignmentError, match="work_not_found") as missing:
         await service.delete("owner", reads.control_caller.context.claims, identity, delete, caller=reads.control_caller)
     assert missing.value.status_code == 404
-    # Original submission identity survives deletion: retry cannot create a new effect.
     with pytest.raises(AssignmentError, match="assignment_operation_deleted"):
         await reads.store.call("get_operation_receipt", owner_id="owner", origin_namespace="web",
                                caller_key=identity, command_digest=digest(identity))
@@ -133,7 +136,6 @@ async def test_unknown_operation_can_cancel_without_interpreting_or_rewriting_pa
     service = WorkControlService(reads.assignments)
 
     def future(tx, repository):
-        # Test-only future writer in this disposable schema, never application SQL.
         path = {"operation": ["operation"], "operation_control": ["operation", "control"],
                 "checkpoint": ["checkpoint"]}[member]
         value = ('{"schema_version":2,"private":"opaque"}' if member == "checkpoint" else
@@ -156,13 +158,6 @@ async def test_unknown_operation_can_cancel_without_interpreting_or_rewriting_pa
 
 
 async def issued_fixture(reads, identity, *, owner="owner", proposed=False):
-    """Issue a synthetic liability through real session/admission/action guards.
-
-    The stored incarnation and database-clock observation are genuine, but this
-    fixture does not refresh or verify external IAM and enables no host runner.
-    With ``proposed`` the action is a sensitive proposal awaiting the owner's
-    decision (state ``proposed``); nothing is reserved or started.
-    """
     sessions = reads.store.plane_runtime.repositories.history.sessions
     work = WorkAdmissionRepository()
     configs = (
@@ -171,7 +166,6 @@ async def issued_fixture(reads, identity, *, owner="owner", proposed=False):
                              10, 0, 0, "work-control-fixture"),
     )
     await reads.store.transaction(lambda tx, _: work.configure(tx, configs))
-    # Publish in-memory config only after the repository transaction commits.
     work.bind_configs(configs)
 
     def issue(tx, repo):
@@ -298,7 +292,6 @@ async def test_owner_decide_reject_replay_stale_mismatch_and_foreign_contract(re
     assert rejected["operation"]["revision"] > revision and "private" not in str(rejected)
     stored = await reads.store.call("get_action", owner_id="owner", assignment_id=ids[0], action_id=action.action_id)
     assert stored.state == "declined" and not stored.ever_started
-    # Exact replay, even with a stale transient revision observation, is a receipt read.
     for replay in (request, decide(revision, proposal, submission=request.submission_id)):
         assert await service.decide(ids[0], action.action_id, replay, caller=caller) == {**rejected, "applied": False}
     with pytest.raises(AssignmentError, match="assignment_approval_invalid") as mismatch:
@@ -342,7 +335,6 @@ async def test_owner_decide_approve_records_state_without_dispatch_and_audits_at
     monkeypatch.setattr(WorkControlAudit, "_insert", refuse)
     with pytest.raises(AssignmentError, match="work_control_unavailable"):
         await service.decide(ids[0], action.action_id, decide(revision, proposal, "approve"), caller=caller)
-    # The refused audit row rolled back the decision itself: nothing was decided.
     pending = await reads.store.call("get_action", owner_id="owner", assignment_id=ids[0], action_id=action.action_id)
     assert pending.state == "proposed"
     assert (await reads.get("owner", OWNER, ids[0]))["revision"] == revision and _decisions(reads) == []
@@ -351,7 +343,6 @@ async def test_owner_decide_approve_records_state_without_dispatch_and_audits_at
     approved = await service.decide(ids[0], action.action_id, request, caller=caller)
     assert approved["applied"] is True and approved["state"] == "approved"
     stored = await reads.store.call("get_action", owner_id="owner", assignment_id=ids[0], action_id=action.action_id)
-    # Approval records the owner's decision only; no attempt, claim or dispatch follows here.
     assert stored.state == "approved" and stored.attempts == () and not stored.ever_started
     assert (await service.decide(ids[0], action.action_id, request, caller=caller))["applied"] is False
     rows = _decisions(reads)
@@ -365,11 +356,9 @@ async def test_owner_decide_approve_records_state_without_dispatch_and_audits_at
                                                     proposal_digest=proposal, decision="approve")
     with pytest.raises(AssignmentError, match="work_control_invalid"):
         await service.decide(ids[0], action.action_id, unvalidated, caller=caller)
-    # A malformed repository reply is never an empty success.
     monkeypatch.setattr(reads.store.repository, "decide_action", lambda *_args, **_kwargs: None)
     with pytest.raises(AssignmentError, match="work_control_unavailable"):
         await service.decide(ids[0], action.action_id, request, caller=caller)
-    # The audit adapter refuses foreign records, unknown decisions and invalid identifiers.
     record = (await reads.store.call("get_operation", owner_id="owner", assignment_id=ids[0])).assignment
     for values in ({"decision": "maybe"}, {"submission_id": "bad"}, {"action_id": "bad"}, {"owner_id": "other"}):
         args = {"owner_id": "owner", "record": record, "submission_id": str(uuid4()),

@@ -1,20 +1,8 @@
-"""Regression test — owner decision (2026-08-03): chat replies carry NO
-appended provenance caption.
-
-Feature 030 appended a server-composed provenance chip ("Model knowledge
-only …" / "Based on this turn's tool results …") to every final chat
-render. The owner removed it; ``test_wiring_030.py`` pins the method's
-absence at the unit level. This file pins the removal through the real
-rich-components final-turn path: parsed components go to the
-canvas via ``_send_or_replace_components`` while the chat rail's summary
-render is exactly ``list(leak_alerts) + chat_core`` — nothing appended.
-
-The harness is deliberately application-composition-free. This contract is
-about deterministic parsing, authorization, provenance stamping, persistence
-adaptation, and render routing; booting PostgreSQL, LETS, and every background
-service adds no signal. Explicit owner-scoped in-memory stores retain the real
-``Orchestrator`` methods at those boundaries without restoring a legacy DB.
+"""Tests that final chat turns carry no appended provenance caption: drives
+backend/orchestrator/orchestrator.py's real component parsing and render routing over
+in-memory History/Workspace/ToolPermissions doubles.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,14 +23,10 @@ USER = "prov-caption-user"
 
 
 class _WebSocket:
-    """Hashable registered UI socket with no background-task authority."""
-
     task = None
 
 
 class _InMemoryHistory:
-    """Owner-scoped history boundary needed by one ordinary chat turn."""
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._chats: dict[str, dict] = {}
@@ -113,8 +97,6 @@ class _InMemoryHistory:
 
 
 class _InMemoryWorkspace:
-    """Owner-scoped component store for the real provenance/upsert method."""
-
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], list[dict]] = {}
         self.snapshots: list[tuple[str, str, str, int | None]] = []
@@ -172,8 +154,6 @@ class _InMemoryWorkspace:
 
 
 class _ToolPermissions:
-    """Fail-closed owner/tool authorization double for visibility filtering."""
-
     def __init__(self) -> None:
         self.allowed_calls: list[tuple[str, str, str]] = []
 
@@ -199,8 +179,6 @@ class _Heartbeat:
 
 
 class _InMemoryChatStepRecorder:
-    """Typed no-I/O recorder retaining the real loop's phase lifecycle."""
-
     def __init__(self, **_values) -> None:
         self.completed: list[str] = []
 
@@ -339,7 +317,6 @@ async def _cleanup(o, chat_id):
 
 
 def _target_of(call) -> str:
-    """The effective ui_render target of a recorded send_ui_render call."""
     if "target" in call.kwargs:
         return call.kwargs["target"]
     if len(call.args) > 2:
@@ -353,8 +330,6 @@ def _components_json(call) -> str:
 
 @pytest.mark.asyncio
 async def test_rich_components_chat_summary_has_no_provenance_caption(orch):
-    """A final LLM reply of rich UI JSON routes components to the canvas and
-    renders the chat summary WITHOUT the retired provenance caption."""
     _register(orch)
     ws = _ws(orch)
     chat_id = await _chat(orch)
@@ -362,8 +337,6 @@ async def test_rich_components_chat_summary_has_no_provenance_caption(orch):
     final_json = json.dumps([
         {"type": "chart", "title": "Daily highs",
          "data": {"x": [1, 2], "y": [72, 75]},
-         # Model-authored trust is untrusted input. The real upsert method
-         # must replace this with the server-derived value.
          "provenance": "grounded"},
     ])
 
@@ -374,8 +347,6 @@ async def test_rich_components_chat_summary_has_no_provenance_caption(orch):
     orch._call_llm = fake_llm
     await orch.handle_chat_message(ws, "chart the weather", chat_id, user_id=USER)
 
-    # The rich-components branch ran: the parsed chart went to the canvas path
-    # (generic "chart" is normalized to "plotly_chart" during validation).
     orch._send_or_replace_components.assert_awaited()
     orch.send_ui_upsert.assert_awaited_once()
     canvas_sent = orch.workspace.components(chat_id, USER)
@@ -387,13 +358,10 @@ async def test_rich_components_chat_summary_has_no_provenance_caption(orch):
     ]
     orch._resolve_llm_client_for.assert_awaited_once_with(ws)
 
-    # …and the chat rail got the summary render (leak_alerts + chat_core).
     renders = orch.send_ui_render.await_args_list
     chat_renders = [c for c in renders if _target_of(c) == "chat"]
     assert chat_renders, "expected the chat-summary ui_render"
 
-    # Owner decision pinned: NO provenance caption in anything rendered this
-    # turn — neither the model-only wording nor the tool-grounded wording.
     for call in renders:
         payload = _components_json(call)
         assert "Model knowledge only" not in payload

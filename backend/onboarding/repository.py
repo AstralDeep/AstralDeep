@@ -1,24 +1,8 @@
-"""Product-facing repository facade for the onboarding subsystem.
-
-Every query that touches ``onboarding_state``, ``tutorial_step``, or
-``tutorial_step_revision`` lives here. The router and recorder NEVER
-write SQL inline — they go through this module.
-
-Design notes:
-
-* User-scoped operations (``get_state``, ``upsert_state``,
-  ``list_steps_for_user``) take ``actor_user_id`` / ``include_admin`` as
-  explicit parameters so the API layer cannot accidentally widen the
-  scope. There is no "list all" helper for ``onboarding_state`` because
-  no caller has a legitimate cross-user use case (mirrors feature 003's
-  audit-repository policy).
-* Admin write operations (``create_step``, ``update_step``,
-  ``archive_step``, ``restore_step``) bundle the canonical-table mutation
-  with the matching ``tutorial_step_revision`` row inside a single DB
-  transaction. The audit-log emit happens at the recorder layer, after
-  the transaction commits, so a partial DB failure cannot leak an audit
-  row that doesn't reflect a real change.
+"""Repository facade over onboarding_state, tutorial_step, and tutorial_step_revision —
+the only SQL for these tables. Admin writes bundle the mutation and its revision row
+in one transaction. Used by onboarding/api.py and recorder.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -50,16 +34,14 @@ def _after(previous: datetime) -> datetime:
 
 
 class StepNotFound(Exception):
-    """Raised when an admin write targets a non-existent step."""
+    pass
 
 
 class DuplicateSlug(Exception):
-    """Raised when an admin attempts to create a step with an in-use slug."""
+    pass
 
 
 class OnboardingRepository:
-    """Thin façade over the three feature-005 tables."""
-
     def __init__(
         self,
         db: Any,
@@ -91,16 +73,7 @@ class OnboardingRepository:
             legacy_database=db,
         )
 
-    # ------------------------------------------------------------------
-    # Onboarding state
-    # ------------------------------------------------------------------
-
     def get_state(self, user_id: str) -> OnboardingStateResponse:
-        """Return the user's onboarding state, defaulting to ``not_started``.
-
-        Absence of a row maps to the implicit default; this is the only
-        place we materialize that default so callers never need to.
-        """
         record = self._state.call(
             self._state.repository.get_state,
             owner_id=user_id,
@@ -113,13 +86,6 @@ class OnboardingRepository:
         status: str,
         last_step_id: Optional[int],
     ) -> Tuple[OnboardingStateResponse, Optional[str]]:
-        """Insert or update the user's row.
-
-        Returns ``(new_state, prior_status)`` where ``prior_status`` is
-        ``None`` when no row existed before this call. The caller (the
-        recorder) uses ``prior_status`` to decide which audit event to
-        record.
-        """
         with self._state.transaction() as transaction:
             existing = self._state.repository.get_state(
                 transaction,
@@ -167,12 +133,6 @@ class OnboardingRepository:
         return self._state_response(durable), prior_status
 
     def record_dismissal(self, user_id: str, max_dismissals: int = 2) -> OnboardingStateResponse:
-        """Record a 'not now' dismissal.
-
-        Increments dismiss_count and sets dismissed_at. If dismiss_count
-        reaches max_dismissals, auto-transitions status to 'skipped' so
-        the tour stops prompting.
-        """
         with self._state.transaction() as transaction:
             existing = self._state.repository.get_state(
                 transaction,
@@ -231,16 +191,7 @@ class OnboardingRepository:
             dismiss_count=record.dismiss_count,
         )
 
-    # ------------------------------------------------------------------
-    # Tutorial steps — read paths
-    # ------------------------------------------------------------------
-
     def list_steps_for_user(self, *, include_admin: bool) -> List[TutorialStepDTO]:
-        """Return the ordered, non-archived steps the caller can see.
-
-        The caller passes ``include_admin=True`` only after verifying the
-        admin role in the API layer.
-        """
         if include_admin:
             audiences = ("user", "admin")
         else:
@@ -254,7 +205,6 @@ class OnboardingRepository:
         return [_tutorial_step_to_dto(record) for record in records]
 
     def list_all_steps(self, include_archived: bool = True) -> List[TutorialStepDTO]:
-        """Admin read: returns every step, optionally including archived ones."""
         records = self._tutorials.call(
             self._tutorials.repository.list_for_administration,
             include_archived=include_archived,
@@ -270,7 +220,6 @@ class OnboardingRepository:
         return None if record is None else _tutorial_step_to_dto(record)
 
     def get_step_audience(self, step_id: int) -> Optional[str]:
-        """Return just the audience for a step. Used for cheap validation."""
         record = self._tutorials.call(
             self._tutorials.repository.get,
             step_id=step_id,
@@ -278,10 +227,6 @@ class OnboardingRepository:
         if record is None or record.archived_at is not None:
             return None
         return record.audience
-
-    # ------------------------------------------------------------------
-    # Tutorial steps — admin write paths
-    # ------------------------------------------------------------------
 
     def create_step(
         self,
@@ -320,17 +265,6 @@ class OnboardingRepository:
         editor_user_id: str,
         partial: Dict[str, Any],
     ) -> Tuple[TutorialStepDTO, List[str]]:
-        """Apply a partial update.
-
-        ``partial`` may contain any of: audience, display_order, target_kind,
-        target_key, title, body. Only fields present in the dict (i.e.
-        keys whose value is set, including ``None`` for ``target_key``)
-        are written.
-
-        Returns ``(updated_dto, changed_fields)`` where ``changed_fields``
-        is the list of column names whose values actually changed (no
-        false positives).
-        """
         if not partial:
             existing = self.get_step(step_id)
             if existing is None:
@@ -397,10 +331,6 @@ class OnboardingRepository:
         )
         return [_tutorial_revision_to_dto(record) for record in records]
 
-
-# ---------------------------------------------------------------------------
-# Helpers — Plane record → DTO
-# ---------------------------------------------------------------------------
 
 def _tutorial_step_to_dto(record: TutorialStepRecord) -> TutorialStepDTO:
     return TutorialStepDTO(

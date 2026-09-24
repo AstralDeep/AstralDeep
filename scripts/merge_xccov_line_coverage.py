@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Merge bounded normalized xccov reports into one platform coverage mapping."""
+"""Merges bounded, normalized xccov reports from export_xccov_line_coverage.py into one
+platform coverage mapping, consumed by test_apple_coverage_artifacts_088.py and
+test_merge_xccov_coverage_088.py.
+"""
 
 from __future__ import annotations
 
@@ -29,11 +32,10 @@ try:
         _validate_path,
         _write_new_output,
     )
-except ModuleNotFoundError:  # Also supports protected ``python -I`` execution.
+except ModuleNotFoundError:
     import importlib.util
 
-    # Only this policy file's sibling exporter is executable. Never search the
-    # candidate checkout or accept a caller-selected exporter/module path.
+    # Only this fixed sibling loads; never a caller-chosen path
     spec = importlib.util.spec_from_file_location(
         "_protected_xccov_exporter",
         Path(__file__).resolve().with_name("export_xccov_line_coverage.py"),
@@ -74,8 +76,6 @@ SUPPORTED_PLATFORMS = frozenset({"ios", "macos"})
 
 
 class MergeError(RuntimeError):
-    """Stable fail-closed normalized-coverage merge error."""
-
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -236,8 +236,6 @@ def merge_xccov_reports(
     platform: str,
     profile: str = "ci",
 ) -> dict[str, Any]:
-    """Validate and add normalized unit/UI observations for one Apple platform."""
-
     try:
         repo = repo.resolve(strict=True)
     except OSError as exc:

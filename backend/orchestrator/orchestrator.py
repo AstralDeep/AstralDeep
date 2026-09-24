@@ -1,13 +1,8 @@
+"""Central WebSocket hub for the multi-agent system: accepts UI/agent connections,
+routes chat via LLM-selected tools, and assembles canvas UI. Served by
+orchestrator/api.py; dispatches into chrome_events.py and agent_lifecycle.py.
 """
-Orchestrator — Central hub for the multi-agent system.
 
-Responsibilities:
-1. WebSocket server for UI clients (/ws) and agent connections
-2. A2A agent discovery via agent cards
-3. LLM-powered tool routing (chat message → tool selection)
-4. Parallel MCP tool execution across agents
-5. Dynamic UI assembly (combines tool outputs into cohesive layouts)
-"""
 import asyncio
 import contextvars
 import hashlib
@@ -122,22 +117,14 @@ load_dotenv(override=False)
 
 PORT = int(os.getenv("ORCHESTRATOR_PORT", 8001))
 
-# Feature 060 / T025: connection-runtime policy.  These are module constants so
-# operators and the contract suite can inspect the exact production defaults.
 REGISTRATION_TIMEOUT_SECONDS = 5.0
 CONNECTION_DRAIN_TIMEOUT_SECONDS = 5.0
 REGISTRATION_QUEUE_LIMIT = 16
 CONNECTION_INGRESS_LIMIT = 4096
 CONNECTION_LEASE_RENEW_SECONDS = 5.0
-# The status contract requires the current phase to be visible once an
-# operation has remained active for one second.  The client-local
-# ``submitting`` projection covers the pre-admission interval; this timer owns
-# the first durable server phase.
 OPERATION_PROGRESS_PHASE_SECONDS = 1.0
 _CONNECTION_CLAIM_POLL_SECONDS = 0.25
-# The connection-operation context is runner-local and has no re-entry after
-# terminal cleanup returns.  One immediate exact-authority retry absorbs a
-# transient repository read without creating an orphaned background finalizer.
+# One retry avoids orphaning a background finalizer
 _VOICE_TERMINAL_FINALIZATION_ATTEMPTS = 2
 _VOICE_REQUEST_FAILED_MESSAGE = (
     "Voice request failed. This request did not complete. Review the error in "
@@ -164,8 +151,6 @@ _VOICE_REQUEST_PROCESSING_MESSAGE = (
 
 
 class _SafeLLMErrorMetadata(NamedTuple):
-    """Content-free provider failure facts safe for logs and audit routing."""
-
     exception_class: str
     status_code: Optional[int]
     upstream_error_class: str
@@ -173,29 +158,21 @@ class _SafeLLMErrorMetadata(NamedTuple):
 
 
 class _LLMHTMLMaintenanceError(RuntimeError):
-    """A successful HTTP envelope carried an upstream maintenance page."""
+    pass
 
 
 class _LLMMalformedResponseError(RuntimeError):
-    """The provider response omitted the required completion message shape."""
+    pass
 
 
 LLM_CREDENTIAL_ATTEMPT_TIMEOUT_SECONDS = 10.0
 PERSONAL_AGENT_STARTUP_TIMEOUT_SECONDS = 5.0
 PERSONAL_AGENT_HEARTBEAT_TIMEOUT_SECONDS = 5.0
-# The host may use the full five-second supervisor escalation budget before it
-# emits the post-termination exit frame.  Keep a bounded transport/event-loop
-# margin so a conformant worst-case stop is not misclassified as unacknowledged.
+# Padding over the 5s stop budget so it isn't misclassified
 PERSONAL_AGENT_STOP_TIMEOUT_SECONDS = 7.0
 PERSONAL_AGENT_STOP_RETRY_SECONDS = 1.0
 PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS = 1.0
-# Feature 063 US4: how often the always-on background poller checks each open
-# remote Slurm job's status over SSH (read-only). Env-overridable.
 REMOTE_CLUSTER_POLL_INTERVAL_SECONDS = float(os.getenv("REMOTE_CLUSTER_POLL_SECONDS", "30"))
-# External A2A agents (A2A_EXTERNAL_AGENTS) are re-checked on this cadence so a
-# remote agent that was down at boot, or that dropped its socket, reconnects
-# without an orchestrator restart. Much slower than the 5 s localhost sweep in
-# _monitor_agents: each pass is a cross-network round trip per configured host.
 EXTERNAL_AGENT_DISCOVERY_INTERVAL_SECONDS = float(
     os.getenv("A2A_EXTERNAL_DISCOVERY_SECONDS", "60"))
 EXTERNAL_AGENT_DISCOVERY_MAX_BACKOFF_SECONDS = float(
@@ -213,8 +190,6 @@ _PERSONAL_AGENT_HOST_FRAME_TYPES = frozenset(
 
 @dataclass(frozen=True)
 class _PersonalAgentExitWaiter:
-    """One exact process-exit acknowledgement retained through DB finalization."""
-
     fence: RuntimeFence
     acknowledged: asyncio.Future[RuntimeFence]
     failure_code: str | None = None
@@ -230,16 +205,7 @@ class _PersonalAgentExitWaiter:
         repr=False,
     )
 _LLM_CREDENTIAL_SAVE_ACTIONS = frozenset(
-    # Feature 089 originally listed the TypeSafe save here too, reasoning that
-    # it is the same kind of write. The reasoning was sound and the change was
-    # not: this set routes an action to _handle_llm_credential_operation, which
-    # only knows how to perform an LLM config set, and the TypeSafe store has no
-    # fenced commit for it to call. A TypeSafe save from the web client
-    # therefore did nothing at all -- no probe, no persistence, no message, no
-    # log line -- which is to say the feature's headline capability did not
-    # work through its own UI. It travels the ordinary chrome dispatch to
-    # _handle_typesafe_save until a fenced TypeSafe commit exists to make the
-    # durable path real.
+    # Not for TypeSafe saves: this handler can't commit them
     {"chrome_llm_save", "llm_config_set"}
 )
 
@@ -282,9 +248,6 @@ _CONNECTION_IDENTITY_FIELDS = frozenset(
     }
 )
 
-# The admission wrapper and the application handler execute in the same
-# context.  This lets the existing UI router stay wire-compatible while the
-# normal synchronous-chat path reuses the already-owned operation/fence.
 _CONNECTION_OPERATION_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = (
     contextvars.ContextVar("connection_operation_context", default=None)
 )
@@ -298,8 +261,6 @@ _ACTIVE_REQUEST_TEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 @dataclass
 class _ConnectionIngressFrame:
-    """One parsed, post-registration frame awaiting durable admission."""
-
     raw: str = field(repr=False)
     parsed: dict[str, Any] = field(repr=False)
     action: str
@@ -319,7 +280,6 @@ class _ConnectionIngressFrame:
     guidance_navigation: object = field(default=None, repr=False)
 
     def close_work_read(self, *, preserve_guidance: bool = False) -> None:
-        """Release private request authority on every terminal or discarded path."""
         if self.work_read is not None:
             self.work_read.close()
             self.work_read = None
@@ -336,8 +296,6 @@ class _ConnectionIngressFrame:
 
 @dataclass
 class _ConnectionOperation:
-    """Connection-local execution metadata for one accepted operation."""
-
     frame: _ConnectionIngressFrame
     owner: OperationOwner
     operation_id: _uuid.UUID
@@ -357,8 +315,6 @@ class _ConnectionOperation:
 
 @dataclass(frozen=True)
 class _VoiceDispatchContext:
-    """Verified content and socket fence carried into the ordinary chat path."""
-
     admission: Any
     connection_generation: str
     origin: Any = field(repr=False)
@@ -366,8 +322,6 @@ class _VoiceDispatchContext:
 
 @dataclass(frozen=True)
 class _LocalVoiceOrigin:
-    """Compatibility view used only by the ordinary voice acceptance path."""
-
     session_id: str
     generation: int
     media_grant_revision: int
@@ -385,16 +339,12 @@ class _LocalVoiceOrigin:
 
 @dataclass(frozen=True)
 class _VoiceOperationRejection:
-    """Pre-acceptance refusal that must win over generic operation success."""
-
     reason: str
     safe_summary: str
 
 
 @dataclass(frozen=True)
 class _PendingVoiceFinalization:
-    """Ephemeral accepted-turn result finalized after its shared operation."""
-
     voice_dispatch: _VoiceDispatchContext
     user_id: str
     chat_id: str
@@ -403,8 +353,6 @@ class _PendingVoiceFinalization:
 
 @dataclass(frozen=True)
 class _VoiceOperationTerminalIntent:
-    """Fixed shared-operation outcome recorded by the ordinary chat path."""
-
     state: OperationState
     terminal_code: str
     safe_summary: str
@@ -412,16 +360,14 @@ class _VoiceOperationTerminalIntent:
 
 
 class _PersonalAgentOperationIdentityConflict(WorkAdmissionConflictError):
-    """One stable personal-agent retry identity described different work."""
+    pass
 
 
 class _PersonalAgentOperationRetryPending(RuntimeError):
-    """The bounded durable child-attempt chain could not be advanced safely."""
+    pass
 
 
 class _PersonalAgentOperationTerminal(RuntimeError):
-    """An exact delivery operation already has a non-retryable terminal result."""
-
     def __init__(
         self,
         state: OperationState,
@@ -434,8 +380,6 @@ class _PersonalAgentOperationTerminal(RuntimeError):
 
 @dataclass
 class ConnectionContext:
-    """Finite, tracked lifetime scope for one accepted UI socket."""
-
     websocket: Any
     connection_scope_id: _uuid.UUID
     registration_deadline: float
@@ -460,8 +404,6 @@ log_level = logging.INFO if debug_mode else logging.WARNING
 
 logging.basicConfig(level=log_level,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-#: 076: the OpenAI content-part type that carries a screenshot to a vision
-#: model. A message-content part, not a WS frame (kept out of the manifest sweep).
 _IMAGE_PART_TYPE = "image_url"
 
 logger = logging.getLogger('Orchestrator')
@@ -469,30 +411,17 @@ logger = logging.getLogger('Orchestrator')
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        # Filter out uvicorn access logs for "poll" endpoints and the
-        # container/orchestrator health probes (they fire every few seconds).
         msg = record.getMessage()
         return not any(path in msg for path in (
             "/.well-known/agent-card.json", "/healthz", "/readyz",
         ))
 
-# Filter uvicorn access logs if they exist
 logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
 
-# Module-level singleton handle, set by Orchestrator.__init__. Used by
-# external callers (e.g., feedback.cli) that need to reach into the
-# running instance without going through FastAPI app.state.
 _ORCH_INSTANCE = None  # type: Optional["Orchestrator"]
 
 
-# Feature 008-llm-text-only-chat (FR-006a) — appended to the chat system
-# prompt whenever a turn dispatches with zero usable tools. Tells the LLM
-# (a) it has no tools/agents available, (b) it MUST NOT fabricate tool
-# output, (c) when the user asks for an action that would require an
-# agent, it should briefly state that no agents are enabled and suggest
-# enabling one. The base system prompt for tool-augmented turns is
-# unchanged (FR-011).
 TEXT_ONLY_SYSTEM_PROMPT_ADDENDUM = """
 TEXT-ONLY MODE (no agents currently available):
 - You have NO tools or agents available for this turn. Do NOT emit tool calls.
@@ -519,12 +448,6 @@ TEXT-ONLY MODE (no agents currently available):
 """
 
 
-# Chat system-prompt template. The two opaque marks are where the per-turn
-# volatile sections (the file-mapping list, the live-canvas listing) are
-# substituted. ``context_engineering.compose_system_prompt`` fills them in
-# place by default (byte-identical to the legacy f-string), or — when
-# FF_CONTEXT_ENGINEERING is on — blanks them here and appends them last so the
-# stable instruction prefix stays cache-friendly.
 CHAT_SYSTEM_TEMPLATE = """You are an AI orchestrator. Your goal is to simplify complex tasks for the user by intelligently using available tools.
 
 %%ASTRAL_FILE_CONTEXT%%
@@ -556,40 +479,22 @@ COMPONENT UPDATE RULES:
 - When the user asks to MODIFY, UPDATE, REMOVE items from, or CHANGE existing displayed data, re-call the SAME tool that originally created it with the corrected/updated parameters. Do NOT create duplicates.
 - When you author UI components directly and intend to UPDATE one listed above, set its "id" field to that component's component_id so it updates in place; omit "id" for genuinely new components.
 - When the user asks for something completely NEW and unrelated, call the appropriate tool normally — the new output is added alongside the existing components.
+- Tool tables, files, charts, and cards are already visible. Do not reproduce their data in a second table or dashboard in your final response. Add only new insights or visuals that answer a different question, keep download controls, and reuse existing component identities for corrections.
 """
 
 
-# Patterns that represent tool-call tokens leaked into text content. Some
-# open-weight LLMs (Llama-style, Qwen-style, etc.) emit these even when
-# instructed not to — we strip them post-hoc so the user never sees a raw
-# `<|tool_call|>...` artifact in the chat. Order matters only for
-# coverage; each pattern is independent.
 _LEAKED_TOOL_CALL_PATTERNS = [
-    # Llama-style with optional pipe variations:
-    #   <|tool_call|> ... <|tool_call|>
-    #   <|tool_call> ... <tool_call|>
     re.compile(r"<\|?tool_call\|?>.*?<\|?/?tool_call\|?>", re.IGNORECASE | re.DOTALL),
-    # Qwen / generic XML-style tool call wrappers
     re.compile(r"<tool_call>.*?</tool_call>", re.IGNORECASE | re.DOTALL),
     re.compile(r"<function_call>.*?</function_call>", re.IGNORECASE | re.DOTALL),
-    # Llama 3 tool-calls-section markers
     re.compile(
         r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
         re.IGNORECASE | re.DOTALL,
     ),
-    # Mistral / generic bracket form
     re.compile(r"\[TOOL_CALLS\].*?\[/TOOL_CALLS\]", re.IGNORECASE | re.DOTALL),
-    # DeepSeek DSML format — note the FULLWIDTH vertical bar (U+FF5C), not regular |.
-    # Matches both the wrapper <｜DSML｜tool_calls>...</｜DSML｜tool_calls> and
-    # standalone <｜DSML｜invoke ...></｜DSML｜invoke> blocks.
+    # Fullwidth vertical bar U+FF5C here, not ASCII |
     re.compile(r"<｜DSML｜tool_calls>.*?</｜DSML｜tool_calls>", re.DOTALL),
     re.compile(r"<｜DSML｜invoke[^>]*>.*?</｜DSML｜invoke>", re.DOTALL),
-    # 055 (D6) — XML-ish pseudo-call syntax observed live: a tool name glued
-    # onto <arg_key>/<arg_value> trains (`update_component<arg_key>…`).
-    # The composite (name + closed pairs) must run before the nameless pair
-    # pattern so the name prefix is removed with its train; a truncated train
-    # (opener never closed) strips to end-of-text — everything after it is
-    # protocol syntax, not prose.
     re.compile(
         r"[A-Za-z_][A-Za-z0-9_]*\s*(?:<arg_key>.*?</arg_key>\s*(?:<arg_value>.*?</arg_value>)?\s*)+",
         re.IGNORECASE | re.DOTALL,
@@ -599,44 +504,25 @@ _LEAKED_TOOL_CALL_PATTERNS = [
         r"(?:[A-Za-z_][A-Za-z0-9_]*\s*)?<arg_(?:key|value)>.*$",
         re.IGNORECASE | re.DOTALL,
     ),
-    # Stray dangling open tags with no close
     re.compile(r"<\|?tool_call\|?>", re.IGNORECASE),
     re.compile(r"<\|tool_calls_section_(?:begin|end)\|>", re.IGNORECASE),
     re.compile(r"\[/?TOOL_CALLS\]", re.IGNORECASE),
     re.compile(r"</?｜DSML｜[^>]*>"),
     re.compile(r"</?arg_(?:key|value)>", re.IGNORECASE),
-    # 055 (D6) — NAME@true attribute trains riding alongside the pseudo-calls
-    # (`NEW_PAGE@true`). Anchored on a TERMINAL boolean so addresses survive:
-    # the lookahead keeps john@true.example.com intact (the "true" there is a
-    # domain label, not a value).
+    # Terminal-bool lookahead keeps emails like a@true.com intact
     re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*@(?:true|false)(?![\w.@-])", re.IGNORECASE),
 ]
 
 
-# Patterns used to extract the tool NAME from a leak match — independent of
-# which wrapper pattern fired. Used by Orchestrator._diagnose_leaked_tool_calls
-# to translate raw markup into a friendly user-facing alert.
 _LEAK_TOOL_NAME_EXTRACTORS = [
-    # DeepSeek DSML invoke tag: <｜DSML｜invoke name="tool_name">
     re.compile(r'<｜DSML｜invoke\s+name="([^"]+)"'),
-    # Llama / OpenAI-style JSON tool calls embedded in leak markup
     re.compile(r'"name"\s*:\s*"([^"]+)"'),
-    # Qwen <tool_call><name>tool_name</name>...
     re.compile(r"<name>\s*([A-Za-z_][A-Za-z0-9_]*)\s*</name>"),
-    # Mistral [TOOL_CALLS] [{"name": "tool_name", ...}] — covered by the JSON pattern above
-    # Bare function-name=... forms occasionally seen in mistral
     re.compile(r"function\s*[:=]\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)"),
 ]
 
 
 def _tool_names_from_leak(content: str) -> List[str]:
-    """Extract distinct tool names from leaked tool-call markup.
-
-    Tries every pattern in :data:`_LEAK_TOOL_NAME_EXTRACTORS` against the
-    full ``content`` blob. Returns names in first-seen order with duplicates
-    removed. Returns an empty list when no recognizable tool name is found —
-    in that case the caller falls back to silently stripping the markup.
-    """
     if not content:
         return []
     seen: List[str] = []
@@ -650,8 +536,6 @@ def _tool_names_from_leak(content: str) -> List[str]:
     return seen
 
 
-# Diagnostic statuses returned by Orchestrator._diagnose_disabled_tool.
-# Defined at module scope so tests can import them by name.
 class ToolDiagnosticStatus(str, Enum):
     ENABLED = "enabled"
     DISABLED_IN_PICKER = "disabled_in_picker"
@@ -670,21 +554,12 @@ class ToolDiagnostic(NamedTuple):
 
 
 def _strip_toolcall_leakage(content: str) -> str:
-    """Remove leaked tool-call markup from model-authored text (055 D6).
-
-    Shared by the final-text sanitizer, the chat narrative, the canvas
-    doc-card promotion, and the round-summary path. Returns the stripped
-    text (possibly empty) — each caller owns its honest fallback.
-    """
     cleaned = content or ""
     for pat in _LEAKED_TOOL_CALL_PATTERNS:
         cleaned = pat.sub("", cleaned)
     return cleaned.strip()
 
 
-# 055 (D6): honest fallback when stripping empties a model response — the
-# user gets a short actionable line instead of an empty bubble/card; the raw
-# payload goes to the diagnostic log only, never the render surface.
 _LEAK_FALLBACK_TEXT = (
     "The AI model's response contained only tool-call markup, so there is "
     "nothing to show for this turn. Please try again."
@@ -698,31 +573,15 @@ def _log_stripped_empty(surface: str, chat_id: Optional[str], raw: str) -> None:
     )
 
 
-#: 055 US4 (wire-contract §6): the server-owned provenance vocabulary.
 _PROVENANCE_KINDS = ("grounded", "estimated", "generated")
 
 
 def _derive_provenance(comp) -> str:
-    """Reuses the web footer's subtree derivation (renderer._subtree_tool_source)
-    so server stamp and footer always classify identically: a subtree tracing
-    to a tool result is "grounded", anything else "generated". "estimated" is
-    never derivable — only server code may assign it (a refine that did not
-    re-run the source tool, research D10) via ``_stamp_provenance(kind=...)``.
-    """
     from webrender.renderer import _subtree_tool_source
     return "grounded" if _subtree_tool_source(comp) else "generated"
 
 
 def _stamp_provenance(comp, kind=None) -> None:
-    """055 US4 (FR-026): stamp ``provenance`` on a component dict, ALWAYS
-    overwriting any agent/model-supplied value — trust cannot be
-    self-upgraded. ``kind`` is a server-side override; anything outside the
-    vocabulary falls back to derivation. With FF_COMPONENT_REFINE off the
-    field is STRIPPED, never merely left alone: 055-era clients render trust
-    badges from this field, so letting an agent-supplied value ride through
-    with the kill switch off would let agents mint their own badges (FR-026
-    has no flag carve-out).
-    """
     if not isinstance(comp, dict):
         return
     if not flags.is_enabled("component_refine"):
@@ -732,14 +591,6 @@ def _stamp_provenance(comp, kind=None) -> None:
 
 
 def _stamp_canvas_provenance(components) -> None:
-    """Stamp a materialized canvas — the last stop before delivery, and the
-    only place designer garnish exists as component dicts. Garnish (``dg_``
-    ids, rebuilt from the layout JSON on every materialization) can never
-    self-assign trust, so it is re-derived unconditionally — a garnish
-    container wrapping tool-sourced refs correctly reads grounded; persisted
-    components keep their server stamp, and legacy (pre-055) rows without one
-    are derived in place.
-    """
     if not flags.is_enabled("component_refine"):
         for comp in components or []:
             if isinstance(comp, dict):
@@ -755,22 +606,6 @@ def _stamp_canvas_provenance(components) -> None:
 
 
 def _tag_source(comp, agent_id, tool_name, tool_params=None, correlation_id=None):
-    """Recursively tag a component dict and all nested children with source
-    metadata (055 US2: hoisted from handle_chat_message so the stream
-    persist-on-terminal path stamps identical provenance).
-
-    `tool_params` is only tagged on the top-level node — the auto-subscribe
-    path reads it there to replay the same arguments on `stream_subscribe`.
-
-    Feature 004: `correlation_id` is the audit-log id of the originating
-    tool dispatch. When present, every component (including nested children)
-    carries it so the frontend can scope user feedback to the originating
-    dispatch.
-
-    055 US4: every tagged node also gets its ``provenance`` field stamped
-    from the just-written source attribution (agent-supplied values are
-    always overwritten — FR-026).
-    """
     if not isinstance(comp, dict):
         return
     comp["_source_agent"] = agent_id
@@ -788,26 +623,16 @@ def _tag_source(comp, agent_id, tool_name, tool_params=None, correlation_id=None
 
 
 def _tag_tool_result_source(comp, result, agent_id, tool_name, tool_params, correlation_id=None):
-    """Pending approval cards carry an opaque request, never replay arguments."""
+    from orchestrator.source_details import present_source_details
+
     data = result.result.get("_data") if isinstance(getattr(result, "result", None), dict) else None
     pending = isinstance(data, dict) and data.get("status") == "confirmation_required"
     _tag_source(comp, agent_id, tool_name, None if pending else tool_params, correlation_id)
+    if isinstance(comp, dict):
+        comp.update(present_source_details(comp))
 
 
 def _sanitize_text_response(content: str) -> str:
-    """Strip leaked tool-call tokens from a text response.
-
-    Some LLMs (especially open-weight Llama-style models) emit their
-    tool-call tokenization as plain text when they're asked to invoke a
-    tool but no tools are available — leaving the user staring at raw
-    `<|tool_call|>...<tool_call|>` markup. The system prompt addendum
-    asks the LLM not to do this, but we cannot rely on prompt
-    compliance, so we strip the patterns here as a defensive layer.
-
-    If the entire response was a leaked tool call (nothing useful left
-    after stripping), returns a friendly fallback so the user gets an
-    actionable message instead of an empty bubble.
-    """
     if not content:
         return content
     cleaned = _strip_toolcall_leakage(content)
@@ -820,29 +645,16 @@ def _sanitize_text_response(content: str) -> str:
     return cleaned
 
 
-# Feature 029 — catalog change handling for historical components
-# (specs/029-agents-adaptive-ui-ci/baseline.md). Six agents are retired
-# outright; three merged into ml-services-1. Sources remap so refresh /
-# pagination on pre-merge components keeps working; retired sources get an
-# explicit retirement message instead of a dispatch crash. Module-level (not
-# class attributes) so unbound-method test fakes need no extra wiring.
 RETIRED_AGENT_IDS = frozenset({
     "email_tracker", "email-tracker-1", "grant_budgets", "grant-budgets-1",
     "grants", "grants-1", "linkedin", "linkedin-1",
     "nefarious", "nefarious-1", "nocodb", "nocodb-1",
-    # Feature 040: etf_tracker_1 retired (agent removed). Both the hyphenated
-    # agent id and the legacy underscore directory-name form route through the
-    # runtime retirement handling so old transcripts degrade gracefully.
     "etf_tracker_1", "etf-tracker-1-1",
 })
 _MERGED_AGENT_REMAP = {
     "classify": "ml-services-1", "classify-1": "ml-services-1",
     "forecaster": "ml-services-1", "forecaster-1": "ml-services-1",
     "llm_factory": "ml-services-1", "llm-factory-1": "ml-services-1",
-    # Feature 063: the split read-only + control agents merged into the single
-    # remote-compute-1. Verb names are identical across the merge, so old
-    # transcript component sources reroute with no tool-name rewrite (no prefix
-    # entry needed) — a refresh transparently re-runs on the unified agent.
     "remote-observe-1": "remote-compute-1", "remote-control-1": "remote-compute-1",
 }
 _MERGED_TOOL_PREFIX = {
@@ -859,26 +671,13 @@ _ASSET_VERSION_CACHE: Dict[str, str] = {}
 _ASSET_VERSION_MAP_CACHE: Dict[str, Dict[str, str]] = {}
 _ASSET_TOKEN_RE = re.compile(r"%%ASTRAL_V:([^%]+)%%")
 
-# Feature 052 (FR-015): the chat loop opts its route-LLM call into narrative
-# streaming through this context (value = the turn's chat id) instead of new
-# _call_llm arguments, so the many tests and callers that stub _call_llm with
-# the historical signature keep working unchanged.
 _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
-# True once the route call has actually pushed narrative ``ui_stream_data``
-# frames for the draft this turn — the MoA panel (C-N9) consults it so a draft
-# the user has already read is never silently swapped for a panel winner.
 _NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_streamed", default=False)
 
 
 def _static_asset_version(static_dir: str) -> str:
-    """Return a short combined content hash of ``client.js`` + ``astral.css``.
-
-    Legacy feature-040 helper kept for its existing callers/tests; the shell
-    now versions every asset individually via :func:`_static_version_map`.
-    Memoized per directory (assets are baked, immutable per process).
-    """
     cached = _ASSET_VERSION_CACHE.get(static_dir)
     if cached:
         return cached
@@ -897,13 +696,6 @@ def _static_asset_version(static_dir: str) -> str:
 
 
 def _static_version_map(static_dir: str) -> Dict[str, str]:
-    """Per-file content-hash version map over the whole static tree.
-
-    Maps each asset's path relative to ``static_dir`` (forward slashes, e.g.
-    ``fonts/inter-latin.woff2``) to ``sha1(file bytes)[:12]``. Built once per
-    directory per process (feature 052, contracts/static-asset-caching.md):
-    a deploy is a new process, so new bytes always get new URLs.
-    """
     cached = _ASSET_VERSION_MAP_CACHE.get(static_dir)
     if cached is not None:
         return cached
@@ -928,22 +720,11 @@ def _static_version_map(static_dir: str) -> Dict[str, str]:
 
 
 def _apply_asset_versions(shell: str, static_dir: str) -> str:
-    """Substitute every ``%%ASTRAL_V:<relpath>%%`` shell token with that
-    file's current content hash (``dev`` for an unknown path so the URL is
-    still well-formed and served under the no-cache flow)."""
     versions = _static_version_map(static_dir)
     return _ASSET_TOKEN_RE.sub(lambda m: versions.get(m.group(1), "dev"), shell)
 
 
 def _projection_static_filesystem_root() -> str:
-    """Resolve Projection's packaged static directory for Starlette.
-
-    ``StaticFiles`` requires a real filesystem directory for the lifetime of
-    the application.  Normal wheel and editable installs expose package data
-    that way; an exotic archive importer is refused explicitly instead of
-    falling back to the removed in-repository copy.
-    """
-
     import os as _o
     from pathlib import Path as _Path
 
@@ -962,20 +743,6 @@ def _projection_static_filesystem_root() -> str:
 
 
 def csp_connect_src() -> str:
-    """The shell CSP's ``connect-src`` value.
-
-    ``'self'`` covers the app's own ``/ws`` socket. The LiveKit signalling
-    socket is the ONE legitimate cross-origin connection the shell opens —
-    ``client.js`` calls ``room.connect(grant.url)`` where ``grant.url`` is
-    ``LIVEKIT_PUBLIC_URL``, a different port in dev (``ws://localhost:7880``)
-    and a different host in production (``wss://voice.<host>``) — so that exact
-    origin is allow-listed.
-
-    Deliberately NOT the bare ``ws:``/``wss:`` schemes this replaced: those match
-    ANY host, so an injected script could stream the page-embedded access token
-    to an attacker. Unset/unparseable leaves ``'self'`` alone (voice is
-    unconfigured anyway); the value is never widened beyond one origin.
-    """
     raw = (os.getenv("LIVEKIT_PUBLIC_URL", "") or "").strip()
     if not raw:
         return "'self'"
@@ -990,17 +757,7 @@ def csp_connect_src() -> str:
 
 
 class _NoCacheStaticFiles(StaticFiles):
-    """Version-aware static files: immutable when the URL proves freshness.
-
-    A request whose ``?v=`` matches the file's current content hash is
-    immutable by construction (changed bytes get a new URL from the shell),
-    so it gets a year-long ``immutable`` Cache-Control. Every other request
-    keeps the feature-040 ``no-cache`` + ETag/Last-Modified 304 flow — this
-    includes the deliberately unversioned CSS ``@font-face`` URLs.
-    """
-
     async def get_response(self, path, scope):
-        """Serve the asset with a version-dependent Cache-Control header."""
         response = await super().get_response(path, scope)
         cache_control = "no-cache"
         try:
@@ -1018,13 +775,8 @@ class _NoCacheStaticFiles(StaticFiles):
             response.headers["Cache-Control"] = cache_control
         except Exception:
             pass
-        # Minimal Linux images need not know WOFF2's MIME type. These exact
-        # bundled fonts are public worker inputs and must match its MIME pins.
         if path == "fonts/open-sans-latin.woff2":
             response.headers["Content-Type"] = "font/woff2"
-        # 088: only this public, static-only worker may cover root navigation.
-        # Stable worker URLs must revalidate even when requested with ?v=;
-        # all authenticated shell/API/auth responses remain outside its cache.
         if path == "service-worker.js" and response.status_code in (200, 304):
             response.headers["Service-Worker-Allowed"] = "/"
             response.headers["Cache-Control"] = "no-cache"
@@ -1032,10 +784,6 @@ class _NoCacheStaticFiles(StaticFiles):
             response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-# 030: per-tool dispatch ceilings for long-running verbs (everything else
-# keeps the 30 s default). research_brief legitimately performs one search
-# plus several 15 s-bounded page fetches — the default ceiling guaranteed
-# "Tool call timed out" (live incident).
 TOOL_TIMEOUT_OVERRIDES = {
     "research_brief": 150.0,
     "fetch_page": 45.0,
@@ -1045,12 +793,6 @@ TOOL_TIMEOUT_OVERRIDES = {
 
 
 def remap_merged_source(agent_id: str, tool_name: str):
-    """Map a pre-merge (agent, tool) provenance onto the ml-services-1 agent.
-
-    The five verbs classify and forecaster shared pre-merge carry a service
-    prefix in the consolidated registry; everything else keeps its name.
-    Unrelated agents pass through untouched.
-    """
     new_agent = _MERGED_AGENT_REMAP.get(agent_id)
     if not new_agent:
         return agent_id, tool_name
@@ -1061,8 +803,6 @@ def remap_merged_source(agent_id: str, tool_name: str):
 
 
 def _is_native_device(profile) -> bool:
-    """Windows/Android/iOS/macOS/watch — surfaces that render structured
-    components with their own layout engine (not the designer's web HTML)."""
     from rote.capabilities import DeviceType
     return profile is not None and profile.device_type in (
         DeviceType.WINDOWS, DeviceType.ANDROID,
@@ -1070,17 +810,10 @@ def _is_native_device(profile) -> bool:
 
 
 def _native_canvas_components(components) -> List[Dict[str, Any]]:
-    """055 US3 (wire-contract §5): the materialized canvas for NATIVE delivery
-    excludes ``doc_`` narrative cards and model "Reasoning" collapsibles —
-    their reducers divert those to the chat rail, so shipping them in a canvas
-    frame would have them silently dropped client-side. Matchers mirror the
-    clients' (AppViewModel.kt isDocCard/isReasoning and the Swift twin)."""
     out = []
     for c in components or []:
         if not isinstance(c, dict):
             continue
-        # The author id is "doc_…"; the workspace persists it under the
-        # namespaced "au_doc_…" identity — match both.
         if (str(c.get("id") or "").startswith("doc_")
                 or str(c.get("component_id") or "").startswith(("doc_", "au_doc_"))):
             continue
@@ -1092,39 +825,21 @@ def _native_canvas_components(components) -> List[Dict[str, Any]]:
 
 
 class PreparedDispatch(NamedTuple):
-    """Outcome of ``Orchestrator._authorize_and_prepare`` when every gate
-    allows the call (056 US3). Carries the fully prepared arguments (path
-    mapping, credential/LLM-credential injection, policy rewrites, delegation
-    token, cap job id) so the caller only has to dispatch and deliver."""
     args: Dict[str, Any]
     stream_params: Dict[str, Any]
     cap_job_id: Optional[str]
     delegation_token: Optional[str]
-    # 056 US1: on a chained hop, the correlation id shared by the hop's
-    # delegation.hop.mint/.enforce records — threaded into ToolDispatchAudit
-    # so the hop's tool.start/end pair shares it too (SC-003 reconstruction).
     hop_correlation_id: Optional[str] = None
 
 
 class GateRefusal(NamedTuple):
-    """Outcome of ``Orchestrator._authorize_and_prepare`` when a gate denies
-    the call (056 US3). ``response`` is the refusal the dispatch path must
-    return; ``render_components`` are the alert dicts the caller renders (may
-    differ from ``response.ui_components`` — e.g. the no-agent and
-    delegation-required refusals render an alert the response doesn't carry;
-    hook blocks render nothing). ``render_target`` preserves each gate's
-    historical ``send_ui_render`` target (None = default)."""
     response: MCPResponse
     render_components: Optional[List[Dict[str, Any]]] = None
     render_target: Optional[str] = None
-    # 056: True when the refusal already emitted its own delegation hop record
-    # (the child-mint/enforce refusals do), so the wrapper does not double-audit.
     hop_audited: bool = False
 
 
 def _unbind_orchestrator_process_consumers(orchestrator) -> None:
-    """Unpublish exact process bindings before their Plane graph is closed."""
-
     from orchestrator.offline_grant import unbind_offline_grant_store
     from orchestrator.web_auth import (
         unbind_credential_manager,
@@ -1159,8 +874,6 @@ def _unbind_orchestrator_process_consumers(orchestrator) -> None:
 
 
 def _transactional_runtime_construction(initializer):
-    """Release every partially published application seam if construction fails."""
-
     @wraps(initializer)
     def guarded(self, *args, **kwargs):
         try:
@@ -1192,10 +905,6 @@ def _transactional_runtime_construction(initializer):
 
 
 def _designer_device(rote, websocket) -> Optional[Dict[str, Any]]:
-    """The connecting device as the plain model ``rote.objectives._device``
-    reads (``{device_type, is_small, is_voice, max_grid_columns}``), derived
-    from the socket's ROTE profile. Fail-open: ``None`` (the objectives'
-    desktop-browser default) on any error or when there is no socket."""
     try:
         if websocket is None or rote is None:
             return None
@@ -1215,17 +924,13 @@ def _designer_device(rote, websocket) -> Optional[Dict[str, Any]]:
 
 
 
-#: What a chat is called before anything has looked at what it is about. Any
-#: of these means "not named yet", whoever wrote it.
 _PLACEHOLDER_CHAT_TITLES = frozenset({"new chat", "untitled chat", "untitled", "chat"})
 
-#: A title is a label, not a sentence. Four words is what the sidebar shows.
 _TITLE_MAX_WORDS = 4
 _TITLE_MAX_CHARS = 48
 
 
 def _chat_needs_a_name(chat_data) -> bool:
-    """True when this chat still carries a placeholder title."""
     if not isinstance(chat_data, dict):
         return False
     title = str(chat_data.get("title") or "").strip()
@@ -1233,18 +938,10 @@ def _chat_needs_a_name(chat_data) -> bool:
 
 
 def _title_from(text) -> str:
-    """A short title from a model reply or, failing that, the request itself.
-
-    Takes the first line (a model that explains itself does so on later ones),
-    drops surrounding quotes and a trailing full stop, and keeps the first few
-    words. Returns "" when there is nothing usable, so the caller can leave
-    the chat's existing name alone rather than replacing it with noise.
-    """
     if not isinstance(text, str):
         return ""
     line = text.strip().splitlines()[0] if text.strip() else ""
     line = line.strip().strip('"').strip("'").strip()
-    # A model that was asked for a title sometimes labels it as one.
     for label in ("chat title:", "title:"):
         if line.lower().startswith(label):
             line = line[len(label):].strip().strip('"').strip("'").strip()
@@ -1262,104 +959,43 @@ def _title_from(text) -> str:
 class Orchestrator:
     @_transactional_runtime_construction
     def __init__(self):
-        # 020-async-queries: background task manager for async chat processing
         from orchestrator.async_tasks import BackgroundTaskManager
         self.async_task_manager = BackgroundTaskManager()
         self.agents: Dict[str, websockets.WebSocketServerProtocol] = {}
-        # Feature 040 (US1): bundled first-party agents running IN-PROCESS
-        # (agent_id -> live BaseA2AAgent instance). Dispatch selects the
-        # in-process path by a positive membership check here; external A2A and
-        # draft-subprocess agents are unaffected.
         self.local_agents: Dict[str, Any] = {}
         self.ui_clients: List[websockets.WebSocketServerProtocol] = []
         self.ui_sessions: Dict[websockets.WebSocketServerProtocol, Dict] = {}
         self.agent_cards: Dict[str, AgentCard] = {}
         self.agent_capabilities: Dict[str, List[Dict]] = {}
         self.pending_requests: Dict[str, asyncio.Future] = {}
-        # request_id -> the agent id the request was DISPATCHED to. Response
-        # correlation is keyed on request_id alone, which is safe only while every
-        # responder is trusted; untrusted BYO agents now share this router, so the
-        # dispatch target is recorded and a response arriving from a DIFFERENT
-        # agent's socket is dropped (defense in depth — uuid4 request ids make it
-        # unguessable today, so this closes the seam rather than a live hole).
         self._pending_request_agent: Dict[str, str] = {}
-        self.pending_ui_sockets: Dict[str, Any] = {}  # request_id -> UI websocket (for progress forwarding)
-        # 015-external-ai-agents: per-(user, agent) concurrency cap for long-running tools (FR-026).
+        self.pending_ui_sockets: Dict[str, Any] = {}
         self.concurrency_cap = ConcurrencyCap(max_per_user_agent=3)
-        # Maps cap_job_id -> (user_id, agent_id) so terminal ToolProgress can release the right slot.
         self._pending_cap_entries: Dict[str, tuple] = {}
-        # 056 US3 (FR-019): a chained hop's long-running work ALSO charges the
-        # initiating agent's (user, agent) slot; this maps cap_job_id → that
-        # second slot so every release site frees both sides.
         self._hop_cap_entries: Dict[str, tuple] = {}
-        # 056 US1: orchestrator-side record of every in-flight agent dispatch
-        # (request_id → user/chat/ui-socket/agent/decoded parent token). A
-        # mediated hop request resolves its authority against THIS record —
-        # never against agent-supplied identity — closing the confused-deputy
-        # seam. Entries live exactly as long as their dispatch.
         self._dispatch_context: Dict[str, Dict[str, Any]] = {}
-        # Strong refs to in-flight hop-mediation tasks (asyncio keeps weak refs).
+        # Strong refs: asyncio only keeps weak refs to tasks
         self._background_hop_tasks: set = set()
-        # Same, for spoken-acknowledgement scheduling. The model turn must not
-        # wait for the utterance to finish playing, so the runner call is
-        # detached; ordering against the terminal recap is preserved by the
-        # announcement runner's own serialized command deque.
         self._voice_ack_tasks: set = set()
-        # 056 US1/US4 (FR-021): per-turn global chain budgets keyed by chat id
-        # (reset at each turn start; lazily created on first hop).
         self._chain_budgets: Dict[str, Any] = {}
-        # 058 (BYO agents): user-agent tunnel sockets keyed by (owner_sub,
-        # agent_id). A user's desktop-hosted agent tunnels its frames over the
-        # owner's authenticated UI socket; this maps each tunneled agent to its
-        # TunnelSocket adapter so dispatch routes back to the client. Cleared on
-        # UI disconnect (honest-offline).
         self._tunnel_sockets: Dict[tuple, Any] = {}
-        # 058 (per-owner ingress bound, FR-017/SC-008): fixed-window frame-rate
-        # counter per owner sub on the agent tunnel, so a flooding/runaway user
-        # agent degrades only its own owner. {owner_sub: [window_start, count]}.
         self._tunnel_ingress: Dict[str, list] = {}
-        # 058 (code delivery, FR-004): the UI sockets that declared themselves
-        # DESKTOP HOSTS at register_ui — the only sockets a generated agent
-        # bundle is ever pushed to. {id(websocket): host_session_id}. A browser
-        # tab never appears here, so authoring in a tab with no desktop client
-        # running reports 'no_host' instead of pushing the user's generated code
-        # into the browser and calling it delivered.
         self._agent_host_sockets: Dict[int, str] = {}
-        # 076 (remote computer control): the owner-scoped registry of desktops
-        # that announced "Allow remote control" on their UI socket, and the
-        # sessions running on them. Constructed unconditionally (no wire
-        # effect); every entry point re-checks FF_COMPUTER_USE.
         from orchestrator.computer_hosts import ComputerHostRegistry
         from orchestrator.computer_sessions import ComputerSessionManager
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
-        # Maps cap_job_id -> {user_id, agent_id, chat_id, tool_name} for long-running
-        # jobs, so a job's progress + terminal result can be routed to (and
-        # persisted in) the originating CHAT — not a single ephemeral socket —
-        # which keeps auto-progress working across refresh / device changes.
         self._job_context: Dict[str, Dict[str, Any]] = {}
-        self.cancelled_sessions: Dict[str, bool] = {}  # websocket id -> cancelled flag
-        # Per (socket, chat) lock. It used to be per socket, which meant one
-        # slow turn held up every other chat in the same tab: switching to
-        # another conversation and sending sat there until the first one
-        # finished. Ordering within a conversation is what has to be kept, and
-        # that is what the key names.
+        self.cancelled_sessions: Dict[str, bool] = {}
         self._chat_locks: Dict[tuple, asyncio.Lock] = {}
-        self._registered_events: Dict[int, asyncio.Event] = {}  # gate non-register messages until auth completes
-        # Feature 065: only non-secret signed scope is retained for an active
-        # UI socket. The bearer is sent once and never stored server-side.
+        self._registered_events: Dict[int, asyncio.Event] = {}
         self._voice_binding_issuer: VoiceControlBindingIssuer | None = None
         self._voice_control_bindings: Dict[int, VoiceControlClaims] = {}
         self._voice_device_bindings: Dict[tuple[str, str], int] = {}
         self._voice_device_kinds: Dict[tuple[str, str], str] = {}
         self._voice_composer_revisions: Dict[int, int] = {}
         self._voice_composer_tasks: Dict[int, asyncio.Task[Any]] = {}
-        # Feature 060: every accepted UI socket owns one finite connection
-        # scope.  The capacity signal is loop-local and lazily created.
         self._connection_contexts: Dict[int, ConnectionContext] = {}
-        # Reconnectable USER-owned operations outlive any one socket.  This
-        # process-local registry is a single-flight execution reservation and
-        # a strong task reference; durable reconciliation remains PostgreSQL.
         self._reconnectable_operations: Dict[
             _uuid.UUID, _ConnectionOperation
         ] = {}
@@ -1367,62 +1003,27 @@ class Orchestrator:
         self._interactive_capacity_event: asyncio.Event | None = None
         self._interactive_capacity_revision = 0
 
-        # Live streaming subscriptions (existing POLLING path — kept for tools
-        # that declare streaming_kind == "poll")
-        self._stream_tasks: Dict[int, Dict[str, asyncio.Task]] = {}   # ws_id -> {tool_name -> Task}
-        self._stream_subs: Dict[int, Dict[str, Dict]] = {}            # ws_id -> {tool_name -> config}
-        self._streamable_tools: Dict[str, Dict] = {}                  # tool_name -> {agent_id, default_interval, min_interval, max_interval, kind}
+        self._stream_tasks: Dict[int, Dict[str, asyncio.Task]] = {}
+        self._stream_subs: Dict[int, Dict[str, Dict]] = {}
+        self._streamable_tools: Dict[str, Dict] = {}
         self._MAX_STREAM_SUBSCRIPTIONS = 10
 
-        # 001-tool-stream-ui: PUSH streaming via StreamManager. Constructed
-        # below after self.rote is initialized; the manager wires into
-        # _safe_send and ui_sessions for per-subscriber authorization.
-        self.stream_manager: Optional[StreamManager] = None  # populated post-init
+        self.stream_manager: Optional[StreamManager] = None
 
-        # 001-tool-stream-ui: per-ws "currently active chat" tracker. Used by
-        # pause_chat / resume on load_chat transitions so the stream manager
-        # knows which chat to pause for THIS websocket (each tab has its own
-        # active chat — pausing/resuming one tab must not affect others).
-        # Keyed by id(websocket).
         self._ws_active_chat: Dict[int, str] = {}
-        # Feature 060: the exact committed/transient generation currently
-        # selected by each socket. Values are server-bound only after owner
-        # validation (hydration) or a fenced turn stage (commit).
         self._conversation_scopes: Dict[int, Dict[str, Any]] = {}
 
-        # Feature 028 — per-socket read-only timeline mode (mutating
-        # component actions are refused server-side while set) and per-chat
-        # serialization locks for deterministic component-action ordering.
         self._ws_timeline_mode: Dict[int, bool] = {}
         self._workspace_locks: Dict[str, asyncio.Lock] = {}
 
-        # Sockets currently showing the server-driven welcome canvas (example
-        # queries pushed after register_ui). The first chat message blanks the
-        # canvas so flat ui_upsert appends never land under the examples.
         self._ws_welcome: Dict[int, bool] = {}
 
-        # Feature 014 — per-active-turn step recorders, keyed by id(websocket).
-        # Created at the start of handle_chat_message and torn down at the end
-        # of _serialized_chat. The cancel_task handler reads this map to invoke
-        # cancel_all_in_flight() (FR-020/021).
         self._chat_recorders: Dict[int, Any] = {}
 
-        # A2A external agent connections (JSON-RPC transport)
-        self.a2a_clients: Dict[str, Any] = {}  # agent_id -> A2A client
-        self.a2a_agent_cards: Dict[str, Any] = {}  # agent_id -> official A2A AgentCard
-        self.agent_urls: Dict[str, str] = {}  # agent_id -> base URL (for peer registry)
+        self.a2a_clients: Dict[str, Any] = {}
+        self.a2a_agent_cards: Dict[str, Any] = {}
+        self.agent_urls: Dict[str, str] = {}
 
-        # LLM credentials (feature 054-byo-llm-setup; supersedes 006's
-        # operator-default model)
-        # ----------------------------------------------------------------
-        # There is NO deployment-supplied default LLM credential. Every
-        # user brings their own provider via the mandatory first-run
-        # setup dialog; the record persists server-side (user_llm_config,
-        # API key Fernet-encrypted) and resolves by user_id. Server-
-        # initiated/system work resolves the admin-managed
-        # system_llm_config record instead — never a user's, and never
-        # the other way around (FR-019). The store itself is created
-        # after HistoryManager below (it needs the DB handle).
         from llm_config import (
             build_llm_client,
             CredentialSource,
@@ -1434,45 +1035,26 @@ class Orchestrator:
             record_llm_unconfigured,
         )
         from llm_config.log_scrub import install_redaction_filter
-        # Cache the imports as instance attributes so the hot _call_llm
-        # path doesn't re-import on every call.
         self._build_llm_client = build_llm_client
         self._CredentialSource = CredentialSource
         self._LLMUnavailable = LLMUnavailable
         self._ResolvedConfig = ResolvedConfig
         self._record_llm_call = record_llm_call
         self._record_llm_unconfigured = record_llm_unconfigured
-        # Root-logger API-key redaction (spec FR-006). The filter existed
-        # since 006 but was never installed; 054 wires it at boot.
         install_redaction_filter()
 
-        # Feature 054 kill switch: governs only the register-time mandatory
-        # dialog push. The credential requirement itself is structural (no
-        # default exists), so gate REFUSALS stay in force with the flag off.
         self._ff_llm_first_run = os.getenv(
             "FF_LLM_FIRST_RUN", "true").lower() in ("true", "1", "yes")
 
-        # Default reasoning-effort knob threaded through _call_llm. Unset →
-        # nothing is sent (zero behavior change on endpoints that predate
-        # reasoning models). Callers may override per-call; this is only the
-        # global default.
         self.llm_reasoning_effort = self._valid_reasoning_effort(
             os.getenv("LLM_REASONING_EFFORT")
         )
-        # Per-(base_url, model) capability cache of optional request params the
-        # endpoint rejected, so we probe once and then stop sending them.
-        # {(base_url, model): {"response_format", …}}.
         self._llm_unsupported_params: Dict[tuple, set] = {}
 
-        # When datamarking is engaged, also surgically remove well-known
-        # instruction-override spans from untrusted tool output (optional
-        # span-level removal). Off by default — the default defense is
-        # delimiting only, which never mutates content.
         self._datamark_sanitize_spans = os.getenv(
             "DATAMARK_SANITIZE_SPANS", "false"
         ).lower() in ("true", "1", "yes")
 
-        # History Manager
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         data_dir = os.path.join(backend_dir, 'data')
         composition_manifest = os.path.join(
@@ -1483,26 +1065,16 @@ class Orchestrator:
         from orchestrator.runtime_composition import compose_astral_runtime
 
         self.runtime_composition = compose_astral_runtime(composition_manifest)
-        # Plane has already established the exact 074 baseline/revision.
-        # History consumes only the application runtime and typed catalog;
-        # it does not construct or borrow a second connection pool.
         self.history = HistoryManager(
             data_dir=data_dir,
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
-        # Feature 065: voice is an included server-owned capability, but its
-        # isolated media/control plane fails closed without affecting typed
-        # chat. Speech endpoint credentials are never present in this process.
         self.voice_services = None
         self.voice_runtime = None
         self.voice_worker_pool = None
         self.voice_worker_endpoint = None
 
-        # Feature 060: one PostgreSQL operation/admission authority shared by
-        # every compatibility manager.  The migration has already established
-        # all six class rows; load their effective persisted values so operator
-        # tuning is preserved across restart instead of reapplying defaults.
         operation_retention_seconds = int(
             os.getenv("OPERATION_RETENTION_SECONDS", "86400")
         )
@@ -1513,10 +1085,6 @@ class Orchestrator:
             plane_repositories=self.runtime_composition.plane.repositories,
             operation_retention=timedelta(seconds=operation_retention_seconds),
         )
-        # Feature 060: Plane is the sole authority for personal-agent
-        # host selection, immutable revisions, runtime generations, and calls.
-        # The process-local maps below are wake-up/routing projections only;
-        # every transition validates the durable fence before using them.
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
             BYO_RUNTIME_LOCK_SHA256,
@@ -1546,10 +1114,6 @@ class Orchestrator:
         self.personal_agent_revisions = PostgresPersonalAgentRevisionStore(
             self.personal_agent_runtime
         )
-        # Plane owns the one application-scoped immutable generated-bundle
-        # store.  Keep this long-standing attribute as a semantic alias for
-        # delivery/recovery callers while eliminating Deep's duplicate
-        # filesystem implementation and lazy constructor.
         self.personal_agent_artifacts = (
             self.runtime_composition.plane.generated_agent_bundles
         )
@@ -1581,11 +1145,7 @@ class Orchestrator:
             tuple[str, str, str], asyncio.Lock
         ] = {}
         self._personal_agent_watchdog_task: asyncio.Task[Any] | None = None
-        # Feature 063 US4: the always-on remote-Slurm-job status poller (launched
-        # in start() only when FF_REMOTE_COMPUTE is on; cancelled on shutdown).
         self._remote_job_poll_task: asyncio.Task[Any] | None = None
-        # Periodic re-discovery of A2A_EXTERNAL_AGENTS (launched in start() only
-        # when the env var is set; cancelled on shutdown).
         self._external_agent_discovery_task: asyncio.Task[Any] | None = None
         self.runtime_observability = RuntimeObservability(
             retention_seconds=operation_retention_seconds,
@@ -1601,9 +1161,6 @@ class Orchestrator:
             operation_coordinator=self.work_admission,
         )
 
-        # 055 bg-continuity: durable task records + a completion fan that
-        # reaches every socket of the user (the originator may be gone). The
-        # manager itself is constructed above, before the DB exists.
         self.async_task_manager.bind(
             coordinator=self.work_admission,
             plane_runtime=self.runtime_composition.plane.runtime,
@@ -1612,9 +1169,6 @@ class Orchestrator:
             observability=self.runtime_observability,
         )
 
-        # Feature 054: persisted per-user + system LLM configuration store
-        # (user_llm_config / system_llm_config tables; Fernet under
-        # CREDENTIAL_ENCRYPTION_KEY with the shared dev key-file fallback).
         from llm_config.user_store import UserLLMConfigStore
         self._llm_store = UserLLMConfigStore(
             data_dir=data_dir,
@@ -1622,17 +1176,8 @@ class Orchestrator:
             plane_repositories=self.runtime_composition.plane.repositories,
         )
 
-        # Feature 089: the user's own TypeSafe credential and their
-        # data-sharing acknowledgment. Both sit beside the LLM store rather
-        # than inside it, because neither participates in the first-run gate:
-        # a user with a TypeSafe key and no LLM configuration is still
-        # unconfigured, and clearing a TypeSafe key never re-gates anyone.
-        # The TypeSafe store shares the LLM store's Fernet key, so one
-        # credential-key rotation covers both.
         from llm_config.data_sharing import DataSharingStore
         from llm_config.typesafe_store import TypeSafeCredentialStore
-        # Outcome recording is fire-and-forget, so the tasks need an owner or
-        # the loop can collect them mid-write.
         self._typesafe_outcome_tasks: set = set()
         self._typesafe_confirm_turns: set = set()
         self._typesafe_turn_styles: dict = {}
@@ -1646,14 +1191,9 @@ class Orchestrator:
             plane_repositories=self.runtime_composition.plane.repositories,
         )
 
-        # Feature 028 — per-chat persistent workspace (identity, upserts,
-        # snapshots/timeline). Owns the saved_components store.
         from orchestrator.workspace import WorkspaceManager
         self.workspace = WorkspaceManager(self.history)
 
-        # In-process file tools share the exact application Plane runtime,
-        # repository catalog, and streaming blob boundary. Missing persistence
-        # is a startup failure, never a silently degraded tool surface.
         from agents.general.file_tools import register_plane_dependencies
 
         register_plane_dependencies(
@@ -1662,8 +1202,6 @@ class Orchestrator:
             self.runtime_composition.plane.blobs,
         )
 
-        # Tool Permission Manager (RFC 8693 delegation) — backed by the same
-        # application Plane runtime/catalog.
         self.tool_permissions = ToolPermissionManager(
             data_dir=data_dir,
             plane_runtime=self.runtime_composition.plane.runtime,
@@ -1671,7 +1209,6 @@ class Orchestrator:
             user_agent_registry=self.user_agent_registry,
         )
 
-        # Per-user credential storage (encrypted API keys for agents)
         self.credential_manager = CredentialManager(
             data_dir=data_dir,
             plane_runtime=self.runtime_composition.plane.runtime,
@@ -1705,18 +1242,11 @@ class Orchestrator:
             )
         )
 
-        # Delegation Service (RFC 8693 token exchange)
         self.delegation = DelegationService()
 
-        # Tool Security Analyzer — proactive security review of agent tools
         self.security_analyzer = ToolSecurityAnalyzer()
-        self.security_flags: Dict[str, Dict[str, Any]] = {}  # agent_id -> {tool_name: flag_dict}
+        self.security_flags: Dict[str, Dict[str, Any]] = {}
 
-        # 074 LETS: every physical tool attempt enters one final adapter after
-        # the existing Astral gate stack has finished rewriting arguments.  The
-        # Plane runtime/gateway are injected by startup composition when ready;
-        # enforce mode is fail-closed while that composition is unavailable,
-        # shadow is observational, and off is an exact no-LETS bypass.
         from orchestrator.governed_dispatch import GovernedFinalDispatch
 
         _lets_mode = (os.getenv("LETS_MODE", "off").strip().lower() or "off")
@@ -1725,22 +1255,12 @@ class Orchestrator:
             if _lets_mode == "off"
             else GovernedFinalDispatch.unavailable(_lets_mode)
         )
-        # Host-owned lifecycle code registers exact runtime generations here.
-        # Agent cards are intentionally never trusted as authority for these
-        # values.
         self._governed_dispatch_runtimes: Dict[str, Any] = {}
 
-        # LLM Token Usage Tracking — per-conversation accumulation
-        self.token_usage: Dict[str, Dict[str, int]] = {}  # chat_id -> {prompt_tokens, completion_tokens, total_tokens}
+        self.token_usage: Dict[str, Dict[str, int]] = {}
 
-        # ROTE — Response Output Translation Engine
         self.rote = ROTE()
 
-        # 001-tool-stream-ui: instantiate the push-streaming manager now that
-        # ROTE exists. Wires _safe_send for per-subscriber delivery,
-        # ui_sessions for the per-chunk authorization invariant
-        # (data-model.md §8), and the streaming agent dispatcher / canceller
-        # methods defined below for routing MCPRequest with _stream=True.
         self.stream_manager = StreamManager(
             rote=self.rote,
             send_to_ws=self._safe_send,
@@ -1749,16 +1269,10 @@ class Orchestrator:
             agent_canceller=self._cancel_stream_request,
             validate_chat_ownership=self._validate_chat_ownership_for_stream,
         )
-        # 055 US2 (FR-011): out-of-band terminals (retry exhaustion, dormant
-        # TTL eviction, resume-dispatch failure) reach the persist path via
-        # this hook; the in-band wrapper in handle_agent_message covers frames
-        # that arrive as agent messages. persist_done keeps them idempotent.
         self.stream_manager.terminal_hook = self._persist_stream_terminal
 
-        # Hook/Event System — extensible lifecycle events
         self.hooks = HookManager()
 
-        # Audit log (003-agent-audit-log) — repository, recorder, publisher
         from audit.repository import AuditRepository
         from audit.recorder import Recorder, set_recorder
         from audit.ws_publisher import make_publish_callable
@@ -1778,7 +1292,6 @@ class Orchestrator:
         from orchestrator.projection_surfaces.authoring import DeclarativeAgentService
         self.declarative_agents = DeclarativeAgentService(self)
 
-        # Feature 004 — component feedback & tool-improvement loop
         from feedback.repository import FeedbackRepository
         from feedback.recorder import Recorder as FeedbackRecorder
         self.feedback_repo = FeedbackRepository(
@@ -1788,7 +1301,6 @@ class Orchestrator:
         )
         self.feedback_recorder = FeedbackRecorder(self.feedback_repo)
 
-        # Feature 005 — tool tips and getting started tutorial
         from onboarding.repository import OnboardingRepository
         from onboarding.seed import seed_tutorial_steps
         self.onboarding_repo = OnboardingRepository(
@@ -1801,22 +1313,17 @@ class Orchestrator:
                 plane_runtime=self.runtime_composition.plane.runtime,
                 plane_repositories=self.runtime_composition.plane.repositories,
             )
-        except Exception as exc:  # pragma: no cover — never block startup
+        except Exception as exc:  # pragma: no cover
             logger.warning(f"Tutorial seed loader failed (non-fatal): {exc}")
-        # Feature 025 — per-user personalization (profile, personality, memory)
         from personalization.service import PersonalizationService
         self.personalization_service = PersonalizationService(
             None,
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
-        # Publish self as the module-level singleton so the feedback CLI
-        # and the pre-pass entrypoint can find the synthesizer without
-        # going through FastAPI app.state.
         global _ORCH_INSTANCE
         _ORCH_INSTANCE = self
 
-        # Agent Lifecycle Manager — handles user-created draft agents
         from orchestrator.agent_lifecycle import AgentLifecycleManager
         self.lifecycle_manager = AgentLifecycleManager(
             orchestrator=self,
@@ -1829,7 +1336,6 @@ class Orchestrator:
         )
         self.lifecycle_manager.personal_agent_runtime = self.personal_agent_runtime
         self.lifecycle_manager.personal_agent_revisions = self.personal_agent_revisions
-        # Knowledge Synthesis ("Dreamer") — learns from tool interactions
         if flags.is_enabled("knowledge_synthesis"):
             from orchestrator.knowledge_synthesis import (
                 InteractionCollector, KnowledgeSynthesizer, KnowledgeIndex,
@@ -1850,21 +1356,14 @@ class Orchestrator:
                 coordinator=self.work_admission,
                 plane_runtime=plane.runtime,
                 plane_repositories=plane.repositories,
-                # Feature 054: cross-user system flow — runs on the admin-
-                # managed system credential, re-resolved per cycle.
                 config_resolver=self._llm_store.get_system_sync,
             )
             self.hooks.register(HookEvent.POST_TOOL_USE, self._interaction_collector.on_tool_use)
             self.hooks.register(HookEvent.POST_TOOL_FAILURE, self._interaction_collector.on_tool_use)
             logger.info("Knowledge synthesis system initialized")
 
-        # Publish the complete Plane/LETS graph only after every required
-        # constructor dependency is ready.  The construction decorator owns
-        # exact rollback, including process-global dependency registrations.
         self.runtime_composition.bind(self)
 
-        # Voice is optional for typed chat and is constructed last so no later
-        # constructor failure can strand its async-only resources.
         try:
             from orchestrator.voice_bootstrap import build_voice_services
 
@@ -1889,10 +1388,6 @@ class Orchestrator:
                 extra={"reason": getattr(exc, "code", type(exc).__name__)},
             )
 
-    # =========================================================================
-    # AGENT MANAGEMENT
-    # =========================================================================
-
     def bind_governed_final_dispatch(
         self,
         *,
@@ -1900,8 +1395,6 @@ class Orchestrator:
         plane,
         authority_repository,
     ) -> None:
-        """Bind the independently composed Plane/LETS runtime atomically."""
-
         from orchestrator.governed_dispatch import GovernedFinalDispatch
 
         self.governed_final_dispatch = GovernedFinalDispatch.active(
@@ -1912,13 +1405,6 @@ class Orchestrator:
         )
 
     def register_governed_dispatch_runtime(self, runtime) -> None:
-        """Publish one host-owned exact runtime identity to final dispatch.
-
-        Lifecycle code calls this only after its normal durable admission and
-        Plane binding convergence.  Self-declared agent-card metadata is never
-        accepted by this seam.
-        """
-
         from orchestrator.governed_dispatch import DispatchRuntime
 
         if not isinstance(runtime, DispatchRuntime):
@@ -1957,8 +1443,6 @@ class Orchestrator:
         agent_id: str,
         owner_hint: Optional[str],
     ):
-        """Resolve host-owned population/runtime identity for one route."""
-
         from orchestrator.governed_dispatch import DispatchRuntime
 
         registered = getattr(self, "_governed_dispatch_runtimes", {}).get(agent_id)
@@ -1968,9 +1452,6 @@ class Orchestrator:
         projected = self.agents.get(agent_id)
         fence = getattr(projected, "runtime_fence", None)
         if bool(getattr(projected, "is_fenced_user_agent_tunnel", False)):
-            # A v3 BYO bundle is protected only after lifecycle code registers
-            # its exact server-issued authority descriptor.  A projected
-            # socket alone is never evidence of executor conformance.
             return DispatchRuntime(
                 owner_id=getattr(projected, "owner_sub", None),
                 agent_id=agent_id,
@@ -1982,10 +1463,6 @@ class Orchestrator:
                 dispatch_posture="dispatch_mediated_only",
             )
 
-        # Server-generated draft agents are host-owned governed population.
-        # Their exact runtime identity is deliberately NOT inferred from a
-        # socket/port.  Until lifecycle publishes its durable descriptor,
-        # enforce refuses and shadow preserves existing behavior.
         draft = None
         manager = getattr(self, "lifecycle_manager", None)
         lookup = getattr(manager, "_get_draft_by_agent_id", None)
@@ -2018,10 +1495,6 @@ class Orchestrator:
                 dispatch_posture="protected_executor",
             )
 
-        # Operator-discovered, remote, and other externally reachable agents
-        # lack a conforming Astral-controlled actuator by default.  They remain
-        # mediated by Astral's complete gate stack but make no protected-
-        # executor claim.
         return DispatchRuntime(
             owner_id=owner_hint,
             agent_id=agent_id,
@@ -2054,11 +1527,6 @@ class Orchestrator:
         return "websocket"
 
     async def _handle_agent_tunnel(self, ui_ws, msg):
-        """058 (Mode 1 transport): unwrap a user agent's frame tunneled over its
-        owner's authenticated UI socket and route it to the agent-message router
-        via a stable TunnelSocket. The owner is the AUTHENTICATED session ``sub``
-        — never anything the frame presents (FR-015). Flag-gated (byo_agents);
-        inert when off (behavior byte-identical to today)."""
         if not flags.is_enabled("byo_agents"):
             return
         from shared.local_transport import TunnelSocket
@@ -2074,11 +1542,6 @@ class Orchestrator:
             logger.warning("058: dropping tunnel frame from owner=%s agent=%s — over ingress cap",
                            owner_sub, agent_id)
             return
-        # A socket that RELAYS an agent's stdio frames is a desktop host by
-        # demonstration — it is supervising the child process right now. Mark it,
-        # so a host that predates the explicit register_ui `agent_host` field is
-        # still a valid delivery target (and a browser tab, which relays nothing,
-        # still never is).
         _hosts = getattr(self, "_agent_host_sockets", None)
         if _hosts is not None:
             _hosts.setdefault(id(ui_ws), str(payload.get("host_session_id") or ""))
@@ -2089,17 +1552,12 @@ class Orchestrator:
             sock.host_session_id = payload.get("host_session_id")
             self._tunnel_sockets[key] = sock
         elif getattr(sock, "ui_websocket", None) is not ui_ws:
-            # Reconnect on a different socket: supersede the stale one.
             sock.ui_websocket = ui_ws
             sock.host_session_id = payload.get("host_session_id")
         frame_text = inner if isinstance(inner, str) else json.dumps(inner)
         await self.handle_agent_message(sock, frame_text)
 
     async def _teardown_owner_tunnels(self, ui_ws):
-        """058 (honest-offline, FR-010/FR-011): on UI disconnect, take every user
-        agent tunneled over this socket OFFLINE — drop its TunnelSocket and live
-        registration so a subsequent invocation returns a prompt honest-offline
-        response. Notifies the owner's other sockets best-effort."""
         owner_sub = (self.ui_sessions.get(ui_ws) or {}).get("sub")
         gone = [(k, s) for k, s in list(self._tunnel_sockets.items())
                 if getattr(s, "ui_websocket", None) is ui_ws]
@@ -2120,16 +1578,10 @@ class Orchestrator:
             logger.info("058: %d user agent(s) offline on UI disconnect (owner=%s)",
                         len(gone), owner_sub)
 
-    #: Max agent-tunnel frames per owner per window before dropping (058 FR-017).
     _TUNNEL_MAX_FRAMES_PER_WINDOW = int(os.getenv("BYO_TUNNEL_MAX_FRAMES_PER_S", "50"))
     _TUNNEL_WINDOW_S = 1.0
 
     def _tunnel_ingress_over_cap(self, owner_sub: str) -> bool:
-        """Per-owner fixed-window frame-rate cap on the agent tunnel (058
-        FR-017/SC-008). Returns True once this owner exceeds the window's frame
-        budget — the caller drops the frame, so a flooding/runaway user agent
-        degrades only its own owner, never the platform or other users. Each owner
-        has an independent counter."""
         now = time.monotonic()
         st = self._tunnel_ingress.get(owner_sub)
         if st is None or (now - st[0]) >= self._TUNNEL_WINDOW_S:
@@ -2139,23 +1591,13 @@ class Orchestrator:
         return st[1] > self._TUNNEL_MAX_FRAMES_PER_WINDOW
 
     def is_agent_host_socket(self, websocket) -> bool:
-        """058: did this UI socket declare itself a desktop AGENT HOST at
-        register_ui? Only such a socket can write a bundle to disk and supervise
-        it as a child process — and only such a socket is ever sent one."""
         return id(websocket) in (getattr(self, "_agent_host_sockets", None) or {})
 
     def owner_host_sockets(self, owner_sub) -> list:
-        """This owner's live DESKTOP-HOST sockets (never a browser tab)."""
         return [ui for ui in list(self.ui_clients)
                 if self.is_agent_host_socket(ui) and self._get_user_id(ui) == owner_sub]
 
-    # ── Feature 076: remote computer control ─────────────────────────────────
-
     def socket_for_chat(self, user_id: str, chat_id: Optional[str]):
-        """The owner's live UI socket whose active chat is ``chat_id`` (the
-        device a remote-control session is started from). Falls back to any
-        live socket of the owner that is not itself a computer host, then to
-        any live socket — never to a socket of another user."""
         candidates = [ws for ws in list(self.ui_clients) if self._get_user_id(ws) == user_id]
         if chat_id:
             for ws in candidates:
@@ -2197,7 +1639,6 @@ class Orchestrator:
             logger.warning("076: dropping oversized computer_response (%d bytes) from owner=%s",
                            raw_len, owner_sub)
             request_id = str(payload.get("request_id") or "")
-            # Fail the waiting verb promptly rather than letting it time out.
             self.computer_hosts.handle_response(websocket, owner_sub, {
                 "request_id": request_id, "ok": False,
                 "error": {"code": "failed", "message": "the host's reply was too large"}})
@@ -2225,7 +1666,7 @@ class Orchestrator:
             return
         host = self.computer_hosts.host_for_socket(websocket)
         if host is None:
-            return  # only a registered host may report on itself
+            return
         if event == "withdraw":
             await self.computer_sessions.end_all_for_host(owner_sub, host.host_id, "consent_revoked")
             self.computer_hosts.withdraw(owner_sub, host.host_id)
@@ -2243,8 +1684,6 @@ class Orchestrator:
         code: str,
         details: Dict[str, Any],
     ) -> None:
-        """Send the exact non-disclosing v3 host-registration refusal."""
-
         await self._safe_send(
             websocket,
             json.dumps(
@@ -2266,22 +1705,12 @@ class Orchestrator:
         owner_user_id: str,
         registration: AgentHostRegistration,
     ) -> Any | None:
-        """Durably validate and acknowledge one structured desktop host.
-
-        Authentication and the finite connection scope are already established
-        by the caller. No socket becomes delivery-eligible until the repository
-        commits and this method emits the server-owned session acknowledgement.
-        """
-
         from orchestrator.user_agents import HostRegistrationRefused
 
         context = (getattr(self, "_connection_contexts", None) or {}).get(
             id(websocket)
         )
         if context is None:
-            # Direct unit seams predate the finite connection runtime. Product
-            # WebSockets always have a context; a UUID4 test seam still exercises
-            # the exact durable host contract without trusting a client value.
             connection_scope_id = str(_uuid.uuid4())
         else:
             connection_scope_id = str(context.connection_scope_id)
@@ -2306,9 +1735,6 @@ class Orchestrator:
             )
             return None
 
-        # A reconnect of the same stable installation supersedes its prior
-        # server session. Remove only the stale projection; the repository has
-        # already fenced and settled the old session transactionally.
         sessions = getattr(self, "_personal_agent_host_sessions", None)
         session_sockets = getattr(self, "_personal_agent_session_sockets", None)
         if sessions is None:
@@ -2471,8 +1897,6 @@ class Orchestrator:
         stop_waiter: _PersonalAgentExitWaiter,
         settlement: Any,
     ) -> None:
-        """Publish one committed settlement before its exact exit acknowledgement."""
-
         future = stop_waiter.settlement
         if future is not None and not future.done():
             future.set_result(settlement)
@@ -2490,8 +1914,6 @@ class Orchestrator:
         self,
         fence: RuntimeFence,
     ) -> tuple[str, ...]:
-        """Return only process-local callers bound to this exact runtime fence."""
-
         assignments = (
             getattr(self, "_personal_agent_request_runtime_fences", None) or {}
         )
@@ -2513,8 +1935,6 @@ class Orchestrator:
         retire_authority: bool,
         completed_steps: set[str] | None = None,
     ) -> None:
-        """Idempotently project one exact, already-committed Plane settlement."""
-
         instance = getattr(settlement, "instance", None)
         if instance is None or getattr(instance, "fence", None) != fence:
             raise RuntimeError("personal-agent runtime settlement fence is stale")
@@ -2535,8 +1955,6 @@ class Orchestrator:
                     fence=fence,
                 )
             except Exception as exc:
-                # Plane is already terminal. Continue fail-closed local cleanup,
-                # then retain the exact receipt while the driver retries LETS.
                 lifecycle_error = exc
             else:
                 steps.add("authority_retired")
@@ -2591,8 +2009,6 @@ class Orchestrator:
     def _personal_agent_owner_for_fence(
         self, fence: RuntimeFence
     ) -> str | None:
-        """Resolve an owner only from the acknowledged host-session binding."""
-
         for record in (
             getattr(self, "_personal_agent_host_sessions", None) or {}
         ).values():
@@ -2606,8 +2022,6 @@ class Orchestrator:
 
     @staticmethod
     def _canonical_personal_agent_failure_code(failure_code: str) -> str:
-        """Map historical/internal diagnostics to the public stable contract."""
-
         aliases = {
             "child_failed": "child_exited",
             "child_exit": "child_exited",
@@ -2639,8 +2053,6 @@ class Orchestrator:
         state: str,
         reason_code: str | None = None,
     ) -> None:
-        """Best-effort owner-scoped projection of one committed runtime row."""
-
         if not owner_user_id:
             return
         try:
@@ -2669,17 +2081,10 @@ class Orchestrator:
     def _personal_agent_lifecycle_from_runtime(
         cls, runtime: Any
     ) -> tuple[str, str | None]:
-        """Project one durable runtime row into the canonical public state."""
-
         state = str(getattr(runtime, "state", "offline"))
         if state in {"delivering", "starting"}:
             return "starting", None
         if state == "ready":
-            # ``ready`` is asserted by the host after registration/liveness but
-            # precedes the server-owned promotion.  A candidate replacing a
-            # different durable active revision is visibly updating; a first
-            # install or same-revision recovery is still starting.  Neither is
-            # routable and neither may be projected as public online.
             active_revision_id = getattr(runtime, "active_revision_id", None)
             authoritative_instance_id = getattr(
                 runtime, "authoritative_instance_id", None
@@ -2714,8 +2119,6 @@ class Orchestrator:
     async def _replay_personal_agent_lifecycles(
         self, websocket: Any, owner_user_id: str
     ) -> int:
-        """Hydrate one reconnecting owner from durable lifecycle rows."""
-
         repository = getattr(self, "personal_agent_runtime", None)
         loader = getattr(repository, "list_latest_runtime_instances", None)
         if not callable(loader):
@@ -2757,8 +2160,6 @@ class Orchestrator:
         owner_user_id: str,
         agent_id: str,
     ) -> tuple[str, ...]:
-        """Load only the server-owned durable scope declaration for LETS."""
-
         from orchestrator import user_agents as _ua
         from orchestrator.lets_lifecycle import LetsLifecycleError
         from orchestrator.lets_scope_profile import binding_for_scope
@@ -2801,8 +2202,6 @@ class Orchestrator:
         executor_conformant: bool,
         declared_scopes: tuple[str, ...] | None = None,
     ):
-        """Converge LETS before one v3 delivery can expose a runtime."""
-
         from orchestrator.byo_authority import (
             ByoRuntimeAuthority,
             ByoRuntimeAuthorityError,
@@ -3086,10 +2485,6 @@ class Orchestrator:
             logger.warning("Personal-agent host disconnect failed closed", exc_info=True)
             return None
 
-        # The durable host fence is already committed.  Before any successor
-        # delivery is selected, quiesce each affected LETS branch.  An enforce
-        # outage still permits local socket cleanup, but it suppresses recovery
-        # so a successor can never overlap an authority that was not fenced.
         lets_recovery_blocked = False
         affected_agents = sorted(
             set(result.selected_sessions)
@@ -3112,10 +2507,6 @@ class Orchestrator:
                     exc_info=True,
                 )
 
-        # PostgreSQL loss/settlement is the authority boundary.  Only after it
-        # commits may the process-local socket projections disappear; otherwise
-        # a transient database failure could strand a still-selected durable
-        # session while making it look disconnected in this process.
         if sessions.get(id(websocket)) == record:
             sessions.pop(id(websocket), None)
         session_sockets = (
@@ -3147,11 +2538,6 @@ class Orchestrator:
                 if self.agents.get(getattr(socket, "agent_id", None)) is socket:
                     self.agents.pop(socket.agent_id, None)
 
-        # The disconnect transaction has already selected every replacement
-        # standby and fenced the lost authority. Re-open the exact immutable
-        # artifact before asking only that selected session to start a fresh
-        # delivery/runtime generation. Recovery failures are isolated per
-        # agent and durably terminalize their allocated delivery operation.
         selected_recoveries = [
             (agent_id, selected_session_id)
             for agent_id, selected_session_id in result.selected_sessions.items()
@@ -3183,13 +2569,6 @@ class Orchestrator:
         lost_host_session_id: str,
         selected_host_session_id: str,
     ) -> bool:
-        """Deliver one active immutable revision to its selected standby.
-
-        Durable selection/allocation remains in PostgreSQL. The filesystem is
-        consulted only after that transaction returns the exact revision, and
-        the bytes are re-hashed before they cross the selected host socket.
-        """
-
         recovery_identity = {
             "agent_id": agent_id,
             "lost_host_session_id": lost_host_session_id,
@@ -3369,9 +2748,7 @@ class Orchestrator:
         ).hexdigest()
         attempt_key = idempotency_key
         attempt_parent = parent_operation_id
-        # A retryable operation is terminal by contract.  An explicit retry must
-        # allocate a fresh child operation, while reusing a stable child key so a
-        # lost response to that retry cannot allocate a second physical attempt.
+        # Retry key stays fixed: avoids a duplicate physical attempt
         for _attempt_depth in range(64):
             request = OperationRequest(
                 operation_kind=operation_kind,
@@ -3490,15 +2867,6 @@ class Orchestrator:
         fence: ExecutionFence,
         stop: asyncio.Event,
     ) -> None:
-        """Keep a selected personal-agent operation current until settlement.
-
-        Tool calls may legitimately outlive the admission slot's default lease.
-        Renewal therefore begins immediately after assignment and remains active
-        through the durable request-settlement transaction. A stale lease is
-        already a fail-closed authority loss; the eventual result/timeout path
-        cannot publish through that obsolete execution fence.
-        """
-
         interval = max(0.001, CONNECTION_LEASE_RENEW_SECONDS)
         while not stop.is_set():
             try:
@@ -3518,9 +2886,6 @@ class Orchestrator:
                 )
                 return
             except Exception:
-                # A transient database failure is retried on the next bounded
-                # interval. PostgreSQL remains authoritative; this task never
-                # invents or reselects an execution generation in memory.
                 logger.warning(
                     "Personal-agent operation lease renewal failed",
                     exc_info=True,
@@ -3531,8 +2896,6 @@ class Orchestrator:
         websocket: Any,
         frame: Dict[str, Any],
     ) -> None:
-        """Validate and atomically reconcile one complete retained inventory."""
-
         if set(frame) != {
             "type",
             "host_id",
@@ -3591,9 +2954,6 @@ class Orchestrator:
                     agent_id=agent_id,
                 )
             except Exception as exc:
-                # Not a fault: the reconciler answers this entry itself
-                # (delete / keep_stopped). Say why, so a bundle that never
-                # starts after a reconnect is diagnosable (077 live finding).
                 logger.info(
                     "Host inventory entry needs no delivery: agent=%s revision=%s (%s: %s)",
                     agent_id, revision_id, type(exc).__name__, exc,
@@ -3768,8 +3128,6 @@ class Orchestrator:
                 )
 
     async def _personal_agent_watchdog_once(self) -> int:
-        """Fence runtimes whose PostgreSQL receipt-time liveness expired."""
-
         await self._renew_personal_agent_authorities()
         candidates = await asyncio.to_thread(
             self.personal_agent_runtime.list_expired_runtime_candidates,
@@ -3800,9 +3158,6 @@ class Orchestrator:
                         fence=runtime.fence,
                     )
                 except Exception:
-                    # Local liveness is already lost. Remove the local route
-                    # below even when the enforce close is left to the durable
-                    # lifecycle reconciler.
                     logger.warning(
                         "Personal-agent LETS watchdog close failed closed",
                         exc_info=True,
@@ -3867,7 +3222,7 @@ class Orchestrator:
                 )
                 fenced += 1
             except Exception:
-                # Another frame/watchdog may have won the same terminal CAS.
+                # Benign: another watchdog/frame may own this terminal CAS
                 logger.debug("personal-agent watchdog race lost", exc_info=True)
         return fenced
 
@@ -3882,9 +3237,6 @@ class Orchestrator:
             await asyncio.sleep(PERSONAL_AGENT_WATCHDOG_INTERVAL_SECONDS)
 
     async def _remote_job_poll_loop(self) -> None:
-        """Feature 063 US4: always-on background poller for open remote Slurm jobs.
-        Read-only by construction (only squeue/sacct/tail run); the loop must never
-        die on a single bad pass."""
         while True:
             try:
                 from orchestrator import remote_jobs
@@ -3977,8 +3329,6 @@ class Orchestrator:
             )
 
     async def _publish_personal_agent_runtime(self, runtime: Any) -> Any:
-        """Expose one already-online durable authority to the tool router."""
-
         from shared.local_transport import FencedTunnelSocket
 
         fence = runtime.fence
@@ -4046,8 +3396,6 @@ class Orchestrator:
         websocket: Any,
         frame: Dict[str, Any],
     ) -> None:
-        """Reduce one exact v3 host frame through the durable repository."""
-
         try:
             frame_type = frame.get("type")
             if frame_type == "agent_host_inventory":
@@ -4119,9 +3467,6 @@ class Orchestrator:
                     elif hasattr(
                         self.personal_agent_runtime, "promote_recovered_runtime"
                     ):
-                        # Inventory recovery uses an already-active immutable
-                        # revision, so there is no candidate-revision promotion
-                        # waiter. Restore only its runtime authority pointer.
                         online = await asyncio.to_thread(
                             self.personal_agent_runtime.promote_recovered_runtime,
                             ready_runtime.fence,
@@ -4145,10 +3490,6 @@ class Orchestrator:
                         "runtime-state stop disposition is stale"
                     )
                 if current.state == "stopping" or stop_waiter is not None:
-                    # A failed/offline state frame is not proof that the process
-                    # tree has exited.  Preserve the staged lifecycle
-                    # disposition until an exact full-fence exit frame resolves
-                    # the registered stop waiter.
                     if (
                         current.state == "stopping"
                         and stop_waiter is None
@@ -4156,11 +3497,6 @@ class Orchestrator:
                     ):
                         self._ensure_personal_agent_runtime_stop_driver(
                             fence.runtime_instance_id,
-                            # After a coordinator restart no in-memory ready
-                            # waiter can prove whether revision recovery owns
-                            # finalization. Retain the exact receipt
-                            # conservatively; the durable recovery owner can
-                            # join and release it after its Plane transaction.
                             lifecycle_owned=True,
                         )
                     return
@@ -4180,12 +3516,6 @@ class Orchestrator:
                         fence,
                         failure_code=failure_code,
                     )
-                    # Do not wait for process exit on the host receive loop: the
-                    # exact exit frame is delivered by that same loop.  The
-                    # tracked driver owns the initial stop send and retries if
-                    # the socket or acknowledgement is lost. A concurrent
-                    # activation finalizer joins its full-fence waiter, so only
-                    # one physical stop is sent per attempt.
                     if ready_waiter is not None and not ready_waiter.done():
                         ready_waiter.set_exception(RuntimeError(failure_code))
                     self._ensure_personal_agent_runtime_stop_driver(
@@ -4278,10 +3608,6 @@ class Orchestrator:
                 }
                 stopping_runtime = runtime.state == "stopping"
                 if stop_waiter is not None and stop_waiter.acknowledged.done():
-                    # The first exact frame already persisted physical-exit
-                    # proof.  A duplicate must not overwrite a lifecycle
-                    # finalizer that may have committed before releasing its
-                    # retained receipt.
                     return
                 proof_code = {
                     "process_exit": "child_exited",
@@ -4297,18 +3623,11 @@ class Orchestrator:
                         and runtime.fence.process_id is not None
                     )
                 ):
-                    # Persist the full-fence proof before waking any lifecycle
-                    # owner.  The owner may only finalize its staged revision
-                    # after this transaction is durable.
                     settlement = await asyncio.to_thread(
                         self.personal_agent_runtime.record_runtime_physical_exit,
                         fence,
                         proof_code=proof_code,
                     )
-                    # A lifecycle caller can register its waiter while the Plane
-                    # transaction is in flight. Re-read after durability so that
-                    # caller is acknowledged instead of being overwritten by a
-                    # stale pre-transaction snapshot.
                     stop_waiter = exit_waiters.get(fence.runtime_instance_id)
                     if stop_waiter is not None and stop_waiter.fence != fence:
                         raise ProtocolValidationError(
@@ -4326,11 +3645,7 @@ class Orchestrator:
                         if exit_waiters.get(fence.runtime_instance_id) is stop_waiter:
                             exit_waiters.pop(fence.runtime_instance_id, None)
                         return
-                    # Every exact exit disposition is authoritative proof that
-                    # this full-fence process is gone.  Keep the durable staged
-                    # failure/promotion disposition intact; its lifecycle owner
-                    # finalizes the runtime and operation before releasing this
-                    # receipt.  In particular, do not rewrite it to RETRYABLE.
+                    # Never rewrite this disposition to RETRYABLE here
                     if not stop_waiter.acknowledged.done():
                         stop_waiter.acknowledged.set_result(fence)
                     return
@@ -4351,8 +3666,6 @@ class Orchestrator:
                         stop_waiter.acknowledged.set_result(fence)
                     return
                 if terminal_runtime:
-                    # Duplicate exact exit frames are idempotent after the
-                    # lifecycle owner has already committed terminal state.
                     return
                 await self._terminalize_personal_agent_runtime(
                     fence,
@@ -4365,8 +3678,6 @@ class Orchestrator:
             ProtocolValidationError,
             ValueError,
         ) as exc:
-            # Stale/malformed host frames are no-ops by contract. Do not echo
-            # attacker-controlled values or allow arrival order to promote them.
             logger.warning(
                 "Dropping personal-agent host frame type=%s: %s",
                 frame.get("type"),
@@ -4380,10 +3691,6 @@ class Orchestrator:
             )
 
     def _is_user_agent(self, agent_id) -> bool:
-        """True iff ``agent_id`` is a feature-057/058 user-created agent (has a
-        ``user_agent`` registry row). Sync DB read — call via ``asyncio.to_thread``
-        off the loop. Fails closed (False) so a lookup error never mislabels a
-        built-in as a user agent."""
         if not agent_id:
             return False
         try:
@@ -4394,11 +3701,6 @@ class Orchestrator:
 
     async def _audit_user_agent(self, actor_sub, action_type, description,
                                 agent_id, outcome="success"):
-        """058 (T035/FR-012): record a user-agent lifecycle/denial audit row,
-        attributed to the OWNING HUMAN. Best-effort, never raises — auditability
-        must not break a delivery/registration/dispatch. Mirrors the 027
-        ``agentic_creation._audit`` shape under the shared ``agent_lifecycle``
-        class so the two creation lifecycles reconstruct together."""
         try:
             from datetime import datetime, timezone
 
@@ -4445,12 +3747,6 @@ class Orchestrator:
         declared_egress=None,
         validated_policy_revision=None,
     ):
-        """Prepare, deliver, and promote one immutable personal-agent revision.
-
-        A legacy feature-058 bundle without v3 metadata keeps its compatibility
-        behavior. Production generation always supplies the finalized manifest
-        and follows the durable prepare/start/ready/promote boundary below.
-        """
         from orchestrator.agent_generator import (
             BYO_BUNDLE_FILENAMES,
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -4463,12 +3759,6 @@ class Orchestrator:
                     parsed_manifest = json.loads(manifest_text)
                 except (TypeError, ValueError):
                     parsed_manifest = None
-                # Feature-058 compatibility bundles also contain a
-                # ``manifest.json`` file, and some fixtures intentionally use
-                # an empty object.  Only infer the durable v3 path when the
-                # embedded manifest actually carries the complete v3 runtime
-                # identity.  An explicitly supplied ``runtime_manifest`` still
-                # enters the v3 validator and fails closed if malformed.
                 runtime_identity = {
                     "runtime_contract_version",
                     "revision_id",
@@ -4536,8 +3826,6 @@ class Orchestrator:
                 agent_metadata=metadata,
             )
 
-        # Explicit compatibility path for old clients/tests. It never treats an
-        # implicit v1 bundle as v3 and never enters the durable v3 host maps.
         frame = json.dumps({
             "type": "agent_bundle_deliver",
             "agent_id": agent_id,
@@ -4565,15 +3853,6 @@ class Orchestrator:
         self,
         runtime_instance_id: str,
     ) -> Any:
-        """Join one exact full-fence process-exit acknowledgement.
-
-        Durable lifecycle code stages the runtime as ``stopping`` before this
-        method runs.  The returned receipt owns the in-memory acknowledgement
-        until the caller has committed its exact Plane finalizer; releasing it
-        earlier would let a duplicate host frame apply the generic RETRYABLE
-        reducer and overwrite that staged disposition.
-        """
-
         from orchestrator.agent_lifecycle import PhysicalStopReceipt
 
         runtime = await asyncio.to_thread(
@@ -4603,10 +3882,6 @@ class Orchestrator:
             and getattr(runtime, "failure_code", None)
             in {"child_exited", "agent_offline"}
         ):
-            # Only the exact runtime-exit reducer writes these terminal proof
-            # codes.  A replay after process/server restart may therefore
-            # finalize durable cleanup without demanding an impossible second
-            # exit frame.  Host-loss and state-only terminal rows do not qualify.
             if stop_waiter is None:
                 return None
             if not stop_waiter.acknowledged.done():
@@ -4695,9 +3970,6 @@ class Orchestrator:
             async with asyncio.timeout(PERSONAL_AGENT_STOP_TIMEOUT_SECONDS):
                 await asyncio.shield(stop_waiter.acknowledged)
         except asyncio.CancelledError:
-            # This invocation created and sent the stop.  If cancellation wins
-            # before the exact acknowledgement, remove only its waiter so a
-            # replay can resend instead of joining abandoned in-memory state.
             if not stop_waiter.acknowledged.done():
                 if exit_waiters.get(runtime_instance_id) is stop_waiter:
                     exit_waiters.pop(runtime_instance_id, None)
@@ -4717,8 +3989,6 @@ class Orchestrator:
         runtime_instance_id: str,
         stop_waiter: _PersonalAgentExitWaiter | None,
     ) -> Any | None:
-        """Recover the exact durable exit settlement after a lost commit ack."""
-
         if stop_waiter is not None:
             current = (
                 getattr(self, "_personal_agent_exit_waiters", None) or {}
@@ -4764,8 +4034,6 @@ class Orchestrator:
         *,
         lifecycle_owned: bool,
     ) -> None:
-        """Send/retry one staged stop without blocking the host receive loop."""
-
         while True:
             try:
                 receipt = await self._stop_personal_agent_revision_process(
@@ -4850,8 +4118,6 @@ class Orchestrator:
         *,
         lifecycle_owned: bool,
     ) -> asyncio.Task[Any]:
-        """Create at most one tracked stop driver for an exact runtime."""
-
         drivers = getattr(self, "_personal_agent_stop_driver_tasks", None)
         if drivers is None:
             drivers = self._personal_agent_stop_driver_tasks = {}
@@ -4932,11 +4198,6 @@ class Orchestrator:
         except (TypeError, ValueError) as exc:
             raise ValueError("runtime manifest must be canonical JSON") from exc
 
-        # Duplicate authoring requests for the same immutable revision share one
-        # activation in this process. The durable submission/revision fences are
-        # still the cross-replica authority; this lock merely prevents a local
-        # replay from waiting on (or trying to terminalize) its already-running
-        # delivery operation.
         activation_key = (owner_sub, agent_id, revision_id)
         if not _activation_locked:
             locks = getattr(self, "_personal_agent_activation_locks", None)
@@ -5037,8 +4298,6 @@ class Orchestrator:
             await _recovery_activator().reconcile_after_crash(owner_sub, agent_id)
 
         async def _project_completed_delivery_authority() -> int:
-            """Project the exact authority behind an observed COMPLETED attempt."""
-
             try:
                 completed_runtime = await asyncio.to_thread(
                     self.personal_agent_runtime.get_current_online_authority_if_present,
@@ -5064,9 +4323,6 @@ class Orchestrator:
                     "revision_completed_authority_pending"
                 ) from exc
 
-        # A same-process replay after commit is already successful. Re-publish
-        # only if its exact durable route projection is absent; never create a
-        # second delivery/runtime generation for the active revision.
         try:
             online = await asyncio.to_thread(
                 self.personal_agent_runtime.get_current_online_authority_if_present,
@@ -5271,8 +4527,6 @@ class Orchestrator:
             safe_summary: str,
             retry_after_ms: int | None,
         ) -> Any:
-            """Return the first durable terminal result for this exact fence."""
-
             observed = None
             try:
                 observed = await self._call_work_admission(
@@ -5286,9 +4540,6 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # The write may have committed before its acknowledgement was
-                # lost. Resolve that ambiguity through the exact owner-scoped
-                # projection instead of issuing a contradictory outcome.
                 observed = None
             if observed is None:
                 try:
@@ -5425,9 +4676,6 @@ class Orchestrator:
             ).get(runtime.fence.host_session_id)
             if selected_socket is not websocket:
                 raise RuntimeError("candidate selected host session is stale")
-            # Startup is non-authoritative. LETS admission closes the previous
-            # generation, so it must follow the Plane promotion commit or a
-            # failed candidate would destroy the last-known-good authority.
             authority = None
             loop = asyncio.get_running_loop()
             waiter = loop.create_future()
@@ -5560,11 +4808,6 @@ class Orchestrator:
                             "revision_cleanup_recovery_pending"
                         )
             except RevisionActivationRecoveryPendingError as pending:
-                # A promotion acknowledgement may be lost on either side of the
-                # commit.  Keep an uncommitted immutable revision retryable and
-                # let an explicit child attempt retire its old runtime; if the
-                # transaction committed, its atomic COMPLETED operation and
-                # active pointers win and exact replay projects that authority.
                 completed = await _settle_retryable()
                 if completed is not None:
                     return completed
@@ -5577,9 +4820,6 @@ class Orchestrator:
                     return completed
                 raise
 
-            # Promotion is the durable authority boundary. Everything below is
-            # a replayable projection of that committed state and must never
-            # relabel or stop the now-authoritative candidate on failure.
             try:
                 online = await asyncio.to_thread(
                     self.personal_agent_runtime.get_runtime_instance,
@@ -5644,12 +4884,6 @@ class Orchestrator:
                 )
             return 1
 
-        # Keep the exact delivery operation selected while candidate startup,
-        # promotion, durable first-winner settlement, and route projection run.
-        # A concurrent retention/replay pass may otherwise expire the default
-        # slot lease and begin a child attempt while this activation is still
-        # using its original execution fence.  Promotion still validates that
-        # fence transactionally; renewal preserves liveness, not authority.
         stop_activation_renewal = asyncio.Event()
         activation_renewal_task = asyncio.create_task(
             self._renew_personal_agent_operation_lease(
@@ -5699,7 +4933,6 @@ class Orchestrator:
                 )
 
     async def delete_user_agent(self, owner_sub, agent_id):
-        """Commit the durable tombstone generation before any host cleanup."""
         from shared.local_transport import TunnelSocket
         from orchestrator import user_agents as _ua
         row = await asyncio.to_thread(
@@ -5709,9 +4942,6 @@ class Orchestrator:
         )
         if row is None or row.get("owner_user_id") != owner_sub:
             return False
-        # Revocation is the destructive authority boundary.  In enforce mode
-        # the durable tombstone cannot commit until the current LETS branch is
-        # terminal; shadow records a would-deny without blocking deletion.
         await self._revoke_personal_agent_authority(
             owner_user_id=owner_sub,
             agent_id=agent_id,
@@ -5738,9 +4968,6 @@ class Orchestrator:
                 code="agent_deleted",
             )
         except Exception:
-            # The tombstone is already authoritative and must never be rolled
-            # back. A repeated delete replays the same tombstone and retries this
-            # fenced cleanup; local routing is removed below in either case.
             logger.warning(
                 "Personal-agent tombstone cleanup will require reconciliation",
                 exc_info=True,
@@ -5766,9 +4993,6 @@ class Orchestrator:
                 exc_info=True,
             )
 
-        # Only the committed tombstone authorizes destructive projection and
-        # process cleanup. Delayed registration/delivery frames now fail their
-        # durable generation checks and cannot resurrect this identity.
         fenced_sockets = [
             (runtime_id, socket)
             for runtime_id, socket in list(
@@ -5834,8 +5058,6 @@ class Orchestrator:
                 except Exception:
                     logger.debug("fenced agent_stop send failed", exc_info=True)
         if legacy_socket is not None:
-            # Explicit feature-058 compatibility only. Legacy cleanup is never
-            # broadcast to unrelated owner sockets or unselected standbys.
             try:
                 await self._safe_send(
                     legacy_socket.ui_websocket,
@@ -5856,18 +5078,11 @@ class Orchestrator:
         return True
 
     async def register_agent(self, websocket, msg: RegisterAgent):
-        """Register a specialist agent and store its capabilities."""
         card = msg.agent_card
         if not card:
             logger.warning("RegisterAgent with no card")
             return
 
-        # 058 (BYO agents) — a user-agent TUNNEL registration is authenticated by
-        # the OWNER's UI session (not the shared AGENT_API_KEY). Owner-binding is
-        # the security decision: derive the owner from the authenticated socket
-        # and refuse unless the registry vouches for (owner, agent_id, runnable
-        # status). Non-tunnel agents (built-in loopback, external WS) keep the
-        # 028 shared-key check.
         is_tunnel = bool(getattr(websocket, "is_user_agent_tunnel", False))
         is_fenced_tunnel = bool(
             getattr(websocket, "is_fenced_user_agent_tunnel", False)
@@ -5886,9 +5101,6 @@ class Orchestrator:
                 logger.warning(
                     "Refusing user-agent tunnel registration '%s' (owner=%s): %s",
                     card.agent_id, owner_sub, reason)
-                # T035/FR-012: a refused boundary registration must leave an
-                # audited trail (owner isolation / forged-id / reserved-id / stale
-                # status), not just a log line.
                 await self._audit_user_agent(
                     owner_sub, "agent.registration_refused",
                     f"Refused user-agent tunnel registration: {reason}",
@@ -5900,9 +5112,6 @@ class Orchestrator:
                         logger.debug("close after refused user-agent registration failed", exc_info=True)
                 return
         else:
-            # 028 FR-016 — agent connections are authenticated. In production
-            # (ASTRAL_ENV != development) a missing/invalid key refuses the
-            # registration outright (fail closed); dev mode stays keyless.
             from orchestrator.auth import validate_agent_api_key
             if not validate_agent_api_key(getattr(msg, "api_key", None) or ""):
                 logger.warning(
@@ -5915,10 +5124,6 @@ class Orchestrator:
                         logger.debug("close after refused agent registration failed", exc_info=True)
                 return
 
-        # 064 Phase A: validate the agent's exact JSON Schema 2020-12
-        # declaration before publishing any card/routing state. This validator
-        # is bounded and offline; it never dereferences a network URI. Only
-        # after validation is an absent dialect made explicit.
         from shared.schema_validation import validate_tool_schema
 
         try:
@@ -5951,9 +5156,6 @@ class Orchestrator:
 
         if websocket is not None:
             self.agents[card.agent_id] = websocket
-        # Executor posture is host-owned.  Ignore any self-declared claim on
-        # the card: externally reachable agents remain dispatch-mediated-only
-        # until lifecycle publishes an exact conforming runtime descriptor.
         card.metadata = dict(getattr(card, "metadata", {}) or {})
         _dispatch_runtime = getattr(self, "_governed_dispatch_runtimes", {}).get(
             card.agent_id
@@ -5970,9 +5172,6 @@ class Orchestrator:
             card.metadata["protected_executor"] = False
         self.agent_cards[card.agent_id] = card
 
-        # 058: a tunnel registration is the delivered, validated user agent
-        # connecting inward → go live (status='live', host session, companion
-        # agent_ownership row is_public=FALSE) and record the owner-scoped socket.
         if is_tunnel:
             from orchestrator import user_agents as _ua
             if is_fenced_tunnel:
@@ -5999,7 +5198,6 @@ class Orchestrator:
                 "User agent registered inward and went live on its owner's host.",
                 card.agent_id)
 
-        # Extract capabilities for routing and tool→scope mapping
         caps = []
         tool_scope_map = {}
         for skill in card.skills:
@@ -6008,9 +5206,6 @@ class Orchestrator:
                 "description": skill.description,
                 "input_schema": skill.input_schema
             })
-            # Store tool→scope mapping from agent-declared scopes. Validate the
-            # declared scope so a typo'd or missing scope is surfaced rather than
-            # silently inheriting the weakest kind.
             from orchestrator.tool_permissions import VALID_SCOPES as _VALID_SCOPES
             declared_scope = getattr(skill, 'scope', '') or ''
             if declared_scope and declared_scope not in _VALID_SCOPES:
@@ -6027,12 +5222,8 @@ class Orchestrator:
             tool_scope_map[skill.id] = declared_scope or 'tools:read'
         self.agent_capabilities[card.agent_id] = caps
 
-        # Register tool→scope mapping in the permission manager
         self.tool_permissions.register_tool_scopes(card.agent_id, tool_scope_map)
 
-        # Prune tool_overrides rows for tools no longer in the agent's live
-        # registry. Best-effort — a transient DB error must not block agent
-        # registration. Idempotent: subsequent calls find nothing to delete.
         try:
             await asyncio.to_thread(
                 self.tool_permissions.cleanup_stale_tool_overrides,
@@ -6041,14 +5232,8 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Stale tool_override cleanup failed for {card.agent_id}: {e}")
 
-        # Extract streamable tool metadata for live streaming.
-        # Two paths: legacy POLL streaming (orchestrator drives cadence) and
-        # 001-tool-stream-ui PUSH streaming (tool is an async generator).
         for skill in card.skills:
             skill_metadata = getattr(skill, 'metadata', {}) or {}
-            # Validate streaming metadata up front (001-tool-stream-ui T016).
-            # Catches misconfigured tools at registration time with a clear
-            # error rather than silently accepting and failing at subscribe.
             try:
                 validate_streaming_metadata(skill_metadata)
             except ValueError as e:
@@ -6058,17 +5243,12 @@ class Orchestrator:
                 )
                 continue
 
-            # Legacy single-bool form: metadata.streamable is a config dict
-            # (poll path). New form: metadata.streamable is True with
-            # streaming_kind set to "push" or "poll".
             streamable_value = skill_metadata.get("streamable")
             if not streamable_value:
                 continue
             if skill.scope not in ("tools:read", "tools:system"):
                 continue
 
-            # Determine kind: explicit metadata.streaming_kind wins; legacy
-            # dict form (no kind) defaults to "poll".
             kind = skill_metadata.get("streaming_kind")
             if kind not in ("push", "poll"):
                 kind = "poll"
@@ -6077,7 +5257,6 @@ class Orchestrator:
                 "agent_id": card.agent_id,
                 "kind": kind,
             }
-            # Poll path config
             if isinstance(streamable_value, dict):
                 entry["default_interval"] = streamable_value.get("default_interval", 2)
                 entry["min_interval"] = streamable_value.get("min_interval", 1)
@@ -6086,14 +5265,12 @@ class Orchestrator:
                 entry["default_interval"] = skill_metadata.get("default_interval_s", 2)
                 entry["min_interval"] = 1
                 entry["max_interval"] = 30
-            # Push path bounds
             if kind == "push":
                 entry["max_fps"] = skill_metadata.get("max_fps", 30)
                 entry["min_fps"] = skill_metadata.get("min_fps", 5)
                 entry["max_chunk_bytes"] = skill_metadata.get("max_chunk_bytes", 65536)
             self._streamable_tools[skill.id] = entry
 
-        # Extract agent's ECIES public key for E2E credential encryption
         public_key_jwk = getattr(card, 'metadata', {}).get("public_key_jwk") if getattr(card, 'metadata', None) else None
         if public_key_jwk:
             self.credential_manager.register_agent_public_key(card.agent_id, public_key_jwk)
@@ -6101,7 +5278,6 @@ class Orchestrator:
 
         logger.info(f"Agent registered: {card.agent_id} ({card.name}) with {len(caps)} tools")
 
-        # Proactive security review: analyze all tools for threats
         raw_flags = self.security_analyzer.analyze_agent(card)
         if raw_flags:
             self.security_flags[card.agent_id] = {
@@ -6114,22 +5290,13 @@ class Orchestrator:
         else:
             self.security_flags[card.agent_id] = {}
 
-        # Auto-assign ownership if this agent has no owner yet
         tool_names = [c["name"] for c in caps]
 
         def _resolve_ownership():
-            """Ownership read/auto-assign through the typed Plane registry."""
             ownership = self.user_agent_registry.get_agent_ownership(card.agent_id)
             if not ownership:
                 default_owner = os.environ.get("DEFAULT_AGENT_OWNER", "")
                 if default_owner:
-                    # Only the bundled first-party fleet is public (visible +
-                    # enabled) by default. Every other ownerless registration —
-                    # an external A2A agent or one discovered via
-                    # A2A_EXTERNAL_AGENTS — defaults PRIVATE, i.e. off until an
-                    # admin turns it on. User-created agents already carry
-                    # explicit private ownership from agent_lifecycle before they
-                    # register, so they never reach this branch (drafts likewise).
                     is_builtin = card.agent_id in FIRST_PARTY_PUBLIC_AGENT_IDS
                     self.user_agent_registry.set_agent_ownership(
                         card.agent_id, default_owner, is_public=is_builtin)
@@ -6146,7 +5313,6 @@ class Orchestrator:
 
         ownership = await asyncio.to_thread(_resolve_ownership)
 
-        # Hook: AGENT_REGISTERED
         if flags.is_enabled("hook_system"):
             await self.hooks.emit(HookContext(
                 event=HookEvent.AGENT_REGISTERED,
@@ -6154,13 +5320,9 @@ class Orchestrator:
                 metadata={"agent_name": card.name, "tool_count": len(caps)},
             ))
 
-        # Don't broadcast draft agents to UI — they only appear in the Drafts tab
         if await asyncio.to_thread(self._is_draft_agent, card.agent_id):
             return
 
-        # Notify UI clients (per-user scopes, tool_scope_map, security flags). For
-        # a private user-agent tunnel registration, notify ONLY the owner's
-        # sockets — never advertise a private agent to other users (FR-019).
         notify_targets = self.ui_clients
         if is_tunnel:
             _owner_sub = getattr(websocket, "owner_sub", None)
@@ -6195,33 +5357,17 @@ class Orchestrator:
                 pass
 
     async def discover_agent(self, base_url: str):
-        """Discover an agent by fetching its A2A agent card and connecting via WebSocket."""
         from orchestrator.agent_peer_auth import (
             agent_auth_headers, agent_ws_url, peer_demands_agent_key,
         )
         from shared.ws_compat import ws_header_kwargs
 
-        # Probe FIRST, credential second. The key is never on the opening
-        # request: we send it only after the peer has answered an
-        # unauthenticated request with OUR challenge scheme, proving it is an
-        # Astral agent waiting for exactly this credential.
-        #
-        # Host trust alone is too coarse to be the only control — it covers a
-        # whole machine, so any port on loopback or the Docker host would
-        # otherwise receive the fleet secret, including an unrelated dev server
-        # or debug port that happens to be listening. Both conditions must hold:
-        # the host is operator-declared AND the peer issued our challenge.
+        # Probe unauthenticated first; the key goes out only after
         peer_headers = {}
         try:
-            # Fetch agent card
             card_url = f"{base_url.rstrip('/')}/.well-known/agent-card.json"
             async with aiohttp.ClientSession() as session:
-                # allow_redirects=False is load-bearing, not tidiness: aiohttp
-                # forwards request headers across a redirect even to a different
-                # host/port (verified), so a trusted destination could 302 the
-                # shared key straight to an attacker — walking it around the
-                # whole point of agent_auth_headers' destination gate. An agent
-                # card endpoint has no legitimate reason to redirect.
+                # allow_redirects=False is load-bearing: a redirect could leak the key
                 async def _get_card(headers):
                     return await session.get(
                         card_url, headers=headers, allow_redirects=False,
@@ -6231,8 +5377,6 @@ class Orchestrator:
                 resp = await _get_card({})
                 try:
                     if resp.status == 401:
-                        # Only an agent that issues OUR challenge gets the key,
-                        # and only at a destination the operator declared.
                         challenge = resp.headers.get("WWW-Authenticate", "")
                         if not peer_demands_agent_key(challenge):
                             logger.info(
@@ -6251,9 +5395,6 @@ class Orchestrator:
                             )
                             return
                     else:
-                        # 200 here means the agent does not gate its card (an
-                        # older agent, or a first-party one). Nothing to prove,
-                        # so nothing is sent — the key stays home.
                         pass
                     if resp.status == 401:
                         resp.release()
@@ -6266,17 +5407,13 @@ class Orchestrator:
                         )
                         return
                     if resp.status == 401:
-                        # Challenged, credentialed, still refused: the two keys
-                        # differ. WARNING, not the "not ready yet" INFO below —
-                        # this is a configuration fault that otherwise reads as a
-                        # startup race and gets misdiagnosed as a network problem.
+                        # Warn, not info: this reads like a race but is misconfig
                         logger.warning(
                             "Agent at %s refused the orchestrator's credential (401) — "
                             "AGENT_API_KEY must match on both sides", base_url,
                         )
                         return
                     if resp.status != 200:
-                        # Log as INFO during discovery to avoid noise during startup
                         logger.info(f"Agent card not ready yet at {card_url} (status: {resp.status})")
                         return
                     card_data = await resp.json()
@@ -6290,32 +5427,24 @@ class Orchestrator:
                 logger.debug(f"Agent {agent_id} already connected")
                 return
 
-            # Connect via WebSocket with no size limit to allow large files.
-            # agent_ws_url preserves TLS (https -> wss); the previous inline
-            # expression hardcoded ws:// and stripped https://, which would now
-            # also put the shared key on the wire in the clear.
+            # agent_ws_url keeps TLS; ws:// would send the key in clear
             ws_url = agent_ws_url(base_url)
             ws = await websockets.connect(ws_url, max_size=50 * 1024 * 1024,
                                           **ws_header_kwargs(peer_headers))
 
-            # Listen for RegisterAgent message
             raw = await asyncio.wait_for(ws.recv(), timeout=5)
             parsed = Message.from_json(raw)
             if isinstance(parsed, RegisterAgent):
                 await self.register_agent(ws, parsed)
 
-            # Store agent URL for peer registry
             self.agent_urls[agent_id] = base_url
 
-            # Start listening loop
             asyncio.create_task(self._agent_listen_loop(ws, agent_id))
 
             logger.info(f"Connected to agent: {agent_id} at {base_url}")
 
         except websockets.exceptions.InvalidHandshake as exc:
-            # InvalidHandshake is the stable base across the websockets 14.0
-            # split (InvalidStatusCode on <=13.x, InvalidStatus on >=14) — never
-            # name either concrete class.
+            # websockets 14 split this exception class; keep the base
             status = (getattr(exc, "status_code", None)
                       or getattr(getattr(exc, "response", None), "status_code", None))
             if status == 401:
@@ -6329,33 +5458,17 @@ class Orchestrator:
             logger.debug(f"Discovery attempt to {base_url} skipped: {e}")
 
     async def discover_a2a_agent(self, base_url: str, notify_ui: bool = True):
-        """Discover an external agent — tries WebSocket first, falls back to A2A JSON-RPC.
-
-        Strategy:
-        1. Try to connect via WebSocket (fastest, bidirectional, preferred)
-        2. If WebSocket fails, fall back to official A2A protocol (JSON-RPC)
-        """
-        # Step 1: Try WebSocket first
         try:
             await self.discover_agent(base_url)
-            # Check if WebSocket discovery succeeded
             for aid, url in self.agent_urls.items():
                 if url == base_url and aid in self.agents:
                     logger.info(f"External agent at {base_url} connected via WebSocket (preferred)")
-                    # Also set up A2A client as backup
                     await self._setup_a2a_client_for_agent(base_url, aid)
                     return
         except Exception as e:
             logger.debug(f"WebSocket discovery to {base_url} failed: {e}")
 
-        # Step 2: Fall back to A2A JSON-RPC
         try:
-            # C-2: never register a second, A2A-derived identity for a host that
-            # a WebSocket-discovered agent already owns. The win_agent registers
-            # over WS with its real id (e.g. windows-tools-1); without this guard
-            # the A2A fallback would slug its display name into a phantom
-            # duplicate ("windows-tools-(code-&-system)") and create stray
-            # ownership/scope rows. The WS path is authoritative for these hosts.
             if base_url in self.agent_urls.values():
                 logger.debug(
                     "A2A fallback skipped: an agent is already registered at %s", base_url
@@ -6366,13 +5479,7 @@ class Orchestrator:
             from shared.a2a_bridge import a2a_card_to_custom
             from orchestrator.agent_peer_auth import agent_auth_headers
 
-            # Client default headers apply to the resolver's own GET. The
-            # timeout is not optional: this coroutine is reachable inline from a
-            # user's register_external_agent, so a hostile card endpoint would
-            # otherwise stall it indefinitely.
-            # follow_redirects=False is httpx's default and is stated here so a
-            # future edit cannot silently enable redirect-following, which would
-            # carry the credential past the destination gate.
+            # Timeout required: a hostile card endpoint could hang this
             async with httpx.AsyncClient(headers=agent_auth_headers(base_url),
                                          follow_redirects=False,
                                          timeout=5.0) as http_client:
@@ -6386,14 +5493,10 @@ class Orchestrator:
                 logger.debug(f"A2A agent {agent_id} already connected")
                 return
 
-            # Track this agent as reachable via hand-rolled JSON-RPC (v1.0 client
-            # is bypassed because we POST per-call with a per-request Bearer token).
             self.a2a_clients[agent_id] = base_url
             self.a2a_agent_cards[agent_id] = a2a_card
             self.agent_urls[agent_id] = base_url
 
-            # Internal registration of an operator-configured A2A discovery —
-            # carries the orchestrator's own configured key (FR-016).
             register_msg = RegisterAgent(agent_card=custom_card,
                                          api_key=os.getenv("AGENT_API_KEY") or None)
             await self.register_agent(None, register_msg)
@@ -6404,20 +5507,12 @@ class Orchestrator:
             logger.debug(f"A2A discovery to {base_url} also failed: {e}")
 
     async def _setup_a2a_client_for_agent(self, base_url: str, agent_id: str):
-        """Set up an A2A backup transport for a WebSocket-connected agent.
-
-        Records the agent's base URL so tool calls can fall back to hand-rolled
-        JSON-RPC if WebSocket transport fails.
-        """
         try:
             import httpx
             from a2a.client import A2ACardResolver
             from orchestrator.agent_peer_auth import agent_auth_headers
 
             a2a_url = f"{base_url}/a2a"
-            # follow_redirects=False is httpx's default and is stated here so a
-            # future edit cannot silently enable redirect-following, which would
-            # carry the credential past the destination gate.
             async with httpx.AsyncClient(headers=agent_auth_headers(base_url),
                                          follow_redirects=False,
                                          timeout=5.0) as http_client:
@@ -6431,7 +5526,6 @@ class Orchestrator:
             logger.debug(f"A2A backup setup for {agent_id} failed (non-critical): {e}")
 
     async def _agent_listen_loop(self, ws, agent_id: str):
-        """Listen for messages from a connected agent."""
         try:
             async for message in ws:
                 await self.handle_agent_message(ws, message)
@@ -6450,20 +5544,8 @@ class Orchestrator:
             except Exception:
                 logger.debug("cap slot sweep failed", exc_info=True)
 
-    # =========================================================================
-    # MESSAGE HANDLING
-    # =========================================================================
-
+    # request_id alone isn't enough; verify the responder's socket
     def _response_is_from_dispatch_target(self, req_id: str, websocket) -> bool:
-        """Is this ``mcp_response`` coming from the agent we sent the request to?
-
-        Correlation on ``request_id`` alone would let ANY connected agent resolve
-        another agent's pending future. Untrusted BYO agents now share this
-        router, so verify the responder: a loopback/tunnel socket carries its own
-        ``agent_id``, and a networked agent socket is the object registered in
-        ``self.agents`` under the dispatch target. An unrecorded request (tests,
-        legacy in-process resolutions) is left alone.
-        """
         expected = (getattr(self, "_pending_request_agent", None) or {}).get(req_id)
         if not expected:
             return True
@@ -6472,7 +5554,6 @@ class Orchestrator:
         return self.agents.get(expected) is websocket
 
     async def handle_agent_message(self, websocket, message: str):
-        """Handle message from an agent."""
         try:
             msg = Message.from_json(message)
 
@@ -6495,37 +5576,20 @@ class Orchestrator:
                     logger.warning(f"Received response for unknown request: {req_id}")
 
             elif isinstance(msg, AgentHopRequest):
-                # 056 US1: an agent requests a MEDIATED hop to a peer tool.
-                # Mediation runs as its own task so the (possibly loopback)
-                # control frame returns immediately and deep hop chains never
-                # nest inside this router's stack.
                 task = asyncio.create_task(
                     self._handle_agent_hop_request(websocket, msg))
                 self._background_hop_tasks.add(task)
                 task.add_done_callback(self._background_hop_tasks.discard)
 
             elif isinstance(msg, ToolProgress):
-                # Long-running job progress. Handled UNCONDITIONALLY — this branch
-                # was previously gated behind the off-by-default progress_streaming
-                # flag, which silently dropped both the auto-progress the agent
-                # promised AND the concurrency-cap release.
                 await self._handle_tool_progress(msg)
 
-            # 001-tool-stream-ui: forward streaming tool chunks to subscribers
-            # via StreamManager. Gated on the feature flag — when off, agents
-            # never send these messages so the branches are never taken.
             elif isinstance(msg, ToolStreamData) and flags.is_enabled("tool_streaming"):
                 if self.stream_manager is not None:
-                    # 055 US2: capture the bridged subscription BEFORE the
-                    # frame is processed — an error chunk can resolve the
-                    # stream terminally, tearing the record down.
                     sub = self._bridged_stream_subscription(msg.stream_id)
                     try:
                         await self.stream_manager.handle_agent_chunk(msg)
                     except NotImplementedError:
-                        # Phase 2 foundational: handlers are stubs until US1
-                        # implements the routing. Drop the chunk silently
-                        # while we're still building the feature.
                         logger.debug(
                             f"ToolStreamData received but stream_manager handler "
                             f"not yet implemented (stream_id={msg.stream_id})"
@@ -6548,9 +5612,6 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Error handling agent message: {e}")
-            # Resolve a correlatable malformed response immediately. Unknown
-            # additive keys are filtered by Message.from_json; reaching this
-            # branch means the known envelope itself is invalid.
             try:
                 raw = json.loads(message)
             except (TypeError, json.JSONDecodeError):
@@ -6570,8 +5631,6 @@ class Orchestrator:
 
     @staticmethod
     def _parsed_ui_frame(message: str) -> dict[str, Any] | None:
-        """Parse one UI frame without inferring its type from payload text."""
-
         try:
             value = json.loads(message)
         except (TypeError, json.JSONDecodeError):
@@ -6580,8 +5639,6 @@ class Orchestrator:
 
     @staticmethod
     def _ui_control_kind(frame: dict[str, Any] | None) -> str | None:
-        """Return the structurally declared transport/control kind, if any."""
-
         if frame is None:
             return None
         frame_type = frame.get("type")
@@ -6627,8 +5684,6 @@ class Orchestrator:
 
     @classmethod
     def _canonical_uuid4(cls, value: Any) -> _uuid.UUID | None:
-        """Return only exact lowercase, hyphenated RFC 4122 UUID4 text."""
-
         if not isinstance(value, str):
             return None
         parsed = cls._optional_uuid4(value)
@@ -6652,8 +5707,6 @@ class Orchestrator:
         return context
 
     def connection_diagnostics(self) -> dict[str, int]:
-        """Return non-sensitive aggregate connection-runtime gauges."""
-
         contexts = tuple(
             getattr(self, "_connection_contexts", {}).values()
         )
@@ -6698,14 +5751,6 @@ class Orchestrator:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Run PostgreSQL authority calls off-loop.
-
-        The explicitly named in-memory repository is a lock-only deterministic
-        test dependency, so calling it inline avoids manufacturing hundreds of
-        thread handoffs in the 1,000-frame contract probe.  Product
-        construction always binds the PostgreSQL repository.
-        """
-
         repository = getattr(self.work_admission, "_repository", None)
         if isinstance(repository, InMemoryWorkAdmissionRepository):
             return method(*args, **kwargs)
@@ -6787,10 +5832,6 @@ class Orchestrator:
             websocket,
             json.dumps(
                 {
-                    # Admission refusal has no operation_id and therefore is
-                    # not an operation_status terminal.  Reuse the manifested
-                    # error envelope and correlate the client-local submitting
-                    # projection by owner-supplied submission_id.
                     "type": "error",
                     "submission_id": str(submission_id),
                     "accepted": False,
@@ -6806,8 +5847,6 @@ class Orchestrator:
     def _connection_admission_class(
         frame: _ConnectionIngressFrame,
     ) -> AdmissionClass:
-        """Select the durable admission class for one validated UI frame."""
-
         if frame.operation_kind == "voice_chat_message":
             return AdmissionClass.VOICE_INTERACTIVE
         return AdmissionClass.INTERACTIVE
@@ -6821,16 +5860,6 @@ class Orchestrator:
         retryable: bool,
         retry_after_ms: int | None = None,
     ) -> bool:
-        """Project admission refusal through the frame's canonical lifecycle.
-
-        A validated voice-origin frame has enough immutable correlation to
-        terminalize both the client and worker transcript buffers.  It must
-        therefore receive ``voice_submission_rejected`` rather than the
-        generic connection-operation error used by typed/UI work.  The
-        transcript is still unaccepted: this path creates no message, task, or
-        acknowledgement and never weakens the later proof/authorization gate.
-        """
-
         if frame.operation_kind == "voice_chat_message":
             try:
                 message = Message.from_json(frame.raw)
@@ -6932,8 +5961,6 @@ class Orchestrator:
 
     @staticmethod
     def _admission_refusal_message(code: str) -> str:
-        """Return the non-sensitive message shared by refusal envelopes."""
-
         return {
             "capacity_exceeded": (
                 "The request could not be accepted right now."
@@ -6956,8 +5983,6 @@ class Orchestrator:
         *,
         code: str,
     ) -> None:
-        """Report malformed input without fabricating submission correlation."""
-
         observability = getattr(self, "runtime_observability", None)
         if observability is not None:
             observability.record_operation(
@@ -6985,8 +6010,6 @@ class Orchestrator:
         retryable: bool,
         retry_after_ms: int | None = None,
     ) -> bool:
-        """Refuse one frame, returning whether exact correlation was possible."""
-
         submission_id = self._client_submission_id(parsed)
         if submission_id is None:
             await self._send_uncorrelated_error(websocket, code=code)
@@ -7129,8 +6152,6 @@ class Orchestrator:
         *,
         connection_generation: str,
     ) -> dict[str, Any]:
-        """Build the strict content-free acknowledgement for one message."""
-
         return {
             "type": "user_message_acked",
             "schema_version": "1",
@@ -7150,8 +6171,6 @@ class Orchestrator:
         message: str,
         speech_outcome: str | None = None,
     ) -> dict[str, Any]:
-        """Build one content-safe lifecycle projection for a UI socket."""
-
         if speech_outcome is not None:
             if turn.state != "succeeded" or speech_outcome not in {
                 "source_finished",
@@ -7188,8 +6207,6 @@ class Orchestrator:
         if turn.state == "succeeded" and turn.result_commit_id:
             frame["result_id"] = turn.result_commit_id
         if speech_outcome is not None:
-            # This describes worker/source completion only. Client playout and
-            # audibility are independently observed and are not inferred here.
             frame["speech_outcome"] = speech_outcome
         return frame
 
@@ -7200,14 +6217,6 @@ class Orchestrator:
         message: str,
         speech_outcome: str | None = None,
     ) -> None:
-        """Fan a turn lifecycle notice to the user's current real UI sockets.
-
-        Every socket receives its own current connection generation.  The
-        notice is best-effort presentation of already-durable state, so a
-        disconnected client can still recover the authoritative conversation
-        text without causing terminal finalization to retry or duplicate.
-        """
-
         sessions = getattr(self, "ui_sessions", {}) or {}
         contexts = getattr(self, "_connection_contexts", {}) or {}
         for websocket, claims in list(sessions.items()):
@@ -7241,8 +6250,6 @@ class Orchestrator:
                 )
 
     async def _notify_reconciled_voice_terminal_turn(self, turn: Any) -> None:
-        """Project a maintenance-repaired terminal turn to current UI sockets."""
-
         message = {
             "succeeded": _VOICE_REQUEST_SUCCEEDED_MESSAGE,
             "cancelled": _VOICE_REQUEST_CANCELLED_MESSAGE,
@@ -7258,8 +6265,6 @@ class Orchestrator:
         frame: _ConnectionIngressFrame,
         turn: Any,
     ) -> bool:
-        """Send an accepted voice message only to its exact retry binding."""
-
         if (
             turn.message_id is None
             or not self._voice_replay_frame_matches_turn(frame, turn)
@@ -7285,8 +6290,6 @@ class Orchestrator:
         frame: _ConnectionIngressFrame,
         turn: Any,
     ) -> bool:
-        """Match the complete retained tuple before any replay disposition."""
-
         if frame.operation_kind != "voice_chat_message":
             return False
         if frame.parsed.get("type") == "voice_local_final":
@@ -7336,8 +6339,6 @@ class Orchestrator:
         frame: _ConnectionIngressFrame,
         turn: Any,
     ) -> bool:
-        """Return the retained terminal disposition without redispatch."""
-
         if (
             not self._voice_turn_origin_unavailable(turn)
             or not self._voice_replay_frame_matches_turn(frame, turn)
@@ -7381,8 +6382,6 @@ class Orchestrator:
         context: ConnectionContext,
         frame: _ConnectionIngressFrame,
     ) -> bool:
-        """Reconcile a reconnect from content-free durable turn metadata."""
-
         if frame.operation_kind != "voice_chat_message":
             return False
         services = getattr(self, "voice_services", None)
@@ -7400,8 +6399,6 @@ class Orchestrator:
                 request_generation=str(frame.request_generation),
             )
         except Exception:
-            # A retry may arrive before proof verification/message acceptance;
-            # the original execution remains the sole path allowed to accept.
             return False
         if self._voice_turn_origin_unavailable(turn):
             return await self._send_voice_unavailable_replay(
@@ -7416,8 +6413,6 @@ class Orchestrator:
         context: ConnectionContext,
         frame: _ConnectionIngressFrame,
     ) -> bool:
-        """Suppress a process-local restart for one unavailable destination."""
-
         if frame.operation_kind != "voice_chat_message":
             return False
         services = getattr(self, "voice_services", None)
@@ -7448,8 +6443,6 @@ class Orchestrator:
         fallback_connection_generation: str,
         turn: Any,
     ) -> None:
-        """Acknowledge every same-operation subscriber without redispatch."""
-
         delivered = False
         if work is not None:
             for subscriber, frame in tuple(work.subscribers.values()):
@@ -7574,8 +6567,7 @@ class Orchestrator:
             if code == "validation_failed" and frame.operation_kind == "llm_credential_save":
                 from orchestrator.projection_surfaces.llm import SavedKeyEndpointChanged
 
-                # Only this fixed server message may cross the terminal/replay
-                # boundary. Other summaries can contain upstream private data.
+                # Only this fixed message may cross the replay boundary
                 if getattr(operation, "safe_summary", None) == SavedKeyEndpointChanged.MESSAGE:
                     error["message"] = SavedKeyEndpointChanged.MESSAGE
         from orchestrator.chrome_events import emit_operation_status
@@ -7652,14 +6644,6 @@ class Orchestrator:
     def _client_submission_id(
         self, parsed: dict[str, Any] | None
     ) -> _uuid.UUID | None:
-        """Recover only a valid client UUID4 for a correlated refusal.
-
-        Validation of the rest of the event may fail, but a valid submission
-        identity is still safe and necessary to terminalize the client's
-        local-only ``submitting`` projection.  Invalid or absent identities
-        remain uncorrelated.
-        """
-
         frame = parsed or {}
         payload = frame.get("payload")
         if not isinstance(payload, dict):
@@ -7678,8 +6662,6 @@ class Orchestrator:
     def _matching_frame_value(
         field_name: str, *sources: dict[str, Any]
     ) -> tuple[Any, bool]:
-        """Return one exact repeated wire value, rejecting source conflicts."""
-
         supplied = [
             source[field_name]
             for source in sources
@@ -7785,10 +6767,6 @@ class Orchestrator:
             return None
         session_chat = frame.get("session_id")
         is_local_voice_final = frame.get("type") == "voice_local_final"
-        # Historical no-chat transport sentinels (for example ``win-client``)
-        # are not conversation identities.  Ignore them rather than admitting
-        # an invalid scope that would make the canonical accepted frame
-        # impossible to serialize.
         if is_local_voice_final:
             if (
                 payload_chat is None
@@ -7809,25 +6787,13 @@ class Orchestrator:
             ):
                 return None
         if not chat_value and action in _CONVERSATION_MUTATION_ACTIONS:
-            # Older component-action clients omitted chat_id because the
-            # active canvas made it appear redundant.  Resolve it before
-            # admission so the durable operation and its publication fence
-            # still bind the exact conversation rather than inferring scope
-            # from a later frame.
             chat_value = self._ws_active_chat.get(id(context.websocket))
         if chat_value is not None and self._canonical_uuid4(chat_value) is None:
             return None
-        # Work is an owner-scoped read. Ordinary clients may still attach the
-        # current chat transport hint; it grants no conversation scope here.
         is_guidance = (action == "chrome_open" and surface == "guidance") or action in {
             "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
         }
         chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_guidance) else None
-        # Keep idempotency material non-secret.  Generic UI payloads can carry
-        # chat text, PHI, credentials, or model input; none of those values may
-        # be persisted even as a dictionary-attackable digest.  Submission and
-        # request generations already identify the attempt, while these bounded
-        # structural fields detect accidental identity reuse on the live scope.
         safe_payload_identity = {
             key: value
             for key in _CONNECTION_IDENTITY_FIELDS
@@ -7841,10 +6807,7 @@ class Orchestrator:
             and isinstance(payload.get("voice_origin"), dict)
         )
         if is_credential_save:
-            # The owner-scoped submission is the durable retry identity across
-            # connections.  Never hash credential/config values; a fixed
-            # versioned operation identity both avoids secret-derived storage
-            # and remains stable when a reconnect has a new wire generation.
+            # Fixed id, never hashed secrets, for this identity
             normalized = b"llm_credential_save:v1"
         elif is_voice_chat or is_local_voice_final:
             if is_local_voice_final:
@@ -7986,8 +6949,6 @@ class Orchestrator:
                     self, context.websocket, self._get_user_id(context.websocket),
                     request_generation=str(frame.request_generation), context=context,
                 )
-                # This exact issuance is captured before the batch can wait for
-                # admission. Dispatch must not select a later registration.
                 await frame.work_read.capture_session()
                 frame.work_read.assert_current()
             except asyncio.CancelledError:
@@ -8020,7 +6981,6 @@ class Orchestrator:
                     from orchestrator.projection_surfaces.guidance import capture_navigation
 
                     frame.guidance_navigation = capture_navigation(self, pending=frame.human_request)
-                # Retain the original issued caller before any admission/lane wait.
                 await frame.human_request.capture_session()
                 if frame.human_request.purpose == "metadata":
                     frame.read_only = frame.human_request.method == "WS_READ"
@@ -8034,9 +6994,6 @@ class Orchestrator:
             raise
         except (AssignmentError, TimeoutError) as exc:
             frame.close_work_read()
-            # Whatever happens next, the cause is worth one line: a turn that
-            # loses its capture here is refused several frames later with a
-            # deliberately opaque code, and nothing else names the reason.
             logger.warning("human request capture failed action=%s cause=%s",
                            frame.action, getattr(exc, "code", type(exc).__name__))
             if frame.action != "chat_message":
@@ -8044,8 +7001,6 @@ class Orchestrator:
                     context, frame, code="operation_failed", retryable=False,
                 )
                 return
-            # The required internal skill lookup will explicitly refuse. A
-            # missing capture never grants later-registration or owner fallback.
         context.submission_digests[
             frame.submission_id
         ] = frame.normalized_digest
@@ -8137,8 +7092,6 @@ class Orchestrator:
                 owner = OperationOwner(
                     owner_scope=OwnerScope.USER,
                     owner_user_id=owner_user_id,
-                    # Origin/subscriber metadata only; USER partitioning and
-                    # REST authorization remain keyed by owner_user_id.
                     connection_scope_id=context.connection_scope_id,
                 )
             else:
@@ -8180,7 +7133,7 @@ class Orchestrator:
             )
             try:
                 result = coordinator.submit(request)
-            except Exception as exc:  # returned to the event loop, never exposed
+            except Exception as exc:
                 result = exc
             projection = None
             if not isinstance(result, Exception) and result.accepted:
@@ -8196,10 +7149,7 @@ class Orchestrator:
                         result.operation_id,
                     )
             results.append((frame, owner, result, projection))
-        # ``asyncio.to_thread`` cannot kill a database call.  If disconnect
-        # cancels the awaiting pump at the five-second bound, this worker still
-        # owns cleanup: every accepted-but-not-yet-applied record is cancelled
-        # before the thread returns, so no connection-owned operation detaches.
+        # to_thread can't be cancelled; cancel late admissions here
         if context.closing:
             for _frame, result_owner, result, _projection in results:
                 if (
@@ -8252,10 +7202,7 @@ class Orchestrator:
         self,
         context: ConnectionContext,
     ) -> None:
-        # One yield coalesces an already-buffered socket burst into one off-loop
-        # database handoff.  This keeps the receiver responsive and prevents
-        # released slots from changing the admission result halfway through a
-        # single ingress burst.
+        # Yield coalesces the burst; not a no-op
         await asyncio.sleep(0)
         while context.ingress:
             batch = list(context.ingress)
@@ -8339,8 +7286,6 @@ class Orchestrator:
                         context,
                         frame,
                     )
-                    # The first process-local worker owns execution.  A retry
-                    # is only another viewer/reconciliation path.
                     continue
                 captured_claims = dict(
                     getattr(self, "ui_sessions", {}).get(
@@ -8366,8 +7311,7 @@ class Orchestrator:
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
                 if owner.owner_scope is OwnerScope.USER:
-                    # Reserve before the first await so concurrent reconnects
-                    # cannot schedule a second worker for this operation.
+                    # Registered before the first await: blocks a duplicate worker
                     registry[result.operation_id] = work
                 if (
                     projection is not None
@@ -8397,12 +7341,6 @@ class Orchestrator:
                 try:
                     await self._send_operation_accepted(context, frame, result)
                 except Exception:
-                    # No accepted operation may be stranded merely because its
-                    # canonical UI projection could not be serialized.  Ingress
-                    # is validated before admission, but this fail-safe owns any
-                    # future validation drift: terminalize durably, discard the
-                    # process-local work entry, and correlate the client's local
-                    # submission without fabricating a wire operation terminal.
                     logger.exception(
                         "Accepted connection operation projection failed "
                         "operation_id=%s",
@@ -8438,10 +7376,6 @@ class Orchestrator:
                     context,
                     frame,
                 ):
-                    # The retained owner/session/turn/submission tuple is a
-                    # terminal destination tombstone. Keep the already
-                    # admitted operation untouched, but never create another
-                    # process-local dispatcher or tool-call path for it.
                     context.operations.pop(result.operation_id, None)
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
@@ -8464,20 +7398,11 @@ class Orchestrator:
                     await self._notify_interactive_capacity()
                     continue
                 scheduled.append((work, projection))
-            # Preserve ingress order while building a reader/writer barrier for
-            # live connection state. Consecutive reads may run together, but a
-            # mutation waits for every earlier read and mutation; later reads
-            # in turn wait for that mutation. Transport controls never enter
-            # this lane and retain their cancellation/drain bypass.
             loop = asyncio.get_running_loop()
             for work, _projection in scheduled:
                 frame = work.frame
                 work.lane_complete = loop.create_future()
                 if frame.operation_kind == "voice_chat_message":
-                    # Voice turns own durable user-scoped operation fences and
-                    # private publication stages. They may overlap on one
-                    # socket/chat; only the short acceptance and terminal
-                    # rebase transactions serialize on the chat row.
                     work.predecessors = ()
                 elif frame.read_only:
                     work.predecessors = tuple(
@@ -8493,8 +7418,6 @@ class Orchestrator:
                         if predecessor is not None
                     ]
                     predecessors.extend(context.pending_reads)
-                    # A mutation closes the current reader generation. Future
-                    # reads will depend on this mutation tail instead.
                     context.pending_reads.clear()
                     work.predecessors = tuple(dict.fromkeys(predecessors))
                     context.mutation_tail = work.lane_complete
@@ -8533,9 +7456,7 @@ class Orchestrator:
                     *,
                     accepted_work: _ConnectionOperation = work,
                 ) -> None:
-                    # A task cancelled before its coroutine's first scheduler
-                    # turn never enters ``finally``. Release its lane future
-                    # here as well so no surviving successor can deadlock.
+                    # A pre-start cancel skips finally; release the lane here too
                     completion = accepted_work.lane_complete
                     accepted_work.auth_claims.clear()
                     accepted_work.frame.close_work_read()
@@ -8728,9 +7649,6 @@ class Orchestrator:
                 context, work.frame, work, terminal
             )
             return terminal
-        # Persistence already released the admission slot in the same
-        # transaction as COMPLETED. Wake local queued work before best-effort
-        # UI projection, which may have no surviving socket.
         await self._notify_interactive_capacity()
         deadline = work.frame.deadline_at_monotonic
         if deadline is None or time.monotonic() >= deadline:
@@ -8757,11 +7675,6 @@ class Orchestrator:
                 exc_info=True,
             )
             return terminal
-        # An already-configured owner unlocks no first-run gate, so nothing
-        # above closed the surface they saved from. Web's modal carries a ✕ and
-        # Android has system Back, but an Apple surface is a full screen with
-        # neither — leaving it up strands the user on a form whose work is
-        # already committed. Mirrors the chrome handler's non-operation path.
         if not unlocked and work.frame.action == "chrome_llm_save":
             try:
                 from orchestrator.chrome_events import is_native_sdui, push_close
@@ -8793,26 +7706,8 @@ class Orchestrator:
         context: ConnectionContext,
         work: _ConnectionOperation,
     ) -> bool:
-        """Run admitted Save without depending on a still-live UI session.
-
-        The authenticated owner/principal were captured before admission.  A
-        disconnect may remove ``ui_sessions[websocket]`` immediately after
-        drain, so routing reconnectable work back through the connection auth
-        gate would incorrectly turn an accepted Save into a no-op.  This keeps
-        the same shared validation/probe/store handler while extracting only
-        the already-admitted LLM surface payload.
-        """
-
         from llm_config.ws_handlers import LLMConfigOperationFailure, handle_llm_config_set
 
-        # Feature 089 (US7/FR): the data-sharing acknowledgment gate lives in the
-        # surface handlers, but a credential save does not reach them -- it is
-        # admitted as a durable operation and executed here instead, which is the
-        # path the real web client takes. Without this the gate never ran for an
-        # ordinary browser save: a never-acknowledged user could store provider
-        # credentials, and the endpoint probe reached the provider first. Both
-        # credential actions travel this path, so both are gated here, before any
-        # key is resolved and before any provider request is made.
         from orchestrator.projection_surfaces.llm import _require_acknowledgment
 
         blocked = await _require_acknowledgment(
@@ -8824,10 +7719,6 @@ class Orchestrator:
                     else "the LLM provider"),
         )
         if blocked is not None:
-            # Refusing is not enough on its own: this dialog cannot be
-            # dismissed, so a refusal with no explanation is a dead end. Put the
-            # inline message back on the surface the way the surface handler
-            # does, then fail the operation.
             try:
                 from orchestrator.chrome_events import _render_surface, _roles
                 from orchestrator.projection_surfaces.llm import (
@@ -8847,10 +7738,6 @@ class Orchestrator:
                 from orchestrator import llm_gate
 
                 if llm_gate.is_gated(self, context.websocket):
-                    # The first-run dialog is mandatory. Re-pushing the
-                    # ordinary settings surface here would quietly turn a
-                    # dialog the person cannot dismiss into one they can,
-                    # and drop what they had typed.
                     await llm_gate.push_setup_dialog(
                         self,
                         context.websocket,
@@ -8924,8 +7811,6 @@ class Orchestrator:
 
     @asynccontextmanager
     async def _workspace_mutation_lock(self, chat_id: str):
-        """Serialize one chat's logical canvas updates, re-entrantly per task."""
-
         held = _WORKSPACE_MUTATION_LOCKS.get()
         if chat_id in held:
             yield
@@ -8943,8 +7828,6 @@ class Orchestrator:
         context: ConnectionContext,
         work: _ConnectionOperation,
     ) -> str | None:
-        """Resolve and validate the exact active chat for a canvas mutation."""
-
         chat_id = work.frame.chat_id
         payload = work.frame.parsed.get("payload")
         if not isinstance(payload, dict):
@@ -8999,8 +7882,6 @@ class Orchestrator:
         *,
         websocket: Any | None = None,
     ) -> None:
-        """Run an admitted UI frame, atomically publishing canvas mutations."""
-
         execution_websocket = (
             context.websocket if websocket is None else websocket
         )
@@ -9009,9 +7890,6 @@ class Orchestrator:
             return
         chat_id = await self._conversation_mutation_chat_id(context, work)
         if chat_id is None:
-            # The existing action handler emits its normal bounded validation
-            # error.  No persistence method may mutate a revisioned chat
-            # without the stage established below.
             await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
         user_id = work.owner.owner_user_id or "legacy"
@@ -9076,8 +7954,6 @@ class Orchestrator:
         user_id: str,
         mutation: Any,
     ) -> Any:
-        """Atomically run a REST/server canvas mutation and notify live clients."""
-
         if not callable(mutation):
             raise TypeError("mutation must be callable")
         stage = None
@@ -9128,8 +8004,6 @@ class Orchestrator:
         context: ConnectionContext,
         work: _ConnectionOperation,
     ) -> None:
-        """Durably publish a generic phase for any accepted two-second task."""
-
         if work.frame.operation_kind == "llm_credential_save":
             return
         await asyncio.sleep(OPERATION_PROGRESS_PHASE_SECONDS)
@@ -9187,12 +8061,8 @@ class Orchestrator:
 
         async def _execute() -> None:
             nonlocal connection_operation_context, renewal_task, terminal_operation
-            # Wait before claiming an execution slot. Claiming first could
-            # deadlock a small pool when a later writer occupies the only slot
-            # while waiting for an earlier reader that has not yet claimed.
+            # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
-                # Retiring a read must not cancel the earlier mutation's shared
-                # lane future. That mutation retains its own execution lifetime.
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
                                 if (work.frame.work_read is not None or (work.frame.human_request is not None
                                     and work.frame.human_request.purpose == "metadata"))
@@ -9336,8 +8206,6 @@ class Orchestrator:
                     work.runtime_websocket = None
                 work.auth_claims.clear()
                 if work.frame.human_request is not None:
-                    # A task inheriting the private context cannot extend the
-                    # metadata handler lifetime through terminal delivery waits.
                     work.frame.human_request.close()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
             voice_rejection = connection_operation_context.get(
@@ -9433,8 +8301,6 @@ class Orchestrator:
                 ),
             )
         except StaleExecutionFenceError:
-            # A watchdog/lease successor may already own the first terminal.
-            # Reconcile that durable winner; never replace it with late success.
             try:
                 projection = await self._call_work_admission(
                     self.work_admission.query_operation,
@@ -9450,9 +8316,6 @@ class Orchestrator:
                 )
         except Exception:
             if work.frame.human_request is not None:
-                # With the traceback swallowed, a settings dialog that refused
-                # to open left nothing behind but this line. It carries no
-                # request content — the frame is not logged, only the failure.
                 logger.warning("Metadata request failed operation_id=%s",
                                work.operation_id, exc_info=True)
             else:
@@ -9468,10 +8331,6 @@ class Orchestrator:
                 safe_summary="Operation failed",
             )
         finally:
-            # The execution body has exited. Stop its progress and lease
-            # observers before reconciliation and terminal speech; otherwise
-            # a final stale renewal can cancel this runner halfway through the
-            # exact-turn voice transition.
             progress_task.cancel()
             await asyncio.gather(progress_task, return_exceptions=True)
             stop_renewal.set()
@@ -9498,9 +8357,6 @@ class Orchestrator:
                     "voice_terminal_finalization_unavailable",
                     exc_info=True,
                 )
-            # The admission-pump done callback is a second cleanup fence, but
-            # the runner itself must scrub authority even when cancellation
-            # lands before the inner execution context is established.
             runtime_websocket = work.runtime_websocket
             if runtime_websocket is not None:
                 self.ui_sessions.pop(runtime_websocket, None)
@@ -9521,8 +8377,6 @@ class Orchestrator:
         context: ConnectionContext,
         work: _ConnectionOperation,
     ) -> None:
-        """Evict a terminal local final and erase its transient text material."""
-
         if work.frame.parsed.get("type") != "voice_local_final":
             return
         context.operations.pop(work.operation_id, None)
@@ -9675,9 +8529,6 @@ class Orchestrator:
                         human_lookup_eligible=False,
                     )
             elif registration_task.done():
-                # Invalid auth deliberately sets the legacy event so old
-                # fire-and-forget waiters can recover.  The finite connection
-                # scope keeps it closed until a valid retry succeeds.
                 registered_event.clear()
             return True
         if control == "close":
@@ -9722,10 +8573,7 @@ class Orchestrator:
             "voice_local_recognition_failed",
             "voice_local_playout_event",
         }:
-            # Playout is authenticated, content-free control evidence.  It
-            # bypasses UI-action dispatch and durable operation admission.
-            # Keep it inline so per-connection sequence/rate checks cannot be
-            # reordered and a client cannot allocate unbounded control tasks.
+            # Kept inline: avoids unbounded per-message task growth
             await self._run_ui_control(context, raw)
             return True
         await self._enqueue_connection_frame(context, raw, parsed)
@@ -9771,8 +8619,6 @@ class Orchestrator:
         context: ConnectionContext,
     ) -> None:
         if context.closing:
-            # The first caller owns drain; a repeated caller only waits for the
-            # context to disappear from the active map.
             return
         drain_started = time.monotonic()
         context.closing = True
@@ -9802,8 +8648,6 @@ class Orchestrator:
             if work.owner.owner_scope is not OwnerScope.CONNECTION
         )
         for work in reconnectable_work:
-            # USER-owned Save continues; only this disconnected status viewer
-            # is removed. Durable operation/submission GETs remain available.
             work.subscribers.pop(id(context), None)
         reconnectable_tasks = {
             work.task
@@ -9913,9 +8757,6 @@ class Orchestrator:
                 task.cancel()
             for task in pending - set(pending_operations):
                 task.cancel()
-            # Give the forced cancellation a bounded scheduler turn to unwind;
-            # durable fences are already terminal, so any survivor cannot
-            # publish a late effect.
             for _ in range(3):
                 if all(task.done() for task in pending):
                     break
@@ -9952,8 +8793,6 @@ class Orchestrator:
                 )
 
     async def _safe_handle_ui_message(self, websocket, message: str):
-        """Compatibility wrapper using structural registration detection."""
-
         try:
             frame = self._parsed_ui_frame(message)
             if self._ui_control_kind(frame) != "register_ui":
@@ -9976,8 +8815,6 @@ class Orchestrator:
         websocket: Any,
         event: VoicePlayoutEvent,
     ) -> bool:
-        """Route one authenticated observation without audit or task creation."""
-
         session_claims = getattr(self, "ui_sessions", {}).get(websocket) or {}
         user_id = session_claims.get("sub")
         binding = getattr(self, "_voice_control_bindings", {}).get(
@@ -10035,8 +8872,6 @@ class Orchestrator:
         reason: str,
         retry_policy: str,
     ) -> None:
-        """Persist and echo one bounded pre-acceptance voice disposition."""
-
         services = getattr(self, "voice_services", None)
         turn = None
         worker_text_cleared = False
@@ -10160,8 +8995,6 @@ class Orchestrator:
             try:
                 guidance_scheduler(turn, reason=reason)
             except Exception:
-                # A visible rejection and cleared worker transcript remain
-                # terminal even if the bounded speech task cannot be started.
                 logger.debug(
                     "Voice pre-acceptance guidance could not be scheduled",
                     exc_info=True,
@@ -10176,8 +9009,6 @@ class Orchestrator:
         chat_id: str,
         message: str,
     ) -> _VoiceDispatchContext | None:
-        """Verify one proof-bound final before it enters ordinary chat."""
-
         origin = msg.voice_origin
         if origin is None:
             return None
@@ -10311,13 +9142,9 @@ class Orchestrator:
         self,
         websocket: Any,
     ) -> tuple[Any, str, Any, int]:
-        """Resolve only the current authenticated origin socket authority."""
-
         origin_socket = getattr(websocket, "_origin", websocket)
         claims = getattr(self, "ui_sessions", {}).get(origin_socket)
         if claims is None:
-            # During a durable operation the verified claims live on the
-            # execution socket, while currentness still comes from the origin.
             claims = getattr(self, "ui_sessions", {}).get(websocket)
         user_id = claims.get("sub") if isinstance(claims, dict) else None
         binding = getattr(self, "_voice_control_bindings", {}).get(
@@ -10489,8 +9316,6 @@ class Orchestrator:
         websocket: Any,
         frame: VoiceLocalFinal,
     ) -> None:
-        """Admit a local final and enter the exact ordinary chat handler."""
-
         origin, user_id, _binding, current_socket_id = (
             self._client_local_socket_authority(websocket)
         )
@@ -10582,8 +9407,6 @@ class Orchestrator:
             raise
 
     async def publish_voice_local_announcement(self, frame: Any) -> None:
-        """Deliver one server-authorized local announcement to its exact socket."""
-
         services = getattr(self, "voice_services", None)
         if services is None:
             raise VoiceControlBindingError("invalid_binding")
@@ -10689,7 +9512,6 @@ class Orchestrator:
         del origin
 
     async def handle_ui_message(self, websocket, message: str):
-        """Handle message from a UI client."""
         raw_frame: dict[str, Any] | None = None
         try:
             raw_frame = self._parsed_ui_frame(message)
@@ -10709,10 +9531,6 @@ class Orchestrator:
             try:
                 msg = Message.from_json(message)
             except ProtocolValidationError:
-                # Authenticate/register the UI normally, but refuse only its
-                # malformed optional host capability with the exact safe v3
-                # envelope. This preserves the existing non-disclosing auth
-                # path while ensuring malformed host data never gains a session.
                 if not (
                     isinstance(raw_frame, dict)
                     and raw_frame.get("type") == "register_ui"
@@ -10734,8 +9552,6 @@ class Orchestrator:
                 await self._handle_voice_local_recognition_started(websocket, msg)
                 return
             if isinstance(msg, VoiceLocalRecognitionFailed):
-                # The durable turn remains content-free. A failure abandons
-                # only its exact pre-acceptance binding and never dispatches.
                 origin, user_id, _binding, _current = (
                     self._client_local_socket_authority(websocket)
                 )
@@ -10773,29 +9589,19 @@ class Orchestrator:
                 token = msg.token
                 user_data = None
 
-                # Check for token validation (skip if not configured or in debug/dev mode if desired, but we want security)
                 if token:
                     with perf_span("register_ui.validate"):
                         user_data = await self.validate_token(token)
 
                 if user_data:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
-                    user_data["_raw_token"] = token  # Store raw token for RFC 8693 delegation
-                    # 076: the client's declared capability strings, so a
-                    # surface can tell a host-capable desktop from a phone.
+                    user_data["_raw_token"] = token
                     user_data["_client_capabilities"] = [
                         str(c) for c in (getattr(msg, "capabilities", None) or []) if isinstance(c, str)]
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
-                        # A reused socket must not carry a former owner's raw
-                        # canvas into the new registration's viewport fallback.
                         self.rote.cleanup(websocket)
                     self.ui_sessions[websocket] = user_data
-                    # A structured v3 advertisement is validated against the
-                    # packaged runtime contract and receives a server-owned host
-                    # session before it becomes eligible. The legacy boolean is
-                    # retained only for feature-058 compatibility tests/clients;
-                    # it never participates in v3 selection or delivery.
                     _hosts = getattr(self, "_agent_host_sockets", None)
                     if _hosts is not None:
                         if invalid_host_field is not None:
@@ -10819,9 +9625,6 @@ class Orchestrator:
                                 getattr(msg, "host_session_id", "") or "")
                         else:
                             _hosts.pop(id(websocket), None)
-                    # 076: a desktop whose owner switched on "Allow remote
-                    # control" announces itself. Ignored entirely with the flag
-                    # off (FR-004); owner = the verified session sub (FR-002).
                     _ch = getattr(msg, "computer_host", None)
                     if _ch is not None and flags.is_enabled("computer_use"):
                         await self._register_computer_host(
@@ -10831,10 +9634,6 @@ class Orchestrator:
                     _resume_requested = getattr(msg, "resume", None) is not None
                     _resume_confirmed_not_found = False
 
-                    # Feature 065: voice mutations require a fresh bearer
-                    # scoped to this authenticated subject, stable device, and
-                    # fenced connection. Failure disables voice for this
-                    # socket without weakening ordinary typed chat.
                     if msg.device_id is not None:
                         try:
                             await self._issue_voice_control_binding(
@@ -10848,15 +9647,10 @@ class Orchestrator:
                                 exc.code,
                             )
 
-                    # Feature 052 (FR-012): profile save + login audit events
-                    # leave the first-paint critical path. One task keeps the
-                    # two auth events in order (the recorder then serializes
-                    # per user), and the profile upsert runs off-loop.
                     asyncio.create_task(
                         asyncio.to_thread(self._save_user_profile, user_data))
 
                     async def _record_register_audit(claims=user_data, m=msg):
-                        """Emit ws_register then the 016 entry-point action, in order."""
                         try:
                             from audit.hooks import record_auth_event
                             await record_auth_event(
@@ -10880,28 +9674,18 @@ class Orchestrator:
 
                     asyncio.create_task(_record_register_audit())
 
-                    # Feature 052 (FR-012): the handshake's independent reads
-                    # run concurrently while the frames below go out.
                     _prefs_task = asyncio.create_task(asyncio.to_thread(
                         self._load_user_preferences, user_id))
                     _tools_task = asyncio.create_task(asyncio.to_thread(
                         self.compute_tools_available_for_user, user_id))
 
-                    # Feature 054: register_ui.llm_config is accepted-and-
-                    # ignored (wire compatibility with pre-054 clients). The
-                    # server-persisted user_llm_config record is authoritative;
-                    # the gate predicate below reads it directly.
                     if getattr(msg, "llm_config", None):
                         logger.debug(
                             "register_ui.llm_config ignored (054: server "
                             "persistence is authoritative)")
-                    # The mandatory first-run gate needs the predicate before
-                    # the welcome render; resolve it concurrently with the
-                    # other handshake reads.
                     _llm_gate_task = asyncio.create_task(
                         self.llm_configured_for(user_data.get("sub", "")))
 
-                    # ROTE: register device capabilities and send profile back
                     device_info = msg.device or {}
                     rote_profile = self.rote.register_device(websocket, device_info)
                     await self._safe_send(websocket, json.dumps({
@@ -10910,15 +9694,8 @@ class Orchestrator:
                         "speech_server_available": self.speech_server_available(),
                     }))
 
-                    # Feature 042: native SDUI clients (Windows/Android) render
-                    # their top bar + settings menu from the single server-owned
-                    # chrome model. Push it right after the handshake (the web
-                    # shell already renders the SAME model server-side, so it
-                    # neither needs nor receives this frame — Constitution XII).
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
-                        # Wrist receives only the explicit shared Work projection;
-                        # it does not join the general native chrome surface set.
                         if _dt in ("windows", "android", "ios", "macos") or (
                             _dt == "watch" and isinstance(user_data.get("_client_capabilities"), list)
                             and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
@@ -10931,8 +9708,6 @@ class Orchestrator:
                             _roles = list((user_data.get("realm_access") or {}).get("roles") or [])
                             for _c in (user_data.get("resource_access") or {}).values():
                                 _roles.extend((_c or {}).get("roles") or [])
-                            # Native clients: ADMIN TOOLS is web-only, and
-                            # "Take the tour" is web-only (feature 043).
                             _menu = menu_model_dict(
                                 _roles, include_admin=False, include_tour=False,
                                 **projection_native_chrome_availability(user_data),
@@ -10940,14 +9715,11 @@ class Orchestrator:
                             if _dt == "watch":
                                 _menu = project_watch_menu_model(_menu)
                             await self._safe_send(websocket, ChromeMenu(model=_menu).to_json())
-                    except Exception as _e:  # pragma: no cover — non-fatal push
+                    except Exception as _e:  # pragma: no cover
                         logger.debug(f"chrome_menu push failed (non-fatal): {_e}")
 
-                    # Dashboard build starts only after rote_config is on the
-                    # wire so clients keep seeing their device profile first.
                     _dash_task = asyncio.create_task(self.send_dashboard(websocket))
 
-                    # Send stored user preferences (theme, etc.)
                     with perf_span("register_ui.reads", user=user_id):
                         try:
                             prefs = await _prefs_task
@@ -10973,11 +9745,6 @@ class Orchestrator:
                         except Exception:
                             _tools_avail = True
 
-                    # Feature 060: resolve a fenced account-scoped locator
-                    # before registration opens its queued work or welcome can
-                    # paint. A transient failure preserves the locator and
-                    # suppresses welcome; an owner-scoped miss uses the same
-                    # non-disclosing not-found result as an explicit load.
                     if _resume_requested:
                         resume = msg.resume or {}
                         resume_chat_id = resume["active_chat_id"]
@@ -11033,16 +9800,10 @@ class Orchestrator:
                                 ),
                             )
 
-                    # Mark registration complete only after the requested
-                    # locator has been owner-validated and resolved.
                     evt = self._registered_events.get(id(websocket))
                     if evt:
                         evt.set()
 
-                    # Feature 065: publish the server-owned composer only
-                    # after resume ownership has been resolved. A bounded
-                    # refresh catches the worker becoming ready shortly after
-                    # backend startup without making typed chat wait.
                     if (
                         msg.device_id is not None
                         and msg.connection_generation is not None
@@ -11058,20 +9819,10 @@ class Orchestrator:
                             ),
                         )
 
-                    # Feature 054: mandatory first-run provider-setup gate.
-                    # An unconfigured user's very first post-login surface is
-                    # the setup dialog — pushed HERE, before the welcome
-                    # render, and the welcome is suppressed until setup
-                    # completes (spec FR-013/FR-016). The push itself is
-                    # behind the FF_LLM_FIRST_RUN kill switch; the server-
-                    # side REFUSALS (chat pre-flight, chrome gate) are
-                    # structural and remain with the flag off. The watch is
-                    # excluded by design (chrome-free) — it gets spoken
-                    # guidance on AI use instead (FR-017).
                     _llm_gated = False
                     try:
                         _llm_configured = await _llm_gate_task
-                    except Exception:  # pragma: no cover — fail open to welcome
+                    except Exception:  # pragma: no cover
                         logger.warning("llm gate predicate failed", exc_info=True)
                         _llm_configured = True
                     if not _llm_configured and self._ff_llm_first_run:
@@ -11084,19 +9835,11 @@ class Orchestrator:
                                 await llm_gate.push_setup_dialog(
                                     self, websocket, user_id)
                                 _llm_gated = True
-                        except Exception:  # non-fatal — refusals still gate
+                        except Exception:
                             logger.warning(
                                 "first-run LLM dialog push failed (refusals "
                                 "still enforce the gate)", exc_info=True)
 
-                    # 055 bg-continuity: a reconnecting client that carries its
-                    # active chat id (RegisterUI.session_id) resumes that
-                    # chat's server context without waiting for a load_chat —
-                    # active-chat marker (which also suppresses the welcome
-                    # canvas below), stream subscriptions, and a replay of any
-                    # in-flight background task. Ownership-validated; an
-                    # invalid/foreign id is ignored silently (register still
-                    # succeeds).
                     if (
                         not _resume_requested
                         and msg.session_id
@@ -11117,10 +9860,6 @@ class Orchestrator:
                             logger.debug("register_ui chat resume failed (non-fatal)",
                                          exc_info=True)
 
-                    # Initial canvas: server-driven welcome examples when this
-                    # socket has no chat to resume — ordinary astralprims
-                    # components over the normal ui_render path (Constitution
-                    # II: ROTE adapts them per device; nothing client-specific).
                     try:
                         if (
                             not _llm_gated
@@ -11131,19 +9870,12 @@ class Orchestrator:
                             )
                         ):
                             from orchestrator.welcome import welcome_components
-                            # Feature 030: tell the welcome canvas whether any
-                            # tools are dispatchable so it can lead with the
-                            # enable-agents consent card instead of promising
-                            # examples that would silently degrade to text.
-                            # speak=False: chrome, not a conversation turn —
-                            # a watch must not narrate the welcome canvas on
-                            # every (re)connect.
                             with perf_span("welcome.render", user=user_id):
                                 await self.send_ui_render(
                                     websocket, welcome_components(tools_available=_tools_avail),
                                     speak=False)
                             self._ws_welcome[id(websocket)] = True
-                    except Exception as _e:  # non-fatal — an empty canvas is fine
+                    except Exception as _e:
                         logger.debug(f"welcome canvas render failed (non-fatal): {_e}")
 
                     try:
@@ -11151,9 +9883,6 @@ class Orchestrator:
                     except Exception:
                         logger.warning("register_ui dashboard delivery failed", exc_info=True)
 
-                    # 055 bg-continuity late-connect catch-up: in-flight tasks
-                    # replay as task_started; completed-but-unnotified ones as
-                    # task_completed (marked notified after delivery).
                     if flags.is_enabled("bg_continuity"):
                         await self._replay_user_tasks(websocket, user_id)
                     logger.info(
@@ -11161,12 +9890,6 @@ class Orchestrator:
                         int((time.monotonic() - _register_started) * 1000), user_id)
                 else:
                     logger.warning("UI registration failed: Invalid or missing token")
-                    # Feature 016 (FR-015): When the client said it was
-                    # silently resuming (resumed=True) but the server
-                    # rejected the token, record auth.session_resume_failed
-                    # so the audit log captures the failure. Best-effort
-                    # attribution via base64-decode of the JWT payload; on
-                    # failure record as anonymous.
                     try:
                         resumed_flag = bool(getattr(msg, "resumed", False))
                         if resumed_flag:
@@ -11210,15 +9933,9 @@ class Orchestrator:
                                     ))
                     except Exception as _e:
                         logger.debug(f"session_resume_failed audit record failed: {_e}")
-                    # Ungate waiting tasks so they hit the auth check naturally
                     evt = self._registered_events.get(id(websocket))
                     if evt:
                         evt.set()
-                    # Feature 028 (FR-009, research D4): replace the dead-end
-                    # error Alert with a recoverable auth_required signal. The
-                    # client re-fetches /auth/session (which silently
-                    # refreshes server-side) and retries register_ui, or
-                    # redirects to /auth/login when the session is truly gone.
                     from shared.protocol import AuthRequired
                     reason = "invalid"
                     if token:
@@ -11238,8 +9955,6 @@ class Orchestrator:
                 await self._handle_voice_playout_event(websocket, msg)
 
             elif msg.type in ("llm_config_set", "llm_config_clear"):
-                # Feature 006-user-llm-config: per-user LLM credential
-                # set/clear over WS. Both require an authenticated socket.
                 if websocket not in self.ui_sessions:
                     await self._safe_send(websocket, json.dumps({
                         "type": "error",
@@ -11269,8 +9984,6 @@ class Orchestrator:
                         recorder=self.audit_recorder,
                     )
                     if saved:
-                        # Feature 054: a successful save unblocks every one
-                        # of the user's gated sockets (FR-015).
                         try:
                             from orchestrator import llm_gate
                             await llm_gate.unlock_after_save(self, actor_user_id)
@@ -11286,8 +9999,6 @@ class Orchestrator:
                         recorder=self.audit_recorder,
                     )
                     if removed:
-                        # Feature 054: clearing re-gates immediately — there
-                        # is no default to revert to (FR-009/FR-013).
                         try:
                             from orchestrator import llm_gate
                             await llm_gate.regate_after_clear(self, actor_user_id)
@@ -11309,16 +10020,6 @@ class Orchestrator:
                         work_read.assert_request(
                             self, websocket, work_read.owner_id, msg.request_generation,
                         )
-                # The _registered_events gate guarantees register_ui has already
-                # resolved before any ui_event runs. So an unauthenticated socket
-                # here means register_ui FAILED — and that path already sent the
-                # recoverable `auth_required` frame that drives the client's
-                # silent re-auth (028 FR-009 D4). A concurrently-gated ui_event
-                # (e.g. the client's initial get_history) arriving in that
-                # cold-boot window must NOT paint a dead-end "Unauthorized" alert:
-                # it is stale the instant re-auth succeeds and the query works.
-                # Drop it silently; the client re-sends its ui_events after the
-                # auth_required-driven reconnect.
                 if websocket not in self.ui_sessions:
                     logger.debug(
                         "Dropping pre-auth ui_event %r; register_ui already "
@@ -11330,7 +10031,6 @@ class Orchestrator:
                 if human_caller is not None:
                     user_id = human_caller.owner_id
 
-                # Audit: record the WS UI action in the user's audit log
                 try:
                     from audit.hooks import record_ws_action
                     _audit_payload = {} if human_caller is not None else (msg.payload or {})
@@ -11342,11 +10042,7 @@ class Orchestrator:
                         msg.action == "chat_message"
                         and isinstance(_voice_audit_origin, dict)
                     ):
-                        # The final transcript already follows the ordinary
-                        # message-retention policy.  Do not create a second
-                        # PHI-bearing copy (or retain its digest/proof) in WS
-                        # audit metadata; only immutable correlation fences
-                        # are operationally necessary here (065 FR-046/047).
+                        # Only safe voice_origin fields; never the message content
                         _audit_payload = {
                             "voice_origin": {
                                 key: _voice_audit_origin.get(key)
@@ -11383,12 +10079,6 @@ class Orchestrator:
                     voice_origin = msg.voice_origin
                     if voice_origin is None:
                         await self._retire_welcome_canvas(websocket)
-                    # Feature 013 / FR-018, FR-024: in-chat tool picker
-                    # selection narrows the orchestrator's tool list. None
-                    # / absent ≡ no narrowing (existing default behavior).
-                    # An empty list reaching this point is a defensive
-                    # case (UI gate FR-021 should have blocked send) —
-                    # logged at WARN below in handle_chat_message.
                     selected_tools_raw = msg.payload.get("selected_tools")
                     if selected_tools_raw is None or selected_tools_raw == "":
                         selected_tools = None
@@ -11426,20 +10116,10 @@ class Orchestrator:
                         if voice_dispatch is None:
                             return
                         user_message = voice_dispatch.admission.canonical_text
-                    # If no chat_id provided, create one for ordinary typed
-                    # chat only. Voice is permanently bound to its recognized
-                    # origin and may never resurrect a deleted destination.
                     elif not chat_id:
                         chat_id = await asyncio.to_thread(
                             self.history.create_chat, user_id=user_id)
-                        # 066: the durable operation was admitted BEFORE this
-                        # conversation existed (no chat id at ingress) — bind
-                        # the chat it just created so the publication fences
-                        # keep strict identity semantics. Scoped to the only
-                        # branch that creates a chat; voice is permanently
-                        # bound to its origin and never reaches here.
                         await self._adopt_operation_chat(chat_id)
-                        # Inform UI about new chat ID
                         await self._safe_send(websocket, json.dumps({
                             "type": "chat_created",
                             "payload": {"chat_id": chat_id, "from_message": True}
@@ -11449,17 +10129,12 @@ class Orchestrator:
                                 self.history.get_chat, chat_id, user_id=user_id):
                             await asyncio.to_thread(
                                 self.history.create_chat, chat_id, user_id=user_id)
-                            # Same 066 adoption: a client-supplied id whose
-                            # conversation did not exist yet.
                             await self._adopt_operation_chat(chat_id)
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_created",
                                 "payload": {"chat_id": chat_id, "from_message": True}
                             }))
 
-                    # Feature 028: chat_message also marks this socket's active
-                    # chat (pre-028 only load_chat did) so workspace upserts in
-                    # brand-new chats reach the originating tab's siblings too.
                     if voice_origin is None:
                         self._ws_active_chat[id(websocket)] = chat_id
 
@@ -11470,15 +10145,9 @@ class Orchestrator:
                         else msg.payload.get("async_mode", False)
                     )
 
-                    # Feature 031: structured attachment references staged on
-                    # this turn. Each entry: {attachment_id, filename, category}.
-                    # Validated for ownership inside handle_chat_message; absent
-                    # / non-list ≡ no attachments (backward compatible).
                     attachments_raw = msg.payload.get("attachments")
                     attachments = attachments_raw if isinstance(attachments_raw, list) else None
 
-                    # 020-async-queries: if async_mode is True, dispatch as
-                    # a background task instead of blocking the WS.
                     if async_mode:
                         await self._dispatch_async_chat(
                             websocket, user_message, chat_id, display_message,
@@ -11487,8 +10156,6 @@ class Orchestrator:
                         )
                     else:
                         self.cancelled_sessions[id(websocket)] = False
-                        # Use serialized wrapper so concurrent chat messages
-                        # for the same session are processed one at a time.
                         await self._serialized_chat(
                             websocket, user_message, chat_id, display_message,
                             user_id=user_id, draft_agent_id=draft_agent_id,
@@ -11498,15 +10165,11 @@ class Orchestrator:
 
                 elif msg.action == "cancel_task":
                     self.cancelled_sessions[id(websocket)] = True
-                    # Feature 014 (FR-020/021): mark every in-flight step as
-                    # cancelled so the persistent step trail reflects user
-                    # intent immediately. Best-effort — late-arriving tool
-                    # results are dropped via recorder.is_terminal() checks.
                     recorder = self._chat_recorders.get(id(websocket))
                     if recorder is not None:
                         try:
                             await recorder.cancel_all_in_flight()
-                        except Exception:  # pragma: no cover — defensive
+                        except Exception:  # pragma: no cover
                             logger.debug("cancel_all_in_flight failed", exc_info=True)
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",
@@ -11515,13 +10178,11 @@ class Orchestrator:
                     }))
 
                 elif msg.action == "watch_task":
-                    # 020-async-queries: subscribe to task completion notifications
                     task_id = msg.payload.get("task_id")
                     if task_id:
                         bg_task = await self.async_task_manager.get(task_id)
                         if bg_task:
                             task_status = bg_task._canonical_status()
-                            # If already completed, notify immediately
                             if task_status.value in (
                                 "completed",
                                 "failed",
@@ -11550,7 +10211,6 @@ class Orchestrator:
                         }))
 
                 elif msg.action == "component_feedback":
-                    # Feature 004 — submit feedback for a rendered component.
                     from feedback.ws_handlers import handle_component_feedback
                     claims = self.ui_sessions.get(websocket) or {}
                     auth_principal = claims.get("preferred_username") or claims.get("sub") or "unknown"
@@ -11598,7 +10258,6 @@ class Orchestrator:
                     await self.send_agent_list(websocket)
 
                 elif msg.action == "register_external_agent":
-                    # Register an external A2A agent by URL (entered by user in frontend)
                     agent_url = msg.payload.get("url", "").strip().rstrip("/")
                     if not agent_url:
                         await self.send_ui_render(websocket, [
@@ -11628,23 +10287,15 @@ class Orchestrator:
                             }))
 
                 elif msg.action == "agent_tunnel":
-                    # 058 (BYO agents, Mode 1 transport): a user's desktop-hosted
-                    # agent tunnels its frames over the owner's authenticated UI
-                    # socket. Unwrap and route to the agent-message router.
                     await self._handle_agent_tunnel(websocket, msg)
 
                 elif msg.action == "computer_response":
-                    # 076: a computer host answering a computer_request push.
                     await self._handle_computer_response(websocket, msg)
 
                 elif msg.action == "computer_event":
-                    # 076: host-side lifecycle (announce/withdraw/paused/resumed/
-                    # stopped/heartbeat) from a computer host.
                     await self._handle_computer_event(websocket, msg)
 
                 elif msg.action == "get_history":
-                    # Feature 037: show the server-driven skeleton while the
-                    # recent-chats query runs, then push the rendered list.
                     await self._push_history_surface(websocket, loading=True)
                     chats = await asyncio.to_thread(
                         self.history.get_recent_chats, user_id=user_id)
@@ -11659,11 +10310,6 @@ class Orchestrator:
                     chat = await asyncio.to_thread(
                         self.history.get_chat, chat_id, user_id=user_id)
                     if chat:
-                        # 001-tool-stream-ui (US2 T042): pause any push
-                        # streams this websocket has in its previous chat
-                        # before sending chat_loaded. The streams transition
-                        # to DORMANT and become eligible for US3 resume on
-                        # return.
                         ws_id = id(websocket)
                         old_chat_id = self._ws_active_chat.get(ws_id)
                         if old_chat_id and old_chat_id != chat_id and self.stream_manager is not None:
@@ -11672,22 +10318,13 @@ class Orchestrator:
                             except Exception as e:
                                 logger.warning(f"pause_chat failed: {e}")
                         self._ws_active_chat[ws_id] = chat_id
-                        # Loading a chat replaces the canvas — the welcome
-                        # blank-on-first-message must not fire afterwards.
                         self._ws_welcome.pop(ws_id, None)
-                        # Feature 028 (FR-031/FR-032): switching chats ends any
-                        # historical timeline view — the new chat opens live,
-                        # and the client is told so its banner/mode clears.
                         if self._ws_timeline_mode.pop(ws_id, None):
                             await self._safe_send(websocket, json.dumps({
                                 "type": "workspace_timeline_mode",
                                 "active": False,
                             }))
 
-                        # Feature 060: the atomic snapshot is the authoritative
-                        # load completion. The bounded chat_loaded/ui_render
-                        # pair below remains compatibility-only and is scoped
-                        # as a disposable overlay for 060 clients.
                         load_authority = self._conversation_authority(
                             _CONNECTION_OPERATION_CONTEXT.get(), websocket
                         )
@@ -11749,15 +10386,7 @@ class Orchestrator:
                                 )
                                 return
 
-                        # Feature 028 (FR-028) + 045: component-bearing transcript
-                        # messages get a server-rendered html form, but the chat
-                        # rail is TEXT ONLY — only text primitives render; rich
-                        # components (tables/charts/metrics) are dropped here and
-                        # shown on the canvas, which re-hydrates from the
-                        # workspace below. A message with no text-only content
-                        # gets no html (the client renders no bubble for it).
                         def _hydrate_loaded_chat():
-                            """Render transcript HTML and re-attach chips off the event loop."""
                             try:
                                 canvas_ids = frozenset(
                                     row["component_id"]
@@ -11772,9 +10401,6 @@ class Orchestrator:
                             except Exception:
                                 logger.exception("webrender unavailable for transcript rendering")
 
-                            # Feature 031: re-hydrate per-turn attachment references
-                            # so the client re-renders attachment chips on loaded
-                            # user messages (additive `attachments` field).
                             try:
                                 from orchestrator.attachments.message_attachment_repo import MessageAttachmentRepository
                                 from orchestrator.attachments.repository import AttachmentRepository
@@ -11811,28 +10437,16 @@ class Orchestrator:
                             "chat": chat
                         }))
 
-                        # Feature 028 (FR-027): re-hydrate the persistent
-                        # workspace — the canvas state the user left — as a
-                        # full ui_render after chat_loaded (stream-resume
-                        # precedent below). No capabilities re-run.
                         try:
-                            # Feature 029: materialized arrangements re-hydrate too.
                             ws_components = await asyncio.to_thread(
                                 self._canvas_components, chat_id, user_id)
                             if ws_components:
-                                # speak=False: re-hydration re-presents old
-                                # turns — never re-spoken (FR-030).
                                 await self.send_ui_render(websocket, ws_components, speak=False)
                         except Exception:
                             logger.exception("workspace re-hydration failed for chat %s", chat_id)
 
-                        # Stream re-attachment (dormant resume + active-stream
-                        # attach) — shared with the register_ui session resume
-                        # (055 bg-continuity).
                         await self._resume_chat_streams(websocket, user_id, chat_id)
 
-                        # 055 bg-continuity: a chat with a live background run
-                        # shows the running state to the joining device.
                         if flags.is_enabled("bg_continuity"):
                             await self._replay_chat_task(websocket, chat_id)
                     else:
@@ -11848,7 +10462,6 @@ class Orchestrator:
                         new_chat_context, "connection_generation", None)
 
                     def new_chat_session_is_current():
-                        """Never finish an old request in a replacement session."""
                         return (
                             self.ui_sessions.get(websocket) is new_chat_session
                             and self._get_user_id(websocket) == user_id
@@ -11859,9 +10472,6 @@ class Orchestrator:
                             and not getattr(new_chat_context, "closing", False)
                         )
 
-                    # Sync DB write off the event-loop thread (feature 052);
-                    # first driven under LOOP_GUARD_ENFORCE by the Bug-A
-                    # regression test.
                     try:
                         chat_id = await asyncio.to_thread(
                             self.history.create_chat, user_id=user_id)
@@ -11871,18 +10481,9 @@ class Orchestrator:
                         raise
                     if not new_chat_session_is_current():
                         return
-                    # A fresh welcome has no conversation fence. Retire only
-                    # this socket's old view before rendering; durable work
-                    # and other sockets stay bound to their existing chats.
                     getattr(self, "_conversation_scopes", {}).pop(id(websocket), None)
                     getattr(self, "_ws_active_chat", {}).pop(id(websocket), None)
                     getattr(self, "_ws_timeline_mode", {}).pop(id(websocket), None)
-                    # 066 (FR-024): a fresh chat greets with the welcome
-                    # examples exactly like a fresh session — same wel_
-                    # purge-on-first-send rules, never persisted. Sent BEFORE
-                    # chat_created: once the client binds the new chat id,
-                    # loose renders route into the transient reducer and a
-                    # late welcome would be dropped.
                     try:
                         from orchestrator.welcome import welcome_components
                         _tools_avail = await asyncio.to_thread(
@@ -11897,7 +10498,7 @@ class Orchestrator:
                         if not new_chat_session_is_current():
                             return
                         self._ws_welcome[id(websocket)] = True
-                    except Exception as _e:  # non-fatal — an empty canvas is fine
+                    except Exception as _e:
                         logger.debug(f"new-chat welcome render failed (non-fatal): {_e}")
                     if not new_chat_session_is_current():
                         return
@@ -11934,11 +10535,6 @@ class Orchestrator:
                                 "from_message": False,
                             },
                         }))
-                # Feature 054 (FR-014): LLM-dependent workspace/component
-                # verbs are refused server-side while the acting user has no
-                # LLM configuration, regardless of client behavior. (The
-                # combine/condense execution itself runs on the SYSTEM
-                # credential; this gate is about the unconfigured USER.)
                 elif msg.action in ("combine_components", "condense_components",
                                     "component_action") \
                         and user_id \
@@ -11955,13 +10551,9 @@ class Orchestrator:
                               variant="error").to_dict()
                     ], target="chat")
 
-                # Saved components actions
                 elif msg.action in ("save_component", "delete_saved_component",
                                     "combine_components", "condense_components") \
                         and self._ws_timeline_mode.get(id(websocket)):
-                    # Feature 028 (FR-031): historical views are strictly
-                    # read-only — the shipped client makes these unreachable in
-                    # timeline mode, but a raw WS client must be refused too.
                     await self._audit_workspace_denial(
                         user_id, msg.payload.get("chat_id") or "",
                         msg.payload.get("component_id") or "", "timeline_readonly")
@@ -11983,10 +10575,6 @@ class Orchestrator:
                         return
                     
                     try:
-                        # Explicit save is a deprecated alias for a normal
-                        # workspace upsert.  A revisioned canvas accepts only
-                        # semantic component objects; legacy bare rows cannot
-                        # bypass the conversation publication boundary.
                         if not isinstance(component_data, dict):
                             raise ValueError("component_data must be a component object")
                         ops = await self.workspace.aupsert(
@@ -12002,7 +10590,6 @@ class Orchestrator:
                             websocket, chat_id, user_id, ops
                         )
 
-                        # Send success response
                         await self._safe_send(websocket, json.dumps({
                             "type": "component_saved",
                             "component": {
@@ -12015,7 +10602,6 @@ class Orchestrator:
                             }
                         }))
                         
-                        # Broadcast updated chat history (each user gets their own)
                         await self._broadcast_user_history()
 
                     except Exception as e:
@@ -12041,9 +10627,6 @@ class Orchestrator:
                         ])
                         return
 
-                    # Resolve the legacy physical row to its stable workspace
-                    # identity, then remove only from the complete staged
-                    # canvas.  The outer operation publishes that removal.
                     row = await asyncio.to_thread(
                         self.history.get_component_by_id,
                         component_id,
@@ -12090,7 +10673,6 @@ class Orchestrator:
                             except Exception:
                                 logger.debug("workspace remove audit failed", exc_info=True)
 
-                        # Broadcast updated chat history (each user gets their own)
                         await self._broadcast_user_history()
                     else:
                         await self._safe_send(websocket, json.dumps({
@@ -12119,7 +10701,6 @@ class Orchestrator:
                         }))
                         return
                     
-                    # Send progress
                     await self._safe_send(websocket, json.dumps({
                         "type": "combine_status",
                         "status": "combining",
@@ -12168,7 +10749,6 @@ class Orchestrator:
                     agent_id = msg.payload.get("agent_id")
                     if not agent_id:
                         return
-                    # Build available tools list for this agent
                     card = self.agent_cards.get(agent_id)
                     if not card:
                         return
@@ -12206,7 +10786,6 @@ class Orchestrator:
                             user_id, agent_id, tool_overrides_payload
                         )
                     logger.info(f"Scopes updated: user={user_id} agent={agent_id} scopes={scopes}")
-                    # Compute effective per-tool permissions from new scopes + overrides
                     card = self.agent_cards.get(agent_id)
                     available_tools = [s.id for s in card.skills] if card else []
                     permissions = self.tool_permissions.get_effective_permissions(
@@ -12221,12 +10800,6 @@ class Orchestrator:
                         "tool_overrides": tool_overrides
                     }))
 
-                    # Also broadcast an updated dashboard to all UI clients for this user
-                    # so their total tools count updates immediately. Feature 008:
-                    # also re-broadcast agent_list so the per-user
-                    # `tools_available_for_user` flag stays in sync with the new
-                    # permissions — this drives the persistent text-only banner
-                    # (FR-005, FR-007a).
                     for client in self.ui_clients:
                         client_user_id = self._get_user_id(client)
                         if client_user_id == user_id:
@@ -12234,13 +10807,6 @@ class Orchestrator:
                             asyncio.create_task(self.send_agent_list(client))
 
                 elif msg.action == "enable_recommended_agents":
-                    # Feature 030 — one-click consent enable. The click IS the
-                    # explicit user grant (Constitution VII: the system sets
-                    # attenuated scopes automatically; the user may override
-                    # per agent afterwards). Server-side validation: only
-                    # connected, non-draft, PUBLIC agents are eligible and
-                    # ``tools:write`` is never granted. The action is audited
-                    # like every other ui_event (ws.enable_recommended_agents).
                     requested = msg.payload.get("agent_ids")
                     if requested is not None and not (
                         isinstance(requested, list)
@@ -12250,8 +10816,6 @@ class Orchestrator:
                     enabled_now = await asyncio.to_thread(
                         self._enable_recommended_agent_scopes, user_id, requested)
                     if self._ws_welcome.get(id(websocket)):
-                        # Welcome canvas is showing — re-render it so the
-                        # consent card disappears and the examples are live.
                         from orchestrator.welcome import welcome_components
                         await self.send_ui_render(websocket, welcome_components(
                             tools_available=await asyncio.to_thread(
@@ -12272,26 +10836,18 @@ class Orchestrator:
                             asyncio.create_task(self.send_agent_list(client))
 
                 elif msg.action == "schedule_decision":
-                    # Feature 030 — the consent click for a chat-proposed
-                    # scheduled job (audited as ws.schedule_decision plus the
-                    # schedule.* events the handler records).
                     from orchestrator import scheduling_chat
                     await scheduling_chat.handle_decision(
                         self, websocket, user_id, msg.payload or {})
 
                 elif msg.action == "remote_op_decision":
-                    # Feature 063 US3 — the approve/decline click for a proposed
-                    # DESTRUCTIVE remote operation (durable proposal; single-use).
                     from orchestrator import remote_confirmation
                     await remote_confirmation.handle_decision(
                         self, websocket, user_id, msg.payload or {})
 
                 elif msg.action == "update_device":
-                    # ROTE: viewport / capability change from the frontend
                     registration = self.ui_sessions.get(websocket)
                     device_info = msg.payload.get("device") or {}
-                    # Capture the pre-change profile so we can diff the canvas
-                    # adaptation and push only what actually changed.
                     old_profile = self.rote.get_profile(websocket)
                     canonical_cached = self.rote.get_cached_components(websocket) or []
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
@@ -12302,39 +10858,23 @@ class Orchestrator:
                     }))
                     if (self.ui_sessions.get(websocket) is not registration
                             or self._get_user_id(websocket) != user_id):
-                        # The config send yielded to a new registration. Its
-                        # workspace must never receive this captured old view.
                         return
-                    # A device change re-renders the FULL persisted workspace
-                    # from server state. A single-slot _last_components replay
-                    # would wipe all but the most recent fragment once partial
-                    # upserts exist.
                     handled_via_workspace = False
                     if profile_changed:
                         active_chat = self._ws_active_chat.get(id(websocket))
                         if active_chat:
                             try:
-                                # Re-adapt the designed canvas, not just the
-                                # flat component list.
                                 ws_components = self._canvas_components(active_chat, user_id)
                                 if ws_components:
-                                    # When the live-viewport flag is on, push
-                                    # only the components whose adaptation
-                                    # actually changed (targeted upsert to THIS
-                                    # socket — other devices didn't change). Any
-                                    # failure falls through to the full re-render.
                                     if viewport.viewport_enabled() and await self._readapt_targeted(
                                             websocket, active_chat, old_profile, new_profile, ws_components):
                                         handled_via_workspace = True
                                     else:
-                                        # speak=False: viewport re-adaptation of
-                                        # existing content — never re-spoken.
                                         await self.send_ui_render(websocket, ws_components,
                                                                   speak=False)
                                         handled_via_workspace = True
                             except Exception:
                                 logger.exception("workspace re-adapt failed after device change")
-                    # Legacy fallback for sockets with no persisted workspace.
                     if not handled_via_workspace and re_adapted is not None:
                         from webrender.chrome.component_model import stamp_canvas_component_chrome
                         re_adapted = stamp_canvas_component_chrome(
@@ -12352,7 +10892,6 @@ class Orchestrator:
                         await self._safe_send(websocket, msg_out.to_json())
 
                 elif msg.action == "save_theme":
-                    # Persist theme colors to user preferences
                     theme_data = msg.payload.get("theme")
                     if theme_data:
                         try:
@@ -12435,18 +10974,12 @@ class Orchestrator:
                         }))
 
                 elif msg.action == "component_action":
-                    # Feature 028 — standardized deterministic component
-                    # action (contracts/component-action.md).
                     await self._handle_component_action(websocket, user_id, msg.payload or {})
 
                 elif msg.action == "component_refine":
-                    # 055 US4 (wire-contract §3) — component-scoped LLM edit
-                    # in place; gated + refused inside the handler.
                     await self._handle_component_refine(websocket, user_id, msg.payload or {})
 
                 elif msg.action == "component_restore":
-                    # 055 US4 — restore an archived component_version under
-                    # the same identity (no LLM).
                     await self._handle_component_restore(websocket, user_id, msg.payload or {})
 
                 elif msg.action == "authorize_action":
@@ -12455,9 +10988,6 @@ class Orchestrator:
                         await hitl_confirmation.handle_decision(
                             self, websocket, user_id, msg.payload or {})
                         return
-                    # C-S8 — the user confirmed a require_token-gated call: mint a
-                    # one-time token and re-dispatch the call through the normal
-                    # tool gate (which verifies + consumes it).
                     _p = msg.payload or {}
                     _aid, _tool = _p.get("agent_id"), _p.get("tool")
                     _targs = dict(_p.get("args") or {})
@@ -12474,10 +11004,6 @@ class Orchestrator:
                             message="Couldn't authorize that action.", variant="warning").to_dict()])
 
                 elif msg.action == "table_paginate":
-                    # Feature 028 (FR-038): pagination clicks that carry the
-                    # table's component identity route through the
-                    # standardized pipeline — permission-gated and updating
-                    # ONLY the table, instead of replacing the whole canvas.
                     if (msg.payload or {}).get("component_id"):
                         await self._handle_component_action(websocket, user_id, {
                             "chat_id": (msg.payload or {}).get("chat_id"),
@@ -12486,7 +11012,6 @@ class Orchestrator:
                             "params_patch": (msg.payload or {}).get("params", {}),
                         })
                         return
-                    # Legacy alias (pre-028 clients): re-invoke with raw params.
                     tool_name = msg.payload.get("tool_name")
                     agent_id = msg.payload.get("agent_id")
                     params = msg.payload.get("params", {})
@@ -12501,10 +11026,6 @@ class Orchestrator:
                         return
 
                     try:
-                        # Legacy clients lack component identity, but they do
-                        # not get a legacy authorization bypass: run the same
-                        # complete Astral gate/rewrite stack before entering
-                        # the governed final adapter.
                         chat_id = (msg.payload or {}).get("chat_id")
                         auth = await self._authorize_and_prepare(
                             websocket,
@@ -12548,13 +11069,7 @@ class Orchestrator:
                             "type": "chat_status", "status": "done", "message": ""
                         }))
 
-                # --- Live Streaming ---
                 elif msg.action == "stream_subscribe":
-                    # 001-tool-stream-ui: route based on the tool's declared
-                    # kind. PUSH tools go through StreamManager (the new
-                    # async-generator path); POLL tools stay on the existing
-                    # _handle_stream_subscribe path. The kind comes from the
-                    # tool's metadata, populated at register_agent time.
                     tool_name = msg.payload.get("tool_name", "")
                     tool_cfg = self._streamable_tools.get(tool_name, {})
                     kind = tool_cfg.get("kind", "poll")
@@ -12584,8 +11099,6 @@ class Orchestrator:
                         }))
 
                 elif msg.action == "stream_unsubscribe":
-                    # 001-tool-stream-ui: dual routing as above. The push
-                    # path takes a stream_id; the poll path takes a tool_name.
                     payload = msg.payload or {}
                     if payload.get("stream_id") and flags.is_enabled("tool_streaming"):
                         await self._handle_push_stream_unsubscribe(
@@ -12599,10 +11112,6 @@ class Orchestrator:
                         await self._handle_stream_list(websocket)
 
                 else:
-                    # Feature 027: chrome/settings + agentic-creation actions
-                    # live in their own dispatcher. It returns False only for
-                    # actions outside its namespace — those were previously a
-                    # silent fall-through; log them so typos are diagnosable.
                     from orchestrator.chrome_events import handle_chrome_event
                     work_arguments = {}
                     if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
@@ -12629,30 +11138,18 @@ class Orchestrator:
                 isinstance(raw_frame, dict)
                 and raw_frame.get("type") == "voice_playout_event"
             ):
-                # This telemetry/control evidence carries no user-facing
-                # operation. Malformed observations fail closed without a
-                # generic error frame, audit entry, or task side effect.
                 logger.warning(
                     "voice_playout_event_rejected reason=%s",
                     getattr(e, "code", type(e).__name__),
                 )
                 return
-            # Feature 060 credential Save owns its terminal at the durable
-            # operation wrapper.  Preserve that typed, safe outcome across
-            # the legacy chrome dispatcher instead of swallowing it as a
-            # generic UI error (which would later fabricate completion).
             from llm_config.ws_handlers import LLMConfigOperationFailure
             if isinstance(e, LLMConfigOperationFailure):
                 raise
             if (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("human_request") is not None:
-                # The operation wrapper owns a closed terminal; no private
-                # metadata request or exception text enters generic diagnostics.
                 raise
             import traceback
             logger.error(f"Error handling UI message: {e}\n{traceback.format_exc()}")
-            # Feature 044 (FR-002/SC-006): a generic ui_event failure must not be
-            # invisible — every client shows error frames, so the turn reaches a
-            # terminal state instead of a permanent "thinking".
             try:
                 await self._safe_send(websocket, json.dumps({
                     "type": "error",
@@ -12664,10 +11161,6 @@ class Orchestrator:
             if _CONNECTION_OPERATION_CONTEXT.get() is not None:
                 raise
 
-    # =========================================================================
-    # COMPONENT COMBINING (LLM-powered)
-    # =========================================================================
-
     async def _workspace_identity_for_saved_row(
         self,
         *,
@@ -12676,8 +11169,6 @@ class Orchestrator:
         row: Dict[str, Any],
         supplied_id: str | None = None,
     ) -> str | None:
-        """Map a legacy saved-row reference onto the staged stable identity."""
-
         data = row.get("component_data")
         if isinstance(data, dict):
             identity = data.get("component_id") or row.get("component_id")
@@ -12717,8 +11208,6 @@ class Orchestrator:
         replacements: List[Dict[str, Any]],
         cause: str = "replace",
     ) -> tuple[list[str], list[Dict[str, Any]], list[Dict[str, Any]]]:
-        """Replace saved component identities inside the active publication."""
-
         source_ids: list[str] = []
         source_tools: set[str] = set()
         source_agents: set[str] = set()
@@ -12800,26 +11289,9 @@ class Orchestrator:
         return source_ids, rows, ops
 
     async def _combine_components_llm(self, components: list, mode: str = "combine") -> dict:
-        """Use LLM to combine/condense UI components.
-        
-        Args:
-            components: List of component dicts with component_data, title, etc.
-            mode: 'combine' for merging 2 components, 'condense' for reducing many.
-        
-        Returns:
-            {"components": [...]} on success, {"error": "..."} on failure.
-        """
-        # Feature 054: combine/condense is a SYSTEM-context helper by
-        # explicit owner decision (websocket=None is passed to _call_llm
-        # below, which resolves the admin-managed system credential —
-        # never the acting user's record). This fast-path return just
-        # avoids building a long prompt that would never be sent; the
-        # downstream _call_llm emits llm_unconfigured when the system
-        # credential is also absent.
         if await self._llm_store.get_system() is None:
             return {"error": "LLM not configured"}
 
-        # Build the component descriptions for the prompt
         component_descriptions = []
         for i, comp in enumerate(components):
             component_descriptions.append(
@@ -12876,7 +11348,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
 Or if they cannot be combined:
 ERROR: <reason>"""
-        else:  # condense
+        else:
             prompt = f"""You are a UI component condenser. You are given {len(components)} UI components and must combine as many as possible into fewer cohesive components.
 
 {schema_description}
@@ -12905,9 +11377,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 }}"""
 
         try:
-            # Use _call_llm for built-in retries (important for transient 502s)
             llm_msg, _usage = await self._call_llm(
-                None,  # no websocket needed for combine
+                None,
                 [
                     {"role": "system", "content": "You are a precise UI component combiner. Output ONLY valid JSON or an ERROR message. No explanations, no markdown fences."},
                     {"role": "user", "content": prompt}
@@ -12922,13 +11393,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             content = (llm_msg.content or "").strip()
             logger.info(f"LLM combine response ({len(content)} chars): {content[:200]}...")
             
-            # Check for ERROR response
             if content.upper().startswith("ERROR"):
                 error_msg = content.split(":", 1)[1].strip() if ":" in content else content
                 return {"error": error_msg}
             
-            # Try to parse JSON
-            # Strip markdown code fences if present
             if content.startswith("```"):
                 content = content.split("\n", 1)[1] if "\n" in content else content[3:]
                 if content.endswith("```"):
@@ -12938,7 +11406,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 result = json.loads(content)
             except json.JSONDecodeError:
-                # Try to find JSON in the response
                 json_match = re.search(r'\{[\s\S]*\}', content)
                 if json_match:
                     result = json.loads(json_match.group())
@@ -12948,25 +11415,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if "components" not in result or not isinstance(result["components"], list):
                 return {"error": "LLM response missing 'components' array"}
             
-            # Feature 029 (FR-020): the renderer registry is the single
-            # source of truth for valid types — hand-copied whitelists
-            # drifted (param_picker/audio/file IO were silently rewritten
-            # to containers). "chart" stays as an accepted alias; the tree
-            # validator maps it to plotly_chart.
             from webrender import allowed_primitive_types
             VALID_TYPES = set(allowed_primitive_types()) | {"chart"}
             
-            # Validate each component
             for comp in result["components"]:
                 if "component_data" not in comp:
                     return {"error": "LLM response component missing 'component_data'"}
                 
-                # Validate the component type
                 comp_data = comp["component_data"]
                 comp_type = comp_data.get("type", "")
                 if comp_type and comp_type not in VALID_TYPES:
                     logger.warning(f"LLM produced unknown component type '{comp_type}', wrapping in card")
-                    # Wrap unknown types in a card to ensure they render
                     comp["component_data"] = {
                         "type": "card",
                         "title": comp_data.get("title", "Combined Component"),
@@ -12974,7 +11433,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     }
                     comp_type = "card"
                 
-                # Recursively validate children
                 self._validate_component_tree(comp_data, VALID_TYPES)
                 
                 if "component_type" not in comp:
@@ -12989,23 +11447,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return {"error": f"LLM error: {str(e)}"}
 
     def _validate_component_tree(self, node: dict, valid_types: set):
-        """Recursively validate component tree, fixing invalid types."""
         if not isinstance(node, dict):
             return
         
         raw_type = node.get("type", "")
         node_type = raw_type.strip().lower()
-        # Map generic 'chart' to 'plotly_chart' regardless of validity
         if node_type == "chart":
             logger.info("Mapping generic component type 'chart' -> 'plotly_chart'")
             node["type"] = "plotly_chart"
-            node_type = "plotly_chart"  # update variable for subsequent checks
+            node_type = "plotly_chart"
         
         if node_type and node_type not in valid_types:
             logger.warning(f"Fixing unknown component type '{node_type}' -> 'container'")
             node["type"] = "container"
         
-        # Validate children arrays
         for key in ("children", "content"):
             children = node.get(key, [])
             if isinstance(children, list):
@@ -13013,7 +11468,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if isinstance(child, dict):
                         self._validate_component_tree(child, valid_types)
         
-        # Validate tab items
         tabs = node.get("tabs", [])
         if isinstance(tabs, list):
             for tab in tabs:
@@ -13022,16 +11476,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if isinstance(child, dict):
                             self._validate_component_tree(child, valid_types)
 
-    # Component types that carry no rich visual content (just text wrappers)
     _TEXT_ONLY_TYPES = {"text", "card", "container", "collapsible", "divider", "list", "alert"}
 
     @classmethod
     def _is_text_only_components(cls, components: list) -> bool:
-        """Return True if all components in the tree contain only text-based content.
-
-        Used to decide whether parsed UI JSON should go to the canvas (rich content)
-        or the chat panel only (text-only content).
-        """
         for comp in components:
             if not isinstance(comp, dict):
                 continue
@@ -13048,17 +11496,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @classmethod
     def _transcript_html(cls, content, *, canvas_component_ids=frozenset()) -> str:
-        """Feature 045 — server-rendered HTML for a component-bearing transcript
-        message, restricted to TEXT ONLY.
-
-        The chat rail is words only: rich components (tables, charts, metrics,
-        dashboards, …) live on the canvas and re-hydrate from the persistent
-        workspace (``_canvas_components``), NOT from the transcript. So a loaded
-        transcript message renders only its text-only primitives (Text/Alert/
-        List and text-only containers); any rich component is dropped. Returns
-        ``''`` when the message carries nothing text-like — the client then
-        renders no bubble for it (the content is on the canvas).
-        """
         if not isinstance(content, list):
             return ""
         text_only = [c for c in content
@@ -13075,10 +11512,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return ""
 
     def _map_file_paths(self, chat_id: str, args: Dict, user_id: str = 'legacy') -> Dict:
-        """Replace original filenames in tool arguments with backend paths.
-
-        Uses file mappings stored in history for the given chat.
-        """
         if not chat_id:
             return args
 
@@ -13086,17 +11519,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not mappings:
             return args
 
-        # Build mapping dict: original_name -> backend_path
         mapping_dict = {m["original_name"]: m["backend_path"] for m in mappings}
 
-        # Recursively traverse args dict and replace strings that match original names
         def replace_in_dict(obj):
             if isinstance(obj, dict):
                 return {k: replace_in_dict(v) for k, v in obj.items()}
             elif isinstance(obj, list):
                 return [replace_in_dict(item) for item in obj]
             elif isinstance(obj, str):
-                # Check if the string matches any original name (exact match)
                 for orig, backend in mapping_dict.items():
                     if obj == orig:
                         logger.info(f"Mapping file path: '{orig}' -> '{backend}'")
@@ -13110,20 +11540,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.info(f"Mapped file paths in tool arguments for chat {chat_id}")
         return new_args
 
-    # =========================================================================
-    # LLM-POWERED TOOL ROUTING
-    # =========================================================================
-
     async def _adopt_operation_chat(self, chat_id) -> None:
-        """Bind a pre-conversation operation to the chat its turn created.
-
-        The first message of a new chat is admitted before the conversation
-        exists, so its durable operation row carries ``chat_id=None``. Once
-        the turn has created (or resolved) the real chat, bind it durably
-        AND refresh the in-context record so every downstream publication
-        fence keeps strict identity semantics. A no-op for operations that
-        were admitted with their conversation already bound.
-        """
         if not chat_id:
             return
         operation_context = _CONNECTION_OPERATION_CONTEXT.get()
@@ -13144,8 +11561,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _conversation_authority(operation_context, websocket):
-        """Return one complete fenced turn authority or ``None`` for legacy work."""
-
         authority = operation_context
         if authority is None:
             authority = getattr(websocket, "task", None)
@@ -13177,8 +11592,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         purpose: str,
         base_render_revision: int,
     ) -> Dict[str, Any]:
-        """Bind the exact active conversation generation for one socket."""
-
         if purpose not in {"hydration", "commit"}:
             raise ValueError("conversation scope purpose is invalid")
         connection = _uuid.UUID(str(connection_generation))
@@ -13211,8 +11624,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         operation_context: Any,
     ):
-        """Prepare an invisible complete next revision for a fenced live turn."""
-
         authority = self._conversation_authority(operation_context, websocket)
         if authority is None:
             return None, None, None
@@ -13292,14 +11703,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context: Any,
         voice_dispatch: _VoiceDispatchContext,
     ):
-        """Commit voice acceptance and activate its linked private result.
-
-        Only the user bubble, the complete accepted canvas/layout view, the
-        assistant-result stage, and the content-free voice correlation share
-        this short transaction. Model/tool execution starts after the chat row
-        lock is released and mutates only the result stage.
-        """
-
         authority = self._conversation_authority(
             operation_context, websocket
         )
@@ -13418,13 +11821,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         request_generation: Any,
     ):
-        """Prepare a server-originated logical update without a UI operation.
-
-        Detached results have no still-running connection operation to fence,
-        but they retain the same atomic conversation boundary and are
-        serialized under the per-chat workspace lock by their caller.
-        """
-
         staged = None
         try:
             layouts = await asyncio.to_thread(
@@ -13480,8 +11876,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         scheduled_attempt: "ScheduledAttempt",
     ):
-        """Prepare the invisible canvas half of one scheduled chat effect."""
-
         if (
             scheduled_attempt.execution_fence is None
             or scheduled_attempt.request_generation is None
@@ -13551,8 +11945,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         role: str,
         content: Any,
     ) -> Any:
-        """Append to the invisible revision, or retain the bounded legacy path."""
-
         if stage is None:
             await asyncio.to_thread(
                 self.history.add_message,
@@ -13584,8 +11976,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return message_id
 
     def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any]):
-        """ROTE-adapt every component group, then add web presentation once."""
+        from orchestrator.canvas_consolidation import consolidate_canvas
 
+        snapshot["canvas"]["components"] = consolidate_canvas(snapshot["canvas"]["components"])
         for message in snapshot["transcript"]:
             for part in message["parts"]:
                 if part.get("type") == "components":
@@ -13729,8 +12122,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         committed: Dict[str, Any],
         server_initiated: bool,
     ) -> None:
-        """Deliver one already-durable revision without mutating its commit."""
-
         targets = []
         for candidate in self._sockets_on_chat(stage.user_id, stage.chat_id):
             binding = self._conversation_scopes.get(id(candidate))
@@ -13790,25 +12181,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ]
                     binding["frame_sequence"] = 0
             except Exception:
-                # The durable commit remains authoritative; this socket keeps
-                # its prior committed view and recovers through hydration.
                 logger.warning(
                     "committed conversation snapshot delivery failed",
                     exc_info=True,
                 )
 
-        # Recent conversations are a projection of durable commits, not of
-        # optional title generation.  In particular, voice acceptance commits
-        # the user's first message before model execution begins; if title
-        # generation or the assistant result later fails, the accepted chat
-        # must still replace the history surface's empty state.  Keep this
-        # owner-scoped and fail-soft so presentation fan-out cannot roll back
-        # or delay the already-authoritative conversation commit.
         await self._refresh_history_after_commit(stage.user_id)
 
     def _scope_conversation_transient(self, websocket, data: str) -> str:
-        """Attach the current equality fence to disposable live UI frames."""
-
         binding = getattr(self, "_conversation_scopes", {}).get(id(websocket))
         if binding is None:
             return data
@@ -13852,7 +12232,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
 
     async def _start_heartbeat(self, websocket) -> asyncio.Task:
-        """Start sending heartbeat messages every 5s to keep UI informed during long operations."""
         async def _heartbeat_loop():
             while True:
                 await asyncio.sleep(5)
@@ -13879,9 +12258,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context=None,
         voice_dispatch=None,
     ):
-        """Run handle_chat_message under a per-conversation lock, so turns in
-        one chat stay in order while another chat's turn runs alongside it.
-        The WS receive loop is never blocked either way."""
         ws_id = id(websocket)
         try:
             if operation_context is None:
@@ -13914,31 +12290,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             voice_dispatch=voice_dispatch,
                         )
         except Exception as e:
-            # Full details (including any upstream HTML payload, stack
-            # trace, etc.) go to structured logs only. The user-facing
-            # message is a generic, safe string — never str(e), which
-            # may contain raw HTML, secrets, or PHI from upstream.
+            # Never str(e) to the user: may carry secrets or PHI
             logger.error(f"Chat task error: {e}", exc_info=True)
-            # Feature 014: a mid-turn exception left some steps in-flight
-            # with no chance to complete. Mark them cancelled so the UI
-            # does not show a stuck spinner. (The success path does NOT
-            # cancel — every step lifecycle call has already fired by
-            # the time handle_chat_message returns; auto-cancelling on
-            # the success path produced false-cancel labels on
-            # successfully-completed steps.)
             recorder = self._chat_recorders.get(ws_id)
             if recorder is not None:
                 try:
                     await recorder.cancel_all_in_flight()
-                except Exception:  # pragma: no cover — defensive
+                except Exception:  # pragma: no cover
                     logger.debug("ChatStepRecorder exception flush failed", exc_info=True)
             await self._safe_send(websocket, json.dumps({
                 "type": "chat_status", "status": "done",
                 "message": "Something went wrong while processing your request. Please try again."
             }))
-            # Surface a clean Alert in the chat so the user sees a
-            # tangible response in the message area, matching the
-            # FR-008 / FR-009 (006) "LLM unavailable" pattern.
             try:
                 await self.send_ui_render(websocket, [
                     Alert(
@@ -13946,31 +12309,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         variant="error",
                     ).to_dict()
                 ])
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 pass
             from orchestrator.user_skill_catalog import SkillCatalogError
             if type(e) is SkillCatalogError:
-                # Cleanup is complete; admission must still record a failure.
                 raise
         finally:
-            # Feature 014: clear the per-turn step recorder reference.
-            # We do NOT flush in-flight steps here — the success path
-            # has already terminated them, and the exception path above
-            # explicitly flushes. The cancel_task handler (line ~959)
-            # also flushes for genuine user-initiated cancellations.
-            # If a programmer error left a step in_progress, the
-            # GET /api/chats/{id}/steps endpoint heals stale rows
-            # (>30 s old, no active task) into 'interrupted' on the
-            # next chat load.
             self._chat_recorders.pop(ws_id, None)
 
     def _drop_chat_locks(self, websocket) -> None:
-        """Forget every conversation lock this socket held.
-
-        The locks are keyed by (socket, chat) now, so a socket owns as many
-        entries as it had conversations; dropping one key would leak the rest
-        for the lifetime of the process.
-        """
         ws_id = id(websocket)
         for key in [k for k in self._chat_locks if k[0] == ws_id]:
             self._chat_locks.pop(key, None)
@@ -13979,12 +12326,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self, websocket, message: str, chat_id: str, display_message: str = None,
         *, user_id=None, draft_agent_id=None, selected_tools=None, attachments=None,
     ):
-        """020-async-queries: Dispatch a chat message as a background task.
-
-        Creates a BackgroundTask and returns immediately with a task_started
-        message. The task runs handle_chat_message asynchronously using a
-        VirtualWebSocket to capture outputs.
-        """
         logger.info("Dispatching async chat for chat_id=%s user_id=%s", chat_id, user_id)
         from orchestrator import user_skills
         from orchestrator.human_request_authority import current_socket_human_read, retire_socket_human_read
@@ -14006,7 +12347,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     retire_socket_human_read(caller)
 
         async def _run_in_background(vws, msg, cid, display, uid, draft, tools, atts):
-            """Execute handle_chat_message with the virtual WS."""
             from contextlib import nullcontext
             try:
                 if origin is not None:
@@ -14045,7 +12385,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if origin is not None:
                     origin.close()
                 raise
-        # Short user-facing label for cross-device task frames (055).
         title = " ".join((display_message or message or "").split())[:60]
         try:
             bg_task = await self.async_task_manager.submit(
@@ -14064,7 +12403,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 bg_task._guidance_origin = origin
 
-        # Register the submitting websocket as a watcher
         bg_task.watchers.append(websocket)
 
         started = {
@@ -14076,14 +12414,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             },
         }
         if flags.is_enabled("bg_continuity"):
-            # 055: the start signal reaches every device of the user, not just
-            # the originating socket (title labels it on non-chat surfaces).
             started["payload"]["title"] = title
             await self._send_to_user_sockets(uid, started)
         else:
             await self._safe_send(websocket, json.dumps(started))
 
-        # Send loading state so UI knows the query was accepted
         await self._safe_send(websocket, json.dumps({
             "type": "chat_status",
             "status": "processing_async",
@@ -14097,12 +12432,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                        turn_class: str,
                                        consented_scopes: Optional[List[str]] = None,
                                        grant_id: Optional[str] = None):
-        """Derive a machine turn's root authority at the ONE shared seam
-        (056 US2, FR-012). Every machine-turn class — scheduled runs, parser
-        replay, draft self-tests, and any future class — calls this and nothing
-        else, so they cannot drift apart. Returns a ``MachineAuthority`` or an
-        ``AuthoritySkip``; callers bind the former with
-        :meth:`_bind_machine_turn` and honor the latter fail-closed."""
         from orchestrator.chain_authority import MachineTurnAuthority
         grants = self.offline_grants
         return await MachineTurnAuthority(self, grants).derive(
@@ -14111,40 +12440,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             turn_class=turn_class)
 
     def _bind_machine_turn(self, vws, authority) -> None:
-        """Bind a machine turn's virtual socket to its consent-derived root
-        authority (056 US2, FR-012/FR-014/FR-015 — the ONE shared seam).
-
-        Two bindings, both deliberate:
-
-        * ``ui_sessions[vws]`` carries the machine claims plus the fresh
-          consent-derived subject token as ``_raw_token``, so the existing RFC
-          8693 exchange (``_get_delegation_token``) mints a properly scoped
-          delegated token for every real-agent dispatch in the turn — the
-          machine turn now acts DELEGATED in production instead of being
-          refused fail-closed for having no session token. Any hop the turn
-          starts mints children off that same root (one authority model, two
-          roots). 055's fan-out already skips VirtualWebSocket entries, so this
-          never counts as a connected device.
-        * ``vws.machine_claims`` is the per-turn audit marker the dispatch path
-          reads, attributing every record to ``machine:<class>`` acting for the
-          owning human (never "legacy"). Cost attribution is untouched: a
-          VirtualWebSocket turn still resolves the SYSTEM LLM credential (054),
-          so who PAID and who AUTHORIZED stay distinct.
-        """
         from orchestrator.chain_authority import machine_session_binding
 
         binding = machine_session_binding(authority)
         claims = authority.machine_claims()
         try:
             vws.machine_claims = claims
-        except Exception:  # pragma: no cover — VirtualWebSocket accepts attrs
+        except Exception:  # pragma: no cover
             logger.debug("machine claims binding failed", exc_info=True)
         self.ui_sessions[vws] = binding
-        # Private exact source object, never inferred from synthetic audit claims.
         vws._guidance_machine_authority = authority
 
     def _unbind_machine_turn(self, vws) -> None:
-        """Drop a machine turn's session binding when the turn ends."""
         self.ui_sessions.pop(vws, None)
         if hasattr(vws, "_guidance_machine_authority"):
             vws._guidance_machine_authority = None
@@ -14168,26 +12475,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effect_key: Optional[str] = None,
         payload_digest: Optional[str] = None,
     ) -> str:
-        """Execute a scheduled job's instruction as a background chat turn (025 T040/T046).
-
-        Reached only when ``FF_SCHEDULER_EXECUTION`` is enabled (gated at loop
-        start), which itself requires the recorded offline-grant security review
-        (030 FR-004/FR-005). The instruction runs through the normal chat path
-        with output persisted to ``chat_id`` history, so the user sees it on
-        reconnect (in-app only). Returns a short summary for the completion
-        notification.
-
-        Authority (056 US2 — the T057-scoped threading, now built): the runner
-        derives a :class:`~orchestrator.chain_authority.MachineAuthority` from
-        the job's durable consent (fresh token per run, scopes narrowed to
-        consented ∩ current) and passes it as ``authority``. It is bound to the
-        turn's virtual socket by :meth:`_bind_machine_turn`, so every
-        real-agent dispatch in the turn runs under a delegated token derived
-        from that consent and every audit row names ``machine:scheduled_job``
-        acting for the owning human. Without an ``authority`` the turn still
-        runs (unchanged legacy behavior), but production posture refuses its
-        real-agent dispatches fail-closed, exactly as before.
-        """
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         from orchestrator.scheduled_publication import stage_scheduled_history
 
@@ -14226,11 +12513,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if publication_reservation.ambiguous:
                 raise RuntimeError("scheduled chat effect outcome is ambiguous")
 
-        # Feature 054 (FR-020): scheduled turns run on the admin-managed
-        # system credential. Fail HONESTLY before executing when it is
-        # absent — the pre-054 path swallowed the unavailability alert
-        # inside the VirtualWebSocket and recorded a "success" run while
-        # nothing actually happened.
         if await self._llm_store.get_system() is None:
             try:
                 await self._record_llm_unconfigured(
@@ -14239,7 +12521,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     auth_principal="system",
                     feature="scheduled_job",
                 )
-            except Exception:  # pragma: no cover — audit is best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("scheduled_job llm_unconfigured audit failed",
                              exc_info=True)
             raise self._LLMUnavailable(
@@ -14264,11 +12546,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             and not chat_id
             and flags.is_enabled("bg_continuity")
         ):
-            # 055: nothing else creates the fallback chat, and
-            # history.add_message silently drops writes to a missing chat —
-            # the whole run's output would be lost. Fallback only: an explicit
-            # target_chat_id must already exist (chat ids are globally keyed,
-            # so creating one here could collide with another user's chat).
             if not await asyncio.to_thread(
                     self.history.get_chat, target_chat, user_id=user_id):
                 await asyncio.to_thread(
@@ -14386,10 +12663,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._unbind_machine_turn(vws)
             try:
                 await vws.close()
-            except Exception:  # pragma: no cover - close is best-effort
+            except Exception:  # pragma: no cover
                 pass
 
-        # Summarize the captured assistant text for the notification body.
         summary = ""
         for out in bg.outputs:
             if not isinstance(out, dict):
@@ -14413,16 +12689,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return summary or "Your scheduled task finished."
 
     async def notify_user(self, user_id: str, payload: Dict[str, Any]) -> None:
-        """Deliver an in-app notification to all of a user's connected sockets (025 T049).
-
-        Best-effort live fan-out over ``ui_clients``. The durable artifact of a
-        scheduled run is its output, which ``run_scheduled_turn`` persists to chat
-        history (delivered on reconnect via ``load_chat``); this is the transient
-        toast. In-app only — there is no external channel.
-        """
         try:
             data = json.dumps(payload)
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover
             logger.debug("notify_user: unserializable payload", exc_info=True)
             return
         sent = 0
@@ -14432,7 +12701,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     continue
                 if await self._safe_send(ws, data):
                     sent += 1
-            except Exception:  # pragma: no cover - per-socket best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("notify_user: send failed for one socket", exc_info=True)
         logger.info(
             "notify_user.delivered",
@@ -14440,12 +12709,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
 
     async def _send_to_user_sockets(self, user_id: str, frame: Dict[str, Any]) -> int:
-        """Deliver one frame to EVERY connected socket authenticated as
-        ``user_id`` (055 bg-continuity — multi-device fan, chat-agnostic).
-        Returns the number of sockets reached."""
         try:
             data = json.dumps(frame)
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover
             logger.debug("_send_to_user_sockets: unserializable frame", exc_info=True)
             return 0
         from orchestrator.async_tasks import VirtualWebSocket
@@ -14453,28 +12719,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         for ws, claims in list(self.ui_sessions.items()):
             if (claims or {}).get("sub") != user_id:
                 continue
-            # A background turn's own VirtualWebSocket sits in ui_sessions for
-            # the turn's lifetime — "delivering" to it would count as a
-            # notified device and silently skip the register_ui catch-up
-            # replay for users with no real socket connected.
+            # Skip: counting the virtual socket hides real catch-up
             if isinstance(ws, VirtualWebSocket):
                 continue
             try:
                 if await self._safe_send(ws, data):
                     sent += 1
-            except Exception:  # pragma: no cover - per-socket best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("_send_to_user_sockets: send failed", exc_info=True)
         return sent
 
     async def _fan_task_completed(self, bg_task, frame: Dict[str, Any]) -> int:
-        """BackgroundTaskManager completion hook (055 bg-continuity): the
-        task_completed frame reaches every socket of the user — the
-        originating socket may be long gone. Returns the delivered count so
-        the manager can persist ``notified``."""
         return await self._send_to_user_sockets(bg_task.user_id, frame)
 
     def _task_started_frame(self, bg_task) -> Dict[str, Any]:
-        """A task_started replay frame for an in-flight background task."""
         return {
             "type": "task_started",
             "payload": {
@@ -14487,9 +12745,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         }
 
     async def _replay_user_tasks(self, websocket, user_id: str):
-        """055 bg-continuity late-connect catch-up: in-flight tasks replay as
-        task_started; completed-but-unnotified rows replay as task_completed
-        and are marked notified. Fail-open — never breaks registration."""
         from orchestrator.async_tasks import TaskStatus
         try:
             for t in await self.async_task_manager.list_for_user(user_id):
@@ -14529,9 +12784,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("background-task replay failed (non-fatal)", exc_info=True)
 
     async def _replay_chat_task(self, websocket, chat_id: str):
-        """055 bg-continuity: a socket joining a chat with a live background
-        run shows the running state immediately (processing_async + a
-        task_started replay)."""
         try:
             t = await self.async_task_manager.get_active_for_chat(chat_id)
             if t is None:
@@ -14546,13 +12798,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("active-task replay failed (non-fatal)", exc_info=True)
 
     async def _resume_chat_streams(self, websocket, user_id: str, chat_id: str):
-        """Re-attach a socket to a chat's push streams. Shared by load_chat
-        and the register_ui session resume (055 bg-continuity).
-
-        001-tool-stream-ui (US3 T054): resume any DORMANT streams for this
-        chat. Each resumed stream gets a stream_subscribed reply so the
-        frontend re-registers it in pushStreamsRef and starts merging chunks
-        again."""
         if self.stream_manager is not None:
             try:
                 resumed = await self.stream_manager.resume(
@@ -14570,8 +12815,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "min_fps": cfg.get("min_fps", 5),
                         "attached": False,
                     }
-                    # 055 US2: keep the resumed placeholder on
-                    # its workspace identity (wire-contract §2).
                     resumed_cid = self.stream_manager.component_id_for(
                         resumed_stream_id)
                     if resumed_cid is not None:
@@ -14580,13 +12823,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception as e:
                 logger.warning(f"stream_manager.resume failed: {e}")
 
-        # 055 late-join: resume() above only revives DORMANT
-        # streams. Streams kept ACTIVE by the user's other
-        # sockets need this socket attached too, plus a
-        # replay of the retained chunk so the canvas shows
-        # current state instead of a blank placeholder.
-        # Rides FF_STREAM_ARTIFACTS — flag off keeps
-        # load_chat's frames byte-identical to pre-055.
         if (self.stream_manager is not None
                 and flags.is_enabled("stream_artifacts")):
             try:
@@ -14610,23 +12846,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if att_cid is not None:
                         att_ack["component_id"] = att_cid
                     await self._safe_send(websocket, json.dumps(att_ack))
-                    # Ack first: clients key the placeholder
-                    # off it before the replay frame fills it.
                     await self.stream_manager.replay_retained(
                         websocket, att_stream_id)
             except Exception as e:
                 logger.warning(f"stream_manager.attach_to_chat failed: {e}")
 
     async def _attach_turn_attachments(self, websocket, message, chat_id, user_id, turn_message_id, attachments):
-        """Feature 031: validate, link, and surface this turn's attachments.
-
-        Each staged attachment is ownership-validated; valid ones are linked to
-        the persisted user message (``message_attachment``) and listed in a
-        structured "Attachments on this turn" block appended to the LLM-facing
-        message (with the reader tool that can parse each, or "pending parser").
-        Foreign/invalid/deleted references are dropped and audited — never
-        parsed. Capped at 10 per turn. Returns the (possibly augmented) message.
-        """
         try:
             from orchestrator.attachments.repository import AttachmentRepository
             from orchestrator.attachments.message_attachment_repo import MessageAttachmentRepository
@@ -14654,9 +12879,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 rec = get_recorder()
                 if rec is None:
                     return
-                # correlation_id and started_at are REQUIRED by AuditEventCreate;
-                # omitting them raised a ValidationError that the except below
-                # silently swallowed, so cross-user denials were never recorded.
+                # correlation_id/started_at required or this fails silently
                 await rec.record(AuditEventCreate(
                     actor_user_id=user_id or "legacy",
                     auth_principal=user_id or "legacy",
@@ -14738,8 +12961,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         chat_id: str,
         stage: Any,
     ) -> bool:
-        """Attach one finalizer to the active admitted operation, if present."""
-
         operation_context = _CONNECTION_OPERATION_CONTEXT.get()
         if (
             not isinstance(operation_context, dict)
@@ -14771,8 +12992,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def _remember_voice_operation_terminal_intent(
         task_state: TaskState,
     ) -> bool:
-        """Persist a fixed voice outcome even when legacy task tracking is off."""
-
         operation_context = _CONNECTION_OPERATION_CONTEXT.get()
         if (
             not isinstance(operation_context, dict)
@@ -14816,8 +13035,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         *,
         connection_generation: _uuid.UUID | None,
     ) -> bool:
-        """Validate the complete public identity of one operation projection."""
-
         if not isinstance(projection, (OperationRecord, SafeOperationProjection)):
             return False
         if (
@@ -14845,8 +13062,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         work: _ConnectionOperation,
         candidate: Any,
     ) -> Any:
-        """Resolve one exact terminal before an accepted voice turn is closed."""
-
         if (
             not isinstance(operation_context, dict)
             or not isinstance(
@@ -14948,15 +13163,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context: dict[str, Any] | None,
         terminal_operation: Any,
     ) -> None:
-        """Bound terminal reconciliation to this runner's live authority.
-
-        The operation context becomes unreachable when the connection runner
-        returns, so transient authority failures are retried inline.  Exhaustion
-        leaves the durable turn unchanged rather than inventing success or
-        failure, logs the missing terminal announcement, and scrubs the
-        runner-local finalizer.
-        """
-
         if not isinstance(operation_context, dict):
             return
         pending = operation_context.get("voice_finalization")
@@ -14989,9 +13195,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if operation_context.get("voice_finalization") is not pending:
                 return
             if attempt + 1 < _VOICE_TERMINAL_FINALIZATION_ATTEMPTS:
-                # A supplied projection may be stale or belong to a peer.  The
-                # retry must query the exact operation authority from the
-                # retained context rather than replaying that candidate.
                 terminal_operation = None
                 await asyncio.sleep(0)
         operation = operation_context.get("operation")
@@ -15013,13 +13216,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context: Any = None,
         terminal_projection: Any = None,
     ) -> tuple[OperationState | None, ExecutionFence | None]:
-        """Read the exact shared operation outcome for one committed voice turn.
-
-        The operation record is the deterministic result authority.  Visible
-        component text is deliberately excluded because an error card and a
-        successful result are both valid committed conversation snapshots.
-        """
-
         authority = self._conversation_authority(
             (
                 operation_context
@@ -15098,13 +13294,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context: Any = None,
         operation_projection: Any = None,
     ) -> bool:
-        """Speak one proven terminal outcome.
-
-        Returns ``True`` when no further finalization is required.  ``False``
-        means exact terminal authority or durable announcement finalization was
-        temporarily unavailable, so a pending caller may retry safely.
-        """
-
         services = getattr(self, "voice_services", None)
         if services is None:
             return False
@@ -15115,9 +13304,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 user_id=user_id,
                 turn_id=initial_turn.turn_id,
             )
-            # A preflight refusal happens before ordinary message acceptance;
-            # it must not fabricate a completion or mutate the recognition
-            # disposition here.
             if turn.state not in {"accepted", "processing", "waiting_on_user"}:
                 return True
             operation_state, operation_fence = (
@@ -15290,8 +13476,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The committed text result is authoritative. Speech degradation
-            # is observable but must never replace or roll it back.
             logger.warning(
                 "Voice terminal recap scheduling was unavailable",
                 exc_info=True,
@@ -15309,8 +13493,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         accepted_turn: Any,
         accepted_message_id: int,
     ) -> dict[str, Any]:
-        """Deliver one committed acceptance before model execution begins."""
-
         await self._deliver_committed_conversation_snapshot(
             websocket,
             stage=acceptance_stage,
@@ -15387,16 +13569,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str = None, draft_agent_id: str = None, selected_tools=None,
         attachments=None, operation_context=None, voice_dispatch=None, selection=None,
     ):
-        """Keep one original guidance handoff within the actual admitted turn.
-
-        ``selection`` (088 T011/T037) is the composer's optional, closed
-        version-1 {agent, skills, notes} identity — the SAME shape HTTP Work
-        accepts. It is existence-checked against the turn's guidance binding
-        below and never consumed further here; a stale, foreign or malformed
-        selection is dropped (never fails the turn), and an absent selection
-        (the default — no client submits one yet) leaves this function byte
-        identical to before.
-        """
         from orchestrator import user_skills
         from orchestrator.human_request_authority import (
             current_socket_human_read, retire_socket_human_read,
@@ -15438,10 +13610,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     chat_id=chat_id, scheduled_attempt=scheduled[0], scheduled_store=scheduled[1])
                 origin = binding.origin
             else:
-                # Pass the context resolved above rather than letting the
-                # authority re-read the ContextVar: by this point the admission
-                # executor that set it may already have reset it in its finally,
-                # and the turn would be refused its own registered caller.
+                # Passed explicitly: the ContextVar may already be reset
                 caller = await current_socket_human_read(
                     expected_orchestrator=self, websocket=websocket,
                     operation_context=context)
@@ -15458,14 +13627,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     binding = await bind_turn_selection(binding, expected_orchestrator=self,
                                                         selection=selection)
                 except AssignmentError:
-                    # Stale, foreign or malformed: proceed without it rather
-                    # than fail an otherwise-ordinary chat turn.
                     pass
             with use_turn_guidance(binding, expected_orchestrator=self):
                 return await execute()
         except AssignmentError as exc:
-            # The refusal reaching the client is deliberately opaque, but an
-            # operator reading the log needs to know WHICH guard refused.
             logger.warning("turn guidance refused: %s (%s)", exc.code, exc.status_code)
             raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
         finally:
@@ -15485,8 +13650,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         operation_context=None,
         voice_dispatch=None,
     ):
-        """Run one chat turn inside its complete staged publication scope."""
-
         from orchestrator.conversation_publication import (
             reset_conversation_publication,
         )
@@ -15510,8 +13673,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._resolve_llm_client_for(websocket)
                 llm_preflight_complete = True
             except self._LLMUnavailable:
-                # The ordinary preflight below owns the correlated refusal and
-                # setup guidance. Nothing has been accepted or persisted yet.
                 pass
             if llm_preflight_complete:
                 user_content = display_message if display_message else message
@@ -15683,19 +13844,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         voice_acceptance: dict[str, Any] | None = None,
         llm_preflight_complete: bool = False,
     ):
-        """Process a chat message: LLM determines which tools to call (Multi-Turn Re-Act Loop).
-
-        Feature 013 / FR-018, FR-020, FR-023: ``selected_tools`` is the
-        user's in-chat tool-picker subset. When not None, the per-turn
-        filter loop excludes any tool not in the subset — narrowing only,
-        never widening (scope/per-tool permissions are still enforced).
-
-        Feature 031: ``attachments`` is the list of attachment references the
-        user staged on this turn ({attachment_id, filename, category}). Each is
-        ownership-validated, linked to the persisted message, and surfaced to
-        the LLM as a structured "Attachments on this turn" block so it calls the
-        right reader tool with the real attachment_id.
-        """
         if voice_dispatch is None:
             logger.info(
                 "Processing chat message for chat_id %s",
@@ -15713,9 +13861,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         scheduled_history_stage = current_scheduled_history_stage()
         if user_id is None:
             user_id = self._get_user_id(websocket)
-        # Feature 013 defensive: a stray empty selection from the WS
-        # payload is treated as "no narrowing" for this single request,
-        # logged so operators can see if the UI gate (FR-021) ever leaks.
         if selected_tools is not None and len(selected_tools) == 0:
             logger.warning(
                 "Chat dispatch received empty selected_tools (chat_id=%s user_id=%s) "
@@ -15724,16 +13869,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 user_id,
             )
             selected_tools = None
-        # If the user has not narrowed in the WS payload, fall back to
-        # their saved per-user preference (FR-024).
         if selected_tools is None and user_id is not None and not draft_agent_id:
             try:
-                # Resolve the chat's bound agent so the saved selection
-                # for THAT agent is applied; if the chat is unbound, no
-                # agent-specific selection applies and the orchestrator
-                # uses its full default.
                 def _saved_tool_selection():
-                    """Bound-agent saved tool selection, read off the event loop."""
                     bound_agent_id = (
                         self.history.get_chat_agent(chat_id, user_id=user_id)
                         if chat_id
@@ -15749,18 +13887,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 saved = await asyncio.to_thread(_saved_tool_selection)
                 if saved is not None and len(saved) > 0:
                     selected_tools = saved
-            except Exception as e:  # pragma: no cover — defensive
+            except Exception as e:  # pragma: no cover
                 logger.debug(f"Could not resolve saved tool selection: {e}")
-        # Feature 031: an attachments-only turn (no typed text) still proceeds —
-        # synthesize a minimal instruction so the LLM engages with the files.
         if (not message) and attachments:
             message = "Please review the attached file(s)."
         if not message:
             logger.warning("Empty message received")
             return
 
-        # Read once from the exact original admitted turn. The observation ends
-        # before the model phase; its parent handoff remains fenced for children.
         from orchestrator import user_skills as _user_skills
         from orchestrator.user_skill_catalog import SkillCatalogError
         from persistent_agents.models import AssignmentError
@@ -15781,7 +13915,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if _skill_caller is not None:
                     _skill_caller.close()
 
-        # Expansion still enters the ordinary permission/audit/PHI dispatch.
         if flags.is_enabled("slash_commands"):
             from orchestrator import slash_commands
             _user_commands = {skill.command: skill for skill in _current_user_skills
@@ -15792,11 +13925,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     display_message = message
                 message = _expanded
 
-        # 030 FR-009 (025 T021): intercept deterministic onboarding ParamPicker
-        # submits before the LLM/history path and persist them directly. These
-        # are fixed templates ("Save my personalization profile — ...") posted by
-        # the onboarding panels; nothing interpreted them before, so selections
-        # were silently dropped. Handled submits never enter the LLM path.
         if not draft_agent_id:
             try:
                 from orchestrator import onboarding_submit
@@ -15847,16 +13975,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 ),
                             )
                         return
-            except Exception:  # pragma: no cover - never block a chat turn
+            except Exception:  # pragma: no cover
                 logger.warning("onboarding submit handling failed (non-fatal)", exc_info=True)
 
-        # Feature 054: pre-flight gate — refuse the turn up-front when the
-        # caller's context has no LLM configuration, instead of letting the
-        # user wait through the loading state for an inevitable failure.
-        # For a user socket this IS the server-authoritative first-run gate
-        # (FR-014); for system contexts it is the honest-degradation path.
-        # The per-call resolver in _call_llm will also catch this, but
-        # exiting early avoids the extra UX latency.
         try:
             if not llm_preflight_complete:
                 await self._resolve_llm_client_for(websocket)
@@ -15883,11 +14004,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 auth_principal=auth_principal,
                 feature="chat_dispatch",
             )
-            # Device-aware guidance (FR-017): the watch cannot host the
-            # setup dialog, so point it at the phone/web; every other
-            # client gets the setup-dialog copy. Stale native builds that
-            # never rendered the mandatory surface get actionable guidance
-            # too ("on the web").
             _guide = "Set up your AI provider to start chatting."
             try:
                 _prof = self.rote.get_profile(websocket)
@@ -15905,14 +14021,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ])
             return
 
-        # Send loading state to UI
         await self._safe_send(websocket, json.dumps({
             "type": "chat_status",
             "status": "thinking",
             "message": "Analyzing request and planning actions..."
         }))
         
-        # Save User Message to History. If display_message is provided, save that instead.
         msg_to_save = display_message if display_message else message
         if voice_acceptance is not None:
             turn_message_id = int(voice_acceptance["message_id"])
@@ -15925,8 +14039,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 content=msg_to_save,
             )
 
-        # Feature 030 — fire-and-forget PHI awareness notice (notify-only,
-        # fail-open; persistence/audit posture unchanged).
         if scheduled_history_stage is None:
             try:
                 asyncio.create_task(self._notify_phi_if_detected(
@@ -15934,11 +14046,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("phi notice scheduling failed (non-fatal)", exc_info=True)
 
-        # Feature 014: create a per-turn ChatStepRecorder. The recorder's
-        # WebSocket emits and persistence are PHI-redacted at the boundary
-        # via shared.phi_redactor (FR-009b). Stored on the orchestrator so
-        # the cancel_task handler can flush in-flight steps (FR-020/021)
-        # and execute_tool_and_wait can record per-tool lifecycle events.
         if scheduled_history_stage is None:
             try:
                 from orchestrator.chat_steps import ChatStepRecorder
@@ -15953,14 +14060,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     turn_message_id=turn_message_id,
                 )
                 self._chat_recorders[id(websocket)] = recorder
-            except Exception:  # pragma: no cover — defensive; never block a turn
+            except Exception:  # pragma: no cover
                 logger.warning("Failed to create ChatStepRecorder", exc_info=True)
 
-        # Feature 014: send the persisted message_id back to the frontend so
-        # it can stamp its locally-appended user message and group incoming
-        # `chat_step` events under the correct turn (steps' turn_message_id
-        # FK matches this id). Without this stamp, the frontend cannot
-        # interleave step lines under the right turn in multi-turn chats.
         if turn_message_id is not None and voice_dispatch is None:
             await self._safe_send(websocket, json.dumps({
                 "type": "user_message_acked",
@@ -15968,7 +14070,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "message_id": turn_message_id,
             }))
 
-        # Capture File Upload Mapping
         upload_match = re.search(r"I have uploaded (.*?) to the backend at: `(.*?)`" , message)
         if upload_match:
             original_name = upload_match.group(1)
@@ -15978,9 +14079,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self.history.add_file_mapping, chat_id, original_name, backend_path,
                 user_id=user_id)
 
-        # Feature 031: validate/link/surface this turn's structured attachments.
-        # Augments the LLM-facing `message` with an "Attachments on this turn"
-        # block; the SAVED history message (msg_to_save) stays the user's text.
         if attachments:
             try:
                 message = await self._attach_turn_attachments(
@@ -15988,15 +14086,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.warning("attachment turn-processing failed (non-fatal)", exc_info=True)
 
-        # Name the chat after what it is about, in the background.
-        #
-        # This used to fire only when the turn was the chat's very first, by
-        # counting saved messages — and the count was off, so in practice it
-        # fired for almost nothing and the sidebar was a column of chats all
-        # called "New Chat". The condition is now the thing it actually cares
-        # about: the chat does not have a name yet. A chat that missed its
-        # first turn gets named on its next one, and a chat that already has a
-        # name is never renamed behind the person's back.
         chat_data = await asyncio.to_thread(self.history.get_chat, chat_id, user_id=user_id)
         if scheduled_history_stage is None and _chat_needs_a_name(chat_data):
             initial_title = _title_from(msg_to_save)
@@ -16012,38 +14101,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self.summarize_chat_title(chat_id, msg_to_save, user_id=user_id, websocket=websocket)
             )
 
-        # Feature 052 (FR-019): one permission memo spans the whole turn —
-        # the tool-list build below and the execute phase resolve each
-        # distinct (user, agent, tool, kind) against the database once.
-        # Exited in the turn's finally (and before the draft early-return);
-        # the next turn always re-reads, so revocations stay visible.
         from orchestrator.tool_permissions import turn_permission_memo
         _perm_memo = turn_permission_memo()
         _perm_memo.__enter__()
 
-        # Build tool definitions from registered agents
-        # Filter by user's per-agent tool permissions (RFC 8693 delegation)
-        # Draft test chats: only expose the draft agent's tools
         if draft_agent_id:
             logger.info(f"Draft test chat — filtering tools to agent: {draft_agent_id}")
         else:
             logger.info(f"Building tool definitions from {len(self.agent_cards)} agents...")
         tools_desc = []
-        tool_to_agent = {}  # Map LLM-facing function name → agent_id
-        # 015-external-ai-agents: when two registered agents expose the
-        # same tool name (e.g. classify-1 and forecaster-1 both have
-        # `submit_dataset`), we qualify the LLM-facing name with an
-        # `{agent_id}__` prefix so the model can pick unambiguously.
-        # `tool_to_unqualified` maps the qualified LLM-facing name back
-        # to the bare skill id that the owning agent expects to receive
-        # over the MCP dispatch boundary. For non-colliding tools the
-        # qualified and unqualified names are identical.
+        tool_to_agent = {}
         tool_to_unqualified: Dict[str, str] = {}
 
-        # Feature 013 follow-up: resolve this user's per-agent disabled
-        # set once so we can skip disabled agents wholesale below. The
-        # draft-test path bypasses this — testing your own draft must
-        # always work even if you've disabled the live version.
         try:
             disabled_agents = (
                 set(
@@ -16055,12 +14124,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if user_id and not draft_agent_id
                 else set()
             )
-        except Exception as e:  # pragma: no cover — defensive
+        except Exception as e:  # pragma: no cover
             logger.debug(f"Could not resolve user disabled-agent list: {e}")
             disabled_agents = set()
 
-        # Phase A: run the single chat visibility predicate off the event loop.
-        # The MCP projection calls the same helper, preventing catalog drift.
         from orchestrator.tool_visibility import eligible_tool_pairs
 
         def _log_exclusion(agent_id: str, skill_id: Optional[str], reason: str) -> None:
@@ -16084,9 +14151,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             log_exclusion=_log_exclusion,
         )
 
-        # Phase B: detect skill-id collisions across the surviving pairs.
-        # A skill id owned by >1 distinct agent_id needs qualification so
-        # the model can pick a specific provider.
         skill_id_owners: Dict[str, set] = {}
         for agent_id, skill in eligible:
             skill_id_owners.setdefault(skill.id, set()).add(agent_id)
@@ -16099,13 +14163,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 sorted(colliding_skill_ids),
             )
 
-        # Phase C: emit one tool definition per eligible pair, qualifying
-        # the LLM-facing name when there's a collision.
         for agent_id, skill in eligible:
             if skill.id in colliding_skill_ids:
-                # OpenAI function-name grammar is [a-zA-Z0-9_-]{1,64}; our
-                # agent_ids use hyphens, our skill ids use underscores,
-                # and "__" appears in neither — so it's a safe separator.
+                # Double underscore is safe: not in ids or OpenAI's grammar
                 llm_name = f"{agent_id}__{skill.id}"
                 desc = f"[Provider: {agent_id}] {skill.description or ''}"
             else:
@@ -16127,10 +14187,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             tool_to_agent[llm_name] = agent_id
             tool_to_unqualified[llm_name] = skill.id
 
-        # Feature 089 seam I1: start routing the moment the eligible set is
-        # known, so the call overlaps the rest of prompt preparation. The task
-        # is awaited just before round one; everything between here and there
-        # is time the user does not pay for.
         self._typesafe_tool_agent_hint = dict(tool_to_agent)
         typesafe_task, typesafe_fingerprint = await self._typesafe_start_routing(
             websocket=websocket,
@@ -16144,24 +14200,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         typesafe_decision = None
         typesafe_verdict = None
 
-        # Feature 008-llm-text-only-chat (FR-001/FR-002/FR-010).
-        # When zero tools survive the filter stack, fall through to a
-        # plain LLM chat (text-only mode) instead of the legacy
-        # "No agents connected" warning. Three exclusions:
-        #  - draft test chats (FR-010): preserve the existing
-        #    draft-diagnostic path so misconfigured drafts surface.
-        #  - LLM unavailable: already short-circuited at the top of
-        #    handle_chat_message (FR-003).
-        # The dispatch loop below already accepts an empty tools list
-        # cleanly — _call_llm omits the `tools` kwarg when tools_desc
-        # is falsy. We tag the audit/log signal so operators can
-        # distinguish text-only fallback turns (FR-009).
         is_text_only = not tools_desc and not draft_agent_id
 
-        # Feature 027 — inject the orchestrator meta-tools (create_capability /
-        # extend_agent) so the LLM can act on capability gaps (D1). Excluded:
-        # draft-test sessions, text-only turns (feature 008 semantics — the
-        # user disabled everything deliberately), and flag-off deployments.
         from orchestrator import agentic_creation
         meta_tools_injected = False
         if agentic_creation.should_inject(draft_agent_id) and not is_text_only:
@@ -16172,10 +14212,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_unqualified[_meta_name] = _meta_name
             meta_tools_injected = True
 
-        # Feature 030 — scheduling from chat: the schedule_recurring_task
-        # meta-tool makes the feature-025 scheduler reachable from the
-        # conversation (a consent card gates creation). Same exclusions as
-        # the 027 meta-tools.
         from orchestrator import scheduling_chat
         scheduler_tool_injected = False
         if scheduling_chat.should_inject(draft_agent_id) and not is_text_only:
@@ -16186,7 +14222,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_unqualified[_sched_name] = _sched_name
             scheduler_tool_injected = True
 
-        # Persistent owner controls remain available on narrow chat clients.
         from persistent_agents import chat_tools as persistent_chat
         persistent_tool_injected = False
         if (flags.is_enabled("persistent_agents") and not draft_agent_id
@@ -16199,10 +14234,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             persistent_tool_injected = True
             is_text_only = False
 
-        # 030-finish-soul-integration — cross-session memory from chat: the
-        # remember/memory_search/memory_get meta-tools make the feature-025
-        # memory store usable on request (passive prompt recall is unchanged).
-        # Same exclusions as the 027/030 meta-tools.
         from orchestrator import memory_chat
         memory_tool_injected = False
         if memory_chat.should_inject(draft_agent_id) and not is_text_only:
@@ -16213,10 +14244,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_unqualified[_mem_name] = _mem_name
             memory_tool_injected = True
 
-        # Feature 039 — desktop codegen download: the offer_desktop_codegen
-        # meta-tool surfaces a download card for the Windows coding-agent .exe
-        # (GitHub-released, SHA-256 + sigstore verified) when a user asks for
-        # code that runs on their machine. Same exclusions as the 027/030 tools.
         from orchestrator import desktop_codegen
         desktop_codegen_injected = False
         if desktop_codegen.should_inject(draft_agent_id) and not is_text_only:
@@ -16227,10 +14254,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_unqualified[_dc_name] = _dc_name
             desktop_codegen_injected = True
 
-        # 056 US4 — planning decomposition: the delegate_subtasks meta-tool lets
-        # the planner split a broad request into bounded, isolated sub-tasks
-        # instead of micro-planning every step itself. Flag-gated
-        # (FF_RECURSIVE_DELEGATION); same exclusions as the other meta-tools.
         from orchestrator import subtasks as _subtasks
         if _subtasks.should_inject(draft_agent_id) and not is_text_only:
             for _st_def in _subtasks.meta_tool_definitions():
@@ -16266,10 +14289,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _tool_notices = turn_tool_notices()
         _tool_notices.__enter__()
         try:
-            # ------------------------------------------------------------------
-            # SYSTEM PROMPT
-            # ------------------------------------------------------------------
-            # Fetch file mappings for this chat
             file_mappings = await asyncio.to_thread(
                 self.history.get_file_mappings, chat_id, user_id=user_id)
             file_context = ""
@@ -16279,10 +14298,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     file_context += f"- {mapping['original_name']} -> {mapping['backend_path']}\n"
                 file_context += "\nIMPORTANT: You MUST use the absolute backend path (right side) when calling tools for these files. Never use just the original filename.\n"
 
-            # Feature 028 (FR-029): the canvas context comes from the SAME
-            # workspace state the user sees, keyed by the stable component_id
-            # the upsert path matches on — so "update the table" turns
-            # actually update the table the user is looking at.
             canvas_saved = (await self.workspace.alive_rows(chat_id, user_id)) if chat_id else []
             canvas_context = ""
             if canvas_saved:
@@ -16298,10 +14313,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         f"| Type: {sc['component_type']} | Tool: {source_tool} | Agent: {source_agent}\n"
                     )
 
-            # With the flag on, the volatile file/canvas sections are appended
-            # LAST so the stable instruction prefix stays KV-cache-friendly;
-            # off → byte-identical in-place substitution of the legacy
-            # f-string.
             system_prompt = context_engineering.compose_system_prompt(
                 CHAT_SYSTEM_TEMPLATE,
                 file_context=file_context,
@@ -16309,24 +14320,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 cache_stable=flags.is_enabled("context_engineering"),
             )
 
-            # Feature 008-llm-text-only-chat (FR-006a). When this turn
-            # is dispatching with no tools, append the text-only
-            # addendum so the LLM (a) does not emit tool calls,
-            # (b) does not fabricate tool output, and (c) tells the
-            # user to enable an agent for action-style requests.
             if is_text_only:
                 system_prompt += TEXT_ONLY_SYSTEM_PROMPT_ADDENDUM
 
-            # Inject knowledge-based routing hints if available
             if flags.is_enabled("knowledge_synthesis") and hasattr(self, 'knowledge_index'):
                 routing_hints = self.knowledge_index.get_routing_hints()
                 if routing_hints:
                     system_prompt += f"\n{routing_hints}\n"
 
-            # Feature 040 (US4): inject authored skill packs for the agents in
-            # play THIS turn only (progressive disclosure — not every agent
-            # every turn). Wires the previously-dormant get_techniques_for_agent.
-            # Bounded + fail-open: any error leaves the turn unchanged.
             if flags.is_enabled("skill_packs") and hasattr(self, 'knowledge_index'):
                 try:
                     from orchestrator import skill_packs
@@ -16340,12 +14341,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     logger.debug("skill_packs.fallback: injection skipped", exc_info=True)
 
-            # 030 FR-010 (025 T028): populate enabled-skill guidance from the
-            # tools actually available to the user this turn. Previously
-            # ``personalization_skill_lines`` was never assigned, so the call
-            # site below always read None and enabling a skill changed nothing.
-            # Meta-tools (orchestrator/scheduler/memory pseudo-agents) are
-            # excluded — they are not user "skills".
             personalization_skill_lines: List[str] = []
             _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
                                "__desktop_codegen__"}
@@ -16358,16 +14353,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     _desc = (_fn.get("description") or "").strip().split(". ")[0][:160]
                     personalization_skill_lines.append(
                         f"- {_name}: {_desc}" if _desc else f"- {_name}")
-                except Exception:  # pragma: no cover - never block a chat turn
+                except Exception:  # pragma: no cover
                     continue
             personalization_skill_lines = personalization_skill_lines[:40] or None
 
-            # Feature 025 — append per-user personalization (memory recall, user
-            # context, enabled-skill guidance, and personality/"soul"). This is
-            # added AFTER the compliance/safety preamble and tool rules so the
-            # personality block remains subordinate to them (FR-015). Skill
-            # guidance lines are supplied from the eligible tool set computed
-            # above. Failures here must never break a chat turn.
             try:
                 skill_lines = locals().get("personalization_skill_lines") or None
                 personalization_fragment = self.personalization_service.build_prompt_fragment(
@@ -16375,56 +14364,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 if personalization_fragment:
                     system_prompt += f"\n\n{personalization_fragment}\n"
-            except Exception as exc:  # pragma: no cover — never block a chat turn
+            except Exception as exc:  # pragma: no cover
                 logger.warning(f"personalization injection failed (non-fatal): {exc}")
 
-            # Feature 027 — capability-gap guidance accompanies the meta-tools.
             if meta_tools_injected:
                 system_prompt += agentic_creation.SYSTEM_PROMPT_ADDENDUM
 
-            # Feature 030 — recurring-work guidance accompanies the
-            # scheduling meta-tool (stops the model denying the capability).
             if persistent_tool_injected:
                 system_prompt += "\n" + persistent_chat.SYSTEM_PROMPT_ADDENDUM
             if scheduler_tool_injected:
                 system_prompt += scheduling_chat.SYSTEM_PROMPT_ADDENDUM
 
-            # Memory guidance accompanies the memory meta-tools.
             if memory_tool_injected:
                 system_prompt += memory_chat.SYSTEM_PROMPT_ADDENDUM
 
-            # Feature 039 — desktop codegen guidance accompanies the
-            # offer_desktop_codegen meta-tool.
             if desktop_codegen_injected:
                 system_prompt += desktop_codegen.SYSTEM_PROMPT_ADDENDUM
 
-            # Mint one unguessable sentinel for this turn and tell the model
-            # that anything wrapped in its markers is untrusted DATA, never
-            # instructions. Untrusted (non-digest) tool outputs are wrapped at
-            # append time below. No-op when the flag is off.
-            # The sentinel is fresh random bytes every turn, so it must NOT sit
-            # in the leading system message: tool-calling chat templates render
-            # the ~16k-token tool block inside or right after that block, and a
-            # per-turn prefix change defeats the server's automatic prefix
-            # caching for the whole prompt. It rides a trailing system message
-            # instead (same placement as the learned-recipe hint below), which
-            # leaves the prefix byte-identical across turns. Rotation is
-            # unchanged, so the threat model is unchanged.
             datamark_on = flags.is_enabled("datamarking")
             turn_sentinel = datamarking.make_turn_sentinel() if datamark_on else None
 
-            # ------------------------------------------------------------------
-            # MULTI-TURN LOOP
-            # ------------------------------------------------------------------
-            # Fetch recent history
             history_messages = []
             chat_data = await asyncio.to_thread(
                 self.history.get_chat, chat_id, user_id=user_id)
             if chat_data and "messages" in chat_data:
-                # A 060 user message is staged/invisible and therefore is not
-                # present in this committed read. Legacy/scheduled history
-                # still includes the just-added message and keeps the bounded
-                # compatibility slice.
                 raw_history = chat_data["messages"]
                 if (
                     conversation_stage is None
@@ -16436,11 +14399,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     role = h_msg.get("role")
                     content = h_msg.get("content")
                     
-                    # If content is UI component list, stringify it or summarize it
                     if isinstance(content, list):
-                        # Try to find text content or just stringify the whole thing
                         content_str = json.dumps(content)
-                        # Optional: limit size of historical UI components
                         if len(content_str) > 2000:
                             content_str = content_str[:2000] + "... [TRUNCATED]"
                     else:
@@ -16459,29 +14419,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "content": datamarking.spotlight_system_addendum(turn_sentinel),
                 })
 
-            # Expose the user's request to the per-tool supervisor gate
-            # (intent-alignment, C-S5) during this turn's tool dispatch.
             if not hasattr(self, "_active_request"):
                 self._active_request = {}
             if chat_id:
                 active_request_token = _ACTIVE_REQUEST_TEXT.set(message)
                 self._active_request[chat_id] = message
-                # 056 (FR-021): a fresh top-level turn gets a fresh global chain
-                # budget (lazily re-created on the turn's first chained hop). A
-                # sub-task, however, runs on a fresh sub-chat under a budget
-                # SLICE of its parent turn that ``subtasks._run_one`` pre-binds
-                # here; preserve that slice (a budget WITH a parent) so hops
-                # started inside the sub-task debit the parent turn's global
-                # ceiling instead of a fresh parentless budget — otherwise each
-                # sub-task could independently spend the full hop budget
-                # (unbounded fan-out / resource-exhaustion bypass).
                 _existing_budget = self._chain_budgets.get(chat_id)
                 if _existing_budget is None or _existing_budget.parent is None:
                     self._chain_budgets.pop(chat_id, None)
 
-            # 033 turn coordination (flag-gated + fail-open via turn_hooks):
-            # flow tool-budget (C-S1), dual ledger (C-N7), skill recall (C-N10),
-            # plan-deviation (C-S12). All no-ops when their flags are off.
             from orchestrator import turn_hooks
             _flow = turn_hooks.flow_pattern(
                 message, tool_count=len(tools_desc), has_attachment=bool(attachments))
@@ -16493,16 +14439,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     f"A learned recipe matches this request: {_matched_skill.name} "
                     f"(tools: {', '.join(_matched_skill.tools)}). Prefer replaying "
                     "it when appropriate.")})
-            _tool_trace: List[Dict[str, Any]] = []   # successful steps → skill induction
-            _tools_used = 0                          # for the flow tool budget
-            _plan_tools = None                       # turn-1 tool set = the plan
+            _tool_trace: List[Dict[str, Any]] = []
+            _tools_used = 0
+            _plan_tools = None
 
             MAX_TURNS = 10
-            # 076: a look-then-act loop (screenshot → act → screenshot …) needs
-            # more tool rounds than an ordinary request; widen the budget only
-            # when the computer-use verbs are in play this turn. The 033 flow
-            # tool budget (12 tools for a "then … then" request) would cut the
-            # same loop short, so the turn cap is the only budget here.
             if flags.is_enabled("computer_use") and any(
                     isinstance(t, dict) and (t.get("function") or {}).get("name") in ("screenshot", "start_session")
                     for t in (tools_desc or [])):
@@ -16510,16 +14451,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _flow = None
             turn_count = 0
             heartbeat_task = await self._start_heartbeat(websocket)
-            # 055 US3: every rich component this turn lands on the canvas —
-            # feeds the coalesced post-done designer pass for native origins.
             _turn_canvas_components: List[Dict[str, Any]] = []
             designed_turn_marker: Optional[str] = None
 
-            # Denial loop detection: track tools denied by permission checks
-            denial_tracker: Dict[str, int] = {}  # tool_name -> denial count
-            DENIAL_THRESHOLD = 2  # remove tool from prompt after this many denials
+            denial_tracker: Dict[str, int] = {}
+            DENIAL_THRESHOLD = 2
 
-            # Task state machine: create and track this Re-Act execution
             if (
                 flags.is_enabled("task_state_machine")
                 and scheduled_history_stage is None
@@ -16561,7 +14498,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
             while turn_count < MAX_TURNS:
-                # Check for cancellation
                 if self.cancelled_sessions.get(id(websocket)):
                     task_terminal_on_exit = TaskState.CANCELLED
                     logger.info(f"Processing cancelled by user for chat_id {chat_id}")
@@ -16590,15 +14526,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 turn_count += 1
                 logger.info(f"--- Turn {turn_count}/{MAX_TURNS} ---")
 
-                # Message compaction: summarize older turns if context budget
-                # exceeded. Feature 054: compaction is a SYSTEM-context helper
-                # by explicit owner decision — llm_call(None, ...) inside
-                # compact_messages resolves the admin system credential. The
-                # window is sized on the USER's model (that model serves the
-                # chat call the prompt must fit into), and the budget is
-                # charged for the tool-definitions block, which rides a
-                # sibling kwarg the message estimate can't see (~16.3k tokens
-                # for the full catalog).
                 if flags.is_enabled("message_compaction"):
                     _user_cfg = await self._llm_store.get(user_id)
                     _sys_cfg = await self._llm_store.get_system()
@@ -16613,9 +14540,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if was_compacted:
                         logger.info("Context compacted before LLM call")
 
-                # In-loop context editing — tombstone stale tool outputs so a
-                # long tool-calling loop doesn't pin volatile (often untrusted)
-                # text in the window. Fail-open; off by default.
                 if flags.is_enabled("context_engineering"):
                     try:
                         messages, _n_edited = context_engineering.edit_context(messages)
@@ -16624,19 +14548,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 "Context editing: tombstoned %d stale tool output(s)",
                                 _n_edited,
                             )
-                    except Exception:  # pragma: no cover - never block a turn
+                    except Exception:  # pragma: no cover
                         logger.debug("context editing failed (non-fatal)", exc_info=True)
 
-                # Call LLM. Feature 008: text-only turns tag the audit
-                # event with feature="chat_dispatch_text_only" so
-                # operators can distinguish fallback dispatches from
-                # tool-augmented ones (FR-009).
                 call_feature = "chat_dispatch_text_only" if is_text_only else "tool_dispatch"
-                # Feature 030: wrap the (non-streaming, possibly minute-long)
-                # LLM call in a visible chat_step phase — the walkthrough
-                # measured 30-220 s tool-less turns whose ONLY feedback was a
-                # static status line. KIND_PHASE rows persist with the same
-                # PHI redaction as tool steps; failures here never block.
                 _phase_recorder = self._chat_recorders.get(id(websocket))
                 _phase_step_id = None
                 if _phase_recorder is not None:
@@ -16651,9 +14566,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.debug("phase step start failed (non-fatal)", exc_info=True)
                 _stream_token = _NARRATIVE_STREAM_CHAT.set(chat_id)
                 _NARRATIVE_STREAMED.set(False)
-                # Feature 089 seam I2. Round one is the only round routing may
-                # narrow; rounds two and later always see the full eligible
-                # list, so a wrong first guess costs at most one round.
                 round_one_tools = tools_desc
                 round_one_choice = None
                 if turn_count == 1:
@@ -16698,21 +14610,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             len(round_one_tools),
                         )
 
-                # Feature 089 (T004): zero-duration markers that anchor the
-                # Send-to-first-model-call and Send-to-first-tool-dispatch
-                # measurements (SC-001, SC-002). They carry only the chat id
-                # and the round number, never message content. Round 1 is the
-                # only round TypeSafe routing may narrow, so only round 1 is
-                # marked.
                 if turn_count == 1:
                     with perf_span("turn.first_llm_call_start", chat=chat_id):
                         pass
-                # Invariant 1: with no routing decision the call is made with
-                # exactly the historical arguments, so an unkeyed turn is
-                # byte-identical to before 089. The keyword is added only when
-                # a forced choice was actually decided -- which also keeps the
-                # many tests and callers that stub _call_llm with the older
-                # signature working unchanged.
                 _round_kwargs = {"feature": call_feature}
                 if turn_count == 1 and round_one_choice is not None:
                     _round_kwargs["tool_choice"] = round_one_choice
@@ -16755,7 +14655,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ])
                     return
 
-                # Check for reasoning content (DeepSeek, o1, etc.)
                 reasoning = getattr(llm_msg, 'reasoning_content', None)
                 if reasoning:
                     logger.info(f"LLM returned reasoning content ({len(reasoning)} chars)")
@@ -16764,11 +14663,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             Text(content=reasoning, variant="markdown")
                         ]).to_dict()
                     ]
-                    # Chat rail, NOT canvas: a canvas-target ui_render replaces
-                    # the whole canvas, wiping this turn's already-delivered
-                    # components. Reasoning is conversation commentary and
-                    # already re-hydrates to the chat rail on reload
-                    # (collapsible is a _TEXT_ONLY_TYPES member).
+                    # Explicit chat target; canvas target would wipe this turn
                     await self.send_ui_render(websocket, reasoning_components, target="chat")
                     await self._append_conversation_message(
                         conversation_stage,
@@ -16778,11 +14673,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         content=reasoning_components,
                     )
 
-                # Check if LLM wants to call tools
                 if llm_msg.tool_calls:
                     logger.info(f"LLM requested {len(llm_msg.tool_calls)} tool(s)")
                     
-                    # Notify UI
                     tool_names = [tc.function.name for tc in llm_msg.tool_calls]
                     if task:
                         await self.task_manager.transition_task(
@@ -16797,15 +14690,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "message": f"Running: {', '.join(tool_names)}..."
                     }))
 
-                    # Add assistant's message (with tool calls) to history
                     messages.append(llm_msg)
 
-                    # Execute tools
                     tool_results = []
-                    # Feature 089 (T004): no-op marker for the first tool
-                    # dispatch of a turn. It measures when work actually
-                    # starts, which is what a narrowed first round is meant to
-                    # bring forward.
                     if turn_count == 1:
                         with perf_span("turn.first_tool_dispatch", chat=chat_id):
                             pass
@@ -16816,9 +14703,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             if res:
                                 tool_results.append(res)
                         else:
-                            # 033 fan-out (C-N8): an oversized parallel wave is split
-                            # into bounded batches run in sequence; otherwise one
-                            # wave as before. No-op (single wave) when off / small.
                             _batches = turn_hooks.fanout_batches(list(llm_msg.tool_calls))
                             if _batches:
                                 logger.info("fanout chat=%s calls=%d batches=%d",
@@ -16831,8 +14715,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 res_list = await self.execute_parallel_tools(websocket, llm_msg.tool_calls, tool_to_agent, chat_id, user_id=user_id, tool_to_unqualified=tool_to_unqualified)
                                 tool_results.extend(res_list)
 
-                    # 033 — flow budget (C-S1), plan-deviation (C-S12), and the
-                    # success trace for skill induction (C-N10). No-op when off.
                     _turn_tools = [tc.function.name for tc in llm_msg.tool_calls]
                     _tools_used += len(_turn_tools)
                     for _i, _tc in enumerate(llm_msg.tool_calls):
@@ -16843,8 +14725,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             except Exception:
                                 _ta = {}
                             _tool_trace.append({"tool": _tc.function.name, "args": _ta})
-                            # MAS payload defense (C-S14): scan the agent's output
-                            # for injection markers; log findings. No-op when off.
                             _findings = turn_hooks.scan_payload(
                                 getattr(_r, "ui_components", None) or getattr(_r, "content", None))
                             if _findings:
@@ -16861,8 +14741,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "final answer now without calling more tools.")})
                         tools_desc = []
 
-                    # Collect tool UI components and tag each (recursively)
-                    # with source metadata (module-level _tag_source).
                     tool_ui_components = []
                     for i_tc, res in enumerate(tool_results):
                         if res and res.ui_components and not res.error:
@@ -16885,8 +14763,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 tool_ui_components.append(comp)
 
                     if tool_ui_components:
-                        # Feature 029: the adaptive designer arranges multi-
-                        # component rounds (fail-open to the 028 flat append).
                         ws_ops = await self._deliver_round_components(
                             websocket, tool_ui_components, chat_id, user_id=user_id,
                             user_request=message,
@@ -16901,9 +14777,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 content=tool_ui_components,
                             )
                             if ws_ops:
-                                # FR-030: capture the workspace state this turn produced.
                                 def _snapshot_tool_turn():
-                                    """Persist the turn's workspace snapshot off the event loop."""
                                     try:
                                         self.workspace.snapshot(
                                             chat_id, user_id, cause="turn",
@@ -16914,17 +14788,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                                 await asyncio.to_thread(_snapshot_tool_turn)
 
-                    # Append tool outputs to LLM conversation history. The
-                    # LLM-visible text is the two-tier digest (a tool's
-                    # `_model_digest` wins; else the existing `_data`/full-result
-                    # serialization) — see _tool_result_to_llm_content.
                     for i, tc in enumerate(llm_msg.tool_calls):
                         res = tool_results[i] if i < len(tool_results) else None
                         tool_content = self._tool_result_to_llm_content(res, tc.function.name)
-                        # Spotlight untrusted tool output. A tool's own
-                        # `_model_digest` is tool-authored and trusted; only
-                        # raw, non-digest output is wrapped as untrusted data
-                        # the model must not obey.
+                        # Only wraps raw output; _model_digest is already trusted
                         if datamark_on and not self._result_has_model_digest(res):
                             tool_content = datamarking.spotlight(
                                 tool_content, turn_sentinel,
@@ -16936,14 +14803,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "content": tool_content,
                         })
 
-                    # 076 (FR-015): a tool result's ``_images`` tier (screenshots)
-                    # reaches the model as image content parts in a user
-                    # message that FOLLOWS the tool messages (the OpenAI schema
-                    # has no image slot on a tool message). Only the most
-                    # recent few stay as images; older ones become a placeholder.
+                    # OpenAI tool messages can't carry images; these follow
                     self._append_tool_images(messages, llm_msg.tool_calls, tool_results)
 
-                    # Denial loop detection: track permission-denied tool results
                     if flags.is_enabled("denial_loop_detection"):
                         for i, tc in enumerate(llm_msg.tool_calls):
                             res = tool_results[i] if i < len(tool_results) else None
@@ -16953,20 +14815,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 if denial_tracker[name] >= DENIAL_THRESHOLD:
                                     logger.info(f"Denial loop: removing '{name}' from tools after {denial_tracker[name]} denials")
                                     tools_desc = [t for t in tools_desc if t["function"]["name"] != name]
-                                    # Inject a system hint so the LLM stops trying
                                     messages.append({
                                         "role": "system",
                                         "content": f"IMPORTANT: The tool '{name}' is not available due to permission restrictions. Do NOT attempt to use it again. Find an alternative approach or inform the user."
                                     })
-                        # If ALL tools have been removed, break early
                         if not tools_desc:
                             logger.warning("All tools denied — breaking Re-Act loop")
                             await self.send_ui_render(websocket, [
                                 Alert(message="All available tools are restricted by your permission settings. Please update your agent permissions.", variant="warning").to_dict()
                             ], target="chat")
-                            # 055 US1: this break used to exit the loop without
-                            # a terminal chat_status, leaving client loading
-                            # states (skeletons) stuck until disconnect.
                             await self._safe_send(websocket, json.dumps({
                                 "type": "chat_status",
                                 "status": "done",
@@ -16974,7 +14831,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             }))
                             break
 
-                    # Update task state and track tool calls
                     if task:
                         for tc in llm_msg.tool_calls:
                             task.tool_calls_made.append(tc.function.name)
@@ -16982,9 +14838,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             task, TaskState.RUNNING, current_tool=None
                         )
 
-                    # Loop continues to next turn to let LLM analyze results.
-                    # (030: name the writing phase — the walkthrough measured
-                    # up to 124 s behind the old static "Analyzing results...")
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",
                         "status": "thinking",
@@ -16992,18 +14845,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     }))
                 
                 else:
-                    # No tool calls -> Final Response
-                    # Strip any tool-call tokens that leaked into the
-                    # text response — see _sanitize_text_response. This
-                    # defends against open-weight LLMs that emit raw
-                    # `<|tool_call|>...` markup even when asked not to,
-                    # which is what users see when they disable all
-                    # agents and the LLM still tries to invoke a tool.
                     raw_content = llm_msg.content or ""
-                    # Inspect the raw markup BEFORE stripping so we can name
-                    # the tool the model wanted (DSML / OpenAI-leak / Qwen /
-                    # Mistral / etc.) and surface a friendly disabled-tool
-                    # alert. See Orchestrator._diagnose_leaked_tool_calls.
+                    # Inspect before stripping or the leaked tool name is lost
                     leak_alerts = await asyncio.to_thread(
                         self._diagnose_leaked_tool_calls, raw_content, user_id, chat_id)
                     content = _sanitize_text_response(raw_content)
@@ -17016,23 +14859,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if not content:
                         content = "I'm not sure how to help with that."
 
-                    # 033 — Mixture-of-Agents panel (C-N9): for a genuinely
-                    # hard pure-reasoning answer, draft a small candidate panel
-                    # and let one judge call pick the winner. Runs BEFORE the
-                    # supervisor review so the supervisor's verdict on what is
-                    # actually sent is final (a block can never be undone by a
-                    # winning candidate). Plain text only; no-op when off
-                    # (default) and fail-open to the draft on any error.
                     _plain = not content.lstrip().startswith(("{", "["))
                     if _plain and _tools_used == 0:
                         content = await self._moa_panel(
                             websocket, messages, message, content, chat_id)
 
-                    # 033 — supervisor drafted-answer review (C-S5): block an
-                    # answer that leaks a secret / PHI before it is sent. Skill
-                    # induction (C-N10): remember this turn's successful tool
-                    # sequence for future replay. Ledger snapshot (C-N7). No-ops
-                    # when their flags are off.
                     _ok, _why = turn_hooks.review_answer(content)
                     if not _ok:
                         logger.warning("supervisor.block chat=%s reason=%s", chat_id, _why)
@@ -17047,7 +14878,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     needs_retry = False
                     error_msg = ""
                     
-                    # Heuristic: if it looks like JSON containing a component
                     stripped = content.strip()
                     looks_like_json = stripped.startswith("{") or stripped.startswith("[") or "```json" in content
 
@@ -17062,8 +14892,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 if match:
                                     raw_json = match.group(1).strip()
                     else:
-                        # Fallback: LLM may have output text before JSON components
-                        # Search for a JSON array or object containing a "type" field
                         json_match = re.search(r'(\[[\s\S]*\]|\{[\s\S]*\})\s*$', content)
                         if json_match:
                             raw_json = json_match.group(1)
@@ -17072,13 +14900,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     if looks_like_json:
                         try:
-                            # Try to parse and find valid components
-                            # Using the same technique as the _combine_components_llm parser
-                            # First try to parse directly
                             try:
                                 data = json.loads(raw_json)
                             except json.JSONDecodeError:
-                                # Strip markdown code fences if present
                                 if raw_json.startswith("```"):
                                     raw_json = raw_json.split("\n", 1)[1] if "\n" in raw_json else raw_json[3:]
                                     if raw_json.endswith("```"):
@@ -17088,7 +14912,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 try:
                                     data = json.loads(raw_json)
                                 except json.JSONDecodeError:
-                                    # Fallback: regex search for JSON
                                     json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', raw_json)
                                     if json_match:
                                         data = json.loads(json_match.group())
@@ -17096,12 +14919,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                         raise
                             
                             if isinstance(data, dict):
-                                # Unwrap common LLM wrapper patterns:
-                                # {"components": [...]}, {"ui_components": [...]}, {"content": [...]}
                                 for wrapper_key in ("components", "ui_components", "content"):
                                     if wrapper_key in data and isinstance(data[wrapper_key], list):
                                         inner = data[wrapper_key]
-                                        # Verify at least one inner item looks like a component
                                         if any(isinstance(x, dict) and "type" in x for x in inner):
                                             data = inner
                                             break
@@ -17112,10 +14932,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             if isinstance(data, list):
                                 for item in data:
                                     if isinstance(item, dict) and "type" in item:
-                                        # Recursively validate component structure so the
-                                        # client never sees an unrenderable type. Feature 029
-                                        # (FR-020): validate against the renderer registry,
-                                        # not a hand-copied subset.
                                         from webrender import allowed_primitive_types
                                         self._validate_component_tree(
                                             item, set(allowed_primitive_types()) | {"chart"}
@@ -17149,29 +14965,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     
                     logger.info("LLM provided final response. conversation complete.")
 
-                    # Manual span (no reindent of the delivery block): closed
-                    # after the turn's transcript write below; an exception
-                    # skips the perf line but changes nothing else.
                     _narrative_span = perf_span("turn.narrative", chat=chat_id)
                     _narrative_span.__enter__()
 
                     final_ops = []
                     if parsed_components:
                         if self._is_text_only_components(parsed_components):
-                            # Text-only components -- route to chat panel only.
-                            # Persisted history matches what the user sees so a
-                            # chat reload re-renders the same alert.
                             response_components = list(leak_alerts) + list(parsed_components)
                             if is_text_only:
                                 response_components += self._text_only_cta_components(user_id)
                             await self.send_ui_render(websocket, response_components, target="chat")
                         else:
-                            # Rich UI components -- canvas gets the parsed components,
-                            # chat gets the leak alerts + a CONCISE narrative (030:
-                            # the chat rail is words only; a long/structured
-                            # narrative becomes a durable canvas doc card). The
-                            # persisted message includes BOTH so reload shows
-                            # the canvas + alerts.
                             _tools_ran = bool(task.tool_calls_made) if task else False
                             if chat_id and self._narrative_is_long(content):
                                 parsed_components = list(parsed_components) + [
@@ -17188,18 +14992,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             _turn_canvas_components.extend(parsed_components)
                             chat_summary = list(leak_alerts) + chat_core
                             await self.send_ui_render(websocket, chat_summary, target="chat")
-                            # Feature 045: the chat transcript stores the TEXT the
-                            # user saw (chat_summary), NOT the rich components —
-                            # those persist in the workspace and re-hydrate to the
-                            # canvas on reload. Keeps the chat rail words-only and
-                            # makes a reloaded transcript match the live one.
                             response_components = list(chat_summary)
                     else:
                         _tools_ran = bool(task.tool_calls_made) if task else False
-                        # 030: long/structured narrative (drafts, documents,
-                        # anything with headings/tables) is promoted to a
-                        # durable canvas card; the chat rail gets a concise
-                        # plain-words lead. Short answers stay chat-only.
                         narrative_doc = None
                         if chat_id and self._narrative_is_long(content):
                             narrative_doc = self._narrative_doc_card(chat_id, content)
@@ -17213,20 +15008,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         else:
                             chat_core = self._chat_narrative(content, chat_id=chat_id)
                         response_components = list(leak_alerts) + chat_core
-                        # Feature 030: text-only turns for a never-configured
-                        # account get a deterministic enable affordance — not
-                        # left to the model's prose (which pointed users at a
-                        # panel where the agents were not even visible).
                         if is_text_only:
                             response_components += self._text_only_cta_components(user_id)
-                        # Concise text response goes to chat panel
                         await self.send_ui_render(websocket, response_components, target="chat")
                         if narrative_doc is not None:
-                            # Persist the doc with the turn so reload shows it.
                             response_components = [narrative_doc] + response_components
 
-                    # Save complete interaction to history.  Its exact message
-                    # identity is the stale guard used after atomic publication.
                     final_message_id = await self._append_conversation_message(
                         conversation_stage,
                         chat_id=chat_id,
@@ -17235,11 +15022,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         content=response_components,
                     )
 
-                    # Feature 028 (FR-030): close the turn with a workspace
-                    # snapshot when this turn changed the workspace.
                     if final_ops and chat_id:
                         def _snapshot_final_turn():
-                            """Persist the final-turn workspace snapshot off the event loop."""
                             try:
                                 self.workspace.snapshot(
                                     chat_id, user_id, cause="turn",
@@ -17252,10 +15036,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     _narrative_span.__exit__(None, None, None)
 
-                    # The designed layout must be part of the same atomic 060
-                    # publication as the transcript/canvas.  Prepare and persist
-                    # it before publication, but retain 055's native wire order
-                    # by deferring only the refinement render until after done.
                     designed_turn_marker = await self._design_turn_post_done(
                         websocket,
                         chat_id,
@@ -17280,7 +15060,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             TaskState.COMPLETED,
                             turn_count=turn_count,
                         )
-                    # Terminal status follows the sole committed-state frame.
                     await self._send_chat_status(websocket, "done")
                     if designed_turn_marker is not None:
                         try:
@@ -17304,7 +15083,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             )
                     return
 
-            # If loop exits without final response — generate LLM summary
             if turn_count >= MAX_TURNS:
                 logger.info(f"Max turns ({turn_count}) reached. Generating summary of tool outputs.")
                 await self._safe_send(websocket, json.dumps({
@@ -17347,9 +15125,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 "completion summary contract was unavailable",
                                 exc_info=True,
                             )
-                    # Chat rail, NOT canvas — the summary is words about the
-                    # tool results; a canvas render would replace (wipe) the
-                    # components those tools just delivered.
                     await self.send_ui_render(websocket, summary_components, target="chat")
                     if chat_id:
                         summary_message_id = await self._append_conversation_message(
@@ -17360,15 +15135,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             content=summary_components,
                         )
                 else:
-                    # Fallback if LLM summary fails — descriptive, not boilerplate.
                     await self.send_ui_render(websocket, [
                         Card(title="Round results", content=[
                             Text(content="Multiple tool operations were completed. Review the results above for details.", variant="body")
                         ]).to_dict()
                     ], target="chat")
 
-                # The max-turns exit uses the same atomic-layout preparation and
-                # post-done native refinement order as the normal completion.
                 designed_turn_marker = await self._design_turn_post_done(
                     websocket,
                     chat_id,
@@ -17378,9 +15150,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     turn_marker=summary_message_id,
                 )
 
-            # Covers both max-turn completion and early loop exits such as all
-            # tools becoming unavailable.  All user-visible/history/workspace
-            # effects above land before the durable terminal transition.
             if conversation_stage is not None:
                 await self._publish_conversation_snapshot(
                     websocket,
@@ -17434,8 +15203,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.error(f"LLM routing error: {e}", exc_info=True)
             error_text = str(e)
 
-            # Auto-fix: if this is a draft agent test chat and the error is a bad tool schema,
-            # trigger auto-fix so the agent code gets corrected automatically.
             if draft_agent_id and hasattr(self, 'lifecycle_manager') and ("invalid" in error_text.lower() and "schema" in error_text.lower()):
                 logger.info(f"Bad tool schema for draft agent {draft_agent_id} — triggering auto-fix")
                 try:
@@ -17467,9 +15234,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         Alert(message=f"Tool schema error and auto-fix failed: {error_text}", variant="error", title="Error").to_dict()
                     ])
             else:
-                # Clear the 'thinking' spinner so the UI doesn't hang
                 await self._send_chat_status(websocket, "done")
-                # Show a user-friendly error message
                 if "424" in error_text or "Failed Dependency" in error_text or "Repository Not Found" in error_text:
                     error_text = ("The LLM server cannot find the configured model. "
                                   "Open LLM settings, use “Load models” to pick a model "
@@ -17508,18 +15273,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
             _perm_memo.__exit__(None, None, None)
             _tool_notices.__exit__(None, None, None)
-            # Feature 089 seam I6: a turn that ended -- cancelled, disconnected,
-            # refused or simply finished -- must not leave a routing call in
-            # flight. It has nothing left to narrow.
             try:
                 from orchestrator.typesafe_routing.runner import cancel_routing
 
                 cancel_routing(typesafe_task)
             except Exception:
                 logger.debug("routing task cancellation failed", exc_info=True)
-            # The verdict belongs to this turn only. Leaving it set would make
-            # the next turn on the same chat inherit a confirmation
-            # requirement nothing asked for.
             self._typesafe_set_turn_verdict(chat_id, None)
             self._typesafe_set_turn_style(chat_id, None)
             if heartbeat_task is not None:
@@ -17528,12 +15287,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _ACTIVE_REQUEST_TEXT.reset(active_request_token)
 
     def _accumulate_usage(self, chat_id: Optional[str], usage):
-        """Accumulate LLM token usage for a conversation.
-
-        Args:
-            chat_id: Conversation identifier. Skipped if None.
-            usage: The ``usage`` object from an OpenAI-compatible response.
-        """
         if not usage or not chat_id:
             return
         if chat_id not in self.token_usage:
@@ -17549,43 +15302,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             f"Token usage for chat {chat_id}: {self.token_usage[chat_id]}"
         )
 
-    # ------------------------------------------------------------------
-    # Feature 006 — credential resolution helpers
-    # ------------------------------------------------------------------
-
     def _llm_context_user_id(self, websocket) -> Optional[str]:
-        """Return the user_id owning ``websocket``'s LLM context, or ``None``
-        for a SYSTEM context.
-
-        System contexts (feature 054, FR-019): ``websocket is None``
-        (background jobs, compaction, combine/condense, narration) and
-        scheduled-turn ``VirtualWebSocket``s — those run a user's chat turn
-        but bill the admin-managed system credential by explicit owner
-        decision, never the owner's own record.
-        """
         if websocket is None:
             return None
         from orchestrator.async_tasks import VirtualWebSocket
         if isinstance(websocket, VirtualWebSocket):
-            # SYSTEM context by default (scheduled jobs, compaction, background
-            # work — 054 FR-019). The exception is a foreground sub-task the
-            # user is actively waiting on (subtasks._run_one), which stamps
-            # ``llm_context_user_id`` so its ReAct planning and LLM-tool
-            # credential resolve to the REQUESTING user, not the admin system
-            # account — otherwise a fully-configured user whose deployment has
-            # no system credential gets every decomposition failing, and where
-            # a system credential exists the user is silently billed to it.
             return getattr(websocket, "llm_context_user_id", None)
-        # A live socket absent from ui_sessions has no user claims yet; the
-        # _registered_events gate guarantees no LLM dispatch happens before
-        # registration, so treating it as SYSTEM here can only surface as an
-        # LLMUnavailable refusal, never a credential borrow.
         claims = self.ui_sessions.get(websocket) or {}
         return claims.get("sub")
 
     async def llm_configured_for(self, user_id: str) -> bool:
-        """The first-run gate predicate: True iff ``user_id`` has a
-        decryptable persisted LLM configuration (spec FR-013/FR-014)."""
         if not user_id:
             return False
         cfg = await self._llm_store.get(user_id)
@@ -17593,8 +15319,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return cfg is not None
 
     async def _drain_llm_discard_notes(self) -> None:
-        """Audit any undecryptable-record discards queued by the store
-        (FR-010: key rotation/corruption ⇒ audited discard + re-gate)."""
         while True:
             note = self._llm_store.pop_discard_note()
             if note is None:
@@ -17612,24 +15336,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     transport="ws",
                     scope=scope,
                 )
-            except Exception:  # pragma: no cover — audit is best-effort
+            except Exception:  # pragma: no cover
                 logger.warning("discarded_undecryptable audit failed", exc_info=True)
 
     async def _resolve_llm_client_for(self, websocket):
-        """Resolve the (client, source, resolved) tuple for a per-call LLM
-        invocation (feature 054-byo-llm-setup).
-
-        - A live user socket resolves the caller's PERSISTED configuration
-          (``user_llm_config`` by the socket's ``sub`` claim) —
-          CredentialSource.USER. Absent ⇒ LLMUnavailable: the mandatory
-          first-run gate.
-        - ``websocket=None`` and scheduled-turn ``VirtualWebSocket``s
-          resolve the admin-managed SYSTEM record — CredentialSource.SYSTEM.
-          Absent ⇒ LLMUnavailable: background features degrade honestly.
-
-        There is NO fallback in either direction, and no path resolves
-        another user's record (FR-019/FR-007).
-        """
         user_id = self._llm_context_user_id(websocket)
         if user_id is None:
             config = await self._llm_store.get_system()
@@ -17641,14 +15351,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return self._build_llm_client(config, source)
 
     def _llm_audit_principals(self, websocket):
-        """Return ``(actor_user_id, auth_principal)`` for audit-event emission
-        on behalf of ``websocket``.
-
-        Mirrors the convention used elsewhere in the orchestrator
-        (handle_ui_message lines 743/758/771). Background-job calls with
-        websocket=None get ``actor_user_id='system'`` per FR-011 wiring
-        in audit-events.md.
-        """
         if websocket is None:
             return ("system", "system")
         claims = self.ui_sessions.get(websocket) or {}
@@ -17660,15 +15362,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _safe_llm_error_metadata(exc: BaseException) -> _SafeLLMErrorMetadata:
-        """Return content-free error facts and the centralized retry decision.
-
-        Provider exception messages can contain response bodies.  This helper
-        therefore inspects only the Python exception class hierarchy and the
-        SDK's numeric ``status_code`` attribute; callers may safely put the
-        returned values in structured logs.  The audit classification remains
-        the existing feature-006 enum.
-        """
-
         raw_status = getattr(exc, "status_code", None)
         if raw_status is None:
             raw_status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -17734,8 +15427,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @classmethod
     def _classify_llm_upstream_error(cls, exc: BaseException) -> str:
-        """Map a provider exception to the existing audit-event enum."""
-
         return cls._safe_llm_error_metadata(exc).upstream_error_class
 
     async def _call_llm(self, websocket, messages, tools_desc=None, temperature=None,
@@ -17743,53 +15434,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         reasoning_effort=None, allow_stream: bool = False,
                         stream_chat_id: Optional[str] = None,
                         tool_choice=None):
-        """Helper to call LLM with retries and exponential backoff.
-
-        Feature 052 (FR-015): when the caller opts in — ``allow_stream=True``
-        or an active ``_NARRATIVE_STREAM_CHAT`` context (how the chat loop's
-        route call opts in without changing this signature) — and
-        ``FF_LLM_STREAMING`` is on (default), the call runs with
-        ``stream=True`` — chunks buffer until the first discriminating delta;
-        a prose narrative streams to ``websocket`` as ``ui_stream_data``
-        frames scoped to ``stream_chat_id``, a tool-call round emits no
-        frames, and any streaming error silently retries non-streaming
-        (contracts/narrative-streaming.md). The returned ``(message, usage)``
-        is equivalent to the non-streamed shape either way.
-
-        Retries only proven transient failures (408/409/425/429/5xx,
-        connection/timeout exceptions, and the internal HTML-maintenance
-        marker). All other 4xx, malformed responses, and unknown exceptions
-        fail after one attempt. The credential client disables SDK-owned
-        retries so this loop is the sole retry budget.
-
-        Optional enhancement params, both probe-and-fallback so a plainer
-        OpenAI-compatible endpoint is never broken by them:
-
-        * ``response_format`` (enforced structured output): a
-          ``response_format`` value (e.g. ``{"type": "json_object"}`` or a
-          ``json_schema`` block) passed straight through to the endpoint.
-        * ``reasoning_effort`` (reasoning-budget knob): ``"minimal"`` /
-          ``"low"`` / ``"medium"`` / ``"high"``; falls back to the
-          ``LLM_REASONING_EFFORT`` global default when the caller passes None.
-
-        If the endpoint rejects either param (400 / unsupported / unknown
-        keyword), it is recorded as unsupported for this (base_url, model) and
-        the call is retried without it — the request still succeeds, just
-        without the enhancement. Subsequent calls skip the rejected param
-        entirely.
-
-        Credential resolution happens here. The caller's credentials (or
-        operator default) are picked up from the per-WebSocket credential
-        store via ``_resolve_llm_client_for``.
-        Every call emits an ``llm_call`` audit event with
-        ``credential_source``;
-        ``LLMUnavailable`` (no credentials anywhere) emits
-        ``llm_unconfigured`` instead and returns ``(None, None)``.
-
-        Returns:
-            Tuple of (message, usage) where usage is the token usage object
-            from the API response, or (None, None) on complete failure.
-        """
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         from persistent_agents.dispatch_context import current_dispatch
         persistent_dispatch = current_dispatch()
@@ -17809,27 +15453,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 feature=feature,
             )
             return None, None
-        # The resolved.model is the user's chosen model when source=USER,
-        # else the admin system record's model (source=SYSTEM).
         call_model = resolved.model
-        # Assemble the optional enhancement params, minus any this endpoint
-        # already told us it doesn't support (probe cache). The in-loop except
-        # strips any that draw a fresh rejection.
         effort = reasoning_effort if reasoning_effort is not None else getattr(
             self, "llm_reasoning_effort", None)
         effort = self._valid_reasoning_effort(effort)
-        # Device-capability-aware model router. Cheap-first — pick the cheapest
-        # tier that fits this task, capped by the connecting device; a
-        # low-confidence response escalates one tier (below). Flag-gated
-        # (default OFF) + fail-open: with the flag off, or no MODEL_TIERS
-        # configured, call_model is the already-resolved default, unchanged.
-        #
-        # A USER record is different: its endpoint/key/model triple was tested
-        # together and the selected model is the user's persisted contract
-        # (054 FR-008). Operator MODEL_TIERS must never silently replace that
-        # model. The router may still surface the on-device eligibility hint,
-        # but tier selection/escalation applies only to the operator-managed
-        # SYSTEM credential.
         _route_tier: Optional[int] = None
         escalated = False
         if model_router.router_enabled():
@@ -17842,11 +15469,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if source != self._CredentialSource.USER:
                     call_model, _route_tier = dec.model, dec.tier
                     if call_model != resolved.model:
-                        # Low-cardinality: tier + model only.
                         logger.info("model_router: routed tier=%s model=%s",
                                     model_router.tier_name(dec.tier), call_model)
-                # On-device lane (C-D6): record whether this turn could run on a
-                # capable client's local model, so the client/operator can offload.
                 self._last_route_ondevice = bool(dec.ondevice)
                 if dec.ondevice:
                     logger.info("model_router: on-device eligible (feature=%s tier=%s)",
@@ -17854,16 +15478,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("model_router: selection failed — using default model",
                              exc_info=True)
-        # The probe cache is keyed on the model ACTUALLY called — computed
-        # after routing so a routed tier's rejections never land on (or are
-        # read from) the default model's entry.
         def _probe_state(model_name: str):
-            """(cap_key, extra_kwargs) for the model this attempt will call.
-
-            Recomputed whenever ``call_model`` changes (initial routing and
-            the one-shot escalation below) so a tier's rejected params are
-            remembered under — and read from — that tier's own entry.
-            """
             key = (getattr(resolved, "base_url", None), model_name)
             rejected = getattr(self, "_llm_unsupported_params", {}).get(key, set())
             kwargs: Dict[str, Any] = {}
@@ -17882,19 +15497,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if persistent_dispatch is not None:
             stream_allowed = False
         attempt = 0
-        # 076 (FR-016): an endpoint that already rejected image parts for this
-        # (base_url, model) gets text-only messages — the image messages are
-        # replaced IN PLACE so later turns of the same conversation stop
-        # carrying screenshots to a model that cannot see them.
         _vision_cache = getattr(self, "_llm_vision_unsupported", None)
         if (_vision_cache is not None and cap_key in _vision_cache
                 and self._messages_have_images(messages)):
             self._strip_image_parts(messages)
-        # Feature 089: a forced tool_choice is a hint, not a requirement. An
-        # endpoint that rejects the dict form gets one immediate retry with
-        # "auto", and that retry does NOT count against MAX_RETRIES -- the call
-        # never actually reached the model, so charging it a retry would let a
-        # routing optimization eat the turn's error budget.
         _forced_choice = tool_choice if tool_choice not in (None, "auto") else None
         _forced_choice_retried = False
         while attempt < self.MAX_RETRIES:
@@ -17906,8 +15512,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
                 if tools_desc:
                     kwargs["tools"] = tools_desc
-                    # Feature 089 seam I3: the default stays exactly "auto", so
-                    # every existing caller produces byte-identical arguments.
                     kwargs["tool_choice"] = (
                         "auto" if _forced_choice is None else _forced_choice
                     )
@@ -17951,25 +15555,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg = getattr(choices[0], "message", None)
                 if _msg is None:
                     raise _LLMMalformedResponseError()
-                # Defensive: some upstream proxies return a 200 status with
-                # an HTML maintenance page body (e.g. an Apache 503/502 from
-                # an in-front load balancer that swallowed the upstream
-                # error). The OpenAI client happily passes this through as
-                # message content, and it would render as the assistant's
-                # reply. Detect the shape and treat it as a transient
-                # failure so the existing retry + clean-Alert path runs.
+                # Some proxies return a maintenance page with HTTP 200
                 _content = (getattr(_msg, "content", None) or "").lstrip()
                 if _content and _content[:200].lower().startswith(
                     ("<!doctype html", "<html", "<head", "<body")
                 ):
                     raise _LLMHTMLMaintenanceError()
-                # Some serving stacks leak Harmony channel tokens
-                # ("<|channel|>thought…") or <think> blocks into content;
-                # strip them before any consumer renders or persists it.
                 if _msg is not None and isinstance(getattr(_msg, "content", None), str):
                     _msg.content = strip_reasoning_markup(_msg.content)
                 usage = getattr(response, "usage", None)
-                # Audit: successful llm_call
                 total_tokens = getattr(usage, "total_tokens", None) if usage else None
                 await self._record_llm_call(
                     self.audit_recorder,
@@ -17982,10 +15576,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     total_tokens=total_tokens,
                     outcome="success",
                 )
-                # Feature 006: emit llm_usage_report WS message ONLY when
-                # the call was served with the user's personal credentials
-                # (FR-016 — operator-default calls are NOT attributed to
-                # the user's per-device counters).
                 if source == self._CredentialSource.USER and websocket is not None:
                     await self._emit_llm_usage_report(
                         websocket,
@@ -17994,11 +15584,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         usage=usage,
                         outcome="success",
                     )
-                # Cheap-first cascade — if the router placed this call on a
-                # lower tier and the response reads low-confidence
-                # (hedge/refusal/empty), escalate ONE tier and re-issue once.
-                # Only for prose turns (tool-call turns aren't graded this
-                # way). Bounded by ``escalated`` so it happens at most once.
                 if (persistent_dispatch is None
                         and _route_tier is not None and not escalated and not tools_desc
                         and model_router.router_enabled()
@@ -18012,19 +15597,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.info("model_router: low-confidence → escalating to "
                                     "tier %s (%s)", model_router.tier_name(_next),
                                     _next_model)
-                        attempt -= 1  # the escalation re-call isn't a retry
+                        attempt -= 1
                         continue
                 return _msg, usage
             except Exception as e:
                 if persistent_dispatch is not None:
-                    # Each durable attempt is accounted independently. Provider
-                    # compatibility probes and retries require another reservation.
                     raise
-                # Feature 089 seam I3: did the endpoint reject the forced
-                # tool_choice? Drop back to "auto" and retry immediately. The
-                # request never reached the model, so this is not a retry
-                # attempt: a routing hint must not be able to spend the turn's
-                # error budget.
                 if _forced_choice is not None and not _forced_choice_retried:
                     _forced_choice_retried = True
                     _forced_choice = None
@@ -18034,10 +15612,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     attempt -= 1
                     continue
 
-                # 076 (FR-016): did the endpoint reject the image parts (a
-                # text-only model)? Strip them in place, remember it for this
-                # (base_url, model) and retry text-only once — the request is
-                # fine, the model just cannot see. Not a retry attempt.
                 if (self._messages_have_images(messages)
                         and self._llm_rejects_images(e)):
                     _vc = getattr(self, "_llm_vision_unsupported", None)
@@ -18048,12 +15622,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.info("LLM endpoint rejected image parts; retrying text-only")
                     attempt -= 1
                     continue
-                # Did the endpoint reject one of our optional enhancement
-                # params? If so, remember it for this (base_url, model), strip
-                # it, and retry immediately — the request itself is fine, just
-                # without the enhancement.
-                # The raw provider string is inspected only in memory for this
-                # compatibility decision; it is never logged or audited.
+                # Provider error text stays in memory only, never logged
                 drop = (
                     self._llm_unsupported_extras(str(e), extra_kwargs)
                     if extra_kwargs
@@ -18068,8 +15637,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.info(
                         "LLM endpoint rejected %s; retrying without it", sorted(drop)
                     )
-                    # A capability-probe rejection is not a real failure —
-                    # don't spend a retry attempt on it.
                     attempt -= 1
                     continue
 
@@ -18103,17 +15670,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             websocket, feature=feature, model=call_model,
                             usage=None, outcome="failure",
                         )
-                    # Return (None, None) so callers fall through to the
-                    # existing user-friendly "Failed to get a response from
-                    # the AI model" Alert. Raising here would surface raw
-                    # upstream payloads (e.g. a provider's 503 HTML page)
-                    # in chat error text. The structured log and audit event
-                    # retain only the safe class/status/category facts.
+                    # None here, not raise: avoids leaking raw payloads to chat
                     return None, None
 
-                # Exponential backoff: 1s, 2s, 4s, 8s with ±20% jitter to
-                # avoid thundering-herd when concurrent LLM calls fail against
-                # the same upstream (mirrors stream_manager.compute_backoff).
                 backoff = min(2 ** (attempt - 1), 8) * random.uniform(0.8, 1.2)
                 logger.info(
                     "Transient LLM error; retrying attempt=%d/%d "
@@ -18123,14 +15682,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     backoff,
                 )
                 await asyncio.sleep(backoff)
-        # Defensive: unreachable for a positive MAX_RETRIES value.
         return None, None
 
     _MOA_CANDIDATE_LABELS = "ABCDEFGH"
 
     @staticmethod
     def _moa_panel_timeout() -> float:
-        """Whole-panel wall-clock budget (candidates + judge), env-tunable."""
         try:
             return max(1.0, float(os.getenv("MOA_PANEL_TIMEOUT_SECONDS", "45")))
         except ValueError:
@@ -18138,28 +15695,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _moa_panel(self, websocket, messages, request: str, draft: str,
                          chat_id: Optional[str]) -> str:
-        """033 C-N9: return the panel's winning answer for a hard turn, or
-        ``draft`` unchanged.
-
-        Gates (all must hold, cheapest first):
-          * ``FF_MOA_DEBATE`` on AND :func:`turn_hooks.should_debate_turn` —
-            a deterministic difficulty score from the user's request plus
-            hedge markers in the draft, against ``MOA_DIFFICULTY_THRESHOLD``;
-          * an interactive UI turn — background turns (scheduled jobs, parser
-            auto-continue, draft self-tests on a ``VirtualWebSocket``) and MCP
-            invocations are skipped so the admin System LLM is never tripled;
-          * the draft was NOT already streamed to the user. A streamed draft
-            has been read; replacing it with a different answer after the
-            fact is more surprising than the silent pause the panel avoids,
-            so such turns keep their draft (documented: with
-            ``FF_LLM_STREAMING`` on the panel only runs when the route call
-            did not stream — JSON-shaped drafts, a streaming fallback, or
-            ``FF_LLM_STREAMING=0``).
-
-        Cost is bounded: two candidate drafts plus ONE judge call, all inside
-        ``MOA_PANEL_TIMEOUT_SECONDS``. The user sees a ``chat_status`` frame
-        while it runs. Any error / timeout / unparsable verdict ⇒ ``draft``.
-        """
         try:
             from orchestrator import turn_hooks
             if not turn_hooks.should_debate_turn(request, draft):
@@ -18193,10 +15728,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _moa_panel_run(self, websocket, messages, request: str, draft: str,
                              chat_id: Optional[str]) -> str:
-        """Draft up to two alternative candidates, then ONE judge call ranks the
-        set; :func:`turn_hooks.aggregate_candidates` runs the debate tournament
-        over that ranking. Scores are set so every fallback path (judge error,
-        partial ranking) resolves to the draft."""
         from orchestrator import turn_hooks
         candidates = [("draft", draft, 1.0)]
         for k in range(2):
@@ -18248,31 +15779,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _llm_streaming_enabled() -> bool:
-        """FF_LLM_STREAMING kill switch (default on), env-read per call so
-        operators and tests can flip it without a restart."""
         return os.getenv("FF_LLM_STREAMING", "true").lower() in ("true", "1", "yes")
 
     async def _call_llm_streamed(self, websocket, client, kwargs, chat_id):
-        """One ``stream=True`` completion with buffer-until-discriminate delivery.
-
-        Runs the provider's sync stream in a worker thread, marshaling chunks
-        onto the event loop. The first meaningful delta decides the mode:
-        ``tool_calls`` ⇒ consume silently and return a normal tool-call
-        response (no UI frames); ``content`` ⇒ progressively emit the
-        narrative as ``ui_stream_data`` frames scoped to ``chat_id``
-        (JSON/fence-shaped output stays silent — it is a component payload the
-        final render must deliver whole). Frames are held back to the last
-        safe markdown boundary so none ships a dangling ``**``/``*``/backtick/
-        ``[`` token (055 FR-013); end-of-stream flushes the full text before
-        the terminal clear. Returns a response object shaped
-        like the non-streamed one; any failure propagates so the caller
-        retries the call non-streaming (contracts/narrative-streaming.md).
-        """
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
 
         def _pump():
-            """Iterate the sync provider stream and feed chunks to the loop."""
             try:
                 for chunk in client.chat.completions.create(stream=True, **kwargs):
                     loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
@@ -18345,8 +15858,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             sent_len = safe_len
                             last_emit = time.monotonic()
             if mode == "content":
-                # Terminal flush: ship the tail held past the last safe
-                # boundary before the clearing frame (055 FR-013).
                 full = "".join(content_parts)
                 if len(full) > sent_len:
                     await self._emit_narrative_frame(
@@ -18358,9 +15869,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._emit_narrative_frame(
                     websocket, chat_id, stream_id, seq, "", terminal=True)
         except Exception:
-            # Clear any partial streamed text so the non-streaming retry's
-            # final render is not visually duplicated; then let the caller
-            # fall back.
             if emitted:
                 try:
                     await self._emit_narrative_frame(
@@ -18379,13 +15887,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _assemble_streamed_message(content: str, tool_calls_acc: Dict[int, Dict[str, Any]]):
-        """Reconstruct a non-streamed-equivalent completion message from
-        accumulated deltas.
-
-        Prefers the real OpenAI model types so a tool-round message can be
-        appended back into ``messages`` and serialized on the next API call;
-        falls back to attribute-compatible namespaces when unavailable.
-        """
         from types import SimpleNamespace
         tool_calls = None
         if tool_calls_acc:
@@ -18417,13 +15918,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _emit_narrative_frame(self, websocket, chat_id, stream_id, seq,
                                     text, *, terminal):
-        """Send one narrative ``ui_stream_data`` frame (existing wire shape).
-
-        Dual shape per 026 FR-018: structured component for native clients
-        plus a web HTML fragment when renderable. The terminal frame carries
-        empty content so every client clears the stream node — the turn's
-        final ``ui_render`` is the authoritative replacement.
-        """
         if text:
             component = Text(content=text, variant="markdown").to_dict()
         else:
@@ -18458,9 +15952,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @classmethod
     def _valid_reasoning_effort(cls, value):
-        """Normalize a reasoning-effort value. Returns the lowercased value if
-        it is one of the recognized levels, else None (so an unset or garbage
-        env/arg is simply not sent)."""
         if value is None:
             return None
         v = str(value).strip().lower()
@@ -18468,21 +15959,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _llm_unsupported_extras(error_str: str, extra_kwargs: Dict[str, Any]) -> set:
-        """Capability probe: given a failed completion's error text and the
-        optional enhancement params we sent, return the subset the endpoint
-        appears to reject (so the caller can drop + remember them).
-
-        Conservative: only fires on signals that look like an unsupported /
-        malformed *parameter* (not a transient 5xx or an auth error). When the
-        message names a specific param, only that one is dropped; when it is a
-        generic "unsupported parameter" 400 that names none of ours, all active
-        enhancement params are dropped (they are optional, so dropping them to
-        keep the call working is always safe).
-        """
         if not extra_kwargs:
             return set()
         low = (error_str or "").lower()
-        # Never treat transient/auth failures as a param-capability problem.
         if any(code in low for code in ("502", "503", "504", "bad gateway",
                                         "service unavailable", "connection",
                                         "timeout", "401", "403")):
@@ -18503,15 +15982,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _call_llm_json(self, websocket, messages, *, schema=None,
                              schema_name: str = "result", temperature=None,
                              feature: str = "structured", reasoning_effort=None):
-        """Request enforced structured (JSON) output and parse it.
-
-        Passes a ``response_format`` (a strict ``json_schema`` block when
-        ``schema`` is given, else plain ``json_object``) through
-        :meth:`_call_llm`, which probe-and-falls-back if the endpoint can't do
-        it. Returns the parsed object, or ``None`` when the call failed or the
-        content was not valid JSON — callers keep their existing best-effort
-        JSON-repair path as the fallback, so this is always safe to adopt.
-        """
         if schema is not None:
             response_format = {
                 "type": "json_schema",
@@ -18530,7 +16000,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             return json.loads(content)
         except (ValueError, TypeError):
-            # Tolerate a fenced ```json block or surrounding prose.
             extracted = self._extract_json_block(content)
             if extracted is not None:
                 try:
@@ -18541,14 +16010,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _extract_json_block(text: str):
-        """Best-effort: pull the first balanced JSON object/array out of a
-        string that may be wrapped in a ```json fence or prose. Returns the
-        substring or None."""
         if not isinstance(text, str):
             return None
         s = text.strip()
         if s.startswith("```"):
-            # strip a leading fence line and a trailing fence
             nl = s.find("\n")
             if nl != -1:
                 s = s[nl + 1:]
@@ -18571,8 +16036,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return s[start:i + 1]
         return None
 
-    #: 076: how many screenshot messages stay as real images in the model's
-    #: context; older ones are replaced by a text placeholder (FR-015).
     _MAX_IMAGE_MESSAGES = int(os.getenv("COMPUTER_USE_MAX_IMAGES", "3"))
     _IMAGE_PLACEHOLDER = ("[An earlier screenshot was here and has been dropped to save "
                           "context. Take a new screenshot if you need to see the screen.]")
@@ -18592,7 +16055,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return any(self._is_image_message(m) for m in (messages or []))
 
     def _strip_image_parts(self, messages) -> int:
-        """Replace every image message's content with a text note IN PLACE."""
         stripped = 0
         for m in messages or []:
             if self._is_image_message(m):
@@ -18601,7 +16063,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return stripped
 
     def _prune_image_messages(self, messages) -> int:
-        """Keep only the newest ``_MAX_IMAGE_MESSAGES`` image messages as images."""
         image_idx = [i for i, m in enumerate(messages) if self._is_image_message(m)]
         excess = image_idx[:-self._MAX_IMAGE_MESSAGES] if self._MAX_IMAGE_MESSAGES > 0 else image_idx
         for i in excess:
@@ -18609,10 +16070,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return len(excess)
 
     def _append_tool_images(self, messages, tool_calls, tool_results) -> int:
-        """076 (FR-015/FR-021): turn each tool result's ``_images`` into a
-        user message of image content parts (data URIs) with a spotlighting
-        caption, appended after this round's tool messages. Returns the number
-        of image messages added."""
         added = 0
         for i, _tc in enumerate(tool_calls or []):
             res = tool_results[i] if i < len(tool_results) else None
@@ -18644,8 +16101,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _llm_rejects_images(exc: BaseException) -> bool:
-        """Does this provider error look like 'image parts not supported'?
-        Conservative: a 4xx whose message mentions images/content parts."""
         raw_status = getattr(exc, "status_code", None)
         if raw_status is None:
             raw_status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -18662,23 +16117,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _tool_result_to_llm_content(res, tool_name=None) -> str:
-        """Two-tier tool output: the text a tool result contributes to the LLM
-        conversation.
-
-        A tool may split its result into a short model-facing tier and a larger
-        renderer-only tier. Precedence:
-
-        1. ``_model_digest`` — the explicit model-facing digest. When present it
-           is the ONLY thing the LLM sees; the render-only payload
-           (``_ui_components`` / ``_data`` / raw fetched text) never enters the
-           model. This both cuts tokens and closes a prompt-injection channel
-           (untrusted fetched/parsed content stops reaching the reasoning loop).
-        2. ``_data`` — the existing convention; serialized as today.
-        3. otherwise the whole result is serialized — unchanged behavior.
-
-        Defaulting to (2)/(3) keeps every current tool byte-identical; the
-        digest tier is purely opt-in for a tool that sets ``_model_digest``.
-        """
         if res is None:
             return "No output"
         if getattr(res, "error", None):
@@ -18696,23 +16134,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _result_has_model_digest(res) -> bool:
-        """True when a tool result carries a ``_model_digest`` — i.e. the
-        LLM-visible text is tool-authored (trusted) and should NOT be wrapped
-        as untrusted by datamarking."""
         if getattr(res, "error", None):
             return False
         result = getattr(res, "result", None)
         return isinstance(result, dict) and result.get("_model_digest") is not None
 
     async def _emit_llm_usage_report(self, websocket, *, feature, model, usage, outcome):
-        """Send an ``llm_usage_report`` message to ``websocket`` carrying the
-        token-usage tally for one LLM-dependent call (feature 006 FR-014).
-
-        Only invoked when the call's credential source was ``user`` —
-        operator-default calls are NOT reported to the per-device
-        token-usage counters (FR-016). Best-effort fire-and-forget;
-        failures here never affect the LLM call's user-facing result.
-        """
         try:
             from datetime import datetime, timezone
             payload = {
@@ -18726,21 +16153,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "at": datetime.now(timezone.utc).isoformat(),
             }
             await self._safe_send(websocket, json.dumps(payload))
-        except Exception as exc:  # pragma: no cover — best-effort delivery
+        except Exception as exc:  # pragma: no cover
             logger.debug(f"llm_usage_report send failed (non-fatal): {exc}")
 
     async def _generate_tool_summary(self, websocket, messages, chat_id=None, user_id=None):
-        """
-        Generate an LLM summary/analysis of accumulated tool results.
-        Called when the Re-Act loop ends (max turns or completion) to ensure
-        the user always gets a meaningful summary rather than a 'stopped' message.
-
-        Feature 006: routes through the per-user / operator-default
-        credential resolver. ``LLMUnavailable`` (no credentials available)
-        emits an llm_unconfigured audit event and returns None silently —
-        a missing summary is non-fatal and the user already has the
-        primary tool output.
-        """
         feature = "tool_summary"
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         try:
@@ -18755,7 +16171,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
 
         try:
-            # Build a summary-focused prompt from the conversation so far
             summary_messages = [
                 {
                     "role": "system",
@@ -18770,13 +16185,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 },
             ]
 
-            # Include relevant parts of the conversation (last several messages)
             for msg in messages[-8:]:
                 if isinstance(msg, dict):
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     if role in ("user", "tool", "assistant") and content:
-                        # Truncate long tool outputs
                         if len(str(content)) > 1500:
                             content = str(content)[:1500] + "..."
                         summary_messages.append({"role": role if role != "tool" else "user", "content": str(content)})
@@ -18818,8 +16231,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 summary_text = _LEAK_FALLBACK_TEXT
 
             if summary_text:
-                # Feature 029 (FR-027): contextual title over the constant
-                # "Summary" — derived from the summary's own first heading.
                 return [
                     Card(title=self._derive_chat_title(summary_text, default="Round results"),
                          content=[
@@ -18855,20 +16266,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         return None
 
-    # =========================================================================
-    # CONSTANTS
-    # =========================================================================
-
     MAX_RETRIES = 3
-    RETRY_BACKOFF = [1.0, 2.0, 4.0]  # exponential backoff
+    RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
     def _find_tool_owner(self, tool_name: str) -> Optional[str]:
-        """Return the agent_id that owns ``tool_name`` (any registered agent), or None.
-
-        Searches every entry in ``self.agent_cards`` regardless of filter state —
-        the goal is to identify the owner so we can name it in the disabled-tool
-        alert, not to gate dispatch.
-        """
         if not tool_name:
             return None
         for agent_id, card in self.agent_cards.items():
@@ -18883,13 +16284,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: Optional[str],
         chat_id: Optional[str],
     ) -> ToolDiagnostic:
-        """Determine why ``tool_name`` may be unavailable for ``user_id`` in ``chat_id``.
-
-        Mirrors the filter stack in handle_chat_message's tool-list build
-        (orchestrator.py around lines 2080–2140). Priority order — first match wins:
-        UNKNOWN_TOOL > AGENT_DISABLED_BY_USER > SECURITY_BLOCKED >
-        NO_REGISTERED_MACHINE > PERMISSION_DENIED > DISABLED_IN_PICKER > ENABLED.
-        """
         agent_id = self._find_tool_owner(tool_name)
         if not agent_id:
             return ToolDiagnostic(
@@ -18903,11 +16297,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             getattr(card, "name", None) or agent_id if card is not None else agent_id
         )
 
-        # 1) User has disabled the whole agent.
         if user_id:
             try:
                 disabled = set(self.tool_permissions.list_disabled_agents(user_id))
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 disabled = set()
             if agent_id in disabled:
                 return ToolDiagnostic(
@@ -18917,7 +16310,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     reason=None,
                 )
 
-        # 2) System-blocked (proactive security review).
         flags = getattr(self, "security_flags", {}).get(agent_id, {}) or {}
         flag = flags.get(tool_name) or {}
         if flag.get("blocked"):
@@ -18928,9 +16320,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 reason=flag.get("reason"),
             )
 
-        # 2b) Remote-compute verbs hidden while the user owns zero machines
-        # (mirrors tool_visibility's no_registered_machine exclusion; a chat
-        # transcript can still tempt the model into re-emitting one).
         if user_id and agent_id == "remote-compute-1" and tool_name != "list_machines":
             from orchestrator import remote_machines
             from orchestrator.plane_repository_context import (
@@ -18941,7 +16330,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 machineless = not remote_machines.owns_any_machine(
                     plane_source_from_orchestrator(self), user_id
                 )
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 machineless = False
             if machineless:
                 return ToolDiagnostic(
@@ -18951,13 +16340,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     reason=None,
                 )
 
-        # 3) Permission / scope denial.
         if user_id:
             try:
                 allowed = self.tool_permissions.is_tool_allowed(user_id, agent_id, tool_name)
-            except Exception:  # pragma: no cover — defensive
-                # Fail closed: a permission-check error must not report the tool
-                # as effectively allowed in the disabled-tool diagnostic.
+            except Exception:  # pragma: no cover
                 allowed = False
             if not allowed:
                 return ToolDiagnostic(
@@ -18967,14 +16353,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     reason=None,
                 )
 
-        # 4) Per-chat tool picker.
         if user_id and chat_id:
             try:
                 bound_agent_id = self.history.get_chat_agent(
                     chat_id,
                     user_id=user_id,
                 )
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 bound_agent_id = None
             if bound_agent_id is not None:
                 try:
@@ -18982,7 +16367,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         user_id,
                         bound_agent_id,
                     )
-                except Exception:  # pragma: no cover — defensive
+                except Exception:  # pragma: no cover
                     saved = None
                 if saved is not None and len(saved) > 0 and tool_name not in saved:
                     return ToolDiagnostic(
@@ -19001,13 +16386,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _alert_for_disabled_tool(diag: ToolDiagnostic, tool_name: str) -> Alert:
-        """Render a user-facing Alert explaining why ``tool_name`` was unavailable.
-
-        Variants follow existing conventions: 'warning' for things the user
-        can self-correct (picker, agent toggle, permission), 'error' for
-        admin-blocked or unknown-tool states, 'info' for the surprising
-        ENABLED-but-format-mismatch case (only reachable from the leak path).
-        """
         agent_label = diag.agent_display_name or diag.agent_id or "an installed agent"
         if diag.status is ToolDiagnosticStatus.DISABLED_IN_PICKER:
             return Alert(
@@ -19073,8 +16451,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 variant="warning",
                 title="No registered machine",
             )
-        # ENABLED — only reachable from the leak path (not from the dispatch
-        # gate, which short-circuits before this is rendered).
+        # Reachable only from the leak path, never the dispatch gate
         return Alert(
             message=(
                 f"The assistant emitted tool-call markup that this orchestrator "
@@ -19093,17 +16470,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: Optional[str],
         chat_id: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Inspect ``content`` for leaked tool-call markup and return one Alert
-        (as a serialized component dict) per distinct tool name found.
-
-        Only returns alerts for tool names actually parsed out of the markup —
-        if the leak regex matches but no recognizable tool name can be
-        extracted, returns an empty list (the existing strip behavior remains
-        the only mitigation for that case).
-        """
         if not content:
             return []
-        # Quick pre-filter: only walk extractors when at least one leak pattern fired.
         if not any(p.search(content) for p in _LEAKED_TOOL_CALL_PATTERNS):
             return []
         names = _tool_names_from_leak(content)
@@ -19117,7 +16485,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return alerts
 
     def _is_long_running_tool(self, agent_id: Optional[str], tool_name: str) -> bool:
-        """Return True if the agent's card declares this tool as long-running (FR-026)."""
         if not agent_id:
             return False
         card = self.agent_cards.get(agent_id)
@@ -19129,17 +16496,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def _tool_accepts_context_arg(
         self, agent_id: Optional[str], tool_name: str, arg_name: str
     ) -> bool:
-        """Return whether an orchestrator-injected argument fits the tool schema.
-
-        ``session_id`` and ``user_id`` are execution context, not model-supplied
-        arguments. Historically they were appended to every call after the gate
-        stack had processed the model arguments. A strict external agent can
-        validly advertise ``additionalProperties: false``; appending undeclared
-        context then turns a valid call into an invalid one at the last hop.
-
-        Preserve the legacy behavior when no usable card/schema is available,
-        and otherwise honour the root object's declared property boundary.
-        """
         if not agent_id:
             return True
         card = self.agent_cards.get(agent_id)
@@ -19163,9 +16519,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return True
 
     def _policy_roles(self, websocket) -> List[str]:
-        """Best-effort session roles for the policy engine. Handles a flat
-        ``roles`` claim or the Keycloak ``realm_access.roles`` shape; returns
-        ``[]`` when unavailable (role-predicated rules simply won't match)."""
         claims = self.ui_sessions.get(websocket) if websocket is not None else None
         if not isinstance(claims, dict):
             return []
@@ -19176,7 +16529,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return list(roles) if isinstance(roles, (list, tuple)) else []
 
     def _taint_tracker(self, chat_id: Optional[str]):
-        """Per-chat taint tracker (the data-flow scope), lazily created."""
         store = getattr(self, "_taint_trackers", None)
         if store is None:
             store = {}
@@ -19190,10 +16542,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return tracker
 
     def _current_request_text(self, chat_id: Optional[str]) -> str:
-        """The user's own message for the turn being dispatched: the
-        task-local ``_ACTIVE_REQUEST_TEXT`` context var set by
-        ``handle_chat_message``, else the per-chat ``_active_request`` map
-        (what the legacy/test paths populate). Empty when unknown."""
         try:
             text = _ACTIVE_REQUEST_TEXT.get()
         except LookupError:
@@ -19205,11 +16553,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _audit_gate_denial(self, websocket, user_id, agent_id, tool_name,
                                  chat_id, args, *, gate: str, detail: str = ""):
-        """Record a gate refusal as an ``agent_tool_call`` audit row
-        (``tool.<name>.denied``), attributed like ``ToolDispatchAudit`` would
-        attribute the call had it run — same claims resolution, same
-        arg-metadata sanitisation (never values). Best-effort, never raises:
-        auditability must not change the refusal itself."""
         try:
             from audit.hooks import (ToolDispatchAudit, actor_principal_from_claims,
                                      make_correlation_id, now_utc)
@@ -19225,8 +16568,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 claims = None
             user, principal = actor_principal_from_claims(claims)
             if user == "legacy":
-                # No session claims (in-process/virtual callers): attribute to
-                # the dispatching user id rather than dropping the row.
                 user = principal = str(user_id or "unknown")
             meta = ToolDispatchAudit._sanitize_args_meta(
                 args if isinstance(args, dict) else {})
@@ -19251,17 +16592,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("%s: denial audit record failed", gate, exc_info=True)
 
     def _skill_store(self, user_id):
-        """Per-user in-memory learned-recipe store (skill memory, C-N10)."""
         if not hasattr(self, "_skill_recipes"):
             self._skill_recipes = {}
         return self._skill_recipes.setdefault(user_id or "_anon", [])
 
     def mint_action_token(self, agent_id, user_id, tool_name, args):
-        """Mint a single-use authorization token (C-S8) for a confirmed high-risk
-        call, bound to (agent, user, tool, hash(args)). This is the issue half of
-        the require_token policy effect — a confirmed call carries the token as
-        ``_txn_token`` and passes the gate's verify-and-consume. Returns None when
-        no signing key (TXN_TOKEN_KEY / MEMORY_HMAC_KEY) is configured."""
         try:
             from orchestrator import transaction_token as _txn
             return _txn.mint(agent_id or "", user_id or "", tool_name, args)
@@ -19277,15 +16612,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         initiating_agent_id: Optional[str] = None,
         auto_subscribe_stream: bool = True,
     ):
-        """Run the gate stack, auditing a HOP's refusal (056 SC-002).
-
-        Thin wrapper over :meth:`_run_gate_stack`. A chained hop refused by any
-        gate — including the ones that refuse before the delegation step
-        (security flag, permission/opt-out, policy, taint, supervisor, HITL,
-        cap) — emits a ``delegation.hop.mint`` failure record, so 100% of
-        gate-violating hop attempts carry audit evidence. Direct dispatch is
-        unchanged (no hop record, exactly as today).
-        """
         outcome = await self._run_gate_stack(
             websocket, agent_id, tool_name, args, chat_id, user_id,
             stream_params=stream_params, parent_token=parent_token,
@@ -19309,34 +16635,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         initiating_agent_id: Optional[str] = None,
         auto_subscribe_stream: bool = True,
     ):
-        """Run the FULL single-path gate stack once (056 US3, FR-017/SC-006).
-
-        Shared by ``execute_single_tool``, ``execute_parallel_tools``, and
-        every chained hop (which re-enters ``execute_single_tool``), so a
-        violating call is refused identically on every dispatch path. Applies,
-        in the single path's historical order: the system security-flag block,
-        the per-user tool permission gate, the deterministic policy engine,
-        the taint/data-flow sink gate, the intent-alignment supervisor + HITL,
-        file-path mapping, per-(user, callee) credential injection, LLM
-        credential surfacing (054), the disabled-tool diagnosis gate, the
-        no-agent check, the RFC 8693 delegation-token mint (fail-closed in
-        production posture), the PRE_TOOL_USE hook, the concurrency cap, and
-        the 055 stream auto-subscribe.
-
-        Returns :class:`PreparedDispatch` on allow or :class:`GateRefusal` on
-        any deny — gate logic only, no UI delivery: each caller renders the
-        refusal per its own delivery model (immediate for the single path,
-        batched for the parallel path), keeping wire behavior byte-identical.
-
-        ``parent_token`` (056 US1, wired by the chained-hop seam) switches the
-        delegation step from the flat single-hop exchange to a child mint;
-        ``initiating_agent_id`` additionally charges the initiating agent's
-        concurrency slot on long-running hops (FR-019).
-        """
         if stream_params is None:
             stream_params = dict(args)
 
-        # System-level security block (proactive security review)
         agent_flags = self.security_flags.get(agent_id, {}) if agent_id else {}
         if agent_id and tool_name in agent_flags and agent_flags[tool_name].get("blocked"):
             reason = agent_flags[tool_name].get("reason", "Security threat detected")
@@ -19349,11 +16650,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 render_target="chat")
 
-        # External-identity gate. The card opts in by declaring required claims;
-        # values come only from the verified Keycloak payload or a persisted,
-        # signed external-identity link retained for this invocation. Every
-        # direct, parallel, MCP, component, and chained call reaches this shared
-        # gate before credentials or delegation are minted.
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
         from orchestrator.chain_authority import machine_scope_ceiling
 
@@ -19412,7 +16708,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     render_components=[alert.to_dict()],
                 )
 
-        # Permission enforcement gate (RFC 8693 delegation)
         if user_id and agent_id and not await asyncio.to_thread(
                 self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
             err_msg = f"Tool '{tool_name}' is restricted for this agent. Update permissions in the sidebar to enable it."
@@ -19423,13 +16718,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     error={"message": err_msg, "retryable": False}),
                 render_components=[alert.to_dict()])
 
-        # Feature 063 US3: destructive-operation confirmation gate. Every dispatch
-        # path (single, parallel, chained hop, component re-exec) reaches here via
-        # _run_gate_stack, so this one check cannot be bypassed. It runs BEFORE args
-        # are mutated (clean sha256 fingerprint) and BEFORE credentials/delegation
-        # tokens are minted for a call that may be refused. remote-compute-1 only;
-        # evaluate() fires only for that agent's DESTRUCTIVE verbs (read verbs and
-        # non-destructive mutating verbs classify to None and pass straight through).
         if (
             agent_id in ("remote-compute-1", "computer-use-1")
             and _session_claims.get("_invocation_channel") == "mcp"
@@ -19464,11 +16752,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _msg, _comps = _conf
                 _policy = remote_confirmation.policy_for(agent_id)
                 if _policy is not None and _policy.card_as_result:
-                    # 076: the approval card is the call's RESULT, not a transient
-                    # alert — it rides the ordinary tool-result path (canvas
-                    # upsert + transcript + fan-out to every device, in place by
-                    # its explicit id) and the model reads the stop instruction
-                    # from ``_data``. 063 keeps its error-shaped refusal.
                     return GateRefusal(
                         response=MCPResponse(
                             result={"_data": {"status": "confirmation_required", "message": _msg}},
@@ -19479,10 +16762,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         error={"message": _msg, "retryable": False}),
                     render_components=_comps, render_target="chat")
 
-        # Deterministic pre-action policy engine — an ordered, fail-closed rule
-        # chain (data, admin-extensible via POLICY_RULES) on top of the
-        # permission gate. Default OFF + no seed rules ⇒ purely additive.
-        # deny/confirm block the call; rewrite redacts args before execution.
         if user_id:
             from orchestrator import policy
             if policy.policy_enabled():
@@ -19494,9 +16773,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     logger.debug("policy: evaluation failed — allowing", exc_info=True)
                     decision = policy.PolicyDecision()
-                # A require_token rule demands a valid single-use transaction
-                # token bound to (agent, user, tool, hash(args)). Fail-closed —
-                # missing/tampered/expired/replayed ⇒ deny.
                 if decision.effect == policy.REQUIRE_TOKEN:
                     from orchestrator import transaction_token as _txn
                     token = args.get("_txn_token") if isinstance(args, dict) else None
@@ -19527,27 +16803,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
                 if decision.args is not None:
-                    args = decision.args  # rewritten (e.g. a secret arg redacted)
-                    # The streaming twin must dispatch the SAME redacted args —
-                    # auto-subscribe with the pre-rewrite capture would hand
-                    # the agent the secret the rule just removed.
+                    # Must reuse these redacted args; originals leak the secret
+                    args = decision.args
                     stream_params = dict(args)
-                # Never forward a consumed authorization token to the agent.
+                # Never forward a consumed authorization token to the agent
                 if isinstance(args, dict) and "_txn_token" in args:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
 
-        # Value-level taint/data-flow gate. If this call is a write/egress SINK
-        # and its arguments carry untrusted-tainted values (effective trust =
-        # min over data ancestors, recorded from prior untrusted-source outputs
-        # — survives multi-hop laundering), refuse it. Flag-gated (default OFF)
-        # + fail-open: unknown values are trusted, so a call with only
-        # constants/user intent always passes.
         if user_id:
             from orchestrator import taint as _taint
             if _taint.taint_enabled() and _taint.is_sink(agent_id, tool_name):
                 tracker = self._taint_tracker(chat_id)
-                # User-intent exemption: a value the user typed VERBATIM in
-                # this turn's message is user-supplied, not untrusted.
                 trust = tracker.effective_trust_of_args(
                     args, user_text=self._current_request_text(chat_id))
                 if _taint.check_flow(trust) == "deny":
@@ -19556,9 +16822,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                            f"write/egress action.")
                     logger.warning("taint.deny user=%s tool=%s agent=%s trust=%s",
                                    user_id, tool_name, agent_id, _taint.trust_name(trust))
-                    # The refusal returns BEFORE ToolDispatchAudit, so record
-                    # the denial itself (non-blocking) — otherwise a taint
-                    # denial for a built-in agent leaves no audit row.
                     await self._audit_gate_denial(
                         websocket, user_id, agent_id, tool_name, chat_id, args,
                         gate="taint", detail=f"trust={_taint.trust_name(trust)}")
@@ -19568,10 +16831,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             error={"message": msg, "retryable": False}),
                         render_components=[alert.to_dict()])
 
-        # Intent-alignment supervisor (C-S5) + high-risk human-in-the-loop
-        # (C-S11). Both default OFF and fail-open: when on, a destructive tool
-        # the user never asked for, or a risky (egress/irreversible/cross-
-        # principal/tainted) call, is held for confirmation instead of running.
         if user_id and agent_id:
             from orchestrator import supervisor as _sup
             if _sup.supervisor_enabled():
@@ -19579,16 +16838,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 from orchestrator import hitl_confirmation
                 if hitl_confirmation.matching_approval(
                         self, user_id, chat_id, agent_id, tool_name, args):
-                    # The authenticated click names this exact stored action.
                     request_text = _sup.mcp_intent_text(tool_name)
                 if _session_claims.get("_invocation_channel") == "mcp":
-                    # Over MCP there is no natural-language turn: the caller
-                    # names the tool explicitly, which IS the expressed
-                    # intent. Supply it as the supervisor's request text so a
-                    # delete_/send_/drop_ tool is not refused as "an action
-                    # you didn't ask for" on every call. Every other gate
-                    # (permissions, 063 destructive refusal, taint, HITL) is
-                    # unchanged (see orchestrator.supervisor docstring).
                     request_text = _sup.mcp_intent_text(tool_name)
                 if not _sup.intent_aligned(request_text, tool_name):
                     msg = (f"'{tool_name}' looks like a destructive action you "
@@ -19614,12 +16865,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tool_name, args, actor_principal=user_id, trust=trust,
                     agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name))
-                # Feature 089 seam I4. A confirm_tools verdict ADDS a
-                # confirmation requirement for every tool call in this turn. It
-                # is deliberately an `or`, never an assignment: a risk the
-                # existing assessment already found still requires
-                # confirmation, and nothing here can make a denied or
-                # approval-required call allowed.
+                # Deliberately or, not =: never lowers an existing requirement
                 _typesafe_confirms = self._typesafe_turn_requires_confirmation(chat_id)
                 if _hitl.requires_confirmation(risks) or _typesafe_confirms:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
@@ -19627,15 +16873,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     pending = await hitl_confirmation.evaluate(
                         self, websocket, user_id, chat_id, agent_id, tool_name, args, risks)
                     if pending is not None:
-                        # Cards are tool results: the atomic turn commit retains
-                        # them and every client receives actionable buttons.
                         return GateRefusal(
                             response=pending,
                             render_components=[Alert(message=pending.error["message"], variant="warning").to_dict()]
                             if pending.error else None,
                             render_target="chat" if pending.error else None)
 
-        # Map file paths if chat_id provided
         if chat_id:
             args = await asyncio.to_thread(
                 self._map_file_paths, chat_id, args, user_id=user_id)
@@ -19646,7 +16889,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 args["user_id"] = user_id
 
-        # Inject per-user credentials (E2E encrypted — only agent can decrypt)
         if user_id and agent_id:
             creds = await asyncio.to_thread(
                 self.credential_manager.get_agent_credentials_encrypted, user_id, agent_id)
@@ -19654,21 +16896,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 args["_credentials"] = creds
                 args["_credentials_encrypted"] = True
 
-        # Feature 054: surface the resolved LLM credentials for THIS call's
-        # context so agent-side LLM tools can run (they no longer have any
-        # env fallback): the caller's persisted record on a user socket, the
-        # admin system record on system-context turns. The kwarg name
-        # ``_session_llm_credentials`` is kept for agent-side compatibility.
-        #
-        # ONLY inject for in-process built-in agents, where the plaintext key
-        # stays inside the orchestrator process (and is scrubbed from the
-        # deep-copied args in ``_execute_in_process``). A WebSocket/A2A agent —
-        # notably a user-created draft or any external agent — would otherwise
-        # receive the user's LIVE provider API key in plaintext over the wire
-        # on EVERY dispatch, even a tool that never touches an LLM (e.g.
-        # ``dice_roller.roll``): the exact inverse of the ECIES per-user-secret
-        # boundary. Every bundled LLM-using tool (general, web_research,
-        # summarizer) runs in-process, so no legitimate consumer is affected.
+        # Plaintext creds: only for in-process, trusted agents
         if agent_id in self.local_agents:
             _llm_ctx_user = self._llm_context_user_id(websocket)
             if _llm_ctx_user is None:
@@ -19682,12 +16910,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "LLM_MODEL": _llm_cfg.model,
                 }
 
-        # 5th gate (015): when no `agent_id` was resolved via `tool_to_agent` —
-        # which happens because the tool was filtered out at chat-time tool-list
-        # construction — see whether the tool actually EXISTS on a registered
-        # agent and surface a friendly disabled-tool alert. This catches the
-        # case where the model emitted a call for a tool the user disabled in
-        # the picker (or whose owning agent they disabled wholesale).
         if not agent_id and tool_name:
             owner = self._find_tool_owner(tool_name)
             if owner is not None:
@@ -19715,26 +16937,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[Alert(message=err_msg, variant="error").to_dict()],
                 render_target="chat")
 
-        # RFC 8693 delegation: generate a scoped token excluding system-blocked tools
-        # The delegation token constrains what the agent can do even if it's compromised
         delegation_token: Optional[str] = None
         hop_correlation_id: Optional[str] = None
-        # 058 (no secrets to untrusted agents): a user-hosted (tunnel) agent is
-        # untrusted — never hand it the delegation-token BYTES, and never run the
-        # flat delegation-required gate against it. The orchestrator re-authorizes
-        # every one of its tool calls at the boundary (is_tool_allowed + the full
-        # gate stack), so it never needs to hold a token; withholding it removes a
-        # forgeable-authority surface (research D2). Its per-(user,callee) ECIES
-        # credentials are still injected (encrypted; only the agent boundary
-        # decrypts). Hop provenance still mints/audits below — only the token
-        # hand-off to the agent is suppressed.
+        # Untrusted tunnel agents never receive delegation token bytes
         from shared.local_transport import TunnelSocket
         _untrusted_tunnel_agent = isinstance(self.agents.get(agent_id), TunnelSocket)
         if user_id and agent_id and parent_token is not None:
-            # 056 US1 (FR-001/FR-002): a chained hop NEVER reuses the parent's
-            # token and never falls back to the flat exchange — it acts under
-            # a freshly minted, strictly-narrower child, or is refused. Real
-            # minting runs in every posture (dev included, D17.2).
+            # A hop never reuses the parent token; mint a child or refuse
             minted = await self._mint_child_for_hop(
                 parent_token, agent_id, tool_name, user_id, chat_id)
             if isinstance(minted, GateRefusal):
@@ -19747,17 +16956,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if delegation_token:
                 args["_delegation_token"] = delegation_token
             elif self._delegation_required() or machine_scopes is not None:
-                # Feature 030 / Constitution VII: agents MUST act under RFC
-                # 8693 delegated tokens. The walkthrough found the deployed
-                # realm missing the tools:* client scopes — every exchange
-                # failed invalid_scope and dispatch silently proceeded
-                # UNSCOPED. Production posture now fails closed with an
-                # actionable message; development keeps the fail-open
-                # behavior (warned once per agent) so local stacks without a
-                # fully configured realm still work. The message has to name
-                # the actual fault: an unavailable exchange is the operator's
-                # to fix, while an empty scope set is this user's permissions
-                # — sending them to a correctly configured realm is a dead end.
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
                 signing_key_fault = (
@@ -19765,9 +16963,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     == "signing_key_unset"
                 )
                 if signing_key_fault:
-                    # MCP channel only: the locally signed mint failed because
-                    # the server's signing key is unset. Sending the caller to
-                    # register IdP client scopes would be a dead end.
                     err_msg = (
                         "Tool execution is disabled: the server delegation "
                         "signing key is not configured, so the orchestrator "
@@ -19809,7 +17004,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     render_components=[Alert(message=err_msg, variant="error").to_dict()],
                     render_target="chat")
 
-        # Hook: PRE_TOOL_USE — allows handlers to block or modify tool args
         if flags.is_enabled("hook_system"):
             hook_ctx = HookContext(
                 event=HookEvent.PRE_TOOL_USE,
@@ -19827,10 +17021,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if hook_resp.action == "modify" and hook_resp.modified_args:
                 args = hook_resp.modified_args
 
-        # 015-external-ai-agents: concurrency cap for long-running tools (FR-026).
-        # Acquired here so a 4th concurrent attempt is rejected without ever
-        # touching the upstream service. Released either on dispatch error
-        # (below) or by the terminal-phase ToolProgress handler.
         cap_job_id: Optional[str] = None
         if user_id and agent_id and self._is_long_running_tool(agent_id, tool_name):
             cap_job_id = f"cap_{tool_name}_{_uuid.uuid4().hex[:8]}"
@@ -19853,11 +17043,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         error={"message": err_msg, "retryable": False}),
                     render_components=[alert.to_dict()],
                     render_target="chat")
-            # 056 US3 (FR-019): a chained hop charges BOTH the executing
-            # agent's slot (above) and the initiating agent's slot, so fan-out
-            # cannot multiply a user's effective concurrency past the per-agent
-            # cap. Reject-not-queue is preserved; a rejection surfaces to the
-            # requester as an honest per-call failure.
             if initiating_agent_id and initiating_agent_id != agent_id:
                 hop_acquired = await self.concurrency_cap.acquire(
                     user_id, initiating_agent_id, cap_job_id)
@@ -19886,23 +17071,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._hop_cap_entries[cap_job_id] = (user_id, initiating_agent_id)
             args["_cap_job_id"] = cap_job_id
             self._pending_cap_entries[cap_job_id] = (user_id, agent_id)
-            # Remember the chat this long-running job belongs to so its progress
-            # and final result are delivered to (and persisted in) that chat for
-            # any client that returns to it later (014/015 + 028).
             self._job_context[cap_job_id] = {
                 "user_id": user_id,
                 "agent_id": agent_id,
                 "chat_id": chat_id,
                 "tool_name": tool_name,
-                # A detached terminal result is its own logical update. The
-                # UUID is allocated before dispatch and retained across the
-                # job lifetime so duplicate terminal delivery cannot invent a
-                # second conversation identity.
                 "publication_request_generation": str(_uuid.uuid4()),
             }
 
-        # 055 US2: a push-streamable tool also streams — subscribe this
-        # user's sockets on the chat before the one-shot dispatch (fail-open).
         if auto_subscribe_stream:
             await self._auto_subscribe_stream_artifacts(
                 websocket, chat_id, user_id, tool_name, stream_params)
@@ -19918,13 +17094,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _guard_machine_meta_tool(
         self, websocket, agent_id, tool_name, args, chat_id, user_id,
     ) -> Optional[MCPResponse]:
-        """Bound host meta-tools before their ordinary real-agent gate exemption.
-
-        Mutating meta-tools have no unattended consent policy. A task cannot
-        manufacture a draft/self-test, memory write, or new owner-control flow
-        to escape its approved tool ceiling. Read-only host discovery requires
-        read consent; decomposition preserves the private parent binding.
-        """
         if not isinstance(agent_id, str) or not agent_id.startswith("__"):
             return None
         from orchestrator.chain_authority import machine_scope_ceiling
@@ -19958,17 +17127,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         })
 
     async def execute_single_tool(self, websocket, tool_call, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None, parent_token: Optional[Dict[str, Any]] = None, initiating_agent_id: Optional[str] = None) -> Optional[MCPResponse]:
-        """Execute a single tool call and render its UI components. Returns the Result object.
-
-        056 US1: a mediated chained hop re-enters HERE (via
-        ``_handle_agent_hop_request``) with ``parent_token`` (the initiator's
-        decoded delegation payload, from the orchestrator's own dispatch
-        record) and ``initiating_agent_id`` — switching the delegation step to
-        a strictly-narrower child mint and charging both sides' concurrency
-        slots. Absent both kwargs, behavior is the unchanged direct path."""
-        # The LLM may have emitted a qualified name (e.g. "forecaster-1__submit_dataset")
-        # when two agents own a tool of the same id. Resolve the bare skill id so the
-        # owning agent receives the name it actually registered.
         llm_tool_name = tool_call.function.name
         if tool_to_unqualified and llm_tool_name in tool_to_unqualified:
             tool_name = tool_to_unqualified[llm_tool_name]
@@ -19977,10 +17135,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         try:
             args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
         except json.JSONDecodeError as _json_err:
-            # Hard-gate malformed tool-call arguments instead of silently
-            # dispatching with empty args (silent repair / parser loss).
-            # Surface the parse failure back to the model so it can retry
-            # with valid JSON — mirrors the permission-denial error return.
+            # Refuses bad args outright; never silently dispatches empty
             msg = (f"The arguments for '{tool_name}' were not valid JSON "
                    f"({str(_json_err).splitlines()[0]}). Re-emit the tool "
                    f"call with well-formed JSON arguments.")
@@ -19990,22 +17145,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, [alert.to_dict()])
             return MCPResponse(error={"message": msg, "retryable": True})
 
-        # 055 US2: the LLM-authored params as written, captured before
-        # path-mapping / credential injection mutate `args` — the stream
-        # bridge identity must fingerprint what `_source_params` will carry.
         stream_params = dict(args)
 
-        # Feature 027 — orchestrator meta-tools dispatch before the agent
-        # gates (the pseudo-agent has no scopes/credentials; ownership and
-        # approval gates live inside the handler — contracts/agentic-creation.md).
         agent_id = tool_to_agent.get(llm_tool_name)
         if agent_id is None and tool_to_agent:
-            # 030: weak models routinely mangle hyphen/underscore in
-            # collision-qualified names ("web_research-1__web_search" for
-            # "web-research-1__web_search"), which used to dead-end as
-            # "No agent available" — and then bait the model into creating
-            # a duplicate capability. Recover deterministically when the
-            # normalized form matches exactly ONE offered tool.
             wanted = llm_tool_name.replace("-", "_").lower()
             matches = [k for k in tool_to_agent
                        if k.replace("-", "_").lower() == wanted]
@@ -20033,8 +17176,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
         if agent_id == "__scheduler__":
-            # Feature 030 — scheduling meta-tool: validation + consent card
-            # only; creation happens in the schedule_decision ui_event.
             from orchestrator import scheduling_chat
             return await scheduling_chat.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
@@ -20045,23 +17186,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
         if agent_id == "__memory__":
-            # 030 — memory meta-tools: execute immediately (PHI-gated), no card.
             from orchestrator import memory_chat
             return await memory_chat.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
         if agent_id == "__desktop_codegen__":
-            # 039 — desktop codegen: surface the generated code + a verified
-            # download card for the Windows coding-agent .exe.
             from orchestrator import desktop_codegen
             return await desktop_codegen.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
         if agent_id == "__subtasks__":
-            # 056 US4 — planner decomposition into bounded isolated sub-tasks.
-            # A sub-task may use only the tools THIS turn offered (never a
-            # superset — FR-020); the handler's own gates and the sub-turns'
-            # full gate stacks do the rest.
             from orchestrator import subtasks as _st
             args["_parent_tools"] = sorted(
                 {t for t in (tool_to_unqualified or {}).values()
@@ -20072,9 +17206,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
             )
 
-        # 056 US3 (FR-017): the FULL gate stack runs in the shared authorizer
-        # so single, parallel, and chained dispatch refuse identically. Gate
-        # logic lives there; this path keeps its immediate per-call delivery.
         auth = await self._authorize_and_prepare(
             websocket, agent_id, tool_name, args, chat_id, user_id,
             stream_params=stream_params, parent_token=parent_token,
@@ -20086,10 +17217,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         websocket, auth.render_components, target=auth.render_target)
                 else:
                     await self.send_ui_render(websocket, auth.render_components)
-            # T035/FR-012: a permission-denied dispatch returns BEFORE
-            # ToolDispatchAudit, so for a USER agent (untrusted-at-the-boundary)
-            # the denial would otherwise leave no audit row. Scope to user agents
-            # so the shared gate's behavior for built-ins/public is unchanged.
             try:
                 if await asyncio.to_thread(self._is_user_agent, agent_id):
                     await self._audit_user_agent(
@@ -20103,17 +17230,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         stream_params = auth.stream_params
         cap_job_id = auth.cap_job_id
 
-        # Audit: record the tool dispatch (in_progress → success/failure)
         from audit.hooks import ToolDispatchAudit
         claims = self.ui_sessions.get(websocket) if websocket is not None else None
         if claims is None and websocket is not None:
-            # 056 US2 (FR-014): machine turns carry a synthetic machine-context
-            # marker on their virtual socket — record them attributed, never
-            # dropped as "legacy".
             claims = getattr(websocket, "machine_claims", None)
         if initiating_agent_id and isinstance(claims, dict):
-            # 056 US1: a hop's tool-call rows name the ACTING agent via the
-            # RFC 8693 act claim while the human stays the actor_user_id.
             claims = {**claims, "act": {"sub": f"agent:{initiating_agent_id}"}}
         async with ToolDispatchAudit(
             claims=claims,
@@ -20154,21 +17275,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 _audit_ctx.set_outcome("interrupted", "no result returned")
             else:
                 _audit_ctx.set_outputs_meta({"has_ui_components": bool(result.ui_components)})
-            # Feature 004: propagate the audit correlation_id onto the response
-            # so the caller can tag every produced UI component with the
-            # originating dispatch's id. The frontend's component_feedback
-            # flow uses this to scope a user's feedback to a specific dispatch.
             if result is not None:
                 try:
                     result.correlation_id = _audit_ctx.correlation_id
                 except Exception:
                     pass
 
-        # Record the call's output taint so it propagates through the chain.
-        # The output's trust = min(source trust, input trust): an untrusted
-        # web/third-party source taints its output, and any tool that consumed
-        # untrusted input passes the taint on (laundering survives an
-        # intermediate hop). Flag-gated; best-effort (never affects the call).
         if user_id and result is not None and result.error is None:
             try:
                 from orchestrator import taint as _taint
@@ -20180,10 +17292,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("taint: output record failed", exc_info=True)
 
-        # 015-external-ai-agents: release cap if the dispatch errored or returned
-        # nothing — there will be no terminal ToolProgress to do it. Successful
-        # long-running starts keep the slot held; the JobPoller's terminal
-        # ToolProgress will release it via the handler in handle_agent_messages.
         if cap_job_id and (result is None or (result is not None and result.error)):
             try:
                 await self.concurrency_cap.release(user_id, agent_id, cap_job_id)
@@ -20191,7 +17299,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._pending_cap_entries.pop(cap_job_id, None)
             await self._release_hop_cap_slot(cap_job_id)
 
-        # Hook: POST_TOOL_USE or POST_TOOL_FAILURE
         if flags.is_enabled("hook_system"):
             post_event = HookEvent.POST_TOOL_FAILURE if (result and result.error) else HookEvent.POST_TOOL_USE
             await self.hooks.emit(HookContext(
@@ -20204,9 +17311,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error=result.error.get("message") if (result and result.error) else None,
             ))
 
-        # Don't render tool results immediately — the caller (handle_chat_message)
-        # collects the round's components and either runs the adaptive UI
-        # designer over them or flat-appends them to the workspace (029).
         if result and result.error:
             err_msg = result.error.get('message', 'Unknown error')
             from orchestrator.tool_feedback import tool_failure_notice
@@ -20214,11 +17318,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if notice is not None:
                 await self.send_ui_render(websocket, [notice], target="chat")
 
-            # Auto-fix: if this is a draft agent, attempt to fix the tool
-            # error automatically. 030: the draft check now gates the STATUS
-            # too — previously every errored live tool flashed a misleading
-            # "Auto-fixing..." even though auto_fix only acts on drafts.
-            # The draft lookup is a sync DB read — off the loop thread (052).
             if (agent_id and hasattr(self, 'lifecycle_manager')
                     and await asyncio.to_thread(
                         self.lifecycle_manager._get_draft_by_agent_id, agent_id)):
@@ -20248,20 +17347,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         return result
 
-    # Scopes considered safe for concurrent execution (read-only operations)
     _PARALLEL_SAFE_SCOPES = frozenset({"tools:read", "tools:search"})
     _MAX_PARALLEL_CONCURRENCY = 10
 
     def _chain_budget_for(self, chat_id: Optional[str]):
-        """The turn's global chain budget (056 FR-021), lazily created. Bounds
-        cumulative depth, total hop count, and wall clock across ALL nesting in
-        the turn (interactive or machine).
-
-        Chat-keyed budgets reset at each turn start (``handle_chat_message``
-        pops ``chat_id``). A chat-less dispatch (``chat_id`` None) has no turn
-        boundary to reset on, so its shared ``_global`` budget is recreated
-        once it exhausts — otherwise a single process would refuse every
-        chat-less hop forever after the first wall-clock window elapses."""
         from orchestrator.chain_authority import ChainBudget
         key = chat_id or "_global"
         budget = self._chain_budgets.get(key)
@@ -20272,19 +17361,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _register_dispatch_context(self, request_id: str, agent_id: str,
                                    args: Dict, ui_websocket) -> None:
-        """Record the orchestrator-side context of an in-flight dispatch
-        (056 US1). A mediated hop from the executing agent resolves user,
-        chat, UI socket, and — critically — the PARENT delegation authority
-        from this record, never from anything the agent presents (FR-001)."""
         try:
             from orchestrator import delegation as _dg
             token = args.get("_delegation_token") if isinstance(args, dict) else None
             parent_payload = _dg.decode_token_payload(token) if token else None
             if parent_payload is not None:
-                # Give a production Keycloak first-hop token the depth-0 actor
-                # claim it lacks, so a later child minted off it verifies as a
-                # complete chain. The actor is THIS dispatch's agent — resolved
-                # from our own record, never from anything the agent presents.
                 parent_payload = _dg.normalize_hop_parent(parent_payload, agent_id)
             self._dispatch_context[request_id] = {
                 "agent_id": agent_id,
@@ -20305,12 +17386,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 chat_id: Optional[str], correlation_id: str,
                                 detail: Optional[str] = None,
                                 requested_scopes=None, granted_scopes=None) -> None:
-        """Append one hop provenance record to the hash-chained audit under
-        the ``delegation`` event class (056 T018, FR-026). Paired records
-        (``delegation.hop.mint`` / ``delegation.hop.enforce``) share the hop's
-        correlation_id with the hop's own tool-call pair, so a full chain is
-        reconstructable from the log alone. Carries actor/scope/depth
-        metadata only — NEVER token bytes (FR-028)."""
         from audit.recorder import get_recorder, now_utc
         from audit.schemas import AuditEventCreate
         from orchestrator import delegation as _dg
@@ -20356,25 +17431,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _mint_child_for_hop(self, parent_token: Dict, agent_id: str,
                                   tool_name: str, user_id: str,
                                   chat_id: Optional[str]):
-        """Mint + verify the child authority for one hop (056 T015/T016/T017).
-
-        Returns ``(encoded_child_token, hop_correlation_id)`` on success or a
-        :class:`GateRefusal` (per-call, fail-closed, audited — never
-        session-terminating). The child satisfies the 048 invariants: scopes =
-        intersection(parent, requested), expiry ≤ parent, depth = parent + 1
-        (refused past the bound), actor chain terminating at the human. An
-        empty intersection against a non-empty request refuses outright
-        (FR-005, D3) rather than dispatching a do-nothing token. Credentials
-        are NEVER carried on the token — the per-(user, callee) credential
-        injection already ran in the authorizer (FR-008).
-        """
         from audit.recorder import make_correlation_id
         from orchestrator import delegation as _dg
         corr = make_correlation_id()
 
-        # Requested scopes for the callee — the same (user, callee) resolution
-        # the flat single-hop mint uses: the callee's non-blocked, user-enabled
-        # tools plus the user's enabled scope-level claims.
         card = self.agent_cards.get(agent_id)
         agent_flags = self.security_flags.get(agent_id, {})
 
@@ -20397,12 +17457,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 response=MCPResponse(
                     error={"message": message_text, "retryable": False}),
                 render_components=[alert.to_dict()],
-                hop_audited=True)  # this path emitted its own hop record
+                hop_audited=True)
 
-        # Fail closed BEFORE minting if the child-signing key is unset in
-        # production posture — never sign a child delegation with the committed
-        # dev constant (Constitution X). Checked up front so no partial audit
-        # trail (mint/enforce) is emitted for a hop that cannot be signed.
+        # Never sign with the committed dev key in production
         try:
             _dg._child_signing_key()
         except _dg.DelegationConfigError:
@@ -20474,21 +17531,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return _dg.encode_delegation_payload(child), corr
 
     async def _handle_agent_hop_request(self, websocket, msg: "AgentHopRequest") -> None:
-        """Mediate one agent-initiated hop (056 US1, FR-001/FR-003/FR-029).
-
-        Resolves the initiator's user/chat/UI-socket/parent-authority from the
-        orchestrator's OWN dispatch record (never agent-supplied), charges the
-        turn's global chain budget, and re-enters ``execute_single_tool`` so
-        the hop passes the FULL single-path gate stack under a freshly minted
-        child delegation. Every refusal is per-call and honest (an error
-        ``MCPResponse``, never a teardown — FR-028); refusals that carry a
-        resolvable authority (a mint/enforce/budget/reserved-callee refusal)
-        are also audited to the hash chain, while the two pre-authority
-        refusals — an unknown/spoofed parent and the flag-off inert path —
-        are log-only (there is no derivable principal to attribute them to).
-        Reserved ``__``-pseudo-agent ids are refused before dispatch, so the
-        meta-tool exemption is structurally unavailable to hops (FR-003/FR-018).
-        """
         from orchestrator import delegation as _dg
         hop_id = msg.request_id or ""
         callee = msg.callee_agent_id or ""
@@ -20510,7 +17552,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         try:
             if not _dg.recursive_delegation_enabled():
-                # Flag off ⇒ the chaining seam does not exist (FR-009).
                 return await _refuse(
                     "Agent-to-agent chaining is disabled (FF_RECURSIVE_DELEGATION off).")
             ctx = self._dispatch_context.get(msg.parent_request_id or "")
@@ -20535,9 +17576,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     ctx=ctx, detail="assignment_unreserved_hop")
             parent = ctx.get("parent_token")
             if not parent:
-                # No parent authority to attenuate — refuse rather than mint
-                # ambient authority (FR-001); dev-mode hops exercise real
-                # minting too (D17.2), so the refusal is identical everywhere.
                 logger.warning(
                     "delegation.hop refused no_parent_authority initiator=%s callee=%s",
                     initiator, callee)
@@ -20583,36 +17621,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _scan_hop_payload(self, resp: MCPResponse, *, initiator: str,
                                 callee: str, tool_name: str, ctx: Dict,
                                 parent: Optional[Dict]) -> MCPResponse:
-        """Scan a hop RESULT before it enters the initiating agent's context
-        (056 FR-007/D11).
-
-        Chaining turns one agent's output into another agent's input — exactly
-        the multi-agent flow the C-S14 scanner was built for, where it has been
-        advisory (logged, delivered anyway) on the tool path. On an inter-agent
-        hop it ENFORCES: a finding quarantines the payload (it is NOT delivered
-        upstream), records an audited reason, and returns an honest error to the
-        requesting agent, which can work around it. Fail-open on scanner error —
-        a broken scanner must not break dispatch.
-
-        Deliberately NOT gated on ``FF_MAS_DEFENSE`` (which gates the advisory
-        tool-path scan): scanning inter-agent payloads is a core guarantee of
-        chaining, so it rides the chaining flag itself — with
-        ``FF_RECURSIVE_DELEGATION`` off no hop exists and nothing changes.
-        """
         from audit.recorder import make_correlation_id
         from orchestrator import mas_defense
         if resp.error is not None:
             return resp
         try:
-            # Scan BOTH channels the hop delivers upstream (result AND
-            # ui_components) — _deliver_hop_response forwards both, so a marker
-            # in either reaches the initiating agent's context.
             findings = []
             if resp.result is not None:
                 findings += mas_defense.scan_message(resp.result)
             if resp.ui_components:
                 findings += mas_defense.scan_message(resp.ui_components)
-        except Exception:  # pragma: no cover — scanner is pure/stdlib
+        except Exception:  # pragma: no cover
             logger.debug("hop payload scan failed — delivering", exc_info=True)
             return resp
         if not findings:
@@ -20632,11 +17651,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _deliver_hop_response(self, initiator_ws, hop_id: str,
                                     resp: MCPResponse) -> None:
-        """Deliver a mediated hop's outcome to the initiating agent (056 US1).
-
-        In-process initiators awaited a future registered on their loopback
-        socket — resolve it directly. Networked initiators receive an
-        ``agent_hop_response`` frame over their existing control socket."""
         futures = getattr(initiator_ws, "_hop_futures", None)
         if isinstance(futures, dict):
             fut = futures.pop(hop_id, None)
@@ -20658,9 +17672,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.warning("hop response delivery failed for %s", hop_id, exc_info=True)
 
     async def _release_hop_cap_slot(self, cap_job_id: str) -> None:
-        """Release the initiating agent's slot of a dual-charged hop (056
-        FR-019). No-op when the job was not a hop. Called from every site
-        that releases the executing agent's slot."""
         entry = self._hop_cap_entries.pop(cap_job_id, None)
         if entry:
             u_id, a_id = entry
@@ -20670,19 +17681,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("hop cap release failed", exc_info=True)
 
     async def _sweep_cap_slots_for_agent(self, agent_id: str) -> int:
-        """Release every concurrency slot still held for a now-dead agent.
-
-        A long-running slot is normally released by the terminal ``ToolProgress``
-        that the agent's OWN ``JobPoller`` emits. When the agent dies that poller
-        dies with it, so the slot would be held for the life of the process —
-        after ``max_per_user_agent`` such deaths the user is permanently refused
-        with "You already have N jobs running".
-        """
         if not agent_id:
             return 0
-        # Jobs EXECUTING on the dead agent (``_pending_cap_entries`` is keyed by
-        # the executing agent): full teardown — release the slot, release the
-        # initiator's dual-charge if this was a hop, and drop the job context.
         executing = [
             cid for cid, (_u, a) in list(self._pending_cap_entries.items())
             if a == agent_id
@@ -20696,12 +17696,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("cap sweep release failed", exc_info=True)
             await self._release_hop_cap_slot(cap_job_id)
             self._job_context.pop(cap_job_id, None)
-        # Hops INITIATED by the dead agent whose CALLEE is still alive
-        # (``_hop_cap_entries`` is keyed by the initiating agent): release only
-        # the initiator's dual-charged slot. Popping ``_pending_cap_entries`` or
-        # ``_job_context`` here would tear down a job still running on a live
-        # agent — double-releasing its cap slot and stranding its terminal
-        # ToolProgress so the result is never finalized into the chat.
         initiated = [
             cid for cid, (_u, a) in list(self._hop_cap_entries.items())
             if a == agent_id and cid not in executing
@@ -20729,20 +17723,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         channel: Optional[str] = None,
         timeout: Optional[float] = None,
     ):
-        """Dispatch a tool with the SAME ToolDispatchAudit start/end events,
-        taint output-recording, and POST-tool hooks as the single-tool path
-        (feature 040 / FR-032; 056 US3 gate-parity).
-
-        The parallel-tool path historically called ``_execute_with_retry``
-        directly, emitting no ``agent_tool_call`` audit rows AND skipping both
-        the taint output record and the POST_TOOL_USE/FAILURE hooks that
-        ``execute_single_tool`` runs after a dispatch — so an untrusted value
-        produced in a multi-call round was never marked tainted (multi-hop
-        exfil-laundering defense bypassed) and post-tool hook side effects
-        (interaction collector → personalization/knowledge, admin handlers)
-        were dropped. Routing every parallel dispatch through this wrapper makes
-        those three behaviors identical to the single path.
-        """
         from audit.hooks import ToolDispatchAudit
         claims = self.ui_sessions.get(websocket) if websocket is not None else None
         async with ToolDispatchAudit(
@@ -20787,9 +17767,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 except Exception:
                     pass
 
-        # Taint output-recording — parity with the single path. Untrusted tool
-        # output taints its result; without this a later sink (send/egress)
-        # sees a multi-call-round value as trusted. Flag-gated, best-effort.
         if user_id and result is not None and result.error is None:
             try:
                 from orchestrator import taint as _taint
@@ -20801,7 +17778,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("taint: output record failed (parallel)", exc_info=True)
 
-        # POST_TOOL_USE / POST_TOOL_FAILURE — parity with the single path.
         if flags.is_enabled("hook_system"):
             post_event = HookEvent.POST_TOOL_FAILURE if (result and result.error) else HookEvent.POST_TOOL_USE
             await self.hooks.emit(HookContext(
@@ -20829,23 +17805,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         delegation_subject_token: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> MCPResponse:
-        """Execute one non-chat invocation through every Astral/final gate.
-
-        ``claims`` and ``delegation_subject_token`` must already have been
-        authenticated by the transport.  The bearer is retained only in a
-        request-local synthetic session long enough for the existing RFC 8693
-        exchange and is never copied into audit claims or caller capabilities.
-        Supplying a real ``websocket`` reuses its already-verified session.
-        """
-
         if channel not in {
             "rest", "websocket", "a2a", "mcp", "background", "scheduled",
             "chained", "stream",
         }:
             raise ValueError("invalid protected dispatch channel")
 
-        # A hashable sentinel supplies verified transport identity to policy,
-        # delegation, and audit seams without fabricating a UI connection.
         invocation = websocket if websocket is not None else object()
         owns_invocation = websocket is None
         if owns_invocation:
@@ -20904,11 +17869,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         tool_name: str,
         arguments: Dict[str, Any],
     ) -> MCPResponse:
-        """Execute one MCP call through the complete shared authorization stack."""
-
-        # MCP authentication has already exchanged the inbound bearer at the
-        # endpoint.  The existing MCP delegation seam mints from verified
-        # claims, so the raw token is intentionally not retained here.
         return await self.execute_authorized_tool(
             claims=claims,
             user_id=user_id,
@@ -20919,25 +17879,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
 
     async def execute_parallel_tools(self, websocket, tool_calls, tool_to_agent: Dict, chat_id: str = None, user_id: str = None, tool_to_unqualified: Optional[Dict[str, str]] = None) -> List[Optional[MCPResponse]]:
-        """Execute multiple tool calls with concurrency safety.
-
-        When tool_concurrency_safety is enabled, read-only tools (tools:read,
-        tools:search scopes) run in parallel while write/system tools run serially
-        after the parallel batch completes.  This prevents race conditions when
-        two write tools target the same agent.
-        """
-        # Phase 1: Prepare all tool calls (args, permissions, credentials)
         from persistent_agents.dispatch_context import DispatchDenied, current_dispatch
         if current_dispatch() is not None:
             raise DispatchDenied("assignment_unreserved_parallel_call")
-        prepared = []  # list of (index, tc, tool_name, agent_id, args | None, error_coro | None)
+        prepared = []
         separately_rendered_refusals: set[int] = set()
 
         for idx, tc in enumerate(tool_calls):
-            # Same qualified→unqualified resolution as the single-tool path:
-            # an LLM-emitted name like "forecaster-1__submit_dataset" is mapped
-            # back to the bare skill id "submit_dataset" before dispatch so the
-            # owning agent receives the name it registered.
             llm_tool_name = tc.function.name
             if tool_to_unqualified and llm_tool_name in tool_to_unqualified:
                 tool_name = tool_to_unqualified[llm_tool_name]
@@ -20947,10 +17895,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 args = json.loads(tc.function.arguments) if tc.function.arguments else {}
             except json.JSONDecodeError as _json_err:
-                # Hard-gate malformed tool-call arguments instead of silently
-                # dispatching with empty args (silent repair / parser loss).
-                # Surface the parse failure back to the model so it can retry
-                # with valid JSON — mirrors the security/permission error coro.
                 _pj_msg = (f"The arguments for '{tool_name}' were not valid "
                            f"JSON ({str(_json_err).splitlines()[0]}). Re-emit "
                            f"the tool call with well-formed JSON arguments.")
@@ -20962,11 +17906,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 prepared.append((idx, tc, tool_name, agent_id, None, _arg_err()))
                 continue
 
-            # 055 US2: LLM-authored params as written (see execute_single_tool).
             stream_params = dict(args)
-
-            # agent_id resolved above (before the JSON parse) so the parse-fail
-            # error path can include it in the prepared tuple.
 
             meta_refusal = await self._guard_machine_meta_tool(
                 websocket, agent_id, tool_name, args, chat_id, user_id,
@@ -20977,11 +17917,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 prepared.append((idx, tc, tool_name, agent_id, None, _meta_refused()))
                 continue
 
-            # Feature 027/030/039 — meta-tools dispatch directly, with the SAME
-            # four reserved pseudo-agent branches as the single path (056 US3
-            # T008/FR-018 — previously only __orchestrator__ worked here). The
-            # exemption stays limited to these reserved ids; real-agent calls
-            # (and therefore chained hops) can never reach a meta-tool handler.
             if agent_id == "__orchestrator__":
                 from orchestrator import agentic_creation
                 prepared.append((idx, tc, tool_name, agent_id, None,
@@ -21019,13 +17954,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 continue
             if agent_id == "__subtasks__":
                 from orchestrator import subtasks as _st
-                # Sub-task tool-scoping filters by UNQUALIFIED skill id
-                # (handle_chat_message: ``skill.id not in selected_tools``), so
-                # ``_parent_tools`` must carry unqualified ids — identical to
-                # the single-tool path. Passing the qualified LLM names
-                # (``tool_to_agent`` keys like ``forecaster-1__submit_dataset``)
-                # made every collision-qualified tool silently unmatched and
-                # dropped from the sub-task's allow-list.
+                # Must stay unqualified, or sub-task tools silently vanish
                 args["_parent_tools"] = sorted(
                     {t for t in (tool_to_unqualified or {}).values()
                      if not str(tool_to_agent.get(t, "")).startswith("__")}
@@ -21037,15 +17966,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                      chat_id=chat_id, websocket=websocket)))
                 continue
 
-            # 056 US3 (T007/FR-017): the FULL single-path gate stack via the
-            # shared authorizer. The parallel path previously applied only
-            # creds/security/permission/no-agent and skipped policy, taint,
-            # supervisor, HITL, the RFC 8693 delegation mint (dispatching
-            # UNSCOPED where the single path refuses fail-closed), the 054
-            # LLM-credential surfacing, PRE_TOOL_USE, and the concurrency
-            # cap. Refusals keep this path's batched delivery: the refusal
-            # response carries its error and is rendered with the error batch
-            # below, exactly like any other failed parallel call.
             auth = await self._authorize_and_prepare(
                 websocket, agent_id, tool_name, args, chat_id, user_id,
                 stream_params=stream_params)
@@ -21070,12 +17990,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not prepared:
             return []
 
-        # Phase 2: Partition into parallel-safe vs serial based on scope
         use_concurrency_safety = flags.is_enabled("tool_concurrency_safety")
 
-        parallel_items = []  # (idx, tool_name, coro)
-        serial_items = []    # (idx, tool_name, agent_id, args)
-        error_items = []     # (idx, coro)
+        parallel_items = []
+        serial_items = []
+        error_items = []
 
         for idx, tc, tool_name, agent_id, args, err_coro in prepared:
             if err_coro is not None:
@@ -21087,19 +18006,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 else:
                     serial_items.append((idx, tool_name, agent_id, args))
             else:
-                # 056 US3: audit parity holds on this branch too (040 FR-032
-                # routed only the concurrency-safety branches through the
-                # audited wrapper; flag-off dispatches were unaudited).
                 parallel_items.append((idx, tool_name, self._execute_with_retry_audited(websocket, agent_id, tool_name, args, chat_id, user_id)))
 
-        # Collect results in original order
         results_by_idx: Dict[int, Any] = {}
 
-        # Execute error items immediately
         for idx, coro in error_items:
             results_by_idx[idx] = await coro
 
-        # Execute parallel-safe tools concurrently (capped)
         if parallel_items:
             sem = asyncio.Semaphore(self._MAX_PARALLEL_CONCURRENCY)
             async def _sem_wrap(coro):
@@ -21112,7 +18025,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             for (idx, _, _), res in zip(parallel_items, par_results):
                 results_by_idx[idx] = res
 
-        # Execute serial (write/system) tools one at a time
         for idx, tool_name, agent_id, args in serial_items:
             try:
                 results_by_idx[idx] = await self._execute_with_retry_audited(websocket, agent_id, tool_name, args, chat_id, user_id)
@@ -21122,14 +18034,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if serial_items:
             logger.info(f"Concurrency safety: {len(parallel_items)} parallel, {len(serial_items)} serial")
 
-        # Reassemble in original order
         ordered = [results_by_idx.get(i) for i in range(len(tool_calls))]
         tool_names = [tc.function.name for tc in tool_calls]
 
-        # 056 US3: the authorizer now acquires the concurrency cap for
-        # long-running parallel dispatches — release slots for errored/absent
-        # results here, since no terminal ToolProgress will arrive to do it
-        # (mirrors the single path's release-on-error).
         args_by_idx = {p[0]: p[4] for p in prepared if p[4] is not None}
         for _idx, _res in enumerate(ordered):
             _errored = (
@@ -21150,7 +18057,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         results = ordered
         
-        # Process results — don't render here, caller batches into collapsible
         final_results = []
         error_components = []
         from orchestrator.tool_feedback import tool_failure_notice
@@ -21169,18 +18075,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if notice is not None:
                         error_components.append(notice)
 
-        # Only render errors immediately — successful results are batched by caller
         if error_components:
             await self.send_ui_render(websocket, error_components, target="chat")
 
-        # Auto-fix: attempt to fix draft agent tool errors
         if hasattr(self, 'lifecycle_manager'):
             for i, result in enumerate(final_results):
                 if result and result.error:
                     t_name = tool_names[i] if i < len(tool_names) else None
                     a_id = tool_to_agent.get(t_name) if t_name else None
-                    # 030: status only when auto-fix can actually act (drafts).
-                    # The lookup is a sync DB read — off the loop thread (052).
                     if a_id and await asyncio.to_thread(
                             self.lifecycle_manager._get_draft_by_agent_id, a_id):
                         try:
@@ -21208,8 +18110,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return final_results
 
     def _governed_dispatch_adapter(self):
-        """Return the bound adapter, with an exact-off fallback for test stubs."""
-
         adapter = getattr(self, "governed_final_dispatch", None)
         if adapter is not None:
             return adapter
@@ -21232,8 +18132,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         conversation_id: Optional[str],
         invoke,
     ) -> Optional[MCPResponse]:
-        """Enter the final adapter around exactly one physical actuator call."""
-
         from orchestrator.governed_dispatch import GovernedDispatchError
         from orchestrator import hitl_confirmation
 
@@ -21267,9 +18165,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 conversation_id=conversation_id,
             )
         except GovernedDispatchError as exc:
-            # Gateway transport has already performed its bounded same-ID
-            # retries.  Never feed an authorization uncertainty back into the
-            # legacy physical retry loop under a new operation identity.
             return MCPResponse(
                 error={
                     "code": exc.code,
@@ -21278,10 +18173,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
             )
 
-        # A legacy transport timeout has no proof that the physical effect did
-        # not run.  Enforce mode therefore reports uncertainty instead of
-        # blindly authorizing a second non-idempotent attempt.  Structured
-        # agent/tool errors retain the historical known-result retry behavior.
         if (
             adapter.mode == "enforce"
             and result is not None
@@ -21306,11 +18197,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         audit_conversation_id: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> Optional[MCPResponse]:
-        """Execute a tool call with up to max_retries attempts.
-
-        On retryable errors, sends status updates to the UI and waits
-        with exponential backoff before trying again.
-        """
         if max_retries is None:
             max_retries = self.MAX_RETRIES
         from persistent_agents.dispatch_context import current_dispatch
@@ -21318,8 +18204,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             max_retries = 1
         from orchestrator import hitl_confirmation
         if hitl_confirmation.approved_call(self, user_id, audit_conversation_id, agent_id, tool_name):
-            # A timeout may mean the effect happened. One approval never
-            # authorizes another physical attempt or transport fallback.
+            # One approval authorizes exactly one physical attempt
             max_retries = 1
 
         last_result = None
@@ -21347,13 +18232,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
             last_result = result
 
-            # Success: no error at all
             if result and not result.error:
                 if attempt > 1:
                     logger.info(f"Tool '{tool_name}' succeeded on attempt {attempt}/{max_retries}")
                 return result
 
-            # Check if error is retryable
             is_retryable = True
             error_msg = "Unknown error"
             if result and result.error:
@@ -21364,18 +18247,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.info(f"Tool '{tool_name}' failed with non-retryable error: {error_msg}")
                 return result
 
-            # Retryable error — try again if attempts remain
             if attempt < max_retries:
                 base = self.RETRY_BACKOFF[attempt - 1] if attempt - 1 < len(self.RETRY_BACKOFF) else 2.0
-                # ±20% jitter to avoid thundering-herd when concurrent tool
-                # calls fail against the same upstream (mirrors
-                # stream_manager.compute_backoff's jitter pattern).
                 backoff = base * random.uniform(0.8, 1.2)
                 logger.warning(
                     f"Tool '{tool_name}' failed (attempt {attempt}/{max_retries}): {error_msg}. "
                     f"Retrying in {backoff}s..."
                 )
-                # Notify UI about the retry
                 try:
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status",
@@ -21384,7 +18262,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                    f"Retrying... (attempt {attempt + 1}/{max_retries})"
                     }))
                 except Exception:
-                    pass  # Don't let status notification failure break retry logic
+                    pass  # status-notify failure must not break the retry
 
                 await asyncio.sleep(backoff)
             else:
@@ -21408,24 +18286,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
-        """Send an MCP tool call to an agent and wait for the response.
-
-        Strategy: Always try WebSocket first (fastest, bidirectional), then
-        fall back to A2A JSON-RPC if WebSocket is unavailable or fails.
-
-        Feature 014: every tool call is recorded as a persistent step entry
-        via :class:`orchestrator.chat_steps.ChatStepRecorder` so users see
-        what was called in the chat. Recording is purely observational —
-        a missing recorder (e.g. no UI websocket) is not an error.
-        """
-        # Feature 014: look up the active per-turn recorder for this UI
-        # websocket so we can stamp start/complete/error around the call.
         recorder = self._chat_recorders.get(id(ui_websocket)) if ui_websocket is not None else None
         step_id = None
         if recorder is not None:
             try:
                 step_id = await recorder.start("tool_call", tool_name, args)
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 logger.debug("recorder.start failed", exc_info=True)
                 step_id = None
 
@@ -21444,8 +18310,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 protected_conversation_id=protected_conversation_id,
             )
             if recorder is not None and step_id is not None:
-                # R6: if the step was cancelled mid-flight, drop the result
-                # silently so the assistant reply does not include it.
+                # Cancelled mid-flight: the result is dropped silently by design
                 if recorder.is_terminal(step_id):
                     logger.info(
                         "tool_call result discarded (step terminal)",
@@ -21455,7 +18320,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if result is not None and result.error:
                         await recorder.error(step_id, result.error.get("message", "tool error"))
                     else:
-                        # Surface a small result preview if present.
                         preview = result.result if (result is not None and result.result is not None) else None
                         await recorder.complete(step_id, preview)
             return result
@@ -21463,7 +18327,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if recorder is not None and step_id is not None and not recorder.is_terminal(step_id):
                 try:
                     await recorder.error(step_id, exc)
-                except Exception:  # pragma: no cover — defensive
+                except Exception:  # pragma: no cover
                     pass
             raise
 
@@ -21482,7 +18346,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
-        """Dispatch through one protected adapter entry per physical send."""
         from orchestrator.agent_identity import required_identity_claims
 
         channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
@@ -21528,12 +18391,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 }
             )
 
-        # 058 (honest-offline, FR-011): a user-created agent runs on the owner's
-        # desktop and connects inward over the tunnel — it has no server-reachable
-        # URL. When its host is closed it is simply offline; short-circuit to a
-        # prompt, honest offline response rather than the reconnect/A2A dance
-        # (which would hang or mislead for a NAT'd user agent). Only queried on the
-        # already-disconnected path, so it adds no cost to live dispatches.
         if agent_id not in self.agents and agent_id not in self.local_agents:
             try:
                 from orchestrator import user_agents as _ua
@@ -21551,9 +18408,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             "retryable": False, "offline": True})
             except Exception:
                 logger.debug("user-agent offline check failed", exc_info=True)
-        # Feature 040 (US1): bundled first-party agents run IN-PROCESS — no
-        # network hop. Selected by a positive registry check; external A2A
-        # agents and draft subprocesses fall through to the paths below.
         if agent_id in self.local_agents:
             return await guarded(
                 args,
@@ -21566,7 +18420,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     caller_capabilities=capabilities,
                 ),
             )
-        # Try WebSocket first
         if agent_id in self.agents:
             result = await guarded(
                 args,
@@ -21581,7 +18434,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
             if result and not (result.error and result.error.get("retryable")):
                 return result
-            # WebSocket failed with a retryable error — fall back to A2A if available
             if agent_id in self.a2a_clients:
                 if identity_bound:
                     return result or identity_transport_unavailable()
@@ -21600,7 +18452,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             return result
 
-        # No WebSocket connection — try A2A
         if agent_id in self.a2a_clients:
             if identity_bound:
                 return identity_transport_unavailable()
@@ -21617,7 +18468,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ),
             )
 
-        # Agent has a known URL but no active connection — attempt WebSocket reconnect then A2A
         if agent_id in self.agent_urls:
             base_url = self.agent_urls[agent_id]
             logger.info(f"Agent {agent_id} disconnected, attempting WebSocket reconnect to {base_url}")
@@ -21638,7 +18488,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception as e:
                 logger.debug(f"WebSocket reconnect failed for {agent_id}: {e}")
 
-            # WebSocket reconnect failed — try A2A discovery as fallback
             if identity_bound:
                 return identity_transport_unavailable()
             logger.info(f"WebSocket reconnect failed for {agent_id}, attempting A2A fallback")
@@ -21674,7 +18523,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ui_websocket=None,
         caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> Optional[MCPResponse]:
-        """Execute a tool call via WebSocket (internal agents)."""
         projected_socket = self.agents.get(agent_id)
         if bool(
             getattr(projected_socket, "is_fenced_user_agent_tunnel", False)
@@ -21713,13 +18561,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         }
         if verified_identity:
             caller_info["verified_identity"] = verified_identity
-        # Cryptographically-random, collision-free request id. A time-based id
-        # (``req_<tool>_<ms>``) collided when two same-tool calls landed in one
-        # millisecond — resolving the WRONG pending future — and, being sent to
-        # the agent in the dispatch, was GUESSABLE: a malicious agent could
-        # forge a hop's ``parent_request_id`` to resolve another dispatch's
-        # authority from ``_dispatch_context`` (confused-deputy). uuid4 is
-        # os.urandom-backed, so neither collision nor guessing is feasible.
+        # Must be unguessable, or a forged id can hijack another hop
         request_id = f"req_{tool_name}_{_uuid.uuid4().hex}"
 
         request = MCPRequest(
@@ -21731,20 +18573,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             caller_info=caller_info,
         )
 
-        # Create a future for the response
         future = asyncio.get_event_loop().create_future()
         self.pending_requests[request_id] = future
-        # The agent this request is SENT to — a response from any other socket is
-        # dropped (see _response_is_from_dispatch_target). Guarded so a test
-        # double reusing this method with its own `self` keeps working.
         _targets = getattr(self, "_pending_request_agent", None)
         if _targets is not None:
             _targets[request_id] = agent_id
-        # 056 US1: record this dispatch so a mediated hop from the executing
-        # agent resolves its context/authority against OUR record.
         self._register_dispatch_context(request_id, agent_id, args, ui_websocket)
 
-        # Register UI socket for progress forwarding
         if ui_websocket and flags.is_enabled("progress_streaming"):
             self.pending_ui_sockets[request_id] = ui_websocket
 
@@ -21780,8 +18615,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ui_websocket: Any,
         caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> MCPResponse:
-        """Assign, send, and settle one exact personal-agent runtime call."""
-
         owner_user_id = socket.owner_sub
         agent_id = socket.agent_id
         request_generation = _uuid.uuid4()
@@ -21894,11 +18727,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             },
         }
         try:
-            # Assignment commits before this process-local waiter exists.  An
-            # exact exit can therefore settle the durable request in that small
-            # gap and project before seeing the waiter.  Recheck only after the
-            # waiter's full runtime fence is registered: if exit already won we
-            # wake it here; if exit wins after this read, the projector sees it.
+            # Exit may settle the request before the waiter registers
             current_runtime = await asyncio.to_thread(
                 self.personal_agent_runtime.get_runtime_instance,
                 authority.fence.runtime_instance_id,
@@ -21946,8 +18775,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
         except Exception as exc:
             if waiter.done() and not waiter.cancelled():
-                # A concurrent exact-exit projection is the committed first
-                # terminal result; a later transport error cannot replace it.
                 return waiter.result()
             try:
                 await asyncio.to_thread(
@@ -21986,25 +18813,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ui_websocket=None,
         caller_capabilities: Optional[Dict[str, object]] = None,
     ) -> Optional[MCPResponse]:
-        """Execute a tool call against a built-in agent running IN-PROCESS (feature 040).
-
-        Runs the agent's own ``handle_mcp_request`` with a
-        :class:`~shared.local_transport.LoopbackSocket` whose frames route back
-        through ``handle_agent_message`` — so the same request-id↔future
-        correlation, progress fan-out, streaming, in-agent credential
-        decryption, and ``_runtime`` injection all apply with no network hop.
-
-        NOTE on confidentiality: for an in-process built-in the agent handler
-        runs inside the orchestrator OS process, so decrypted ECIES plaintext
-        DOES transiently exist in this process's memory — the confidentiality
-        boundary here is encryption-at-rest in the DB, not a separate process
-        (unlike the networked A2A path). To keep that plaintext from leaking
-        back into the orchestrator-owned argument dict, the request is built
-        against a deep copy of ``args`` and the copy is scrubbed afterwards.
-
-        The whole gate stack (permission/policy/taint/audit/concurrency) wraps
-        this call upstream in ``execute_single_tool`` and is unchanged.
-        """
         import copy
         from shared.local_transport import LoopbackSocket
         from orchestrator.agent_identity import (
@@ -22032,13 +18840,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         }
         if verified_identity:
             caller_info["verified_identity"] = verified_identity
-        # Cryptographically-random, collision-free request id (see
-        # _execute_via_websocket) — this id keys both ``pending_requests`` and
-        # ``_dispatch_context``, the record a mediated hop resolves authority
-        # from, so it must be neither collidable nor guessable.
         request_id = f"req_{tool_name}_{_uuid.uuid4().hex}"
-        # Private copy so in-agent credential decryption never writes plaintext
-        # back into the caller's args dict (callers may retain/audit it).
         call_args = copy.deepcopy(args)
         request = MCPRequest(
             request_id=request_id,
@@ -22052,20 +18854,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self.pending_requests[request_id] = future
         _targets = getattr(self, "_pending_request_agent", None)
         if _targets is not None:
-            _targets[request_id] = agent_id      # dispatch target (see above)
-        # 056 US1: record this dispatch so a mediated hop from the executing
-        # agent resolves its context/authority against OUR record. Registered
-        # against the ORIGINAL args (the deep copy is scrubbed in-agent).
+            _targets[request_id] = agent_id
         self._register_dispatch_context(request_id, agent_id, args, ui_websocket)
         if ui_websocket and flags.is_enabled("progress_streaming"):
             self.pending_ui_sockets[request_id] = ui_websocket
 
         def _on_handler_done(task: "asyncio.Task"):
-            # The agent handler resolves the future itself via the loopback's
-            # MCPResponse frame. If it raised before sending one (it should not —
-            # mcp_server.process_request catches tool errors and returns an
-            # error response), resolve with a retryable error so the awaiter
-            # never hangs until timeout.
             try:
                 exc = task.exception()
             except asyncio.CancelledError:
@@ -22092,7 +18886,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return MCPResponse(request_id=request_id,
                                error={"message": str(e), "retryable": True})
         finally:
-            # Scrub decrypted credential plaintext from the private copy.
             try:
                 if isinstance(call_args, dict):
                     call_args.pop("_credentials", None)
@@ -22105,15 +18898,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _a2a_wire_arguments(args: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the exact tool argument mapping serialized over A2A.
-
-        Orchestrator-only underscore metadata is used to build transport
-        headers and must not become tool input.  Encrypted credentials are the
-        one existing wire-level exception because only the target executor can
-        decrypt them.  This normalization runs before protected authorization
-        so the permit digest and executor mutation fence cover identical bytes.
-        """
-
         clean_args = {
             key: value
             for key, value in args.items()
@@ -22136,13 +18920,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         caller_capabilities: Optional[Dict[str, object]] = None,
         wire_arguments: Optional[Dict[str, Any]] = None,
     ) -> Optional[MCPResponse]:
-        """Execute a tool call via A2A JSON-RPC (external agents).
-
-        Posts a hand-rolled JSON-RPC `message/send` request to the agent's /a2a
-        endpoint so the per-call delegation token can be forwarded as a Bearer
-        Authorization header. Avoids the v1.0 SDK Client which routes auth
-        through interceptors rather than per-call metadata.
-        """
         import uuid
         import httpx
         from google.protobuf.json_format import ParseDict, MessageToDict
@@ -22172,17 +18949,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "method": "tools/call",
                 "name": tool_name,
                 "arguments": clean_args,
-                # Typed MCP-equivalent metadata lives alongside arguments,
-                # never inside the tool schema or model-controlled mapping.
                 "protocol_version": MCP_PROTOCOL_VERSION,
                 "caller_capabilities": dict(caller_capabilities or {}),
             })],
         )
 
         headers = {"Content-Type": "application/json"}
-        # Transport credential (who this orchestrator is) — sent ALONGSIDE, never
-        # instead of, the per-call delegation token below, which is a different
-        # credential answering a different question (what this call may do).
         from orchestrator.agent_peer_auth import agent_auth_headers
         headers.update(agent_auth_headers(base_url))
         delegation_token = args.get("_delegation_token")
@@ -22212,7 +18984,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             result = data.get("result")
             if isinstance(result, dict):
-                # Try to parse the result as a Task; fall back to Message; else raw dict.
                 try:
                     return a2a_response_to_mcp_response(ParseDict(result, Task()), request_id)
                 except Exception:
@@ -22240,13 +19011,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                error={"message": str(e), "retryable": True})
 
     def _delegation_required(self) -> bool:
-        """Whether tool dispatch must refuse to proceed without a delegated token.
-
-        Constitution VII mandates RFC 8693 delegated tokens for agents.
-        Default: required in production posture (``ASTRAL_ENV`` unset or not
-        ``development`` — the project's fail-closed convention), optional in
-        development. ``DELEGATION_REQUIRED`` overrides either way.
-        """
         override = os.getenv("DELEGATION_REQUIRED", "").strip().lower()
         if override in ("1", "true", "yes"):
             return True
@@ -22257,18 +19021,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _delegation_denied_for_permissions(
         self, websocket, agent_id: str, user_id: str
     ) -> bool:
-        """Whether a failed mint is this user's permissions, not the IdP's fault.
-
-        An empty effective scope list means the user has granted this agent no
-        runnable tool, so the exchange is refused locally (``no_enabled_scopes``)
-        rather than sent to Keycloak with an empty ``scope``. The two causes
-        need different refusals — telling a user to go fix a correctly
-        configured realm is a dead end.
-
-        A turn with no bound user token (an unconsented machine turn) is NOT a
-        permissions fault even though its scope set is also empty: nothing was
-        ever exchanged. Only consulted on the refusal path.
-        """
         try:
             session = self.ui_sessions.get(websocket, {}) or {}
             if (
@@ -22283,12 +19035,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False
 
     async def _get_delegation_token(self, websocket, agent_id: str, user_id: str) -> Optional[str]:
-        """Generate an RFC 8693 delegation token scoped to safe, allowed tools.
-
-        The scope excludes system-blocked tools (from security review) and
-        user-disabled tools (from permission manager), so the agent can only
-        act within the constrained tool set.
-        """
         try:
             card = self.agent_cards.get(agent_id)
             if not card:
@@ -22303,11 +19049,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         session,
                     )
                 except _dg.DelegationConfigError:
-                    # The MCP mint is signed locally (no IdP exchange), so a
-                    # missing DELEGATION_CHILD_SIGNING_KEY / MEMORY_HMAC_KEY
-                    # is an operator fault distinct from "realm lacks the
-                    # tools:* scopes". Mark the request-local session so the
-                    # refusal names the real cause; warn once, never the key.
                     session["_delegation_fault"] = "signing_key_unset"
                     if not getattr(self, "_mcp_signing_key_warned", False):
                         self._mcp_signing_key_warned = True
@@ -22329,17 +19070,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 return None
 
-            # Build the effective scope: only tools that pass BOTH checks
             agent_flags = self.security_flags.get(agent_id, {})
 
             def _scope_reads():
-                """Per-skill permission reads + scope names off the event loop."""
                 allowed = []
                 for skill in card.skills:
-                    # Exclude system-blocked
                     if skill.id in agent_flags and agent_flags[skill.id].get("blocked"):
                         continue
-                    # Exclude user-disabled
                     if not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
                         continue
                     if machine_scopes is not None and (
@@ -22363,18 +19100,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
             if "error" in result:
                 if result.get("error") == "no_enabled_scopes":
-                    # Not an IdP fault and not agent-wide: this user granted
-                    # this agent nothing runnable. Per-user, so it must NOT
-                    # mark the agent as "exchange failing" — that would
-                    # downgrade a later, genuine realm failure to a debug line.
                     logger.warning(
                         "Delegation refused: user=%s has no enabled tool scopes for agent=%s",
                         user_id, agent_id)
                     return None
-                # Feature 030: log loudly ONCE per agent instead of warning on
-                # every call — a misconfigured realm previously produced an
-                # identical warning per tool dispatch (pure noise) while the
-                # dispatch itself proceeded unscoped.
                 if not hasattr(self, "_delegation_failed_agents"):
                     self._delegation_failed_agents = set()
                 if agent_id not in self._delegation_failed_agents:
@@ -22396,8 +19125,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         claims: Dict[str, Any],
     ) -> Optional[str]:
-        """Mint downstream authority from verified claims, never bearer bytes."""
-
         from orchestrator import delegation as _dg
 
         card = self.agent_cards.get(agent_id)
@@ -22441,23 +19168,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         }
         return _dg.encode_delegation_payload(payload)
 
-    # =========================================================================
-    # LIVE STREAMING SUBSCRIPTIONS
-    # =========================================================================
-
-    # =========================================================================
-    # PUSH STREAMING (001-tool-stream-ui)
-    # =========================================================================
 
     async def _validate_chat_ownership_for_stream(
         self, websocket, user_id: str, chat_id: str,
     ) -> bool:
-        """Callback used by StreamManager to verify that ``chat_id`` belongs
-        to ``user_id``. Reuses the existing history.get_chat ownership
-        check that all other chat-scoped operations go through (off-loop —
-        the 052 detector refuses sync DB calls on the event-loop thread).
-        Returns True if the chat exists AND is owned by the user.
-        """
         try:
             chat = await asyncio.to_thread(
                 self.history.get_chat, chat_id, user_id=user_id)
@@ -22476,13 +19190,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         websocket,
         chat_id: str,
     ) -> str:
-        """Authorize and dispatch one physical push-stream open attempt.
-
-        Every initial open, dormant resume, and upstream retry re-enters the
-        complete Astral gate/rewrite stack and then obtains fresh protected
-        authority.  The permit is bound to the exact stream ID but remains in
-        typed caller capabilities, never tool arguments.
-        """
         if agent_id not in self.agents and agent_id not in self.local_agents:
             raise RuntimeError(f"agent {agent_id!r} is not connected")
 
@@ -22628,14 +19335,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _cancel_stream_request(
         self, agent_id: str, request_id: str, stream_id: str,
     ) -> None:
-        """Send a ``ToolStreamCancel`` to the agent for an in-flight stream.
-        The agent's BaseA2AAgent loop closes the underlying generator and
-        sends a final ``ToolStreamData`` with ``terminal: true``.
-        """
         cancel_msg = ToolStreamCancel(request_id=request_id, stream_id=stream_id)
         if agent_id in self.local_agents:
-            # In-process twin of the WS send: hand the cancel straight to the
-            # agent's own handler (the loopback has no inbound channel).
             try:
                 await self.local_agents[agent_id]._handle_stream_cancel(cancel_msg)
                 logger.info(
@@ -22662,21 +19363,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         self, websocket, chat_id: Optional[str], user_id: Optional[str],
         tool_name: str, params: Dict[str, Any],
     ) -> None:
-        """055 US2 (FR-009/FR-010): server-side subscription at streaming-tool
-        dispatch.
-
-        No client sends ``stream_subscribe`` unprompted (research D4), so a
-        push-streamable tool dispatched from chat would stream to nobody.
-        Subscribe the originating socket and every co-viewing socket of the
-        chat here; the client ``stream_subscribe`` action stays valid for
-        reattach (wire-contract §2). Called AFTER the dispatch gates pass, so
-        no additional permission checks. Fail-open — any refusal leaves the
-        turn on today's terminal-only delivery.
-        """
         if websocket is None or not chat_id or not user_id:
             return
-        # getattr: dispatch-focused test stubs build partial Orchestrators
-        # without a stream_manager — fail-open applies to those too.
         if (getattr(self, "stream_manager", None) is None
                 or not flags.is_enabled("stream_artifacts")
                 or not flags.is_enabled("tool_streaming")):
@@ -22685,13 +19373,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not tool_cfg or tool_cfg.get("kind") != "push":
             return
         agent_id = tool_cfg["agent_id"]
-        # The subscription identity must fingerprint the same params the
-        # one-shot component is `_source_params`-stamped with — never the
-        # injected private keys.
         clean_params = {k: v for k, v in params.items()
                         if not (isinstance(k, str) and k.startswith("_"))}
-        # Originating socket first: it creates the subscription (dispatching
-        # the streaming run to the agent); co-viewers attach (FR-009a dedup).
         targets = [websocket] + [
             ws for ws in self._sockets_on_chat(user_id, chat_id)
             if ws is not websocket
@@ -22725,13 +19408,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self._safe_send(ws, json.dumps(reply))
 
     def _bridged_stream_subscription(self, stream_id: str):
-        """The live bridged subscription for ``stream_id``, or None (flag off,
-        unbridged legacy stream, or unknown id).
-
-        Captured BEFORE the stream manager processes a chunk/end frame:
-        terminal processing tears the record down, and the persist wrapper
-        still needs its retention + identity afterwards.
-        """
         if self.stream_manager is None or not flags.is_enabled("stream_artifacts"):
             return None
         sub = self.stream_manager.subscription_for_stream(stream_id)
@@ -22740,16 +19416,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return sub
 
     async def _persist_stream_terminal(self, sub) -> None:
-        """055 US2 (FR-011): persist a bridged stream's terminal state as a
-        normal workspace component under the identity every frame carried.
-
-        Natural completion (``agent_end``) persists the retained last
-        content-bearing chunk; a FAILED resolution persists an honest
-        failed-state Alert under the SAME identity so reload shows the truth
-        instead of silently dropping what the user watched. Non-terminal
-        states (active/reconnecting/dormant) are left alone. Fail-open:
-        persistence failures degrade to today's ephemeral behavior.
-        """
         import copy
         from orchestrator.stream_manager import StreamState
         cid = sub.bridged_component_id
@@ -22764,9 +19430,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                          f"an error ({reason}) before completing."),
                 variant="error").to_dict()]
         elif (sub.state is StreamState.STOPPED
-                # dormant_ttl = abandonment; unsubscribe = the user closing an
-                # indefinite live view (its only success-terminal). In both,
-                # what streamed is still what persists.
                 and sub.state_reason in ("agent_end", "dormant_ttl", "unsubscribe")
                 and sub.retained_chunk is not None
                 and sub.retained_chunk.components):
@@ -22775,9 +19438,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         for comp in components:
             if isinstance(comp, dict):
-                # The agent SDK stamps every top-level id with the stream id;
-                # dropping it here keeps the stream-scoped id from ever being
-                # resolved as an author identity.
                 if str(comp.get("id", "")).startswith("stream-"):
                     comp.pop("id", None)
                 _tag_source(comp, sub.agent_id, sub.tool_name,
@@ -22829,29 +19489,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("workspace audit failed", exc_info=True)
 
     def _tool_security_blocked(self, agent_id: Optional[str], tool_name: str) -> bool:
-        """True when a hard security-flag block is set for (agent, tool).
-
-        Mirrors the dispatch-path block in ``_dispatch_tool_call`` so the
-        streaming paths (subscribe / loop) cannot bypass a system-blocked tool.
-        """
         flags = self.security_flags.get(agent_id, {}) if agent_id else {}
         return bool(agent_id and tool_name in flags and flags[tool_name].get("blocked"))
 
     async def _handle_push_stream_subscribe(
         self, websocket, session_id: Optional[str], payload: Dict, user_id: str
     ) -> None:
-        """Handle a stream_subscribe action for a PUSH-streaming tool.
-
-        Delegates to ``self.stream_manager.subscribe(...)``. Translates
-        ``ValueError`` into a ``stream_error`` reply per
-        contracts/protocol-messages.md §A6. On success replies with
-        ``stream_subscribed``.
-
-        US1 implementation: subscribe() actually creates a subscription and
-        the agent dispatcher fires the request. agent_id is looked up from
-        the orchestrator's _streamable_tools registry so the client doesn't
-        need to know it (mirrors the legacy poll path).
-        """
         tool_name = payload.get("tool_name", "")
         params = payload.get("params", {})
         chat_id = session_id or ""
@@ -22885,8 +19528,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         agent_id = tool_cfg["agent_id"]
 
-        # Hard security-flag block (mirror the dispatch gate) — a system-blocked
-        # tool must never be streamable, even when permissions would allow it.
         if self._tool_security_blocked(agent_id, tool_name):
             await self._safe_send(websocket, json.dumps({
                 "type": "stream_error",
@@ -22900,7 +19541,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
             return
 
-        # Permission check (mirrors legacy poll path)
         if not await asyncio.to_thread(
                 self.tool_permissions.is_tool_allowed, user_id, agent_id, tool_name):
             await self._safe_send(websocket, json.dumps({
@@ -22938,9 +19578,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
             return
 
-        # Success — reply with stream_subscribed including the FPS bounds and
-        # the FR-009a `attached` flag so the client knows whether this was a
-        # fresh subscribe or an attach to an existing deduplicated stream.
         cfg = self._streamable_tools.get(tool_name, {})
         reply = {
             "type": "stream_subscribed",
@@ -22952,8 +19589,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "min_fps": cfg.get("min_fps", 5),
             "attached": attached,
         }
-        # 055 US2: bridged streams carry the workspace identity from the ack
-        # onward so the client keys the placeholder by it (wire-contract §2).
         cid = self.stream_manager.component_id_for(stream_id)
         if cid is not None:
             reply["component_id"] = cid
@@ -22962,17 +19597,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _handle_push_stream_unsubscribe(
         self, websocket, session_id: Optional[str], payload: Dict, user_id: str
     ) -> None:
-        """Handle a stream_unsubscribe for a push-streamed subscription.
-
-        Per FR-009a per-subscriber semantics, removing this websocket from
-        the subscription's ``subscribers`` list does NOT necessarily stop
-        the stream — only when the list becomes empty does the stream
-        transition to STOPPED. The actual logic is in
-        ``StreamManager.unsubscribe`` (US4 T066).
-        """
         stream_id = payload.get("stream_id", "")
         if not stream_id:
-            return  # silent: malformed unsubscribe is not worth a reply
+            return  # malformed unsubscribe is ignored by design
         try:
             await self.stream_manager.unsubscribe(websocket, stream_id)
         except NotImplementedError:
@@ -22993,7 +19620,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
 
     async def _handle_stream_subscribe(self, websocket, payload: Dict):
-        """Subscribe a UI client to a live-streaming tool."""
         tool_name = payload.get("tool_name")
         interval = payload.get("interval_seconds")
         params = payload.get("params", {})
@@ -23028,14 +19654,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
             return
 
-        # Clamp interval to tool's allowed range
         if interval is None:
             interval = tool_cfg["default_interval"]
         interval = max(tool_cfg["min_interval"], min(tool_cfg["max_interval"], interval))
 
         ws_id = id(websocket)
 
-        # Enforce max subscription limit
         current_subs = self._stream_subs.get(ws_id, {})
         if tool_name not in current_subs and len(current_subs) >= self._MAX_STREAM_SUBSCRIPTIONS:
             await self._safe_send(websocket, json.dumps({
@@ -23044,17 +19668,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
             return
 
-        # Cancel existing task for this tool if re-subscribing
         existing_task = self._stream_tasks.get(ws_id, {}).get(tool_name)
         if existing_task:
             existing_task.cancel()
 
-        # Store subscription config
         self._stream_subs.setdefault(ws_id, {})[tool_name] = {
             "interval": interval, "params": params, "agent_id": agent_id,
         }
 
-        # Create streaming task
         task = asyncio.create_task(
             self._stream_loop(
                 websocket,
@@ -23075,7 +19696,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         logger.info(f"Stream subscribed: user={user_id} tool={tool_name} interval={interval}s")
 
     async def _handle_stream_unsubscribe(self, websocket, payload: Dict):
-        """Unsubscribe a UI client from a live-streaming tool."""
         tool_name = payload.get("tool_name")
         ws_id = id(websocket)
 
@@ -23090,7 +19710,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         logger.info(f"Stream unsubscribed: tool={tool_name}")
 
     async def _handle_stream_list(self, websocket):
-        """Return the list of active stream subscriptions for this client."""
         ws_id = id(websocket)
         subs = self._stream_subs.get(ws_id, {})
         items = [
@@ -23112,7 +19731,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         initial_args: Optional[Dict[str, Any]] = None,
         chat_id: Optional[str] = None,
     ):
-        """Poll with fresh Astral and protected authorization per actuator."""
         user_id = self._get_user_id(websocket)
         prepared_args = initial_args
         while True:
@@ -23161,9 +19779,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     }))
 
                 if result and not result.error:
-                    # Tag components with source metadata (same as regular tool flow)
-                    # Feature 004: also tag with correlation_id when available
-                    # so streamed components are linkable to their dispatch.
                     stream_corr_id = getattr(result, "correlation_id", None)
 
                     def _tag(comp):
@@ -23192,7 +19807,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     }))
                 elif result and result.error:
                     logger.warning(f"Stream tool error ({tool_name}): {result.error}")
-                    # Don't break on transient errors; continue loop
 
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
@@ -23201,21 +19815,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.error(f"Stream loop error for {tool_name}: {e}")
                 await asyncio.sleep(interval)
 
-        # Cleanup on exit
         ws_id = id(websocket)
         self._stream_tasks.get(ws_id, {}).pop(tool_name, None)
         self._stream_subs.get(ws_id, {}).pop(tool_name, None)
 
     def _cleanup_streams(self, websocket):
-        """Cancel all streaming tasks for a disconnected websocket."""
         ws_id = id(websocket)
         for tool_name, task in self._stream_tasks.pop(ws_id, {}).items():
             task.cancel()
         self._stream_subs.pop(ws_id, None)
-
-    # =========================================================================
-    # UI HELPERS
-    # =========================================================================
 
     def _voice_binding_runtime_issuer(self) -> VoiceControlBindingIssuer:
         issuer = self._voice_binding_issuer
@@ -23226,8 +19834,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _voice_credential_expiry(claims: Dict[str, Any]) -> datetime:
-        """Return the real Keycloak expiry, with a development-only mock seam."""
-
         expiry = claims.get("exp")
         if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
             try:
@@ -23245,8 +19851,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         registration: RegisterUI,
         claims: Dict[str, Any],
     ) -> bool:
-        """Deliver one memory-only bearer after authenticated registration."""
-
         if registration.device_id is None:
             return False
         if registration.connection_generation is None:
@@ -23315,12 +19919,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "displacement_cleanup_unavailable"
                 ) from exc
 
-        # Install the binding before delivering it. WebSocket delivery and the
-        # client's first REST mutation run on independent connections, so a
-        # client can legitimately present the bearer as soon as ``send``
-        # completes. Roll back exactly to the prior socket/device state when
-        # delivery fails; no bearer that the client did not receive remains
-        # current.
         self._voice_control_bindings[socket_id] = issued.claims
         device_bindings[device_key] = socket_id
         device_kinds[device_key] = self._voice_device_kind(registration)
@@ -23358,14 +19956,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return "web"
 
     def _clear_voice_control_binding(self, websocket) -> None:
-        """Fence the socket's binding synchronously before auth teardown."""
-
         socket_id = id(websocket)
-        # A few deliberately minimal runtime harnesses construct an
-        # ``Orchestrator`` with ``__new__`` so they can exercise the connection
-        # pumps without booting the voice subsystem.  Disconnect cleanup must
-        # remain safe for those pre-voice and partially constructed instances;
-        # a fully initialized runtime still owns the real mapping.
         claims = getattr(self, "_voice_control_bindings", {}).pop(socket_id, None)
         composer_tasks = getattr(self, "_voice_composer_tasks", {})
         task = composer_tasks.pop(socket_id, None)
@@ -23387,22 +19978,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             getattr(self, "_voice_device_kinds", {}).pop(device_key, None)
 
     def speech_server_available(self) -> bool:
-        """Credential-free ``rote_config.speech_server_available`` hint.
-
-        This key predates feature 065: it used to mirror the presence of a
-        legacy dedicated speech-proxy URL setting, which no longer exists —
-        the isolated voice worker reaches the speech gateway through its own
-        ``VOICE_SPEECH_BASE_URL`` and this process never holds that endpoint.
-        The key name is kept for wire stability; its value now answers the
-        same question honestly from the included conversational-voice
-        runtime: ``FF_CONVERSATIONAL_VOICE`` is on, the voice services were
-        constructed, and at least one preflight-gated speech worker is live.
-        A worker is admitted only after its model-inventory/ASR/TTS probes
-        pass, so a live worker is the credential-free proof that a speech
-        server is configured and reachable. Synchronous and in-memory so the
-        handshake never waits on a probe; any failure reads as ``False``.
-        """
-
         try:
             if not flags.is_enabled("conversational_voice"):
                 return False
@@ -23412,7 +19987,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if worker_pool is None:
                 return False
             return worker_pool.readiness().worker_count > 0
-        except Exception:  # a hint must never break the handshake
+        except Exception:
             return False
 
     async def publish_voice_composer_state(
@@ -23423,8 +19998,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         connection_generation: str,
         selected_chat_id: str | None = None,
     ) -> Dict[str, Any] | None:
-        """Push one current, owner-validated composer projection."""
-
         socket_id = self._voice_device_bindings.get((user_id, device_id))
         if socket_id is None:
             return None
@@ -23464,15 +20037,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return dict(frame)
 
     async def publish_voice_session_state(self, session) -> None:
-        """Push one durable ``voice_session_state`` projection to its owner.
-
-        Bound to the voice runtime's session-state publisher seam. Clients
-        shipped this reducer in feature 065 (chat-context resync, microphone
-        restore, ended teardown) but the frame was never produced; the PATCH,
-        DELETE, and lease/idle-reaper paths now feed it. Ended sessions also
-        refresh the composer so the Start control returns.
-        """
-
         from orchestrator.voice_runtime import session_state_frame
 
         socket_id = self._voice_device_bindings.get(
@@ -23546,13 +20110,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         device_id: str,
         connection_generation: str,
     ) -> VoiceControlClaims:
-        """Verify a REST control bearer against the currently registered socket.
-
-        A valid HMAC is deliberately insufficient: reconnect, reauthentication,
-        binding rotation, or socket teardown removes the matching claims from
-        ``_voice_control_bindings`` and immediately fences the old bearer.
-        """
-
         claims = self._voice_binding_runtime_issuer().verify(
             bearer,
             expected_subject=subject,
@@ -23575,14 +20132,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return claims
 
     async def _safe_send(self, websocket, data: str) -> bool:
-        """Send data over a websocket, returning False if the connection is closed."""
         try:
             data = self._scope_conversation_transient(websocket, data)
             if hasattr(websocket, "send_text"):
-                # FastAPI WebSocket
                 await websocket.send_text(data)
             else:
-                # websockets library WebSocket
                 await websocket.send(data)
             self._trace_frame(websocket, data, ok=True)
             return True
@@ -23592,14 +20146,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False
 
     def _trace_frame(self, websocket, data: str, *, ok: bool, error: str = "") -> None:
-        """Diagnostic outbound-frame trace, enabled by a marker file so a
-        running container can flip it without an env-recreate. Fail-open.
-
-        The trace is metadata-only. Outbound frames routinely contain chat
-        text, recap text, PHI, provider material, or short-lived voice
-        capabilities, so even an explicitly armed diagnostic trace must never
-        become a second content-retention channel (065 FR-046/FR-047).
-        """
         try:
             if not os.path.exists("/app/.frame_trace"):
                 return
@@ -23653,11 +20199,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
 
     def _vws_fan_targets(self, websocket) -> List[Any]:
-        """Real sockets that must mirror a VirtualWebSocket-bound chat frame
-        (055 bg-continuity): the task-owner's sockets active on the task's
-        chat. Empty for real sockets (no double delivery), when
-        FF_BG_CONTINUITY is off, or when the background task carries no
-        user+chat identity (e.g. bare handshake/test tasks)."""
         from orchestrator.async_tasks import VirtualWebSocket
         if not isinstance(websocket, VirtualWebSocket):
             return []
@@ -23668,18 +20209,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         chat_id = getattr(task, "chat_id", None)
         if not user_id or not chat_id:
             return []
-        # The executing socket never fans to itself (a registered
-        # VirtualWebSocket would otherwise recurse).
+        # Excludes self: a VirtualWebSocket target would recurse
         return [ws for ws in self._sockets_on_chat(user_id, chat_id)
                 if ws is not websocket]
 
-    # ------------------------------------------------------------------
-    # Feature 089 — TypeSafe routing seams
-    # ------------------------------------------------------------------
-
     def _typesafe_notifier(self, websocket):
-        """The adapter's only channel to the user: one chat_status frame."""
-
         async def _notify(status: str, message: str) -> None:
             await self._send_chat_status(websocket, status, message)
 
@@ -23698,12 +20232,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         history_messages=None,
         active_agent=None,
     ):
-        """Seam I1. Build the bounded request and start the routing task.
-
-        Returns ``(task, key_fingerprint)``, or ``(None, None)`` when there is
-        nothing to route. Never raises: a turn must not be able to fail because
-        routing could not start.
-        """
         try:
             from orchestrator.typesafe_routing import RoutingRequest, start_routing
             from orchestrator.typesafe_routing.questions import AgentOption, ToolOption
@@ -23715,8 +20243,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if stored is None:
                 return None, None
 
-            # Names the model sees are exactly the names the LLM will be
-            # offered, so a decision can be applied without translation.
             names_by_agent: dict[str, list] = {}
             for entry in tools_desc:
                 function = (entry or {}).get("function") or {}
@@ -23767,14 +20293,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None, None
 
     def _typesafe_turn_requires_confirmation(self, chat_id) -> bool:
-        """True when this turn's TypeSafe verdict was ``confirm_tools``."""
         if not chat_id:
             return False
         return bool(getattr(self, "_typesafe_confirm_turns", set()) and
                     chat_id in self._typesafe_confirm_turns)
 
     def _typesafe_set_turn_verdict(self, chat_id, verdict) -> None:
-        """Record the turn's verdict so the per-call gate step can read it."""
         if not chat_id:
             return
         turns = getattr(self, "_typesafe_confirm_turns", None)
@@ -23786,22 +20310,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             turns.discard(chat_id)
 
     def _typesafe_style_layout(self, chat_id, components, ops):
-        """Seam I5's composer half. Returns a validated layout, or ``None``.
-
-        The components handed to the composer are the **upserted** ones, so the
-        ids it references are the identities the canvas actually holds. Using
-        the pre-upsert components would produce refs to ids that do not exist
-        yet, and the designer's validator would drop every one of them.
-
-        The result goes through the designer's own ``validate_layout`` before
-        it is used, so a composed layout is held to exactly the same contract
-        as a model-produced one.
-        """
-        # Every 089 seam is inert when it cannot run. Reading the attribute
-        # defensively matters here because the caller's `except` is broad: an
-        # AttributeError raised on this line would be swallowed as "the
-        # designer crashed" and would silently disable the designer instead of
-        # this seam.
         styles = getattr(self, "_typesafe_turn_styles", None)
         style = styles.get(chat_id) if (styles and chat_id) else None
         if not style:
@@ -23850,7 +20358,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
 
     def _typesafe_set_turn_style(self, chat_id, decision) -> None:
-        """Record this turn's presentation style for the delivery seam."""
         if not chat_id:
             return
         styles = getattr(self, "_typesafe_turn_styles", None)
@@ -23863,12 +20370,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             styles.pop(chat_id, None)
 
     def _provider_preset_for(self, user_id: str):
-        """The user's provider preset key, for the forced-choice allowlist.
-
-        Read from the cached config synchronously: this runs on the hot path
-        just before round one, and a miss only costs the forced choice, which
-        the shortlist does not depend on.
-        """
         try:
             store = getattr(self, "_llm_store", None)
             if store is None:
@@ -23880,12 +20381,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
 
     async def _typesafe_refuse_turn(self, websocket, chat_id, user_id, decision) -> None:
-        """Seam I2's refusal branch: render the refusal, audit it, end the turn.
-
-        The alert carries no detail about why. A screen that explains its own
-        threshold teaches an attacker how to get under it, and the honest
-        message to a user who tripped it by accident is the same either way.
-        """
         try:
             from astralprims import Alert
 
@@ -23907,7 +20402,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         await self._send_chat_status(websocket, "done", "")
 
     async def _typesafe_audit_verdict(self, user_id: str, decision, *, verdict: str) -> None:
-        """Audit ``typesafe.security_verdict``. Carries scores, never text."""
         recorder = getattr(self, "audit_recorder", None)
         if recorder is None or decision is None:
             return
@@ -23941,7 +20435,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe verdict audit failed (non-fatal)", exc_info=True)
 
     def _tool_to_agent_lookup(self, llm_name, eligible):
-        """Map an LLM-facing tool name back to its agent id."""
         mapping = getattr(self, "_typesafe_tool_agent_hint", None)
         if isinstance(mapping, dict) and llm_name in mapping:
             return mapping[llm_name]
@@ -23953,7 +20446,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return None
 
     async def _typesafe_await_decision(self, task, *, user_id: str, chat_id=None):
-        """Seam I2. Collect the decision within the remaining budget."""
         if task is None:
             return None
         try:
@@ -23971,7 +20463,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return outcome
 
     def _typesafe_record_metrics(self, outcome) -> None:
-        """Publish the turn's routing outcome and tier as closed-vocabulary tokens."""
         observability = getattr(self, "runtime_observability", None)
         if observability is None or outcome is None:
             return
@@ -23986,7 +20477,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe metric emission failed (non-fatal)", exc_info=True)
 
     async def _typesafe_audit_fallback(self, user_id: str, outcome) -> None:
-        """Audit ``typesafe.routing_fallback``. Records why, never what."""
         recorder = getattr(self, "audit_recorder", None)
         if recorder is None or outcome is None:
             return
@@ -24021,7 +20511,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe fallback audit failed (non-fatal)", exc_info=True)
 
     def _typesafe_record_outcome(self, user_id: str, outcome) -> None:
-        """Fire-and-forget the turn's verdict on the key it was observed on."""
         store = getattr(self, "_typesafe_store", None)
         credential_outcome = getattr(outcome, "credential_outcome", None)
         fingerprint = getattr(outcome, "fingerprint", None)
@@ -24031,8 +20520,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             task = asyncio.create_task(
                 store.record_outcome_async(user_id, credential_outcome, fingerprint)
             )
-            # Keep a reference so the task is not garbage collected mid-flight,
-            # and drop it when it finishes.
+            # Keeps a reference so the task isn't GC'd mid-flight
             self._typesafe_outcome_tasks.add(task)
             task.add_done_callback(self._typesafe_outcome_tasks.discard)
         except Exception:
@@ -24040,25 +20528,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
 
     async def _send_chat_status(self, websocket, status: str, message: str = ""):
-        """Send a chat_status frame; a VirtualWebSocket-bound frame also fans
-        to the user's real sockets on the task's chat (055 bg-continuity) so
-        background turns surface their terminal state on every device."""
         data = json.dumps({"type": "chat_status", "status": status, "message": message})
         await self._safe_send(websocket, data)
         for ws in self._vws_fan_targets(websocket):
             try:
                 await self._safe_send(ws, data)
-            except Exception:  # pragma: no cover - per-socket best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("vws chat_status fan failed", exc_info=True)
 
     async def _broadcast_user_history(self, user_id: str | None = None):
-        """Send each connected UI client their own user's recent chat history.
-
-        Groups clients by user_id to avoid redundant DB queries when the
-        same user has multiple tabs open.  ``user_id`` narrows commit-driven
-        refreshes to the owner whose durable conversation projection changed;
-        callers that omit it retain the existing all-user refresh behavior.
-        """
         if not self.ui_clients:
             return
 
@@ -24076,31 +20554,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             msg = json.dumps({"type": "history_list", "chats": history_list})
             for c in clients:
                 tasks.append(self._safe_send(c, msg))
-                # Feature 037: refresh the server-driven, ROTE-adapted surface.
                 tasks.append(self._push_history_surface(c, chats=history_list))
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _refresh_history_after_commit(self, user_id: str) -> None:
-        """Fail-soft owner-scoped history projection after a durable commit."""
-
         try:
             await self._broadcast_user_history(user_id=user_id)
         except Exception:
-            # The conversation commit and its snapshot are authoritative.
-            # A transient history-query/render failure recovers on the next
-            # commit, explicit history request, or socket registration.
             logger.warning(
                 "committed conversation history refresh failed",
                 exc_info=True,
             )
 
     async def _push_history_surface(self, websocket, *, chats=None, loading: bool = False) -> None:
-        """Feature 037: render the chat-history surface (skeleton while loading,
-        else the recent-chats list) and push it ROTE-adapted to the client's
-        history region via send_ui_render(target="history"). Fail-soft — a
-        surface error never breaks history delivery."""
         try:
             from orchestrator.history_surface import (
                 history_skeleton_components,
@@ -24114,11 +20582,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _derive_chat_title(content: str, default: str = "Response") -> str:
-        """Feature 029 (FR-027): a contextual chat-card title.
-
-        Prefers the response's own first markdown heading; falls back to the
-        provided default. Never invents content — purely derivational.
-        """
         for line in (content or "").splitlines():
             line = line.strip()
             if line.startswith("#"):
@@ -24128,12 +20591,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return default
 
     def _chat_narrative(self, content: str, chat_id: Optional[str] = None) -> List[Dict]:
-        """Feature 029 (FR-027): the final-turn chat-panel narrative.
-
-        Replaces the constant ``Card(title="Analysis")``: short plain answers
-        render as bare markdown (no card chrome); longer ones get a card with
-        a title derived from the response itself.
-        """
         text = _strip_toolcall_leakage(content)
         if not text and (content or "").strip():
             _log_stripped_empty("chat_narrative", chat_id, content)
@@ -24147,14 +20604,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ]
 
     def _canvas_components(self, chat_id: str, user_id: str) -> List[Dict]:
-        """Feature 029: the canvas as one component list — designed arrangements
-        materialized in place, unclaimed components flat — in shared position
-        order. With no arrangements this is exactly the pre-029 flat canvas."""
+        from orchestrator.canvas_consolidation import consolidate_canvas
+
         layouts = self.workspace.live_layouts(chat_id, user_id)
         if not layouts:
             components = self.workspace.live_components(chat_id, user_id)
             _stamp_canvas_provenance(components)
-            return components
+            return consolidate_canvas(components)
         from orchestrator import ui_designer
         from orchestrator.workspace import iter_layout_refs
         by_id: Dict[str, Dict] = {}
@@ -24184,17 +20640,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         for _pos, _kind, payload in sorted(stream, key=lambda t: (t[0], t[1])):
             out.extend(payload)
         _stamp_canvas_provenance(out)
-        return out
+        return consolidate_canvas(out)
 
     async def _push_canvas(self, chat_id: str, user_id: str, originating_ws=None,
                            turn_marker: Optional[str] = None):
-        """Full-canvas ui_render (materialized arrangements) to every socket of
-        the user on this chat — the same fan-out + per-socket ROTE adaptation
-        the legacy reconciliation path uses.
-
-        ``turn_marker`` (055 US3): the chat's latest message id when the canvas
-        was designed — the push is dropped when the chat has since moved on
-        (cross-socket/async stale guard)."""
         if turn_marker is not None:
             latest = str(await asyncio.to_thread(
                 self.history.get_latest_message_id, chat_id, user_id=user_id) or "")
@@ -24211,36 +20660,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if originating_ws is not None and originating_ws not in targets:
             targets.append(originating_ws)
         for ws in targets:
-            # speak=False: a full-canvas push re-presents existing content —
-            # watch sockets must never re-speak it (055 US3 / FR-030).
             await self.send_ui_render(ws, components, speak=False)
 
     async def _run_designer(self, websocket, components: List[Dict], chat_id: str,
                             user_id: str, user_request: str, layout_key: str,
                             *, progress: bool = True) -> Optional[List[Dict]]:
-        """One bounded designer conversation over ``components``; returns the
-        validated arrangement or ``None`` (None ALWAYS = keep the flat canvas).
-
-        ``progress=False`` suppresses the per-pass ``chat_status`` frames —
-        required on the post-done native pass (055 US3), where they would flip
-        clients back to turn-active behind a stuck status line."""
         from orchestrator import ui_designer
 
         _designer_pass = {"n": 0}
 
         async def _designer_llm(messages):
-            # Same credential resolution as the round itself (feature 006,
-            # websocket-scoped) and the same llm_call auditing (FR-028).
-            # Feature 030: each pass announces itself — the walkthrough
-            # measured an 83 s frame-silent gap while the designer worked
-            # behind a stale status line.
             _designer_pass["n"] += 1
             if progress:
                 try:
                     await self._safe_send(websocket, json.dumps({
                         "type": "chat_status", "status": "thinking",
-                        # The optional schema-planning call and repair calls
-                        # also use this callback; max_rounds counts drafts only.
                         "message": f"Designing your layout (pass {_designer_pass['n']})...",
                     }))
                 except Exception:
@@ -24252,8 +20686,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return (msg.content or "") if msg else None
 
         from webrender import allowed_primitive_types
-        # The current persisted arrangement for this layout_key (if any)
-        # lets the designer avoid re-arranging it for a marginal gain.
         _current_layout = None
         try:
             for _lay in await asyncio.to_thread(
@@ -24280,26 +20712,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _deliver_round_components(self, websocket, components: List[Dict], chat_id: str,
                                         user_id: str, *, user_request: str = "") -> List[Dict]:
-        """Feature 029: deliver one round's rich components to the canvas.
-
-        Feature 052 (FR-013) delivery order — upsert FIRST: components persist
-        (identities assigned by the unchanged 028 upsert) and the flat
-        ``ui_upsert`` goes out immediately, exactly like the native branch;
-        THEN rounds with ≥2 components (flag-gated) get the adaptive designer
-        pass, whose designed canvas lands as a later in-place refinement
-        (morph anchors preserve identity). ANY designer failure simply means
-        the refinement never arrives — the already-delivered flat components
-        are the legacy fallback rendering, no user-visible error (FR-022).
-        """
         from orchestrator import ui_designer
         from orchestrator.workspace import layout_key_for
         timeline = self._ws_timeline_mode.get(id(websocket), False)
-        # Native clients render structured components with their OWN responsive
-        # layout, so the per-round designer pass never runs for them: rounds
-        # deliver flat, and with FF_DESIGNER_ALL_DEVICES on the turn handler
-        # runs ONE coalesced post-done pass instead (_design_turn_post_done,
-        # 055 US3). Flag off restores the 052 skip (native-origin turns are
-        # never designed — the walkthrough saw a ~150 s mid-turn wait).
         _prof = self.rote.get_profile(websocket) if websocket is not None else None
         if _is_native_device(_prof):
             return await self._send_or_replace_components(websocket, components, chat_id, user_id)
@@ -24311,20 +20726,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.exception("workspace upsert failed — falling back to transient render")
             await self.send_ui_render(websocket, components)
             return []
-        # Feature 052 (FR-013): upsert-first — the flat components reach the
-        # user immediately (exactly the native-branch delivery); the designed
-        # arrangement below arrives as a later in-place refinement.
         await self.send_ui_upsert(websocket, chat_id, user_id, ops)
         layout = None
         try:
             turn_marker = str(await asyncio.to_thread(
                 self.history.get_latest_message_id, chat_id, user_id=user_id) or "")
             layout_key = layout_key_for(chat_id, turn_marker)
-            # Feature 089 seam I5. When TypeSafe already said how this result
-            # should read, arranging it is a lookup rather than a judgment, so
-            # the deterministic composer runs first and the designer call is
-            # not made at all. Anything the composer will not arrange returns
-            # None and the designer runs exactly as before.
             layout = self._typesafe_style_layout(chat_id, components, ops)
             if layout is None:
                 layout = await self._run_designer(
@@ -24336,9 +20743,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 await asyncio.to_thread(
                     self.workspace.upsert_layout, chat_id, user_id, layout_key, layout)
-                # Stale-chat guard (FR-013): the designed refinement is only
-                # forced to the originating socket while it still views this
-                # chat; other sockets are chat-filtered inside _push_canvas.
                 if self._ws_active_chat.get(id(websocket)) == chat_id:
                     await self._push_canvas(chat_id, user_id, originating_ws=websocket,
                                             turn_marker=turn_marker)
@@ -24351,7 +20755,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.exception(
                     "designed canvas delivery failed — flat ui_upsert already delivered")
-        # Audit the mutation (FR-023) — identical to the flat path.
         try:
             from audit.hooks import record_workspace_event
             for op in ops:
@@ -24374,17 +20777,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         *,
         turn_marker: Any = None,
     ) -> Optional[str]:
-        """Prepare 055's one coalesced native design for post-done delivery.
-
-        Feature 060 requires the layout to be frozen into the same atomic
-        transcript/canvas publication, so design and persistence happen before
-        that publication.  The caller emits the materialized refinement only
-        after ``chat_status done`` and before returning (therefore still before
-        async ``task_completed``).  Designer progress remains suppressed.
-
-        Returns the exact final message marker when a layout was persisted;
-        ``None`` keeps the already-delivered flat components authoritative.
-        """
         from orchestrator.scheduled_publication import (
             current_scheduled_history_stage,
         )
@@ -24438,9 +20830,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _push_designed_native_canvas(self, chat_id: str, user_id: str,
                                            originating_ws, turn_marker: str) -> None:
-        """Out-of-turn full ``ui_render`` of the designed canvas (055 US3):
-        materialized pre-ROTE, doc/Reasoning-filtered for native sockets,
-        never spoken, dropped when a newer turn has started on the chat."""
         latest = str(await asyncio.to_thread(
             self.history.get_latest_message_id, chat_id, user_id=user_id) or "")
         if latest != str(turn_marker):
@@ -24465,20 +20854,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _send_or_replace_components(self, websocket, components: List[Dict], chat_id: str,
                                           user_id: str, *, force_component_id: Optional[str] = None) -> List[Dict]:
-        """Feature 028: persist rich components into the chat's workspace under
-        stable identities and push partial ``ui_upsert`` updates (research D12).
-
-        Replaces the pre-028 ``(tool, agent)`` matcher whose
-        ``components_replaced`` messages the thin client silently dropped —
-        the disappearing-UI defect. Updates morph in place on every socket of
-        this user viewing the chat (FR-040); new components append. Returns
-        the persisted op list so callers can snapshot the turn (FR-030).
-
-        055 US4: stamps ``provenance`` on every component before it persists
-        or renders — this is where model-authored components (parsed rounds,
-        narrative doc cards) enter the workspace without passing
-        ``_tag_source``, so a model-supplied trust value is overwritten here.
-        """
         if not components:
             return []
         for comp in components:
@@ -24488,9 +20863,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
 
         if current_scheduled_history_stage() is not None:
-            # Scheduled output is captured by VirtualWebSocket and persisted
-            # only through the atomic staged-history publication.  A workspace
-            # upsert here would become visible before the effect ledger commit.
+            # Skipped here: would surface before the atomic commit lands
             await self.send_ui_render(websocket, components)
             return []
         if not chat_id:
@@ -24505,7 +20878,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, components)
             return []
         await self.send_ui_upsert(websocket, chat_id, user_id, ops)
-        # Audit the mutation (FR-023) without blocking the turn.
         try:
             from audit.hooks import record_workspace_event
             for op in ops:
@@ -24519,9 +20891,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return ops
 
     def _component_action_allowed(self, user_id: str, agent_id: str, tool_name: str):
-        """FR-036: deterministic component actions pass the SAME gates as the
-        chat path — security-flag blocks and per-user tool permissions
-        (the pre-028 ``table_paginate`` skipped both)."""
         agent_flags = self.security_flags.get(agent_id, {}) if hasattr(self, "security_flags") else {}
         flag = agent_flags.get(tool_name)
         if flag and flag.get("blocked"):
@@ -24535,18 +20904,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return True, ""
 
     async def _handle_component_action(self, websocket, user_id: str, payload: Dict[str, Any]):
-        """Feature 028 — standardized deterministic component action
-        (contracts/component-action.md): resolve the emitting component's
-        provenance, re-check permissions, re-execute its source capability,
-        and upsert the result into the target component in place."""
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         target_id = payload.get("target_component_id") or component_id
         params_patch = payload.get("params_patch") or {}
-        # Contract (component-action.md): 'refresh' and 'invoke' are the
-        # deterministic kinds — both re-execute the source capability with the
-        # patched params. Anything else is refused explicitly (intent actions
-        # never arrive on this verb; they use the param_picker chat idiom).
         kind = str(payload.get("kind") or "refresh").lower()
         if kind not in ("refresh", "invoke"):
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
@@ -24561,7 +20922,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="This action is missing its component context.", variant="error").to_dict()
             ], target="chat")
             return
-        # Timeline guard (FR-031): historical views are strictly read-only.
         if self._ws_timeline_mode.get(id(websocket)):
             await self._audit_workspace_denial(user_id, chat_id, component_id, "timeline_readonly")
             await self.send_ui_render(websocket, [
@@ -24583,8 +20943,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="This component has no refreshable source.", variant="warning").to_dict()
             ], target="chat")
             return
-        # Feature 029 (FR-004): retired sources get a clear retirement message
-        # (audited), merged sources transparently reroute to ml-services-1.
         if agent_id in RETIRED_AGENT_IDS:
             await self._audit_workspace_denial(user_id, chat_id, component_id, "agent_retired")
             await self.send_ui_render(websocket, [
@@ -24612,16 +20970,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         try:
             async with Orchestrator._workspace_mutation_lock(self, chat_id):
-                # Deterministic ordering per chat (contract §Concurrency).
-                # FR-036: a deterministic component re-execution must face the
-                # SAME gate stack as a chat dispatch of the same tool — the
-                # policy engine, taint gate, supervisor/HITL, PRE_TOOL_USE hook,
-                # RFC 8693 delegation mint, per-user credential + LLM-credential
-                # injection, and the concurrency cap — not merely the
-                # security-flag + permission pre-check above (kept as a fast
-                # fail). Without this, clicking Refresh/invoke on a saved
-                # component ran a policy-denied or HITL-confirm-required tool
-                # that the chat path would have blocked.
                 auth = await self._authorize_and_prepare(
                     websocket, agent_id, tool_name, dict(params), chat_id, user_id)
                 if isinstance(auth, GateRefusal):
@@ -24675,18 +21023,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _refine_restore_gate(self, websocket, user_id: str,
                                    payload: Dict[str, Any]):
-        """055 US4 (wire-contract §3): shared gate sequence for
-        component_refine/component_restore — the component_action stack:
-        feature flag, watch carve-out, component context, timeline read-only
-        guard, row existence, retired-source refusal, security flags +
-        per-user permission on the source agent/tool. The source gates are
-        skipped only when the component has no source at all (a
-        model-authored artifact has no tool to gate; the refine LLM gate
-        still applies in the caller). Refusals are per-action error frames
-        (Alert to the chat rail), never socket teardown.
-
-        Returns ``(chat_id, component_id, row)`` or ``None`` after refusing.
-        """
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         if not flags.is_enabled("component_refine"):
@@ -24697,8 +21033,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                       variant="error").to_dict()
             ], target="chat")
             return None
-        # Declared ROTE-capability divergence: the watch renders no
-        # refine/restore affordance and the server refuses honestly.
         profile = self.rote.get_profile(websocket)
         if getattr(profile.device_type, "value", str(profile.device_type)) == "watch":
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
@@ -24756,15 +21090,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return chat_id, component_id, row
 
     async def _handle_component_refine(self, websocket, user_id: str, payload: Dict[str, Any]):
-        """055 US4 (FR-022/FR-023, research D10): bounded LLM edit of ONE
-        component in place under its existing identity.
-
-        Gate order is the component_action stack plus the 054 per-user LLM
-        gate — a refine is an LLM turn billed to the user's own provider
-        config. The source tool is NOT re-run, so the result re-stamps
-        provenance as 'estimated'; the prior dict is archived to
-        component_version BEFORE the overwrite (FR-024).
-        """
         gate = await self._refine_restore_gate(websocket, user_id, payload)
         if gate is None:
             return
@@ -24798,8 +21123,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         plane_source = plane_source_from_orchestrator(self)
         try:
             async with Orchestrator._workspace_mutation_lock(self, chat_id):
-                # Re-read inside the lock: the archived "current" must be the
-                # dict actually being overwritten, not a pre-lock snapshot.
+                # Re-read inside the lock; never archive a pre-lock snapshot
                 row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
                 if row is None or not isinstance(row.get("component_data"), dict):
                     await self.send_ui_render(websocket, [
@@ -24819,8 +21143,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return
                 version_no = await artifact_versions.aarchive(
                     plane_source, chat_id, user_id, component_id, current, "refine")
-                # Hydrate the history affordance (web data-versions popover) —
-                # without this the restore path is unreachable from the UI.
                 refined["versions"] = await artifact_versions.alist_versions(
                     plane_source, chat_id, user_id, component_id)
                 ops = await self.workspace.aupsert(
@@ -24850,10 +21172,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
 
     async def _handle_component_restore(self, websocket, user_id: str, payload: Dict[str, Any]):
-        """055 US4 (FR-024): restore an archived component_version under the
-        same identity — the component_action gate stack minus the LLM gate
-        (no model runs). The current dict is archived first, so a restore is
-        itself undoable and the version chain stays complete."""
         gate = await self._refine_restore_gate(websocket, user_id, payload)
         if gate is None:
             return
@@ -24917,13 +21235,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _refine_component_llm(self, websocket, component: Dict[str, Any],
                                     instruction: str) -> Optional[Dict[str, Any]]:
-        """Bounded single-purpose LLM edit constrained to the SAME component
-        type (research D10): one structured-output call under the user's
-        provider config, validated against the renderer registry. Returns
-        the refined dict with identity + source metadata carried over and
-        provenance re-stamped 'estimated', or ``None`` when the model
-        refused / emitted an unusable or type-changing result (the caller
-        leaves the component untouched)."""
         from webrender import allowed_primitive_types
         valid_types = set(allowed_primitive_types()) | {"chart"}
         orig_type = str(component.get("type") or "").strip().lower()
@@ -24963,13 +21274,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not isinstance(result, dict):
             return None
         if isinstance(result.get("component"), dict) and "type" not in result:
-            result = result["component"]  # tolerate a {"component": {...}} wrapper
+            result = result["component"]
         if str(result.get("type") or "").strip().lower() != orig_type:
             logger.info("component_refine: model changed the component type "
                         "(%r -> %r) — rejected", orig_type, result.get("type"))
             return None
-        # The model can neither stamp trust nor mint identities/attribution:
-        # strip anything it invented, then carry the original's over.
+        # Strips model fields: it cannot mint trust or identity
         refined = {k: v for k, v in result.items() if not str(k).startswith("_")}
         for key in ("provenance", "component_id", "id"):
             refined.pop(key, None)
@@ -25000,13 +21310,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _readapt_targeted(self, websocket, chat_id, old_profile, new_profile,
                                 components: List[Dict]) -> bool:
-        """On a viewport/orientation change, re-render each canvas component
-        under the old and new profile and push a ``ui_upsert`` for ONLY the
-        ones whose fragment actually changed — to THIS socket alone (other
-        devices on the chat didn't change). Returns True when handled (even if
-        nothing changed — that means the canvas looks identical, no work
-        needed), False on any error so the caller falls back to a full
-        re-render."""
         try:
             from shared.protocol import UIUpsert
             from webrender import render_component_fragment
@@ -25041,13 +21344,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False
 
     async def send_ui_upsert(self, websocket, chat_id: str, user_id: str, ops: List[Dict]):
-        """Fan a ``ui_upsert`` out to every socket of ``user_id`` whose active
-        chat is ``chat_id``, adapting each op per receiving device (D16).
-
-        The structured dict AND its web HTML fragment ride together per op
-        (026 FR-018 dual shape); the originating socket goes through the same
-        path so there is exactly one delivery code path.
-        """
         if not ops:
             return
         from rote.adapter import ComponentAdapter
@@ -25066,10 +21362,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             and publication.publication_role == "assistant_result"
             and publication.matches(self.history, chat_id, user_id)
         ):
-            # A concurrent voice result is a private candidate until its
-            # terminal rebase commits. The execution adapter discards this
-            # transient projection; real clients receive only the subsequent
-            # complete committed snapshot.
             targets = [] if websocket is None else [websocket]
         else:
             targets = [
@@ -25110,10 +21402,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.exception("webrender: ui_upsert fragment render failed")
                 wire_ops.append({"op": "upsert", "component_id": cid,
                                  "component": adapted, "html": html})
-            # Feature 051: watch sockets hear the upserted content too. One
-            # utterance per delivery, built from the adapted components; the
-            # viewport re-adapt path (_readapt_targeted) deliberately does NOT
-            # attach speech — re-adapting old content must never re-speak it.
             speech = None
             try:
                 from orchestrator.watch_speech import speech_for_profile
@@ -25126,15 +21414,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self._safe_send(ws, UIUpsert(chat_id=chat_id, ops=wire_ops, speech=speech).to_json())
 
     async def _handle_tool_progress(self, msg) -> None:
-        """Route a long-running job's ToolProgress to the job's CHAT.
-
-        Live updates fan out to every socket the user currently has open on that
-        chat (so progress survives a refresh or a move to another device), plus
-        the legacy originating socket. On a terminal update the result is
-        PERSISTED into the chat workspace so a client returning later
-        re-hydrates the completed UI (014/015 + 028). The concurrency-cap slot is
-        released on terminal regardless of who is connected.
-        """
         md = msg.metadata or {}
         cap_job_id = md.get("cap_job_id", "")
         req_id = md.get("request_id", "")
@@ -25156,18 +21435,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if md.get("result") is not None:
             payload["result"] = md["result"]
 
-        # Resolve the job-user's CURRENT sockets before terminal finalization.
-        # Terminal delivery itself happens only after the atomic conversation
-        # update so a following client read can never race the old revision.
         targets: List[Any] = []
         if ctx:
             targets = self._sockets_on_chat(ctx.get("user_id"), ctx.get("chat_id"))
         legacy = self.pending_ui_sockets.get(req_id)
         if legacy is not None and legacy not in targets:
             targets.append(legacy)
-        # Terminal: publish result component + narration as one conversation
-        # revision before advertising terminal progress. Nonterminal progress
-        # remains a disposable status overlay and never touches durable state.
         if terminal and ctx:
             try:
                 await self._finalize_long_running_job(ctx, msg)
@@ -25192,19 +21465,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self._release_hop_cap_slot(cap_job_id)
 
     def _sockets_on_chat(self, user_id: str, chat_id: str) -> List[Any]:
-        """Every socket ``user_id`` currently has open on ``chat_id`` (for
-        fanning a job update out to a refreshed / multi-device session)."""
         return [
             ws for ws in self.ui_clients
             if self._get_user_id(ws) == user_id and self._ws_active_chat.get(id(ws)) == chat_id
         ]
 
     async def _narrate_job_result(self, ctx: Dict[str, Any], result: Dict[str, Any]):
-        """Ask the model to narrate a completed job's results (a concise,
-        plain-language comparison naming the best performer). Server-initiated
-        (operator-default LLM, websocket=None). Returns chat-rail components, or
-        None when no LLM is available / the call fails — callers fall back to a
-        deterministic note."""
         try:
             tool = ctx.get("tool_name", "the job")
             messages = [
@@ -25230,13 +21496,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return None
 
     async def _finalize_long_running_job(self, ctx: Dict[str, Any], msg) -> None:
-        """Atomically publish a detached job result and its narration.
-
-        The component, assistant turn, complete canvas, revision increment,
-        and commit timestamp share one ``conversation_commit`` transaction.
-        Current clients receive a commit-ready prelude plus one complete
-        snapshot; compatibility overlay frames are emitted only afterward.
-        """
         uid = ctx.get("user_id")
         cid = ctx.get("chat_id")
         if not uid or not cid:
@@ -25316,8 +21575,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     reset_conversation_publication(token)
 
         component_id = component.get("component_id")
-        # Bounded compatibility overlays remain non-authoritative for 060
-        # reducers; legacy clients still receive the familiar live update.
         await self.send_ui_upsert(None, cid, uid, ops)
         for ws in self._sockets_on_chat(uid, cid):
             try:
@@ -25336,11 +21593,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("job finalize audit failed", exc_info=True)
 
     def _build_job_result_component(self, ctx: Dict[str, Any], msg) -> Dict[str, Any]:
-        """Build a deterministic result component from a terminal ToolProgress.
-
-        A completed job renders its metrics as a Table; a failed / unknown
-        outcome renders a status Alert. The component is source-tagged so the
-        workspace assigns it a stable identity (028) and it survives reload."""
         md = msg.metadata or {}
         phase = md.get("phase", "")
         tool = ctx.get("tool_name", "job")
@@ -25380,16 +21632,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return comp
 
     async def _retire_welcome_canvas(self, websocket):
-        """First chat_message from a welcome-showing socket: pop the flag.
-
-        055 FF_FIRST_TURN_CONTRACT (on): clients purge the wel_-identified
-        welcome components locally at turn start, so no frame is sent — the
-        legacy blanking ``ui_render []`` reached the client one RTT after
-        send and destroyed its optimistic loading skeleton (US1 root cause).
-        Flag off restores the legacy blanking frame byte-for-byte. The
-        ``_ws_welcome`` bookkeeping pops either way (the
-        enable_recommended_agents welcome refresh keys on it).
-        """
         if self._ws_welcome.pop(id(websocket), None):
             if not flags.is_enabled("first_turn_contract"):
                 try:
@@ -25399,19 +21641,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def send_ui_render(self, websocket, components: List, target: str = "canvas",
                              speak: bool = True):
-        """Send a UIRender message to a UI client, adapted via ROTE.
-
-        ``speak=False`` suppresses the watch spoken rendition for renders that
-        re-present EXISTING content (chat re-hydration, viewport re-adaptation,
-        the welcome canvas) — a turn is never auto-spoken twice (FR-030)."""
         from persistent_agents.dispatch_context import current_dispatch
         if current_dispatch() is not None:
-            # Assignment activity is published only after its fenced checkpoint.
-            # Per-tool transient frames cannot bypass stop/revision ordering.
             return
-        # Auto-route alert-only messages (any variant) to the chat panel
-        # instead of the canvas — a frame that is nothing but alerts would
-        # otherwise clobber the workspace with a partial single-alert render.
         if target == "canvas" and components and all(
             isinstance(c, dict) and c.get("type") == "alert"
             for c in components
@@ -25427,21 +21659,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         html = None
         try:
             if target == "canvas":
-                # Feature 028: canvas renders carry per-component identity
-                # wrappers so every top-level component is a ui_upsert morph
-                # target (contracts/ws-workspace-protocol.md).
                 from webrender import render_workspace
                 html = render_workspace(adapted, profile, canonical_components=components)
             else:
                 from webrender import render_for_target, target_for_profile
-                # Per-device renderer target — voice/aom native targets when
-                # FF_NATIVE_TARGETS is on, web otherwise (the registry seam).
                 html = render_for_target(target_for_profile(profile), adapted, profile)
         except Exception:
             logger.exception("webrender: failed to render UI (sending structured components only)")
-        # Feature 051: watch-profile sockets additionally hear the delivery —
-        # spoken rendition of the SAME adapted components (fail-open, absent
-        # for every other profile; contracts/spoken-rendition.md).
         speech = None
         if speak:
             try:
@@ -25451,24 +21675,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("watch_speech unavailable for ui_render", exc_info=True)
         msg = UIRender(components=adapted, target=target, html=html, speech=speech)
         await self._safe_send(websocket, msg.to_json())
-        # 055 bg-continuity: a background (VirtualWebSocket) turn's chat-rail
-        # narrative also reaches the user's real sockets on that chat, each
-        # re-adapted per device (rich canvas components already fan through
-        # the workspace upsert path). Real-socket sends fan nowhere — checked
-        # inline so the method stays self-contained for them (DB-free tests
-        # bind it standalone).
         if target == "chat":
             from orchestrator.async_tasks import VirtualWebSocket
             if isinstance(websocket, VirtualWebSocket):
                 for ws in self._vws_fan_targets(websocket):
                     try:
                         await self.send_ui_render(ws, components, target="chat", speak=speak)
-                    except Exception:  # pragma: no cover - per-socket best-effort
+                    except Exception:  # pragma: no cover
                         logger.debug("vws chat-rail fan failed", exc_info=True)
 
     async def _shell_token_for_request(self, request):
-        """Feature 026: access token for the web shell's WS register_ui handshake.
-        Server-side OIDC session (or 'dev-token' under mock auth)."""
         try:
             from orchestrator.web_auth import session_token
             return await asyncio.to_thread(session_token, request)
@@ -25478,12 +21694,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _adapt_tool_schema_for_model(schema: dict) -> dict:
-        """Adapt an already-validated schema for the model function grammar.
-
-        Registration is the validation boundary. This downstream projection
-        does not repair invalid schemas; it only removes the dialect annotation
-        that some model providers reject.
-        """
         if not isinstance(schema, dict):
             raise ProtocolValidationError("validated tool schema must be an object")
         adapted = dict(schema)
@@ -25491,15 +21701,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return adapted
 
     def _is_draft_agent(self, agent_id: str) -> bool:
-        """Hide any agent whose agent_id maps to a non-live draft record.
-
-        Feature 030: an explicitly PUBLIC agent is never treated as a draft.
-        Lifecycle drafts are always private, so a public ownership row means
-        the slug-reverse draft match was a stale-row false positive — e.g.
-        a live bundled agent (such as ``weather-1``) whose directory name
-        collides with an old draft slug and was silently hidden from the
-        agent list and Public tab (verified walkthrough finding).
-        """
         if hasattr(self, 'lifecycle_manager'):
             draft = self.lifecycle_manager._find_draft_by_agent_id(agent_id)
             if draft and draft["status"] != "live":
@@ -25516,15 +21717,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return False
 
     def _build_dashboard_agent_list(self, user_id: str) -> List[Dict[str, Any]]:
-        """Assemble the per-user dashboard agent entries (sync DB reads —
-        callers on the event loop run this via ``asyncio.to_thread``)."""
         ownership_map = {
             o["agent_id"]: o
             for o in self.user_agent_registry.get_all_agent_ownership()
         }
         agent_list = []
         for agent_id, card in self.agent_cards.items():
-            # Hide draft agents that aren't live yet — they only appear in the Drafts tab
             if self._is_draft_agent(agent_id):
                 continue
             available_tools = [s.id for s in card.skills]
@@ -25554,20 +21752,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return agent_list
 
     def get_personal_agent_capabilities(self) -> Dict[str, Any]:
-        """Return one detached candidate-owned capability payload.
-
-        REST and WebSocket configuration both call this getter so candidate
-        applicability cannot drift between surfaces or be mutated by a caller.
-        """
-
         return self.personal_agent_capabilities.to_dict()["capabilities"]
 
     async def send_dashboard(self, websocket):
-        """Send the initial dashboard view."""
         user_id = self._get_user_id(websocket)
         agent_list = await asyncio.to_thread(self._build_dashboard_agent_list, user_id)
 
-        # Calculate total available tools for this user based on permissions
         total_tools = 0
         for agent in agent_list:
             if "permissions" in agent:
@@ -25575,10 +21765,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 total_tools += len(agent["tools"])
 
-        # Build streamable tools list for live streaming. Includes BOTH the
-        # legacy poll path (gated by FF_LIVE_STREAMING) AND the new push path
-        # (001-tool-stream-ui, gated by FF_TOOL_STREAMING). The frontend
-        # uses the `kind` field to decide which subscribe payload to send.
         streamable_list: Dict[str, Dict[str, Any]] = {}
         live_enabled = flags.is_enabled("live_streaming")
         push_enabled = flags.is_enabled("tool_streaming")
@@ -25607,32 +21793,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def compute_tools_available_for_user(
         self, user_id: str, draft_agent_id: Optional[str] = None
     ) -> bool:
-        """Return ``True`` iff at least one tool is currently dispatchable for ``user_id``.
-
-        Mirrors the per-turn filter loop in :meth:`handle_chat_message`
-        (registered agent + system security_flags + per-user
-        :meth:`tool_permissions.is_tool_allowed`). Used by feature 008
-        for two purposes:
-
-        1. The orchestrator decides whether the next chat turn enters
-           the text-only branch (caller passes ``draft_agent_id`` so a
-           draft test chat is scoped correctly per FR-010).
-        2. :meth:`send_agent_list` broadcasts the result as
-           ``tools_available_for_user`` so the frontend can mount the
-           persistent text-only banner (FR-007a).
-
-        Args:
-            user_id: The user whose permissions gate tool availability.
-            draft_agent_id: When set, only that agent's tools are
-                considered (matches the dispatch-time draft scoping).
-                When ``None``, every connected non-draft agent is
-                considered.
-
-        Returns:
-            ``True`` if at least one tool would survive the full filter
-            stack for ``user_id``. ``False`` otherwise — this is the
-            signal that the chat turn would dispatch in text-only mode.
-        """
         for agent_id, card in self.agent_cards.items():
             if agent_id not in self.agents and agent_id not in self.local_agents:
                 continue
@@ -25649,15 +21809,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _enable_recommended_agent_scopes(self, user_id: str,
                                          requested_agent_ids=None) -> List[str]:
-        """Consent-based bulk enable for the public catalog (feature 030).
-
-        For every connected, non-draft, PUBLIC agent (optionally narrowed to
-        ``requested_agent_ids``), grants the scopes its registered tools
-        actually use — minus ``tools:write``, which is never granted here
-        (Constitution VII: attenuated, system-computed scopes; explicit user
-        click as the grant). Unknown, private, or draft ids are silently
-        ignored. Returns the agent ids that were enabled.
-        """
         ownership_map = {
             o["agent_id"]: o
             for o in self.user_agent_registry.get_all_agent_ownership()
@@ -25681,13 +21832,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 f"Consent enable (030): user={user_id} agents={enabled} (write excluded)")
         return enabled
 
-    # 030: chat rail vs canvas split — the chat bubble stays concise words;
-    # long/structured narrative content is promoted to a durable canvas card.
     _NARRATIVE_PROMOTE_CHARS = 700
 
     @classmethod
     def _narrative_is_long(cls, content: str) -> bool:
-        """True when a final narrative is too long/structured for the chat rail."""
         c = content or ""
         return (len(c) > cls._NARRATIVE_PROMOTE_CHARS
                 or bool(re.search(r"(?m)^#{1,6}\s", c))
@@ -25695,7 +21843,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _concise_lead(content: str, limit: int = 320) -> str:
-        """First plain sentences of a narrative — headings/tables stripped."""
         lines = [ln for ln in (content or "").splitlines()
                  if ln.strip() and not ln.lstrip().startswith(("#", "|", ">"))]
         text = " ".join(" ".join(lines).split())
@@ -25712,14 +21859,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     @staticmethod
     def _narrative_doc_card(chat_id: str, content: str) -> Dict[str, Any]:
-        """Durable canvas card for a long-form narrative (drafts, documents).
-
-        Identity is derived from the chat and the document's own first
-        heading, so iterating on the same document ("revise the aims")
-        SUPERSEDES it in place while a different document appends — the
-        walkthrough found grant deliverables vanishing into chat scroll with
-        no workspace identity at all.
-        """
         import hashlib
         text = _strip_toolcall_leakage(content)
         if not text and (content or "").strip():
@@ -25734,36 +21873,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     async def _notify_phi_if_detected(self, websocket, chat_id: str,
                                       user_id: str, message: str) -> None:
-        """Notify-only PHI awareness for chat input (feature 030).
-
-        Fires a transient chat Alert when a user message LOOKS like it
-        contains PHI. Detection is fail-open (a missing/erroring analyzer
-        never fires the notice) and the persistence posture is unchanged:
-        the message stays in the transcript, cross-session memory keeps its
-        fail-closed Presidio gate, and audit stays content-free. Shown at
-        most once per chat per socket. Never raises into the chat turn.
-        """
         from personalization.chat_notices import notify_if_detected
 
         await notify_if_detected(self, websocket, chat_id, user_id, message)
 
     def _text_only_cta_components(self, user_id: str) -> List[Dict[str, Any]]:
-        """Deterministic enable affordance for text-only replies (feature 030).
-
-        Appended server-side to the chat reply when a turn dispatched with
-        zero tools AND the user has never enabled any agent scope. Users who
-        deliberately disabled their agents (rows exist, some enabled
-        elsewhere) are not nagged. Composed of astralprims primitives per
-        Constitution II/VIII; the buttons route through the audited
-        ``enable_recommended_agents`` / ``chrome_open`` actions.
-
-        Since feature 040 this no longer fires for a fresh account — the safe
-        baseline makes the built-ins dispatchable, so such a turn is not
-        text-only in the first place and never reaches here. That is correct,
-        not a regression: see :func:`orchestrator.welcome.enable_agents_card`
-        for the populations still reachable (explicit opt-out,
-        ``FF_SAFE_AGENTS`` off, safe-but-private catalog).
-        """
         try:
             if self.tool_permissions.has_any_enabled_scope(user_id):
                 return []
@@ -25784,11 +21898,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         ]
 
     async def send_agent_list(self, websocket):
-        """Send list of connected agents."""
         user_id = self._get_user_id(websocket)
 
         def _build_agent_list():
-            """Assemble the per-user agent entries off the event loop."""
             ownership_map = {
                 o["agent_id"]: o
                 for o in self.user_agent_registry.get_all_agent_ownership()
@@ -25812,7 +21924,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
             agents = []
             for agent_id, card in self.agent_cards.items():
-                # Hide draft agents that aren't live yet
                 if self._is_draft_agent(agent_id):
                     continue
                 available_tools = [s.id for s in card.skills]
@@ -25848,12 +21959,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         agents = await asyncio.to_thread(_build_agent_list)
 
-        # Feature 008-llm-text-only-chat (FR-007a, contracts/ws-agent-list.md).
-        # Broadcast a single boolean for this user that collapses the
-        # three reasons a chat would dispatch in text-only mode (no
-        # agents connected, all tools blocked by user permissions, all
-        # blocked by security flags). The frontend uses this to toggle
-        # the persistent text-only banner.
         tools_available_for_user = await asyncio.to_thread(
             self.compute_tools_available_for_user, user_id)
 
@@ -25871,18 +21976,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     exc_info=True,
                 )
 
-    # =========================================================================
-    # SERVER
-    # =========================================================================
-
     async def handle_ui_connection_fastapi(self, websocket: WebSocket):
-        """Handle a UI client WebSocket connection using FastAPI."""
         await websocket.accept()
         self.ui_clients.append(websocket)
         self._registered_events[id(websocket)] = asyncio.Event()
         logger.info(f"UI client connected (total: {len(self.ui_clients)})")
 
-        # Hook: SESSION_START
         if flags.is_enabled("hook_system"):
             await self.hooks.emit(HookContext(
                 event=HookEvent.SESSION_START,
@@ -25894,11 +21993,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except WebSocketDisconnect:
             logger.info("UI client disconnected")
         except Exception as e:
-            # Only log interesting errors
             if "ConnectionClosed" not in str(e):
                 logger.error(f"WebSocket error: {e}")
         finally:
-            # Hook: SESSION_END
             if flags.is_enabled("hook_system"):
                 user_data = self.ui_sessions.get(websocket, {})
                 await self.hooks.emit(HookContext(
@@ -25907,7 +22004,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     metadata={"websocket_id": id(websocket)},
                 ))
 
-            # Audit: WebSocket logout / disconnect
             try:
                 _claims = self.ui_sessions.get(websocket)
                 if _claims:
@@ -25921,24 +22017,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug(f"WS disconnect audit record failed: {_e}")
 
             self._cleanup_streams(websocket)
-            # 001-tool-stream-ui (US2 T043): pause any push streams owned by
-            # this websocket. They transition to DORMANT and become eligible
-            # for resume on the user's return (US3).
             if self.stream_manager is not None:
                 try:
                     await self.stream_manager.detach(websocket)
                 except Exception as e:
                     logger.warning(f"stream_manager.detach failed: {e}")
-            # Persist host loss and settle exact fenced calls before removing
-            # authentication/socket projections. Legacy tunnel teardown below
-            # remains a separate compatibility path.
             try:
                 await self._disconnect_personal_agent_host(websocket)
             except Exception:
                 logger.debug("personal-agent host teardown failed", exc_info=True)
-            # 058 (honest-offline): take this socket's tunneled user agents
-            # offline BEFORE dropping its session (teardown reads the owner sub
-            # from ui_sessions). No-op when no user agent is tunneled here.
             try:
                 await self._teardown_owner_tunnels(websocket)
                 await self._teardown_computer_host(websocket)
@@ -25956,15 +22043,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._drop_chat_locks(websocket)
             self._registered_events.pop(id(websocket), None)
             (getattr(self, "_agent_host_sockets", None) or {}).pop(id(websocket), None)
-            # Feature 054: persisted LLM config SURVIVES disconnect by design;
-            # only the per-socket gate marker is dropped.
             from orchestrator import llm_gate as _llm_gate
             _llm_gate.clear_socket(self, websocket)
             self.rote.cleanup(websocket)
             logger.info(f"UI client session cleaned up (total: {len(self.ui_clients)})")
 
     async def handle_ui_connection(self, websocket, path=None):
-        """Handle a UI client WebSocket connection (legacy websockets lib)."""
         self.ui_clients.append(websocket)
         self._registered_events[id(websocket)] = asyncio.Event()
         logger.info(f"UI client connected (total: {len(self.ui_clients)})")
@@ -25978,7 +22062,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.info("UI client disconnected")
         finally:
             self._cleanup_streams(websocket)
-            # 001-tool-stream-ui (US2 T043): same detach for the legacy path.
             if self.stream_manager is not None:
                 try:
                     await self.stream_manager.detach(websocket)
@@ -25988,9 +22071,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._disconnect_personal_agent_host(websocket)
             except Exception:
                 logger.debug("personal-agent host teardown failed", exc_info=True)
-            # 058 (honest-offline): take this socket's tunneled user agents
-            # offline BEFORE dropping its session (teardown reads the owner sub
-            # from ui_sessions). No-op when no user agent is tunneled here.
             try:
                 await self._teardown_owner_tunnels(websocket)
                 await self._teardown_computer_host(websocket)
@@ -26008,16 +22088,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._drop_chat_locks(websocket)
             self._registered_events.pop(id(websocket), None)
             (getattr(self, "_agent_host_sockets", None) or {}).pop(id(websocket), None)
-            # Feature 054: persisted LLM config SURVIVES disconnect by design;
-            # only the per-socket gate marker is dropped.
             from orchestrator import llm_gate as _llm_gate
             _llm_gate.clear_socket(self, websocket)
             self.rote.cleanup(websocket)
             logger.info(f"UI client session cleaned up (total: {len(self.ui_clients)})")
 
     def _track_startup_background_task(self, coroutine, *, name: str):
-        """Own one startup-created task until completion or graph shutdown."""
-
         tasks = getattr(self, "_startup_background_tasks", None)
         if tasks is None:
             tasks = set()
@@ -26041,8 +22117,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return task
 
     async def start(self):
-        """Run the server under one cancellation-safe application-graph owner."""
-
         try:
             await self._run_started_server()
         finally:
@@ -26051,15 +22125,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _run_started_server(self):
         logger.info(f"Orchestrator starting on port {PORT}")
 
-        # Feature 028 (FR-015): production posture is fail-closed. Mock auth
-        # outside explicitly declared development mode is a fatal
-        # misconfiguration — refuse to serve rather than run open.
+        # Mock auth outside dev is fatal; refuse rather than run open
         from orchestrator.session_store import assert_production_posture
         assert_production_posture()
 
-        # Plane is already initialized and all final-dispatch/lifecycle seams
-        # are locally bound. Start bounded recovery before any agent is
-        # registered or any background work can reach a physical actuator.
         self.runtime_composition.start()
         publication_recovery = (
             await self.generated_agent_publication_service.recover_once()
@@ -26074,35 +22143,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self.explicit_notes.expiry_loop(), name="explicit-note-expiry",
         )
 
-        # Feature 040 (US2): mark the bundled first-party fleet owner-safe so
-        # their tools are usable out of the box (audited; idempotent — already-
-        # safe agents are skipped on re-boot). Gated by FF_SAFE_AGENTS.
         try:
             from shared.feature_flags import flags
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = FIRST_PARTY_PUBLIC_AGENT_IDS
-                # Feature 063 (FR-002/FR-004/FR-005): the unified remote-compute-1 is
-                # safe-seeded ONLY when the remote-compute feature is enabled — so with
-                # the flag off the seed set is byte-identical to the pre-063 fleet (no
-                # agent_trust row or audit event for it). Safe-seeding flips only the
-                # baseline; every DESTRUCTIVE verb is still gated per-verb by the
-                # confirmation mechanism (remote_confirmation) no matter the baseline.
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
-                # Feature 076: same posture — computer-use-1 is safe-seeded only
-                # when its flag is on; its consequential verbs stay gated per
-                # reach by remote_confirmation regardless of the baseline.
                 if not flags.is_enabled("computer_use"):
                     seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
                 await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
 
-        # Feature 040 (US1): register the bundled first-party agents IN-PROCESS
-        # (no per-agent uvicorn port). start.py skips spawning them as
-        # subprocesses when this flag is on; the networked path remains for any
-        # agent not registered locally. Default ON; kill-switch falls back to WS.
         try:
             if flags.is_enabled("inprocess_agents"):
                 from orchestrator import local_agents
@@ -26110,7 +22163,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.exception("Feature 040: in-process agent registration failed")
 
-        # Feature 028 (FR-013): drain queued offline sign-out revocations.
         async def _revocation_queue_loop():
             from orchestrator.web_auth import process_revocation_queue_once
             interval = int(os.getenv("AUTH_REVOCATION_RETRY_SECONDS", "60"))
@@ -26128,9 +22180,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="auth-revocation-queue",
         )
 
-        # Feature 052 (FR-011): warm the IdP signing keys at boot and keep
-        # them fresh in the background so interactive token validation never
-        # pays a cold JWKS fetch. Never blocks boot or /readyz.
         self._track_startup_background_task(
             self._jwks_warm_loop(),
             name="jwks-warm-loop",
@@ -26145,23 +22194,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 name="personal-agent-runtime-watchdog",
             )
 
-        # Feature 063 US4: launch the remote-cluster-job poller ONLY when the
-        # remote-compute feature is on (fail-closed — with the flag off no task is
-        # created and boot is byte-identical to today). Read-only status polling
-        # needs only the remote_compute gate, not FF_SCHEDULER_EXECUTION.
         if flags.is_enabled("remote_compute") and (
             self._remote_job_poll_task is None or self._remote_job_poll_task.done()
         ):
             self._remote_job_poll_task = asyncio.create_task(
                 self._remote_job_poll_loop(), name="remote-cluster-job-poller")
 
-        # Feature 052 (FR-028): pre-load the PHI analyzer singleton in a
-        # daemon thread so the first personalization write doesn't stall on
-        # the 2-5 s Presidio+spaCy build. Readiness never waits on it.
         self._start_phi_warm()
 
-        # 030: purge permission rows leaked by drafts discarded before the
-        # delete-time purge existed (run in a thread — pure DB/dir checks).
         try:
             purged = await asyncio.to_thread(
                 self.lifecycle_manager.reconcile_orphaned_draft_permissions)
@@ -26171,17 +22211,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.debug("draft permission sweep failed (non-fatal)", exc_info=True)
 
-        # Delete the junk agent_ownership/permission rows a removed legacy
-        # filesystem discovery keyed by agents/ DIRECTORY names (exact literal
-        # ids only — see agent_lifecycle.LEGACY_DIRECTORY_AGENT_IDS). Same
-        # posture as the 030 sweep: thread, idempotent, never blocks boot.
         try:
             await asyncio.to_thread(
                 self.lifecycle_manager.reconcile_legacy_directory_ownership)
         except Exception:
             logger.debug("legacy directory-id sweep failed (non-fatal)", exc_info=True)
 
-        # Auto-discover agents (continuous monitor)
         agent_port = int(os.getenv("AGENT_PORT", 8003))
         max_agents = int(os.getenv("MAX_AGENTS", 10))
         self._track_startup_background_task(
@@ -26189,20 +22224,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="local-agent-monitor",
         )
 
-        # Start knowledge synthesis background loop
         if flags.is_enabled("knowledge_synthesis") and hasattr(self, '_knowledge_synthesizer'):
             self._track_startup_background_task(
                 self._knowledge_synthesizer.run_loop(),
                 name="knowledge-synthesis-loop",
             )
 
-        # Feature 004 — daily quality-signal job + proposal generation
         async def _feedback_quality_loop():
             from feedback.quality import compute_for_window
             from feedback.proposals import generate_for_underperforming
             interval_seconds = int(os.getenv("FEEDBACK_QUALITY_JOB_INTERVAL", str(24 * 3600)))
-            # First run after a short warm-up so a freshly-restarted server
-            # produces an initial snapshot quickly without colliding with startup.
             await asyncio.sleep(int(os.getenv("FEEDBACK_QUALITY_JOB_WARMUP", "60")))
             while True:
                 try:
@@ -26220,18 +22251,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="feedback-quality-loop",
         )
 
-        # Feature 025 wiring (027 click-through finding): the scheduler loop
-        # was never instantiated anywhere, so cron jobs and "Run now" silently
-        # never dispatched.
-        #
-        # 030-finish-soul-integration (FR-005, Constitution VII): the EXECUTION
-        # loop runs unattended jobs under the offline-grant store, so it is now
-        # FAIL-CLOSED — it starts only when FF_SCHEDULER_EXECUTION is enabled,
-        # which MUST NOT be turned on until the lead-dev security review of
-        # offline_grant.py is recorded (030 FR-004 / 025 T057). When the gate is
-        # off, no job-execution code path is reachable; chat-side scheduling
-        # (proposals/consent cards) is unaffected and the surface reports
-        # unattended execution as unavailable.
         self.persistent_assignments = None
         self.persistent_assignment_runner = None
         if flags.is_enabled("persistent_agents"):
@@ -26271,13 +22290,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "security review (030 FR-004/FR-005; 025 T057)"
             )
 
-        # Feature 027 (click-through finding): user-created agents that went
-        # live do not survive a restart — nothing relaunched them, leaving
-        # "My agents" empty and the original requests unservable. Relaunch
-        # every live generated agent without touching ownership or the user's
-        # saved scopes (align_scopes=False).
         async def _relaunch_generated_agents():
-            await asyncio.sleep(5)  # let the static-fleet monitor settle first
+            await asyncio.sleep(5)
             try:
                 rows = await asyncio.to_thread(
                     self.lifecycle_manager.draft_store.list_relaunchable_drafts
@@ -26299,10 +22313,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="generated-agent-relaunch",
         )
 
-        # Import WebSocket protocol docs for OpenAPI description
         from orchestrator.models import WS_PROTOCOL_DOCS
 
-        # OpenAPI tag metadata for grouping endpoints in /docs
         tags_metadata = [
             {"name": "Chat", "description": "Chat session management — create, list, load, delete chats and send messages."},
             {"name": "Components", "description": "Saved UI component management — save, list, delete, combine, and condense components."},
@@ -26313,7 +22325,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             {"name": "Audit", "description": "Per-user audit log (HIPAA + NIST AU). Read-only; admin-blind."},
         ]
 
-        # Create FastAPI app with rich OpenAPI documentation
         app = FastAPI(
             title="AstralDeep Orchestrator API",
             description=(
@@ -26333,9 +22344,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             openapi_url="/api/openapi.json",
         )
 
-        # Constitution VI: interactive API docs MUST answer at the literal
-        # /docs URL. The canonical pages stay /api-namespaced; these aliases
-        # redirect (no second Swagger mount, no schema duplication).
         from fastapi.responses import RedirectResponse as _DocsRedirect
 
         @app.get("/docs", include_in_schema=False)
@@ -26350,11 +22358,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         async def _openapi_alias():
             return _DocsRedirect("/api/openapi.json")
 
-        # CORS — the web UI is same-origin since feature 026 (the orchestrator
-        # serves it), so cross-origin access is the exception, not the rule.
-        # Default allowlist = this deployment's own public URLs; extend with
-        # CORS_ORIGINS (comma-separated) for legitimate external consumers.
-        # (The former :5173 React-dev defaults are gone with the SPA.)
         if os.getenv("CORS_ORIGINS"):
             cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
         else:
@@ -26373,12 +22376,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             allow_headers=["*"],
         )
 
-        # Store Orchestrator instance on app.state so REST API routes can access it
         app.state.orchestrator = self
 
-        # Feature 065: mount the internal authenticated worker pool only when
-        # fail-closed voice construction and its dedicated control secret both
-        # passed. The installer is idempotent and rejects path collisions.
         try:
             from orchestrator.voice_bootstrap import install_voice_worker_control
 
@@ -26393,10 +22392,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 extra={"reason": getattr(exc, "code", type(exc).__name__)},
             )
 
-        # ── Health probes (ungated; no user data) ───────────────────────────
-        # /healthz: liveness — the process is serving. /readyz: readiness —
-        # the database answers. Wired into the compose healthcheck and any
-        # orchestration platform (k8s livenessProbe/readinessProbe).
         @app.get("/healthz", include_in_schema=False)
         async def healthz():
             return {"status": "ok"}
@@ -26412,12 +22407,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     {"status": "degraded", "persistence": "unready"},
                     status_code=503,
                 )
-            # LETS posture rides the same probe. The only network it may
-            # cause is the bounded, cached warden reachability probe
-            # (lets_probe; off the event loop, ≤ 2 s, once per
-            # LETS_HEALTH_PROBE_INTERVAL_SECONDS; none at all in off mode).
-            # Enforce + blocked is the only LETS-driven 503, and with the
-            # live probe it is reached whenever the warden stopped answering.
             from orchestrator.lets_health_api import (
                 readyz_body,
                 refresh_lets_reachability,
@@ -26433,10 +22422,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         async def websocket_endpoint(websocket: WebSocket):
             await self.handle_ui_connection_fastapi(websocket)
 
-        # ── Feature 026: serve the server-driven web UI from this app ──────
-        # The shell page + static assets replace the former separate React SPA
-        # (no separate :5173 frontend). astralprims defines primitives, the
-        # orchestrator renders them (webrender), ROTE adapts per device.
         import secrets as _secrets
         from astralprojection import template_path as _projection_template_path
         from fastapi.responses import HTMLResponse as _HTMLResponse
@@ -26445,9 +22430,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         @app.get("/", response_class=_HTMLResponse)
         async def serve_shell(request: Request):
-            # Feature 028 (FR-001): the shell is gated. Unauthenticated
-            # visitors are redirected straight to Keycloak via /auth/login
-            # with their destination preserved — no app markup is served.
             try:
                 from orchestrator.web_auth import shell_gate
                 from fastapi.responses import RedirectResponse as _Redirect
@@ -26462,17 +22444,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.exception("astralprojection: shell template missing")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
-            # Inject a session token for the WS handshake. In mock-auth/dev the
-            # client falls back to 'dev-token'; with server-side OIDC the auth
-            # routes establish a session and supply the access token here.
             token = ""
             try:
                 token = await self._shell_token_for_request(request)
             except Exception:
                 token = ""
-            # Feature 027: render the static top bar + settings menu from the
-            # server session's roles (admin group absent for non-admins —
-            # FR-014 UX gating; handlers re-check server-side).
             topbar = ""
             try:
                 from orchestrator.chrome_availability import projection_chrome_availability
@@ -26485,9 +22461,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")
             shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
-            # Feature 089: the sidebar profile widget. Display only — the
-            # values come from the session's own claims and carry no id or
-            # address; authorization is unaffected by what is shown here.
             from html import escape as _html_escape
             identity = {"name": "Signed in", "role": "Member", "initials": "A"}
             try:
@@ -26502,9 +22475,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
 
-            # Feature 028 (FR-011): server-derived resume flag — false only on
-            # the load right after interactive sign-in; the client echoes it
-            # into register_ui so auth.session_resumed keeps 016 semantics.
             resumed_flag = "true"
             try:
                 from orchestrator.web_auth import session_resumed_flag
@@ -26512,9 +22482,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("session_resumed_flag failed", exc_info=True)
             shell = shell.replace("%%ASTRAL_RESUMED%%", resumed_flag)
-            # Feature 031: inject the file-input `accept` list from the server's
-            # content_type allow-list so the picker offers exactly the accepted
-            # extensions (single source of truth; server still validates uploads).
             accept_attr = ""
             try:
                 from orchestrator.attachments.content_type import ACCEPTED_EXTENSIONS
@@ -26522,10 +22489,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.debug("attachment accept-list injection failed", exc_info=True)
             shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
-            # Feature 089 (T052): the landing's example scenarios and the
-            # sidebar's agent directory, injected into the SHELL — which only
-            # the web client fetches — so no native registration frame gains a
-            # field or a target check. See backend/orchestrator/web_landing.py.
             landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
             try:
                 from orchestrator import web_landing
@@ -26538,37 +22501,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("shell: landing payload unavailable", exc_info=True)
             shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
 
-            # Feature 052: per-file content-hash asset URLs — a changed file is
-            # fetched under a new URL, unchanged files stay immutable-cached.
             shell = _apply_asset_versions(shell, _projection_static_dir)
-            # The shell hands the access token to page JS, so an injected script
-            # would be a full impersonation. Both inline blocks are
-            # server-substituted here, so they can carry a per-response nonce and
-            # everything else executable must be same-origin.
             nonce = _secrets.token_urlsafe(16)
             shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
             connect_src = csp_connect_src()
             resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
-            # The shell carries a per-session token and references versioned
-            # assets — never cache it (security + always-fresh asset URLs).
             resp.headers["Cache-Control"] = "no-store"
-            # style-src keeps 'unsafe-inline': the self-hosted Tailwind build
-            # generates CSS at runtime by injecting <style>, and the renderers
-            # emit inline style="" attributes. blob:/data: cover the voice audio
-            # path and the renderer's permitted data: image payloads.
             resp.headers["Content-Security-Policy"] = (
                 "default-src 'self'; "
                 f"script-src 'self' 'nonce-{nonce}'; "
                 "style-src 'self' 'unsafe-inline'; "
-                # https: matches webrender.safe_url, which admits http(s):// for
-                # the image/audio primitives; without it agent-rendered remote
-                # images/audio silently fail to load in the web shell while native
-                # clients (no CSP) show them. http:// is omitted — it is
-                # mixed-content-blocked on this https origin anyway.
                 "img-src 'self' data: blob: https:; "
                 "media-src 'self' data: blob: https:; "
-                # See csp_connect_src(): 'self' + the single LiveKit signalling
-                # origin. Replaces bare ws:/wss:, which matched ANY host.
                 f"connect-src {connect_src}; "
                 "font-src 'self'; "
                 "object-src 'none'; "
@@ -26587,17 +22531,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="static",
         )
 
-        # Mount REST API routers
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
-        from orchestrator.web_auth import web_auth_router  # Feature 026 — server-side OIDC
+        from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
         from audit.middleware import AuditHTTPMiddleware
         from feedback.api import feedback_user_router, feedback_admin_router
         from onboarding.api import onboarding_user_router, onboarding_admin_router
-        from llm_config.api import llm_router  # Feature 006-user-llm-config
-        # Feature 025 — agentic soul integration
+        from llm_config.api import llm_router
         from personalization.api import (
             personalization_router,
             skills_router,
@@ -26609,21 +22551,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(chat_router)
         app.include_router(component_router)
         app.include_router(agent_router)
-        app.include_router(user_router)  # Feature 013 — tool-selection prefs
+        app.include_router(user_router)
         app.include_router(draft_router)
         app.include_router(dashboard_router)
-        app.include_router(chrome_router)  # Feature 042 — GET /api/chrome/menu
+        app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
-        app.include_router(lets_router)  # admin-only GET /lets/health
-        # Feature 055 US5 — flag-gated export/share (routes 404 while off)
+        app.include_router(lets_router)
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
-        app.include_router(web_auth_router)  # Feature 026 — /auth/login,/callback,/session,/logout
-        # Feature 068: the kiosk sign-in surface (/kiosk + /auth/kiosk/*) is
-        # ABSENT unless enabled — no route, no OpenAPI entry, and GET / keeps
-        # feature 028's redirect-straight-to-Keycloak posture untouched.
-        # FeatureFlags is import-time state; recreate the container to toggle.
+        app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router
             app.include_router(kiosk_router)
@@ -26634,15 +22571,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(async_task_router)
         app.include_router(operation_router)
         app.include_router(audit_router)
-        # Feature 004 — component feedback & tool-improvement loop
         app.include_router(feedback_user_router)
         app.include_router(feedback_admin_router)
-        # Feature 005 — tool tips and getting started tutorial
         app.include_router(onboarding_user_router)
         app.include_router(onboarding_admin_router)
-        # Feature 006 — user-configurable LLM subscription (Test Connection)
         app.include_router(llm_router)
-        # Feature 025 — agentic soul integration
         app.include_router(personalization_router)
         app.include_router(skills_router)
         app.include_router(memory_router)
@@ -26650,32 +22583,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(assignment_router)
         app.include_router(dreaming_router)
 
-        # Audit HTTP middleware — records every authenticated REST request
-        # in the caller's own log (FR-021). Added after CORS so OPTIONS
-        # preflights are short-circuited before reaching the recorder.
         app.add_middleware(AuditHTTPMiddleware)
 
-        # Feature 064: the MCP resource server is absent — routes, metadata,
-        # renderer registration, and CORS policy included — unless the startup
-        # flag was enabled. FeatureFlags is import-time state; recreate the
-        # container to enable or disable this surface.
         if flags.is_enabled("mcp_server"):
             from orchestrator.mcp_server_endpoint import install_mcp_server
 
             install_mcp_server(app, self)
             logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
 
-        # Mount A2A JSON-RPC server (orchestrator as A2A agent).
-        # 073: absent unless an operator deliberately enables it. When mounted,
-        # POST /a2a is bearer-gated BEFORE SDK dispatch (first-party user token:
-        # realm issuer, allow-listed azp, user/admin role, no delegation
-        # token), tasks are owner-scoped to the verified subject, tool
-        # discovery/resolution is projected per user like chat and /mcp, and
-        # dispatch runs through execute_authorized_tool (full gate stack). The
-        # anonymous card advertises only the public, owner-safe built-in
-        # catalog. There are no first-party callers; the orchestrator's
-        # OUTBOUND A2A client path (_execute_via_a2a, used when an agent's
-        # WebSocket is unavailable) does not go through this mount.
         if flags.is_enabled("a2a_server"):
             try:
                 from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
@@ -26691,26 +22606,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception as e:
                 logger.warning(f"A2A server setup skipped: {e}")
 
-        # Discover external A2A agents from env var, then keep re-checking them.
-        # This used to be a single pass three seconds after boot, which gave up
-        # permanently if the remote host was down, slow, or behind a proxy that
-        # had not finished reloading. _monitor_agents does not cover these: it
-        # only sweeps localhost ports.
         external_agents = os.getenv("A2A_EXTERNAL_AGENTS", "")
         if external_agents:
             urls = [u.strip() for u in external_agents.split(",") if u.strip()]
             if urls:
                 async def _discover_external():
-                    await asyncio.sleep(3)  # Wait for server to start
+                    await asyncio.sleep(3)
                     await self._external_agent_discovery_loop(urls)
                 self._external_agent_discovery_task = asyncio.create_task(
                     _discover_external())
 
-        # Start combined server. proxy_headers honors X-Forwarded-Proto/-For
-        # from a TLS-terminating reverse proxy (production deployments) so
-        # request.base_url is https — which drives the session cookie's
-        # `secure` flag and the OIDC redirect_uri. Only proxies listed in
-        # FORWARDED_ALLOW_IPS are trusted (default: loopback only).
         config = uvicorn.Config(
             app, host="0.0.0.0", port=PORT,
             log_level=os.getenv("LOG_LEVEL", "info").lower(),
@@ -26740,8 +22645,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         await server.serve()
 
     async def _close_started_services(self) -> None:
-        """Share one exact teardown across normal, failed, and cancelled starts."""
-
         task = getattr(self, "_started_services_close_task", None)
         if task is None:
             task = asyncio.create_task(
@@ -26823,8 +22726,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         remainder,
                     )
             finally:
-                # Kept as an idempotent compatibility guard if a partial
-                # startup failed before drain captured the retention task.
                 try:
                     await self.async_task_manager.stop_retention_sweep()
                 finally:
@@ -26900,15 +22801,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
 
     async def _jwks_warm_loop(self):
-        """Warm the Keycloak JWKS at boot, then refresh it in the background.
-
-        Feature 052 (FR-011): the first fetch removes the cold IdP round trip
-        from the interactive sign-in path; the periodic refetch (default 500 s,
-        inside the cache's 600 s TTL) keeps it warm. IdP failures log and back
-        off — boot, /readyz, and the fail-closed validation path are untouched
-        (a failed fetch never caches anything). Skipped cleanly under mock
-        auth or when no authority is configured.
-        """
         from shared import jwks_cache
         authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip()
         if not authority or os.getenv("USE_MOCK_AUTH", "").lower() == "true":
@@ -26921,8 +22813,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         while True:
             try:
                 if warmed:
-                    # _fetch bypasses the TTL — get_jwks would no-op inside
-                    # its 600 s window and let the cache go cold at expiry.
+                    # Calls _fetch directly; get_jwks would no-op inside the TTL
                     await jwks_cache._fetch(jwks_url)
                 else:
                     with perf_span("boot.jwks_warm"):
@@ -26940,20 +22831,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 backoff = min(backoff * 2, 300.0)
 
     def _start_phi_warm(self):
-        """Spawn a daemon thread that builds the PHI analyzer singleton.
-
-        Feature 052 (FR-028): the Presidio+spaCy load happens in the
-        background instead of stalling the first interactive use. Readiness
-        is independent; a first request racing the warm-up just blocks on the
-        singleton exactly as before. ``FF_PHI_WARM=false`` disables the
-        pre-warm (lazy first-use semantics are then unchanged).
-        """
         if os.getenv("FF_PHI_WARM", "true").lower() not in ("true", "1", "yes"):
             logger.info("phi warm: disabled via FF_PHI_WARM")
             return
 
         def _phi_warm_worker():
-            """Build the PHI gate singleton off the boot path."""
             try:
                 from personalization.phi_gate import get_phi_gate
                 with perf_span("boot.phi_warm"):
@@ -26966,16 +22848,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         threading.Thread(target=_phi_warm_worker, name="phi-warm", daemon=True).start()
 
     async def _external_agent_discovery_loop(self, urls: List[str]):
-        """Keep operator-configured external A2A agents connected.
-
-        Per-URL exponential backoff keeps a permanently dead host from costing a
-        network round trip every interval, and from filling the log. Repeated
-        passes over a healthy agent are cheap and safe: discover_agent returns
-        early once the agent id is already in self.agents, so a pass is a card
-        fetch and nothing more.
-        """
         logger.info("External agent discovery loop watching %d URL(s)", len(urls))
-        # url -> (next monotonic deadline, current backoff seconds)
         schedule: Dict[str, tuple] = {url: (0.0, 0.0) for url in urls}
 
         def _is_connected(url: str) -> bool:
@@ -27019,29 +22892,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await asyncio.sleep(EXTERNAL_AGENT_DISCOVERY_INTERVAL_SECONDS)
 
     async def _monitor_agents(self, start_port: int, max_ports: int = 10):
-        """Continuously monitor and discover agents across a range of ports."""
         logger.info(f"Starting agent monitor for ports {start_port} to {start_port + max_ports - 1}...")
 
         while True:
             for port in range(start_port, start_port + max_ports):
                 agent_url = f"http://localhost:{port}"
                 try:
-                    # This will connect if not already connected
                     await self.discover_agent(agent_url)
                 except Exception:
                     pass
             
-            await asyncio.sleep(5)  # Check every 5 seconds
+            await asyncio.sleep(5)
 
     async def summarize_chat_title(self, chat_id: str, message: str, user_id: str = 'legacy', websocket=None):  # noqa: E501
-        """Generate a concise title for the chat using LLM.
-
-        Feature 006: routes through the per-user / operator-default
-        credential resolver. If the user has personal credentials
-        configured, those are used; otherwise the operator default.
-        ``LLMUnavailable`` (no credentials anywhere) returns silently —
-        a missing chat title is non-fatal.
-        """
         feature = "chat_title"
         actor_user_id, auth_principal = self._llm_audit_principals(websocket)
         try:
@@ -27087,10 +22950,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not title:
                 return
 
-            # Update history and notify UI
             self.history.update_chat_title(chat_id, title, user_id=user_id)
 
-            # Broadcast update (each user gets their own history)
             await self._broadcast_user_history(user_id=user_id)
 
         except Exception as e:
@@ -27102,8 +22963,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 error.status_code,
                 error.upstream_error_class,
             )
-            # 066 (FR-020): a chat with a completed turn must never stay
-            # "New Chat" — deterministic fallback from the user's message.
             try:
                 fallback = _title_from(message)
                 if fallback:
@@ -27129,12 +22988,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     usage=None, outcome="failure",
                 )
 
-    # =========================================================================
-    # AUTHENTICATION
-    # =========================================================================
-
     async def validate_token(self, token: str) -> Optional[Dict]:
-        """Validate JWT token against KeyCloak."""
         if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
             if token == "dev-token":
                 logger.info("Mock Auth: Validated dev-token as test_user")
@@ -27181,15 +23035,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.warning("Auth not configured (KEYCLOAK_AUTHORITY/CLIENT_ID missing)")
                 return None
 
-            # Fetch JWKS (feature 028 D8: cached with kid-miss refetch — the
-            # pre-028 per-call fetch made every WS register an IdP round-trip)
             jwks_url = f"{authority}/protocol/openid-connect/certs"
             from shared.jwks_cache import get_jwks
             jwks = await get_jwks(jwks_url, token=token)
 
-            # Verify token — skip strict audience check since Keycloak
-            # confidential clients set aud="account", not the client_id.
-            # We validate azp (authorized party) instead.
+            # Skips aud check by design: Keycloak always sets aud=account
             payload = jose_jwt.decode(
                 token,
                 jwks,
@@ -27197,20 +23047,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 options={"verify_aud": False, "verify_at_hash": False}
             )
 
-            # Bind the token to our realm: reject when the issuer claim is
-            # present and does not match the configured authority (defense
-            # beyond the signature alone; tolerant of a trailing-slash diff).
             iss = payload.get("iss")
             if iss and authority and iss.rstrip("/") != authority.rstrip("/"):
                 logger.warning("Token 'iss' does not match the configured authority — rejecting")
                 return None
 
-            # Verify authorized party is an accepted client. The web client
-            # (expected_client) is always accepted; additional first-party
-            # clients — notably the native desktop's dedicated public client
-            # astral-desktop — are accepted via the KEYCLOAK_ALLOWED_AZP
-            # allow-list (RFC 8252 native-app posture). Empty allow-list ⇒
-            # only the web client (identical to the legacy single-azp check).
             azp = payload.get("azp")
             from shared.auth_clients import is_azp_allowed, allowed_azps
             if azp and not is_azp_allowed(azp):
@@ -27220,9 +23061,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 return None
 
-            # A delegated agent token carries the human's sub, the user's roles,
-            # the realm iss and the requesting client's azp, so it clears every
-            # gate above. Only the audience distinguishes it.
+            # Only the audience marks a token as agent, not user
             from shared.auth_clients import is_first_party_user_claims
             ok, reason = is_first_party_user_claims(payload)
             if not ok:
@@ -27232,7 +23071,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 return None
 
-            # Extract Roles
             client_id = os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
             roles = payload.get("realm_access", {}).get("roles", [])
             if "resource_access" in payload:
@@ -27255,22 +23093,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
 
     def _get_user_id(self, websocket) -> str:
-        """Extract user_id from the UI session, default to 'legacy' if not authenticated."""
         if websocket not in self.ui_sessions:
             return 'legacy'
         user_data = self.ui_sessions[websocket]
-        # user_data is the JWT payload, sub is the subject (user ID)
         return user_data.get('sub', 'legacy')
 
     def _load_user_preferences(self, user_id: str) -> Dict[str, Any]:
-        """Load the bounded public theme plus verified identity projection.
-
-        Generic preference-row transport belonged to the retired Deep database
-        facade.  The product consumes only two typed Plane contracts here and
-        reconstructs the existing internal preference-shaped handoff so the
-        authorization and client-redaction helpers remain unchanged.
-        """
-
         from orchestrator.external_identity_links import PREFERENCES_KEY
         from orchestrator.plane_repository_context import (
             plane_source_from_orchestrator,
@@ -27307,8 +23135,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         theme: Dict[str, Any],
     ) -> None:
-        """Replace one owner's bounded theme through Plane."""
-
         from orchestrator.plane_repository_context import (
             plane_source_from_orchestrator,
         )
@@ -27322,8 +23148,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
 
     def _background_tasks_for_replay(self, user_id: str):
-        """Return the newest bounded terminal, unnotified task projections."""
-
         from astralplane.repositories.background_tasks import BackgroundTaskStatus
         from orchestrator.plane_repository_context import (
             plane_source_from_orchestrator,
@@ -27364,8 +23188,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str,
         task_ids: tuple[str, ...],
     ) -> None:
-        """Apply owner-scoped notification CASes in one caller transaction."""
-
         from orchestrator.plane_repository_context import (
             plane_source_from_orchestrator,
         )
@@ -27380,8 +23202,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
     def _probe_plane_readiness(self) -> None:
-        """Verify initialized runtime state and one real typed database query."""
-
         from orchestrator.plane_repository_context import (
             plane_source_from_orchestrator,
         )
@@ -27403,8 +23223,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
 
     async def _probe_application_readiness(self) -> None:
-        """Probe Plane and generated-publication recovery without loop blocking."""
-
         await asyncio.to_thread(self._probe_plane_readiness)
         publication = await self.generated_agent_publication_service.readiness()
         if not publication.ready:
@@ -27413,12 +23231,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             )
 
     def _save_user_profile(self, user_data: Dict) -> None:
-        """Persist user profile from JWT claims to the database."""
         user_id = user_data.get("sub")
         if not user_id or user_id == "legacy":
             return
         try:
-            # Extract roles from JWT claims
             roles = list(set(
                 user_data.get("realm_access", {}).get("roles", []) +
                 user_data.get("resource_access", {}).get(
@@ -27450,8 +23266,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 async def _join_orchestrator_close_through_cancellation(
     task: asyncio.Task[None],
 ) -> None:
-    """Observe exact teardown before propagating repeated caller cancellation."""
-
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -27464,7 +23278,6 @@ async def _join_orchestrator_close_through_cancellation(
 
 
 def main() -> None:
-    """Reject unsafe production configuration before opening durable services."""
     from orchestrator.session_store import assert_production_posture
 
     assert_production_posture()

@@ -1,4 +1,7 @@
-"""Direct-RTC media activator for the Feature-065 session runtime."""
+"""Reserves a worker and activates direct-RTC media for one voice session: grants,
+capture/playout fences, and turn playback, sitting between voice_runtime.py and
+voice_coordinator.py's WorkerPool.
+"""
 
 from __future__ import annotations
 
@@ -39,8 +42,6 @@ _ANNOUNCEMENT_RETENTION_SECONDS = 120.0
 
 
 class VoiceMediaActivationError(RuntimeError):
-    """Content-free direct-media failure safe for the REST problem mapper."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -48,8 +49,6 @@ class VoiceMediaActivationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ClientPlayoutObservation:
-    """One exact content-free local-render event stamped by server time."""
-
     user_id: str
     fence: AnnouncementFence
     turn_announcement_sequence: int
@@ -69,8 +68,6 @@ class _ClientPlayoutRecord:
 
 
 class DirectRtcVoiceMedia:
-    """Reserve one worker, deliver a purpose-bound grant, then expose media."""
-
     def __init__(
         self,
         *,
@@ -120,10 +117,6 @@ class DirectRtcVoiceMedia:
         ] = {}
         self._client_sequences: dict[tuple[str, str], int] = {}
         self._client_event_times: dict[tuple[str, str], deque[float]] = {}
-        # ``voice_turn.announcement_sequence`` is a durable per-turn CAS
-        # sequence, while clients consume one ordered media stream for the
-        # entire session.  Keep the wire sequence separately so a greeting,
-        # the first turn acknowledgement, and later turns can never collide.
         self._media_announcement_sequences: dict[tuple[str, int], int] = {}
         self._announcement_send_locks: dict[tuple[str, int], asyncio.Lock] = {}
         self._interruption_started_at: dict[tuple[str, int], float] = {}
@@ -158,9 +151,6 @@ class DirectRtcVoiceMedia:
             )
         room_created = False
         try:
-            # Neither the worker nor the client grant has room-create
-            # authority. The orchestrator creates one bounded two-party room
-            # explicitly before minting either purpose-bound join grant.
             await self._livekit.ensure_room(session.room_name)
             room_created = True
             issued_at = self._now()
@@ -225,8 +215,6 @@ class DirectRtcVoiceMedia:
         *,
         refresh_id: str,
     ) -> Mapping[str, Any]:
-        """Apply a durable rotation at the worker before reminting a bearer."""
-
         key = (session.session_id, session.generation)
         async with self._lock:
             active = self._sessions.get(key)
@@ -286,7 +274,6 @@ class DirectRtcVoiceMedia:
                         active.participant_identity,
                     )
                 except Exception:
-                    # The worker revision fence already rejects this publisher.
                     pass
         elif session.media_grant_revision != active.media_grant_revision:
             raise VoiceMediaActivationError("stale_media_grant_rotation")
@@ -297,8 +284,6 @@ class DirectRtcVoiceMedia:
         session_id: str,
         generation: int,
     ) -> VoiceSessionRecord | None:
-        """Return the immutable active media snapshot for an exact fence."""
-
         if (
             not isinstance(session_id, str)
             or not session_id
@@ -317,8 +302,6 @@ class DirectRtcVoiceMedia:
         assignment_id: str,
         worker_identity: str,
     ) -> bool:
-        """Confirm the exact local and pool reservation without new authority."""
-
         key = (session.session_id, session.generation)
         async with self._lock:
             local = self._reservations.get(key)
@@ -455,9 +438,6 @@ class DirectRtcVoiceMedia:
                         "worker_assignment_unavailable"
                     )
                 self._capture_requested[key] = bool(enabled)
-                # A routine foreground heartbeat or idempotent microphone
-                # update must not release an assistant-output fence. Only the
-                # exact authenticated terminal playout event may do that.
                 if enabled and key in self._capture_playout_holds:
                     return
             await self._workers.send_session_command(
@@ -474,8 +454,6 @@ class DirectRtcVoiceMedia:
         session: VoiceSessionRecord,
         announcement_id: str,
     ) -> bool:
-        """Release capture only for the latest exact client playout fence."""
-
         key = (session.session_id, session.generation)
         async with self._lock:
             if self._capture_playout_holds.get(key) != announcement_id:
@@ -510,8 +488,6 @@ class DirectRtcVoiceMedia:
         media_grant_revision: int,
         capture_lock: asyncio.Lock,
     ) -> bool:
-        """Release one fully observed hold without blocking other sessions."""
-
         async with capture_lock:
             async with self._lock:
                 if (
@@ -550,8 +526,6 @@ class DirectRtcVoiceMedia:
                 return False
 
     async def barge_in(self, session: VoiceSessionRecord) -> None:
-        """Interrupt explicit user-requested output and reopen eligible capture."""
-
         await self._send_speech_stop(
             session,
             reason="barge_in",
@@ -559,8 +533,6 @@ class DirectRtcVoiceMedia:
         )
 
     async def stop_speech(self, session: VoiceSessionRecord) -> None:
-        """Fence lifecycle/mute output without bypassing client playout proof."""
-
         await self._send_speech_stop(
             session,
             reason="user_stop" if not session.speech_muted else "mute",
@@ -610,10 +582,6 @@ class DirectRtcVoiceMedia:
                     },
                 )
                 if release_capture_hold:
-                    # The authenticated worker command fences its speech epoch
-                    # before reopening capture. Retire the matching
-                    # coordinator-side hold in the same serialized command
-                    # lane so a later microphone enable cannot be swallowed.
                     async with self._lock:
                         current = self._sessions.get(key)
                         if (
@@ -664,8 +632,6 @@ class DirectRtcVoiceMedia:
         text: str,
         sensitive_authorized: bool = False,
     ) -> None:
-        """Deliver one already-reserved, bounded turn announcement."""
-
         if not isinstance(turn, VoiceTurnRecord):
             raise TypeError("turn must be VoiceTurnRecord")
         if not isinstance(claim, AnnouncementClaim):
@@ -801,13 +767,6 @@ class DirectRtcVoiceMedia:
         event: VoicePlayoutEvent,
         session: VoiceSessionRecord,
     ) -> ClientPlayoutObservation:
-        """Validate one event against its authenticated socket and command.
-
-        The client wall clock remains diagnostic.  Operational state uses only
-        the receipt timestamp captured after every owner, connection, session,
-        generation, grant, announcement, order, and rate fence has passed.
-        """
-
         if not isinstance(user_id, str) or not user_id:
             raise VoiceMediaActivationError("playout_owner_unavailable")
         if not isinstance(claims, VoiceControlClaims):
@@ -883,8 +842,6 @@ class DirectRtcVoiceMedia:
         *,
         timeout_seconds: float = 10.0,
     ) -> str:
-        """Wait for the authenticated worker's exact source terminal."""
-
         if not isinstance(announcement_id, str) or not announcement_id:
             raise ValueError("invalid_announcement_id")
         if not 1 <= timeout_seconds <= 30:
@@ -908,13 +865,6 @@ class DirectRtcVoiceMedia:
             return result
 
     async def handle_worker_frame(self, frame: Mapping[str, Any]) -> None:
-        """Start the one greeting only after the owner's microphone is live.
-
-        WorkerPool has already authenticated and generation-fenced this frame.
-        Waiting for the worker's ``listening`` transition makes the greeting
-        audible instead of racing the REST response or the client's room join.
-        """
-
         frame_type = frame.get("type")
         if frame_type == "media_state" and frame.get("state") in {
             "reconnecting",
@@ -937,10 +887,6 @@ class DirectRtcVoiceMedia:
                 async with self._lock:
                     announcement_id = self._capture_playout_holds.get(key)
                     record = self._playout_records.get(announcement_id or "")
-                    # A pre-publication speech failure releases its worker hold
-                    # without any possible client playout event. Only the
-                    # ordered failed-source + explicit worker-listening pair
-                    # may retire that coordinator-side bookkeeping fence.
                     if (
                         record is not None
                         and record.source_phase == "failed"
@@ -1143,8 +1089,6 @@ class DirectRtcVoiceMedia:
                     self._capture_playout_holds.pop(key, None)
             raise
         except Exception:
-            # A later authenticated listening transition may retry. No bearer,
-            # transcript, or speech text is retained in this failure path.
             async with self._lock:
                 failed_announcement = locals().get("announcement_id", "")
                 self._playout_records.pop(failed_announcement, None)
@@ -1212,8 +1156,6 @@ class DirectRtcVoiceMedia:
                     finally:
                         await self._release(reservation, remove_local=False)
             finally:
-                # Participant and room cleanup is mandatory even when a worker is
-                # unreachable or refuses the final control command.
                 await self._remove_media(session)
         except asyncio.CancelledError:
             self._record_cleanup(session, "partial", cleanup_started_at)
@@ -1233,8 +1175,6 @@ class DirectRtcVoiceMedia:
         try:
             await self.end(session, "media_error")
         except Exception:
-            # The caller still durable-ends the generation. All grants are short
-            # lived, and room reconciliation removes any stale participant.
             return
 
     async def _await_ready(self, session: VoiceSessionRecord) -> None:
@@ -1302,8 +1242,6 @@ class DirectRtcVoiceMedia:
         try:
             await self._remove_media(session)
         except Exception:
-            # Preserve the activation refusal. Short-lived grants remain
-            # fenced, while the normal room reconciler can retry cleanup.
             return
 
     def _now(self) -> datetime:
@@ -1411,8 +1349,6 @@ class DirectRtcVoiceMedia:
         ] = fence.announcement_id
 
     def _require_playout_registration_locked(self, announcement_id: str) -> None:
-        """Reject a duplicate/capacity miss before consuming a wire sequence."""
-
         self._prune_playout_locked(self._monotonic_now())
         if announcement_id in self._playout_records:
             raise VoiceMediaActivationError("announcement_already_inflight")
@@ -1423,8 +1359,6 @@ class DirectRtcVoiceMedia:
         self,
         key: tuple[str, int],
     ) -> int:
-        """Allocate one bounded session-global sequence while ``_lock`` is held."""
-
         current = self._media_announcement_sequences.get(key)
         if current is None:
             raise VoiceMediaActivationError("worker_assignment_unavailable")

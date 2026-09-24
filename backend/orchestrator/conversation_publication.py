@@ -1,12 +1,6 @@
-"""Task-local authority for one staged conversation-canvas publication.
-
-The durable rows for a not-yet-committed canvas live in ``saved_components``
-under their conversation commit identity.  This module supplies only the
-task-local selector for those rows; it does not publish them or own the
-database transaction.  :class:`contextvars.ContextVar` is intentional:
-``asyncio.to_thread`` copies the caller's context, so existing synchronous
-workspace methods keep seeing the correct stage when invoked by their async
-facades without introducing process-global mutable state.
+"""Task-local contextvar selecting the staged, not-yet-committed canvas rows for the
+current conversation commit, read by workspace.py and history.py; does not itself own
+the database transaction or publish.
 """
 
 from __future__ import annotations
@@ -26,7 +20,6 @@ _MAX_SUMMARY_TEXT_CHARS = 8_000
 
 
 def _uuid4_text(value: Any, field_name: str) -> str:
-    """Return one canonical UUID4 string or reject an unsafe stage identity."""
     try:
         parsed = uuid.UUID(str(value))
     except (AttributeError, TypeError, ValueError) as exc:
@@ -37,8 +30,6 @@ def _uuid4_text(value: Any, field_name: str) -> str:
 
 
 def _canonical_json(value: Any) -> str:
-    """Return the one byte-stable JSON form used by publication digests."""
-
     try:
         return json.dumps(
             value,
@@ -59,21 +50,15 @@ def _collection_digest(values: Sequence[Mapping[str, Any]]) -> str:
 def canonical_components_sha256(
     components: Sequence[Mapping[str, Any]],
 ) -> str:
-    """Digest one ordered, complete component view without content logging."""
-
     return _collection_digest(components)
 
 
 def canonical_layouts_sha256(layouts: Sequence[Mapping[str, Any]]) -> str:
-    """Digest one ordered, complete layout view without content logging."""
-
     return _collection_digest(layouts)
 
 
 @dataclass(frozen=True, slots=True)
 class ConversationCompletionSummary:
-    """Optional authoritative summary on the normal atomic result contract."""
-
     summary_text: str
     summary_source: str
 
@@ -96,18 +81,10 @@ class ConversationCompletionSummary:
         object.__setattr__(self, "summary_text", self.summary_text.strip())
 
 
+# Ignore a notification's summary field — not authoritative
 def completion_summary_from_content(
     content: Any,
 ) -> ConversationCompletionSummary | None:
-    """Read only the explicit result fields, never a notification `summary`.
-
-    The compatibility async-task notification scrape uses a field named
-    ``summary`` and is intentionally not authoritative. A committed producer
-    must emit both exact optional contract fields on one top-level semantic
-    result object; malformed or partial metadata degrades to the deterministic
-    committed-visible fallback.
-    """
-
     values = content if isinstance(content, list) else [content]
     for value in values:
         if not isinstance(value, Mapping):
@@ -180,8 +157,6 @@ def _iter_layout_refs(value: Any) -> Iterable[str]:
 
 @dataclass(frozen=True, slots=True)
 class ConversationPublicationMerge:
-    """Deterministic result of a three-view component/layout rebase."""
-
     components: tuple[dict[str, Any], ...]
     layouts: tuple[dict[str, Any], ...]
     component_conflicts: tuple[str, ...]
@@ -199,8 +174,6 @@ def _merge_keyed_view(
     *,
     key: str,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
-    """Merge complete keyed views; concurrent same-key edits preserve latest."""
-
     base_by_id = _identity_map(base, key=key)
     candidate_by_id = _identity_map(candidate, key=key)
     latest_by_id = _identity_map(latest, key=key)
@@ -247,15 +220,6 @@ def merge_conversation_publication(
     candidate_layouts: Sequence[Mapping[str, Any]],
     latest_layouts: Sequence[Mapping[str, Any]],
 ) -> ConversationPublicationMerge:
-    """Rebase a private result without rerunning its agent or side effects.
-
-    Candidate-only changes apply over the latest committed view. When both
-    candidate and latest changed the same stable identity from the execution
-    base, latest wins and the caller receives a bounded conflict disposition.
-    Candidate layouts that reference components absent after the merge are
-    dropped; a still-valid latest layout of the same key is retained instead.
-    """
-
     components, component_conflicts, _component_sources = _merge_keyed_view(
         base_components,
         candidate_components,
@@ -302,14 +266,6 @@ def merge_conversation_publication(
 
 @dataclass(slots=True)
 class ConversationPublicationStage:
-    """Complete staged canvas selected for the current logical turn.
-
-    ``layouts`` is an in-memory deep copy of the current authoritative
-    layouts. Component rows are durable and commit-versioned in PostgreSQL;
-    layouts remain private to this object until the owning repository writes
-    both surfaces at its fenced atomic publication boundary.
-    """
-
     history: Any
     commit_id: str
     chat_id: str
@@ -385,7 +341,6 @@ class ConversationPublicationStage:
             raise ValueError("a committed stage must be sealed")
 
     def matches(self, history: Any, chat_id: str, user_id: str) -> bool:
-        """Return whether this stage owns the exact workspace access."""
         return (
             self.history is history
             and str(chat_id) == self.chat_id
@@ -393,31 +348,20 @@ class ConversationPublicationStage:
         )
 
     def ensure_mutable(self) -> None:
-        """Reject a late staged mutation after publication finalization."""
         if self.sealed:
             raise RuntimeError("conversation publication stage is sealed")
 
     def mark_dirty(self) -> None:
-        """Record that this stage now differs from its authoritative base."""
-
         self.ensure_mutable()
         self.dirty = True
 
     def set_completion_summary(self, *, text: str, source: str) -> None:
-        """Attach validated authoritative metadata before atomic publication."""
-
         self.ensure_mutable()
         summary = ConversationCompletionSummary(text, source)
         self.summary_text = summary.summary_text
         self.summary_source = summary.summary_source
 
     def seal(self, *, committed: bool) -> None:
-        """Finalize this task-local stage with an immutable outcome.
-
-        Repeating the same outcome is idempotent. Reclassifying a rolled-back
-        stage as committed (or vice versa) is rejected so late cleanup cannot
-        rewrite the publication result observed by callers.
-        """
         committed = bool(committed)
         if self.sealed:
             if self.committed != committed:
@@ -433,14 +377,12 @@ _CURRENT_CONVERSATION_PUBLICATION: ContextVar[
 
 
 def current_conversation_publication() -> ConversationPublicationStage | None:
-    """Return the publication stage active in this task context, if any."""
     return _CURRENT_CONVERSATION_PUBLICATION.get()
 
 
 def activate_conversation_publication(
     stage: ConversationPublicationStage,
 ) -> Token[ConversationPublicationStage | None]:
-    """Activate ``stage`` and return the exact token required for reset."""
     if not isinstance(stage, ConversationPublicationStage):
         raise TypeError("stage must be a ConversationPublicationStage")
     stage.ensure_mutable()
@@ -450,5 +392,4 @@ def activate_conversation_publication(
 def reset_conversation_publication(
     token: Token[ConversationPublicationStage | None],
 ) -> None:
-    """Restore the task context captured before activation."""
     _CURRENT_CONVERSATION_PUBLICATION.reset(token)

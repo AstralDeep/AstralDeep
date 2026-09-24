@@ -1,21 +1,6 @@
-"""Feature 077 — the express lane for personal agents ("describe it and it exists").
-
-One description → the SAME guided session the step editor drives
-(`agent_authoring`: Specify → Clarify → Plan → Tasks → Analyze → Generate),
-run as a background pipeline that re-renders the *My agents & skills* surface
-after every step for the socket that started it. Nothing here bypasses a gate:
-
-* Clarify is still the hard gate — when the assistant has questions the run
-  stops in ``needs_answers`` and resumes only through :func:`agent_authoring.advance`
-  with the owner's answers (FR-002).
-* Analyze is still the deterministic checker — a refusal ends the run as
-  ``failed`` with the violations and hands the owner the step editor (FR-003).
-* Generate goes through :func:`agent_authoring.generate_from_session`, which
-  re-evaluates the generation gate on the server (FR-001).
-
-Run state is in-process and bounded (FR-004); the session rows are the durable
-truth, so a restart loses only the in-flight run — the step editor can resume
-any session from where it stands.
+"""Runs the agent_authoring Specify→Clarify→Plan→Tasks→Analyze→Generate session as a
+background pipeline for one-line agent creation, re-rendering the My agents & skills
+surface after each step. Consumed by projection_surfaces/authoring.py.
 """
 
 from __future__ import annotations
@@ -31,8 +16,6 @@ from orchestrator import agent_authoring as aa
 
 logger = logging.getLogger("Orchestrator.QuickCreate")
 
-#: Pipeline steps in order. ``deliver`` is the delivery half of Generate,
-#: shown separately because it is the step a missing desktop client fails.
 STEPS: Tuple[str, ...] = ("specify", "clarify", "plan", "tasks", "analyze", "generate", "deliver")
 STEP_LABELS = {
     "specify": "Write the specification",
@@ -44,7 +27,6 @@ STEP_LABELS = {
     "deliver": "Send to your desktop",
 }
 
-#: Run states.
 RUNNING, NEEDS_ANSWERS, DONE, WAITING_FOR_DESKTOP, FAILED = (
     "running", "needs_answers", "done", "waiting_for_desktop", "failed")
 
@@ -120,8 +102,6 @@ def forget(owner: str, draft_id: str) -> None:
 
 
 def derive_agent_name(description: str) -> str:
-    """A readable default name from the description — the owner can rename it
-    later through Revise. Never empty."""
     words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9'-]*", description or "")
              if w.lower() not in _STOPWORDS]
     picked = words[:4]
@@ -131,14 +111,8 @@ def derive_agent_name(description: str) -> str:
     return name[:60]
 
 
-# ---------------------------------------------------------------------------
-# Starting / resuming
-# ---------------------------------------------------------------------------
-
 async def start(orch, websocket, user_id: str, roles: Any, *, description: str,
                 agent_name: str = "", refresh=None) -> Tuple[Optional[QuickRun], str]:
-    """Open a session for ``description`` and launch the pipeline. Returns
-    ``(run, message)``; ``run`` is None when the request was refused."""
     if not aa.byo_enabled():
         return None, "Personal agents are not enabled on this deployment."
     description = (description or "").strip()
@@ -161,7 +135,6 @@ async def start(orch, websocket, user_id: str, roles: Any, *, description: str,
 
 async def resume_with_answers(orch, websocket, user_id: str, roles: Any, draft_id: str,
                               fields: Dict[str, str], refresh=None) -> Tuple[bool, str]:
-    """Save the owner's Clarify answers through the hard gate and resume."""
     run = get_run(user_id, draft_id)
     if run is None or run.state != NEEDS_ANSWERS:
         return False, "That agent is not waiting for answers."
@@ -189,17 +162,13 @@ def _launch(orch, websocket, user_id, roles, run: QuickRun, refresh, resume_from
         name=f"quick-create-{run.draft_id}")
 
 
-# ---------------------------------------------------------------------------
-# The pipeline
-# ---------------------------------------------------------------------------
-
 async def _pipeline(orch, websocket, user_id, roles, run: QuickRun, refresh, resume_from: str) -> None:
     async def push() -> None:
         if refresh is None:
             return
         try:
             await refresh(orch, websocket, user_id, roles, run)
-        except Exception:  # noqa: BLE001 — progress is best-effort
+        except Exception:  # noqa: BLE001
             logger.debug("quick-create: progress push failed", exc_info=True)
 
     async def fail(step: str, message: str, **outcome: Any) -> None:
@@ -224,15 +193,10 @@ async def _pipeline(orch, websocket, user_id, roles, run: QuickRun, refresh, res
                     await fail(step, "The authoring session disappeared.")
                     return
                 if aa.phase_of(row) != step:
-                    # The step editor moved this session meanwhile: stop quietly,
-                    # the session view is the truth.
                     await fail(step, "This agent is being edited step by step — continue there.")
                     return
                 drafted, message = await aa.draft_phase(orch, websocket, user_id, run.draft_id)
                 if not drafted and step != "clarify":
-                    # The owner's model is not deterministic: one more attempt
-                    # before handing the step to the person (Clarify is not
-                    # retried — a missing answer there must stay a gate).
                     run.note(f"{STEP_LABELS[step]}: first draft came back empty — retrying once.")
                     drafted, message = await aa.draft_phase(orch, websocket, user_id, run.draft_id)
                 if not drafted:
@@ -316,6 +280,6 @@ async def _pipeline(orch, websocket, user_id, roles, run: QuickRun, refresh, res
         run.state = FAILED
         run.message = "Cancelled."
         raise
-    except Exception as exc:  # noqa: BLE001 — never a silent hang
+    except Exception as exc:  # noqa: BLE001
         logger.exception("quick-create: pipeline crashed for %s", run.draft_id)
         await fail(run.current, f"Something went wrong: {exc}")

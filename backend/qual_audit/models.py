@@ -1,4 +1,7 @@
-"""Pydantic models for the Academic Testing Suite audit trail."""
+"""Pydantic models for the qualification audit trail: test runs, case results, evidence,
+audit-chain entries, and LaTeX artifacts, shared by cli.py, database.py, evidence.py,
+latex_export.py, and runner.py.
+"""
 
 import uuid
 from datetime import datetime, timezone
@@ -15,10 +18,6 @@ def _uuid() -> str:
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
-
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
 
 class RunStatus(str, Enum):
     RUNNING = "running"
@@ -46,13 +45,7 @@ class AuditAction(str, Enum):
     NEEDS_RERUN = "needs_rerun"
 
 
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
-
 class TestRun(BaseModel):
-    """A single execution of one or more test suites."""
-
     id: str = Field(default_factory=_uuid)
     started_at: datetime = Field(default_factory=_now)
     finished_at: Optional[datetime] = None
@@ -62,8 +55,6 @@ class TestRun(BaseModel):
 
 
 class TestCaseResult(BaseModel):
-    """Individual test outcome within a run."""
-
     id: str = Field(default_factory=_uuid)
     run_id: str
     suite: str
@@ -77,8 +68,6 @@ class TestCaseResult(BaseModel):
 
 
 class TestEvidence(BaseModel):
-    """Immutable captured data linked to a test case."""
-
     id: str = Field(default_factory=_uuid)
     case_id: str
     evidence_type: str
@@ -88,8 +77,6 @@ class TestEvidence(BaseModel):
 
 
 class AuditEntry(BaseModel):
-    """Human verification action forming a tamper-evident hash chain."""
-
     id: str = Field(default_factory=_uuid)
     case_id: str
     action: AuditAction
@@ -100,8 +87,6 @@ class AuditEntry(BaseModel):
 
 
 class LatexArtifact(BaseModel):
-    """Tracks a generated LaTeX output file."""
-
     id: str = Field(default_factory=_uuid)
     run_id: str
     filename: str

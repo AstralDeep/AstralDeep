@@ -1,4 +1,8 @@
-"""Fail-closed release-evidence policy tests for feature 060 (T103/T106)."""
+"""Fail-closed policy tests for scripts/validate_release_evidence.py: the schema
+engine's supported keywords and assertions, canonical JSON decoding, the
+same-candidate evidence matrix, exception approvals, and per-platform producer
+binding.
+"""
 
 from __future__ import annotations
 
@@ -32,7 +36,7 @@ CONTRACT_ROOT = REPO_ROOT / "specs" / "060-runtime-reliability-hardening" / "con
 
 if not (
     (REPO_ROOT / "scripts").is_dir() and (REPO_ROOT / "specs").is_dir()
-):  # repo root absent inside the product image
+):
     pytest.skip(
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
@@ -1230,7 +1234,6 @@ def _apple_origin_chain(
     platform: str,
     raw_result_paths: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    """Build a fully rehashed raw/final artifact chain for the selected platform."""
     report = contract_examples._platform_evidence(platform)
     report["workflow"]["job_id"] = f"{platform}-raw-producer"
     payloads = {

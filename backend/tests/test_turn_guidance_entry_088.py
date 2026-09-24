@@ -1,8 +1,8 @@
-"""Entry compatibility before model execution, with real admission and guidance.
-
-The ordinary slash expander is the stopping boundary. Its explicit failure is
-not evidence of a successful model, speech, or completed conversation result.
+"""Tests for turn guidance entry ahead of model execution in
+orchestrator/turn_guidance_authority.py: slash expansion is the stopping boundary
+before admission, and its refusal is never mistaken for a completed turn.
 """
+
 import asyncio
 import json
 import time
@@ -86,8 +86,6 @@ async def test_proof_admitted_voice_enters_real_chat_wrapper_and_current_catalog
     token=hub._CONNECTION_OPERATION_CONTEXT.set(operation_context)
     async def available(*_a,**_k):
         return None
-    # Recognition/proof, operation claim and acceptance are actual above. This
-    # entry probe does not run a provider or re-publish the already accepted UI.
     monkeypatch.setattr(orch,'_resolve_llm_client_for',available)
     monkeypatch.setattr(orch,'_deliver_committed_conversation_snapshot',available)
     monkeypatch.setattr(orch,'_broadcast_voice_ack',available)
@@ -214,9 +212,6 @@ async def test_remote_voice_ingress_captures_original_human_before_admission_que
             await release.wait()
         return await actual(callback,*args,**kwargs)
     monkeypatch.setattr(state.orch,'_call_work_admission',hold)
-    # This verifies human capture, not voice admission. The existing recognized
-    # turn above is real; its UI payload shape must select the original human
-    # before any operation queue wait or later proof-validation dispatch.
     generation=send(state,'chat_message',message='/weekly queued voice',chat_id=binding.chat_id,
         voice_origin={'session_id':turn.session_id,'generation':turn.session_generation,
             'media_grant_revision':turn.media_grant_revision,'turn_id':turn.turn_id,
@@ -230,8 +225,6 @@ async def test_remote_voice_ingress_captures_original_human_before_admission_que
         assert frame.guidance_origin.credential.session_id==fixture[2]
         assert not frame.guidance_origin.closed
     finally:
-        # Discard this deliberately held capture; no second voice dispatch or
-        # accepted transcript is authorized by this ingress-only assertion.
         state.socket.closed=True
         state.socket.disconnect()
         release.set()

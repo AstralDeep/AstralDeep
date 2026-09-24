@@ -1,10 +1,8 @@
-"""Private, read-only guidance authority for already admitted ordinary turns.
-
-An original human or consent-derived token is retained only in memory. Reading
-guidance neither refreshes that token nor grants model, tool, publication, or
-authored-metadata authority. A lookup has a new bounded observation window, but
-can never outlive or replace the original credential, grant, or admitted turn.
+"""Read-only, in-memory guidance authority for turns already admitted elsewhere;
+machine/voice/foreground/background/HTTP bindings retain a parent's read origin
+without ever granting model, tool, or authored-metadata authority themselves.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -69,11 +67,6 @@ class _GuidanceOrigin:
 
 
 async def capture_turn_guidance_from_human(caller, *, expected_orchestrator):
-    """Detach only a verified original human read origin for a private handoff.
-
-    The resulting object is not a caller and cannot enter metadata mutations.
-    The receiving turn must bind its actual execution before a lookup can use it.
-    """
     if type(caller) is not CurrentHumanCaller:
         _refuse()
     caller._assert_local(expected_orchestrator)
@@ -128,8 +121,6 @@ class _OperationBinding:
     def current(self, tx, orch, origin):
         self.local(orch, origin)
         current = self.coordinator.assert_current_execution_lease(self.fence, transaction=tx)
-        # Phase/revision and lease duration may advance. Logical and execution
-        # identities may not be silently adopted after admission.
         for name in ("operation_id", "owner_scope", "owner_user_id", "connection_scope_id",
                      "operation_kind", "chat_id", "connection_generation", "request_generation"):
             if getattr(current, name) != getattr(self.record, name):
@@ -138,12 +129,6 @@ class _OperationBinding:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _ForegroundSocketBinding:
-    """A connected foreground turn retains its original transport identity.
-
-    The short metadata capture may retire after handoff. Its original socket
-    and registration still constrain this connected operation and its children;
-    background/USER voice custody uses their separate execution bindings.
-    """
     websocket: object
     context: object
     registration: object
@@ -167,7 +152,6 @@ class _ForegroundSocketBinding:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class TurnGuidanceBinding:
-    """One private turn handoff; children retain every parent execution fence."""
     origin: _GuidanceOrigin
     websocket: object
     chat_id: str
@@ -181,11 +165,6 @@ class TurnGuidanceBinding:
     task: object = field(default_factory=asyncio.current_task, repr=False)
     closed: bool = False
     foreground: object = field(default=None, repr=False)
-    # 088 T011/T037 — the composer's exact selected agent/skill/note heads for
-    # this turn, existence-checked once at capture time (``bind_turn_selection``).
-    # ``None`` (the overwhelming default: no client submits one yet) means this
-    # binding behaves exactly as it always has — nothing downstream reads this
-    # field today, so its absence changes nothing (FR-023 byte-identical pin).
     selection: object = field(default=None, repr=False)
 
     def close(self):
@@ -237,8 +216,6 @@ class TurnGuidanceBinding:
             self.machine.current_grant(tx, orch, self.origin)
         if self.voice is not None:
             self.voice.current(tx, orch, self.origin)
-        # Refresh clocks only on rows already held after every downstream wait.
-        # A SELECT clock expression may otherwise have preceded its row wait.
         if self.machine is not None:
             self.machine.current(tx, orch, self.origin)
         for operation in self.operations:
@@ -277,8 +254,7 @@ class _MachineBinding:
             _scheduled_current(tx, self.scheduled, origin.owner_id)
 
     def current_grant(self, tx, orch, origin):
-        # Original owner79 is already held. Grant locking follows every
-        # occurrence/operation/slot lock, never the reverse.
+        # Grant lock must follow slot/operation locks, never precede
         grant = self.repository.assert_current_grant(tx, owner_id=origin.owner_id,
                                                      grant_id=self.grant.grant_id)
         if grant != self.grant:
@@ -301,12 +277,6 @@ def _scheduled_current(tx, scheduled, owner):
 
 async def bind_machine_guidance(*, expected_orchestrator, websocket, authority,
                                 chat_id, scheduled_attempt=None, scheduled_store=None):
-    """Use the exact previously derived machine token and selected grant.
-
-    This performs normal token verification and current grant/attempt reads,
-    never a new mint, refresh, or latest-grant selection. Missing machine
-    authority remains an explicit refusal when owner guidance is required.
-    """
     from orchestrator.async_tasks import VirtualWebSocket
     from orchestrator.chain_authority import MachineAuthority, machine_session_binding
     from orchestrator.offline_grant import OfflineGrantStore
@@ -383,7 +353,6 @@ async def bind_machine_guidance(*, expected_orchestrator, websocket, authority,
 
 
 def bind_background_guidance(origin, *, expected_orchestrator, websocket):
-    """Bind an original human handoff to the actual manager-owned running task."""
     from orchestrator.async_tasks import BackgroundTask, BackgroundTaskManager, VirtualWebSocket
     if type(origin) is not _GuidanceOrigin or type(websocket) is not VirtualWebSocket:
         _refuse()
@@ -418,8 +387,7 @@ class _VoiceBinding:
                 or self.store._voice is not self.repository
                 or origin.binding.repositories.voice is not self.repository):
             _refuse()
-        # Operation/slot locks are already held. This exact read uses NOWAIT
-        # session/turn locks and samples DB time after both, never a host clock.
+        # NOWAIT lock; sample DB time after, never the host clock
         observation = self.repository.assert_current_guidance_turn(tx,
             owner_id=origin.owner_id, session_id=self.turn.session_id, turn_id=self.turn.turn_id,
             expected_session_generation=self.turn.session_generation,
@@ -437,7 +405,6 @@ class _VoiceBinding:
 
 def bind_voice_guidance(origin, *, expected_orchestrator, websocket, voice_dispatch,
                         operation_context, chat_id):
-    """Bind original human selection only to a real proof-admitted voice turn."""
     from orchestrator.orchestrator import _VoiceDispatchContext
     from orchestrator.voice_sessions import TranscriptAdmission, VoiceSessionRepository
     if (type(origin) is not _GuidanceOrigin or type(voice_dispatch) is not _VoiceDispatchContext
@@ -464,7 +431,6 @@ def bind_voice_guidance(origin, *, expected_orchestrator, websocket, voice_dispa
 
 
 def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operation_context, chat_id):
-    """Retain a parent read origin under its actual foreground operation fence."""
     if type(origin) is not _GuidanceOrigin or type(operation_context) is not dict:
         _refuse()
     operation = _OperationBinding.capture(expected_orchestrator, origin,
@@ -482,11 +448,6 @@ def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operat
 
 
 def bind_http_guidance(origin, *, expected_orchestrator, websocket, chat_id):
-    """Carry the original HTTP request's guidance read into its owned task.
-
-    This supplies no durable execution authority to the legacy REST chat path.
-    A socket selected only for delivery cannot replace the HTTP principal.
-    """
     if type(origin) is not _GuidanceOrigin or not isinstance(chat_id, str) or not chat_id:
         _refuse()
     origin.current(expected_orchestrator)
@@ -494,7 +455,6 @@ def bind_http_guidance(origin, *, expected_orchestrator, websocket, chat_id):
 
 
 def inherit_turn_guidance(parent, *, expected_orchestrator, websocket, chat_id, budget):
-    """Narrow a parent turn's read origin into one actual internal child turn."""
     from orchestrator.chain_authority import ChainBudget
     if (type(parent) is not TurnGuidanceBinding or type(budget) is not ChainBudget
             or budget.parent is None or not isinstance(chat_id, str) or not chat_id):
@@ -509,32 +469,17 @@ def inherit_turn_guidance(parent, *, expected_orchestrator, websocket, chat_id, 
         limits.append((current, current.max_hops, current.max_depth, current.wall_clock_s,
                        current.started_at, current.parent))
         current = current.parent
-    # The caller already charged the child hop. Reading its instructions is not
-    # another hop: spent==maximum remains valid until the admitted wall bound.
     return TurnGuidanceBinding(parent.origin, websocket, chat_id, parent=parent,
                                budget=budget, budget_limits=tuple(limits))
 
 
-# ---------------------------------------------------------------------------
-# 088 T011/T037 — the composer's selection (agent revision + skills + notes)
-#
-# This binds the SAME closed, existence-checked identifiers HTTP Work already
-# requires (``orchestrator.work_submit._selected_ids``) into an ordinary chat
-# turn. It is a read-only, current-heads check at capture time — never a grant,
-# never a value read (note plaintext is never opened here), and never a
-# durable commitment: nothing downstream consumes ``TurnGuidanceBinding.
-# selection`` yet, so an absent selection changes nothing (FR-023).
-# ---------------------------------------------------------------------------
-
 @dataclass(frozen=True, slots=True, repr=False)
 class TurnSelectionBinding:
-    """Bounded, existence-checked identifiers only; never an opened note value."""
     agent: object = None
     skills: tuple = ()
     notes: tuple = ()
 
     def recheck(self, tx, repositories, owner_id):
-        """Re-assert every reference is still exactly the current head."""
         _selection_current(tx, repositories, owner_id, self.agent, self.skills, self.notes)
 
 
@@ -567,12 +512,6 @@ def _selection_current(tx, repositories, owner_id, agent, skills, notes):
 
 
 def _selection_identifiers(value):
-    """Validate the closed version-1 shape and return hashable identifiers.
-
-    Reuses the exact same validator HTTP Work applies to its own
-    ``selection`` body, so a chat turn and a Work admission accept and refuse
-    identically shaped input.
-    """
     from orchestrator.work_submit import _selected_ids
     try:
         _selected_ids(value)
@@ -585,12 +524,6 @@ def _selection_identifiers(value):
 
 
 async def bind_turn_selection(binding, *, expected_orchestrator, selection):
-    """Existence-check every selected head now, exactly as HTTP Work does at capture.
-
-    A stale, forgotten or malformed selection refuses (``AssignmentError``);
-    it is the caller's choice whether to drop it or fail the whole turn — this
-    never mutates or re-derives ``selection`` itself.
-    """
     from dataclasses import replace
     if type(binding) is not TurnGuidanceBinding:
         _refuse()
@@ -610,7 +543,6 @@ async def bind_turn_selection(binding, *, expected_orchestrator, selection):
 
 @contextmanager
 def use_turn_guidance(binding, *, expected_orchestrator):
-    """Scope a server-owned handoff to its exact turn, restoring on every exit."""
     if type(binding) is not TurnGuidanceBinding:
         _refuse()
     binding.local(expected_orchestrator)
@@ -625,7 +557,6 @@ def use_turn_guidance(binding, *, expected_orchestrator):
 
 
 def current_turn_guidance(*, expected_orchestrator, websocket, chat_id):
-    """Return an explicit parent handoff; never reconstruct it from an owner."""
     value = _TURN.get()
     if value is None:
         return None
@@ -637,13 +568,6 @@ def current_turn_guidance(*, expected_orchestrator, websocket, chat_id):
 
 
 class TurnGuidanceReader:
-    """Exact read-only facade capability for one short guidance observation.
-
-    Only the fixed skill list may accept this type. Its legacy materialization
-    is deterministic migration; authored save/toggle/delete still require an
-    actual CurrentHumanCaller. The callback is server-owned synchronous code.
-    """
-
     def __init__(self, binding, *, expected_orchestrator):
         if type(binding) is not TurnGuidanceBinding:
             _refuse()
@@ -691,7 +615,7 @@ class TurnGuidanceReader:
         self._turn.local(orch)
         try:
             task = asyncio.current_task()
-        except RuntimeError:  # The bounded Plane callback runs in its owned worker.
+        except RuntimeError:
             task = None
         if task is not None and task is not self._turn.task:
             _refuse()
@@ -700,8 +624,6 @@ class TurnGuidanceReader:
         self._local(self._orch)
         origin = self._turn.origin
         sessions = origin.binding.session_repository
-        # Same owner79 fence as guidance writers, acquired before session and
-        # operation rows. A callback may only reacquire this already-held lock.
         self.repositories.preferences.skills.lock_owner(tx, owner_id=self.owner_id)
         if origin.credential is not None:
             state = sessions.get_execution_state(tx, owner_id=self.owner_id,
@@ -757,7 +679,6 @@ class TurnGuidanceReader:
 
 
 async def acquire_turn_guidance_reader(*, expected_orchestrator, websocket, chat_id):
-    """Verify the original admitted turn immediately before its fixed read."""
     binding = current_turn_guidance(expected_orchestrator=expected_orchestrator,
                                     websocket=websocket, chat_id=chat_id)
     reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)

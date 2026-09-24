@@ -1,4 +1,7 @@
-"""Direct-RTC media activation tests for Feature 065."""
+"""Tests for direct-RTC media activation (voice_coordinator.py, voice_media.py,
+voice_worker_endpoint.py): worker/context readiness gating, per-session command
+isolation, greeting/turn send ordering, and grant/room teardown.
+"""
 
 from __future__ import annotations
 
@@ -701,8 +704,6 @@ async def test_authenticated_runtime_stop_barges_in_before_capture_can_be_reenab
             [name for name, _fields in workers.calls if name == "set_capture"]
         ) == capture_commands_before
 
-        # A later authenticated enable must reach the worker. A stale
-        # coordinator playout hold would swallow it and strand capture closed.
         await media.set_capture(active, True)
         assert workers.calls[-1] == (
             "set_capture",
@@ -778,8 +779,6 @@ async def test_greeting_waits_for_listening_and_is_sent_exactly_once() -> None:
 
 @pytest.mark.asyncio
 async def test_wire_sequences_do_not_collide_between_greeting_or_turns() -> None:
-    """A turn-local claim sequence may reset without replaying on the wire."""
-
     workers = _Workers()
     media = DirectRtcVoiceMedia(
         livekit=_LiveKit(),

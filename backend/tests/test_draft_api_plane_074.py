@@ -1,3 +1,8 @@
+"""Tests for owner-scoped draft agent API operations (orchestrator/api.py) over a typed
+Plane draft store: listing, admin pending-review, stop/delete, credential scoping,
+and fail-closed on a missing draft.
+"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

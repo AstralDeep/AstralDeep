@@ -1,12 +1,8 @@
-"""Machineless users must not carry the remote-compute tool catalog (067).
-
-The 18 remote-compute verbs cost ~2,700 prompt tokens on every LLM call, yet
-17 of them dead-end at "this machine is not in your inventory" for a user with
-no registered machine. `eligible_tool_pairs` is the single visibility predicate
-for chat and the MCP projection, so the machine-ownership subtraction lives
-there: with zero owned machines only `list_machines` (the discovery verb whose
-empty-state reply points at Settings → Remote machines) stays visible.
+"""Tests for the machine-ownership tool-visibility subtraction
+(orchestrator/tool_visibility.py, mcp_projection.py): a machineless user sees only
+list_machines, ownership is probed once, and a probe failure fails open.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -24,8 +20,6 @@ DISCOVERY_VERBS = {"list_machines"}
 
 
 class _MachineRepository:
-    """Typed Plane remote-repository stub for the ownership projection."""
-
     def __init__(self, owns_machine: bool) -> None:
         self.owns_machine = owns_machine
         self.list_calls: list[tuple[str, int]] = []
@@ -36,8 +30,6 @@ class _MachineRepository:
 
 
 class _PlaneRuntime:
-    """Minimal application-scoped transaction seam for the typed repository."""
-
     def __init__(self, remote: _MachineRepository) -> None:
         self.repositories = SimpleNamespace(remote=remote)
 
@@ -110,7 +102,6 @@ def test_machineless_user_sees_only_the_discovery_verb():
         if reason == "no_registered_machine"
     }
     assert hidden == set(TOOL_REGISTRY) - DISCOVERY_VERBS
-    # The subtraction never leaks onto other agents.
     assert ("dice-roller-1", "roll_dice") in [
         (agent_id, skill.id) for agent_id, skill in pairs
     ]
@@ -148,8 +139,6 @@ def test_machine_owner_pays_one_existence_probe_not_eighteen():
 
 
 def test_probe_failure_fails_open_to_the_full_catalog():
-    # The subtraction is a prompt-cost optimization; the dispatch permission
-    # gate still runs. A transient DB error must not blank the tool list.
     orch = _orchestrator(owns_machine=True)
 
     def _boom(_transaction, **_kwargs):

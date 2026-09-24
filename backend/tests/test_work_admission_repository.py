@@ -1,8 +1,6 @@
-"""PostgreSQL repository tests for feature-060 work admission.
-
-The integration cases use a throwaway database.  They never mutate the
-configured development database, and they exercise a second coordinator to
-prove that accepted work and reconciliation truth are process-independent.
+"""PostgreSQL repository tests for orchestrator/work_admission.py using a throwaway
+database: truth surviving coordinator reconstruction, cross-coordinator FIFO/slot
+limits, exact handoff, and lease-recovery/retention boundaries.
 """
 
 from __future__ import annotations
@@ -392,7 +390,7 @@ def test_in_memory_repository_corruption_and_unknown_inputs_fail_closed() -> Non
     with pytest.raises(StaleExecutionFenceError):
         coordinator.reselect_execution(wrong_fence)
 
-    for slots in repository._slots.values():  # noqa: SLF001 - corruption test
+    for slots in repository._slots.values():  # noqa: SLF001
         slots[:] = [
             dataclasses.replace(
                 slot,
@@ -407,7 +405,7 @@ def test_in_memory_repository_corruption_and_unknown_inputs_fail_closed() -> Non
     with pytest.raises(StaleExecutionFenceError, match="capacity lease is missing"):
         coordinator.renew_execution_lease(claim.fence)
     assert (
-        repository._claim_free_slots_locked(  # noqa: SLF001 - invariant test
+        repository._claim_free_slots_locked(  # noqa: SLF001
             AdmissionClass.INTERACTIVE,
             uuid.uuid4(),
             lease_token=None,
@@ -416,7 +414,7 @@ def test_in_memory_repository_corruption_and_unknown_inputs_fail_closed() -> Non
         is True
     )
     assert (
-        repository._claim_free_slots_locked(  # noqa: SLF001 - invariant test
+        repository._claim_free_slots_locked(  # noqa: SLF001
             AdmissionClass.INTERACTIVE,
             uuid.uuid4(),
             lease_token=None,

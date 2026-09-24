@@ -1,17 +1,6 @@
-"""Live-system WS smoke test (integration).
-
-Connects to the orchestrator's real UI WebSocket endpoint (``/ws``) the same
-way the web client does — register_ui with the dev-mode mock token — and
-asserts the registration handshake completes (``system_config`` received).
-
-Historic note: this file used to target ``ws://localhost:8000`` with no path
-and swallowed every exception, so it "passed" while logging
-``server rejected WebSocket connection: HTTP 403`` (Starlette's standard
-rejection for a WS upgrade on an unmatched route) to verification_log.txt.
-It now fails loudly when the system is unreachable or refuses registration.
-
-Run directly (``python tests/test_agent_flow.py``) for the long LLM-driven
-multi-agent flow with console narration.
+"""Live-system WS smoke test: registers against the orchestrator's real /ws endpoint
+with the dev-mode mock token and asserts the handshake completes; also a manual
+long-form multi-agent flow runner.
 """
 
 import asyncio
@@ -31,7 +20,6 @@ QUERY = (
     "stats (cpu, memory, storage, all of it)"
 )
 URI = f"ws://localhost:{os.getenv('ORCHESTRATOR_PORT', '8001')}/ws"
-# Mock-auth literal accepted when USE_MOCK_AUTH=true + ASTRAL_ENV=development.
 DEV_TOKEN = os.getenv("TEST_UI_TOKEN", "dev-token")
 
 REGISTER_MSG = {
@@ -43,12 +31,10 @@ REGISTER_MSG = {
 
 
 class _RealAuthActive(Exception):
-    """The live orchestrator runs real Keycloak auth — dev-token registration
-    is unavailable, which is a posture, not a defect."""
+    pass
 
 
 async def _register(websocket) -> None:
-    """Send register_ui and wait for system_config (raises on auth refusal)."""
     await websocket.send(json.dumps(REGISTER_MSG))
     while True:
         resp = json.loads(await asyncio.wait_for(websocket.recv(), timeout=30))
@@ -67,10 +53,6 @@ async def _register(websocket) -> None:
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ws_register_handshake():
-    """The UI WS endpoint accepts a dev-token registration end to end.
-
-    Skips (not fails) when the live orchestrator runs real Keycloak auth —
-    refusing the mock token is then the CORRECT behavior (028 FR-001)."""
     try:
         async with websockets.connect(URI) as websocket:
             await _register(websocket)
@@ -81,7 +63,6 @@ async def test_ws_register_handshake():
 
 
 async def run_full_flow() -> None:
-    """Manual long-form flow: drive a real multi-agent LLM query."""
     print(f"Connecting to {URI}...")
     async with websockets.connect(URI) as websocket:
         await _register(websocket)

@@ -1,25 +1,8 @@
+"""Exposes the orchestrator as an A2A agent: an anonymous agent-card endpoint
+advertising only the public owner-safe catalog, and a bearer-authenticated JSON-RPC
+endpoint routing into the orchestrator's tool dispatch. Gated by FF_A2A_SERVER.
 """
-Orchestrator A2A Executor — Exposes the orchestrator as an A2A-compliant agent.
 
-External A2A clients can discover the orchestrator at /a2a/.well-known/agent-card.json
-and send messages via JSON-RPC at /a2a. The orchestrator routes messages through its
-LLM-powered tool selection and returns aggregated results.
-
-Posture (FF_A2A_SERVER, default off):
-
-* ``GET /a2a/.well-known/agent-card.json`` is anonymous, as the A2A discovery
-  contract requires, and therefore advertises ONLY the public, owner-safe
-  built-in catalog as generic per-agent skills — never the per-tool inventory
-  of user drafts, BYO agents or external peers.
-* ``POST /a2a`` refuses every request without a valid first-party bearer BEFORE
-  the SDK dispatches anything, so ``tasks/list``/``tasks/get``/``tasks/cancel``
-  cannot run under the SDK's default unauthenticated user. The authenticated
-  subject becomes the task-store owner, so callers only ever see their own tasks.
-* Tool discovery and ``tools/call`` resolution are projected through the SAME
-  per-user visibility predicate chat and the MCP endpoint use
-  (``mcp_projection.project_tools`` → ``tool_visibility.eligible_tool_pairs``),
-  and dispatch runs through ``execute_authorized_tool`` (full gate stack).
-"""
 import asyncio
 import os
 import uuid
@@ -59,10 +42,7 @@ from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 logger = logging.getLogger("OrchestratorA2AExecutor")
 
-#: ``request.scope`` key under which the HTTP auth gate hands the verified
-#: principal to the SDK context builder.
 PRINCIPAL_SCOPE_KEY = "astral_a2a_principal"
-#: ``ServerCallContext.state`` keys the context builder populates.
 STATE_CLAIMS = "astral_claims"
 STATE_SUBJECT_TOKEN = "astral_subject_token"
 
@@ -71,8 +51,6 @@ BEARER_REQUIRED = "A valid bearer token is required"
 
 
 class A2APrincipal(User):
-    """The authenticated caller of the orchestrator's inbound A2A server."""
-
     def __init__(self, claims: Dict[str, Any], subject_token: str):
         self.claims = claims
         self.subject_token = subject_token
@@ -87,20 +65,11 @@ class A2APrincipal(User):
 
     @property
     def user_name(self) -> str:
-        # The task-store owner key. Namespaced so it can never collide with the
-        # SDK's unauthenticated '' owner or a raw display name.
+        # Namespaced so it can't collide with the SDK's shared '' owner
         return f"sub:{self.sub}"
 
 
 def a2a_task_owner(context: ServerCallContext) -> str:
-    """Task-store owner resolver: the verified subject, or an EMPTY scope.
-
-    The SDK default keys every unauthenticated request under ``''`` — one
-    shared bucket. An unauthenticated context here resolves to a fresh,
-    unguessable per-call scope instead, so it can neither list, read nor
-    cancel anything (the HTTP gate already refuses such requests; this is the
-    structural backstop for the store itself).
-    """
     user = getattr(context, "user", None)
     if isinstance(user, A2APrincipal):
         return user.user_name
@@ -108,15 +77,6 @@ def a2a_task_owner(context: ServerCallContext) -> str:
 
 
 class AuthenticatedA2AContextBuilder(DefaultServerCallContextBuilder):
-    """Populate the SDK call context from the HTTP gate's verified principal.
-
-    The SDK's ``build`` is synchronous, so the (async) bearer validation runs in
-    the route wrapper installed by :func:`setup_orchestrator_a2a`; this builder
-    only carries its result across. Without a principal the user is the SDK's
-    ``UnauthenticatedUser`` — never a StarletteUser from some unrelated
-    middleware — and no claims reach the executor.
-    """
-
     def build(self, request) -> ServerCallContext:
         context = super().build(request)
         principal = request.scope.get(PRINCIPAL_SCOPE_KEY)
@@ -132,7 +92,6 @@ class AuthenticatedA2AContextBuilder(DefaultServerCallContextBuilder):
 
 
 def bearer_from_headers(headers) -> str:
-    """The bearer credential from a header mapping, or ''."""
     authorization = ""
     if headers is not None:
         try:
@@ -150,12 +109,6 @@ def bearer_from_headers(headers) -> str:
 
 
 def _a2a_framework_resolver(orchestrator):
-    """A sync ``token -> FrameworkCaller | None`` closure, or ``None`` (088 T049).
-
-    Mirrors ``mcp_server_endpoint._framework_bearer_resolver`` exactly: ``None``
-    when the flag is off or the service isn't wired, restoring the
-    first-party-JWT-only A2A path byte-for-byte.
-    """
     try:
         from shared.feature_flags import flags
 
@@ -172,11 +125,6 @@ def _a2a_framework_resolver(orchestrator):
 async def authenticate_a2a_request(
     validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
 ) -> Optional[A2APrincipal]:
-    """Validate the request bearer — a first-party JWT, or (088 T049) a
-    framework credential when ``resolve_framework_bearer`` is supplied and the
-    bearer has that shape. Omitted (every caller before 088 T049), behavior is
-    byte-identical to the JWT-only path.
-    """
     token = bearer_from_headers(headers)
     if not token:
         return None
@@ -199,13 +147,6 @@ async def authenticate_a2a_request(
 
 
 class OrchestratorA2AExecutor(AgentExecutor):
-    """Wraps the orchestrator's routing logic as an A2A AgentExecutor.
-
-    External A2A clients can send natural language messages which get routed
-    through the orchestrator's LLM tool selection, or direct tool calls
-    via a data Part.
-    """
-
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
         self.security_validator = A2ASecurityValidator(require_first_party_user=True)
@@ -224,8 +165,7 @@ class OrchestratorA2AExecutor(AgentExecutor):
                 )
                 return
 
-            # Every path — discovery included — needs a verified principal:
-            # the tool inventory is per-user.
+            # Every path, including discovery, needs a verified principal
             identity = await self._validated_invocation_identity(context)
             if identity is None:
                 await updater.failed(
@@ -268,8 +208,6 @@ class OrchestratorA2AExecutor(AgentExecutor):
     async def _validated_invocation_identity(
         self, context
     ) -> Optional[Tuple[Dict[str, Any], str]]:
-        """The verified caller: the gate's principal, else the actual HTTP bearer."""
-
         call_context = getattr(context, "call_context", None)
         state = getattr(call_context, "state", {}) or {}
         if not isinstance(state, dict):
@@ -301,7 +239,6 @@ class OrchestratorA2AExecutor(AgentExecutor):
         claims,
         subject_token,
     ):
-        """Execute a direct tool call through Astral gates and final dispatch."""
         mcp_request.validate_protocol_metadata(allow_legacy=True)
         tool_name = mcp_request.params.get("name", "")
         arguments = mcp_request.params.get("arguments", {})
@@ -316,16 +253,12 @@ class OrchestratorA2AExecutor(AgentExecutor):
             claims,
         )
         if projected is None:
-            # One non-disclosing answer for unknown, hidden and unauthorized.
             await updater.failed(
                 message=self._msg(TOOL_UNAVAILABLE, context.task_id)
             )
             return
 
         if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
-            # 088 T049: a framework Work tool never reaches the ordinary agent
-            # dispatch stack (delegation/taint/MoA) — same admission model as
-            # the MCP endpoint's identical branch, on the SAME facade.
             from orchestrator.mcp_server_endpoint import _dispatch_work_tool
 
             result = await _dispatch_work_tool(
@@ -373,14 +306,12 @@ class OrchestratorA2AExecutor(AgentExecutor):
             await updater.complete(message=msg)
 
     async def _execute_natural_language(self, text, updater, context, claims):
-        """Route a natural language message through the LLM for tool selection."""
         await self._list_user_tools(
             updater, context, claims,
             intro_text=f"Received: {text}\n\nAvailable tools:",
         )
 
     async def _list_user_tools(self, updater, context, claims, intro_text="Available tools:"):
-        """Return the CALLER's tools — the same set chat and /mcp would offer."""
         from orchestrator.mcp_projection import project_tools
 
         projected = await asyncio.to_thread(
@@ -415,19 +346,14 @@ class OrchestratorA2AExecutor(AgentExecutor):
         )
 
 
-# ------------------------------------------------------------------ card
-
-
 def _is_safe_marked(orchestrator, agent_id: str) -> bool:
-    """Feature 040 owner-safe marker, read through the permission layer; fail closed."""
     try:
         return bool(orchestrator.tool_permissions._is_safe_agent(agent_id))
-    except Exception:  # noqa: BLE001 — a lookup failure never widens the card
+    except Exception:  # noqa: BLE001
         return False
 
 
 def public_catalog_agent_ids(orchestrator) -> List[str]:
-    """Agents the ANONYMOUS card may name: public first-party ∩ safe ∩ connected."""
     connected = set(getattr(orchestrator, "agents", {}) or {}) | set(
         getattr(orchestrator, "local_agents", {}) or {}
     )
@@ -451,14 +377,6 @@ def _public_url() -> str:
 
 
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
-    """Build the PUBLIC A2A AgentCard for the orchestrator.
-
-    The card is served without authentication, so it names only the public,
-    owner-safe built-in agents as generic skills (one per agent, no per-tool
-    inventory). The caller's actual tool set is discovered after
-    authentication via ``message/send`` with a ``{"method": "tools/list"}``
-    data part and is projected per user.
-    """
     authority = os.getenv("KEYCLOAK_AUTHORITY", "")
 
     skills: List[A2AAgentSkill] = []
@@ -511,9 +429,6 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     )
 
 
-# ----------------------------------------------------------------- mount
-
-
 def _unauthenticated_response():
     from starlette.responses import JSONResponse
 
@@ -529,7 +444,6 @@ def _unauthenticated_response():
 
 
 def setup_orchestrator_a2a(app, orchestrator):
-    """Mount the A2A JSON-RPC endpoint on the orchestrator's FastAPI app."""
     from starlette.routing import Route
     from a2a.server.request_handlers import DefaultRequestHandler
     from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
@@ -546,14 +460,11 @@ def setup_orchestrator_a2a(app, orchestrator):
     validator = executor.security_validator
 
     async def refresh_card(_card):
-        """Rebuild the orchestrator's public A2A card from the current catalog."""
         return build_orchestrator_a2a_card(orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):
-            # Authenticate BEFORE the SDK parses a method: tasks/list,
-            # tasks/get and tasks/cancel are served by the request handler
-            # without ever reaching the executor.
+            # Must run before the SDK parses a method, or tasks/* bypass this
             principal = await authenticate_a2a_request(
                 validator, request.headers,
                 resolve_framework_bearer=_a2a_framework_resolver(orchestrator),

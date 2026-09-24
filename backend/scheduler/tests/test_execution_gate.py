@@ -1,4 +1,7 @@
-"""030 — scheduler execution is fail-closed by default (US1 / T008, FR-005)."""
+"""Tests that scheduler execution defaults off via FF_SCHEDULER_EXECUTION while
+memory_chat defaults on, guarding shared/feature_flags.py's fail-closed default.
+"""
+
 import importlib
 import sys
 from pathlib import Path
@@ -20,7 +23,6 @@ def test_scheduler_execution_opt_in(monkeypatch):
     import shared.feature_flags as ff
     importlib.reload(ff)
     assert ff.flags.is_enabled("scheduler_execution") is True
-    # restore default for other tests
     monkeypatch.delenv("FF_SCHEDULER_EXECUTION", raising=False)
     importlib.reload(ff)
 

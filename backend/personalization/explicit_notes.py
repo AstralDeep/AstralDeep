@@ -1,10 +1,8 @@
-"""Pure encrypted current notes, separate from retained automatic memory.
-
-No key is resolved here. The host supplies its existing credential-family Fernet
-instance; storage, caller authority and head CAS remain host/Plane obligations.
-Fernet authenticates the complete closed metadata envelope inside its ciphertext.
-These objects never represent historical values or dispatch authorization.
+"""Encrypts and authenticates a user's single current explicit note per category via an
+injected Fernet cipher; the host supplies the key, storage, and CAS. Used by
+explicit_note_service.py, explicit_note_expansion.py, and selected_guidance.py.
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -23,8 +21,6 @@ _FORMAT = "astral.explicit-note/v1"
 
 
 class ExplicitNoteUnavailable(ValueError):
-    """Closed refusal without a note value, identity, ciphertext or key."""
-
     def __init__(self):
         super().__init__("explicit_note_unavailable")
 
@@ -54,7 +50,6 @@ def _note_id(value):
 
 
 def normalize_note_value(value: str) -> str:
-    """Normalize NFC and line endings once; refuse oversized input, never truncate."""
     try:
         if type(value) is not str or len(value.encode("utf-8")) > MAX_NOTE_VALUE_BYTES:
             raise ExplicitNoteUnavailable()
@@ -70,8 +65,6 @@ def normalize_note_value(value: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ExplicitNoteMetadata:
-    """Live metadata, reserving the final revision for a mandatory erasure tombstone."""
-
     owner_id: str
     note_id: str
     revision: int
@@ -101,8 +94,6 @@ class ExplicitNoteMetadata:
 
 @dataclass(frozen=True, slots=True)
 class EncryptedExplicitNote:
-    """Current opaque row; there is intentionally no previous-value field."""
-
     metadata: ExplicitNoteMetadata
     ciphertext: bytes = field(repr=False)
 
@@ -114,16 +105,12 @@ class EncryptedExplicitNote:
 
 @dataclass(frozen=True, slots=True)
 class OpenedExplicitNote:
-    """Ephemeral plaintext for the requesting owner, never an audit/history DTO."""
-
     metadata: ExplicitNoteMetadata
     value: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class ExplicitNoteTombstone:
-    """Minimum retirement identity; no ciphertext or discarded current metadata."""
-
     owner_id: str
     note_id: str
     revision: int
@@ -166,8 +153,6 @@ def _current(metadata, owner_id, now_ms, require_enabled):
 
 @dataclass(frozen=True, slots=True)
 class ExplicitNoteCipher:
-    """Injected existing at-rest crypto; no environment, file or network access."""
-
     _fernet: Fernet = field(repr=False)
 
     def __post_init__(self):
@@ -175,14 +160,12 @@ class ExplicitNoteCipher:
             raise ExplicitNoteUnavailable()
 
     def seal(self, metadata: ExplicitNoteMetadata, value: str) -> EncryptedExplicitNote:
-        """Encrypt a normalized current value with all exact metadata authenticated."""
         _metadata(metadata)
         value = normalize_note_value(value)
         return EncryptedExplicitNote(metadata, self._fernet.encrypt(_payload(metadata, value)))
 
     def open(self, note: EncryptedExplicitNote, *, owner_id: str, now_ms: int,
              require_enabled: bool = True) -> OpenedExplicitNote:
-        """Authenticate closed canonical plaintext before permitting any use."""
         if type(note) is not EncryptedExplicitNote:
             raise ExplicitNoteUnavailable()
         note.__post_init__()
@@ -201,7 +184,6 @@ class ExplicitNoteCipher:
 
     def revise(self, note: EncryptedExplicitNote, metadata: ExplicitNoteMetadata, *,
                owner_id: str, now_ms: int, value: str | None = None) -> EncryptedExplicitNote:
-        """Prepare one successor, including toggles, without persisting the old value."""
         opened = self.open(note, owner_id=owner_id, now_ms=now_ms, require_enabled=False)
         _metadata(metadata)
         previous = opened.metadata
@@ -213,14 +195,9 @@ class ExplicitNoteCipher:
         return self.seal(metadata, opened.value if value is None else value)
 
 
+# Erasure happens in the storage transaction, not here
 def retire_note(metadata: ExplicitNoteMetadata, *, owner_id: str, now_ms: int,
                 reason: str) -> ExplicitNoteTombstone:
-    """Prepare minimal erasure metadata, even if current ciphertext is unreadable.
-
-    The future authorized storage transaction must erase the ciphertext and old
-    metadata, increment the head and invalidate references atomically. This pure
-    function performs no deletion and retains no history.
-    """
     _metadata(metadata)
     _owner(owner_id)
     _integer(now_ms)

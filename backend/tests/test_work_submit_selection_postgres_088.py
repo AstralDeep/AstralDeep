@@ -1,4 +1,7 @@
-"""Selected Work acceptance with real Plane/IAM/crypto and no provider calls."""
+"""Tests for selected-guidance acceptance (backend/orchestrator/work_submit.py,
+backend/personalization/selected_guidance.py): exact-head binding, ciphertext
+authentication, and refusal of stale or adopted selections.
+"""
 
 import json
 from types import SimpleNamespace
@@ -270,7 +273,6 @@ async def test_current_owner_cannot_adopt_absent_or_other_revision(selected_stat
 async def test_current_note_ciphertext_must_authenticate_before_work_creation(selected_state):
     state = selected_state
     with state.api.runtime.transaction() as tx:
-        # Test-owned storage corruption, not a product mutation path.
         tx.execute("UPDATE explicit_note_current SET ciphertext=%s WHERE note_id=%s",
                    ("synthetic-invalid-ciphertext", state.note.note_id))
     with pytest.raises(AssignmentError) as error:
@@ -356,8 +358,6 @@ async def test_same_revision_cipher_replacement_cannot_match_captured_binding(se
                 tx, owner_id=state.api.fixture[1], note_id=state.note.note_id)
             encrypted = state.notes.service._encrypted(row)
             new = state.notes.service.cipher.seal(encrypted.metadata, "A different private owner preference.")
-            # Simulated corruption bypassing the revisioned public API. The
-            # authenticated envelope must still reject an unchanged row ID/rev.
             tx.execute("UPDATE explicit_note_current SET ciphertext=%s WHERE note_id=%s",
                        (new.ciphertext, state.note.note_id))
         return captured

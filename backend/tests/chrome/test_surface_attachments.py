@@ -1,7 +1,5 @@
-"""Feature 031 US3 — attachments library chrome surface (T043).
-
-The surface lists only the caller's live attachments with attach (existing,
-no re-upload) + delete controls. Covers FR-020/FR-021.
+"""Tests for orchestrator/projection_surfaces/attachments.py: lists only the caller's
+live attachments with attach/delete controls, and reports durable delete acceptance.
 """
 
 from __future__ import annotations
@@ -62,11 +60,9 @@ async def test_render_lists_only_callers_attachments():
 
     html = await surface.render(_orch(repo), "u1", [], {})
     assert "report.pdf" in html and "data.parquet" in html
-    assert "secret.pdf" not in html  # another user's file never shown
-    # Attach buttons carry the existing id (client stages it — no re-upload).
+    assert "secret.pdf" not in html
     assert 'class="astral-attach-existing' in html
     assert 'data-attachment-id="a1"' in html
-    # Delete routes through the server handler.
     assert "chrome_attachment_delete" in html
 
 

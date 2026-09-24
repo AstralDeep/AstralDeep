@@ -1,17 +1,9 @@
-"""The composer's Advanced picker: the per-chat selection view.
-
-Feature 088 shipped the picker's view builder, its client handler and its
-consumption at task submission, but nothing on the server ever answered the
-request the composer sends. `chrome_open {surface: guidance, params: {view:
-"selection"}}` fell through the private-notes validator, whose allowed params
-are `mode`/`search`/`after_id`, and came back `explicit_note_request_invalid` —
-so the Advanced button had never worked at all.
-
-These cover the server half that was missing: the request shape the composer
-sends is accepted, a selection is narrowed to what still exists, and the view
-builds from the state this module produces. The delivery path itself needs the
-human-request authority and is exercised by the socket tests.
+"""Tests for the composer's Advanced picker in
+orchestrator/projection_surfaces/guidance.py: the selection request shape is
+accepted, a selection narrows to what still exists at the current revision, and
+work_submit.py consumes the stamped payload.
 """
+
 from copy import deepcopy
 from uuid import uuid4
 
@@ -38,25 +30,19 @@ def offered():
     )
 
 
-# --------------------------------------------------------------------------
-# The request the composer actually sends
-# --------------------------------------------------------------------------
-
 def test_the_advanced_button_request_is_accepted():
     from orchestrator.projection_surfaces.guidance import _request
     payload = {"surface": "guidance", "params": {"view": "selection"}}
     expected = deepcopy(payload)
     frozen = _request("chrome_open", payload)
-    payload.clear()  # the request must be a copy, not a view of the message
+    payload.clear()
     assert frozen == expected
 
 
 @pytest.mark.parametrize("params", [
-    {"view": "selection", "mode": "list"},          # not both at once
+    {"view": "selection", "mode": "list"},
     {"view": "selection", "search": "anything"},
-    {"view": "skills"},                             # only the one view exists here
-    # 088's open contract: this request carries the view and nothing else, not
-    # even the binding the composer is holding.
+    {"view": "skills"},
     {"view": "selection", "selection": None},
     {"view": "selection", "selection": selection()},
 ])
@@ -97,10 +83,6 @@ def test_setting_a_selection_is_its_own_action():
     assert not _is_selection("chrome_open", {"params": {"mode": "list"}})
 
 
-# --------------------------------------------------------------------------
-# What a selection is narrowed to
-# --------------------------------------------------------------------------
-
 def test_a_selection_keeps_only_what_is_still_offered_at_that_revision():
     from orchestrator.projection_surfaces.guidance import _narrow_selection
     agents, skills, notes = offered()
@@ -116,11 +98,8 @@ def test_a_selection_keeps_only_what_is_still_offered_at_that_revision():
 
 
 @pytest.mark.parametrize("stale", [
-    # edited since it was selected
     selection(skills=[{"skill_id": SKILL_ID, "revision": 1}]),
-    # deleted since it was selected
     selection(notes=[{"note_id": str(uuid4()), "revision": 1}]),
-    # a revision of the agent that is no longer the active one
     selection(agent={"agent_id": AGENT_ID, "revision_id": str(uuid4())}),
 ])
 def test_anything_changed_since_is_simply_no_longer_selected(stale):
@@ -137,10 +116,6 @@ def test_no_incoming_selection_means_nothing_selected():
         assert _narrow_selection(value, agents, skills, notes) == {
             "agent": None, "skills": [], "notes": []}
 
-
-# --------------------------------------------------------------------------
-# What the person ends up looking at
-# --------------------------------------------------------------------------
 
 def test_the_view_builds_from_the_state_this_module_produces():
     from astralprojection.chrome import render_html
@@ -172,6 +147,5 @@ def test_the_payload_stamped_for_the_composer_is_the_shape_work_accepts():
         "skills": [{"skill_id": SKILL_ID, "revision": 2}],
         "notes": [],
     }
-    # work_submit is the consumer; it must accept what the picker stamps.
     from orchestrator.work_submit import _selected_ids
     _selected_ids(payload)

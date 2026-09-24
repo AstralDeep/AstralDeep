@@ -1,3 +1,8 @@
+"""Tests for scripts/merge_xccov_line_coverage.py and native_xccov_domain.py:
+deterministic unit+UI coverage merging under filesystem/producer-label constraints,
+fail-closed rejection of malformed input, and iOS/macOS lane rules.
+"""
+
 from __future__ import annotations
 
 import json
@@ -751,7 +756,6 @@ def test_protected_merger_copy_matches_initialized_projection_exact_bytes():
 
 
 def test_isolated_import_uses_only_the_policy_sibling_exporter(tmp_path, monkeypatch):
-    """Exercise the production -I fallback while measuring its actual source."""
     import builtins
     import runpy
 

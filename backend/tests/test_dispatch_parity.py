@@ -1,12 +1,8 @@
-"""T010 (056-delegated-agent-chaining): dispatch-path gate parity (FR-017).
-
-For each gate, the SAME violating call is driven down the single path
-(``execute_single_tool``) and the parallel batch (``execute_parallel_tools``)
-and must refuse with an identical error, with equivalent audit evidence on
-allowed dispatches. The chained-hop leg re-enters ``execute_single_tool``
-via the same shared authorizer, so a hop leg (added with the US1 seam in
-``test_chain_hop.py``) inherits this parity for free — SC-006.
+"""Tests for dispatch-gate parity between execute_single_tool and execute_parallel_tools
+(orchestrator/policy.py, taint.py, scheduling_chat.py): identical refusals and
+equivalent audit rows across both paths.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,7 +58,6 @@ VIOLATIONS = [
 
 
 def _arm(orch, violation, monkeypatch):
-    """Configure one gate to refuse, mirroring quickstart §US3's matrix."""
     if violation == "security_flag":
         orch.security_flags["a1"] = {"t1": {"blocked": True, "reason": "threat"}}
     elif violation == "permission":
@@ -94,7 +89,6 @@ def _arm(orch, violation, monkeypatch):
 
 
 def _tool_for(violation):
-    # Supervisor triggers on destructive verbs; HITL on egress verbs.
     return {"supervisor": "delete_records", "hitl": "send_email"}.get(violation, "t1")
 
 
@@ -123,8 +117,6 @@ async def test_no_agent_refusal_matches(orch):
 
 @pytest.mark.asyncio
 async def test_parallel_now_mints_delegation_token(orch, monkeypatch):
-    """The parallel path previously dispatched UNSCOPED; it must now carry
-    the same delegation token a single call would (quickstart §US3 step 2)."""
     seen_args = {}
 
     async def _capture(ws, agent_id, tool_name, args, **_dispatch_context):
@@ -140,8 +132,6 @@ async def test_parallel_now_mints_delegation_token(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_audit_rows_equivalent_on_both_paths(orch, monkeypatch):
-    """An allowed dispatch emits the same paired agent_tool_call rows on
-    either path (equivalent audit evidence, SC-006)."""
     rec = MagicMock()
     rec.record = AsyncMock()
     monkeypatch.setattr(audit_hooks, "get_recorder", lambda: rec)
@@ -165,13 +155,11 @@ async def test_audit_rows_equivalent_on_both_paths(orch, monkeypatch):
                 if r.event_class == "agent_tool_call"]
 
     assert _shape(single_rows) == _shape(parallel_rows)
-    assert _shape(single_rows)  # both emitted the paired rows
+    assert _shape(single_rows)
 
 
 @pytest.mark.asyncio
 async def test_meta_tool_parity_in_parallel_batch(orch, monkeypatch):
-    """__scheduler__/__memory__/__desktop_codegen__ now dispatch from a
-    parallel batch exactly like __orchestrator__ (T008/FR-018)."""
     from orchestrator import desktop_codegen, memory_chat, scheduling_chat
     for mod in (scheduling_chat, memory_chat, desktop_codegen):
         monkeypatch.setattr(
@@ -189,8 +177,5 @@ async def test_meta_tool_parity_in_parallel_batch(orch, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_agent_hop_cannot_reach_meta_tools(orch):
-    """The meta-tool exemption is structurally closed to real agent ids: a
-    call resolved to a NON-reserved agent id named like a meta-tool falls
-    through the normal gates (here: no such registered agent)."""
     msg = await _single(orch, tool="create_capability", agent="evil-agent-1")
     assert "No agent available" in msg

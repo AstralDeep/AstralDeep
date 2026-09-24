@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""Collect, normalize, and parse local feature-060 release evidence.
-
-This is the deterministic local pre-push half of T107.  The command
-inventories the evidence directory, canonicalizes and SHA-256-digests every
-recognized document, assembles one canonical ``release_evidence_set`` when the
-directory holds only platform reports, and delegates schema plus same-candidate
-policy validation to the sibling ``validate_release_evidence.py`` module so the
-logic stays single-sourced.  The result is ALWAYS diagnostic: the emitted JSON
-states ``protected_release_authorization: false``, there is no decision-output
-mode, and only the protected-decision GitHub job can emit a trusted release
-decision.  Output is deterministic for identical inputs and ``--now``:
-assembled evidence-set identity uses content-derived UUIDv5, never random or
-time-dependent values beyond the ``--now`` default of the current UTC time.
+"""Collects and canonicalizes local release evidence into one deterministic,
+content-hashed release_evidence_set that is always marked non-authorizing, deferring
+schema and policy validation to validate_release_evidence.py.
 """
 
 from __future__ import annotations
@@ -38,8 +28,6 @@ EVIDENCE_DOCUMENT_TYPES = {
     "windows_draft_verification_provenance",
 }
 def _load_validator() -> Any:
-    """Import the sibling validator so schema/policy logic stays single-sourced."""
-
     path = Path(__file__).resolve().parent / "validate_release_evidence.py"
     spec = importlib.util.spec_from_file_location(
         "astral_release_evidence_validator", path
@@ -56,8 +44,6 @@ VALIDATOR = _load_validator()
 
 
 def _load_coverage_collector() -> Any:
-    """Import the sibling changed-code collector without duplicating its policy."""
-
     path = Path(__file__).resolve().parent / "check_changed_coverage.py"
     spec = importlib.util.spec_from_file_location(
         "astral_changed_coverage_collector", path
@@ -127,8 +113,6 @@ def _parser() -> argparse.ArgumentParser:
 def _inventory(
     root: Path, schema: Mapping[str, Any]
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Load, schema-validate, and order every recognized evidence document."""
-
     if not root.is_dir():
         raise VALIDATOR.DocumentError(f"evidence directory does not exist: {root}")
     entries: list[tuple[str, dict[str, Any]]] = []
@@ -145,20 +129,13 @@ def _inventory(
     return entries
 
 
+# This 'decision' is only a claim; policy re-verifies it
 def assemble_evidence_set(
     reports: Sequence[Mapping[str, Any]],
     requests: Sequence[Mapping[str, Any]],
     *,
     now: datetime,
 ) -> dict[str, Any]:
-    """Assemble one canonical, deterministic release_evidence_set from reports.
-
-    The evidence-set identity is a UUIDv5 over the canonical JSON digests of the
-    sorted member documents, so re-running the command over identical inputs
-    always yields byte-identical output for the same ``--now``.  The assembled
-    ``decision`` is a claim only; policy evaluation still verifies it.
-    """
-
     if not reports:
         raise VALIDATOR.PolicyError(
             "no platform evidence reports to assemble into an evidence set"
@@ -212,8 +189,6 @@ def assemble_evidence_set(
 
 
 def _coverage_reports(root: Path) -> list[dict[str, str]]:
-    """Digest raw coverage report bytes; an absent directory is an empty list."""
-
     if not root.is_dir():
         return []
     entries = [
@@ -230,8 +205,6 @@ def _coverage_reports(root: Path) -> list[dict[str, str]]:
 def _coverage_input_summary(
     args: argparse.Namespace, *, require_complete: bool = False
 ) -> dict[str, Any]:
-    """Bind every explicit producer slot before the changed-code collector runs."""
-
     seen_paths: dict[Path, str] = {}
     seen_files: dict[tuple[int, int], str] = {}
     seen_payloads: dict[tuple[int, str], str] = {}
@@ -309,8 +282,6 @@ def _coverage_input_summary(
 
 
 def _release_identity(evidence_set: Mapping[str, Any]) -> dict[str, Any]:
-    """Bind stage-owned media identity and each candidate client artifact."""
-
     reports = evidence_set.get("evidence")
     if not isinstance(reports, list):
         raise VALIDATOR.PolicyError("evidence set lacks platform reports")
@@ -354,8 +325,6 @@ def _release_identity(evidence_set: Mapping[str, Any]) -> dict[str, Any]:
 def _staging_outputs_summary(
     path_text: str | None, staging_environment_id: str
 ) -> dict[str, str] | None:
-    """Bind optional local staging outputs to the matrix staging identity."""
-
     if not path_text:
         return None
     path = Path(path_text)
@@ -388,13 +357,6 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 def _changed_coverage_summary(
     args: argparse.Namespace, coverage_inputs: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """Run the sibling collector only when explicit native reports are supplied.
-
-    The resulting decision remains local diagnostic evidence. It is never
-    accepted as protected release authorization, and protected CI independently
-    reconstructs the same inputs with its pinned collector revision.
-    """
-
     report_options = [
         (producer.flag, getattr(args, producer.key))
         for producer in COVERAGE.COVERAGE_PRODUCERS
@@ -491,8 +453,6 @@ def _failure_document(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the deterministic, non-authorizing local pre-push evidence parse."""
-
     args = _parser().parse_args(argv)
     try:
         if not VALIDATOR.GIT_SHA_RE.fullmatch(args.base_sha) or not (
@@ -503,7 +463,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.base_sha == args.candidate_sha:
             raise VALIDATOR.PolicyError("base-sha must differ from candidate-sha")
-        # Reuse the validator's strict RFC 3339 semantics for --now.
         now = (
             VALIDATOR._parse_timestamp(args.now, field="now")
             if args.now

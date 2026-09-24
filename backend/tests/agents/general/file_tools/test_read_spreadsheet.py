@@ -1,4 +1,6 @@
-"""read_spreadsheet: XLSX, CSV, TSV (XLS/ODS covered structurally)."""
+"""Tests for agents/general/file_tools/read_spreadsheet.py: XLSX sheet selection,
+CSV/TSV parsing and row truncation, and XLS/ODS structural handling.
+"""
 
 from __future__ import annotations
 

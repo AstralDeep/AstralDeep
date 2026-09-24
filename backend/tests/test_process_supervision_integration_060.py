@@ -1,4 +1,7 @@
-"""Migration guards for every backend-owned feature-060 child launch."""
+"""Tests that every feature's child-process launch goes through
+backend/shared/process_supervision.py: agent lifecycle start/stop and the start
+entrypoint inject one supervisor, and no module owns its own process tree or pipes.
+"""
 
 from __future__ import annotations
 
@@ -70,8 +73,7 @@ def test_agent_lifecycle_injects_one_supervisor_for_start_and_stop() -> None:
     assert "spawn" in _attribute_calls(start)
     assert "terminate" in _attribute_calls(stop)
 
-    # A post-exit synchronous stderr read can deadlock or race the continuous
-    # reader and must disappear with the raw Popen path.
+    # A post-exit sync stderr read can deadlock or race the reader
     source = _LIFECYCLE_PATH.read_text(encoding="utf-8")
     assert "proc.stderr.read" not in source
     assert "subprocess.PIPE" not in source

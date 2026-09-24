@@ -1,12 +1,8 @@
-"""033 Wave-0 (C-N16) — context engineering.
-
-Exercises the two pure helpers directly:
-
-* ``compose_system_prompt`` — off-path is byte-identical to legacy in-place
-  substitution; on-path moves volatile sections last behind a stable prefix.
-* ``edit_context`` — tombstones stale tool outputs while preserving the
-  assistant→tool pairing the API requires.
+"""Tests for orchestrator/context_engineering.py: compose_system_prompt's byte-identical
+off-path and stable-prefix on-path ordering, and edit_context's tombstoning of stale
+tool outputs while preserving assistant/tool pairing.
 """
+
 from __future__ import annotations
 
 import sys
@@ -24,10 +20,6 @@ CC = ce.CANVAS_CONTEXT_MARK
 TEMPLATE = f"HEADER\n\n{FC}\n\nRULES go here.\n{CC}\nFOOTER\n"
 
 
-# --------------------------------------------------------------------------
-# compose_system_prompt
-# --------------------------------------------------------------------------
-
 def test_off_path_is_byte_identical_to_in_place_substitution():
     fc = "\nFILES: a -> /b\n"
     cc = "\nCANVAS: comp1\n"
@@ -36,7 +28,6 @@ def test_off_path_is_byte_identical_to_in_place_substitution():
     )
     legacy = TEMPLATE.replace(FC, fc).replace(CC, cc)
     assert got == legacy
-    # the marks are gone, the volatile content sits where it always did
     assert FC not in got and CC not in got
     assert got.index("FILES: a -> /b") < got.index("RULES go here")
 
@@ -54,17 +45,13 @@ def test_on_path_moves_volatile_to_the_end():
     got = ce.compose_system_prompt(
         TEMPLATE, file_context=fc, canvas_context=cc, cache_stable=True
     )
-    # volatile content now trails the rules/footer
     assert got.index("RULES go here") < got.index("FILES: a -> /b")
     assert got.index("FOOTER") < got.index("FILES: a -> /b")
-    # fixed order: file context before canvas context
     assert got.index("FILES: a -> /b") < got.index("CANVAS: comp1")
     assert FC not in got and CC not in got
 
 
 def test_on_path_prefix_is_stable_across_different_volatile():
-    """The cache-stable invariant: the prefix up to the trailing volatile
-    block is identical no matter what the volatile content is."""
     a = ce.compose_system_prompt(
         TEMPLATE, file_context="\nF1\n", canvas_context="\nC1\n", cache_stable=True
     )
@@ -84,10 +71,6 @@ def test_on_path_no_volatile_is_just_core():
     assert got == TEMPLATE.replace(FC, "").replace(CC, "")
 
 
-# --------------------------------------------------------------------------
-# edit_context
-# --------------------------------------------------------------------------
-
 def _assistant(call_id):
     return {"role": "assistant", "content": None,
             "tool_calls": [{"id": call_id}]}
@@ -99,7 +82,6 @@ def _tool(call_id, content):
 
 
 def _convo(n_rounds, *, size=1000):
-    """system, user, then n_rounds of (assistant, big tool result)."""
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},
@@ -113,11 +95,9 @@ def _convo(n_rounds, *, size=1000):
 def test_tombstones_old_rounds_keeps_recent():
     msgs = _convo(6)
     out, n = ce.edit_context(msgs, keep_last_tool_rounds=3, min_tombstone_chars=400)
-    # 6 rounds, keep last 3 → rounds 0,1,2 tombstoned
     assert n == 3
     tool_contents = [m["content"] for m in out if m.get("role") == "tool"]
     assert tool_contents[:3] == [ce.TOMBSTONE] * 3
-    # the most recent three remain verbatim
     assert all(c.startswith("RESULT-") for c in tool_contents[3:])
 
 
@@ -141,7 +121,7 @@ def test_never_touches_non_tool_messages():
 
 
 def test_small_outputs_not_tombstoned():
-    msgs = _convo(6, size=10)  # tiny tool outputs, below the char threshold
+    msgs = _convo(6, size=10)
     out, n = ce.edit_context(msgs, keep_last_tool_rounds=2, min_tombstone_chars=400)
     assert n == 0
     assert all(m["content"].startswith("RESULT-")
@@ -172,7 +152,6 @@ def test_does_not_mutate_input():
     msgs = _convo(6)
     snapshot = [dict(m) for m in msgs]
     ce.edit_context(msgs, keep_last_tool_rounds=2)
-    # original list and dicts untouched
     assert msgs == snapshot
     assert all(m["content"].startswith(("RESULT-",))
                for m in msgs if m.get("role") == "tool")
@@ -181,7 +160,6 @@ def test_does_not_mutate_input():
 def test_malformed_input_passes_through():
     assert ce.edit_context(None) == (None, 0)
     assert ce.edit_context([]) == ([], 0)
-    # a non-dict tool-ish entry is simply skipped, not crashed on
     weird = [{"role": "user", "content": "u"}, "not-a-dict",
              _assistant("c0"), _tool("c0", "y" * 1000)]
     out, n = ce.edit_context(weird, keep_last_tool_rounds=0)

@@ -1,4 +1,8 @@
-"""Single-source tool visibility used by chat and external projections."""
+"""Single source of truth for which agent/skill tool pairs a user may see, shared by
+chat and external protocol projections (mcp_projection.py) so no external surface can
+expose a broader catalog than chat.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -9,11 +13,6 @@ from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
 ExclusionLogger = Callable[[str, str | None, str], None]
 
-# The remote-compute catalog is 18 verbs (~2,700 prompt tokens); 17 of them
-# dead-end at "this machine is not in your inventory" for a user with no
-# registered machine. Only list_machines stays visible machineless — it is
-# the discovery verb whose empty-state reply points at Settings → Remote
-# machines (registration itself is a chrome surface, not a tool).
 _REMOTE_COMPUTE_AGENT_ID = "remote-compute-1"
 _REMOTE_DISCOVERY_SKILL_IDS = frozenset({"list_machines"})
 
@@ -28,25 +27,6 @@ def eligible_tool_pairs(
     identity_claims: dict[str, Any] | None = None,
     log_exclusion: ExclusionLogger | None = None,
 ) -> list[tuple[str, Any]]:
-    """Return the live agent/skill pairs that chat may offer to ``user_id``.
-
-    This is deliberately synchronous because callers run database-backed
-    permission evaluation off the event loop. External protocol projections
-    use the same predicate so they cannot become a broader catalog than chat.
-
-    Args:
-        orchestrator: Runtime holding registered agents and authorization state.
-        user_id: Human principal whose permissions are evaluated.
-        disabled_agents: Agents the principal disabled in preferences.
-        draft_agent_id: Optional draft under owner-isolated self-test.
-        selected_tools: Optional chat picker restriction; it only subtracts.
-        identity_claims: Verified access-token claims for identity-bound agents.
-        log_exclusion: Optional callback receiving agent, skill, and reason.
-
-    Returns:
-        Ordered ``(agent_id, skill)`` pairs that survive every visibility gate.
-    """
-
     disabled = set(disabled_agents)
     eligible: list[tuple[str, Any]] = []
 
@@ -67,9 +47,6 @@ def eligible_tool_pairs(
                     user_id,
                 )
             except Exception:
-                # Fail open to the full catalog: this subtraction is a prompt
-                # cost optimization, and the dispatch permission gate still
-                # runs. A transient DB error must not blank the tool list.
                 machineless = False
         return machineless
 
@@ -123,18 +100,6 @@ def eligible_tool_pairs(
 
 
 def enabled_scope_union(orchestrator: Any, user_id: str) -> list[str]:
-    """Return the union of EFFECTIVE scopes across every agent chat may offer.
-
-    An agent-less machine turn (a scheduled job proposed without a specific
-    agent) runs as an ordinary assistant turn, so the per-tool permission gate
-    routes its tool calls across ALL of the user's eligible agents. The consent
-    it needs — and the containment ``MachineTurnAuthority.derive`` computes —
-    is therefore the union of ``get_enabled_scope_names`` over exactly the
-    agents :func:`eligible_tool_pairs` admits for this user: live, non-draft,
-    connected, not user-disabled, nothing identity-bound (a machine turn
-    carries no verified identity claims). Fail-closed to ``[]`` on any error,
-    ordered by ``VALID_SCOPES`` so the list is stable for audit rows.
-    """
     from orchestrator.tool_permissions import VALID_SCOPES
 
     try:
@@ -151,8 +116,7 @@ def enabled_scope_union(orchestrator: Any, user_id: str) -> list[str]:
                 user_id, agent_id) or []
             union.update(str(name) for name in names)
     except Exception as exc:
-        # Fail-closed: consent/containment must never widen on an error.
-        # The empty union captures no scopes and asserts none at run time.
+        # Fails closed here — an empty union asserts no scopes
         import logging
 
         logging.getLogger(__name__).warning(

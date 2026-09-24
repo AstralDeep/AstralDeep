@@ -1,9 +1,6 @@
-"""Bounded coordinator and direct-RTC worker-pool authority for Feature 065.
-
-The HTTP upgrade/challenge endpoint and PostgreSQL repository live at adjacent
-integration seams.  This module owns the content-free, post-authentication
-worker registry, deterministic assignment and frame fences, plus pure state
-adapters that a row-locked repository can apply atomically.
+"""Content-free worker registry, deterministic assignment/frame fencing, and cadence
+scheduling for direct-RTC voice coordination, driven by voice_media.py and
+voice_runtime.py and authenticated by voice_worker_endpoint.py.
 """
 
 from __future__ import annotations
@@ -68,9 +65,6 @@ APPROVED_PHRASE_TEXT = MappingProxyType(
         "llm_setup_needed": (
             "Please set up your AI provider in Settings so I can continue."
         ),
-        # Short terminal and pre-acceptance phrases must fit the immutable
-        # 36,000-sample (1.5-second) command ceiling under the exact launch
-        # voice. Keep them concise; the full explanation remains on screen.
         "sensitive_result_ready": "Private result ready.",
         "request_failed": "Request failed.",
         "request_refused": "I can't help with that.",
@@ -100,11 +94,6 @@ APPROVED_PHRASE_KEYS = MappingProxyType(
     }
 )
 
-# Pre-acceptance transcript dispositions never enter the accepted-turn cadence.
-# Each reason is projected to one fixed, content-free instruction so user or
-# model text cannot reach this TTS path. These keys are intentionally absent
-# from APPROVED_PHRASE_KEYS: ordinary lifecycle selection must never pick a
-# rejection-specific explanation at random.
 PREACCEPTANCE_REJECTION_PHRASES = MappingProxyType(
     {
         "capacity_exhausted": ("refusal", "request_busy"),
@@ -240,16 +229,10 @@ _RECOGNITION_FAILURE_REASONS = frozenset(
         "self_speech",
     }
 )
-# Spurious-audio refusals carry no user intent: assistant playback the worker
-# heard itself (self_speech) and stock ASR hallucinations minted from ambient
-# noise (hallucinated_transcript). Both are durably suppressed with no retry
-# guidance; the retrying rejection path refuses them.
 SILENT_RECOGNITION_REASONS = frozenset({"hallucinated_transcript", "self_speech"})
 
 
 class VoiceCoordinatorError(RuntimeError):
-    """A content-free error safe for logs, metrics, and problem mapping."""
-
     def __init__(self, code: str) -> None:
         if _REASON.fullmatch(code) is None:
             code = "voice_coordinator_error"
@@ -258,32 +241,30 @@ class VoiceCoordinatorError(RuntimeError):
 
 
 class RegistrationError(VoiceCoordinatorError):
-    """An authenticated worker registration was refused."""
+    pass
 
 
 class ControlProtocolError(VoiceCoordinatorError):
-    """A control frame failed direction, structure, or fence validation."""
+    pass
 
 
 class ControlSendError(VoiceCoordinatorError):
-    """A bounded control send failed with no content in the exception."""
+    pass
 
 
 class CapacityUnavailable(VoiceCoordinatorError):
-    """No exact-profile worker capacity can be reserved immediately."""
+    pass
 
 
 class StaleFence(VoiceCoordinatorError):
-    """A connection, generation, assignment, or revision is stale."""
+    pass
 
 
 class ClaimUnavailable(VoiceCoordinatorError):
-    """A durable coordinator lease or announcement claim cannot be acquired."""
+    pass
 
 
 class ClientLocalAnnouncementRegistry:
-    """Content-free authority for bounded local announcements and playout."""
-
     def __init__(self, *, capacity: int = 256) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("invalid_local_announcement_capacity")
@@ -458,8 +439,6 @@ class ClientLocalAnnouncementRegistry:
         frame: Any,
         now: datetime,
     ) -> None:
-        """Reauthorize one still-ephemeral announcement immediately before send."""
-
         checked_now = _aware(now, "invalid_current_time")
         frame.validate()
         self._prune(checked_now)
@@ -519,8 +498,6 @@ class ClientLocalAnnouncementRegistry:
         }
 
     def discard(self, announcement_id: str) -> None:
-        """Drop one undelivered announcement without retaining its content."""
-
         self._announcements.pop(announcement_id, None)
 
     def fence_session(
@@ -599,8 +576,6 @@ class WorkerSocket(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class WorkerPoolPolicy:
-    """Validated deployment bounds and one approved runtime closure."""
-
     runtime_closure_sha256: str
     max_workers: int = 32
     max_sessions_per_worker: int = 100
@@ -650,8 +625,6 @@ class WorkerPoolPolicy:
 
 
 class CoordinatorClock:
-    """Strict UTC/monotonic clock adapter used by state and transport code."""
-
     def __init__(
         self,
         *,
@@ -685,15 +658,11 @@ class CoordinatorClock:
 
 @dataclass(frozen=True, slots=True)
 class MonotonicDeadline:
-    """One in-process deadline plus its conservative UTC recovery marker."""
-
     due_monotonic: float
     recovery_due_at: datetime
 
 
 class MonotonicScheduler:
-    """Convert bounded cadence delays to monotonic deadlines and recover them."""
-
     def __init__(
         self, clock: CoordinatorClock, *, max_delay_seconds: float = 300
     ) -> None:
@@ -740,8 +709,6 @@ class MonotonicScheduler:
 
 @dataclass(frozen=True, slots=True)
 class SessionBindRequest:
-    """Credential-free durable fields required to bind one worker session."""
-
     session_id: str
     generation: int
     room_name: str
@@ -783,8 +750,6 @@ class SessionReservation:
 
 @dataclass(frozen=True, slots=True)
 class RecognitionStart:
-    """Content-free recognition binding accepted from one assigned worker."""
-
     session_id: str
     generation: int
     assignment_id: str
@@ -816,8 +781,6 @@ class RecognitionStart:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptTurnBinding:
-    """Immutable identifiers returned by durable recognition allocation."""
-
     session_id: str
     generation: int
     media_grant_revision: int
@@ -857,8 +820,6 @@ class TranscriptTurnBinding:
         assignment_id: str,
         worker_identity: str,
     ) -> TranscriptTurnBinding:
-        """Copy only immutable, content-free fields from a repository row."""
-
         try:
             return cls(
                 session_id=turn.session_id,
@@ -887,8 +848,6 @@ class WorkerRegistrationReceipt:
 
 @dataclass(frozen=True, slots=True)
 class WorkerConnectionRelease:
-    """Credential-free exact assignments fenced by one worker lease expiry."""
-
     connection_id: str
     worker_identity: str
     accepted_max_sessions: int
@@ -905,8 +864,6 @@ class WorkerConnectionRelease:
 
 @dataclass(frozen=True, slots=True)
 class WorkerTerminalRelease:
-    """Exact credential-free assignment released after terminal worker state."""
-
     reservation: SessionReservation
     terminal_state: str
     accepted_max_sessions: int
@@ -968,8 +925,6 @@ class WorkerPoolReadiness:
 
 @dataclass(frozen=True, slots=True)
 class WorkerStatusEntry:
-    """Credential-free FR-034 projection of one admitted worker connection."""
-
     worker_identity: str
     accepted_max_sessions: int
     active_sessions: int
@@ -978,8 +933,6 @@ class WorkerStatusEntry:
 
 @dataclass(frozen=True, slots=True)
 class AdmissionRefusal:
-    """Credential-free FR-034 record of one refused worker admission attempt."""
-
     stage: str
     reason: str
     occurred_at: datetime
@@ -1000,8 +953,6 @@ class _WorkerConnection:
 
 
 class _BoundedSendGate:
-    """Serialize one session while bounding tasks waiting for its socket."""
-
     def __init__(self, limit: int) -> None:
         self._limit = limit
         self._pending = 0
@@ -1051,8 +1002,6 @@ class _WorkerAssignment:
 
 
 class WorkerPool:
-    """Concurrency-safe exact-profile registry and session frame authority."""
-
     def __init__(
         self,
         policy: WorkerPoolPolicy,
@@ -1080,8 +1029,6 @@ class WorkerPool:
         *,
         authenticated_identity: str,
     ) -> WorkerRegistrationReceipt:
-        """Register only an already challenge-authenticated exact worker."""
-
         identity, requested_capacity = self._parse_registration(
             frame, authenticated_identity=authenticated_identity
         )
@@ -1159,8 +1106,6 @@ class WorkerPool:
         await _safe_close(socket, 1011, "registration_failed")
 
     async def reserve_session(self, request: SessionBindRequest) -> SessionReservation:
-        """Atomically reserve a deterministic capacity slot, never a queue."""
-
         now_mono = self._clock.monotonic()
         now_utc = self._clock.utcnow()
         async with self._lock:
@@ -1230,10 +1175,7 @@ class WorkerPool:
                 assignment_id=assignment_id,
                 worker_identity=connection.worker_identity,
                 connection_id=connection.connection_id,
-                # Worker-grant timestamps use the protocol/JWT NumericDate
-                # precision of whole seconds. Retain the assignment fence at
-                # that same precision so a grant minted later in the same
-                # second cannot be misclassified as predating its assignment.
+                # Whole-second truncation must match JWT NumericDate precision
                 assigned_at=now_utc.replace(microsecond=0),
                 expected_visible_chat_id=request.visible_chat_id,
                 expected_chat_context_revision=request.chat_context_revision,
@@ -1249,8 +1191,6 @@ class WorkerPool:
         request: SessionBindRequest,
         worker_rtc_grant: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Validate and deliver one memory-only worker grant inside a bind."""
-
         assignment = await self._current_assignment(reservation, request)
         self._validate_assignment_command_state(assignment, "session_bind")
         async with assignment.send_gate:
@@ -1328,8 +1268,6 @@ class WorkerPool:
         frame_type: str,
         fields: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Send one bounded coordinator-direction frame under session fences."""
-
         if frame_type not in _COORDINATOR_FRAME_TYPES:
             raise ControlProtocolError("wrong_direction")
         protected = {
@@ -1403,8 +1341,6 @@ class WorkerPool:
     async def receive_worker_frame(
         self, connection_id: str, payload: str | bytes
     ) -> dict[str, Any]:
-        """Authorize one worker-direction frame before any downstream effect."""
-
         _uuid4(connection_id, "invalid_connection_id", ControlProtocolError)
         async with self._lock:
             connection = self._connections.get(connection_id)
@@ -1522,15 +1458,6 @@ class WorkerPool:
         connection_id: str,
         payload: str | bytes,
     ) -> tuple[SessionReservation, int] | None:
-        """Resolve only an exact session-local rejected worker frame.
-
-        This is deliberately a second strict decode after
-        :meth:`receive_worker_frame` rejects a payload.  Undecodable envelopes,
-        forbidden content, pool-global frames, bad base identities, and stale
-        connection/session/generation/assignment fences return ``None`` so the
-        endpoint retains its connection-fatal behavior.
-        """
-
         try:
             frame = _decode_frame(payload)
             frame_type = frame.get("type")
@@ -1570,8 +1497,6 @@ class WorkerPool:
         self,
         reservation: SessionReservation,
     ) -> bool:
-        """Release only the unchanged assignment classified for quarantine."""
-
         async with self._lock:
             assignment = self._assignments.get(reservation.session_id)
             if assignment is None:
@@ -1598,8 +1523,6 @@ class WorkerPool:
         chat_context_revision: int,
         timeout_seconds: float = 10,
     ) -> AssignmentSnapshot:
-        """Wait boundedly for profile readiness and the exact applied chat fence."""
-
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
         _uuid4(visible_chat_id, "invalid_visible_chat_id", ControlProtocolError)
@@ -1633,8 +1556,6 @@ class WorkerPool:
         client_participant_identity: str,
         timeout_seconds: float = 10,
     ) -> AssignmentSnapshot:
-        """Wait boundedly for the exact ordered publisher-rotation acknowledgement."""
-
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
         _uuid4(refresh_id, "invalid_refresh_id", ControlProtocolError)
@@ -1664,8 +1585,6 @@ class WorkerPool:
         )
 
     async def touch_connection(self, connection_id: str) -> None:
-        """Record a transport-level ping/pong receipt using monotonic time."""
-
         _uuid4(connection_id, "invalid_connection_id", ControlProtocolError)
         now = self._clock.monotonic()
         async with self._lock:
@@ -1675,14 +1594,6 @@ class WorkerPool:
             connection.last_seen_monotonic = now
 
     async def unregister_worker(self, connection_id: str) -> tuple[str, ...]:
-        """Fence one exact transport and release all of its in-memory leases.
-
-        A stale disconnect is intentionally idempotent: a replaced worker's
-        endpoint must never be able to remove the replacement connection.
-        The returned values are the session IDs whose assignments were
-        released, so the endpoint owner can reconcile adjacent durable leases.
-        """
-
         _uuid4(connection_id, "invalid_connection_id", ControlProtocolError)
         return await self._fence_connection(
             connection_id,
@@ -1691,8 +1602,6 @@ class WorkerPool:
         )
 
     async def shutdown(self) -> tuple[str, ...]:
-        """Stop admission and share one bounded cleanup across all callers."""
-
         async with self._lock:
             task = self._shutdown_task
             if task is not None and task.done():
@@ -1707,8 +1616,6 @@ class WorkerPool:
         return await asyncio.shield(task)
 
     async def _shutdown_once(self) -> tuple[str, ...]:
-        """Fence every worker/assignment exactly once and close boundedly."""
-
         async with self._registration_lock:
             async with self._lock:
                 self._closed = True
@@ -1727,16 +1634,12 @@ class WorkerPool:
         return released
 
     async def expire_connections(self) -> tuple[str, ...]:
-        """Fence and close workers whose monotonic liveness lease elapsed."""
-
         releases = await self.expire_connection_leases()
         return tuple(item.connection_id for item in releases)
 
     async def expire_connection_leases(
         self,
     ) -> tuple[WorkerConnectionRelease, ...]:
-        """Fence expired workers while preserving exact cleanup authority."""
-
         now = self._clock.monotonic()
         expired: list[tuple[_WorkerConnection, WorkerConnectionRelease]] = []
         async with self._lock:
@@ -1774,8 +1677,6 @@ class WorkerPool:
     async def release_session(
         self, session_id: str, generation: int, assignment_id: str
     ) -> bool:
-        """Release only the exact assignment fence; stale releases do nothing."""
-
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
         _uuid4(assignment_id, "invalid_assignment_id", ControlProtocolError)
@@ -1799,8 +1700,6 @@ class WorkerPool:
         generation: int,
         terminal_state: str,
     ) -> WorkerTerminalRelease | None:
-        """Atomically release one assignment only while its terminal fence holds."""
-
         _uuid4(connection_id, "invalid_connection_id", ControlProtocolError)
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
@@ -1835,8 +1734,6 @@ class WorkerPool:
         session_id: str,
         generation: int,
     ) -> SessionReservation:
-        """Return the exact live assignment fence without exposing credentials."""
-
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
         async with self._lock:
@@ -1855,8 +1752,6 @@ class WorkerPool:
         generation: int,
         client_turn_id: str,
     ) -> TranscriptTurnBinding:
-        """Return one live, fully bound recognition under its assignment fence."""
-
         _uuid4(session_id, "invalid_session_id", ControlProtocolError)
         _positive(generation, "invalid_generation", ControlProtocolError)
         _uuid4(client_turn_id, "invalid_client_turn_id", ControlProtocolError)
@@ -1889,8 +1784,6 @@ class WorkerPool:
         self,
         binding: TranscriptTurnBinding,
     ) -> None:
-        """Clear one exact recognition binding without sending a disposition."""
-
         if not isinstance(binding, TranscriptTurnBinding):
             raise TypeError("binding must be TranscriptTurnBinding")
         async with self._lock:
@@ -1961,8 +1854,6 @@ class WorkerPool:
                 raise CapacityUnavailable(timeout_code) from None
 
     def assignment_snapshot(self, session_id: str) -> AssignmentSnapshot:
-        """Return credential-free operational state for tests/observability."""
-
         assignment = self._assignments.get(session_id)
         if assignment is None:
             raise StaleFence("stale_assignment")
@@ -1988,8 +1879,6 @@ class WorkerPool:
         )
 
     def readiness(self) -> WorkerPoolReadiness:
-        """Return exact-profile, credential-free live capacity state."""
-
         now = self._clock.monotonic()
         live = [
             connection
@@ -2017,12 +1906,6 @@ class WorkerPool:
         )
 
     def worker_status(self) -> tuple[WorkerStatusEntry, ...]:
-        """Project the admitted workers readiness() counts, per FR-034.
-
-        The same liveness and replacement filters as :meth:`readiness` apply,
-        so the list always explains the aggregate counters.
-        """
-
         now = self._clock.monotonic()
         return tuple(
             WorkerStatusEntry(
@@ -2833,8 +2716,6 @@ class WorkerPool:
 
 @dataclass(frozen=True, slots=True)
 class ControlLeaseState:
-    """Row-lock snapshot for one session's coordinator control lease."""
-
     generation: int
     owner_id: str | None = None
     expires_at: datetime | None = None
@@ -2849,8 +2730,6 @@ class ControlLeaseState:
 
 
 class ControlLeaseAdapter:
-    """Pure CAS rules for durable coordinator ownership and crash recovery."""
-
     def __init__(self, *, ttl_seconds: int = 15) -> None:
         if not 5 <= ttl_seconds <= 60:
             raise ValueError("invalid_control_lease_ttl")
@@ -2893,8 +2772,6 @@ class ControlLeaseAdapter:
 
 
 class PhraseBook:
-    """Validated allowlisted phrase-key selector with deterministic variation."""
-
     def __init__(self, phrases: Mapping[str, tuple[str, ...]]) -> None:
         if not isinstance(phrases, Mapping) or not phrases:
             raise ValueError("invalid_phrase_book")
@@ -2948,8 +2825,6 @@ class PhraseBook:
         return selected
 
     def text(self, phrase_key: str) -> str:
-        """Resolve only an approved key; caller text never enters this path."""
-
         if not isinstance(phrase_key, str):
             raise ValueError("invalid_phrase_key")
         try:
@@ -2960,16 +2835,12 @@ class PhraseBook:
 
 @dataclass(frozen=True, slots=True)
 class LifecyclePhrase:
-    """Sanitized lifecycle selection with optional fixed allowlisted wording."""
-
     kind: str
     phrase_key: str | None
     text: str | None
 
 
 class LifecyclePhraseSelector:
-    """Translate sanitized committed lifecycle categories into safe speech."""
-
     def __init__(self, phrase_book: PhraseBook | None = None) -> None:
         self._phrase_book = phrase_book or PhraseBook(APPROVED_PHRASE_KEYS)
 
@@ -3011,8 +2882,6 @@ class LifecyclePhraseSelector:
 
 @dataclass(frozen=True, slots=True)
 class CadenceTurnSnapshot:
-    """Content-free durable/recovery projection for one accepted voice turn."""
-
     session_id: str
     turn_id: str
     generation: int
@@ -3074,8 +2943,6 @@ class CadenceTurnSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class CadenceDecision:
-    """One deterministic, deadline-fenced quantum offered to durable claim code."""
-
     announcement_id: str
     session_id: str
     turn_id: str
@@ -3095,8 +2962,6 @@ class CadenceDecision:
 
 @dataclass(frozen=True, slots=True)
 class PlayoutCompletion:
-    """Later valid source/client finish observation using server receipt time."""
-
     announcement_id: str
     turn_id: str | None
     source_finished_at: datetime
@@ -3134,16 +2999,10 @@ class _CadenceTurn:
     waiting_pending: bool = False
     terminal_pending: bool = False
     terminal_suppressed: bool = False
-    # Consecutive handoff-degrade deferrals since this turn last held the
-    # stream. Bounds starvation: a turn is never deferred twice in a row, so
-    # under a sustained missed-handoff regime its progress quantum speaks
-    # late on the second miss instead of being re-deferred forever.
     deferrals: int = 0
 
 
 class SpeechCadenceScheduler:
-    """Deterministic two-turn, one-physical-stream cadence authority."""
-
     _TERMINAL_LIFECYCLES = frozenset({"succeeded", "failed", "refused", "cancelled"})
 
     def __init__(
@@ -3161,8 +3020,6 @@ class SpeechCadenceScheduler:
         self._order = 0
         self._offered: CadenceDecision | None = None
         self._stream: CadenceDecision | None = None
-        # Latest legal start for an already-due peer after stream release.
-        # This is a maximum latency budget; it never delays an earlier start.
         self._handoff_deadline_at: float | None = None
         self._handoff_enforced = False
         self._failed = False
@@ -3171,14 +3028,10 @@ class SpeechCadenceScheduler:
 
     @property
     def handoff_degrades(self) -> int:
-        """Missed-handoff degradations since construction (runner logs deltas)."""
-
         return self._handoff_degrades
 
     @property
     def deferred_quanta(self) -> int:
-        """Stale progress quanta dropped by handoff degradation."""
-
         return self._deferred_quanta
 
     def add_turn(
@@ -3192,8 +3045,6 @@ class SpeechCadenceScheduler:
         last_phrase_key: str | None = None,
         next_due_at: datetime | None = None,
     ) -> None:
-        """Register an accepted turn or restore its processing cadence marker."""
-
         acknowledged = announcement_sequence > 0
         lifecycle = "processing" if acknowledged else "accepted"
         self.restore_turn(
@@ -3213,8 +3064,6 @@ class SpeechCadenceScheduler:
         )
 
     def restore_turn(self, snapshot: CadenceTurnSnapshot) -> None:
-        """Recover from durable state using UTC only to rebuild a monotonic timer."""
-
         if not isinstance(snapshot, CadenceTurnSnapshot):
             raise TypeError("snapshot must be CadenceTurnSnapshot")
         if snapshot.turn_id in self._turns:
@@ -3241,30 +3090,17 @@ class SpeechCadenceScheduler:
         )
 
     def snapshot(self, turn_id: str) -> CadenceTurnSnapshot:
-        """Return the content-free fields needed for restart reconstruction."""
-
         return self._turn(turn_id).snapshot
 
     def has_turn(self, turn_id: str) -> bool:
-        """Return whether this scheduler owns the exact validated turn id."""
-
         _uuid4(turn_id, "invalid_turn_id")
         return turn_id in self._turns
 
     @property
     def active_turn_count(self) -> int:
-        """Return the bounded number of turns owned by this output stream."""
-
         return len(self._turns)
 
     def next_wake_delay(self) -> float | None:
-        """Return a monotonic delay until useful scheduler work may begin.
-
-        Lifecycle mutations wake the production runner independently.  This
-        value therefore contains no wall-clock or content and is safe to use
-        only as a bounded local sleep hint.
-        """
-
         if self._failed:
             raise VoiceCoordinatorError("speech_scheduler_failed")
         if self._offered is not None:
@@ -3289,8 +3125,6 @@ class SpeechCadenceScheduler:
         return max(0.0, target - now)
 
     def next_hard_deadline_delay(self) -> float | None:
-        """Return time left before the earliest eligible hard start bound."""
-
         if self._failed:
             raise VoiceCoordinatorError("speech_scheduler_failed")
         now = self._clock.monotonic()
@@ -3312,8 +3146,6 @@ class SpeechCadenceScheduler:
         return max(0.0, min(deadlines) - now)
 
     def remove_turn(self, turn_id: str) -> None:
-        """Release a quiescent terminal turn from the two-turn scheduler."""
-
         turn = self._turn(turn_id)
         if (
             not turn.snapshot.terminal
@@ -3326,14 +3158,6 @@ class SpeechCadenceScheduler:
         del self._turns[turn_id]
 
     def abandon_turn(self, turn_id: str) -> bool:
-        """Fence one unavailable origin without requiring task cancellation.
-
-        Chat deletion/auth loss is a voice-publication lifecycle, not an
-        agent-operation terminal state.  It may therefore remove an active
-        cadence stream immediately while the accepted operation continues in
-        the ordinary background execution path.
-        """
-
         self._turn(turn_id)
         preempted = self._preempt_stream(turn_id)
         self._cancel_offer(turn_id)
@@ -3341,8 +3165,6 @@ class SpeechCadenceScheduler:
         return preempted
 
     def next_decision(self) -> CadenceDecision | None:
-        """Offer the highest-priority due quantum without starting a second stream."""
-
         if self._failed:
             raise VoiceCoordinatorError("speech_scheduler_failed")
         if self._stream is not None:
@@ -3366,13 +3188,6 @@ class SpeechCadenceScheduler:
                 for turn in candidates
             )
         ):
-            # A missed 250 ms stream handoff is a late runner, not an
-            # unusable stream. Degrade instead of latching _failed: stale
-            # ordinary progress quanta are dropped (their cadence re-anchors
-            # at now) while terminal, waiting, and acknowledgement
-            # announcements stay due and are spoken late. Hard failure
-            # remains reserved for the CADENCE_HARD_GAP_SECONDS breach
-            # checked above.
             deadline = self._handoff_deadline_at
             self._handoff_deadline_at = None
             self._handoff_enforced = False
@@ -3384,10 +3199,6 @@ class SpeechCadenceScheduler:
                     and not turn.waiting_pending
                     and turn.snapshot.acknowledgement_started
                     and turn.snapshot.lifecycle == "processing"
-                    # Never defer the same turn twice in a row: on the second
-                    # consecutive miss its progress quantum stays due and is
-                    # spoken late, bounding starvation under a sustained
-                    # missed-handoff regime.
                     and turn.deferrals == 0
                 ):
                     self._defer_cadence(turn, now)
@@ -3416,21 +3227,13 @@ class SpeechCadenceScheduler:
         return decision
 
     def start(self, decision: CadenceDecision) -> None:
-        """Commit one offered quantum to the sole physical stream."""
-
         if decision != self._offered:
             raise StaleFence("stale_cadence_decision")
         now = self._clock.monotonic()
         if now > decision.latest_start_monotonic + 1e-9:
             self._failed = True
             raise VoiceCoordinatorError("cadence_deadline_exceeded")
-        # No handoff-budget re-check here: reservation/preparation latency
-        # between offer and start can consume the stream-switch budget, but
-        # the quantum was selected moments ago and is still correct — and its
-        # durable announcement claim is already held — so it is spoken late
-        # rather than failing every later announcement including the
-        # terminal. The genuinely-unusable bound stays the latest-start
-        # check above.
+        # No re-check here - the offered quantum is still correct
         turn = self._turn(decision.turn_id)
         snapshot = turn.snapshot
         lifecycle = snapshot.lifecycle
@@ -3458,8 +3261,6 @@ class SpeechCadenceScheduler:
         self._handoff_enforced = False
 
     def finish(self, decision: CadenceDecision, completion: PlayoutCompletion) -> None:
-        """Advance cadence only from fully matched source and client finishes."""
-
         if decision != self._stream:
             raise StaleFence("stale_cadence_stream")
         if (
@@ -3501,8 +3302,6 @@ class SpeechCadenceScheduler:
         *,
         waiting_reason: str | None = None,
     ) -> bool:
-        """Apply a sanitized lifecycle fence; return whether speech was preempted."""
-
         turn = self._turn(turn_id)
         if lifecycle not in _LIFECYCLE_KIND or lifecycle == "accepted":
             raise ControlProtocolError("invalid_lifecycle_state")
@@ -3562,8 +3361,6 @@ class SpeechCadenceScheduler:
         return self._preempt_progress(turn_id)
 
     def set_muted(self, turn_id: str, muted: bool) -> bool:
-        """Fence speech immediately; muted announcements are never burst-replayed."""
-
         if not isinstance(muted, bool):
             raise ValueError("invalid_speech_muted")
         turn = self._turn(turn_id)
@@ -3675,8 +3472,6 @@ class SpeechCadenceScheduler:
         )
 
     def _defer_cadence(self, turn: _CadenceTurn, now: float) -> None:
-        """Drop one stale ordinary progress quantum by re-anchoring at now."""
-
         turn.target_start_monotonic = now + CADENCE_TARGET_SECONDS
         turn.latest_start_monotonic = now + CADENCE_HARD_GAP_SECONDS
         turn.snapshot = replace(
@@ -3717,8 +3512,6 @@ class SpeechCadenceScheduler:
 
 @dataclass(frozen=True, slots=True)
 class AnnouncementFence:
-    """Expected content-free binding shared by command, media, and observations."""
-
     session_id: str
     generation: int
     media_grant_revision: int
@@ -3818,8 +3611,6 @@ class _PlayoutRecord:
 
 
 class PlayoutEvidenceTracker:
-    """Strict source/client observation validator; receipt time drives cadence."""
-
     def __init__(
         self,
         clock: CoordinatorClock,
@@ -3843,8 +3634,6 @@ class PlayoutEvidenceTracker:
         self._client_event_times: dict[tuple[str, str], deque[float]] = {}
 
     def register(self, fence: AnnouncementFence) -> None:
-        """Register one exact command fence before accepting manifest/events."""
-
         if not isinstance(fence, AnnouncementFence):
             raise TypeError("fence must be AnnouncementFence")
         if fence.announcement_id in self._records:
@@ -3856,8 +3645,6 @@ class PlayoutEvidenceTracker:
         )
 
     def record_manifest(self, frame: Mapping[str, Any]) -> None:
-        """Accept one bounded media manifest before any renderable audio."""
-
         if _json_frame_size(frame, "invalid_announcement_manifest") > (
             MAX_ANNOUNCEMENT_MANIFEST_BYTES
         ):
@@ -3948,8 +3735,6 @@ class PlayoutEvidenceTracker:
         *,
         worker_identity: str,
     ) -> PlayoutCompletion | None:
-        """Validate an authenticated worker lifecycle event and its exact order."""
-
         if _json_frame_size(frame, "invalid_source_event") > MAX_CONTROL_FRAME_BYTES:
             raise ControlProtocolError("source_event_too_large")
         if not isinstance(frame, Mapping):
@@ -4030,8 +3815,6 @@ class PlayoutEvidenceTracker:
         return self._maybe_complete(record)
 
     def record_client(self, frame: Mapping[str, Any]) -> PlayoutCompletion | None:
-        """Validate a content-free owner-bound local-render observation."""
-
         if _json_frame_size(frame, "invalid_client_playout_event") > (
             MAX_CLIENT_PLAYOUT_FRAME_BYTES
         ):
@@ -4106,8 +3889,6 @@ class PlayoutEvidenceTracker:
         return self._maybe_complete(record)
 
     def expire_missing(self) -> tuple[str, ...]:
-        """Degrade announcements whose required evidence never arrived."""
-
         now = self._clock.monotonic()
         expired: list[str] = []
         for announcement_id, record in self._records.items():
@@ -4194,7 +3975,7 @@ class PlayoutEvidenceTracker:
         elif phase in {"finished", "interrupted"}:
             if record.source_phase != "started":
                 raise ControlProtocolError("source_event_out_of_order")
-        else:  # pragma: no cover - type enum is checked by the caller.
+        else:  # pragma: no cover
             raise ControlProtocolError("invalid_source_event_type")
 
     @staticmethod
@@ -4261,8 +4042,6 @@ class PlayoutEvidenceTracker:
 
 @dataclass(frozen=True, slots=True)
 class AnnouncementState:
-    """Content-free voice_turn scheduling columns under a row lock."""
-
     generation: int
     announcement_sequence: int = 0
     result_reserved_samples: int = 0
@@ -4409,8 +4188,6 @@ class AnnouncementMutation:
 
 
 class AnnouncementStateAdapter:
-    """Pure row-lock/CAS announcement reservation and crash-recovery rules."""
-
     def __init__(self, phrase_book: PhraseBook, *, claim_ttl_seconds: int = 5) -> None:
         if not 1 <= claim_ttl_seconds <= 30:
             raise ValueError("invalid_announcement_claim_ttl")
@@ -4634,8 +4411,6 @@ class AnnouncementStateAdapter:
 
 
 class VoiceCoordinatorRepository(Protocol):
-    """Atomic PostgreSQL seam; implementations apply the pure adapters above."""
-
     async def claim_control_lease(
         self,
         *,
@@ -4699,8 +4474,6 @@ class VoiceCoordinatorRepository(Protocol):
 
 
 class VoiceCoordinator:
-    """Thin authority facade joining worker-pool and durable claim seams."""
-
     def __init__(
         self,
         worker_pool: WorkerPool,
@@ -4716,15 +4489,11 @@ class VoiceCoordinator:
 
     @property
     def replica_id(self) -> str:
-        """Return the non-secret durable coordinator ownership identity."""
-
         return self._replica_id
 
     async def claim_session_control(
         self, *, user_id: str, session_id: str, generation: int
     ) -> ControlLeaseState:
-        """Claim/renew one DB control lease and verify the returned fence."""
-
         user_id = _user_id(user_id)
         _uuid4(session_id, "invalid_session_id")
         _positive(generation, "invalid_generation")
@@ -4756,8 +4525,6 @@ class VoiceCoordinator:
     async def release_session_control(
         self, *, user_id: str, session_id: str, generation: int
     ) -> bool:
-        """Release only this replica's exact durable session fence."""
-
         user_id = _user_id(user_id)
         _uuid4(session_id, "invalid_session_id")
         _positive(generation, "invalid_generation")
@@ -4782,8 +4549,6 @@ class VoiceCoordinator:
         self,
         frame: Mapping[str, Any],
     ) -> TranscriptTurnBinding:
-        """Durably bind one accepted recognition frame, then notify its worker."""
-
         if not isinstance(frame, Mapping) or frame.get("type") != "recognition_started":
             raise ControlProtocolError("invalid_recognition_started_frame")
         session_id = _uuid4(
@@ -4860,8 +4625,6 @@ class VoiceCoordinator:
         self,
         frame: Mapping[str, Any],
     ) -> Any:
-        """Durably abandon one authenticated ASR failure, then clear its fence."""
-
         if not isinstance(frame, Mapping) or frame.get("type") != "recognition_failed":
             raise ControlProtocolError("invalid_recognition_failed_frame")
         session_id = _uuid4(
@@ -4926,8 +4689,6 @@ class VoiceCoordinator:
         self,
         frame: Mapping[str, Any],
     ) -> Any:
-        """Durably suppress authenticated playback recognition without output."""
-
         if not isinstance(frame, Mapping) or frame.get("type") != "recognition_failed":
             raise ControlProtocolError("invalid_recognition_failed_frame")
         session_id = _uuid4(
@@ -4987,8 +4748,6 @@ class VoiceCoordinator:
         *,
         accepted_message_id: int,
     ) -> dict[str, Any]:
-        """Send the post-commit, fully correlated acceptance disposition."""
-
         _positive(
             accepted_message_id,
             "invalid_accepted_message_id",
@@ -5011,8 +4770,6 @@ class VoiceCoordinator:
         reason: str,
         retry_policy: str,
     ) -> dict[str, Any]:
-        """Send one fully correlated, terminal pre-acceptance refusal."""
-
         if reason not in _TRANSCRIPT_REJECTION_REASONS:
             raise ControlProtocolError("invalid_transcript_rejection_reason")
         if retry_policy not in _TRANSCRIPT_RETRY_POLICIES:
@@ -5064,8 +4821,6 @@ class VoiceCoordinator:
     async def claim_turn_announcement(
         self, *, user_id: str, request: AnnouncementClaimRequest
     ) -> AnnouncementMutation:
-        """Atomically claim one sequence/reservation through the DB seam."""
-
         user_id = _user_id(user_id)
         now = _aware(self._utcnow(), "invalid_coordinator_clock")
         try:
@@ -5142,8 +4897,6 @@ class VoiceCoordinator:
         generation: int,
         claim_id: str,
     ) -> bool:
-        """Release one exact claim without changing its reserved audio budget."""
-
         user_id = _user_id(user_id)
         _uuid4(session_id, "invalid_session_id")
         _uuid4(turn_id, "invalid_turn_id")
@@ -5169,8 +4922,6 @@ class VoiceCoordinator:
 
 
 def deterministic_uuid4(domain: str, *parts: str) -> str:
-    """Return a stable RFC-4122 UUIDv4-shaped id from canonical fence fields."""
-
     values = (domain, *parts)
     if any(
         not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4_096
@@ -5344,8 +5095,6 @@ def _reject_forbidden_coordinator_content(value: Any) -> None:
 
 
 def _media_rotation_fingerprint(fields: Mapping[str, Any]) -> tuple[Any, ...]:
-    """Return the complete non-secret idempotency tuple for one rotation."""
-
     return (
         fields.get("refresh_id"),
         fields.get("previous_media_grant_revision"),

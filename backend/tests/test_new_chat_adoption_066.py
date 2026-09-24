@@ -1,14 +1,6 @@
-"""Feature-066 pins for operation-chat adoption in ``handle_ui_message``.
-
-The first message of a new chat is admitted BEFORE its conversation exists,
-so ``_adopt_operation_chat`` binds the chat the turn just created onto the
-connection's durable operation record. Guards first: no chat id, no operation
-context, no fence, or an operation that already carries its conversation are
-all silent no-ops. Both chat-creating call sites in the ``chat_message``
-branch must reach the adoption, and a fresh ``new_chat`` greets with the
-welcome examples (FR-024). Harness style follows
-``test_voice_new_chat_activation_065.py``: a ``SimpleNamespace`` fake with
-the REAL ``Orchestrator`` methods bound onto it.
+"""Tests for orchestrator/orchestrator.py's _adopt_operation_chat: binds a newly created
+chat onto the connection's durable operation record before the conversation exists,
+no-ops on missing id/context/fence, and renders welcome examples.
 """
 
 from __future__ import annotations
@@ -111,14 +103,8 @@ def _adopting_fake(coordinator) -> SimpleNamespace:
     return fake
 
 
-# ---------------------------------------------------------------------------
-# _adopt_operation_chat: guards + happy path
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_adopt_returns_before_any_lookup_without_a_chat_id() -> None:
-    # work_admission=None would explode if the guard ever fell through.
     fake = _adopting_fake(coordinator=None)
     token = _CONNECTION_OPERATION_CONTEXT.set({"operation": object()})
     try:
@@ -131,7 +117,6 @@ async def test_adopt_returns_before_any_lookup_without_a_chat_id() -> None:
 @pytest.mark.asyncio
 async def test_adopt_is_a_no_op_without_an_operation_context() -> None:
     fake = _adopting_fake(coordinator=None)
-    # The unset default (None) and a corrupt non-dict value both bail out.
     assert await fake._adopt_operation_chat("chat-new") is None
     token = _CONNECTION_OPERATION_CONTEXT.set("not-a-dict")
     try:
@@ -156,13 +141,10 @@ async def test_adopt_skips_foreign_missing_fence_and_already_bound() -> None:
         fake = _adopting_fake(coordinator)
         token = _CONNECTION_OPERATION_CONTEXT.set(context)
         try:
-            # The already-bound case would raise ValueError (cross-
-            # conversation) if the guard fell through to bind_chat.
             await fake._adopt_operation_chat("chat-b")
         finally:
             _CONNECTION_OPERATION_CONTEXT.reset(token)
         assert context["operation"] is original
-    # Nothing was bound onto the None-chat operation.
     assert coordinator.assert_current_execution(unbound.fence).chat_id is None
 
 
@@ -181,7 +163,6 @@ async def test_adopt_binds_the_operation_and_refreshes_the_context() -> None:
     finally:
         _CONNECTION_OPERATION_CONTEXT.reset(token)
 
-    # The in-context record is refreshed to the durably bound revision.
     assert context["operation"] is not claim.operation
     assert context["operation"].chat_id == "chat-created-066"
     projection = coordinator.query_operation(
@@ -190,17 +171,11 @@ async def test_adopt_binds_the_operation_and_refreshes_the_context() -> None:
     assert projection.chat_id == "chat-created-066"
 
 
-# ---------------------------------------------------------------------------
-# chat_message call sites + the fresh-chat welcome render
-# ---------------------------------------------------------------------------
-
-
 async def _noop_ws_action(**_kwargs: object) -> None:
     return None
 
 
 def _chat_fake(websocket, history) -> tuple[SimpleNamespace, list, list, list]:
-    """A handle_ui_message host with recorders on every 066 seam."""
     sent: list[dict[str, object]] = []
     adopted: list[str] = []
     turns: list[tuple[str, str]] = []
@@ -316,7 +291,6 @@ async def test_unknown_client_supplied_chat_id_is_created_and_adopted(
 async def test_new_chat_greets_with_the_welcome_examples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """066 FR-024: a fresh chat renders the welcome canvas before chat_created."""
     import audit.hooks
 
     monkeypatch.setattr(audit.hooks, "record_ws_action", _noop_ws_action)
@@ -352,7 +326,6 @@ async def test_new_chat_greets_with_the_welcome_examples(
     )
     await asyncio.sleep(0)
 
-    # The welcome canvas rendered silently, then chat_created followed.
     assert len(rendered) == 1
     components, speak = rendered[0]
     assert speak is False

@@ -1,9 +1,6 @@
-"""Two-supervisor claim races on one due operation against actual Plane.
-
-Two AssignmentRunner instances with distinct worker ids share one
-AssignmentStore and race the same due operation. External IAM replies are the
-existing synthetic fixture; every row lives in a disposable PostgreSQL schema.
-No model call, physical tool, one-shot ingress or live provider is involved.
+"""Tests for persistent_agents/runner.py against real Postgres: two supervisors racing
+one due operation claim it exactly once, and a crash after bind recovers only after
+lease expiry.
 """
 
 import asyncio
@@ -34,7 +31,6 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 async def cohort(runtime, fixture):
-    """One shared store/coordinator/service and a builder for peer runners."""
     store = AssignmentStore(plane_runtime=runtime)
     coordinator = await asyncio.to_thread(
         WorkAdmissionCoordinator.from_plane,
@@ -101,9 +97,6 @@ async def test_two_runners_race_one_due_operation_claims_exactly_once(
     runner_a = cohort.runner(handler)
     runner_b = cohort.runner(handler)
     assert runner_a.worker_id != runner_b.worker_id
-    # Resolve the original operation authority once; both peers claim under it so
-    # the winner is decided purely by the atomic DB claim, not by racing the
-    # single original session's refresh (which is a separate serialized concern).
     authority = await runner_a._operation_authority(record)
     for value in (runner_a, runner_b):
         monkeypatch.setattr(
@@ -116,7 +109,6 @@ async def test_two_runners_race_one_due_operation_claims_exactly_once(
             "_start_claim",
             lambda claim, worker=value.worker_id: started[worker].append(claim),
         )
-    # Gate the shared claim transaction so both peers reach the DB claim together.
     entered, ready = [], asyncio.Event()
     original_transaction = cohort.store.operation_lifecycle_transaction
 
@@ -130,15 +122,11 @@ async def test_two_runners_race_one_due_operation_claims_exactly_once(
     monkeypatch.setattr(cohort.store, "operation_lifecycle_transaction", gated)
     await asyncio.gather(runner_a._tick_operations(), runner_b._tick_operations())
     claims = started[runner_a.worker_id] + started[runner_b.worker_id]
-    # Exactly one supervisor dispatches; the loser refused its claim.
     assert len(claims) == 1
     assert claims[0].assignment.assignment_id == record.assignment_id
-    # Both peers reached the claim boundary and advanced discovery; the loser
-    # attempted the claim and moved its cursor past the candidate without dispatch.
     assert len(entered) == 2
     assert runner_a._operation_cursor is not None
     assert runner_b._operation_cursor is not None
-    # The claim is durable: the leased operation no longer appears due.
     page = await discover(cohort)
     assert record.assignment_id not in {candidate.assignment_id for candidate in page}
 
@@ -148,8 +136,6 @@ async def test_crash_after_bind_recovers_only_after_lease_expiry(cohort, monkeyp
     entered, captured = asyncio.Event(), []
 
     async def handler(executor):
-        # bind_operation has already committed before the handler runs; the
-        # admission generation is live. Block as if the process then died.
         captured.append(executor)
         entered.set()
         await asyncio.Event().wait()
@@ -161,18 +147,14 @@ async def test_crash_after_bind_recovers_only_after_lease_expiry(cohort, monkeyp
     operation_id = captured[0].operation_fence.operation_id
     assert (await admission(cohort, operation_id)).state == OperationState.RUNNING
 
-    # Crash runner A after bind: cancel the in-flight episode task. Cancellation
-    # re-raises, so the claim lease and admission generation both persist.
     [task] = list(runner_a._active.values())
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The lease has not expired, so a peer's recovery reclaims nothing.
     assert (await runner_b._recover_operations()).reclaimed_assignment_ids == ()
     assert (await admission(cohort, operation_id)).state == OperationState.RUNNING
 
-    # Expire the exact lease as the recovery suite does.
     expiry = datetime.now(UTC) - timedelta(seconds=1)
     with cohort.runtime.transaction() as tx:
         tx.execute(
@@ -182,11 +164,8 @@ async def test_crash_after_bind_recovers_only_after_lease_expiry(cohort, monkeyp
         )
     recovered = await runner_b._recover_operations()
     assert recovered.reclaimed_assignment_ids == (record.assignment_id,)
-    # Exactly one admission generation was recovered and retired.
     assert len(recovered.operation_bindings) == 1
     assert (await admission(cohort, operation_id)).state == OperationState.FAILED
 
-    # Retirement is idempotent: a second sweep finds no expired lease and does
-    # not touch the already-failed admission generation again.
     assert (await runner_b._recover_operations()).reclaimed_assignment_ids == ()
     assert (await admission(cohort, operation_id)).state == OperationState.FAILED

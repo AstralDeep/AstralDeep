@@ -1,27 +1,8 @@
-"""Deep-owned host adapter for the Audit Trail Projection surface.
-
-List view: filter bar (``event_class`` / ``outcome`` selects + UTC dates and keyword
-text input) inside a ``data-ui-form`` container whose Apply button fires
-``chrome_audit_page`` with collected ``fields``; reverse-chronological
-rows (recorded_at, event_class, action_type, outcome badge, description
-snippet) that open the detail view via ``chrome_open``; keyset cursor
-pagination through Previous / Next buttons carrying filters and bounded history.
-
-Detail view (``params.event_id``): every public event field plus
-``correlation_id`` and pretty-printed ``inputs_meta`` / ``outputs_meta``,
-with a back link to the list.
-
-Data access reuses the SAME internals as ``GET /api/audit`` and
-``GET /api/audit/{id}`` (``backend/audit/api.py``):
-``orch.audit_repo.list_for_user`` / ``get_for_user`` scoped to the
-authenticated WebSocket user, the endpoints' artifact-availability
-resolver, and the same ``audit_view`` self-recording through the
-process-wide recorder (AU-2 / AU-12). ``auth_principal`` is the WS
-user id — the WS session has no JWT claims dict, and ``require_user_id``
-derives the user id from the same ``sub`` claim the REST path echoes.
-
-Never HTTP-to-self. Every dynamic interpolation goes through ``esc()``.
+"""Renders the Audit Trail surface: a filterable, cursor-paginated event list and a
+per-event detail view. Reads reuse the same orch.audit_repo internals as the GET
+/api/audit REST routes in backend/audit/api.py, scoped to the authenticated user.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,11 +29,10 @@ _VALUE_LIMITS = {"event_class": 64, "outcome": 32, "q": 256, "cursor": 512,
 
 
 class _FilterError(ValueError):
-    """Invalid user filters, distinct from a failed repository query."""
+    pass
 
 
 def _history(value) -> list[str]:
-    """Bound untrusted page history; cursors never change owner scope."""
     if not isinstance(value, str) or len(value) > 16_384:
         return []
     try:
@@ -65,7 +45,6 @@ def _history(value) -> list[str]:
 
 
 def _list_params(value) -> dict[str, str]:
-    """Accept bounded scalar navigation state, never nested identity fields."""
     if not isinstance(value, dict):
         return {}
     result = {}
@@ -89,7 +68,6 @@ def _list_params(value) -> dict[str, str]:
 
 
 def _date_bound(value, *, end=False):
-    """Map an inclusive UTC date selection to Plane's half-open interval."""
     if not value:
         return None
     parsed = date.fromisoformat(str(value))
@@ -100,7 +78,6 @@ def _date_bound(value, *, end=False):
 
 
 def _nav_button(label, fields) -> str:
-    """Render an escaped, server-authorized navigation action."""
     payload = esc(json.dumps({"fields": fields}))
     return (
         f'<button type="button" data-ui-action="chrome_audit_page" data-ui-payload=\'{payload}\' '
@@ -121,12 +98,7 @@ _INPUT_CLS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Small render helpers (all output escaped at every interpolation)
-# ---------------------------------------------------------------------------
-
 def _outcome_badge(outcome) -> str:
-    """Render a small pill badge for an audit outcome value."""
     cls = _OUTCOME_BADGE_STYLES.get(outcome, "border-white/10 bg-white/5 text-astral-muted")
     return (
         f'<span class="inline-block px-2 py-0.5 rounded-full border text-[10px] '
@@ -135,31 +107,22 @@ def _outcome_badge(outcome) -> str:
 
 
 def _fmt_ts(value) -> str:
-    """Format a datetime for display; ``-`` for missing values."""
     if value is None:
         return "-"
     try:
         if isinstance(value, datetime) and value.tzinfo is not None:
             value = value.astimezone(timezone.utc)
         return value.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:  # pragma: no cover — defensive against odd types
+    except Exception:  # pragma: no cover
         return str(value)
 
 
 def _valid_or_none(value, allowed):
-    """Return ``value`` if it is a member of ``allowed``, else ``None``.
-
-    Filter params can only take invalid values via a tampered client (the
-    rendered selects only offer valid options), so invalid values are
-    silently dropped rather than erroring — same effective scope as the
-    REST endpoint's 400 (the read stays user-scoped either way).
-    """
     value = str(value or "").strip()
     return value if value in allowed else None
 
 
 def _select(name: str, label: str, options, current) -> str:
-    """Render a labeled ``<select name=...>`` with an All-values default."""
     opts = ['<option value="">All</option>']
     for option in options:
         sel = " selected" if option == current else ""
@@ -171,7 +134,6 @@ def _select(name: str, label: str, options, current) -> str:
 
 
 def _filter_bar(event_class, outcome, q, params=None) -> str:
-    """Render the ``data-ui-form`` filter bar with the Apply button."""
     q_input = (
         f'<label class="flex flex-col gap-1 text-xs text-astral-muted flex-1 min-w-[10rem]">Search'
         f'<input type="text" name="q" maxlength="256" value="{esc(q)}" '
@@ -210,7 +172,6 @@ def _filter_bar(event_class, outcome, q, params=None) -> str:
 
 
 def _row(dto, return_to=None) -> str:
-    """Render one clickable list row that opens the detail view."""
     payload = esc(json.dumps(
         {"surface": _SURFACE_KEY, "params": {"event_id": str(dto.event_id),
                                             "return_to": return_to or {}}}
@@ -232,7 +193,6 @@ def _row(dto, return_to=None) -> str:
 
 
 def _pager(next_cursor, params) -> str:
-    """Previous/next keyset navigation retaining filters and bounded history."""
     history = _history(params.get("history"))
     buttons = []
     if params.get("cursor"):
@@ -249,7 +209,6 @@ def _pager(next_cursor, params) -> str:
 
 
 def _back_button(params=None) -> str:
-    """Render the detail view's back link to the audit list."""
     payload = esc(json.dumps({"surface": _SURFACE_KEY, "params": params or {}}))
     return (
         f"<button type=\"button\" data-ui-action=\"chrome_open\" data-ui-payload='{payload}' "
@@ -259,7 +218,6 @@ def _back_button(params=None) -> str:
 
 
 def _detail_row(label: str, value_html: str) -> str:
-    """Render one label/value detail row. ``value_html`` is pre-escaped."""
     return (
         f'<div class="flex gap-3 text-sm">'
         f'<div class="w-36 shrink-0 text-astral-muted">{esc(label)}</div>'
@@ -268,7 +226,6 @@ def _detail_row(label: str, value_html: str) -> str:
 
 
 def _meta_block(label: str, data) -> str:
-    """Pretty-print an inputs/outputs metadata dict inside an escaped pre."""
     pretty = json.dumps(data or {}, indent=2, sort_keys=True, default=str)
     return (
         f'<div class="space-y-1"><div class="text-xs font-semibold uppercase '
@@ -279,7 +236,6 @@ def _meta_block(label: str, data) -> str:
 
 
 def _pointers_block(pointers) -> str:
-    """Render artifact pointers (id, store, extension, size, availability)."""
     if not pointers:
         return ""
     rows = []
@@ -298,16 +254,8 @@ def _pointers_block(pointers) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# audit_view self-recording (same shape as backend/audit/api.py)
-# ---------------------------------------------------------------------------
-
 async def _record_list_view(user_id, event_class, outcome, q, cursor, returned_count,
                             from_ts=None, to_ts=None) -> None:
-    """Self-record the list read exactly like ``GET /api/audit`` does.
-
-    Never lets a recording failure break the read itself (AU-2 / AU-12).
-    """
     recorder = get_recorder()
     if recorder is None:
         return
@@ -334,12 +282,11 @@ async def _record_list_view(user_id, event_class, outcome, q, cursor, returned_c
             outputs_meta={"returned_count": returned_count},
             started_at=now_utc(),
         ))
-    except Exception as exc:  # pragma: no cover — never block the read
+    except Exception as exc:  # pragma: no cover
         logger.debug("audit_view self-record failed: %s", exc)
 
 
 async def _record_detail_view(user_id, event_id) -> None:
-    """Self-record the detail read exactly like ``GET /api/audit/{id}``."""
     recorder = get_recorder()
     if recorder is None:
         return
@@ -355,16 +302,11 @@ async def _record_detail_view(user_id, event_id) -> None:
             inputs_meta={"event_id": event_id},
             started_at=now_utc(),
         ))
-    except Exception as exc:  # pragma: no cover — never block the read
+    except Exception as exc:  # pragma: no cover
         logger.debug("audit_view detail self-record failed: %s", exc)
 
 
-# ---------------------------------------------------------------------------
-# Views
-# ---------------------------------------------------------------------------
-
 async def _read_list(orch, user_id, params):
-    """Read one owner-scoped page for both web and native surface rendering."""
     try:
         params = _list_params(params)
     except ValueError as exc:
@@ -400,7 +342,6 @@ async def _read_list(orch, user_id, params):
         items, next_cursor = await asyncio.to_thread(
             orch.audit_repo.list_for_user, user_id, **kwargs)
     except ValueError as exc:
-        # Expected failure: a stale/corrupt cursor. Fall back to page one.
         if not cursor:
             raise
         logger.warning("chrome audit: invalid cursor for user %s: %s", user_id, exc)
@@ -418,7 +359,6 @@ async def _read_list(orch, user_id, params):
 
 
 async def _render_list(orch, user_id, params) -> str:
-    """Render the filterable, cursor-paginated audit list body."""
     try:
         params, event_class, outcome, q, items, next_cursor, notices = await _read_list(orch, user_id, params)
     except _FilterError as exc:
@@ -436,8 +376,6 @@ async def _render_list(orch, user_id, params) -> str:
         groups = []
         for day, entries in groupby(items, key=lambda dto: _fmt_ts(dto.recorded_at)[:10]):
             groups.append(f'<h3 class="text-sm font-semibold mt-3">{esc(day)} (UTC)</h3>')
-            # Repeated successful navigation remains available in a disclosure
-            # without drowning out substantive actions in the same page.
             for routine, batch in groupby(entries, key=lambda dto: (
                 dto.outcome == "success" and dto.action_type in (
                     "ws.chrome_open", "ws.chrome_close", "audit_view.list", "audit_view.detail"
@@ -468,7 +406,6 @@ async def _render_list(orch, user_id, params) -> str:
 
 
 async def _render_detail(orch, user_id, event_id, return_to=None) -> str:
-    """Render the detail body for one audit event (user-scoped fetch)."""
     event_id = str(event_id)
     dto = await asyncio.to_thread(
         orch.audit_repo.get_for_user,
@@ -477,8 +414,6 @@ async def _render_detail(orch, user_id, event_id, return_to=None) -> str:
         availability_resolver=_availability_resolver(orch, user_id),
     )
     if dto is None:
-        # Non-existence and cross-user access are indistinguishable
-        # (FR-007 / FR-019) — same posture as the REST 404.
         return _back_button(return_to) + chrome_error_block(
             "Audit event not found.", retry_surface=_SURFACE_KEY
         )
@@ -515,19 +450,6 @@ async def _render_detail(orch, user_id, event_id, return_to=None) -> str:
 
 
 async def render(orch, user_id, roles, params) -> str:
-    """Render the audit surface body (list, or detail when ``event_id`` set).
-
-    Args:
-        orch: Orchestrator instance (``orch.audit_repo`` is used directly —
-            the same repository the REST endpoints call).
-        user_id: Authenticated WebSocket user id; all reads are scoped to it.
-        roles: Session roles (unused — the audit log is per-user, not gated).
-        params: ``{event_id?}`` for detail, else ``{cursor?, event_class?,
-            outcome?, q?}`` list filters.
-
-    Returns:
-        Body HTML for the chrome modal (escape-by-default via ``esc()``).
-    """
     params = params if isinstance(params, dict) else {}
     event_id = params.get("event_id")
     if event_id:
@@ -540,7 +462,6 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 def _entry_snapshot(dto):
-    """Copy public DTO fields into the reusable Projection view boundary."""
     entry = dto.model_dump(mode="json")
     for key in ("recorded_at", "started_at", "completed_at"):
         entry[key] = _fmt_ts(getattr(dto, key))
@@ -549,7 +470,6 @@ def _entry_snapshot(dto):
 
 
 async def components(orch, user_id, roles, params):
-    """Deliver the same owner-scoped audit filters and details as native SDUI."""
     from astralprojection.chrome.admin import build_audit_view
     from webrender.chrome.surfaces import _sdui
 
@@ -571,8 +491,6 @@ async def components(orch, user_id, roles, params):
     try:
         active, _, _, _, items, next_cursor, notices = await _read_list(orch, user_id, params)
     except _FilterError as exc:
-        # Keep a usable filter form after refusal; no query or false empty
-        # success is represented as a completed audit read.
         try:
             active = _list_params(params)
         except ValueError:
@@ -587,21 +505,7 @@ async def components(orch, user_id, roles, params):
             *[item.to_dict() for item in view.components]]
 
 
-# ---------------------------------------------------------------------------
-# Handlers
-# ---------------------------------------------------------------------------
-
 async def _handle_audit_page(orch, websocket, user_id, roles, payload):
-    """Apply list filters / pagination (``chrome_audit_page {fields}``).
-
-    Pure navigation — no mutation. Builds the list params from the
-    collected form ``fields`` (empty values dropped, whitespace trimmed)
-    and asks the dispatcher to re-render the ``audit`` surface with them.
-
-    Returns:
-        ``(surface_key, params, notice_html)`` per the surface-module
-        handler contract (empty notice — nothing was saved).
-    """
     fields = payload.get("fields") if isinstance(payload, dict) else {}
     try:
         params = _list_params(fields)

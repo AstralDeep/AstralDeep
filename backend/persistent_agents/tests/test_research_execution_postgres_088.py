@@ -1,7 +1,6 @@
-"""Real one-shot action ledger with synthetic final IAM and model transports.
-
-The actual fixed page reader, USER configuration encryption, model dispatcher,
-session/claim guards and PostgreSQL accounting run. No provider is contacted.
+"""Tests for persistent_agents/execution.py's model dispatch against real Postgres: one
+send per bound selection, revoke-during-config-wait prevents sending, unusable
+responses stay charged, and repeated cancellation settles exactly once.
 """
 
 import asyncio
@@ -222,7 +221,6 @@ async def test_cached_output_refuses_changed_current_permission_binding(research
 
 
 async def change_config(op):
-    # Even a same-value save has a new encrypted row and full timestamp binding.
     await op.executor.orch._llm_store.set(
         op.owner,
         provider="openai",

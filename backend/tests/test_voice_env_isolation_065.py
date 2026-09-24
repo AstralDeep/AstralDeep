@@ -1,4 +1,7 @@
-"""Feature 065 speech credentials stay inside the isolated media worker."""
+"""Tests that voice_agent/config.py's worker only accepts explicit worker-local speech
+credentials, rejecting ambient OpenAI environment variables that voice_backend.py's
+example environment deliberately leaves blank.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +38,6 @@ def _worker_environment() -> dict[str, str]:
         "VOICE_WORKER_CLOSURE_SHA256": "0" * 64,
         "VOICE_SPEECH_BASE_URL": "https://speech.example.test/v1",
         "VOICE_SPEECH_API_KEY": "speech-only-sentinel",
-        # Compose deliberately leaves the legacy names present but empty.
         "OPENAI_BASE_URL": "",
         "OPENAI_API_KEY": "",
         "HTTP_PROXY": "",

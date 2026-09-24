@@ -1,4 +1,7 @@
-"""Registry/schema contract tests for the Summarizer agent (feature 029)."""
+"""Tests for agents/summarizer/mcp_tools.py and mcp_server.py: registry schema and
+bounds, the agent card, and MCP dispatch/error-classification behavior.
+"""
+
 from agents.summarizer import mcp_tools
 from agents.summarizer.mcp_server import MCPServer
 from agents.summarizer.summarizer_agent import PORT_ENV_VAR, SummarizerAgent
@@ -41,7 +44,6 @@ def test_compare_documents_schema() -> None:
 
 
 def test_bounds() -> None:
-    """24k-char input cap; 1 MB / 15 s fetch bounds (FR-013/FR-014)."""
     assert mcp_tools.INPUT_CAP == 24_000
     assert mcp_tools.FETCH_MAX_BYTES == 1024 * 1024
     assert mcp_tools.FETCH_TIMEOUT_S == 15
@@ -147,7 +149,6 @@ def test_error_classification() -> None:
 
 
 def test_agent_instantiates_and_card_exposes_tools() -> None:
-    """Plug-and-play contract: the agent card is built from the registry."""
     agent = SummarizerAgent(port=65124)
     assert agent.card.agent_id == "summarizer-1"
     skill_names = {skill.name for skill in agent.card.skills}

@@ -1,4 +1,7 @@
-"""Explicit test-only draft boundary over the retiring legacy fixture database."""
+"""In-memory and database-backed doubles implementing the draft-store contract, used by
+agent-authoring, drafts, and BYO-authoring policy tests that need a detached
+DraftStore without a live database.
+"""
 
 from __future__ import annotations
 
@@ -46,8 +49,6 @@ def _optional_text(value: object, field: str, maximum: int) -> str | None:
 
 
 class InMemoryDraftStore:
-    """Thread-safe detached draft store for Deep policy tests."""
-
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -161,8 +162,6 @@ class InMemoryDraftStore:
         after_generation_claim_expires_at: int | None = None,
         after_draft_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return a bounded deterministic local-clock analogue for policy tests."""
-
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be in 1..1000")
         supplied_cursor = (
@@ -351,8 +350,6 @@ class InMemoryDraftStore:
         claim_id: str,
         lease_seconds: int = 300,
     ) -> dict[str, Any] | None:
-        """Renew one exact live test claim without changing its revision."""
-
         with self._lock:
             row = self.rows.get(draft_id)
             now = int(time.time() * 1000)
@@ -377,8 +374,6 @@ class InMemoryDraftStore:
         claim_id: str,
         lease_seconds: int = 300,
     ) -> dict[str, Any] | None:
-        """Reselect one expired exact test claim and advance its revision."""
-
         with self._lock:
             row = self.rows.get(draft_id)
             now = int(time.time() * 1000)
@@ -406,8 +401,6 @@ class InMemoryDraftStore:
         expected_preclaim_revision: int,
         claim_id: str,
     ) -> dict[str, Any] | None:
-        """Return the exact live post-claim row after acknowledgement loss."""
-
         with self._lock:
             row = self.rows.get(draft_id)
             now = int(time.time() * 1000)
@@ -436,8 +429,6 @@ class InMemoryDraftStore:
         transition_kind: str,
         expected_revision: int,
     ) -> tuple[int, str] | None:
-        """Return one exact stored transition without comparing observer state."""
-
         with self._lock:
             current = self.rows.get(draft_id)
             replay = self._transitions.get(transition_id)
@@ -513,8 +504,6 @@ class InMemoryDraftStore:
 
 
 class DatabaseDraftStoreDouble:
-    """Expose the typed Deep draft-store shape without a production fallback."""
-
     def __init__(self, database: Any) -> None:
         self.database = database
         self._lock = threading.RLock()
@@ -636,8 +625,6 @@ class DatabaseDraftStoreDouble:
         transition_kind: str,
         expected_revision: int,
     ) -> tuple[int, str] | None:
-        """Return one exact stored transition without comparing observer state."""
-
         with self._lock:
             current = self.get_owned_draft_agent(owner_user_id, draft_id)
             replay = self._transitions.get(transition_id)

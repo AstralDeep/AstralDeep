@@ -1,4 +1,7 @@
-"""Atomic authoring admission and optional online-authority tests."""
+"""Tests for orchestrator/user_agents.py's authoring admission: concurrent replay
+creation without CAS, read-only revision checks, cross-owner/tombstone refusal, and
+the optional online-authority runtime lookup.
+"""
 
 from __future__ import annotations
 

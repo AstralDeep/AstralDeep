@@ -1,11 +1,6 @@
-"""Exact-composition driver for the local AstralDeep/LETS case study.
-
-The tracked LETS harness starts this file once per scenario.  This entrypoint
-accepts one strict, bounded JSON request and emits one content-free result.  It
-uses the real Deep lifecycle, governed-dispatch, authorization-gateway, and
-public receipt-verifier boundaries with isolated deterministic test services;
-the observations below are therefore collected from executed calls rather
-than copied from the scenario's expected fields.
+"""Entrypoint the tracked LETS case-study harness runs per scenario: accepts one bounded
+JSON request and drives it through Deep's real lifecycle, governed-dispatch,
+authorization-gateway, and LETS receipt boundaries.
 """
 
 from __future__ import annotations
@@ -29,9 +24,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator, Literal
 
-# ``python backend/tests/lets_case_study_driver.py`` is the documented harness
-# invocation.  Make that direct entrypoint resolve the same Deep packages as a
-# pytest process whose working directory is ``backend``.
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT = _BACKEND_ROOT.parent
 _ASTRALPLANE_SOURCE_ROOT = _REPOSITORY_ROOT / "components/AstralPlane/src"
@@ -39,9 +31,7 @@ _LETS_SOURCE_ROOT = _REPOSITORY_ROOT / "components/LETS/src"
 for source_root in (_BACKEND_ROOT, _ASTRALPLANE_SOURCE_ROOT, _LETS_SOURCE_ROOT):
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
-# LETS authority-anchor helpers start with ``python -m``. Give only those
-# descendants the same fixed source roots; the runner removes caller-provided
-# PYTHONPATH before this process starts.
+# Descendants need this; the runner strips inherited PYTHONPATH
 os.environ["PYTHONPATH"] = os.pathsep.join(
     str(root) for root in (_BACKEND_ROOT, _ASTRALPLANE_SOURCE_ROOT, _LETS_SOURCE_ROOT)
 )
@@ -135,7 +125,7 @@ _Mode = Literal["off", "shadow", "enforce"]
 
 
 class DriverError(RuntimeError):
-    """Stable, value-free refusal safe for the retained stderr artifact."""
+    pass
 
 
 def _sha256_file(path: Path) -> str:
@@ -469,8 +459,6 @@ def _isolated_audit() -> Iterator[_AuditSink]:
 
 
 class _MeasuringWarden:
-    """Deterministic signed-receipt service with a measured finite budget."""
-
     def __init__(
         self,
         signer: Any,
@@ -610,8 +598,6 @@ class _LifecycleOutcome:
 
 
 class _HostLifecycle:
-    """Minimal deterministic host state machine surrounding the LETS adapter."""
-
     def __init__(self) -> None:
         self.state = "new"
 
@@ -651,8 +637,6 @@ class _CaseStudyPlane:
 
 
 class _RevokedBindingRepository:
-    """Expose no active row only after observing the lifecycle-produced revocation."""
-
     def __init__(self, binding: object | None) -> None:
         self.binding = binding
         self.inactive_observed = False

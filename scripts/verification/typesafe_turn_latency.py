@@ -1,34 +1,7 @@
 #!/usr/bin/env python3
-"""Feature 089 (T004/T032): what TypeSafe routing costs a turn.
-
-SC-001 through SC-004 are all statements about **TypeSafe-attributable
-delay**: the wall time a turn spends between opening the routing seam and
-having a decision in hand. That is the one thing feature 089 adds to the turn
-path, so it is the one thing this measures — directly, at the seam, rather
-than inferred from an end-to-end number that a model's own variance would
-swamp.
-
-| Criterion | What is measured here |
-|---|---|
-| SC-001 | An unkeyed turn: the added wall time, and that no call is made |
-| SC-002 | A keyed success: the added wall time before the first model call |
-| SC-003 | Every injected failure mode: the maximum added wall time |
-| SC-004 | An open circuit: the added wall time during cool-down |
-
-Two sources of timing are available:
-
-* ``--source fake`` replays the latency distribution measured against the real
-  service (``--p50``/``--p95``, defaulting to the T015 numbers) through the
-  deterministic fake, so a run is repeatable and can be done at any hour
-  without spending the owner's quota;
-* ``--source live`` calls the real service, with the owner's key read from
-  **stdin only** — never an argument, never the environment, never the report.
-
-The report names a key only by fingerprint and carries no prompt text.
-
-Usage:
-    python scripts/typesafe_turn_latency.py --turns 200
-    python scripts/typesafe_turn_latency.py --source live --turns 50 < key.txt
+"""Measures TypeSafe-attributable turn latency at the orchestrator/typesafe_routing/
+seam, replaying a measured distribution (--source fake) or the real service (--source
+live) across unkeyed, keyed, failure, and open-circuit cases.
 """
 
 from __future__ import annotations
@@ -50,12 +23,9 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 FIXTURES = ROOT / "backend/tests/fixtures/typesafe_routing"
 
-#: The measured real-service distribution (verification.md §8.2.2, 2026-09-17).
 DEFAULT_P50_MS = 212.0
 DEFAULT_P95_MS = 280.0
 
-#: A sentinel latency the fake sleeps on every answered call; the sleeper
-#: turns it into one draw from the measured distribution.
 _MARK = 0.0001234
 
 
@@ -118,17 +88,11 @@ def _request(prompt: str):
 
 @dataclass
 class Case:
-    """One measured condition, and the criterion it answers."""
-
     name: str
     criterion: str
     bound_ms: Optional[float]
     samples: list[float]
     calls: int = 0
-    #: What this harness's own measurement window can add: the wall clock is
-    #: read outside `start_routing`/`await_decision`, so a turn that runs to
-    #: the full budget is observed a scheduling quantum past it. Stated rather
-    #: than folded into the bound, so a real overshoot stays visible.
     allowance_ms: float = 0.0
 
     def overshoot_ms(self) -> float:
@@ -144,11 +108,6 @@ class Case:
 
 
 async def _time_seam(*, api_key, request, client, circuit, flags, fingerprint=None):
-    """The wall time of the seam, exactly as the turn sees it.
-
-    `start_routing` returns immediately; `await_decision` is what the turn
-    blocks on before its first model call. The pair is what feature 089 adds.
-    """
     from orchestrator.typesafe_routing.runner import await_decision, start_routing
 
     started = time.perf_counter()
@@ -166,11 +125,6 @@ async def _time_seam(*, api_key, request, client, circuit, flags, fingerprint=No
 
 
 def _fake_client(*, p50_ms: float, p95_ms: float, faults=None, rng=None):
-    """The deterministic fake, answering at the measured live latencies.
-
-    A lognormal fitted to the measured p50 and p95 rather than a flat delay:
-    a fixed delay would hide exactly the tail SC-002 and SC-003 are about.
-    """
     sys.path.insert(0, str(ROOT / "backend" / "tests"))
     from fakes.typesafe_fake import FakeTypeSafeClient, high_confidence
 
@@ -178,9 +132,6 @@ def _fake_client(*, p50_ms: float, p95_ms: float, faults=None, rng=None):
     mu = p50_ms / 1000.0
     sigma = max(1e-6, (p95_ms - p50_ms) / 1000.0 / 1.645)
 
-    # The fake sleeps `latency` on every answered call and the backoff on every
-    # retry; both go through this, so a run reproduces the measured spread
-    # rather than a flat delay that would hide the tail SC-002 is about.
     async def sleeper(seconds: float) -> None:
         if seconds == _MARK:
             await asyncio.sleep(max(0.0, rng.gauss(mu, sigma)))
@@ -209,7 +160,6 @@ async def run_fake(args) -> dict:
     requests = [_request(prompts[i % len(prompts)]) for i in range(min(len(prompts), 24))]
     cases: list[Case] = []
 
-    # SC-001 -- no key. The seam must not call, and must not wait.
     unkeyed = Case("unkeyed (SC-001)", "SC-001", 5.0, [])
     client = _fake_client(p50_ms=args.p50, p95_ms=args.p95)
     for i in range(args.turns):
@@ -222,7 +172,6 @@ async def run_fake(args) -> dict:
     unkeyed.calls = client.call_count
     cases.append(unkeyed)
 
-    # SC-001 -- the kill switch. Same promise by a different route.
     flag_off = Case("feature flag off (SC-001)", "SC-001", 5.0, [])
     client = _fake_client(p50_ms=args.p50, p95_ms=args.p95)
     for i in range(args.turns):
@@ -234,7 +183,6 @@ async def run_fake(args) -> dict:
     flag_off.calls = client.call_count
     cases.append(flag_off)
 
-    # SC-002 -- the keyed success path.
     keyed = Case("keyed success (SC-002)", "SC-002", 150.0 + args.p95, [])
     client = _fake_client(p50_ms=args.p50, p95_ms=args.p95)
     for i in range(args.turns):
@@ -246,7 +194,6 @@ async def run_fake(args) -> dict:
     keyed.calls = client.call_count
     cases.append(keyed)
 
-    # SC-003 -- every injected failure mode, bounded by the turn budget.
     faults = {
         "timeout": TypeSafeAPITimeoutError,
         "connection": TypeSafeAPIConnectionError,
@@ -254,7 +201,7 @@ async def run_fake(args) -> dict:
         "server_error": TypeSafeInternalServerError,
         "auth": TypeSafeAuthenticationError,
         "malformed": TypeSafeAPIResponseValidationError,
-        "hang": 9.0,  # a service that never answers
+        "hang": 9.0,
     }
     for label, fault in faults.items():
         case = Case(f"injected {label} (SC-003)", "SC-003", 1500.0, [],
@@ -273,7 +220,6 @@ async def run_fake(args) -> dict:
         case.calls = client.call_count
         cases.append(case)
 
-    # SC-004 -- an open circuit costs nothing until cool-down ends.
     opened = Case("circuit open (SC-004)", "SC-004", 5.0, [])
     circuit = UserCircuit()
     for _ in range(12):
@@ -293,7 +239,6 @@ async def run_fake(args) -> dict:
 
 
 async def run_live(args, key: str) -> dict:
-    """The keyed success path against the real service (SC-002)."""
     from orchestrator.typesafe_routing.budget import UserCircuit
 
     import hashlib

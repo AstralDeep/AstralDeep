@@ -1,4 +1,9 @@
-"""Closed declarative drafts retain instructions without granting execution."""
+"""Tests for declarative agent definition parsing
+(orchestrator/projection_surfaces/authoring.py, persistent_agents/models.py): closed
+drafts retain instructions and structural tool shape without granting execution
+authority.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -41,8 +46,6 @@ def test_supported_tool_shape_is_only_structural_not_authority():
     value["capabilities"] = [{"agent_id": "web-research-1", "tool_name": "fetch_page"}]
     parsed = authoring.DeclarativeAgentDefinition.parse(value)
     assert parsed.fixed_research_shape is True
-    # Existing default budgets are insufficient for the model profile. Parsing
-    # a draft must not silently increase them or pretend to authorize execution.
     assert parsed.to_dict()["limits"]["daily"]["tokens"] == 100_000
     assert parsed.to_dict() == value
 

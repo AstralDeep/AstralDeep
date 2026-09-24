@@ -1,14 +1,8 @@
-"""Pre-enablement fixes for ``FF_MCP_SERVER`` (Phase A2).
-
-Three gates that behaved differently over MCP than over the web/WS channel:
-
-1. the realm-role entry requirement (``user`` / ``admin``) the web callback
-   enforces but ``/mcp`` did not;
-2. the delegation refusal text when the server signing key is unset (the MCP
-   mint is local, so "register the tools:* client scopes" was misleading);
-3. the runtime supervisor's intent check, which saw EMPTY request text over
-   MCP and refused every ``delete_``/``send_``/... tool.
+"""Tests for orchestrator/mcp_authz.py, mcp_server_endpoint.py and supervisor.py: the
+realm-role entry gate, an honest refusal when the signing key is unset, and the
+supervisor's intent check for destructive tools called over MCP.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,11 +17,6 @@ import pytest
 from orchestrator import mcp_authz, supervisor
 from orchestrator.orchestrator import Orchestrator
 from shared.protocol import AgentCard, AgentSkill
-
-
-# --------------------------------------------------------------------------- #
-# (1) realm-role gate                                                          #
-# --------------------------------------------------------------------------- #
 
 
 async def _authorize(required=("mcp:discover",)):
@@ -49,7 +38,6 @@ async def _authorize(required=("mcp:discover",)):
         {"sub": "u1", "scope": "mcp:tools:invoke", "realm_access": {"roles": ["guest"]}},
         {"sub": "u1", "scope": "mcp:tools:invoke", "realm_access": {"roles": "user"}},
         {"sub": "u1", "scope": "mcp:tools:invoke", "realm_access": "user"},
-        # Client roles are NOT an entry grant: only realm_access counts.
         {
             "sub": "u1",
             "scope": "mcp:tools:invoke",
@@ -68,7 +56,6 @@ async def test_token_without_entry_realm_role_is_refused_403(monkeypatch, claims
     assert err.status_code == 403
     assert err.error == "insufficient_scope"
     assert err.required_scopes == ("mcp:tools:invoke",)
-    # No claim value leaks through the description or the challenge header.
     for leaked in ("u1", "guest", "astral-mcp"):
         assert leaked not in err.description
     challenge = mcp_authz.challenge_header(
@@ -95,8 +82,6 @@ async def test_token_with_entry_realm_role_is_admitted(monkeypatch, role):
 
 @pytest.mark.asyncio
 async def test_role_gate_precedes_scope_gate(monkeypatch):
-    """An un-admitted account gets the role refusal, not a scope hint."""
-
     async def decode(_token):
         return {"sub": "u1", "scope": "mcp:discover"}
 
@@ -128,8 +113,6 @@ def test_realm_roles_helper_is_defensive():
 
 @pytest.mark.asyncio
 async def test_endpoint_returns_403_and_challenge_for_roleless_token(monkeypatch):
-    """End-to-end through the mounted endpoint: a signed token with no entry
-    role yields 403 + WWW-Authenticate, and the body carries no claims."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -171,11 +154,6 @@ async def test_endpoint_returns_403_and_challenge_for_roleless_token(monkeypatch
     assert response.status_code == 403, response.text
     assert 'error="insufficient_scope"' in response.headers.get("www-authenticate", "")
     assert "secret-subject" not in response.text
-
-
-# --------------------------------------------------------------------------- #
-# (2) honest refusal when the signing key is unset                             #
-# --------------------------------------------------------------------------- #
 
 
 def _mcp_orchestrator():
@@ -243,16 +221,11 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
     monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    # Production startup composes Plane synchronously before serving requests.
-    # Keep the event-loop guard enabled while constructing that graph off-loop.
     orch = await asyncio.to_thread(orchestrator_factory)
     orch.audit_recorder = MagicMock()
     orch.audit_recorder.record = AsyncMock()
     orch.send_ui_render = AsyncMock()
     orch.agent_cards["reader-1"] = _mcp_orchestrator().agent_cards["reader-1"]
-    # Present the agent as an in-process built-in so dispatch reaches the
-    # delegation gate (which sits after the "No agent available" check); the
-    # refusal must fire BEFORE any agent code runs.
     orch.local_agents["reader-1"] = MagicMock()
     orch._execute_in_process = AsyncMock(side_effect=AssertionError("must not dispatch"))
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
@@ -274,11 +247,6 @@ async def test_mcp_refusal_names_signing_key_not_idp_scopes(orchestrator_factory
     assert "DELEGATION_CHILD_SIGNING_KEY" in message
 
 
-# --------------------------------------------------------------------------- #
-# (3) supervisor intent over MCP                                               #
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "tool", ["delete_records", "send-email", "drop_table", "purge.cache", "pay_invoice"]
 )
@@ -286,14 +254,11 @@ def test_mcp_intent_text_aligns_destructive_tool_named_by_caller(tool):
     text = supervisor.mcp_intent_text(tool)
     assert text.startswith("call tool ")
     assert supervisor.intent_aligned(text, tool)
-    # Over chat the same tool with unrelated words is still refused.
     assert not supervisor.intent_aligned("show me my dashboard", tool)
     assert not supervisor.intent_aligned("", tool)
 
 
 def test_mcp_intent_text_does_not_fabricate_intent_for_listed_tools():
-    """An injected destructive-tool catalogue entry whose NAME carries no verb
-    still needs an intent verb: the synthesized text is only the tool name."""
     assert not supervisor.intent_aligned(
         supervisor.mcp_intent_text("nuke_everything"),
         "nuke_everything",
@@ -337,7 +302,6 @@ async def test_supervisor_over_mcp_accepts_explicitly_named_destructive_tool(
         arguments={},
     )
     assert "didn't ask for" not in _err(resp)
-    # Past the supervisor: falls through to the no-agent sentinel.
     assert "No agent available" in _err(resp)
 
 
@@ -358,7 +322,6 @@ async def test_supervisor_over_chat_still_refuses_unrequested_destructive(
 async def test_mcp_destructive_remote_compute_refusal_survives_supervisor_change(
     gate_orch, monkeypatch
 ):
-    """The 063 unattended-channel refusal is independent of the supervisor."""
     monkeypatch.setenv("FF_RUNTIME_SUPERVISOR", "true")
     monkeypatch.setenv("ASTRAL_ENV", "development")
     from orchestrator import remote_confirmation

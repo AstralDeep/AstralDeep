@@ -1,4 +1,7 @@
-"""Committed-result recap delivery failure coverage for Feature 065."""
+"""Tests for committed-result recap delivery failures: failed/partial speech,
+intentional stop, foreground suspension, and a worker barge-in mid-recap each report
+the correct speech outcome without touching the committed turn text.
+"""
 
 from __future__ import annotations
 
@@ -260,8 +263,6 @@ async def test_suspend_resume_race_drops_active_recap_remainder() -> None:
         await _eventually(lambda: len(media.calls) == 2)
 
         async def delayed_source_stop(_session: Any) -> None:
-            # Model the exact race where mute wins locally while the worker's
-            # already-in-flight source reaches its normal terminal event.
             media.stops += 1
 
         media.stop_speech = delayed_source_stop  # type: ignore[method-assign]
@@ -313,7 +314,6 @@ async def test_worker_barge_in_marks_exact_recap_suppressed_not_failed() -> None
             )
         )
         await _eventually(lambda: len(media.calls) == 2)
-        # Worker VAD can barge in without a preceding REST stop command.
         media.finish("speech_interrupted")
 
         delivery = await completion

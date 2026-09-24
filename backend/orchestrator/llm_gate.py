@@ -1,30 +1,8 @@
-"""Feature 054 — the mandatory first-run LLM provider-setup gate.
-
-Server-authoritative delivery + lifecycle of the "Set up your AI provider"
-dialog (spec FR-013..FR-016):
-
-* :func:`push_setup_dialog` — push the mandatory dialog to one socket
-  (register-time, or re-gate after a clear). Web receives a
-  ``chrome_render`` modal in the no-close mandatory variant; native SDUI
-  clients (Windows/Android/iOS/macOS) receive the existing ``chrome_surface``
-  frame with its reserved ``mode`` field set to ``"mandatory"`` — no new
-  frame types, no protocol-manifest change. The watch is chrome-free by
-  design and is never pushed (it gets spoken guidance at the chat
-  pre-flight instead, FR-017).
-* :func:`unlock_after_save` — after a successful probe-gated save, close
-  the gate on ALL of the user's connected sockets and render each gated
-  socket's welcome canvas, without re-login (FR-015).
-* :func:`regate_after_clear` — after a clear, immediately push the
-  mandatory dialog to all of the user's sockets (FR-009: there is no
-  default to revert to).
-
-The dialog is only the UX half; the authoritative half is the set of
-server-side refusals (chat pre-flight, ``chrome_events`` gate,
-``component_action``) that key off :meth:`Orchestrator.llm_configured_for`
-regardless of what any client renders. Sign-out is the one guaranteed
-escape: ``/auth/logout`` routes are never gated and the mandatory dialog
-carries a sign-out affordance (FR-013).
+"""Server-authoritative delivery of the mandatory first-run AI-provider setup dialog:
+pushes it at register time, re-pushes it on a failed save, and unlocks every socket
+after a successful probe-gated save. Used by orchestrator.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,8 +28,6 @@ def _device_type(orch, websocket) -> str:
 
 
 def _gated_map(orch) -> dict:
-    """Per-socket gate marker: id(websocket) → True while the mandatory
-    dialog is (believed) showing on that socket."""
     m = getattr(orch, "_ws_llm_gated", None)
     if m is None:
         m = {}
@@ -60,17 +36,10 @@ def _gated_map(orch) -> dict:
 
 
 def is_gated(orch, websocket) -> bool:
-    """Is this socket currently held by the mandatory first-run dialog?
-
-    A refusal has to re-push whichever dialog the person is actually looking
-    at; the mandatory one cannot be replaced with the dismissible settings
-    surface without changing what they are allowed to do.
-    """
     return bool(_gated_map(orch).get(id(websocket)))
 
 
 def _user_sockets(orch, user_id: str) -> list:
-    """All live UI sockets registered to ``user_id``."""
     out = []
     for ws, claims in list((getattr(orch, "ui_sessions", None) or {}).items()):
         if ((claims or {}).get("sub") or "legacy") == user_id:
@@ -88,29 +57,15 @@ def _roles_for(orch, websocket) -> list:
 
 async def push_setup_dialog(orch, websocket, user_id: str, *,
                             params_extra: dict | None = None) -> None:
-    """Push the mandatory provider-setup dialog to one socket.
-
-    Device-aware: web → mandatory ``chrome_render`` modal (no ✕,
-    ``data-mandatory``, sign-out link); native SDUI →
-    ``chrome_surface {mode:"mandatory"}`` with the first-run composition.
-    The watch is skipped (chrome-free by design).
-    """
     from orchestrator.projection_surfaces import llm as llm_surface
 
     dtype = _device_type(orch, websocket)
     if dtype == _WATCH:
         return
     roles = _roles_for(orch, websocket)
-    # WHICH account is this? The dialog is per-user and server-side, so a user
-    # signed in on a second device under a DIFFERENT Keycloak account otherwise
-    # sees a bare "set up your AI provider" and concludes their config failed to
-    # sync. Name the principal. (Claims only — no logic change.)
     claims = (getattr(orch, "ui_sessions", None) or {}).get(websocket) or {}
     principal = (claims.get("preferred_username") or claims.get("email") or "")
     params = {"first_run": True, "principal": principal}
-    # A refusal re-pushes this same dialog carrying what the person already
-    # typed and the reason it was refused. Without that the dialog comes back
-    # empty and unexplained, and this is the dialog that cannot be dismissed.
     if params_extra:
         params.update(params_extra)
     if dtype in ("windows", "android", "ios", "macos"):
@@ -135,9 +90,6 @@ async def push_setup_dialog(orch, websocket, user_id: str, *,
         body = await llm_surface.render(orch, user_id, roles, params)
         await orch._safe_send(websocket, ChromeRender(
             region="modal",
-            # Feature 089 moved the surface's actions into the dialog footer.
-            # This dialog cannot be dismissed, so rendering it without one
-            # would leave a new user with no way to save and no way out.
             html=render_modal_shell(
                 llm_surface.FIRST_RUN_TITLE, body, SURFACE_KEY, mandatory=True,
                 subtitle=getattr(llm_surface, "SUBTITLE", ""),
@@ -148,12 +100,6 @@ async def push_setup_dialog(orch, websocket, user_id: str, *,
 
 
 async def _push_gate_close(orch, websocket) -> None:
-    """Close the mandatory dialog on one socket.
-
-    Web: empty ``chrome_render`` clears the modal region. Natives: the
-    documented blank-``surface_key`` empty-components close instruction
-    (today's reducers only honor the BLANK form) — the 054 client edits
-    additionally clear the mandatory pin on this frame."""
     if _device_type(orch, websocket) in ("windows", "android", "ios", "macos"):
         from shared.protocol import ChromeSurface
         await orch._safe_send(websocket, ChromeSurface(
@@ -165,7 +111,6 @@ async def _push_gate_close(orch, websocket) -> None:
 
 
 async def _send_welcome(orch, websocket, user_id: str) -> None:
-    """Render the welcome canvas that the gate suppressed at register time."""
     try:
         if orch._ws_active_chat.get(id(websocket)):
             return
@@ -178,7 +123,7 @@ async def _send_welcome(orch, websocket, user_id: str) -> None:
         await orch.send_ui_render(
             websocket, welcome_components(tools_available=tools_avail), speak=False)
         orch._ws_welcome[id(websocket)] = True
-    except Exception:  # non-fatal — an empty canvas is fine
+    except Exception:
         logger.debug("llm_gate: welcome render failed (non-fatal)", exc_info=True)
 
 
@@ -192,16 +137,6 @@ async def unlock_after_save(
     completed_operation_id: Any | None = None,
     deadline_at_monotonic: float | None = None,
 ) -> bool:
-    """Close the gate on ALL of the user's sockets after a successful save.
-
-    Returns ``True`` iff at least one socket was gated (the caller uses
-    this to skip its own modal re-render — the unlock already replaced it).
-
-    Feature 060 credential operations pass their complete execution fence and
-    attempt deadline.  Each logical gate transition is authorized immediately
-    before it mutates the marker, so a cancelled/stale provider worker cannot
-    unlock a user after the durable terminal state won the race.
-    """
     completed_authority = (
         completed_owner is not None or completed_operation_id is not None
     )
@@ -252,9 +187,6 @@ async def unlock_after_save(
         if not was_gated:
             continue
         try:
-            # Closing the race between the logical marker mutation and the
-            # first client frame: deadline loss restores the marker, so no
-            # post-deadline close/navigation can be projected.
             await _assert_unlock_authority()
         except Exception:
             gated[id(ws)] = True
@@ -266,9 +198,6 @@ async def unlock_after_save(
             await _send_welcome(orch, ws, user_id)
             await _assert_unlock_authority()
         except Exception:
-            # Fence/deadline failures are operation-authority outcomes, not a
-            # best-effort delivery miss. Propagate them so the outer Save
-            # terminal cannot become a late success.
             if coordinator is not None:
                 raise
             logger.debug(
@@ -279,13 +208,8 @@ async def unlock_after_save(
 
 
 async def regate_after_clear(orch, user_id: str) -> int:
-    """Push the mandatory dialog to all of the user's sockets after a clear.
-
-    Returns the number of sockets gated. Watch sockets are skipped (they
-    get the spoken guidance at their next AI use instead)."""
     count = 0
     if not getattr(orch, "_ff_llm_first_run", True):
-        # Kill switch: no mandatory pushes. Server-side refusals still gate.
         return 0
     for ws in _user_sockets(orch, user_id):
         try:
@@ -299,7 +223,6 @@ async def regate_after_clear(orch, user_id: str) -> int:
 
 
 def clear_socket(orch, websocket) -> None:
-    """Disconnect cleanup — forget the gate marker for a closed socket."""
     m = getattr(orch, "_ws_llm_gated", None)
     if m is not None:
         m.pop(id(websocket), None)

@@ -1,10 +1,8 @@
-"""Feature 040 (US5) — user-typed /slash-commands.
-
-Covers: known commands expand into a prompt (not a tool call — no privileged
-bypass), unknown commands produce a friendly relay (never an error), ordinary
-text and slash-paths are left untouched, and discovery metadata is exposed.
-Pure unit tests — no DB.
+"""Tests for user-typed /slash-commands (orchestrator/slash_commands.py): known commands
+expand into a prompt, not a tool call; unknown commands get a friendly relay;
+expansion never emits a literal tool directive.
 """
+
 from __future__ import annotations
 
 import sys
@@ -32,7 +30,6 @@ def test_research_command_includes_no_fabrication_guard():
 
 def test_unknown_command_is_friendly_not_error():
     out = slash_commands.expand_message("/frobnicate stuff")
-    # Friendly relay that lists real commands; never raises, never empty.
     assert "frobnicate" in out
     assert "/help" in out and "/summarize" in out
 
@@ -43,7 +40,6 @@ def test_ordinary_text_is_unchanged():
 
 
 def test_slash_path_is_not_a_command():
-    # A leading slash that is a path, not a clean command token, is left as text.
     assert slash_commands.expand_message("/usr/local/bin") == "/usr/local/bin"
 
 
@@ -65,13 +61,11 @@ def test_command_list_exposes_discovery_metadata():
 def test_download_command_expands_without_url_or_tool_directive():
     out = slash_commands.expand_message("/download")
     assert "desktop app" in out
-    assert "http" not in out  # never a baked-in URL
+    assert "http" not in out
     assert "tools/call" not in out and "tool_call" not in out
 
 
 def test_expansion_is_prompt_only_no_tool_directive():
-    # The expansion is a natural-language prompt — it must not contain a literal
-    # tool-call directive that would bypass the model + permission gate.
     out = slash_commands.expand_message("/weather Lexington KY")
     assert "Lexington KY" in out
     assert "tools/call" not in out and "tool_call" not in out

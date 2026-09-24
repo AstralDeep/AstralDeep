@@ -1,4 +1,6 @@
-"""Network-disabled clean-checkout proof for the feature-074 composition."""
+"""Tests that scripts/migration proves an exact offline composition checkout with
+network disabled, verifying submodule URLs and gitlink revisions.
+"""
 
 from __future__ import annotations
 
@@ -130,10 +132,7 @@ def test_clean_checkout_initializes_exact_offline_composition(tmp_path: Path) ->
     source_revision = _git("rev-parse", "HEAD", cwd=REPOSITORY_ROOT)
     _git("checkout", "--detach", source_revision, cwd=checkout, environment=environment)
 
-    # `git submodule update` starts child clone processes outside the parent
-    # repository, so parent-local url.* config does not reach them. Command
-    # configuration in the environment is inherited while remaining confined
-    # to this test process and its children.
+    # submodule update spawns clones outside repo-local config
     environment["GIT_CONFIG_COUNT"] = str(len(rewrites))
     for index, (canonical_url, local_url) in enumerate(sorted(rewrites.items())):
         environment[f"GIT_CONFIG_KEY_{index}"] = f"url.{local_url}.insteadOf"

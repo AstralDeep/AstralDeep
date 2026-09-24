@@ -1,4 +1,8 @@
-"""Owner policy for durable assignments; all execution uses normal dispatch."""
+"""Owner policy for durable assignments (create/revise/control/approve); routes all
+execution through ordinary dispatch fences via persistent_agents/store.py, enforcing
+privacy.py and phi_gate.py before any mutation.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +39,6 @@ from .privacy import content_text, privacy_text, reviewed_urls
 
 
 def thaw(value):
-    """Convert detached frozen records without unsafe JSON/string fallbacks."""
     if is_dataclass(value):
         return {entry.name: thaw(getattr(value, entry.name)) for entry in fields(value)}
     if isinstance(value, Mapping):
@@ -56,7 +59,6 @@ def public_record(record):
     data["cost_status"] = "capped" if data["definition"]["limits"].get("currency") else "unpriced"
     data["last_check_at"] = data.get("checkpoint", {}).get("last_checked_at")
     data["latest_result"] = data.get("checkpoint", {}).get("last_finding")
-    # Private cursors/source event receipts are never part of owner view state.
     data.pop("checkpoint", None)
     return data
 
@@ -65,8 +67,6 @@ def public_action(action):
     data = thaw(action)
     data.pop("owner_id", None)
     data["intent"].pop("downstream_key", None)
-    # Attempts contain observation capabilities; public consumers need states,
-    # never dispatch tokens or operation lease credentials.
     data["attempts"] = [{key: attempt[key] for key in
                          ("attempt_id", "state", "outcome", "result_digest") if key in attempt}
                         for attempt in data.get("attempts", [])]
@@ -74,7 +74,6 @@ def public_action(action):
 
 
 async def _thread(function, *args, **kwargs):
-    # Do not inherit a foreground turn's permission memo into fresh authority reads.
     return await asyncio.to_thread(contextvars.Context().run, lambda: function(*args, **kwargs))
 
 
@@ -163,7 +162,6 @@ class AssignmentService:
                                      states=("proposed", "approved", "uncertain"), limit=100)
 
     async def actions(self, owner_id, claims, assignment_id, *, limit=100, after_id=None):
-        """Owner-visible durable outcomes, including completed actions."""
         await self.get(owner_id, claims, assignment_id)
         self._page(limit)
         if after_id is not None:
@@ -172,7 +170,6 @@ class AssignmentService:
                                      limit=limit, after_id=after_id)
 
     async def events(self, owner_id, claims, assignment_id, *, limit=100, after_id=None):
-        """Durable source receipt identities, without private source content."""
         await self.get(owner_id, claims, assignment_id)
         self._page(limit)
         if after_id is not None:
@@ -224,7 +221,6 @@ class AssignmentService:
 
     async def _definition_policy(self, owner_id, claims, *, name, instructions, source,
                                  allowed_tools, completion_condition, conversation_id):
-        """Shared content/source/permission policy, without inventing offline consent."""
         try:
             protected_text = privacy_text(content_text({
                 "name": name, "instructions": instructions,
@@ -278,7 +274,6 @@ class AssignmentService:
             conversation_id=body.conversation_id, cost_quote_coverage=coverage)
 
     async def _prepare_consent(self, owner_id, selected_session):
-        """Prepare immutable encrypted consent without creating unattended authority."""
         try:
             from orchestrator.session_consent import ConsentSession
             if not isinstance(selected_session, ConsentSession):
@@ -292,8 +287,6 @@ class AssignmentService:
 
     async def create(self, owner_id, claims, body: CreateAssignmentRequest, *, selected_session=None):
         self._owner(owner_id, claims)
-        # Stable owner-derived UUID4 gives lost-ack retries a lookup before grant
-        # capture. Plane independently compares the complete submission digest.
         assignment_id = str(UUID(bytes=hashlib.sha256(
             f"{owner_id}\0{body.submission_id}".encode()).digest()[:16], version=4))
         submission_digest = digest(body.model_dump())
@@ -322,9 +315,7 @@ class AssignmentService:
         receipt = await self._receipt(owner_id, assignment_id, body.submission_id, submission_digest, "revise")
         if receipt is not None:
             return AssignmentControlResult(receipt, False)
-        # A mismatched observation can only replay an exact accepted request.
-        # Future CAS numbers may become current during an await; never let that
-        # transition turn this no-consent branch into a new mutation.
+        # A future CAS becoming current mid-await must not mutate
         stale = (record.instruction_revision != body.expected_instruction_revision
                  or record.control_epoch != body.expected_control_epoch)
         if stale:
@@ -371,7 +362,6 @@ class AssignmentService:
                 submission_digest=submission_digest, command=command), bound_session_waits=True)
 
     async def _mutation(self, method, command, *, prepared, **kwargs):
-        """Commit consent and its dependent mutation together, or replay a receipt."""
         try:
             return await self.store.transaction(
                 lambda transaction, repository: self._consented_mutation(
@@ -380,8 +370,6 @@ class AssignmentService:
         except AssignmentError as exc:
             if exc.status_code != 409:
                 raise
-            # Concurrent consented retries can capture distinct server grants.
-            # Only Plane's retained exact client-submission receipt proves replay.
             receipt = await self._receipt(kwargs["owner_id"], kwargs["assignment_id"],
                 kwargs["submission_id"], kwargs["submission_digest"], command)
             if receipt is None:
@@ -389,7 +377,6 @@ class AssignmentService:
             return receipt if method == "create_assignment" else AssignmentControlResult(receipt, False)
 
     def _consented_mutation(self, transaction, repository, method, command, prepared, kwargs):
-        """Use only the caller's one Plane transaction; never compensate an unknown commit."""
         from astralplane.errors import PlaneError
         from orchestrator.offline_grant import OfflineGrantError
         receipt = repository.get_submission_receipt(transaction,
@@ -404,8 +391,6 @@ class AssignmentService:
             result = getattr(repository, method)(transaction, **kwargs)
             record = result if method == "create_assignment" else result.assignment
             if record.definition.offline_grant_id != prepared.grant_id:
-                # A concurrent accepted receipt can carry a different grant.
-                # Roll back our unused candidate before the outside replay read.
                 raise AssignmentError("assignment_idempotency_conflict", 409)
             grants.assert_current_capture(transaction, prepared, plane_runtime=self.store.plane_runtime)
             return result
@@ -528,7 +513,6 @@ class AssignmentService:
             expected_instruction_revision=body.expected_instruction_revision,
             expected_control_epoch=body.expected_control_epoch, decision=decision)
         await self._audit(claims, body.decision, record)
-        # A retained completed/uncertain receipt is never a reason to dispatch again.
         if body.decision == "approve" and decided.state == "approved":
             return await self.approval_executor(owner_id, claims, record, decided, interaction)
         return decided

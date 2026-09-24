@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Linux CI only. Every container/database is disposable; no host .env is used.
-# Boot smoke is structural. Real login, LETS-enforce and enabled media still
-# require protected staging before any backend/web production-readiness verdict.
+# Linux-CI boot-smoke gate for the backend/web Docker images: brings up disposable dev and test
+# containers and checks structural startup only; real login, LETS-enforce, and media remain gated
+# behind staging.
 set -euo pipefail
 image="${1:?immutable local image ID required}"
 phase="${2:-tests}"
@@ -39,7 +39,6 @@ docker exec "$namespace-pg" pg_isready -U astral -d ad_gate_tests
 docker exec "$namespace-pg" createdb -U astral ad_gate_smoke
 docker exec "$namespace-pg" createdb -U astral ad_gate_development
 
-# Missing production credentials must exit 78 before opening durable resources.
 set +e
 docker run --name "$namespace-negative" --network none --cpus=1 --memory=1g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
@@ -49,7 +48,6 @@ set -e
 test "$negative" -eq 78
 printf '%s\n' "$negative" > "$output/boot-negative.exit"
 
-# Fresh synthetic keys never leave this runner. These are not live credentials.
 python - "$namespace" "$environment" <<'PY'
 import base64
 import os
@@ -107,8 +105,6 @@ docker exec "$namespace-app" python /app/scripts/install_local_components.py ver
   --root /app --lock /opt/astral-component-wheels/astral-component-wheels.lock.json
 docker stop "$namespace-app" >/dev/null
 
-# The distinct development smoke proves the documented development startup and
-# mock handshake only. It has its own database and cannot qualify production.
 docker run -d --init --name "$namespace-dev" --network "$namespace" --cpus=2 --memory=2g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --env ASTRAL_ENV=development --env USE_MOCK_AUTH=true --env PYTHON_DOTENV_DISABLED=1 \
@@ -137,8 +133,6 @@ while True:
 PY
 if [[ "$phase" == boot ]]; then exit 0; fi
 url="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_tests"
-# The isolated development server supplies the historical mock-token handshake;
-# loopback can never resolve to an unrelated developer or production instance.
 docker run --init --name "$namespace-test" --network "container:$namespace-dev" --cpus=2 --memory=4g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --user "$(id -u):$(id -g)" --env HOME=/tmp \

@@ -1,11 +1,9 @@
-"""Per-user remote-machine inventory + transport-target construction (feature 063).
-
-Thin, owner-scoped DB helpers over the ``remote_machine`` / ``machine_credential``
-tables plus ``build_target()``, which loads a machine scoped to its owner (FR-018)
-and decrypts its credential into a transport ``MachineTarget``. Every query is
-owner-scoped so one user can never see, name, or address another user's machine
-(FR-010, SC-012).
+"""Owner-scoped SSH machine inventory and credential lookup: build_target() loads a
+machine and decrypts its credential into a transport MachineTarget for
+remote_transport.py. Every query is scoped so one user can never see another's
+machines.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,7 +23,7 @@ logger = logging.getLogger("RemoteMachines")
 
 
 class MachineNotFound(Exception):
-    """No machine with that id in the invoking user's inventory (FR-018/SC-012)."""
+    pass
 
 
 def _now_ms() -> int:
@@ -82,7 +80,6 @@ def _machine_dict(machine: RemoteMachine) -> Dict:
 
 def create_machine(db, owner_user_id: str, label: str, address: str, port: int,
                    username: str, os_family: str, role: str) -> str:
-    """Insert a machine into the user's inventory; return its new id."""
     machine_id = uuid.uuid4().hex
     now = _now_ms()
     context = _remote_context(db)
@@ -120,7 +117,6 @@ def list_machines(db, owner_user_id: str) -> List[Dict]:
 
 
 def owns_any_machine(db, owner_user_id: str) -> bool:
-    """Existence-only check for tool visibility; no machine data leaves."""
     context = _remote_context(db)
     return bool(
         context.call(
@@ -142,9 +138,6 @@ def get_machine(db, owner_user_id: str, machine_id: str) -> Optional[Dict]:
 
 
 def resolve_machine(db, owner_user_id: str, ref: str) -> Optional[Dict]:
-    """Resolve a machine within the caller's inventory by id, then label, then
-    address (case-insensitive). Lets a chat verb accept "dgx" or the address, not
-    just the opaque machine_id. Owner-scoped throughout (FR-018)."""
     if not ref:
         return None
     context = _remote_context(db)
@@ -157,8 +150,6 @@ def resolve_machine(db, owner_user_id: str, ref: str) -> Optional[Dict]:
 
 
 def delete_machine(db, owner_user_id: str, machine_id: str) -> bool:
-    """Delete an owned machine (credential cascades via the FK). Returns False if
-    the machine is not in the caller's inventory."""
     context = _remote_context(db)
     return context.call(
         context.repository.delete_machine,
@@ -168,11 +159,6 @@ def delete_machine(db, owner_user_id: str, machine_id: str) -> bool:
 
 
 def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -> Dict[str, int]:
-    """Account-removal leg of FR-015 (data-model.md "Retirement & revocation"):
-    destroy every machine credential the user owns, then their remote_machine
-    inventory and tracked_job rows. Sibling of the attachments account-deletion
-    hook (``attachments.account_lifecycle.purge_user_attachments``) — called by
-    the user-management subsystem when an account is removed. Idempotent."""
     if credential_manager is None:
         from orchestrator.credential_manager import CredentialManager
         credential_manager = CredentialManager(db=db)
@@ -186,8 +172,6 @@ def purge_user_remote_compute(db, owner_user_id: str, credential_manager=None) -
     return {"credentials": credentials, "machines": machines, "jobs": jobs}
 
 
-# Verdicts under which the connection genuinely reached + authenticated to the
-# machine; anything else audits as a failed connection attempt (FR-047).
 _CONNECTED_VERDICTS = ("ok", "partial")
 
 
@@ -195,14 +179,6 @@ def audit_machine_event(owner_user_id: Optional[str], action_type: str, descript
                         machine_id: Optional[str] = None, label: Optional[str] = None,
                         verdict: Optional[str] = None, cred_type: Optional[str] = None,
                         outcome: str = "success") -> None:
-    """FR-047 hash-chained audit row naming the actor, the machine (id + label)
-    and the outcome. Reuses the ``agent_lifecycle`` class the 063 confirmation
-    gate already records ``remote_op.*`` rows under (no schema change; same
-    posture as feature 056's constant-only ``delegation`` class), correlated by
-    ``machine_id`` so one machine's whole lifecycle lines up. SECRETS NEVER
-    enter a row (FR-049): only ids, labels, credential *types* and verdicts.
-    Best-effort — an audit failure never blocks the operation (mirrors
-    ``remote_confirmation._audit_sync``)."""
     try:
         from datetime import datetime, timezone
 
@@ -231,19 +207,12 @@ def audit_machine_event(owner_user_id: Optional[str], action_type: str, descript
             inputs_meta=meta,
             started_at=datetime.now(timezone.utc),
         ))
-    except Exception:  # noqa: BLE001 — audit is best-effort, never fatal
+    except Exception:  # noqa: BLE001
         logger.debug("remote_machine audit failed (%s)", action_type, exc_info=True)
 
 
 def record_probe(db, owner_user_id: str, machine_id: str, verdict: str,
                  host_key: Optional[Dict] = None) -> None:
-    """Persist the last reachability verdict; record the host key ONLY on first
-    contact (FR-020). Never overwrites an existing recorded key — a change surfaces
-    as a host_key_mismatch verdict and requires an explicit re-trust action.
-
-    Also the single audit seam for connection attempts (FR-047): every probe and
-    verb-level connection already reports its verdict through here, so each one
-    lands in the audit log as attempt + verdict without agents/** auditing."""
     now = _now_ms()
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
@@ -281,8 +250,6 @@ def record_probe(db, owner_user_id: str, machine_id: str, verdict: str,
 
 
 def retrust_host_key(db, owner_user_id: str, machine_id: str) -> None:
-    """Deliberately clear the recorded host key so the next probe re-records it —
-    the ONLY path that accepts a changed host identity (FR-020)."""
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         return
@@ -297,20 +264,13 @@ def retrust_host_key(db, owner_user_id: str, machine_id: str) -> None:
 
 
 def build_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTarget:
-    """Load an owned machine + decrypt its credential into a MachineTarget.
-
-    Raises MachineNotFound (not in the user's inventory), CredentialNotConfigured,
-    or credential_manager.CredentialUndecryptable — the verb layer maps each to a
-    result verdict. Address/port/username come from the stored row, never the model
-    (FR-018).
-    """
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         raise MachineNotFound(machine_id)
     cred = credmgr.get_machine_credential(
         machine_id,
         owner_user_id,
-    )  # may raise CredentialUndecryptable
+    )
     if cred is None:
         raise CredentialNotConfigured(machine_id)
     return MachineTarget(

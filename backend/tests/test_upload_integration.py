@@ -1,12 +1,6 @@
-"""
-Manual integration smoke test for the upload → chat workflow.
-
-This test requires a running backend (ports 8002, env ORCHESTRATOR_PORT)
-and is not suitable for automated CI. It's kept as a reference for manual
-end-to-end validation during development.
-
-To run:
-    python tests/test_upload_integration.py
+"""Manual smoke test for the upload-to-chat workflow against a running backend; skipped
+in automated runs and kept as a reference for operators validating the flow end to
+end.
 """
 
 import requests
@@ -20,7 +14,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Mark as skipped in automated runs — this is a manual smoke test
 pytestmark = pytest.mark.skip(reason="Manual smoke test — requires running backend services")
 
 

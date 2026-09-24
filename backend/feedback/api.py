@@ -1,16 +1,9 @@
-"""REST API surfaces for the component-feedback subsystem.
-
-Two routers:
-
-* ``feedback_user_router`` — per-user list / get / submit / retract / amend.
-* ``feedback_admin_router`` — admin-gated quality, proposals, quarantine.
-
-The owning user on every user-side endpoint is exclusively derived from
-the JWT (FR-009 / FR-031). Admin endpoints depend on the existing
-``verify_admin`` helper from :mod:`backend.orchestrator.auth`. Both
-routers auto-document via FastAPI's ``/docs`` Swagger UI (Constitution
-Principle VI).
+"""REST routers for component feedback: feedback_user_router
+(list/get/submit/retract/amend, owner always from the JWT) and feedback_admin_router
+(quality, proposals, quarantine). Built on feedback/proposals.py and
+feedback/recorder.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,10 +44,6 @@ feedback_user_router = APIRouter(prefix="/api/feedback", tags=["Feedback"])
 feedback_admin_router = APIRouter(prefix="/api/admin/feedback", tags=["Feedback Admin"])
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _orchestrator(request: Request):
     orch = getattr(request.app.state, "orchestrator", None)
     if orch is None:
@@ -84,10 +73,6 @@ def _recorder(request: Request) -> Recorder:
 def _principal_of(payload: dict) -> str:
     return payload.get("preferred_username") or payload.get("sub") or "unknown"
 
-
-# ---------------------------------------------------------------------------
-# User-side endpoints
-# ---------------------------------------------------------------------------
 
 class UserSubmitResponse(BaseModel):
     feedback_id: str
@@ -241,10 +226,6 @@ async def amend_feedback(
     )
 
 
-# ---------------------------------------------------------------------------
-# Admin-side endpoints
-# ---------------------------------------------------------------------------
-
 class AdminFlaggedResponse(BaseModel):
     items: List[Dict[str, Any]]
     next_cursor: Optional[str] = None
@@ -266,7 +247,6 @@ async def list_flagged(
     items: List[Dict[str, Any]] = []
     for s in snaps:
         cb = repo.category_breakdown(s.agent_id, s.tool_name, s.window_start, s.window_end)
-        # Pending proposal lookup for badge display in admin UI
         props, _ = repo.list_proposals(
             status="pending", agent_id=s.agent_id, tool_name=s.tool_name, limit=1,
         )
@@ -481,8 +461,6 @@ async def reject_proposal_endpoint(
         "reviewed_at": rejected.reviewed_at.isoformat() if rejected.reviewed_at else None,
     }
 
-
-# ----- Quarantine routes (admin) -----
 
 class QuarantineListResponse(BaseModel):
     items: List[Dict[str, Any]]

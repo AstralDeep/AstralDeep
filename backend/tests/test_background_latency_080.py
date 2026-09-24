@@ -1,16 +1,6 @@
-"""080-runtime-metrics: fixed-bucket background latency collector (US2).
-
-Contract-first coverage for the intended public helper
-``RuntimeObservability.observe_background_operation(operation)``.  The helper is
-expected to read only the safe projection's ``state`` and the
-``accepted_at``/``started_at``/``terminal_at`` timestamps, aggregate realized
-queue-wait, execution and end-to-end latency into the exact fixed buckets from
-``contracts/metrics.md``, and never propagate identifiers, task kinds, raw
-terminal codes or payload dimensions.
-
-Helper-dependent tests are EXPECTED RED until feature 080 adds the helper:
-``_observe`` asserts the method exists before calling it. Collector contracts use
-``SimpleNamespace`` projections so no coordinator or task lifecycle is required.
+"""Tests for RuntimeObservability.observe_background_operation: fixed-bucket latency
+aggregation from safe-projection timestamps only, with no identifiers, task kinds, or
+terminal codes ever exported.
 """
 
 from __future__ import annotations
@@ -39,7 +29,6 @@ _EXPECTED_RED = (
 
 _BASE = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
 
-# Exact cumulative upper bounds from contracts/metrics.md, in seconds.
 _BUCKETS: tuple[tuple[str, float], ...] = (
     ("le_0_05", 0.05),
     ("le_0_1", 0.1),
@@ -65,21 +54,11 @@ _SKIP_REASONS = frozenset(
 
 
 class _HugeDelta:
-    """Elapsed-span stand-in reporting a finite-but-enormous number of seconds."""
-
     def total_seconds(self) -> float:
         return sys.float_info.max
 
 
 class _HugeInstant(datetime):
-    """Aware datetime subclass whose subtraction yields an overflow-scale span.
-
-    Datetime/timedelta arithmetic cannot reach the double-precision maximum, so
-    this narrowly-justified white-box injection is the only way to exercise the
-    cumulative-sum overflow guard without inventing impossible calendar ranges.
-    Ordering comparisons keep the inherited (valid) datetime semantics.
-    """
-
     def __sub__(self, other):  # type: ignore[override]
         return _HugeDelta()
 
@@ -205,11 +184,6 @@ def _has_latency(observability) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Golden aggregation
-# ---------------------------------------------------------------------------
-
-
 def test_started_terminal_records_all_three_phases() -> None:
     observability = _observability()
 
@@ -221,7 +195,6 @@ def test_started_terminal_records_all_three_phases() -> None:
     assert _sum(observability, "queue_wait", "completed") == pytest.approx(0.5)
     assert _sum(observability, "execution", "completed") == pytest.approx(2.0)
     assert _sum(observability, "end_to_end", "completed") == pytest.approx(2.5)
-    # Boundaries are inclusive; below-boundary buckets stay empty.
     assert _bucket(observability, "queue_wait", "completed", "le_0_5") == 1
     assert _bucket(observability, "queue_wait", "completed", "le_0_25") == 0
     assert _bucket(observability, "execution", "completed", "le_2_5") == 1
@@ -242,7 +215,6 @@ def test_never_started_records_wait_and_end_to_end_without_execution() -> None:
     assert _count(observability, "end_to_end", "retryable") == 1
     assert _sum(observability, "queue_wait", "retryable") == pytest.approx(3.0)
     assert _sum(observability, "end_to_end", "retryable") == pytest.approx(3.0)
-    # No execution sample may be fabricated for never-started work.
     assert not _has_phase(observability, "execution")
 
 
@@ -376,11 +348,6 @@ def test_closed_phase_and_outcome_vocabulary() -> None:
     assert tokens <= _BUCKET_TOKENS
 
 
-# ---------------------------------------------------------------------------
-# Safety boundary — no identity, task kind, terminal code or payload leaks
-# ---------------------------------------------------------------------------
-
-
 def test_no_secret_taskkind_or_terminal_code_labels_propagate() -> None:
     observability = _observability()
     operation = SimpleNamespace(
@@ -414,7 +381,6 @@ def test_no_secret_taskkind_or_terminal_code_labels_propagate() -> None:
         for sample in observability.snapshot()
         if "result_code" in sample.labels
     }
-    # The coarse outcome, never the raw terminal code, is exported.
     assert result_codes <= {"failed"}
 
 
@@ -440,11 +406,6 @@ def test_public_record_rejects_non_contract_latency_bucket_tokens(token: str) ->
     assert observability.snapshot() == before
 
 
-# ---------------------------------------------------------------------------
-# Omission signals
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("field", ("accepted_at", "terminal_at"))
 def test_missing_required_timestamp_omits_and_records_skip(field: str) -> None:
     observability = _observability()
@@ -465,11 +426,11 @@ def test_missing_required_timestamp_omits_and_records_skip(field: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     (
-        ("accepted_at", datetime(2026, 7, 15, 12, 0)),  # naive
-        ("terminal_at", datetime(2026, 7, 15, 12, 0, 5)),  # naive
-        ("accepted_at", "2026-07-15T12:00:00Z"),  # wrong type
-        ("terminal_at", 1_700_000_000),  # wrong type
-        ("started_at", 12345),  # wrong type on a started operation
+        ("accepted_at", datetime(2026, 7, 15, 12, 0)),
+        ("terminal_at", datetime(2026, 7, 15, 12, 0, 5)),
+        ("accepted_at", "2026-07-15T12:00:00Z"),
+        ("terminal_at", 1_700_000_000),
+        ("started_at", 12345),
     ),
 )
 def test_naive_or_malformed_timestamp_omits_and_records_invalid_timestamp(
@@ -519,8 +480,6 @@ def test_invalid_timezone_omits_without_exporting_failure_detail(
     ),
 )
 def test_malformed_elapsed_span_omits_all_latency(seconds: float | bool) -> None:
-    # Real timedelta cannot return these values. Keep calendar ordering valid
-    # and inject only the elapsed-span boundary used by the collector.
     class MalformedDelta:
         def total_seconds(self):
             return seconds
@@ -608,7 +567,7 @@ def test_skip_reasons_use_closed_vocabulary_without_offending_data() -> None:
         observability,
         SimpleNamespace(
             state=OperationState.COMPLETED,
-            accepted_at=datetime(2026, 7, 15, 12, 0),  # naive
+            accepted_at=datetime(2026, 7, 15, 12, 0),
             started_at=None,
             terminal_at=_BASE,
         ),
@@ -635,18 +594,11 @@ def test_skip_reasons_use_closed_vocabulary_without_offending_data() -> None:
         assert sample.labels["result_code"] in _SKIP_REASONS
 
 
-# ---------------------------------------------------------------------------
-# Overflow defense — no partial mutation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("overflow_phase", ("queue_wait", "execution", "end_to_end"))
 def test_overflow_would_be_total_is_rejected_without_partial_mutation(
     overflow_phase: str,
 ) -> None:
     observability = _observability()
-    # Overflow each phase independently, including after earlier phases have
-    # staged valid updates. None of the observation may become visible.
     key = (
         "background_operation_latency_seconds_sum",
         (
@@ -668,19 +620,12 @@ def test_overflow_would_be_total_is_rejected_without_partial_mutation(
     try:
         _observe(observability, operation)
     except (ArithmeticError, ValueError, OverflowError):
-        # A fail-closed rejection is acceptable; it must not mutate partially.
         pass
 
     assert observability.snapshot() == before
-    # Every retained value stays finite and non-negative.
     for sample in observability.snapshot():
         assert math.isfinite(sample.value)
         assert sample.value >= 0
-
-
-# ---------------------------------------------------------------------------
-# Concurrency and snapshot consistency
-# ---------------------------------------------------------------------------
 
 
 def _run_threads(workers: list[Callable[[], None]], *, timeout: float = 5.0) -> None:
@@ -740,8 +685,6 @@ def test_snapshot_is_atomic_with_respect_to_concurrent_updates() -> None:
     observer_count = 4
     observations_per_worker = 80
     barrier = threading.Barrier(observer_count + 1, timeout=2.0)
-    # Seed a complete observation so an empty or phase-incomplete snapshot
-    # cannot be mistaken for a legitimate not-yet-observed family.
     _observe(observability, _started_op(queue_wait=0.5, execution=1.0))
 
     def assert_complete_snapshot() -> None:

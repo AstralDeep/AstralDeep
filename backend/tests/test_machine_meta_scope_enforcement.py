@@ -1,4 +1,8 @@
-"""Host meta-tools cannot escape a machine task's bounded authority."""
+"""Tests for orchestrator/chain_authority.py and subtasks.py: host meta-tools stay
+bounded by a machine task's scope, mutating meta-tools require attended policy, and
+an unrecognized host tool fails closed.
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -68,7 +72,6 @@ def _handler(monkeypatch, tool):
 @pytest.mark.parametrize("tool", META_TOOLS)
 @pytest.mark.parametrize("turn_class", ["scheduled_job", "persistent_assignment"])
 async def test_mutating_meta_tools_require_attended_policy(monkeypatch, path, tool, turn_class):
-    # Even a broad task tool grant does not grant host settings/draft authority.
     orch, socket, _ = _host(scopes=("tools:read", "tools:write", "tools:system"),
                             turn_class=turn_class)
     handler = _handler(monkeypatch, tool)

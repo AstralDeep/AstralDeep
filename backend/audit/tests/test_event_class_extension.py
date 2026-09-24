@@ -1,12 +1,7 @@
-"""T018 — verify the feature-006 LLM event-class identifiers are
-accepted by the existing AuditEventCreate validator.
-
-The audit DDL has no Postgres CHECK constraint on ``event_class``;
-validation lives entirely in :data:`audit.schemas.EVENT_CLASSES`.
-This test ensures the three new identifiers (``llm_config_change``,
-``llm_unconfigured``, ``llm_call``) round-trip through ``AuditEventCreate``
-without rejection, while a typo'd identifier still raises.
+"""Tests for audit/schemas.py: the LLM-config event_class identifiers round-trip through
+AuditEventCreate, while an unrecognized identifier is still rejected.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

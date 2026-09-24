@@ -1,4 +1,7 @@
-"""Regression tests for feature-074 repository migration guards."""
+"""Tests for scripts/migration/preflight_074.ps1 and check_staged_paths_074.py:
+exact-root/branch/clean-index checks, reparse-point rejection, and staged-path
+sensitivity guards.
+"""
 
 from __future__ import annotations
 
@@ -140,7 +143,7 @@ def _create_directory_link(link: Path, target: Path) -> None:
         if os.name != "nt":
             raise
 
-    # Directory junctions do not require Developer Mode or symlink privilege.
+    # Junctions need no Developer Mode or symlink privilege
     completed = _run(
         [
             _powershell(),

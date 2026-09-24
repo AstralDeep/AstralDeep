@@ -1,17 +1,8 @@
-"""Feature 077 — create your own agents and skills, the easy path.
-
-Pins, in order:
-
-1. The express lane runs the SAME gated session end to end from one description
-   (SC-001) and stops at Clarify when the assistant has questions (FR-002).
-2. An Analyze refusal ends the run as ``failed`` and generates nothing (SC-002).
-3. Desktop presence is honest for a first-time user (SC-003, FR-005).
-4. User skills: store bounds/validation, the digest, /command expansion and
-   ``/help`` (SC-004, FR-008..FR-010); flag-off is inert (FR-015).
-5. The surface: home view (web + native) shows status, the express lane, runs,
-   skills; handlers create/edit/toggle/delete; progress pushes re-render only
-   the socket that is still looking (FR-011, FR-012).
+"""Tests for the personal-agent authoring UX across agent_authoring.py,
+agent_quick_create.py, user_skills.py, and slash_commands.py: the express-creation
+lane, desktop presence, skill-store bounds, and scoped progress pushes.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -55,12 +46,6 @@ def db():
 
 @pytest.fixture
 def skill_authority(bound, fixture):
-    """Real current caller/catalog; only the legacy agent pipeline is doubled.
-
-    These are handler/render tests, not socket-ingress qualification. Normal
-    JWT verification, issued-session checks, owner isolation, materialization
-    and revision mutations use the actual installed Plane repositories.
-    """
     from orchestrator.human_request_authority import (
         HumanRequestBoundary, authenticate_current_human_request, bind_human_caller,
     )
@@ -89,8 +74,6 @@ def skill_authority(bound, fixture):
 
 
 class _LLM:
-    """The assistant's drafts, keyed by the phase the prompt asks for."""
-
     def __init__(self, questions=None):
         self.questions = list(questions or [])
         self.calls = []
@@ -128,8 +111,6 @@ async def _settle(run: qc.QuickRun, timeout=5.0):
         await asyncio.wait_for(asyncio.shield(run.task), timeout)
 
 
-# ── 1. the express lane ──────────────────────────────────────────────────────
-
 async def test_one_description_becomes_a_delivered_agent(db, tmp_path, skill_authority):
     llm = _LLM(questions=[])
     orch = _orch(db, llm, tmp_path)
@@ -144,19 +125,15 @@ async def test_one_description_becomes_a_delivered_agent(db, tmp_path, skill_aut
                                       description="sort my inbox into folders every morning",
                                       refresh=refresh)
         assert run is not None and "Creating" in message
-        assert run.agent_name == "Sort Inbox Folders Morning"   # derived, never empty
+        assert run.agent_name == "Sort Inbox Folders Morning"
         await _settle(run)
         assert run.state == qc.DONE, run.message
         assert all(run.steps[s] == "done" for s in qc.STEPS)
         assert run.agent_id and orch.deliver_agent_bundle.await_count == 1
-        # every phase went through the real machine: the session sits at generate
         row = await asyncio.to_thread(aa.get_session, orch, owner, run.draft_id)
         assert aa.phase_of(row) == "generate" and aa.analyze_record(row)["passed"] is True
-        # progress was pushed for every step, in order
         assert pushes[:4] == ["specify", "clarify", "plan", "tasks"]
         assert pushes[-1] == "deliver"
-        # the run shows up on the home view, the session does not double as an
-        # editor session
         from tests.test_byo_authoring_flow import _t
         ctx = await authoring._list_context(orch, owner)
         assert [r.draft_id for r in ctx["runs"]] == [run.draft_id]
@@ -174,12 +151,10 @@ async def test_the_express_lane_stops_for_the_assistants_questions(db, tmp_path)
     assert [q["question"] for q in run.questions] == ["Which mailbox?", "What counts as junk?"]
     assert run.steps["clarify"] == "waiting" and run.steps["plan"] == "pending"
     orch.deliver_agent_bundle.assert_not_awaited()
-    # an incomplete answer set is refused by the same hard gate the editor uses
     ok, message = await qc.resume_with_answers(orch, object(), OWNER, ["user"], run.draft_id,
                                                {"q0": "work"})
     assert ok is False and "still need an answer" in message
     assert run.state == qc.NEEDS_ANSWERS
-    # complete answers resume the pipeline to the end
     ok, _ = await qc.resume_with_answers(orch, object(), OWNER, ["user"], run.draft_id,
                                          {"q0": "work", "q1": "newsletters"})
     assert ok is True
@@ -216,16 +191,13 @@ async def test_without_a_desktop_the_run_waits_and_resend_delivers_later(db, tmp
     orch = _orch(db, _LLM(), tmp_path, host=False)
     owner = skill_authority.owner
     async with skill_authority.select(orch):
-        orch.deliver_agent_bundle = AsyncMock(return_value=0)   # nobody to send it to
+        orch.deliver_agent_bundle = AsyncMock(return_value=0)
         run, _ = await qc.start(orch, object(), owner, ["user"],
                                 description="sort my inbox into folders every morning")
         await _settle(run)
         assert run.state == qc.WAITING_FOR_DESKTOP and run.steps["deliver"] == "waiting"
         html = await authoring.render(orch, owner, ["user"], {})
         assert "Resend to my desktop" in html and "No desktop client connected" in html
-        # Resend re-enters generate_from_session, which (pinned in test_byo_authoring)
-        # reopens the exact immutable publication without a model call; here only
-        # the run's bookkeeping is under test.
         calls = []
 
         async def _resend(o, user, draft_id, websocket=None, **kw):
@@ -236,7 +208,7 @@ async def test_without_a_desktop_the_run_waits_and_resend_delivers_later(db, tmp
             orch, object(), owner, ["user"], {"draft_id": run.draft_id})
         assert calls == [run.draft_id]
         assert "Delivered" in result[2] and run.state == qc.DONE and run.steps["deliver"] == "done"
-        orch.lifecycle_manager.generate_code.assert_awaited_once()   # the run's single model call
+        orch.lifecycle_manager.generate_code.assert_awaited_once()
 
 
 async def test_refusals_and_bounds(db, tmp_path, monkeypatch):
@@ -250,8 +222,6 @@ async def test_refusals_and_bounds(db, tmp_path, monkeypatch):
     assert qc.derive_agent_name("") == "My agent"
     assert qc.derive_agent_name("please make an agent that will") == "My agent"
 
-
-# ── 2. desktop presence ──────────────────────────────────────────────────────
 
 def test_host_presence_counts_a_signed_in_desktop_before_any_tunnel():
     orch = SimpleNamespace(_tunnel_sockets={}, owner_host_sockets=lambda o: [],
@@ -271,8 +241,6 @@ def test_host_presence_counts_a_signed_in_desktop_before_any_tunnel():
     assert aa.host_online(orch, OWNER) is True
 
 
-# ── 3. skills ────────────────────────────────────────────────────────────────
-
 def test_skill_store_saves_lists_toggles_and_deletes(tmp_path):
     store = us.UserSkillStore(str(tmp_path))
     skill = store.save(OWNER, name="Weekly status", instructions="Three bullets, then risks.",
@@ -283,7 +251,6 @@ def test_skill_store_saves_lists_toggles_and_deletes(tmp_path):
     path = next((tmp_path / "user_skills").rglob("weekly-status.md"))
     text = path.read_text(encoding="utf-8")
     assert "type: user_skill" in text and "applies_to: [always]" in text
-    # a different owner sees nothing; the owner's directory name is a hash
     assert store.list("someone-else") == [] and OWNER not in str(path)
     scoped = store.save(OWNER, name="Summarizer voice", instructions="Be terse, cite sources.",
                         applies_to="summarizer-1, web-research-1")
@@ -343,10 +310,10 @@ async def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeyp
         skills = await store.list(caller=caller)
         digest = skill_packs.build_skill_digest(index, ["summarizer-1"], user_skills=skills)
         assert "Your skill: House style" in digest and "Your skill: Standup" in digest
-        assert "Research depth" not in digest                      # scoped to another agent
+        assert "Research depth" not in digest
         digest = skill_packs.build_skill_digest(index, ["web-research-1"], user_skills=skills)
         assert "Research depth" in digest
-        assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""   # no selection: as before
+        assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""
 
         commands = {skill.command: skill for skill in skills if skill.enabled and skill.command}
         expanded = slash_commands.expand_message("/standup fixed the build", commands)
@@ -364,7 +331,6 @@ async def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeyp
                                 expected_revision=house.revision, enabled=False)
         current = await store.list(caller=caller)
         assert "House style" not in skill_packs.build_skill_digest(index, ["summarizer-1"], user_skills=current)
-    # A different normally verified owner gets an independent empty catalog.
     async with skill_authority.select(orch, method="GET", other_owner=str(uuid4())) as caller:
         assert await store.list(caller=caller) == ()
         assert skill_packs.build_skill_digest(index, ["summarizer-1"],
@@ -373,8 +339,6 @@ async def test_skills_reach_the_digest_and_the_slash_expansion(tmp_path, monkeyp
     assert us.store_for(orch) is None
     assert skill_packs.build_skill_digest(index, ["summarizer-1"]) == ""
 
-
-# ── 4. the surface ───────────────────────────────────────────────────────────
 
 async def test_home_view_web_and_native(db, tmp_path, skill_authority):
     from persistent_agents.models import AssignmentError
@@ -388,7 +352,7 @@ async def test_home_view_web_and_native(db, tmp_path, skill_authority):
         assert "Advanced: build it step by step" in html and "chrome_author_start" in html
         assert "Your skills" in html and "chrome_user_skill_save" in html
         assert 'data-astral-commands="[]"' in html
-        assert "share" not in html.lower().replace("shared", "")   # no share/publish affordance
+        assert "share" not in html.lower().replace("shared", "")
         comps = await authoring.components(orch, owner, ["user"], {})
         kinds = [(c["type"], c.get("submit_action")) for c in comps]
         assert ("alert", None) == kinds[0]
@@ -400,7 +364,6 @@ async def test_home_view_web_and_native(db, tmp_path, skill_authority):
         assert identity["expected_revision"] == 0 and identity["skill_enabled"] == "true"
         fields = {"skill_name": "Standup", "skill_command": "standup", "skill_applies": "",
                   "skill_instructions": "Yesterday / today / blockers."}
-        # Mutations carry the actual rendered identity; the notice is receipt-safe.
         result = await authoring.HANDLERS["chrome_user_skill_save"](
             orch, object(), owner, ["user"], {**identity, "fields": fields})
         assert "Skill saved." in result[2] and "/standup" not in result[2]
@@ -415,7 +378,7 @@ async def test_home_view_web_and_native(db, tmp_path, skill_authority):
                 orch, object(), owner, ["user"],
                 {**add["submit_payload"], "fields": {**fields, "skill_command": "help"}})
         assert invalid.value.status_code == 422
-        assert await us.store_for(orch).list(caller=caller) == skills  # built-in command refused
+        assert await us.store_for(orch).list(caller=caller) == skills
         result = await authoring.HANDLERS["chrome_user_skill_edit"](
             orch, object(), owner, ["user"], {"slug": "standup"})
         assert result[1] == {"skill_slug": "standup"}
@@ -435,7 +398,7 @@ async def test_home_view_web_and_native(db, tmp_path, skill_authority):
         current = await us.store_for(orch).list(caller=caller)
         assert len(current) == 1 and current[0].revision == 2 and not current[0].enabled
         html = await authoring.render(orch, owner, ["user"], {})
-        assert 'data-astral-commands="[]"' in html                     # disabled ⇒ not advertised
+        assert 'data-astral-commands="[]"' in html
         comps = await authoring.components(orch, owner, ["user"], {})
         card = next(c for c in comps if c.get("type") == "card" and c.get("title") == "Standup")
         delete = next(c for c in card["content"] if c.get("action") == "chrome_user_skill_delete")
@@ -456,15 +419,15 @@ async def test_progress_pushes_only_while_the_person_is_looking(db, tmp_path, mo
     monkeypatch.setattr(chrome_events, "_render_surface", _render)
     run = qc.QuickRun(owner=OWNER, draft_id="d", agent_name="x")
     await authoring._refresh_home(orch, ws, OWNER, ["user"], run)
-    assert rendered == []                                          # nothing open
+    assert rendered == []
     chrome_events._note_open_surface(orch, ws, authoring.SURFACE_KEY)
     await authoring._refresh_home(orch, ws, OWNER, ["user"], run)
     assert rendered == [authoring.SURFACE_KEY]
-    chrome_events._note_open_surface(orch, ws, "agents")            # navigated away
+    chrome_events._note_open_surface(orch, ws, "agents")
     await authoring._refresh_home(orch, ws, OWNER, ["user"], run)
     assert rendered == [authoring.SURFACE_KEY]
     chrome_events._note_open_surface(orch, ws, authoring.SURFACE_KEY)
-    orch.ui_clients = set()                                          # disconnected
+    orch.ui_clients = set()
     await authoring._refresh_home(orch, ws, OWNER, ["user"], run)
     assert rendered == [authoring.SURFACE_KEY]
 
@@ -487,13 +450,12 @@ async def test_quick_create_handler_and_dismiss(db, tmp_path, skill_authority):
 
 
 def test_step_editor_copy_and_stale_pass_warning(db):
-    from tests.test_byo_authoring_flow import _plan_fields  # noqa: F401 — shared helpers
+    from tests.test_byo_authoring_flow import _plan_fields  # noqa: F401
     orch = make_orch(db)
     row = {"phase": "clarify", "clarify_answers": None, "agent_name": "x", "state_revision": 1}
     assert "Find open questions" in authoring._phase_body(row, "clarify")
     assert "Find open questions" in authoring._phase_actions("d", "clarify", 1)
     assert "Ask the assistant" in authoring._phase_actions("d", "plan", 1)
-    # a passed session whose artifacts changed afterwards: Generate is replaced
     stale = authoring._phase_actions("d", "generate", 1, stale=True)
     assert "chrome_author_generate" not in stale and "Re-run Analyze" in stale
     fresh = authoring._phase_actions("d", "generate", 1, stale=False)
@@ -502,8 +464,6 @@ def test_step_editor_copy_and_stale_pass_warning(db):
               "plan_json": "{}", "agent_name": "x", "description": "d"}
     assert "Re-run Analyze before generating" in authoring._phase_body(passed, "generate", orch)
 
-
-# ── 5. the static code gate names builtins, not every method called compile ──
 
 def test_code_gate_flags_builtins_but_not_library_methods_of_the_same_name():
     from orchestrator.code_security import CodeSecurityAnalyzer, Severity, blocks_execution
@@ -528,11 +488,6 @@ def test_code_gate_flags_builtins_but_not_library_methods_of_the_same_name():
 
 
 def test_agent_status_sees_a_fenced_v3_runtime_as_running():
-    """Rig finding (2026-09-03): a 074 fenced personal-agent runtime registers
-    per runtime instance (``_personal_agent_runtime_sockets`` + ``orch.agents``)
-    and never enters the 058 ``_tunnel_sockets`` map, so the *My agents & skills*
-    row pill said "offline" for a registered, answering agent. Liveness must
-    read both registrations and stay honest on teardown and across owners."""
     from shared.local_transport import FencedTunnelSocket
     fence = SimpleNamespace(agent_id="ua-1", host_session_id="hs-1",
                             runtime_instance_id="ri-1")
@@ -541,15 +496,12 @@ def test_agent_status_sees_a_fenced_v3_runtime_as_running():
                            _tunnel_sockets={},
                            _personal_agent_runtime_sockets={"ri-1": route})
     assert aa.agent_status(orch, OWNER, "ua-1") == "running"
-    assert aa.agent_status(orch, "someone-else", "ua-1") == "offline"     # owner-keyed
+    assert aa.agent_status(orch, "someone-else", "ua-1") == "offline"
     assert aa.agent_status(orch, OWNER, "ua-2") == "offline"
-    # A superseded runtime (a newer instance took the route) is offline …
     orch._personal_agent_runtime_sockets["ri-1"] = object()
     assert aa.agent_status(orch, OWNER, "ua-1") == "offline"
-    # … and so is one whose runtime entry was torn down.
     orch._personal_agent_runtime_sockets.clear()
     assert aa.agent_status(orch, OWNER, "ua-1") == "offline"
-    # The 058 tunnel path is unchanged: the route must be that very socket.
     v2 = object()
     orch = SimpleNamespace(agents={"ua-1": v2}, _tunnel_sockets={(OWNER, "ua-1"): v2},
                            _personal_agent_runtime_sockets={})

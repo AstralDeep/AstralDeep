@@ -1,23 +1,8 @@
-"""End-to-end smoke tests for the ML Services agent against the live services.
-
-Ported from the three predecessor agents' e2e suites (feature 029
-consolidation); same opt-in env vars, tools called through the consolidated
-modules with their prefixed names. All tests are skipped by default.
-
-CLASSify — enable by exporting:
-    CLASSIFY_E2E_URL=https://classify.ai.uky.edu/
-    CLASSIFY_E2E_API_KEY=<your real key>
-    CLASSIFY_E2E_CSV=/app/dataset_soft.csv   # optional
-
-Forecaster — enable by exporting:
-    FORECASTER_E2E_URL=https://forecaster.ai.uky.edu/
-    FORECASTER_E2E_API_KEY=<your real key>
-    FORECASTER_E2E_CSV=/app/bikerides_day.csv   # optional
-
-LLM-Factory — enable by exporting:
-    LLM_FACTORY_E2E_URL=https://llm-factory.ai.uky.edu/
-    LLM_FACTORY_E2E_API_KEY=<your real key>
+"""Opt-in end-to-end smoke tests for the ML Services agent against live CLASSify,
+Forecaster, and LLM-Factory deployments; skipped unless the matching *_E2E_URL
+environment variables are set.
 """
+
 import os
 import time
 from pathlib import Path
@@ -25,10 +10,6 @@ from pathlib import Path
 import pytest
 
 from agents.ml_services import classify_tools, forecaster_tools, llm_factory_tools
-
-# ---------------------------------------------------------------------------
-# CLASSify
-# ---------------------------------------------------------------------------
 
 CLASSIFY_E2E_URL = os.getenv("CLASSIFY_E2E_URL")
 CLASSIFY_E2E_KEY = os.getenv("CLASSIFY_E2E_API_KEY")
@@ -81,11 +62,9 @@ def test_classify_get_ml_options_returns_payload() -> None:
     ),
 )
 def test_classify_full_pipeline_against_live_service() -> None:
-    """submit → set-columns → start-training → poll → get-results → delete."""
     creds = {"CLASSIFY_URL": CLASSIFY_E2E_URL, "CLASSIFY_API_KEY": CLASSIFY_E2E_KEY}
     report_uuid = None
     try:
-        # 1. Submit the CSV.
         submit = classify_tools.classify_submit_dataset(
             file_handle=CLASSIFY_CSV_PATH, _credentials=creds, user_id="e2e-smoke",
         )
@@ -101,9 +80,6 @@ def test_classify_full_pipeline_against_live_service() -> None:
             f"columns={len(column_types)}"
         )
 
-        # 2. Pick the class column. dataset_soft.csv has a literal `class`
-        # column with TRUE/FALSE values; fall back to the last column for
-        # other CSVs.
         class_column = "class" if "class" in column_types else list(column_types)[-1]
         set_cols = classify_tools.set_column_types(
             report_uuid=report_uuid,
@@ -117,7 +93,6 @@ def test_classify_full_pipeline_against_live_service() -> None:
         )
         print(f"[E2E] set_column_types → class_column={class_column}")
 
-        # 3. Start training with one fast model.
         start = classify_tools.classify_start_training_job(
             report_uuid=report_uuid,
             class_column=class_column,
@@ -131,10 +106,9 @@ def test_classify_full_pipeline_against_live_service() -> None:
         )
         print("[E2E] classify_start_training_job → started")
 
-        # 4. Poll until Completed.
         client = classify_tools.make_client(creds)
         poll = classify_tools._make_status_poll(client, report_uuid)
-        deadline = time.time() + 600  # 10 min hard cap
+        deadline = time.time() + 600
         terminal = None
         while time.time() < deadline:
             res = poll()
@@ -148,7 +122,6 @@ def test_classify_full_pipeline_against_live_service() -> None:
             f"Training reported terminal status {terminal}"
         )
 
-        # 5. Fetch results.
         results = classify_tools.classify_get_results(
             report_uuid=report_uuid, _credentials=creds,
         )
@@ -172,15 +145,9 @@ def test_classify_full_pipeline_against_live_service() -> None:
                 print(f"[E2E] classify_delete_dataset cleanup failed: {cleanup_err}")
 
 
-# ---------------------------------------------------------------------------
-# Forecaster
-# ---------------------------------------------------------------------------
-
 FORECASTER_E2E_URL = os.getenv("FORECASTER_E2E_URL")
 FORECASTER_E2E_KEY = os.getenv("FORECASTER_E2E_API_KEY")
 
-# Caller can override the CSV with FORECASTER_E2E_CSV; default to the repo's
-# canonical timeseries fixture mounted at /app inside the docker container.
 _FORECASTER_CSV_CANDIDATES = [
     os.getenv("FORECASTER_E2E_CSV"),
     "/app/bikerides_day.csv",
@@ -210,11 +177,9 @@ def test_forecaster_credentials_check_against_live_service() -> None:
     ),
 )
 def test_forecaster_full_pipeline_against_live_service() -> None:
-    """submit → save-columns → start-training → poll → get-results → delete."""
     creds = {"FORECASTER_URL": FORECASTER_E2E_URL, "FORECASTER_API_KEY": FORECASTER_E2E_KEY}
     uuid = None
     try:
-        # 1. Submit the CSV.
         submit = forecaster_tools.forecaster_submit_dataset(
             file_handle=FORECASTER_CSV_PATH, _credentials=creds, user_id="e2e-smoke",
         )
@@ -227,16 +192,12 @@ def test_forecaster_full_pipeline_against_live_service() -> None:
         assert cols, "forecaster_submit_dataset returned no columns"
         print(f"[E2E] forecaster_submit_dataset → uuid={uuid} columns={cols}")
 
-        # 2. Map columns to roles. The bikerides_day.csv fixture has:
-        #    Date,Volume,Rain,Temp
         column_roles = {
             "Date": "time-component",
             "Volume": "target",
             "Rain": "past-covariates",
             "Temp": "past-covariates",
         }
-        # If the column list differs, fall back to first=time, second=target,
-        # rest=past-covariates so the test stays useful with other CSVs.
         if not all(c in cols for c in column_roles):
             column_roles = {cols[0]: "time-component", cols[1]: "target"}
             for extra in cols[2:]:
@@ -249,7 +210,6 @@ def test_forecaster_full_pipeline_against_live_service() -> None:
         )
         print(f"[E2E] set_column_roles → {column_roles}")
 
-        # 3. Start a minimal training job.
         options = {
             "models": ["linear-regression"],
             "expanding-window": False,
@@ -265,10 +225,9 @@ def test_forecaster_full_pipeline_against_live_service() -> None:
         )
         print(f"[E2E] forecaster_start_training_job → started (options={options})")
 
-        # 4. Poll until Completed (or fail-budget exhausted).
         client = forecaster_tools.make_client(creds)
         poll = forecaster_tools._make_status_poll(client, uuid)
-        deadline = time.time() + 300  # 5 min hard cap
+        deadline = time.time() + 300
         terminal = None
         while time.time() < deadline:
             res = poll()
@@ -282,7 +241,6 @@ def test_forecaster_full_pipeline_against_live_service() -> None:
             f"Training reported terminal status {terminal}"
         )
 
-        # 5. Fetch results.
         results = forecaster_tools.forecaster_get_results(uuid=uuid, _credentials=creds)
         assert results["_ui_components"][0].get("variant") != "error", (
             f"forecaster_get_results failed: {results}"
@@ -300,10 +258,6 @@ def test_forecaster_full_pipeline_against_live_service() -> None:
             except Exception as cleanup_err:
                 print(f"[E2E] forecaster_delete_dataset cleanup failed: {cleanup_err}")
 
-
-# ---------------------------------------------------------------------------
-# LLM-Factory
-# ---------------------------------------------------------------------------
 
 LLM_FACTORY_E2E_URL = os.getenv("LLM_FACTORY_E2E_URL")
 LLM_FACTORY_E2E_KEY = os.getenv("LLM_FACTORY_E2E_API_KEY")

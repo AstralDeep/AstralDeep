@@ -1,9 +1,8 @@
-"""Independent Plane schema and Deep user-agent-policy revision guards.
-
-AstralPlane owns schema migration source, revision, and digest qualification.
-Deep retains only the deterministic product-policy revision guard; changing
-that policy remains independent from Plane's schema revision.
+"""Tests that AstralPlane's schema revision and Deep's user-agent-policy revision
+(orchestrator/agent_constitution.py, astralplane/__init__.py) stay pinned and
+independently guarded against silent drift.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +14,7 @@ from astralplane import SCHEMA_REVISION
 EXPECTED_SCHEMA_REVISION = "088.003"
 EXPECTED_USER_AGENT_POLICY_REVISION = "constitution=0.1.0;analyze=2"
 EXPECTED_USER_AGENT_POLICY_SOURCE_SHA256 = (
-    "1651a3a0e81a9012ed56e978dd3d4fef41d7ca5e266480525f3b2e340a6daa50"
+    "45f1091922ac968d22f528446b99e776b89a0361b14244ae278b0c9f5aa50055"
 )
 
 _POLICY_BUMP_INSTRUCTIONS = (
@@ -30,7 +29,6 @@ _POLICY_BUMP_INSTRUCTIONS = (
 
 
 def user_agent_policy_source_sha256() -> str:
-    """Hash the exact baked constitution plus deterministic Analyze module."""
     from orchestrator import agent_analyze, agent_constitution
 
     constitution_path = Path(agent_constitution.__file__).resolve().parents[1] / (

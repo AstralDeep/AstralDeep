@@ -1,22 +1,8 @@
-"""Feature 028 — FR-023/FR-011: real audit hooks write real rows.
-
-Exercises the REAL ``audit.hooks`` recording helpers (no monkeypatching the
-hooks themselves) against the live Postgres ``audit_events`` table:
-
-* ``record_workspace_event`` — workspace mutations land under
-  ``event_class='conversation'`` with ``action_type='workspace.<action>'``;
-  denials round-trip ``outcome='failure'`` plus scalar ``detail`` fields.
-* ``record_auth_event`` — ``auth.logout`` / ``auth.token_refresh_failed``
-  land under ``event_class='auth'``.
-* FR-011 noise rule — ``web_auth._refresh_session``'s SUCCESS path emits
-  zero audit events (functionally and by source inspection); the refusal
-  path audits ``auth.token_refresh_failed`` end-to-end through the real
-  hook into the database.
-
-Every test uses uuid-unique user ids and purges its own audit rows in a
-``finally`` block (the append-only trigger requires the ``audit.allow_purge``
-session GUC, mirroring the retention CLI).
+"""Tests for the audit hooks (backend/audit/hooks.py, backend/audit/recorder.py) against
+a live Postgres audit_events table: workspace and auth events land with correct
+class/outcome, and successful silent refresh stays audit-silent.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,11 +34,6 @@ from tests.helpers.session_plane_runtime import web_session_store  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(scope="module")
 def db():
     with isolated_plane_runtime("workspace_audit") as runtime:
@@ -61,10 +42,6 @@ def db():
 
 @pytest.fixture()
 def recorder(db, tmp_path):
-    """A REAL Recorder over the live audit_events table, wired into the
-    process-global slot that audit.hooks reads. The retry queue is pointed
-    at a tmp file so a transient DB failure can never leak rows into the
-    running orchestrator's drain loop."""
     prev = get_recorder()
     rec = Recorder(
         AuditRepository(
@@ -87,8 +64,6 @@ def _audit_rows(db, user_id):
 
 
 def _purge_audit(db, *user_ids):
-    """Delete this test's rows. audit_events is append-only behind a trigger;
-    deletion requires the audit.allow_purge GUC (same path as the retention CLI)."""
     with db.transaction() as transaction:
         transaction.execute("SET LOCAL audit.allow_purge = 'true'")
         for uid in user_ids:
@@ -102,14 +77,7 @@ def _uid() -> str:
     return f"pytest-wah-{uuid.uuid4().hex[:12]}"
 
 
-# ---------------------------------------------------------------------------
-# record_workspace_event (FR-023)
-# ---------------------------------------------------------------------------
-
-
 def test_component_added_writes_conversation_success_row(db, recorder):
-    """028 FR-023: component_added lands as one conversation-class row with
-    action_type='workspace.component_added', default outcome=success."""
     user_id = _uid()
     chat_id = f"chat-{uuid.uuid4().hex[:12]}"
     component_id = f"wc_{uuid.uuid4().hex[:16]}"
@@ -125,20 +93,18 @@ def test_component_added_writes_conversation_success_row(db, recorder):
         row = rows[0]
         assert row["event_class"] == "conversation"
         assert row["action_type"] == "workspace.component_added"
-        assert row["outcome"] == "success"  # default, not passed explicitly
+        assert row["outcome"] == "success"
         assert row["actor_user_id"] == user_id
-        assert row["auth_principal"] == user_id  # direct user action: principal == actor
+        assert row["auth_principal"] == user_id
         assert row["conversation_id"] == chat_id
         assert row["inputs_meta"] == {"component_id": component_id}
-        assert row["description"] == "Workspace component added"  # generated default
+        assert row["description"] == "Workspace component added"
         assert row["recorded_at"] is not None
     finally:
         _purge_audit(db, user_id)
 
 
 def test_action_denied_failure_with_detail_roundtrips(db, recorder):
-    """028 FR-023: action_denied with outcome='failure' + detail{'reason':...}
-    round-trips; only scalar detail values enter inputs_meta."""
     user_id = _uid()
     chat_id = f"chat-{uuid.uuid4().hex[:12]}"
     component_id = f"wc_{uuid.uuid4().hex[:16]}"
@@ -166,7 +132,6 @@ def test_action_denied_failure_with_detail_roundtrips(db, recorder):
         assert row["inputs_meta"]["reason"] == "unsupported_kind:bogus"
         assert row["inputs_meta"]["attempt"] == 2
         assert row["inputs_meta"]["component_id"] == component_id
-        # non-scalar detail values are dropped (data-minimization posture)
         assert "nested" not in row["inputs_meta"]
         assert "tags" not in row["inputs_meta"]
     finally:
@@ -174,11 +139,8 @@ def test_action_denied_failure_with_detail_roundtrips(db, recorder):
 
 
 def test_workspace_hook_noop_guards(db, recorder):
-    """The hook is a silent no-op without a wired Recorder and for the
-    'legacy'/empty pseudo-users — no rows, no exceptions."""
     user_id = _uid()
 
-    # 1) No recorder wired -> nothing written even for a real user.
     set_recorder(None)
     try:
         asyncio.run(record_workspace_event(
@@ -188,7 +150,6 @@ def test_workspace_hook_noop_guards(db, recorder):
     finally:
         set_recorder(recorder)
 
-    # 2) Recorder wired, but unauthenticated pseudo-users never record.
     legacy_before = len(_audit_rows(db, "legacy"))
     asyncio.run(record_workspace_event(
         user_id="legacy", action="component_added", chat_id="c1",
@@ -201,13 +162,7 @@ def test_workspace_hook_noop_guards(db, recorder):
     assert _audit_rows(db, user_id) == []
 
 
-# ---------------------------------------------------------------------------
-# record_auth_event (FR-011 — the events that ARE audited)
-# ---------------------------------------------------------------------------
-
-
 def test_logout_writes_auth_row(db, recorder):
-    """028 FR-011: logout lands under event_class='auth' as 'auth.logout'."""
     user_id = _uid()
     try:
         asyncio.run(record_auth_event(
@@ -231,8 +186,6 @@ def test_logout_writes_auth_row(db, recorder):
 
 
 def test_token_refresh_failed_writes_auth_failure_row(db, recorder):
-    """028 FR-011: a refused silent refresh is audited as
-    'auth.token_refresh_failed' with outcome='failure'."""
     user_id = _uid()
     try:
         asyncio.run(record_auth_event(
@@ -251,11 +204,6 @@ def test_token_refresh_failed_writes_auth_failure_row(db, recorder):
         assert row["outcome_detail"] == "refresh_token revoked at IdP"
     finally:
         _purge_audit(db, user_id)
-
-
-# ---------------------------------------------------------------------------
-# FR-011 noise rule: successful silent refreshes are NOT audited
-# ---------------------------------------------------------------------------
 
 
 class _FakeTokenResponse:
@@ -307,8 +255,6 @@ def _refresh_env(monkeypatch, db):
 
 
 def test_refresh_session_success_path_is_audit_silent(db, monkeypatch):
-    """028 FR-011: a SUCCESSFUL silent refresh updates tokens and emits
-    ZERO audit events (token_refresh success is noise, never recorded)."""
     store = _refresh_env(monkeypatch, db)
     monkeypatch.setattr(
         web_auth.httpx, "AsyncClient",
@@ -342,35 +288,28 @@ def test_refresh_session_success_path_is_audit_silent(db, monkeypatch):
     sess["incarnation_id"] = store.get(sid)["incarnation_id"]
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is not sess  # the original request observation stays immutable
+        assert out is not sess
         assert out["incarnation_id"] == sess["incarnation_id"]
         assert out["access_token"] == "new-at"
         assert out["refresh_token"] == "new-rt"
         assert web_session_store(db).get(sid)["refresh_token"] == "new-rt"
-        assert audit_calls == []  # the noise rule: success is silent
+        assert audit_calls == []
         assert kill_calls == []
     finally:
         store.delete(sid)
 
 
 def test_refresh_session_source_confines_audit_to_failure_branch():
-    """028 FR-011 (grep-level): _refresh_session never calls _audit directly;
-    auditing is delegated to _kill_session, invoked exactly once with
-    audit_action='token_refresh_failed' on the refusal branch."""
     src = inspect.getsource(web_auth._refresh_session)
     assert "_audit(" not in src, "success path must not audit"
     assert src.count('audit_action="token_refresh_failed"') == 1
     assert src.count("_kill_session(") == 1
-    # The audit call itself lives in _kill_session, gated on audit_action.
     kill_src = inspect.getsource(web_auth._kill_session)
     assert "_audit(" in kill_src
     assert "if audit_action:" in kill_src
 
 
 def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, recorder, monkeypatch):
-    """028 FR-011: a refresh REFUSED by the IdP kills the session and writes
-    a real 'auth.token_refresh_failed' failure row through the unpatched
-    _audit -> record_auth_event -> Recorder -> Postgres pipeline."""
     store = _refresh_env(monkeypatch, db)
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _fake_async_client(fail=True))
 
@@ -386,7 +325,7 @@ def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, reco
     sess["incarnation_id"] = store.get(sid)["incarnation_id"]
     try:
         out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is None  # dead session: interactive login required
+        assert out is None
         assert sid not in web_auth._SESSIONS
         assert web_session_store(db).get(sid) is None
 

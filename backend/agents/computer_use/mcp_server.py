@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""MCP server for computer-use-1 — routes tool/call over the verb registry.
-
-Same dispatch contract as the other bundled agents (a top-level component with
-``variant == "error"`` becomes an MCP error), plus one addition for the
-look-then-act loop: a result's ``_images`` tier rides on ``MCPResponse.result``
-next to ``_data`` so the orchestrator can hand screenshots to the model as
-image parts (spec FR-015) while the model-facing *text* stays the small
-``_data`` digest (``_tool_result_to_llm_content`` reads ``_data`` first, so
-no base64 ever enters the text context).
+"""MCP server for the computer-use agent: dispatches tool/call requests from
+mcp_tools.py's verb registry and keeps screenshot `_images` separate from the `_data`
+text digest so no base64 reaches the model's text context.
 """
 import inspect
 import logging
@@ -24,8 +18,6 @@ NON_RETRYABLE_EXCEPTIONS = (TypeError, KeyError, ValueError, AttributeError)
 
 
 class MCPServer:
-    """MCP server that routes tool/call requests to registered verb functions."""
-
     def __init__(self):
         self.tools = TOOL_REGISTRY
 
@@ -83,7 +75,7 @@ class MCPServer:
 
                 return MCPResponse(request_id=request.request_id, result=result)
 
-            except Exception as e:  # noqa: BLE001 — every verb is non-retryable by contract
+            except Exception as e:  # noqa: BLE001
                 logger.error("Tool '%s' raised %s: %s", tool_name, type(e).__name__, e)
                 return MCPResponse(request_id=request.request_id,
                                    error={"code": -32603, "message": str(e), "retryable": False})

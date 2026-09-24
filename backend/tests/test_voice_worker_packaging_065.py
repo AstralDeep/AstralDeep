@@ -1,4 +1,7 @@
-"""Supply-chain and image-boundary guards for the Feature 065 voice worker."""
+"""Supply-chain and image-boundary tests for the voice worker package: exact dependency
+pins and hash closure, approved native wheels per architecture, Silero model
+license/provenance, and a strict Docker build context.
+"""
 
 from __future__ import annotations
 

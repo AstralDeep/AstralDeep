@@ -1,15 +1,12 @@
+"""Derives the agent-authoring LLM prompt spec from astralprims' Pydantic fields so it
+can't drift, feeding generate_llm_prompt_section() into agent_generator.py and
+agent_validator.py.
 """
-Agent Constitution — single source of truth for generated agent specifications.
 
-Auto-derives the primitives spec from shared/primitives.py dataclass fields
-so it never drifts out of sync. Provides the LLM prompt section used by
-both generate_tools_file() and refine_tools_file().
-"""
 import os
 import sys
 from typing import Dict, Any, Set
 
-# Ensure shared is importable
 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
@@ -21,8 +18,6 @@ from astralprims import (  # noqa: E402
     ColorPicker, FileUpload, FileDownload, Button, Input,
 )
 
-# ─── Auto-derived component registry ────────────────────────────────────
-
 COMPONENT_CLASSES = [
     Text, Card, Table, List_, Alert, ProgressBar, MetricCard,
     CodeBlock, Image, Grids, Tabs, Collapsible, Divider,
@@ -32,9 +27,6 @@ COMPONENT_CLASSES = [
 
 
 def _build_primitives_spec() -> Dict[str, Dict[str, Any]]:
-    """Inspect the (Pydantic v2) astralprims model fields to build the canonical
-    component spec. astralprims primitives are Pydantic models, so we read
-    ``cls.model_fields`` rather than ``dataclasses.fields``."""
     spec = {}
     for cls in COMPONENT_CLASSES:
         field_info = {}
@@ -63,8 +55,6 @@ PRIMITIVES_SPEC: Dict[str, Dict[str, Any]] = _build_primitives_spec()
 
 VALID_COMPONENT_TYPES: Set[str] = set(PRIMITIVES_SPEC.keys())
 
-# ─── Required imports block ─────────────────────────────────────────────
-
 _ASTRALPRIMS_IMPORT = """from astralprims import (
     Text, Card, Table, Container, MetricCard, ProgressBar,
     Alert, Grid, BarChart, LineChart, PieChart, PlotlyChart, List_,
@@ -73,8 +63,6 @@ _ASTRALPRIMS_IMPORT = """from astralprims import (
     create_ui_response
 )"""
 
-#: Server-hosted (027) agents live inside the backend package layout, so the
-#: generated file bootstraps sys.path to reach it.
 REQUIRED_IMPORTS_BLOCK = f"""import os
 import sys
 from typing import Dict, Any, List, Optional
@@ -83,18 +71,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 {_ASTRALPRIMS_IMPORT}"""
 
-#: BYO (058) bundles run on the OWNER'S desktop, where astralprims is
-#: pip-installed and there is no backend package to reach for. The sys.path shim
-#: is not merely useless there — it is REFUSED by the self-containment gate
-#: (``agent_generator.BYO_FORBIDDEN_PATTERNS``), so a prompt that mandated it
-#: would make BYO codegen structurally unable to succeed. Keep this block and the
-#: gate in agreement (test_byo_prompt_required_imports_pass_the_byo_gate in
-#: tests/test_byo_authoring.py pins it).
 BYO_REQUIRED_IMPORTS_BLOCK = f"""from typing import Dict, Any, List, Optional
 
 {_ASTRALPRIMS_IMPORT}"""
-
-# ─── Working example ────────────────────────────────────────────────────
 
 WORKING_EXAMPLE = '''def get_stock_summary(ticker: str, **kwargs) -> Dict[str, Any]:
     """Get a summary for a stock ticker with UI visualization."""
@@ -144,15 +123,11 @@ WORKING_EXAMPLE = '''def get_stock_summary(ticker: str, **kwargs) -> Dict[str, A
             Alert(message=f"Failed to fetch data for {ticker}: {str(e)}", variant="error")
         ])'''
 
-# ─── Component reference (human-readable) ───────────────────────────────
-
 def _build_component_reference() -> str:
-    """Build a concise reference of all components with their fields."""
     lines = []
     for type_val, info in sorted(PRIMITIVES_SPEC.items()):
         cls_name = info["class_name"]
         fields = info["fields"]
-        # Skip the 'type' field and common base fields
         relevant = {k: v for k, v in fields.items()
                     if k not in ("type", "id", "css", "class_name", "tooltip", "attributes")}
         params = []
@@ -168,18 +143,7 @@ def _build_component_reference() -> str:
 
 COMPONENT_REFERENCE = _build_component_reference()
 
-# ─── LLM prompt section generator ───────────────────────────────────────
-
 def generate_llm_prompt_section(self_contained: bool = False) -> str:
-    """Generate the complete UI component specification for LLM prompts.
-
-    Used by both generate_tools_file() and refine_tools_file() to ensure
-    the LLM always has correct, up-to-date component information.
-
-    ``self_contained`` (BYO, 058): emit the required-imports block WITHOUT the
-    backend ``sys.path`` shim — the bundle runs on the owner's desktop, and the
-    self-containment gate REFUSES any file containing ``sys.path.insert``.
-    """
     imports_block = BYO_REQUIRED_IMPORTS_BLOCK if self_contained else REQUIRED_IMPORTS_BLOCK
     return f"""## UI COMPONENT SYSTEM — YOU MUST FOLLOW THIS EXACTLY
 

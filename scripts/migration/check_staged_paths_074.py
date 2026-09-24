@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Reject sensitive or local-only paths in an exact Git staged set.
-
-The guard intentionally examines path names and generated-agent marker
-metadata only. It never opens staged or working-tree file content. Run it from
-any repository with ``--repo <exact-worktree-root>`` immediately before a
-migration commit.
+"""Rejects sensitive, local-only, or generated-agent paths from an exact Git staged set
+by inspecting path names and marker metadata only, never staged file content; run
+immediately before a migration commit.
 """
 
 from __future__ import annotations
@@ -115,7 +112,7 @@ class Violation:
 
 
 class GuardError(RuntimeError):
-    """The staged set could not be inspected safely."""
+    pass
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -168,8 +165,7 @@ def exact_repository_root(value: str) -> Path:
 
 
 def staged_paths(repo: Path) -> list[str]:
-    # --no-renames exposes both sides of a rename as independent paths. That
-    # prevents a sensitive old or new name from being hidden by rename display.
+    # no-renames: a rename can't hide a sensitive path
     raw = _git(
         repo,
         (

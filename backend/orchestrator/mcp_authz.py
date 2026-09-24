@@ -1,9 +1,8 @@
-"""MCP-only OAuth resource-server boundary for feature 064.
-
-This module is deliberately not shared with the web/native bearer dependency:
-MCP tokens have a distinct audience and scopes, and the inbound bearer value is
-discarded after validation rather than being stored on an orchestrator session.
+"""MCP-only OAuth resource-server boundary, kept separate from the web/native bearer
+dependency since MCP tokens carry a distinct audience and scope set; the inbound
+bearer is discarded after validation. Used by mcp_server_endpoint.py.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,9 +17,6 @@ from shared.jwks_cache import get_jwks
 
 
 MCP_AUDIENCE = "astral-mcp"
-# Same entry requirement as the web callback (feature 028 FR-005): an
-# authenticated account must carry the ``user`` or ``admin`` realm role. The
-# MCP channel must not become a side door for accounts the product refuses.
 MCP_ENTRY_ROLES = frozenset({"user", "admin"})
 MCP_SCOPES = (
     "mcp:discover",
@@ -34,14 +30,6 @@ _SCOPE_IMPLICATIONS = {
     "mcp:tools:invoke": frozenset(MCP_SCOPES),
 }
 
-# 088 T049: a resolved framework credential (see
-# ``orchestrator.framework_credentials.FrameworkCaller``) always maps to the
-# full coarse MCP scope triad — the credential's OWN narrower
-# operations.*/artifacts.read/agents.read scopes are the fine-grained gate
-# ``orchestrator.mcp_projection`` applies per tool. Kept local (no import of
-# ``orchestrator.framework_credentials`` here) so this module's own tests stay
-# free of that dependency; ``authorize_mcp_request``'s caller passes a plain
-# resolver callable instead.
 _FRAMEWORK_MCP_SCOPES = frozenset(MCP_SCOPES)
 _FRAMEWORK_TOKEN_PREFIX = "afk_"
 
@@ -55,8 +43,6 @@ class MCPAuthError(Exception):
 
 
 def canonical_public_base_url(value: str | None = None) -> str:
-    """Return the configured canonical origin, never a request-derived host."""
-
     raw = (value if value is not None else os.getenv("PUBLIC_BASE_URL", "")).strip()
     if not raw:
         raise RuntimeError("PUBLIC_BASE_URL is required when FF_MCP_SERVER is enabled")
@@ -106,17 +92,10 @@ def _scope_values(payload: Mapping[str, Any]) -> frozenset[str]:
         values = [str(value) for value in raw]
     else:
         values = []
-    # offline_access is intentionally neither published nor authoritative here.
     return frozenset(value for value in values if value != "offline_access")
 
 
 def realm_roles(payload: Mapping[str, Any]) -> frozenset[str]:
-    """Realm roles from verified claims (``realm_access.roles`` only).
-
-    Client roles (``resource_access``) are deliberately ignored: the web gate's
-    permissive union exists for shell-render UX, while here the outcome is an
-    authorization decision, so only the realm-level grant counts.
-    """
     realm_access = payload.get("realm_access")
     if not isinstance(realm_access, Mapping):
         return frozenset()
@@ -162,8 +141,6 @@ def bearer_from_headers(
         raise MCPAuthError(401, "invalid_token", "URI bearer tokens are not accepted", required)
     auth = headers.get("authorization", "")
     if not auth:
-        # Cookie-only requests are refused exactly like missing credentials. We
-        # never inspect cookie values, so session material cannot become a token.
         description = (
             "cookie credentials are not accepted"
             if cookies
@@ -177,11 +154,8 @@ def bearer_from_headers(
 
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
-    """Validate one MCP bearer and return claims without retaining token bytes."""
-
     if os.getenv("USE_MOCK_AUTH", "").strip().lower() == "true":
-        # Deliberately unlike the legacy dependency: only the MCP-specific dev
-        # credential is accepted. The web ``dev-token`` must fail this audience.
+        # Separate from the web dev-token; keep audiences apart
         if token != "dev-mcp-token":
             raise ValueError("invalid MCP development token")
         return {
@@ -215,12 +189,6 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
 def require_mcp_entry_role(
     payload: Mapping[str, Any], required_scopes: Iterable[str]
 ) -> None:
-    """Refuse a validly signed token whose account lacks the entry role.
-
-    Mirrors ``web_auth``'s callback gate. The refusal is a 403 with a fixed
-    description and the generic ``insufficient_scope`` challenge error so no
-    claim value (roles, sub, issuer) is echoed back to the caller.
-    """
     if not has_mcp_entry_role(payload):
         raise MCPAuthError(
             403,
@@ -238,20 +206,6 @@ async def authorize_mcp_request(
     required_scopes: Iterable[str],
     resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
 ) -> dict[str, Any]:
-    """Validate one MCP bearer — a JWT, or (088 T049) a framework credential.
-
-    ``resolve_framework_bearer`` is an ADDITIONAL, entirely optional credential
-    class: omitted (every caller before 088 T049, and every JWT-shaped bearer
-    even when it IS supplied), behavior is byte-identical to the JWT-only path.
-    When supplied and the bearer has the framework token shape (``afk_...``,
-    see ``orchestrator.framework_credentials``), it is resolved INSTEAD of JWT
-    decoding — a synchronous callable returning a
-    ``orchestrator.framework_credentials.FrameworkCaller`` or ``None`` (any
-    reason: malformed, revoked, expired, exhausted, unknown), run off the
-    event loop. A resolved caller always carries the full coarse MCP scope
-    triad; the credential's OWN narrower scopes ride the returned claims as
-    ``_framework_scopes`` for ``mcp_projection`` to gate per tool.
-    """
     required = tuple(required_scopes)
     token = bearer_from_headers(
         headers,
@@ -274,10 +228,6 @@ async def authorize_mcp_request(
             "realm_access": {"roles": ["user"]},
             "_framework_credential_id": caller.credential_id,
             "_framework_scopes": sorted(caller.scopes),
-            # The resolved caller itself, for THIS request's dispatch only
-            # (``mcp_server_endpoint._dispatch_work_tool``) — never re-derived
-            # from a bearer that boundary does not have, and never returned to
-            # the client, logged, or serialized as part of this dict.
             "_framework_caller": caller,
         }
     try:
@@ -286,15 +236,10 @@ async def authorize_mcp_request(
         raise
     except Exception as exc:
         raise MCPAuthError(401, "invalid_token", "invalid bearer token", required) from exc
-    # Role check precedes the scope check: the scope challenge lists what a
-    # correctly enrolled client should request, which is moot for an account
-    # the product does not admit at all.
     require_mcp_entry_role(payload, required)
     missing = tuple(scope for scope in required if scope not in effective_mcp_scopes(payload))
     if missing:
         raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
-    # Return a detached claims mapping only. The raw bearer is intentionally not
-    # part of this result, request.state, an orchestrator session, or any log.
     return dict(payload)
 
 

@@ -1,9 +1,6 @@
-"""Unit tests for start.py's orchestrator readiness poll (feature 052, FR-029).
-
-``_wait_for_orchestrator`` must proceed on the first healthy /healthz
-response, stop early when the orchestrator process dies, and fail closed
-after the timeout. The module import itself is side-effect free beyond dotenv
-loading, so importing it here is safe.
+"""Tests for start.py's orchestrator readiness poll and agent supervisor
+(orchestrator/local_agents.py): healthz polling with timeout, agent-entrypoint
+directory naming, and the remote-compute flag's spawn path.
 """
 
 from __future__ import annotations
@@ -23,8 +20,6 @@ import start  # noqa: E402
 
 
 class _Proc:
-    """Fake subprocess handle with a fixed poll() result."""
-
     def __init__(self, poll_result=None):
         self._poll_result = poll_result
         self.returncode = poll_result
@@ -34,8 +29,6 @@ class _Proc:
 
 
 class _Resp:
-    """Context-manager stand-in for urllib's HTTP response."""
-
     def __init__(self, status):
         self.status = status
 
@@ -179,15 +172,7 @@ def test_main_times_out_before_spawning_dependent_agents(monkeypatch, tmp_path):
     assert supervisor.termination_reason.value == "quit"
 
 
-# ---------------------------------------------------------------------------
-# Agent discovery: only <dir>/<dir>_agent.py is an entrypoint
-# ---------------------------------------------------------------------------
-
-
 def _agents_tree(tmp_path):
-    """A bind-mount-shaped agents/ tree: a built-in, the feature-063 verb suites
-    under agents/tests (test_remote_compute_agent.py ends in _agent.py), the
-    flag-gated remote_compute dir, a draft, an external agent and some noise."""
     backend_dir = tmp_path / "backend"
     agents = backend_dir / "agents"
     agents.mkdir(parents=True)
@@ -197,21 +182,17 @@ def _agents_tree(tmp_path):
     tests = agents / "tests"
     tests.mkdir()
     (tests / "test_remote_compute_agent.py").write_text("", encoding="utf-8")
-    (tests / "tests_agent.py").write_text("", encoding="utf-8")  # even this must not run
+    (tests / "tests_agent.py").write_text("", encoding="utf-8")
     for name in ("weather", "remote_compute", "external_agent"):
         (agents / name).mkdir()
         (agents / name / f"{name}_agent.py").write_text("", encoding="utf-8")
-    # A real-looking dir whose only *_agent.py is NOT named after the dir.
     (agents / "misnamed").mkdir()
     (agents / "misnamed" / "helper_agent.py").write_text("", encoding="utf-8")
-    # A test_-prefixed directory that even follows the naming convention.
     (agents / "test_probe").mkdir()
     (agents / "test_probe" / "test_probe_agent.py").write_text("", encoding="utf-8")
-    # A draft (on-demand via the UI, never at boot).
     (agents / "drafty").mkdir()
     (agents / "drafty" / "drafty_agent.py").write_text("", encoding="utf-8")
     (agents / "drafty" / ".draft").write_text("", encoding="utf-8")
-    # A stray file at the top level.
     (agents / "stray_agent.py").write_text("", encoding="utf-8")
     return backend_dir, agents
 
@@ -229,8 +210,6 @@ def test_agent_entrypoint_accepts_only_dir_named_module(tmp_path):
 
 
 def test_agent_entrypoint_matches_local_agents_convention(tmp_path):
-    """start.py and orchestrator/local_agents.py must agree on what an agent
-    package is, or the supervisor spawns things the orchestrator never loads."""
     from orchestrator import local_agents
 
     _, agents = _agents_tree(tmp_path)
@@ -242,9 +221,6 @@ def test_agent_entrypoint_matches_local_agents_convention(tmp_path):
 
 
 class _RunningThenExitingOrchestrator:
-    """poll() reports alive while agents are being spawned, then a clean exit
-    so main() leaves its supervision loop without a SystemExit."""
-
     returncode = 0
 
     def __init__(self):
@@ -294,13 +270,11 @@ def test_main_never_spawns_the_tests_dir_or_misnamed_modules(monkeypatch, tmp_pa
     assert "test_probe" not in agents
     assert "drafty" not in agents
     assert "__pycache__" not in agents
-    # The only subprocess-startable non-built-in agent in the tree.
     assert agents == ["external_agent"]
     spawned = {s["owner"].owner_id: s for s in supervisor.spawned}
     script = spawned["external_agent"]["argv"][1]
     assert os.path.basename(script) == "external_agent_agent.py"
     assert spawned["external_agent"]["cwd"] == os.path.dirname(script)
-    # Every spawned agent script is <dir>/<dir>_agent.py — never a test file.
     for s in supervisor.spawned[1:]:
         base = os.path.basename(s["argv"][1])
         assert not base.startswith("test_")
@@ -311,8 +285,6 @@ def test_max_agents_count_ignores_tests_dir_and_drafts(monkeypatch, tmp_path):
     backend_dir, _ = _agents_tree(tmp_path)
     supervisor, _ = _run_main(
         monkeypatch, backend_dir, inprocess=True, remote_flag=False)
-    # weather + remote_compute + external_agent; NOT tests/misnamed/test_probe/
-    # drafty/__pycache__ (drafts are excluded from the port count as before).
     assert supervisor.spawned[0]["env"]["MAX_AGENTS"] == "3"
 
 
@@ -328,8 +300,8 @@ def test_remote_compute_flag_on_inprocess_is_not_spawned_twice(monkeypatch, tmp_
     backend_dir, _ = _agents_tree(tmp_path)
     _, agents = _run_main(
         monkeypatch, backend_dir, inprocess=True, remote_flag=True)
-    assert "remote_compute" not in agents   # register_built_ins owns it
-    assert "weather" not in agents          # built-ins likewise
+    assert "remote_compute" not in agents
+    assert "weather" not in agents
     assert agents == ["external_agent"]
 
 
@@ -337,8 +309,6 @@ def test_remote_compute_flag_on_inprocess_off_uses_subprocess_path(monkeypatch, 
     backend_dir, _ = _agents_tree(tmp_path)
     _, agents = _run_main(
         monkeypatch, backend_dir, inprocess=False, remote_flag=True)
-    # The in-process kill-switch falls back to the networked path for the
-    # bundled built-ins AND the flag-enabled remote_compute agent.
     assert sorted(agents) == ["external_agent", "remote_compute", "weather"]
 
 
@@ -354,4 +324,4 @@ def test_remote_compute_flag_reads_the_feature_flag_singleton(monkeypatch):
         raise RuntimeError("flags unavailable")
 
     monkeypatch.setattr(flags, "is_enabled", _boom)
-    assert start._remote_compute_enabled() is False  # fail closed
+    assert start._remote_compute_enabled() is False

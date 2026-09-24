@@ -1,4 +1,7 @@
-"""Server-owned v3 authority binding for personal-agent executors."""
+"""Server-owned authority binding for personal BYO agent executors: derives the final
+executor identity from authenticated server-side fences only, never from
+client-proposed values, for orchestrator.py.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ _AUDIENCE_DOMAIN: Final = "astraldeep.byo_user"
 
 
 class ByoRuntimeAuthorityError(RuntimeError):
-    """A delivery cannot prove one exact active BYO authority binding."""
+    pass
 
 
 def _uuid4(value: object, field: str) -> str:
@@ -34,13 +37,6 @@ def _uuid4(value: object, field: str) -> str:
 
 
 def derive_byo_executor_audience(host_id: str, host_session_id: str) -> str:
-    """Derive the final executor identity from authenticated server fences.
-
-    The desktop recomputes the same value from its accepted stable host ID and
-    server-issued session ID. No card, tool, delivery, or client-proposed
-    audience is trusted.
-    """
-
     host = _uuid4(host_id, "host_id")
     session = _uuid4(host_session_id, "host_session_id")
     material = f"{_AUDIENCE_DOMAIN}\0{host}\0{session}".encode("utf-8")
@@ -49,8 +45,6 @@ def derive_byo_executor_audience(host_id: str, host_session_id: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ByoRuntimeAuthority:
-    """Exact non-secret authority object carried beside a v3 delivery fence."""
-
     owner_id: str
     binding_id: str
     lease_id: str
@@ -103,8 +97,6 @@ class ByoRuntimeAuthority:
         fence: RuntimeFence,
         owner_id: str,
     ) -> ByoRuntimeAuthority:
-        """Bind one active Plane record to the selected host/runtime fence."""
-
         state = getattr(getattr(binding, "state", None), "value", None)
         population = getattr(getattr(binding, "population", None), "value", None)
         expected = (

@@ -1,24 +1,6 @@
-"""Typed monitoring outcomes for successive observations of one public source.
-
-Pure classification only (feature 088, FR-013/FR-014). Nothing here reads a
-source, authorizes work or spends an allowance. The runner supplies the retained
-result of an already governed read, the checkpoint's prior binding and the owner
-definition's source; this module answers which of the four outcomes the
-observation is and returns a bounded, text-free record for
-``checkpoint["observation"]``:
-
-- ``initial``: no comparable prior observation exists for this source.
-- ``unchanged``: a complete extraction whose revision digest equals the prior's.
-- ``changed``: a complete extraction whose revision digest differs.
-- ``insufficient_evidence``: the reader reported an incomplete extraction, no
-  revision identity is available, or the prior result binding is missing.
-
-Equality is exact byte identity of the reader's normalized extraction. Missing
-prior result bytes never become an invented semantic equality; they are
-``insufficient_evidence``. Retained-excerpt truncation (``excerpt_complete`` /
-legacy ``truncated``) is recorded as observation scope but does not gate the
-classification: the revision digest covers the reader's full normalized output,
-and the persistent path deliberately shows models a flagged excerpt.
+"""Classifies a fresh governed read against its prior observation as initial, unchanged,
+changed, or insufficient_evidence; pure and source-free. Consumed by
+persistent_agents/runner.py using research_result.py's page facts.
 """
 
 from __future__ import annotations
@@ -76,7 +58,6 @@ def _sequence(value):
 
 
 def observation_shape(observed):
-    """Name the closed retained-result shape, or None for anything else."""
     if type(observed) is not dict:
         return None
     keys = set(observed)
@@ -89,7 +70,6 @@ def observation_shape(observed):
 
 
 def normalize_url(url):
-    """Lower-case scheme/host, drop the fragment and a default port; invent nothing."""
     if type(url) is not str or not url.strip() or len(url.encode("utf-8")) > 8192:
         raise ValueError(_ERROR)
     parts = urlsplit(url)
@@ -107,12 +87,6 @@ def normalize_url(url):
 
 
 def extraction_facts(observed, source):
-    """Completeness flags and URLs exactly as the reader reported them.
-
-    Flags the reader did not report stay ``None``; they are never guessed as
-    complete or incomplete. The legacy envelope reports only excerpt
-    truncation, so its body/extraction completeness is unknown.
-    """
     shape = observation_shape(observed)
     source = thaw(source)
     if shape is None or type(source) is not dict:
@@ -172,12 +146,6 @@ def _record(*, kind, reason, sequence, revision, context_digest, prior, facts):
 
 
 def classify_observation(prior, observed, extraction):
-    """Classify one fresh governed read against the prior binding.
-
-    ``prior`` is ``None`` or ``{"revision_digest", "result_digest", "sequence"}``
-    from :func:`prior_observation`; ``extraction`` comes from
-    :func:`extraction_facts` for the same ``observed`` value.
-    """
     prior = _prior_binding(prior)
     if observation_shape(observed) is None or type(extraction) is not dict:
         raise ValueError(_ERROR)
@@ -204,12 +172,6 @@ def classify_observation(prior, observed, extraction):
 
 
 def event_observation(checkpoint, observed, extraction, *, sequence, revision):
-    """Describe an observation the source ledger already admitted as an event.
-
-    The event exists only for an incorporated observation, so its kind is fixed
-    by the ledger: ``initial`` without a comparable prior, else ``changed``.
-    Completeness is still recorded exactly as reported.
-    """
     if (observation_shape(observed) is None or type(extraction) is not dict
             or not _sequence(sequence) or sequence < 1 or not _is_digest(revision)
             or extraction["revision_digest"] != revision):
@@ -223,7 +185,6 @@ def event_observation(checkpoint, observed, extraction, *, sequence, revision):
 
 
 def valid_observation_record(value):
-    """Accept only a complete, well-typed record; anything else is absent."""
     if (type(value) is not dict or set(value) != _RECORD_KEYS
             or value["version"] != OBSERVATION_VERSION or value["kind"] not in KINDS
             or not _sequence(value["observation_sequence"])
@@ -242,16 +203,6 @@ def valid_observation_record(value):
 
 
 def prior_observation(checkpoint, *, source_configuration_digest, pending_sequence=None):
-    """Return the binding of the last incorporated observation, or None.
-
-    A typed record wins. A record for another source configuration is not a
-    prior for this one. Without a typed record the legacy cursor/last
-    observation pair is read: on a fresh read the cursor names the last
-    incorporated revision; while an event with ``pending_sequence`` is pending
-    the cursor already names that event, so only ``last_observation`` can bind
-    the earlier observation. Missing retained bytes leave the result digest
-    ``None``, which classification reports as insufficient evidence.
-    """
     checkpoint = thaw(checkpoint)
     if type(checkpoint) is not dict:
         return None
@@ -265,9 +216,6 @@ def prior_observation(checkpoint, *, source_configuration_digest, pending_sequen
                     "result_digest": record["context_digest"],
                     "sequence": record["observation_sequence"]}
         if record["prior_revision_digest"] is None or record["prior_result_digest"] is None:
-            # The last incorporated binding was already unavailable when this
-            # record was written; the next observation starts over honestly
-            # instead of repeating insufficient evidence forever.
             return None
         return {"revision_digest": record["prior_revision_digest"],
                 "result_digest": record["prior_result_digest"],
@@ -293,7 +241,6 @@ def prior_observation(checkpoint, *, source_configuration_digest, pending_sequen
 
 
 def extractive_passages(text):
-    """Split retained text into the same contiguous passages as page_passages."""
     if type(text) is not str:
         raise ValueError(_RESULT_ERROR)
     start, passages = 0, []
@@ -309,13 +256,6 @@ def extractive_passages(text):
 
 
 def build_initial_result(observed, extraction, *, source_action_id, source_result_digest):
-    """Deterministic exact excerpts for an initial observation; no model plans them.
-
-    A retained fixed-reader observation goes through ``build_page_result`` with
-    its ledger binding. The legacy envelope carries no transport facts, so its
-    attribution names only what is known: the requested URL, the read action,
-    its result digest, the revision digest and the reported flags.
-    """
     shape = observation_shape(observed)
     if shape == "page":
         selection = [item["id"] for item in page_passages(observed)[:MAX_PASSAGES]]

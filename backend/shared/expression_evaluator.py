@@ -1,9 +1,8 @@
-'''
-Safe expression evaluator for row-based calculations.
+"""AST-validated, restricted-eval evaluator for user-authored row expressions
+(agents/general/mcp_tools.py's modify_data): allow-lists safe node types, builtins,
+and attributes, denying dunder access to close sandbox-escape paths.
+"""
 
-Supports Python-like expressions with row context, using AST validation
-for security. Provides fallback to restricted eval for performance.
-'''
 import ast
 import math
 import numpy as np
@@ -11,38 +10,20 @@ from typing import Any, Dict, Callable
 
 
 class ExpressionEvaluator:
-    """
-    Safely evaluate Python-like expressions with row context.
-    
-    Features:
-    - AST validation to prevent unsafe operations
-    - Support for row["column"] access, arithmetic, comparisons, logical ops
-    - Built-in functions: int, float, str, bool, len, round, abs, min, max, sum
-    - Conditional expressions (if-else)
-    - Safe evaluation with row context
-    """
-    
-    # Allowed AST node types
     ALLOWED_NODES = {
-        # Expressions
         ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp,
         ast.Name, ast.Constant, ast.Subscript, ast.Index, ast.Slice,
         ast.Tuple, ast.List, ast.Dict, ast.Set,
-        # Operators
         ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
         ast.USub, ast.UAdd, ast.Not, ast.Invert,
         ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
         ast.Is, ast.IsNot, ast.In, ast.NotIn,
         ast.And, ast.Or,
-        # Function calls
         ast.Call, ast.Attribute,
-        # Control flow
         ast.IfExp,
-        # Context nodes (safe)
         ast.Load, ast.Store, ast.Del,
     }
     
-    # Allowed built-in functions
     ALLOWED_BUILTINS = {
         'int': int,
         'float': float,
@@ -69,7 +50,6 @@ class ExpressionEvaluator:
         'np.where': np.where,
     }
 
-    # Allowed attributes (e.g., row.get, row.keys for schema introspection)
     ALLOWED_ATTRIBUTES = {
         'get', 'keys', 'values', 'items',
         'lower', 'upper', 'strip', 'replace', 'split', 'startswith', 'endswith',
@@ -77,13 +57,6 @@ class ExpressionEvaluator:
     }
     
     def __init__(self, expression: str, use_ast_validation: bool = True):
-        """
-        Initialize evaluator with expression.
-        
-        Args:
-            expression: Python-like expression string
-            use_ast_validation: If True, validate AST for security (slower)
-        """
         self.expression = expression.strip()
         self.use_ast_validation = use_ast_validation
         self._compiled = None
@@ -93,16 +66,9 @@ class ExpressionEvaluator:
         
     @staticmethod
     def _is_dunder(name: str) -> bool:
-        """A double-underscore (dunder) identifier — the gateway to every
-        attribute-based sandbox escape (``__class__``, ``__globals__``,
-        ``__dict__``, ``__builtins__``, ``__import__`` …)."""
         return isinstance(name, str) and name.startswith("__")
 
     def _validate_expression(self) -> None:
-        """
-        Validate expression AST for security.
-        Raises ValueError if unsafe nodes are found.
-        """
         try:
             tree = ast.parse(self.expression, mode='eval')
         except SyntaxError as e:
@@ -116,54 +82,32 @@ class ExpressionEvaluator:
                     f"at line {node.lineno if hasattr(node, 'lineno') else '?'}"
                 )
 
-            # Refuse dunder access ANYWHERE. Every AST-based sandbox escape
-            # routes through a double-underscore attribute or name —
-            # ``().__class__``, ``x.__globals__``, or
-            # ``math.__dict__['__builtins__']['eval']`` — so a bare
-            # ``ast.Attribute`` that is not the callee of a Call (previously
-            # unvalidated) reaches the real module/type internals. No
-            # legitimate row expression references a dunder, so deny outright.
             if isinstance(node, ast.Attribute) and self._is_dunder(node.attr):
                 raise ValueError(f"Disallowed attribute: {node.attr}")
             if isinstance(node, ast.Name) and self._is_dunder(node.id):
                 raise ValueError(f"Disallowed name: {node.id}")
 
-            # Additional checks for Call nodes
             if isinstance(node, ast.Call):
-                # The callee must be a plain name or an attribute access —
-                # never the result of a subscript, call, or lambda. A Call
-                # whose func is an ``ast.Subscript`` (e.g. ``d['eval'](...)``)
-                # otherwise slips past BOTH the Name and Attribute allowlists
-                # below and reaches arbitrary callables.
+                # Else d['eval'](...) bypasses the allowlist below
                 if not isinstance(node.func, (ast.Name, ast.Attribute)):
                     raise ValueError(
                         "Disallowed call target: only named functions and "
                         "attribute methods may be called")
-                # Check function name
                 if isinstance(node.func, ast.Name):
                     func_name = node.func.id
                     if func_name not in self.ALLOWED_BUILTINS:
-                        # Check if it's a math function
                         if not (func_name.startswith('math.') and func_name in self.ALLOWED_BUILTINS):
                             raise ValueError(f"Disallowed function: {func_name}")
                 elif isinstance(node.func, ast.Attribute):
-                    # Allow row.get etc.
                     attr_name = node.func.attr
                     if attr_name not in self.ALLOWED_ATTRIBUTES:
-                        # Sometimes node.func corresponds to an object's attribute (like pd.Series.str.contains)
-                        # Let's be lenient on pandas attribute chains for string manipulation within eval
                         if attr_name not in ['contains', 'str', 'where']:
                             raise ValueError(f"Disallowed attribute: {attr_name}")
     
     def compile(self) -> Callable:
-        """
-        Compile expression into a callable function.
-        Returns a function that takes a row dict and returns evaluated value.
-        """
         if self._compiled is not None:
             return self._compiled
         
-        # Create safe globals
         safe_globals = {
             '__builtins__': {
                 'int': int,
@@ -186,27 +130,22 @@ class ExpressionEvaluator:
             },
             'math': math,
             'np': np,
-            'row': None,  # Placeholder, will be replaced with actual row
+            'row': None,
         }
         
-        # Add math functions individually for easier access
         for name, func in self.ALLOWED_BUILTINS.items():
             if name.startswith('math.') or name.startswith('np.'):
-                # Will be accessed via math/np module
                 continue
             safe_globals[name] = func
         
         try:
-            # Compile expression
             code = compile(self.expression, '<string>', 'eval')
             
             def evaluator(row: Dict[str, Any]) -> Any:
-                """Evaluate expression with given row context."""
                 safe_globals['row'] = row
                 try:
                     return eval(code, safe_globals, {})
                 except Exception as e:
-                    # Provide more context in error
                     raise ValueError(
                         f"Error evaluating expression '{self.expression}': {e}"
                     ) from e
@@ -217,15 +156,6 @@ class ExpressionEvaluator:
             raise ValueError(f"Expression compilation failed: {e}")
     
     def evaluate(self, row: Dict[str, Any]) -> Any:
-        """
-        Evaluate expression for a single row.
-        
-        Args:
-            row: Dictionary representing a row of data
-            
-        Returns:
-            Evaluated result
-        """
         if self._compiled is None:
             self.compile()
         return self._compiled(row)
@@ -238,18 +168,6 @@ class ExpressionEvaluator:
         default: Any = None,
         use_ast_validation: bool = True
     ) -> list[Any]:
-        """
-        Evaluate expression for multiple rows efficiently.
-        
-        Args:
-            expression: Expression string
-            rows: List of row dictionaries
-            default: Default value if evaluation fails for a row
-            use_ast_validation: Whether to validate AST
-            
-        Returns:
-            List of results, same length as rows
-        """
         evaluator = cls(expression, use_ast_validation)
         evaluator.compile()
         
@@ -263,17 +181,6 @@ class ExpressionEvaluator:
 
 
 def safe_eval(expression: str, row: Dict[str, Any], default: Any = None) -> Any:
-    """
-    Convenience function for one-off expression evaluation.
-    
-    Args:
-        expression: Expression string
-        row: Row dictionary
-        default: Value to return if evaluation fails
-        
-    Returns:
-        Evaluated result or default
-    """
     try:
         evaluator = ExpressionEvaluator(expression)
         return evaluator.evaluate(row)
@@ -282,15 +189,6 @@ def safe_eval(expression: str, row: Dict[str, Any], default: Any = None) -> Any:
 
 
 def validate_expression(expression: str) -> bool:
-    """
-    Validate expression syntax and safety.
-    
-    Args:
-        expression: Expression string
-        
-    Returns:
-        True if valid, False otherwise
-    """
     try:
         ExpressionEvaluator(expression)
         return True
@@ -299,25 +197,20 @@ def validate_expression(expression: str) -> bool:
 
 
 if __name__ == "__main__":
-    # Simple test
     test_row = {"age": 25, "salary": 50000, "name": "Alice", "active": True}
     
-    # Test basic arithmetic
     expr1 = "row['age'] * 2 + 5"
     evaluator1 = ExpressionEvaluator(expr1)
-    print(f"{expr1} = {evaluator1.evaluate(test_row)}")  # Should be 55
+    print(f"{expr1} = {evaluator1.evaluate(test_row)}")
     
-    # Test conditional
     expr2 = "'Adult' if row['age'] >= 18 else 'Minor'"
     evaluator2 = ExpressionEvaluator(expr2)
-    print(f"{expr2} = {evaluator2.evaluate(test_row)}")  # Should be 'Adult'
+    print(f"{expr2} = {evaluator2.evaluate(test_row)}")
     
-    # Test string concatenation
     expr3 = "row['name'] + ' is ' + str(row['age'])"
     evaluator3 = ExpressionEvaluator(expr3)
     print(f"{expr3} = {evaluator3.evaluate(test_row)}")
     
-    # Test batch evaluation
     rows = [
         {"age": 15, "salary": 20000},
         {"age": 30, "salary": 60000},

@@ -1,4 +1,7 @@
-"""PostgreSQL restart/rollback evidence for Feature 075 speech backends."""
+"""Tests that voice_backend.py and voice_runtime.py reconstruct conversation and history
+state correctly across a PostgreSQL restart, using in-memory local and remote media
+adapters that never touch the network.
+"""
 
 from __future__ import annotations
 
@@ -82,8 +85,6 @@ class _ReadyCapability:
 
 
 class _LocalOnlyMedia:
-    """No-network lifecycle adapter that rejects accidental remote activation."""
-
     async def activate(self, _session: Any) -> ActivatedVoiceMedia:
         raise AssertionError("client-local reconstruction allocated remote media")
 
@@ -127,8 +128,6 @@ class _LocalOnlyMedia:
 
 
 class _DeterministicRemoteMedia(_LocalOnlyMedia):
-    """In-memory Factory media boundary with no network or credentials."""
-
     def __init__(self, now: datetime) -> None:
         self._now = now
         self._current: tuple[str, int, str, str] | None = None

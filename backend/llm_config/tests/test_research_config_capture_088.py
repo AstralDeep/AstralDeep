@@ -1,4 +1,7 @@
-"""Opaque uncached USER capture and exact keyed ciphertext/timestamp revision."""
+"""Tests for llm_config/research_profile.py's select_config: capture bypasses the
+mutable cache, the resulting selection binds exact ciphertext and timestamps, and a
+corrupt or foreign row refuses without mutating state.
+"""
 
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
@@ -131,7 +134,7 @@ def test_revision_mac_binds_raw_ciphertext_and_exact_microseconds(configured, fi
     if field == "api_key_ciphertext":
         value = configured._encrypt_key(
             before._api_key
-        )  # Same plaintext, fresh cipher.
+        )
     elif field == "owner_id":
         value = "bob"
     else:

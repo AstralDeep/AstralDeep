@@ -1,15 +1,8 @@
-"""Feature 063 T028/T066 — FR-015 machine-credential revocation legs.
-
-Logout (web ``/auth/logout`` + 044 native ``/api/auth/logout``) and account
-removal each destroy the user's stored machine credentials as part of the
-existing revocation flow; machine delete destroys that machine's row (FK
-cascade); a deleted machine/credential cascades to tracked-job orphaning at
-the next poll (FR-046); and a failing credential leg never blocks local
-sign-out (fail-open).
-
-Uses one isolated current AstralPlane PostgreSQL runtime; every row is keyed by
-a uuid4 user_id and cleanup uses the typed account-retirement boundary.
+"""Tests for machine-credential revocation (orchestrator/credential_manager.py,
+remote_machines.py, web_auth.py): logout and account removal destroy credentials,
+machine delete cascades via FK, and a failing credential leg never blocks sign-out.
 """
+
 import asyncio
 import secrets
 import uuid
@@ -28,10 +21,6 @@ from tests.helpers.session_plane_runtime import (
     web_session_store,
 )
 
-
-# ---------------------------------------------------------------------------
-# Helpers / fixtures
-# ---------------------------------------------------------------------------
 
 class _FakeRequest:
     def __init__(self, cookies=None, query_params=None, base_url="http://localhost:8001/"):
@@ -57,7 +46,6 @@ def credmgr(plane_runtime, monkeypatch):
 
 @pytest.fixture()
 def store(plane_runtime, monkeypatch):
-    """A WebSessionStore with a real Fernet key, wired into web_auth."""
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     s = web_session_store(plane_runtime)
     monkeypatch.setattr(web_auth, "_get_store", lambda: s)
@@ -66,7 +54,6 @@ def store(plane_runtime, monkeypatch):
 
 @pytest.fixture()
 def real_auth_env(monkeypatch):
-    """Mock auth OFF + a Keycloak authority so the revocation block runs."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
@@ -123,16 +110,9 @@ def _stub_offline_grants(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# Web logout leg (FR-015 via /auth/logout)
-# ---------------------------------------------------------------------------
-
 def test_web_logout_destroys_machine_credentials(
     plane_runtime, credmgr, store, monkeypatch, real_auth_env
 ):
-    """Sign-out destroys every machine_credential row the user owns, riding the
-    same revocation flow as the refresh token + offline grants. The machine
-    inventory itself survives — logout revokes secrets, not machines."""
     user_id = f"u-{uuid.uuid4()}"
     sid = secrets.token_urlsafe(24)
     store.create(sid, user_id=user_id, access_token="at", refresh_token=f"rt-{uuid.uuid4()}",
@@ -167,8 +147,6 @@ def test_web_logout_destroys_machine_credentials(
 def test_web_logout_survives_credential_leg_failure(
     plane_runtime, credmgr, store, monkeypatch, real_auth_env
 ):
-    """Fail-open: a broken credential store never blocks the local sign-out —
-    the session still dies, the refresh leg still runs, and logout redirects."""
     user_id = f"u-{uuid.uuid4()}"
     sid = secrets.token_urlsafe(24)
     refresh = f"rt-{uuid.uuid4()}"
@@ -193,19 +171,15 @@ def test_web_logout_survives_credential_leg_failure(
     req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
     try:
         resp = asyncio.run(web_auth.auth_logout(req))
-        assert resp.status_code == 303                 # local sign-out completed
+        assert resp.status_code == 303
         assert sid not in web_auth._SESSIONS
         assert store.get(sid) is None
-        assert revoked == [refresh]                    # refresh leg still ran
+        assert revoked == [refresh]
     finally:
         web_auth._SESSIONS.pop(sid, None)
         store.delete(sid)
         purge_revocations(plane_runtime, (user_id,))
 
-
-# ---------------------------------------------------------------------------
-# Native logout leg (044 /api/auth/logout parity)
-# ---------------------------------------------------------------------------
 
 def test_native_logout_destroys_machine_credentials(
     plane_runtime, credmgr, monkeypatch
@@ -240,16 +214,9 @@ def test_native_logout_destroys_machine_credentials(
         _cleanup(plane_runtime, user_id, credmgr)
 
 
-# ---------------------------------------------------------------------------
-# Account-removal leg (purge_user_remote_compute hook)
-# ---------------------------------------------------------------------------
-
 def test_account_removal_purges_credentials_machines_and_jobs(
     plane_runtime, credmgr
 ):
-    """Account removal destroys the user's machine credentials AND their
-    remote_machine / tracked_job rows (data-model.md 'Retirement & revocation');
-    a second sweep finds nothing (idempotent)."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         machine_id = _seed_machine(plane_runtime, credmgr, user_id)
@@ -278,15 +245,9 @@ def test_account_removal_purges_credentials_machines_and_jobs(
         _cleanup(plane_runtime, user_id, credmgr)
 
 
-# ---------------------------------------------------------------------------
-# Machine-delete leg + tracked-job orphaning cascade (FR-046)
-# ---------------------------------------------------------------------------
-
 def test_machine_delete_destroys_only_that_machines_credential(
     plane_runtime, credmgr
 ):
-    """Deleting one machine destroys that machine's credential row via the FK
-    ON DELETE CASCADE alone; a sibling machine's credential is untouched."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         m1 = _seed_machine(plane_runtime, credmgr, user_id, "dgx")
@@ -303,9 +264,6 @@ def test_machine_delete_destroys_only_that_machines_credential(
 def test_deleted_credential_and_machine_orphan_tracked_job_at_poll(
     plane_runtime, credmgr
 ):
-    """FR-046 / data-model: 'if machine_id's row or its credential is gone at
-    poll time, tracking stops' — the delete legs cascade to job orphaning via
-    the poller's probe, not synchronously."""
     user_id = f"u-{uuid.uuid4()}"
     try:
         machine_id = _seed_machine(plane_runtime, credmgr, user_id)
@@ -326,11 +284,9 @@ def test_deleted_credential_and_machine_orphan_tracked_job_at_poll(
         assert record is not None
         row = remote_jobs._record_to_dict(record)
 
-        # Credential-delete leg: machine still present, secret gone → orphan.
         credmgr.delete_machine_credential(machine_id, user_id)
         assert remote_jobs._probe_state(orch, row) == {"orphan": True}
 
-        # Machine-delete leg: inventory row gone → orphan.
         remote_machines.delete_machine(plane_runtime, user_id, machine_id)
         assert remote_jobs._probe_state(orch, row) == {"orphan": True}
     finally:

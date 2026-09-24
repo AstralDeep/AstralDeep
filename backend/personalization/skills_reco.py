@@ -1,11 +1,8 @@
-"""Profession/goal → skill recommendation ranking (feature 025, T020).
-
-A skill is an agent tool (FR-009). Given the user's profession + goals and the
-set of agent tools they could be authorized for, rank the tools by textual
-relevance so onboarding can suggest the most useful skills first.
-
-Pure function — no I/O — so it is unit-testable without the stack.
+"""Ranks a user's authorized agent tools by textual relevance to their profession and
+goals for onboarding suggestions; a pure function used by onboarding/api.py and
+panels.py's skills panel.
 """
+
 from __future__ import annotations
 
 import re
@@ -31,15 +28,6 @@ def recommend_skills(
     *,
     limit: int = 8,
 ) -> List[Dict[str, Any]]:
-    """Return ``available_tools`` ranked by relevance to profession + goals.
-
-    Each tool dict is expected to carry at least ``tool_name`` and
-    ``description`` (and may carry ``agent_id``, ``scope``, ``available``).
-    The returned list is a shallow copy of each tool dict plus a ``score`` key,
-    sorted by score descending then tool name. Authorized (``available``) tools
-    are preferred on ties. When profession/goals are empty, tools keep their
-    input order (stable) so onboarding still shows something useful.
-    """
     profile_tokens = _tokens(profession)
     for g in goals or []:
         profile_tokens |= _tokens(g)

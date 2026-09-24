@@ -1,4 +1,7 @@
-"""Strict, redacted LETS host-configuration and readiness tests."""
+"""Tests for orchestrator/lets_config.py: strict parsing and redaction of LETS host
+configuration across off/active/shadow modes, manifest authentication and identity
+binding, and fail-closed validation of malformed settings.
+"""
 
 from __future__ import annotations
 
@@ -734,9 +737,6 @@ def test_default_environment_mapping_can_be_loaded(
     assert loaded.config == direct
 
 
-# --- Minted service identity (LETS_IDENTITY_*) -----------------------------
-
-
 def _identity_environment(tmp_path: Path, **overrides: str) -> dict[str, str]:
     values = _active_environment(tmp_path)
     del values["LETS_SERVICE_TOKEN_FILE"]
@@ -831,7 +831,7 @@ def test_neither_credential_source_is_missing_service_identity(tmp_path: Path) -
         {"LETS_IDENTITY_KID": "astral-orch/ed25519-1"},
         {"LETS_IDENTITY_SCOPES": "lets.lease.issue"},
         {"LETS_IDENTITY_TOKEN_TTL_SECONDS": "60"},
-        {"LETS_IDENTITY_ISSUER": " "},  # blank is "unset"; this one is not blank
+        {"LETS_IDENTITY_ISSUER": " "},
     ],
 )
 def test_token_file_with_a_stray_identity_variable_is_conflicting(
@@ -839,7 +839,6 @@ def test_token_file_with_a_stray_identity_variable_is_conflicting(
 ) -> None:
     values = _active_environment(tmp_path)
     values.update(stray)
-    # Whitespace-only values are treated as unset and must NOT conflict.
     if all(not value.strip() for value in stray.values()):
         config = LetsHostConfig.from_environ(values, authenticate_manifest=_authenticate)
         assert config.service_identity_mode == "token_file"

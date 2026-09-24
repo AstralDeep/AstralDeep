@@ -1,8 +1,9 @@
-"""Issuer-bound refresh/revocation with real Plane, JWT policy and synthetic HTTP.
-
-No session-issuing route is activated. Fixture insertion is test-only; all refresh
-claims, original-incarnation CAS, consent and queued retirement are real storage.
+"""Tests for issuer-bound session refresh and revocation
+(orchestrator/session_authority.py, session_store.py, web_auth.py) against real
+Plane, JWT policy, and synthetic HTTP: rotation, revocation-queue cycling, and claim
+races.
 """
+
 import asyncio
 from dataclasses import replace
 import threading
@@ -168,7 +169,7 @@ async def test_changed_destination_sends_no_refresh_and_does_not_persist_new_tok
     after = get_session_record(runtime, fixture[2])
     assert not fixture[4].requests
     assert after.access_token_ciphertext == before.access_token_ciphertext
-    assert fixture[0]._dec(after.refresh_token_ciphertext) == ""  # claim remains fenced
+    assert fixture[0]._dec(after.refresh_token_ciphertext) == ""
 
 
 @pytest.mark.asyncio
@@ -459,8 +460,6 @@ async def test_original_incarnation_waiting_on_real_claim_lock_cannot_adopt_repl
             record = store._sessions.repository.get_by_session_id_for_administration(tx, session_id=sid)
             task = asyncio.create_task(refresh(fixture))
             assert await asyncio.to_thread(entered.wait, 2)
-            # The public consent guard holds owner then row locks; the waiting
-            # refresh CAS must refuse this replacement after commit.
             store._sessions.repository.delete(tx, owner_id=record.owner_id, session_id=sid,
                                                expected_incarnation_id=record.incarnation_id)
             new = store._sessions.repository.put(tx, replace(record, incarnation_id=None))
@@ -553,7 +552,7 @@ async def test_bound_revocation_never_reads_remote_body_or_redirects(fixture, mo
     class UnreadableBody(httpx.AsyncByteStream):
         async def __aiter__(self):
             pytest.fail("Revocation must not consume a remote response body")
-            yield b""  # async-generator protocol only
+            yield b""
     async def network(req):
         requested.append(str(req.url))
         return httpx.Response(204, stream=UnreadableBody())
@@ -571,7 +570,6 @@ async def test_untyped_bound_identity_is_not_a_refresh_destination(fixture):
 
 
 def queued(runtime, store, owner, *, count=1, issuer=ISSUER, attempts=0, timestamp=1, ciphertext=None):
-    """Only synthetic queue fixture rows, through actual public Plane methods."""
     repo = runtime.repositories.revocations
     rows = []
     with runtime.transaction() as tx:
@@ -615,7 +613,6 @@ async def test_retained_prefix_does_not_starve_later_eligible_revocation(fixture
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://new.invalid/realm")
     assert await web_auth.process_revocation_queue_once() == 0
     assert not wire.requests and len(revocation_records(runtime, owner)) == 21
-    # A legacy administrative peek must neither move nor reset the new cycle.
     assert len(store.pending_revocations()) == 20
     assert await web_auth.process_revocation_queue_once() == 1
     assert revocation_records(runtime, owner) == tuple(held)
@@ -635,8 +632,6 @@ async def test_cycle_ceiling_wraps_despite_new_backdated_enqueues(fixture, runti
     assert inserted.queue_id > ceiling
     assert await web_auth.process_revocation_queue_once() == 0
     assert not wire.requests and store._revocation_cursor is None
-    # The captured finite old cycle has ended. Backdated new work is visible in
-    # the next cycle rather than extending the old cycle forever.
     assert await web_auth.process_revocation_queue_once() == 1
     assert len(wire.requests) == 1
     assert inserted.queue_id not in {r.queue_id for r in revocation_records(runtime, owner)}
@@ -707,7 +702,6 @@ async def test_missing_paging_capability_and_read_failure_refuse_without_transpo
     monkeypatch.setattr(store._revocations.repository,"page_for_administration",None)
     assert await web_auth.process_revocation_queue_once() == 0
     assert not wire.requests and revocation_records(runtime,owner) == (row,)
-    # Existing legacy peek remains available independently of the new consumer.
     assert store.pending_revocations()[0]["id"] == row.queue_id
     assert store._revocation_cursor is None
 
@@ -839,8 +833,6 @@ async def test_callback_retirement_preserves_legacy_default_and_exact_bound_clie
                                issuing_issuer=None, issuing_client_id=None))
     wire.changes = {"sub": str(uuid4())}
     logout_audits(monkeypatch, runtime)
-    # New-session issuance is outside this consumer slice. Keep the actual
-    # callback's original-session selection, code exchange and retirement.
     monkeypatch.setattr(web_auth, "_establish_session", lambda *args: RedirectResponse("/", status_code=303))
     state = uuid4().hex
     web_auth._PENDING[state] = {"code_verifier": "v" * 43, "created_at": time.time(), "next": "/"}

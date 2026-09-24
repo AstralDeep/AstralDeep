@@ -1,4 +1,6 @@
-"""In-image assertions for the isolated Feature 065 voice-worker test target."""
+"""Tests for the isolated voice-worker Docker image: runtime dependency versions, Silero
+asset integrity, prohibited imports, and packaging boundaries.
+"""
 
 from __future__ import annotations
 

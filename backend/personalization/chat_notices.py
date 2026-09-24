@@ -1,4 +1,8 @@
-"""User-selected chat awareness notices, separate from mandatory privacy gates."""
+"""Opt-in, non-persistent chat notices flagging detected PHI awareness, separate from
+the mandatory phi_gate.py enforcement; surfaced via orchestrator's
+projection_surfaces/personalization.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -37,7 +41,6 @@ def set_notices_enabled(orch, user_id: str, enabled: bool) -> None:
 
 
 async def notify_if_detected(orch, websocket, chat_id: str, user_id: str, message: str) -> None:
-    """Show an opted-in awareness notice once per socket/chat, without persistence."""
     try:
         if not message or not chat_id or not user_id:
             return
@@ -51,7 +54,6 @@ async def notify_if_detected(orch, websocket, chat_id: str, user_id: str, messag
         hit = await asyncio.to_thread(get_phi_gate().detect_for_notice, message)
         if not hit:
             return
-        # The preference can change while the analyzer runs.
         if not await asyncio.to_thread(notices_enabled, orch, user_id):
             return
         orch._phi_notified.add(key)
@@ -65,5 +67,5 @@ async def notify_if_detected(orch, websocket, chat_id: str, user_id: str, messag
         ).to_dict()], target="chat")
         logger.info("phi_notice.shown")
     except Exception:
-        # Optional awareness failures must never block ordinary chat dispatch.
+        # Non-fatal: must never block chat dispatch on failure
         logger.debug("phi notice failed (non-fatal)", exc_info=True)

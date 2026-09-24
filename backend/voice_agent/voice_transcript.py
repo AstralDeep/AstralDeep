@@ -1,10 +1,6 @@
-"""Development-tree bridge to the canonical transcript-proof implementation.
-
-The isolated worker image overwrites this bridge with the audited
-``backend/shared/voice_transcript.py`` source at build time.  Keeping the
-import inside ``voice_agent`` prevents the product ``shared`` package from
-crossing the worker boundary while preserving one canonical implementation in
-the repository and in ordinary backend test runs.
+"""Development-tree re-export of backend/shared/voice_transcript.py; the worker image
+overwrites it at build time so shared code never crosses the boundary, while
+session.py and its tests import one canonical implementation.
 """
 
 from shared.voice_transcript import (  # noqa: F401

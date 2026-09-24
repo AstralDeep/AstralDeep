@@ -1,4 +1,7 @@
-"""Registry/schema contract tests for the Web Research agent (feature 029)."""
+"""Tests for agents/web_research/mcp_tools.py and mcp_server.py: registry schema and
+bounds, the agent card, and MCP dispatch/error-classification behavior.
+"""
+
 from agents.web_research import mcp_tools
 from agents.web_research.mcp_server import MCPServer
 from agents.web_research.web_research_agent import PORT_ENV_VAR, WebResearchAgent
@@ -46,7 +49,6 @@ def test_research_brief_schema_matches_contract() -> None:
 
 
 def test_brief_fetch_bounds() -> None:
-    """<= 5 fetches per brief; 1 MB / 15 s per fetch (FR-013)."""
     assert mcp_tools.BRIEF_FETCHES == {"shallow": 2, "standard": 5}
     assert mcp_tools.FETCH_MAX_BYTES == 1024 * 1024
     assert mcp_tools.FETCH_TIMEOUT_S == 15
@@ -85,7 +87,6 @@ def test_mcp_server_unknown_tool_is_not_retryable() -> None:
 
 
 def test_mcp_server_surfaces_error_alerts_without_renderable_error_payload() -> None:
-    """A tool-level error Alert becomes an MCP error with no renderable body."""
     server = MCPServer()
     response = server.process_request(MCPRequest(
         request_id="r3", method="tools/call",
@@ -105,7 +106,6 @@ def test_error_classification() -> None:
 
 
 def test_agent_instantiates_and_card_exposes_tools() -> None:
-    """Plug-and-play contract: the agent card is built from the registry."""
     agent = WebResearchAgent(port=65123)
     assert agent.card.agent_id == "web-research-1"
     skill_names = {skill.name for skill in agent.card.skills}
@@ -113,7 +113,6 @@ def test_agent_instantiates_and_card_exposes_tools() -> None:
 
 
 def test_mcp_server_plain_dict_result_passthrough() -> None:
-    """Tools returning a plain dict (no _ui_components) pass through as result."""
     server = MCPServer()
     response = server.process_request(MCPRequest(
         request_id="r4", method="tools/call",

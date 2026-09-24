@@ -1,14 +1,8 @@
+"""Background knowledge synthesis: durably claims interaction data via AstralPlane's
+maintenance repository, turns it into per-agent technique and pattern markdown
+through a local LLM, and caches it for orchestrator.py's prompt injection.
 """
-Knowledge Synthesis System ("Dreamer") — learns from tool interactions.
 
-Inspired by Claude Code's auto-dream memory consolidation pattern.
-Three components:
-  1. InteractionCollector — hook handler that logs tool outcomes to DB
-  2. KnowledgeSynthesizer — background worker that calls a local LLM to
-     extract patterns from interaction data into structured markdown
-  3. KnowledgeIndex — reads and caches knowledge files for injection into
-     orchestrator system prompts and agent generation prompts
-"""
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,29 +44,19 @@ from shared.llm_text import strip_reasoning_markup
 
 logger = logging.getLogger("Orchestrator.Knowledge")
 
-# 030-finish-soul-integration (FR-021): knowledge file stems for agents retired
-# or merged in feature 029. The index MUST never surface these, even if a
-# leftover file exists on disk (backend/knowledge/ is git-ignored and re-scanned
-# at runtime). Mirrors orchestrator.RETIRED_AGENT_IDS / the ml_services merge.
 RETIRED_KNOWLEDGE_STEMS = frozenset({
     "grants", "grant_budgets", "nefarious", "email_tracker", "linkedin", "nocodb",
     "classify", "forecaster", "llm_factory",
-    "etf_tracker",  # Feature 040: etf_tracker_1 retired.
+    "etf_tracker",
 })
-
-# ─── Defaults ───────────────────────────────────────────────────────────
 
 DEFAULT_KNOWLEDGE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "knowledge"
 )
-# Feature 040 (US4): authored, version-controlled skill packs live here,
-# SEPARATE from the gitignored, auto-synthesized DEFAULT_KNOWLEDGE_DIR so the
-# synthesizer can never overwrite hand-authored guidance. Authored packs take
-# precedence in get_techniques_for_agent.
 AUTHORED_KNOWLEDGE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "knowledge_packs"
 )
-DEFAULT_SYNTHESIS_INTERVAL = 1800   # 30 minutes
+DEFAULT_SYNTHESIS_INTERVAL = 1800
 DEFAULT_MIN_INTERACTIONS = 20
 ROUTING_HINTS_MAX_CHARS = 1500
 GENERATION_CONTEXT_MAX_CHARS = 2000
@@ -80,8 +64,6 @@ STALENESS_DAYS = 7
 
 
 def _fsync_parent_directory(path: Path) -> None:
-    """Persist a rename barrier where the host exposes POSIX directory fsync."""
-
     if os.name == "nt":
         return
     descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -93,8 +75,6 @@ def _fsync_parent_directory(path: Path) -> None:
 
 @dataclass(frozen=True)
 class MaintenanceClaim:
-    """One exact maintenance-unit attempt and its operation fence."""
-
     unit_id: str
     unit_kind: str
     scope_key: str
@@ -107,12 +87,10 @@ class MaintenanceClaim:
 
 
 class MaintenanceClaimError(RuntimeError):
-    """The selected maintenance attempt no longer owns its durable fence."""
+    pass
 
 
 def _interaction_payload(record: Any) -> Dict[str, Any]:
-    """Detach one typed Plane interaction into the synthesis input contract."""
-
     return {
         "id": record.interaction_id,
         "agent_id": record.agent_id,
@@ -125,8 +103,6 @@ def _interaction_payload(record: Any) -> Dict[str, Any]:
 
 
 class MaintenanceOutputPublisher:
-    """Crash-safe publisher rooted at the synthesized knowledge directory."""
-
     _MAX_BYTES = 2 * 1024 * 1024
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
@@ -163,8 +139,6 @@ class MaintenanceOutputPublisher:
     def reconcile(
         self, relative_path: str, output_generation: str
     ) -> Optional[str]:
-        """Return the digest of an already-replaced output for this generation."""
-
         generation = str(uuid.UUID(str(output_generation)))
         target = self._target(relative_path)
         if not target.exists():
@@ -186,8 +160,6 @@ class MaintenanceOutputPublisher:
         *,
         fault_hook: Optional[Callable[[str], None]] = None,
     ) -> str:
-        """Flush, replace, and directory-fsync one generation-marked output."""
-
         generation_uuid = uuid.UUID(str(output_generation))
         if generation_uuid.version != 4:
             raise ValueError("output_generation must be a UUID4")
@@ -241,8 +213,6 @@ class MaintenanceOutputPublisher:
 
 
 class MaintenanceUnitRepository:
-    """PostgreSQL authority for retry-stable synthesis units and input truth."""
-
     def __init__(
         self,
         db=None,
@@ -321,8 +291,6 @@ class MaintenanceUnitRepository:
     def ensure_synthesis_units(
         self, interactions: Sequence[Mapping[str, Any]]
     ) -> tuple[str, ...]:
-        """Create every batch membership before any unit starts executing."""
-
         if not interactions:
             return ()
         by_agent: Dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -410,8 +378,6 @@ class MaintenanceUnitRepository:
         *,
         eligible_unit_ids: Optional[Sequence[str]] = None,
     ) -> Optional[MaintenanceClaim]:
-        """Recover expired units and claim one oldest eligible scope."""
-
         worker_id = str(worker_id)[:128]
         if not worker_id:
             raise ValueError("maintenance worker identity is required")
@@ -420,8 +386,6 @@ class MaintenanceUnitRepository:
             eligible_ids = [str(uuid.UUID(str(value))) for value in eligible_unit_ids]
             if not eligible_ids:
                 return None
-        # Expire operation slots before attempting a new domain claim so a
-        # crashed worker cannot consume the maintenance lane indefinitely.
         self.coordinator.expire_execution_leases()
         observed = datetime.now(timezone.utc)
         with self._maintenance.transaction() as transaction:
@@ -549,8 +513,6 @@ class MaintenanceUnitRepository:
     def complete(
         self, claim: MaintenanceClaim, *, output_relative_path: str, output_digest: str
     ) -> None:
-        """Commit output metadata, unit inputs, sources, and operation together."""
-
         if not re.fullmatch(r"[0-9a-f]{64}", output_digest or ""):
             raise ValueError("maintenance output digest is invalid")
         with self.coordinator.repository.fenced_transaction(
@@ -613,8 +575,6 @@ class MaintenanceUnitRepository:
     def fail(
         self, claim: MaintenanceClaim, *, error_code: str, retry_after_seconds: int = 1
     ) -> None:
-        """Retain pending inputs and terminalize only this exact failed attempt."""
-
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", error_code or ""):
             raise ValueError("maintenance error code is invalid")
         if type(retry_after_seconds) is not int or not 0 <= retry_after_seconds <= 3600:
@@ -659,13 +619,7 @@ class MaintenanceUnitRepository:
             )
 
 
-# =========================================================================
-# INTERACTION COLLECTOR — Hook handler for POST_TOOL_USE / POST_TOOL_FAILURE
-# =========================================================================
-
 class InteractionCollector:
-    """Lightweight hook handler that logs tool call outcomes to the database."""
-
     def __init__(
         self,
         db=None,
@@ -685,7 +639,7 @@ class InteractionCollector:
             plane_runtime=runtime,
             legacy_database=db,
         )
-        self._start_times: Dict[str, float] = {}  # request key -> start time
+        self._start_times: Dict[str, float] = {}
 
     def _record(
         self,
@@ -721,18 +675,15 @@ class InteractionCollector:
                 )
 
     def record_start(self, agent_id: str, tool_name: str) -> str:
-        """Record when a tool call begins. Returns a key for matching the end."""
         key = f"{agent_id}:{tool_name}:{time.time()}"
         self._start_times[key] = time.time()
         return key
 
     async def on_tool_use(self, ctx: HookContext) -> Optional[HookResponse]:
-        """Hook handler for POST_TOOL_USE and POST_TOOL_FAILURE events."""
         try:
             success = ctx.error is None
             error_message = ctx.error if not success else None
 
-            # Estimate response time from metadata if available
             response_time_ms = None
             if ctx.metadata.get("start_time"):
                 elapsed = time.time() - ctx.metadata["start_time"]
@@ -753,16 +704,10 @@ class InteractionCollector:
         except Exception as e:
             logger.error(f"InteractionCollector failed to log: {e}")
 
-        return None  # never block
+        return None
 
-
-# =========================================================================
-# KNOWLEDGE SYNTHESIZER — Background worker using local LLM
-# =========================================================================
 
 class KnowledgeSynthesizer:
-    """Periodically analyzes interaction data and produces knowledge markdown."""
-
     def __init__(
         self,
         db=None,
@@ -778,16 +723,6 @@ class KnowledgeSynthesizer:
         maintenance_publisher: Optional[MaintenanceOutputPublisher] = None,
         maintenance_fault_hook: Optional[Callable[[str], None]] = None,
     ):
-        """Args:
-            config_resolver: Zero-arg SYNC callable returning the current
-                system LLM configuration, or ``None``. Feature 054: the
-                synthesizer is a cross-user system flow — it runs on the
-                admin-managed system credential, re-checked EVERY cycle
-                (an admin save re-enables synthesis without a restart; the
-                retired ``OPENAI_*``/``KNOWLEDGE_LLM_MODEL`` env reads are
-                gone). No resolver, or no stored record, means each cycle
-                logs and skips with data preserved.
-        """
         self.knowledge_dir = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
         self.knowledge_index = knowledge_index
         self._config_resolver = config_resolver
@@ -833,9 +768,6 @@ class KnowledgeSynthesizer:
             )
 
     def _refresh_client(self) -> bool:
-        """Per-cycle system-credential resolution (SYNC — call off-loop).
-
-        Returns True when a usable client/model pair is in place."""
         if self._config_resolver is None:
             self.client = None
             self.model = None
@@ -867,17 +799,13 @@ class KnowledgeSynthesizer:
 
     @property
     def _available(self) -> bool:
-        """Kept for compatibility with existing tests/telemetry: True iff the
-        LAST refresh produced a client."""
         return self.client is not None
 
     def _ensure_dirs(self):
-        """Create knowledge directory structure if it doesn't exist."""
         for subdir in ["techniques", "patterns", "capabilities"]:
             os.makedirs(os.path.join(self.knowledge_dir, subdir), exist_ok=True)
 
     async def run_loop(self):
-        """Background loop — runs until cancelled."""
         logger.info(
             f"Knowledge synthesizer started (interval={self.synthesis_interval}s, "
             f"min_interactions={self.min_interactions})"
@@ -893,7 +821,6 @@ class KnowledgeSynthesizer:
                 logger.error(f"Knowledge synthesis cycle failed: {e}")
 
     async def _synthesis_cycle(self):
-        """Claim and settle independent synthesis units with durable retry truth."""
         if self._interactions is None or self._maintenance_repository is None:
             return
         records = await run_maintenance(
@@ -910,8 +837,6 @@ class KnowledgeSynthesizer:
             )
             return
 
-        # Feature 054: re-resolve the admin-managed system credential each
-        # cycle (system_llm_unconfigured ⇒ honest skip, data preserved).
         if not await run_maintenance(self._refresh_client):
             logger.warning(
                 "system_llm_unconfigured: knowledge synthesis skipped — "
@@ -929,8 +854,6 @@ class KnowledgeSynthesizer:
             len(interactions),
         )
         completed = 0
-        # At most one bounded fetch worth of independent outputs is processed
-        # per cycle; persistent failures retain their identity for the next run.
         for _index in range(128):
             claim = await run_maintenance(
                 self._maintenance_repository.claim_next,
@@ -984,7 +907,7 @@ class KnowledgeSynthesizer:
             relative_path = f"capabilities/{slug}.md"
         elif claim.unit_kind == "cross_agent_synthesis":
             relative_path = "patterns/tool_patterns.md"
-        else:  # pragma: no cover - repository only selects the allow-list
+        else:  # pragma: no cover
             await run_maintenance(
                 repository.fail, claim, error_code="unsupported_unit_kind"
             )
@@ -1083,8 +1006,6 @@ class KnowledgeSynthesizer:
                     error_code="synthesis_failed",
                 )
             except Exception:
-                # A crash-after-replace simulation or a lost lease leaves the
-                # durable claim for expiry/reconciliation; never fake completion.
                 logger.warning(
                     "Could not terminalize maintenance unit %s",
                     claim.unit_id,
@@ -1093,7 +1014,6 @@ class KnowledgeSynthesizer:
             return False
 
     async def _synthesize_agent(self, agent_id: str, interactions: List[Dict]):
-        """Synthesize technique document for a single agent."""
         stats = self._compute_stats(interactions)
         prompt = self._build_agent_prompt(agent_id, interactions, stats)
 
@@ -1104,7 +1024,6 @@ class KnowledgeSynthesizer:
         slug = agent_id.replace("-", "_").rstrip("_1234567890")
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        # Check for existing file to preserve synthesis_count
         filepath = os.path.join(self.knowledge_dir, "techniques", f"{slug}.md")
         synthesis_count = 1
         if os.path.exists(filepath):
@@ -1124,7 +1043,6 @@ class KnowledgeSynthesizer:
 
         self._write_knowledge_file(filepath, frontmatter, content)
 
-        # Also write/update capability summary
         cap_content = self._build_capability_summary(agent_id, stats)
         cap_path = os.path.join(self.knowledge_dir, "capabilities", f"{slug}.md")
         cap_fm = {
@@ -1136,7 +1054,6 @@ class KnowledgeSynthesizer:
         self._write_knowledge_file(cap_path, cap_fm, cap_content)
 
     async def _synthesize_patterns(self, interactions: List[Dict]):
-        """Synthesize cross-agent patterns."""
         stats = self._compute_stats(interactions)
         prompt = self._build_patterns_prompt(interactions, stats)
 
@@ -1156,7 +1073,6 @@ class KnowledgeSynthesizer:
         self._write_knowledge_file(filepath, fm, content)
 
     def _compute_stats(self, interactions: List[Dict]) -> Dict[str, Any]:
-        """Compute aggregate statistics from interaction rows."""
         by_tool: Dict[str, Dict] = defaultdict(lambda: {
             "total": 0, "success": 0, "failures": 0, "errors": [], "response_times": []
         })
@@ -1172,14 +1088,12 @@ class KnowledgeSynthesizer:
             if row.get("response_time_ms"):
                 by_tool[tool]["response_times"].append(row["response_time_ms"])
 
-        # Compute rates and avg times
         for tool, s in by_tool.items():
             s["success_rate"] = round(s["success"] / s["total"] * 100, 1) if s["total"] else 0
             s["avg_response_ms"] = (
                 round(sum(s["response_times"]) / len(s["response_times"]))
                 if s["response_times"] else None
             )
-            # Keep only unique errors, capped
             s["unique_errors"] = list(set(s["errors"]))[:5]
             del s["errors"]
             del s["response_times"]
@@ -1226,7 +1140,6 @@ Be data-driven and specific. Only report patterns supported by the data."""
 
     def _build_patterns_prompt(self, interactions: List[Dict],
                                stats: Dict[str, Any]) -> str:
-        # Group by agent for cross-agent view
         by_agent: Dict[str, int] = defaultdict(int)
         for row in interactions:
             by_agent[row["agent_id"]] += 1
@@ -1266,7 +1179,6 @@ Be concise and data-driven."""
         return "\n".join(lines)
 
     async def _call_llm(self, prompt: str) -> Optional[str]:
-        """Call the local LLM. Returns None on failure."""
         try:
             response = await run_maintenance(
                 self.client.chat.completions.create,
@@ -1287,17 +1199,12 @@ Be concise and data-driven."""
             return strip_reasoning_markup(response.choices[0].message.content)
         except Exception as e:
             logger.warning(f"Knowledge LLM call failed: {e}")
-            # ``_available`` is a read-only compatibility property. Clearing the
-            # concrete client honestly disables further calls until next cycle.
             self.client = None
             self.model = None
             return None
 
-    # ─── File I/O ────────────────────────────────────────────────────────
-
     @staticmethod
     def _write_knowledge_file(filepath: str, frontmatter: Dict, content: str):
-        """Atomically write a legacy knowledge file with durable replacement."""
         fm_lines = []
         for key, value in frontmatter.items():
             if isinstance(value, str):
@@ -1329,7 +1236,6 @@ Be concise and data-driven."""
 
     @staticmethod
     def _read_frontmatter(filepath: str) -> Dict:
-        """Read simple key: value frontmatter from a knowledge file."""
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 text = f.read()
@@ -1342,7 +1248,6 @@ Be concise and data-driven."""
                     key, value = line.split(": ", 1)
                     key = key.strip()
                     value = value.strip().strip('"')
-                    # Try numeric conversion
                     try:
                         if "." in value:
                             result[key] = float(value)
@@ -1356,7 +1261,6 @@ Be concise and data-driven."""
         return {}
 
     def _update_index(self):
-        """Rebuild the _index.md file from all knowledge files."""
         sections = {"techniques": [], "patterns": [], "capabilities": []}
 
         for category in sections:
@@ -1366,10 +1270,6 @@ Be concise and data-driven."""
             for fname in sorted(os.listdir(cat_dir)):
                 if not fname.endswith(".md"):
                     continue
-                # 030-finish-soul-integration (FR-021): never index knowledge for
-                # retired/merged agents. backend/knowledge/ is git-ignored and
-                # re-scanned from disk, so a one-time delete is not durable — a
-                # leftover file would otherwise resurrect a retired-agent entry.
                 if fname[:-3] in RETIRED_KNOWLEDGE_STEMS:
                     continue
                 fpath = os.path.join(cat_dir, fname)
@@ -1416,30 +1316,17 @@ Be concise and data-driven."""
                 pass
 
 
-# =========================================================================
-# KNOWLEDGE INDEX — Reader and cache for knowledge files
-# =========================================================================
-
 class KnowledgeIndex:
-    """Reads knowledge markdown files and provides content for prompt injection."""
-
     def __init__(self, knowledge_dir: str = None):
         self.knowledge_dir = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
         self._cache: Dict[str, str] = {}
         self._mtimes: Dict[str, float] = {}
 
     def invalidate_cache(self):
-        """Clear the cache so next access re-reads files."""
         self._cache.clear()
         self._mtimes.clear()
 
     def get_techniques_for_agent(self, agent_id: str) -> str:
-        """Return technique markdown for a specific agent.
-
-        Feature 040 (US4): an AUTHORED pack (committed under knowledge_packs/,
-        which the synthesizer never writes) takes precedence over the
-        auto-synthesized file, so hand-curated guidance is never clobbered.
-        """
         slug = agent_id.replace("-", "_").rstrip("_1234567890")
         authored = os.path.join(AUTHORED_KNOWLEDGE_DIR, "techniques", f"{slug}.md")
         content = self._read_content(authored)
@@ -1449,7 +1336,6 @@ class KnowledgeIndex:
         return self._read_content(filepath)
 
     def get_routing_hints(self) -> str:
-        """Return a compact agent performance summary for the system prompt."""
         cap_dir = os.path.join(self.knowledge_dir, "capabilities")
         if not os.path.isdir(cap_dir):
             return ""
@@ -1463,7 +1349,6 @@ class KnowledgeIndex:
             fpath = os.path.join(cap_dir, fname)
             fm = KnowledgeSynthesizer._read_frontmatter(fpath)
 
-            # Skip stale files
             updated = fm.get("updated_at", "")
             if self._is_stale(updated):
                 continue
@@ -1472,7 +1357,6 @@ class KnowledgeIndex:
             if not content:
                 continue
 
-            # Extract first few lines (compact summary)
             summary_lines = [line for line in content.strip().split("\n") if line.strip()][:4]
             summary = "\n".join(summary_lines)
 
@@ -1484,11 +1368,9 @@ class KnowledgeIndex:
         return "\n\n".join(lines) if len(lines) > 1 else ""
 
     def get_generation_context(self, description: str) -> str:
-        """Return relevant patterns for agent code generation."""
         parts = []
         total_chars = 0
 
-        # Include tool patterns if available
         patterns_path = os.path.join(self.knowledge_dir, "patterns", "tool_patterns.md")
         patterns = self._read_content(patterns_path)
         if patterns:
@@ -1496,14 +1378,12 @@ class KnowledgeIndex:
             parts.append(truncated)
             total_chars += len(truncated)
 
-        # Include technique files that might be relevant (keyword match on description)
         desc_words = set(description.lower().split())
         tech_dir = os.path.join(self.knowledge_dir, "techniques")
         if os.path.isdir(tech_dir):
             for fname in sorted(os.listdir(tech_dir)):
                 if not fname.endswith(".md"):
                     continue
-                # Simple relevance: check if agent slug words overlap with description
                 slug_words = set(fname.replace(".md", "").replace("_", " ").split())
                 if slug_words & desc_words:
                     fpath = os.path.join(tech_dir, fname)
@@ -1515,7 +1395,6 @@ class KnowledgeIndex:
         return "\n\n---\n\n".join(parts) if parts else ""
 
     def _read_content(self, filepath: str) -> str:
-        """Read a knowledge file, returning body without frontmatter. Uses mtime cache."""
         if not os.path.exists(filepath):
             return ""
 
@@ -1528,7 +1407,6 @@ class KnowledgeIndex:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 text = f.read()
-            # Strip frontmatter
             match = re.match(r"^---\n.*?\n---\n\n?", text, re.DOTALL)
             content = text[match.end():] if match else text
             self._cache[cache_key] = content
@@ -1540,7 +1418,6 @@ class KnowledgeIndex:
 
     @staticmethod
     def _is_stale(updated_at: str) -> bool:
-        """Check if an updated_at timestamp is older than STALENESS_DAYS."""
         if not updated_at:
             return True
         try:
@@ -1551,23 +1428,7 @@ class KnowledgeIndex:
             return True
 
 
-# =========================================================================
-# Feature 004 — extension hooks attached to KnowledgeSynthesizer
-#
-# `refine_proposal` is the entry point used by feedback.proposals to
-# optionally rewrite the deterministic-base proposal markdown with a
-# refined version produced by the local LLM. If the LLM is unavailable
-# or the call fails, the deterministic base is used unchanged (FR-020).
-# =========================================================================
-
 async def _refine_proposal_via_llm(synth: "KnowledgeSynthesizer", base_markdown: str) -> Optional[str]:
-    """Refine a deterministic-base proposal with the synthesizer's LLM.
-
-    The user-feedback comments embedded in ``base_markdown`` were already
-    cleared by both the inline safety screen and the loop pre-pass before
-    this function is reached. Even so, we frame them as data-only and
-    explicitly instruct the model not to follow any instructions inside.
-    """
     if not synth._available or synth.client is None:
         return None
     system_msg = (
@@ -1596,15 +1457,7 @@ async def _refine_proposal_via_llm(synth: "KnowledgeSynthesizer", base_markdown:
 
 
 async def _classify_comment_safe(synth: "KnowledgeSynthesizer", comment: str) -> bool:
-    """LLM-based pre-pass classifier. Returns True if the comment is safe.
-
-    Any return path other than a clean ``"safe"`` token is treated as unsafe.
-    """
     if not synth._available or synth.client is None:
-        # Fail closed: when the model is unavailable we treat comments as
-        # potentially unsafe and let the inline screen's verdict stand.
-        # Records that were inline-clean stay clean; records that were
-        # already quarantined stay quarantined; we just don't add new flags.
         return True
     prompt = (
         "Classify the following user comment as either 'safe' or 'unsafe' "
@@ -1637,7 +1490,6 @@ async def _classify_comment_safe(synth: "KnowledgeSynthesizer", comment: str) ->
 
 
 def _attach_synth_hooks(synth: "KnowledgeSynthesizer"):
-    """Attach feature-004 helpers as bound async callables on the synthesizer."""
     async def refine_proposal(base_markdown: str) -> Optional[str]:
         return await _refine_proposal_via_llm(synth, base_markdown)
 
@@ -1648,7 +1500,6 @@ def _attach_synth_hooks(synth: "KnowledgeSynthesizer"):
     synth.classify_comment_safe = classify_comment_safe  # type: ignore[attr-defined]
 
 
-# Decorate KnowledgeSynthesizer.__init__ so the hooks are always bound.
 _orig_synth_init = KnowledgeSynthesizer.__init__
 
 def _patched_synth_init(self, *args, **kwargs):
@@ -1658,24 +1509,7 @@ def _patched_synth_init(self, *args, **kwargs):
 KnowledgeSynthesizer.__init__ = _patched_synth_init  # type: ignore[assignment]
 
 
-# =========================================================================
-# Feature 004 — loop pre-pass screen entrypoint (callable from CLI / tests)
-# =========================================================================
-
 async def run_safety_pre_pass_once(repo) -> int:
-    """Run the LLM pre-pass over every recent ``clean`` feedback record.
-
-    Records flagged by the pre-pass have their ``comment_safety`` flipped
-    to ``quarantined`` and a ``quarantine_entry`` is inserted with
-    ``detector='loop_pre_pass'``. Returns the number of newly-quarantined
-    records.
-
-    Looks at records whose ``comment_safety='clean'`` and ``comment_raw``
-    is non-empty. The orchestrator's synthesizer is reused for the LLM
-    call when present; otherwise this is a no-op (flags 0 records) per
-    FR-020 graceful-degradation semantics.
-    """
-    # Lazy import — avoid orchestrator dependency at module import time.
     from feedback.proposals import emit_quarantine_audit
 
     synth = _global_synth_for_pre_pass()
@@ -1697,8 +1531,6 @@ async def run_safety_pre_pass_once(repo) -> int:
             continue
         if ok:
             continue
-        # Plane atomically binds the safety transition and quarantine row to
-        # the same feedback owner; a stale/cross-owner candidate cannot flip.
         repo.upsert_quarantine(
             fb_id,
             owner_user_id=owner_user_id,
@@ -1715,16 +1547,7 @@ async def run_safety_pre_pass_once(repo) -> int:
 
 
 def _global_synth_for_pre_pass():
-    """Locate the running orchestrator's KnowledgeSynthesizer, if any.
-
-    The pre-pass needs the synthesizer's LLM client. We don't want to spin
-    up a fresh client here (Constitution V — no extra deps / no extra
-    initialization), so we discover the running instance via the
-    orchestrator singleton convention.
-    """
     try:
-        # The orchestrator stashes itself on the FastAPI app.state at start();
-        # at CLI-time there's no FastAPI app yet so we just return None.
         from orchestrator.orchestrator import _ORCH_INSTANCE  # type: ignore[attr-defined]
         if _ORCH_INSTANCE is not None:
             return getattr(_ORCH_INSTANCE, "_knowledge_synthesizer", None)

@@ -1,11 +1,8 @@
-"""Private current-caller observation for Work socket reads, never execution.
-
-The captured registration and JWT remain fixed across every await. A signed
-cookie, when present, selects one issued session before any Work data is read;
-delivery rechecks that exact issuance without refresh or a latest-owner lookup.
-Bare native bearer reads retain the ordinary JWT read policy. No observation
-here authorizes admission, continuation, saving or a provider call.
+"""Captures and rechecks one WebSocket caller's original session for Work reads without
+refresh or execution authority. Used by chrome_events.py, human_request_authority.py,
+and orchestrator.py before each delivery.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +24,6 @@ from persistent_agents.service import AssignmentService
 
 
 def invalidate(orch, websocket):
-    """Retire a pending Work delivery before any later navigation awaits."""
     pending = getattr(orch, "_work_surface_reads", None)
     if pending is not None:
         read = pending.pop(websocket, None)
@@ -36,7 +32,6 @@ def invalidate(orch, websocket):
 
 
 def _transport_headers(websocket):
-    """Freeze headers from the actual ASGI or supported legacy socket transport."""
     scope = getattr(websocket, "scope", None)
     if isinstance(scope, dict) and "headers" in scope:
         headers = scope["headers"]
@@ -73,8 +68,6 @@ def _transport_headers(websocket):
 
 
 class WorkSurfaceRead:
-    """One socket-private read lifetime; its contents never enter a frame."""
-
     def __init__(self, orch, websocket, owner_id, *, request_generation=None, context=None):
         self.orch, self.websocket, self.owner_id = orch, websocket, owner_id
         self.context = context
@@ -109,7 +102,6 @@ class WorkSurfaceRead:
             raise AssignmentError("work_authentication_required", 401)
         self.delivery = _ReadDelivery(owner_id, _read_expiry(self.registration), token, None)
         self.deadline = time.monotonic() + 15
-        # Freeze the actual transport's signed-cookie selection before IAM awaits.
         headers = _transport_headers(websocket)
         self.connection = HTTPConnection({"type": "websocket", "headers": headers})
         self.session_id = _signed_selection(self.connection)
@@ -128,7 +120,6 @@ class WorkSurfaceRead:
             raise
 
     def assert_current(self):
-        """Refuse any retired registration, transport, request or runtime lifetime."""
         if (self._closed or getattr(self.orch, "ui_sessions", {}).get(self.websocket) is not self.registration
                 or self.registration != self.captured
                 or getattr(self.orch, "_work_surface_reads", {}).get(self.websocket) is not self
@@ -165,14 +156,12 @@ class WorkSurfaceRead:
         self.service._owner(self.owner_id, self.captured)
 
     def assert_request(self, orch, websocket, owner_id, request_generation):
-        """Match delivery to the exact request captured before admission waits."""
         self.assert_current()
         if (orch is not self.orch or websocket is not self.websocket
                 or owner_id != self.owner_id or request_generation != self.request_generation):
             raise AssignmentError("work_authentication_required", 401)
 
     async def capture_session(self):
-        """Capture one original issuance once, before IAM or batch-admission awaits."""
         async with asyncio.timeout_at(self.deadline), self._capture_lock:
             self.assert_current()
             if self._session_captured:
@@ -193,18 +182,15 @@ class WorkSurfaceRead:
             self._session_captured = True
 
     async def authenticate(self):
-        """Verify the frozen caller, reusing its captured issuance without refresh."""
         await self.capture_session()
         await self.verify()
 
     async def verify(self):
-        """Recheck original JWT and issuance, then the local delivery lifetime."""
         self.assert_current()
         await self.delivery.verify(self.service)
         self.assert_current()
 
     def close(self):
-        """Retire this private observation without disturbing a newer request."""
         self._closed = True
         if getattr(self.orch, "_work_surface_reads", {}).get(self.websocket) is self:
             self.orch._work_surface_reads.pop(self.websocket, None)

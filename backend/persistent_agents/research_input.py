@@ -1,11 +1,6 @@
-"""Private input for one fixed USER research model attempt.
-
-Only route metadata, opaque source references and keyed bindings enter the action
-ledger. The complete body, configuration ciphertext and opened provider key stay
-in this immutable in-memory object. This object is not authority: callers must
-revalidate Plane's current source/config/session fences before permit or replay.
-Non-retained input additionally requires its original live acquisition proof;
-an unavailable ledger row cannot reconstruct a prompt.
+"""Private in-memory input for one fixed USER model attempt; body and provider key never
+enter the ledger. Re-validated against Plane's current source/config/session before
+every permit or replay. Used by execution.py and research_episode.py.
 """
 
 from __future__ import annotations
@@ -29,7 +24,6 @@ from persistent_agents.runtime_values import thaw
 
 
 def route() -> dict:
-    """Return the only durable routing fields for this supported model profile."""
     return {
         "kind": "model",
         "provider": "openai",
@@ -46,23 +40,12 @@ def _deny():
 _SELECTED_INPUT_DOMAIN = b"astral.research.selected-input/v3\x00"
 _SELECTED_RESULT_DOMAIN = b"astral.research.selected-result/v3\x00"
 
-# Transport codes the isolated helper raises strictly before any request bytes
-# exist: egress validation (URL policy and DNS resolution) precedes the socket.
-# A refused connection, TLS failure or timeout shares the transport's
-# ``unreachable``/``deadline`` codes with post-send losses, so those stay
-# uncertain until the transport itself distinguishes them.
 PRE_SEND_FAILURE_CODES = frozenset({"egress_blocked"})
 PRE_SEND_FAILURE = "assignment_provider_unreachable"
 
 
 @dataclass(frozen=True, slots=True)
 class UnsentAttempt:
-    """An issued permit whose request provably never left this process.
-
-    Only the closed pre-send transport codes construct it. Settlement records a
-    failed attempt with known-zero provider usage; it is never a response.
-    """
-
     code: str
 
     def __post_init__(self):
@@ -72,7 +55,6 @@ class UnsentAttempt:
 
 def receipt_payload(*, payload_binding, action_id, attempt_id, outcome, result, actual,
                     selected_input=None, profile_name=profile.PROFILE):
-    """Versioned factual receipt bytes; the legacy representation is unchanged."""
     values = dict(profile=profile_name, payload_binding=payload_binding,
                   action_id=action_id, attempt_id=attempt_id, outcome=outcome,
                   result=thaw(result), actual=thaw(actual))
@@ -84,13 +66,6 @@ def receipt_payload(*, payload_binding, action_id, attempt_id, outcome, result, 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class ResearchGuidance:
-    """Original persisted selection plus private, exact current-row expansion.
-
-    Capture only under the existing operation lifecycle transaction. This is
-    input identity, never authority; every use still requires its ordinary
-    session, assignment, admission, source, configuration and policy checks.
-    """
-
     _record_json: str
     snapshot: object
     captured: object
@@ -108,7 +83,6 @@ class ResearchGuidance:
         if snapshot is not None:
             envelope = snapshot.envelope
             if envelope is None:
-                # Old metadata cannot silently become an authenticated expansion.
                 _deny()
             else:
                 key = private_binding_key(envelope.binding_key_id)
@@ -124,7 +98,6 @@ class ResearchGuidance:
         return cls(_record_identity(record), snapshot, captured, key, service, sessions)
 
     def metadata(self):
-        """Detach only immutable IDs, versions and opaque authentication."""
         return None if self.captured is None else thaw(asdict(self.snapshot.envelope))
 
     def assert_record(self, record):
@@ -161,7 +134,6 @@ class ResearchGuidance:
                     _deny()
 
     def assert_current(self, tx, repository, record, *, authority_valid_until):
-        """Compare the original header and final DB-time current-head facts."""
         self.assert_local()
         repository.assert_selected_input_current(tx, owner_id=record.owner_id,
             assignment_id=record.assignment_id,
@@ -173,7 +145,6 @@ class ResearchGuidance:
 
 
 def fixed_reader_source(record) -> dict:
-    """Return the sole source whose complete tool policy has a qualified fence."""
     try:
         source = thaw(record.definition.source)
         supported = (
@@ -192,7 +163,6 @@ def fixed_reader_source(record) -> dict:
 
 
 def chat_definition(record) -> None:
-    """Require the source-less chat shape: no tools, no scopes, retained turn."""
     try:
         operation = thaw(record.operation)
         supported = (
@@ -212,7 +182,6 @@ def chat_definition(record) -> None:
 
 
 def _record_identity(record) -> str:
-    """Bind immutable operation content, excluding mutable usage and lease state."""
     try:
         kind = record.operation.get("kind")
     except (AttributeError, TypeError):
@@ -221,8 +190,6 @@ def _record_identity(record) -> str:
         try:
             chat_definition(record)
         except DispatchDenied:
-            # A kind that does not describe its own definition is a changed
-            # binding, never a different supported profile.
             _deny()
     else:
         fixed_reader_source(record)
@@ -249,7 +216,6 @@ def _record_identity(record) -> str:
 
 
 def _source_identity(record, action) -> tuple[str, dict]:
-    """Require an authentic succeeded fixed reader result and exact settled attempt."""
     request = thaw(action.intent.request)
     if (
         action.owner_id != record.owner_id
@@ -275,8 +241,6 @@ def _source_identity(record, action) -> tuple[str, dict]:
     ):
         _deny()
     observation = result.get("result")
-    # Batch A checks all source facts and its own action/result binding. Empty
-    # selection validates provenance without creating any generated claim.
     build_page_result(
         observation,
         [],
@@ -288,7 +252,6 @@ def _source_identity(record, action) -> tuple[str, dict]:
         _deny()
     attempt = attempts[-1]
     if attempt.get("state") != "succeeded" or attempt.get("outcome") != result:
-        # Plane's public result projection can add disposition-derived fields.
         expected = dict(result)
         for key in ("result_available", "reacquisition_reason"):
             expected.pop(key, None)
@@ -307,8 +270,6 @@ def _source_identity(record, action) -> tuple[str, dict]:
 
 @dataclass(frozen=True, slots=True)
 class ResearchInput:
-    """Exact private input with reusable named-key and source/config comparisons."""
-
     owner_id: str = field(repr=False)
     assignment_id: str
     source_action_id: str
@@ -325,12 +286,6 @@ class ResearchInput:
 
     @classmethod
     async def capture_chat(cls, record, *, config_store, key_id=None, guidance=None):
-        """Freeze one source-less owner turn; the prompt is never stored.
-
-        The same private key, exact uncached USER configuration and opaque
-        payload binding as research apply. Selected guidance is not composed
-        into a chat turn: admission refuses it and a bound selection here denies.
-        """
         from persistent_agents.chat_episode import CHAT_PROFILE, build_chat_request
 
         try:
@@ -371,7 +326,6 @@ class ResearchInput:
     @classmethod
     async def capture(cls, record, source, *, config_store, key_id=None, ephemeral=None,
                       guidance=None):
-        """Freeze source and exact uncached USER selection without storing prompts."""
         try:
             context = config_store._repository
             config_binding = (config_store, context, context.plane_runtime,
@@ -444,32 +398,26 @@ class ResearchInput:
 
     @property
     def key_id(self) -> str:
-        """Return only the nonsecret exact retained key identifier."""
         return self._key.key_id
 
     @property
     def kind(self) -> str:
-        """Return the closed one-shot kind this private input was captured for."""
         return self._kind
 
     @property
     def passage_ids(self) -> tuple[str, ...]:
-        """Return the closed source selection domain without its prose."""
         return self._request.passage_ids
 
     def body(self) -> dict:
-        """Produce a detached complete request; mutations cannot alter this input."""
         return json.loads(self._request.body)
 
     def parse(self, body, *, status_code):
-        """Interpret one provider reply under this input's own closed profile."""
         if self._kind == "chat":
             from persistent_agents.chat_episode import parse_chat_response
             return parse_chat_response(body, status_code=status_code)
         return profile.parse_response(body, status_code=status_code, passage_ids=self.passage_ids)
 
     def transient(self) -> AssignmentTransientInput:
-        """Return only route reconstruction metadata for Plane's existing contract."""
         references = () if self._kind == "chat" else (
             AssignmentInputReference(kind="source", resource_id=self.source_action_id, revision=1),
         )
@@ -484,14 +432,12 @@ class ResearchInput:
         )
 
     def assert_record(self, record) -> None:
-        """Refuse a different owner/instruction/control/original session selection."""
         if _record_identity(record) != self._record_json:
             _deny()
         if self._guidance is not None:
             self._guidance.assert_record(record)
 
     def assert_current(self, record, source, config_row) -> None:
-        """Compare already guarded/locked current rows and re-resolve the exact key."""
         self.assert_record(record)
         if self._kind == "chat":
             chat_definition(record)
@@ -512,7 +458,6 @@ class ResearchInput:
             self._guidance.assert_local()
 
     def assert_body(self, owner_id, body) -> None:
-        """Bind exact final kwargs before and after every awaited dispatch gate."""
         if (
             owner_id != self.owner_id
             or canonical(body).encode("utf-8") != self._request.body
@@ -520,7 +465,6 @@ class ResearchInput:
             _deny()
 
     def assert_local(self, *, orchestrator, runtime):
-        """Final pure key/config/selection check after the last database wait."""
         if self._config_binding is None:
             _deny()
         store, context, original_runtime, repository, cipher = self._config_binding
@@ -534,7 +478,6 @@ class ResearchInput:
             self._guidance.assert_local()
 
     def assert_action(self, action) -> None:
-        """Bind a stored route-only intent; generic/cached model actions never pass."""
         if (
             action.owner_id != self.owner_id
             or action.assignment_id != self.assignment_id
@@ -550,11 +493,9 @@ class ResearchInput:
             _deny()
 
     def selection_result(self, selected) -> dict:
-        """Retain only exact selected IDs and existing source bindings, never prose."""
         if self._kind != "research":
             _deny()
         source = json.loads(self._source_json)
-        # Existing deterministic builder enforces exact distinct selection.
         build_page_result(
             source["observation"],
             list(selected),
@@ -573,7 +514,6 @@ class ResearchInput:
         return result
 
     def receipt_digest(self, *, action_id, attempt_id, outcome, result, actual) -> str:
-        """Sign a factual attempt receipt even if current key authority is retired."""
         if self._kind == "chat":
             from persistent_agents.chat_episode import CHAT_PROFILE
             profile_name = CHAT_PROFILE
@@ -588,7 +528,6 @@ class ResearchInput:
         )
 
     def chat_result(self, action) -> dict:
-        """Authenticate one retained chat answer against its keyed receipt."""
         from persistent_agents.chat_episode import chat_result_value
 
         if self._kind != "chat":
@@ -637,7 +576,6 @@ class ResearchInput:
         return result
 
     def retained_result(self, action) -> dict:
-        """Authenticate cached output only after current source/config guards."""
         if self._kind != "research":
             _deny()
         self.assert_action(action)
@@ -681,7 +619,6 @@ class ResearchInput:
         return result
 
     def ephemeral_result(self, action, selection) -> dict:
-        """Authenticate live selection against an unavailable model receipt."""
         self.assert_action(action)
         if self._ephemeral is None:
             _deny()
@@ -718,11 +655,6 @@ async def invoke_fixed_user_model(
     allow_stream,
     stream_chat_id,
 ):
-    """Enter only from ordinary _call_llm with the private fixed model capability.
-
-    No SDK/default/config cache, fallback, streaming or client content delivery is
-    reachable. The isolated transport remains the sole physical HTTP boundary.
-    """
     from llm_config.types import CredentialSource, ResolvedConfig
     from shared import isolated_http
 
@@ -760,9 +692,7 @@ async def invoke_fixed_user_model(
                 timeout_seconds=60,
             )
         except isolated_http.IsolatedHttpError as error:
-            # Only the closed pre-send codes become a known-zero failed
-            # attempt. Every other transport outcome may have reached the
-            # provider and keeps the existing uncertain settlement.
+            # Only these codes count as never-sent; else stays uncertain
             if error.code not in PRE_SEND_FAILURE_CODES:
                 raise
             unsent = UnsentAttempt(error.code)
@@ -795,7 +725,6 @@ async def invoke_fixed_user_model(
 
 
 def _accepted(parsed) -> bool:
-    """A usable reply under either closed profile; usage alone is not success."""
     if parsed is None:
         return False
     if type(parsed) is profile.ResearchResponse:

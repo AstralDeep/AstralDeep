@@ -1,9 +1,6 @@
-"""Application-scoped composition of Plane-backed LETS enforcement.
-
-This module wires public component contracts only. AstralDeep retains rollout
-policy and orchestration; AstralPlane owns durable transactions; LETS owns
-finite authority and receipt verification. No component source or private
-implementation module is imported here.
+"""Composes the application-scoped LETS runtime from lets_client.py, lets_config.py, and
+AstralPlane's authority module, binding reconcilers and a cached reachability probe,
+or returning an explicit off/degraded graph. Used by runtime_composition.py.
 """
 
 from __future__ import annotations
@@ -40,8 +37,6 @@ from orchestrator.user_agents import GovernedByoAgentLifecycle
 
 
 class LetsCompositionError(RuntimeError):
-    """Stable startup refusal with no configuration or credential values."""
-
     def __init__(self, code: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
@@ -50,8 +45,6 @@ class LetsCompositionError(RuntimeError):
 
 @dataclass(slots=True)
 class LetsRuntimeComposition:
-    """One application-scoped LETS runtime and its bounded reconcilers."""
-
     loaded: LetsConfigLoad
     plane: PlaneRuntime
     repository: AuthorityRepository
@@ -62,12 +55,7 @@ class LetsRuntimeComposition:
     byo_lifecycle: GovernedByoAgentLifecycle | None
     lifecycle_reconciler: LetsLifecycleReconciler | None
     effect_reconciler: LetsEffectReconciler | None
-    # Boot-time stamp used by the readiness projection when no live probe can
-    # exist (the degraded graph bound no client): the last moment anything
-    # about the warden was actually known.
     composed_at_ns: int = field(default_factory=time.time_ns)
-    # Cached live reachability (orchestrator.lets_probe); None whenever no
-    # client is bound (off mode, invalid configuration, degraded shadow).
     reachability: LetsReachabilityProbe | None = None
     _stop: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     _tasks: tuple[asyncio.Task[None], ...] = field(default=(), repr=False)
@@ -102,8 +90,6 @@ class LetsRuntimeComposition:
         effect_stale_after: timedelta = timedelta(minutes=1),
         limit: int = 200,
     ) -> tuple[str, ...]:
-        """Discover only owner partitions that contain due recovery work."""
-
         selected_at = datetime.now(UTC) if now is None else now
         if selected_at.tzinfo is None or selected_at.utcoffset() != timedelta(0):
             raise LetsCompositionError("invalid_recovery_time")
@@ -125,8 +111,6 @@ class LetsRuntimeComposition:
         interval_seconds: float = 15.0,
         effect_stale_after: timedelta = timedelta(minutes=1),
     ) -> tuple[asyncio.Task[None], ...]:
-        """Start exactly one serialized lifecycle and effect recovery loop."""
-
         if self._tasks:
             return self._tasks
         if self.loaded.readiness.mode == "off" or not self.ready:
@@ -160,8 +144,6 @@ class LetsRuntimeComposition:
         return self._tasks
 
     async def stop(self) -> None:
-        """Stop recovery loops and close the warden client once."""
-
         self._stop.set()
         tasks, self._tasks = self._tasks, ()
         if tasks:
@@ -181,8 +163,6 @@ def compose_lets_runtime(
     repository: AuthorityRepository,
     environ: Mapping[str, str] | None = None,
 ) -> LetsRuntimeComposition:
-    """Build the active LETS graph or return the explicit off/degraded graph."""
-
     if not isinstance(plane, PlaneRuntime):
         raise TypeError("initialized Plane runtime is required")
     if not isinstance(repository, AuthorityRepository):
@@ -191,7 +171,6 @@ def compose_lets_runtime(
     if not loaded.readiness.application_ready:
         raise LetsCompositionError(loaded.readiness.reason)
     config = loaded.config
-    # Off mode never parses the probe knob: flag-off stays byte-identical.
     probe_interval: float | None = None
     if config is not None and config.mode != "off":
         try:
@@ -199,8 +178,6 @@ def compose_lets_runtime(
         except LetsProbeConfigError as exc:
             raise LetsCompositionError(exc.code) from None
     if config is None:
-        # Invalid shadow configuration is deliberately nonblocking and binds no
-        # client, Plane operation, or fabricated success evidence.
         return LetsRuntimeComposition(
             loaded=loaded,
             plane=plane,
@@ -258,12 +235,6 @@ def compose_lets_runtime(
         if not callable(probe):
             raise LetsClientBoundaryError("client_configuration")
         reachability = LetsReachabilityProbe(probe, interval_seconds=probe_interval)
-        # First live observation at composition. Bounded (≤ PROBE_WAIT_SECONDS)
-        # and never fatal: in shadow a failed probe is a degraded reading, in
-        # enforce it is reported as blocked on /readyz — boot semantics are
-        # deliberately unchanged (a composed enforce graph still boots; the
-        # readiness probe, not the constructor, takes the instance out of
-        # rotation until the warden answers).
         reachability.refresh_if_due(force=True)
         return LetsRuntimeComposition(
             loaded=loaded,

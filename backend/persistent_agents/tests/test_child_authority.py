@@ -1,4 +1,8 @@
-"""Concurrent delegated analyses cannot overwrite another child's authority."""
+"""Tests for persistent_agents/dispatch_context.py: concurrent delegated child analyses
+use distinct authority sockets under a shared claim/budget, and a reconciled effect
+without a result is never presented as recovered output.
+"""
+
 from dataclasses import replace
 from unittest.mock import Mock
 

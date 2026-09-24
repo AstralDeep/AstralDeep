@@ -1,14 +1,8 @@
-"""Feature 055 US2 (D6) — shared tool-call leak stripping on every delivery
-surface.
-
-The recorded incident: an LLM emitted XML-ish pseudo-call syntax
-(``update_component<arg_key>…<arg_value>…NEW_PAGE@true``) as plain text and it
-rode the doc-card promotion path into a rendered Document card verbatim.
-``_strip_toolcall_leakage`` now covers those trains alongside the existing
-wrapper patterns and is applied on the chat narrative, the doc-card promotion,
-and ``_generate_tool_summary`` — with an honest fallback + diagnostic log when
-stripping empties the response. Not flag-gated (correctness fix).
+"""Tests for _strip_toolcall_leakage in orchestrator/orchestrator.py: leaked pseudo
+tool-call syntax is stripped from the chat narrative, doc-card promotion, and tool
+summaries, with an honest fallback if stripping empties the response.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,8 +20,6 @@ from orchestrator.orchestrator import (  # noqa: E402
     _strip_toolcall_leakage,
 )
 
-# Reconstructed from the recorded incident (spec.md / research.md D6): a tool
-# name glued onto <arg_key>/<arg_value> pairs, closed by a NAME@true train.
 RECORDED_FIXTURE = (
     "update_component<arg_key>component_id</arg_key>"
     "<arg_value>doc_3f9a1c2b7d44</arg_value>"
@@ -35,11 +27,6 @@ RECORDED_FIXTURE = (
     "<arg_value># Project Update\n\nRevised draft of the aims section.</arg_value>"
     "NEW_PAGE@true"
 )
-
-
-# ---------------------------------------------------------------------------
-# _strip_toolcall_leakage — pattern coverage
-# ---------------------------------------------------------------------------
 
 
 def test_recorded_fixture_strips_to_empty():
@@ -92,15 +79,8 @@ def test_plain_markdown_untouched():
 
 
 def test_sanitize_text_response_fallback_preserved():
-    # The chat-loop sanitizer keeps its actionable no-agents fallback when
-    # everything was leak markup, and now covers the pseudo-call syntax too.
     assert "No agents are currently enabled" in _sanitize_text_response(RECORDED_FIXTURE)
     assert _sanitize_text_response("plain answer") == "plain answer"
-
-
-# ---------------------------------------------------------------------------
-# Chat narrative surface
-# ---------------------------------------------------------------------------
 
 
 def _narrative(text, chat_id=None):
@@ -130,18 +110,12 @@ def test_chat_narrative_honest_fallback_when_stripped_empty(caplog):
                and "chat-9" in r.getMessage() for r in caplog.records)
 
 
-# ---------------------------------------------------------------------------
-# Doc-card promotion surface
-# ---------------------------------------------------------------------------
-
-
 def test_doc_card_strips_embedded_leak_keeps_document():
     doc = "# Specific Aims\n\nAim 1 text.\n\n" + RECORDED_FIXTURE + "\n\nAim 2 text."
     card = Orchestrator._narrative_doc_card("chat-1", doc)
     body = card["content"][0]["content"]
     assert "Aim 1 text." in body and "Aim 2 text." in body
     assert "<arg_key>" not in body and "@true" not in body
-    # Identity is derived from the CLEANED text — same doc, same id.
     clean = Orchestrator._narrative_doc_card(
         "chat-1", "# Specific Aims\n\nAim 1 text.\n\nAim 2 text.")
     assert card["id"] == clean["id"]
@@ -155,11 +129,6 @@ def test_doc_card_honest_fallback_when_stripped_empty(caplog):
     assert card["title"] == "Document"
     assert any("toolcall_leak.stripped_empty" in r.getMessage()
                and "surface=doc_card" in r.getMessage() for r in caplog.records)
-
-
-# ---------------------------------------------------------------------------
-# Tool-summary surface
-# ---------------------------------------------------------------------------
 
 
 def _summary_orch(llm_text):
@@ -196,11 +165,8 @@ async def test_tool_summary_honest_fallback_when_stripped_empty(caplog):
 
 
 def test_email_with_boolean_domain_label_survives():
-    """Adversarial-review fix: `@(?:true|false)` must be TERMINAL — an email
-    whose domain starts with `true.`/`false.` is prose, not a value train."""
     from orchestrator.orchestrator import _strip_toolcall_leakage
     text = "Email me at john@true.example.com today."
     assert _strip_toolcall_leakage(text) == text
-    # The value train itself still strips (terminal boolean, then whitespace).
     assert "NEW_PAGE@true" not in _strip_toolcall_leakage("done NEW_PAGE@true now")
     assert "@false" not in _strip_toolcall_leakage("SET_MODE@false end")

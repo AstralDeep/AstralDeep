@@ -1,9 +1,8 @@
-"""T036 at Save: a reviewed selection whose agent/skill/note head changed cannot publish.
-
-Real HTTP through the registered router, real skills/notes/agents repositories,
-real PostgreSQL publication and audit. Only institutional replies and the
-physical source/provider replies are synthetic.
+"""Tests that saving a reviewed research selection (real HTTP, skills/notes/agents
+repositories, PostgreSQL) refuses when the underlying agent, skill, or note head
+changed since review, while a completed result stays readable.
 """
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -133,7 +132,6 @@ async def test_changed_skill_or_agent_head_refuses_save(integrated, monkeypatch,
                                     json=_approval(review))
         assert refused.status_code == 409 and refused.json() == {"error": "assignment_guidance_changed"}
     assert _head(op, value.chat) == (0, None)
-    # A completed result read never demands that a forgotten/archived head still exists.
     assert await _result_available(client, value) is True
     rows, _ = runner.orch.audit_repo.list_for_user(op.owner)
     assert not any(row.action_type == "work.result.save" for row in rows)
@@ -174,8 +172,6 @@ async def test_exact_replay_saves_a_selected_result_once_with_id_only_audit(inte
     replay = await client.post(target, json=approval)
     assert replay.status_code == 200 and replay.json() == {**accepted.json(), "applied": False}
     assert _head(op, value.chat) == (1, command["publication_id"])
-    # The head may change after an accepted Save; the receipt still replays and
-    # the completed result stays readable without reopening the selection.
     await asyncio.to_thread(_skill_change, op, skill, "delete")
     replay = await client.post(target, json=approval)
     assert replay.status_code == 200 and replay.json()["applied"] is False

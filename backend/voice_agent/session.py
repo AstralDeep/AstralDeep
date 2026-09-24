@@ -1,4 +1,7 @@
-"""Bounded session ownership for the isolated voice-worker control client."""
+"""Direct-RTC voice session state machine — VAD/endpointing, capture fencing, barge-in,
+and ASR/TTS orchestration — multiplexed across assignments by SessionSupervisor;
+wired into control.py and main.py, built on voice_transcript.py.
+"""
 
 from __future__ import annotations
 
@@ -47,55 +50,22 @@ SPEECH_QUIESCE_TIMEOUT_SECONDS = 0.25
 OUTPUT_OPERATION_TIMEOUT_SECONDS = 0.25
 OUTPUT_DRAIN_TIMEOUT_SECONDS = 0.5
 CLIENT_PLAYOUT_CONFIRMATION_TIMEOUT_SECONDS = 8.0
-# A client terminal event proves that the authenticated device finished its
-# declared playout, but it cannot prove that the device audio route and the
-# upstream LiveKit microphone buffer contain no final render-tail frames. Keep
-# capture fenced for one short, bounded tail window after ordinary playout.
-# Explicit barge-in still reopens immediately through the separate stop path.
+# Playout terminal doesn't prove the route is clear yet
 POST_PLAYOUT_CAPTURE_GUARD_SECONDS = 0.5
 SELF_SPEECH_SUPPRESSION_WINDOW_SECONDS = 3.0
 MAX_RECENT_SPEECH_FINGERPRINTS = 8
 VAD_THRESHOLD = 0.5
-# Silero's streaming iterator uses a lower negative threshold once speech has
-# started so small posterior dips do not split an utterance. Keep the launch
-# threshold unchanged, but require both 64 ms of high-confidence evidence and
-# a 128-ms candidate before allocating a turn. Ambiguous frames provide bounded
-# pre-roll and may bridge that evidence within one 512-ms window. This survives
-# normal Opus posterior smoothing while rejecting a lone spike and keeping the
-# pre-recognition buffer finite. The turn endpoints after a bounded run of
-# below-release evidence so ordinary clause pauses survive as one
-# conversational turn (VAD_END_SILENCE_FRAMES below).
 VAD_RELEASE_THRESHOLD = VAD_THRESHOLD - 0.15
 VAD_MIN_HIGH_CONFIDENCE_FRAMES = 2
 VAD_MIN_CANDIDATE_FRAMES = 4
 VAD_MAX_CANDIDATE_FRAMES = 16
-# 066 R-9 follow-through: a TRUE bounded pre-roll. Speech onsets ramp from
-# below the release threshold (unvoiced plosives, soft attacks), and the
-# candidate buffer resets on any sub-release frame — so the head of an
-# utterance was lost and users were transcribed "from the middle". The ring
-# retains the last 24 admitted frames (768 ms — a strict superset of the
-# 512 ms candidate window) regardless of posterior dips, and activation
-# seeds the utterance from it. Fenced frames never reach the ring (admission
-# is checked upstream), and a capture-epoch change (fence transition) clears
-# it, so audio from before an assistant playout can never resurface in the
-# next turn.
 VAD_PREROLL_FRAMES = 24
-# Feature 066 near-real-time tuning. The 065 launch value was a fixed 40
-# frames (1.28 s); that figure was an implementation choice, never a spec
-# contract (no 065 spec/plan/research text pins it). Endpointing floors of
-# roughly 0.8-1.0 s are standard for conversational agents, and 066 optimizes
-# time-to-transcript, so the default drops to 960 ms (30 frames). Operators
-# tune VOICE_ENDPOINT_SILENCE_MS, clamped to a sane [320, 2560] ms and rounded
-# to whole 32 ms frames; unset/invalid values fall back to the default. Read
-# once at import like the feature flags - changing it requires a restart.
 _ENDPOINT_SILENCE_DEFAULT_MS = 960
 _ENDPOINT_SILENCE_MIN_MS = 320
 _ENDPOINT_SILENCE_MAX_MS = 2_560
 
 
 def _endpoint_silence_frames(raw: str | None) -> int:
-    """Return the clamped, frame-rounded endpoint-silence run length."""
-
     try:
         requested_ms = int(str(raw).strip(), 10)
     except (TypeError, ValueError):
@@ -109,22 +79,9 @@ def _endpoint_silence_frames(raw: str | None) -> int:
 VAD_END_SILENCE_FRAMES = _endpoint_silence_frames(
     os.environ.get("VOICE_ENDPOINT_SILENCE_MS")
 )
-# Feature 066: the endpoint-silence run is proven non-speech frame by frame
-# (any at-or-above-release frame resets the counter), so all but a short tail
-# is trimmed before the batch ASR POST - at the default endpoint that removes
-# ~0.83 s of upload bytes and whisper decode time from every turn. Four frames
-# (128 ms) of retained tail preserve the release transient so the recognizer
-# closes the final word cleanly.
 ASR_TAIL_SILENCE_FRAMES = 4
 MAX_UTTERANCE_FRAMES = 1_875
-# Whisper is documented to mint stock phrases from speech-free audio ("Thank
-# you.", "Obrigado.", ... — both observed live 2026-08-05 entering chat as
-# genuine user turns). Refusal requires a CONJUNCTION: the canonical text is
-# one of these normalized stock phrases AND the utterance carried fewer
-# at-or-above-VAD_THRESHOLD frames than the shortest of them can physically
-# be spoken in (8 frames = 256 ms at the 32 ms frame size). Neither half is
-# safe alone: the phrase list would eat a genuine "thank you", the duration
-# floor would eat genuine short commands ("stop", "yes").
+# Whisper can hallucinate stock phrases from near-silence
 ASR_HALLUCINATION_MIN_VOICED_FRAMES = 8
 _ASR_STOCK_HALLUCINATIONS = frozenset(
     {
@@ -157,24 +114,20 @@ _SAFE_FAILURE_REASON = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class ProtocolViolation(RuntimeError):
-    """A content-free authenticated control-protocol violation."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 class CapacityExceeded(RuntimeError):
-    """The authenticated worker has no unclaimed session slot."""
+    pass
 
 
 class AssignmentConflict(RuntimeError):
-    """A session was rebound without an authorized assignment transition."""
+    pass
 
 
 class ClosedSessionRace(RuntimeError):
-    """A command arrived for an exact generation that just closed locally."""
-
     def __init__(
         self,
         *,
@@ -191,8 +144,6 @@ class ClosedSessionRace(RuntimeError):
 
 
 class RtcSessionError(RuntimeError):
-    """A redacted direct-RTC failure safe for control-plane reporting."""
-
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -200,12 +151,6 @@ class RtcSessionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class SessionNotice:
-    """One bounded event emitted from the serialized media owner.
-
-    Text is deliberately excluded from ``repr`` so an accidental exception or
-    diagnostic representation cannot copy transcript content into logs.
-    """
-
     kind: str
     reason: str | None = None
     announcement_id: str | None = None
@@ -224,32 +169,24 @@ class SessionNotice:
 
 
 class VadEngine(Protocol):
-    """Exact-frame voice activity inference owned by one session."""
-
     def probability(self, pcm_s16le: bytes) -> float:
-        """Return one speech probability for exactly 512 mono 16-kHz samples."""
+        pass
 
     def reset(self) -> None:
-        """Clear recurrent state between utterances and on every fence."""
+        pass
 
 
 class AsrAdapter(Protocol):
-    """Bounded batch transcription seam."""
-
     async def transcribe_pcm16(self, pcm_s16le: bytes) -> Any:
-        """Transcribe one already-ended in-memory utterance."""
+        pass
 
 
 class TtsAdapter(Protocol):
-    """Bounded fixed-profile synthesis seam."""
-
     async def synthesize(self, text: str, *, max_duration_samples: int) -> Any:
-        """Return validated mono 24-kHz PCM."""
+        pass
 
 
 class RtcFactory(Protocol):
-    """Narrow factory around the exact pinned ``livekit.rtc`` API."""
-
     def create_room(self) -> Any: ...
 
     def room_options(self, *, auto_subscribe: bool, connect_timeout: float) -> Any: ...
@@ -290,22 +227,14 @@ class RtcFactory(Protocol):
 
 
 class LiveKitRtcFactory:
-    """Production adapter for the audited ``livekit==1.1.14`` surface.
-
-    The import is intentionally delayed. Host contract tests can exercise the
-    state machine with injected fakes, while the isolated worker image proves
-    the native package and this adapter together under Python 3.11.
-    """
-
     def __init__(self, rtc_module: Any | None = None) -> None:
-        # The dependency's diagnostic payloads may include credentialed RTC
-        # state. Product-owned logs remain bounded and content-free.
+        # Vendor logs may carry credentialed RTC state
         for logger_name in _LIVEKIT_VENDOR_LOGGERS:
             logging.getLogger(logger_name).disabled = True
         if rtc_module is None:
             try:
                 from livekit import rtc as rtc_module
-            except ImportError:  # pragma: no cover - image/host split
+            except ImportError:  # pragma: no cover
                 raise RtcSessionError("livekit_runtime_unavailable") from None
         self._rtc = rtc_module
 
@@ -352,10 +281,6 @@ class LiveKitRtcFactory:
 
     def stream_buffer_depth(self, event: Any, stream: Any) -> int:
         del event
-        # This private shape is intentionally guarded against the exact pin.
-        # The public API exposes no overflow count even though RingQueue drops
-        # its oldest item at capacity. Seeing a full queue therefore aborts the
-        # utterance conservatively before damaged audio reaches ASR.
         queue = getattr(stream, "_queue", None)
         buffered = getattr(queue, "_queue", ())
         return len(buffered)
@@ -378,10 +303,7 @@ class LiveKitRtcFactory:
 
     def track_publish_options(self) -> Any:
         options = self._rtc.TrackPublishOptions()
-        # LiveKit's audio-source grant vocabulary has no distinct
-        # "assistant" source. Publish the worker's synthetic mono audio under
-        # the microphone audio class so the room grant can remain restricted
-        # to audio only instead of granting every camera/screen source.
+        # No assistant source in LiveKit; reuses mic to scope grants
         options.source = self._rtc.TrackSource.SOURCE_MICROPHONE
         return options
 
@@ -400,18 +322,14 @@ class LiveKitRtcFactory:
 
 
 DEFAULT_VAD_MODEL_PATH = "/opt/voice-assets/silero_vad.onnx"
-# One ONNX graph per model path per worker process. Building it costs a
-# blocking disk read plus a graph load, and it used to run once per voice
-# session inside the supervisor-wide lock, serializing every concurrent
-# activation behind it. Only a successful build is shared: a failure must stay
-# reproducible for the next construction of the same path.
+# Only a successful build is cached; failures must retry
 _VAD_INFERENCE_SESSIONS: dict[str, Any] = {}
 
 
 def _build_vad_inference_session(model_path: Path | str) -> Any:
     try:
         import onnxruntime as ort
-    except ImportError:  # pragma: no cover - image/host split
+    except ImportError:  # pragma: no cover
         raise RtcSessionError("vad_runtime_unavailable") from None
     path = Path(model_path)
     if not path.is_file():
@@ -429,19 +347,13 @@ def _build_vad_inference_session(model_path: Path | str) -> Any:
 
 
 async def preload_vad_model(model_path: Path | str = DEFAULT_VAD_MODEL_PATH) -> None:
-    """Build the shared VAD graph off the event loop before the first session."""
-
     try:
         await asyncio.to_thread(_build_vad_inference_session, model_path)
     except Exception:
-        # The per-session constructor raises the same reason again; a missing
-        # or unreadable asset must not change when the worker gives up.
         return
 
 
 class SileroVad:
-    """Exact Silero v6 recurrent ONNX inference for 32-ms input frames."""
-
     def __init__(
         self,
         *,
@@ -449,7 +361,7 @@ class SileroVad:
     ) -> None:
         try:
             import numpy as np
-        except ImportError:  # pragma: no cover - image/host split
+        except ImportError:  # pragma: no cover
             raise RtcSessionError("vad_runtime_unavailable") from None
         self._session = _build_vad_inference_session(model_path)
         self._np = np
@@ -457,8 +369,6 @@ class SileroVad:
 
     @property
     def recurrent_state(self) -> Any:
-        """Expose state only for exact in-image shape/reset verification."""
-
         return self._state
 
     @property
@@ -497,8 +407,6 @@ class SileroVad:
 
 @dataclass(slots=True, repr=False)
 class WorkerRtcGrant:
-    """A short-lived direct-RTC grant whose bearer remains memory-only."""
-
     revision: int
     livekit_url: str
     join_token: str = field(repr=False)
@@ -508,8 +416,6 @@ class WorkerRtcGrant:
     worker_identity: str
 
     def clear_secrets(self) -> None:
-        """Drop the only worker-owned reference to the join bearer."""
-
         self.join_token = ""
 
     def __repr__(self) -> str:
@@ -525,8 +431,6 @@ class WorkerRtcGrant:
 
 @dataclass(slots=True, repr=False)
 class SessionBinding:
-    """Validated immutable assignment fields plus a clearable RTC bearer."""
-
     session_id: str
     generation: int
     assignment_id: str
@@ -555,8 +459,6 @@ class SessionBinding:
 
     @property
     def reconnect_key(self) -> tuple[str, int, str, str, str, str, int, str, str, int, str]:
-        """Return content-free fields that cannot change during RTC reconnect."""
-
         return (
             self.session_id,
             self.generation,
@@ -588,31 +490,23 @@ class SessionBinding:
 
 
 class SessionRuntime(Protocol):
-    """The narrow control-lifecycle interface implemented by an RTC session."""
-
     binding: SessionBinding
 
     async def run(self) -> None:
-        """Own session resources until closed or failed."""
+        pass
 
     def deliver(self, frame: dict[str, Any]) -> None:
-        """Queue one already-authenticated and sequence-fenced frame."""
+        pass
 
     async def close(self, reason: str) -> None:
-        """Release media, buffered frames, and bearer references."""
+        pass
 
     @property
     def media_state(self) -> str:
-        """Return the content-free media state for heartbeat telemetry."""
+        pass
 
 
 class BoundControlSession:
-    """A bounded lifecycle holder extended by the direct-RTC implementation.
-
-    Feature task T047 supplies media processing. Until then this class owns no
-    media authority, performs no dispatch, and never reports readiness.
-    """
-
     def __init__(
         self,
         binding: SessionBinding,
@@ -674,16 +568,11 @@ class _RecognitionBinding:
     submission_id: str | None = None
     request_generation: str | None = None
     echo_fingerprints: frozenset[bytes] = frozenset()
-    # At-or-above-VAD_THRESHOLD frames observed across the whole utterance,
-    # stamped at finalize. Content-free speech-evidence floor for the stock
-    # hallucination refusal in _recognition_complete.
     voiced_frames: int = 0
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class _RecentSpeechFingerprint:
-    """Content-free fingerprint retained only for bounded echo suppression."""
-
     digest: bytes = field(repr=False)
     expires_at: float
 
@@ -722,16 +611,12 @@ class _SpeechMeta:
 
 
 def _normalized_speech(canonical: str) -> str:
-    """Punctuation/case-insensitive speech form shared by echo + stock checks."""
-
     return "".join(
         character for character in canonical.casefold() if character.isalnum()
     )
 
 
 def _speech_fingerprint(text: str) -> bytes | None:
-    """Hash a punctuation/case-insensitive speech form without retaining text."""
-
     try:
         canonical = canonical_transcript(text)
     except TranscriptProofError:
@@ -743,8 +628,6 @@ def _speech_fingerprint(text: str) -> bytes | None:
 
 
 def validate_announcement_binding(frame: Mapping[str, Any]) -> None:
-    """Enforce the greeting/turn invariant before text reaches synthesis."""
-
     kind = frame.get("kind")
     turn_id = frame.get("turn_id")
     if (kind == "greeting") != (turn_id is None):
@@ -772,14 +655,6 @@ def validate_announcement_binding(frame: Mapping[str, Any]) -> None:
 
 
 class DirectRtcSession(BoundControlSession):
-    """One serialized, generation-fenced direct-RTC media owner.
-
-    RTC callbacks and audio pumps only enqueue immutable events. This task owns
-    subscription, VAD/endpointing, recognition transitions, output publication,
-    reconnect reconciliation, and all buffer cleanup. Coordinator protocol and
-    LiveKit data-envelope publication remain injected consumers of notices.
-    """
-
     _CALLBACK_EVENTS = (
         "participant_connected",
         "participant_disconnected",
@@ -819,10 +694,6 @@ class DirectRtcSession(BoundControlSession):
         self._notice_sink = notice_sink
         self._utcnow = utcnow or (lambda: datetime.now(UTC))
         self._monotonic = monotonic or time.monotonic
-        # Platform SDKs own acoustic echo cancellation and route-specific audio
-        # processing. This synchronous seam lets their verified route state
-        # fail ASR ingestion closed without making the media worker claim it
-        # can acoustically prove AEC from remote PCM.
         self._input_audio_gate = input_audio_gate
         try:
             proof_key = derive_session_proof_key(
@@ -993,16 +864,8 @@ class DirectRtcSession(BoundControlSession):
     def greeting_count(self) -> int:
         return self._greeting_count
 
+    # Never put transcript text on the worker control channel
     async def publish_transcript_envelope(self, envelope: Mapping[str, Any]) -> None:
-        """Publish one already proof-bound final only to the assigned client.
-
-        Proof construction and ``turn_bound`` ownership remain coordinator
-        protocol responsibilities. This narrow media seam validates the full
-        immutable binding, canonical text/digest shape, proof lifetime, packet
-        ceiling, topic, reliability, and destination before touching LiveKit.
-        It never copies transcript text onto the worker control channel.
-        """
-
         required = {
             "type",
             "schema_version",
@@ -1144,8 +1007,6 @@ class DirectRtcSession(BoundControlSession):
         )
 
     async def _publish_transcript_payload(self, payload: bytes) -> None:
-        """Deliver one validated envelope over the selected client transport."""
-
         if not self._room_connected or self._room is None:
             raise RtcSessionError("rtc_room_unavailable")
         try:
@@ -1167,8 +1028,6 @@ class DirectRtcSession(BoundControlSession):
         track_name: str,
         duration_samples: int,
     ) -> None:
-        """Publish a content-free manifest before any PCM reaches the track."""
-
         if self._room is None or self._output_track_sid is None:
             raise RtcSessionError("rtc_room_unavailable")
         manifest: dict[str, Any] = {
@@ -1279,10 +1138,6 @@ class DirectRtcSession(BoundControlSession):
             self._overrun_wakeup.set()
 
     async def _next_owned_event(self) -> tuple[str, Any]:
-        # One persistent waiter per source, re-created only once it completes.
-        # A value that becomes ready alongside another source stays parked in
-        # its own finished task until the loop asks for it, so no waiter is
-        # cancelled and re-created per event.
         if self._control_waiter is None:
             self._control_waiter = asyncio.create_task(self._queue.get())
         if self._rtc_waiter is None:
@@ -1300,8 +1155,6 @@ class DirectRtcSession(BoundControlSession):
             return_when=asyncio.FIRST_COMPLETED,
         )
         if closed_task.done():
-            # Closed wins, and a value this call already recovered can no
-            # longer reach the teardown drain: discard it here.
             if control_task.done():
                 self._control_waiter = None
                 _clear_buffered_value(_completed_waiter_value(control_task))
@@ -1321,13 +1174,8 @@ class DirectRtcSession(BoundControlSession):
         self._rtc_waiter = None
         return "rtc", rtc_task.result()
 
+    # Finished waiter values sit outside the queue drain
     async def _release_owned_waiters(self) -> None:
-        """Cancel every persistent waiter, discarding any value one parked.
-
-        A finished queue waiter holds its value outside the queue, so the
-        teardown drain cannot reach it; zero retention requires this.
-        """
-
         control = self._control_waiter
         rtc = self._rtc_waiter
         self._control_waiter = None
@@ -1360,15 +1208,9 @@ class DirectRtcSession(BoundControlSession):
                 enabled = frame.get("enabled")
                 if not isinstance(enabled, bool):
                     raise ProtocolViolation("invalid_capture_state")
-                # A client-side VAD/barge-in request may arrive while output is
-                # active. Fence and quiesce that output before capture can be
-                # reopened so synthesized speech cannot become a user turn.
+                # Quiesce output first: TTS audio must not self-transcribe
                 if enabled and self._assistant_output_active():
                     await self._stop_speech("barge_in", emit=True)
-                # Every set_capture command is coordinator-authenticated. A
-                # false command is also allowed to retire the playout fence;
-                # capture remains closed while lifecycle or microphone policy
-                # is false, without leaking a timeout task.
                 self._release_playout_capture_hold(guard_tail=enabled)
                 self._capture_requested = enabled
                 if not enabled:
@@ -1828,8 +1670,6 @@ class DirectRtcSession(BoundControlSession):
         return not previous and next_open
 
     def _fence_capture(self) -> None:
-        """Invalidate already-queued microphone frames and close ingestion."""
-
         self._capture_epoch += 1
         self._capture_open = False
 
@@ -1894,10 +1734,6 @@ class DirectRtcSession(BoundControlSession):
         if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
             await self._abort_utterance("vad_failed")
             return
-        # Pre-roll ring maintenance for every ADMITTED, validated frame. A
-        # capture-epoch change marks a fence transition (assistant playout,
-        # reconnect), so the ring resets there and pre-fence audio can never
-        # seed a later turn — exact fence semantics, no clock reads.
         if self._preroll_epoch != self._capture_epoch:
             self._vad_preroll.clear()
             self._preroll_epoch = self._capture_epoch
@@ -1920,12 +1756,7 @@ class DirectRtcSession(BoundControlSession):
                 if len(self._recognition_bindings) >= MAX_RETAINED_FINALS:
                     raise RtcSessionError("transcript_buffer_full")
                 self._utterance_active = True
-                # Voiced evidence accumulated during candidacy carries into
-                # the utterance; the active branch below keeps counting.
                 self._utterance_voiced_frames = self._candidate_speech_frames
-                # Seed the turn from the pre-roll ring: it is a superset of
-                # the candidate frames plus the onset audio the candidate
-                # logic discarded on sub-release dips.
                 self._utterance = bytearray(b"".join(self._vad_preroll))
                 self._silence_frames = 0
                 self._client_turn_id = str(uuid4())
@@ -1997,19 +1828,6 @@ class DirectRtcSession(BoundControlSession):
         )
 
     def _trim_trailing_silence(self) -> None:
-        """Drop the proven trailing endpoint-silence run before batch ASR.
-
-        ``_silence_frames`` already counts exactly the contiguous trailing
-        below-release run (any speech-evidence frame resets it), so the VAD's
-        existing per-frame verdicts identify the trim without re-analyzing
-        audio. Internal clause pauses are bridged mid-utterance and are never
-        trailing, so they stay intact. The max-length finalize path can also
-        trim, bounded to at most the proven trailing run it arrived with
-        (< the endpoint threshold, or it would have endpointed already). A
-        bounded ASR_TAIL_SILENCE_FRAMES tail is kept for recognizer context.
-        Fail closed: never trim into speech evidence or empty the buffer.
-        """
-
         excess_frames = self._silence_frames - ASR_TAIL_SILENCE_FRAMES
         if excess_frames <= 0:
             return
@@ -2078,9 +1896,6 @@ class DirectRtcSession(BoundControlSession):
                         and recognition.voiced_frames
                         < ASR_HALLUCINATION_MIN_VOICED_FRAMES
                     ):
-                        # Stock phrase minted from speech-free audio: refuse
-                        # it like self_speech (silently, no retry guidance)
-                        # instead of submitting a turn the user never spoke.
                         await self._emit(
                             SessionNotice(
                                 "recognition_failed",
@@ -2338,8 +2153,6 @@ class DirectRtcSession(BoundControlSession):
             )
             return
         await self._stop_speech("superseded", emit=True)
-        # A replacement command is the only path that retires an older
-        # published announcement without waiting for its client terminal.
         self._remember_playout_echo_fingerprint()
         await self._abort_utterance("assistant_speech", emit=False)
         self._seen_announcements.append(announcement_id)
@@ -2457,9 +2270,7 @@ class DirectRtcSession(BoundControlSession):
                     return
                 chunk = pcm_s16le[offset : offset + frame_bytes]
                 await self._capture_output_chunk(epoch, chunk, source)
-            # This is only a bounded SDK/source drain. Authenticated client
-            # voice_playout_event frames remain the sole evidence that a user
-            # device actually rendered any of these samples.
+            # SDK drain isn't proof of playback; only client event is
             await self._await_output_operation(
                 source.wait_for_playout(),
                 timeout=OUTPUT_DRAIN_TIMEOUT_SECONDS,
@@ -2547,11 +2358,6 @@ class DirectRtcSession(BoundControlSession):
             and self._synthesis_task is None
             and self._speech_producer is None
         ):
-            # Source completion is not client playout completion. An explicit,
-            # authenticated barge-in may therefore arrive after the source has
-            # drained while its local-playout fence is still active. Retire
-            # that fence immediately; ordinary user-stop/mute/end paths remain
-            # proof-gated and retain the acoustic-tail behavior.
             if reason == "barge_in" and self._playout_capture_hold:
                 self._fence_capture()
                 self._release_playout_capture_hold()
@@ -2564,9 +2370,6 @@ class DirectRtcSession(BoundControlSession):
                         )
                     )
             return
-        # This fence is deliberately the first mutation: callbacks, source
-        # captures, and already-queued microphone frames from the old speech
-        # epoch become stale before any await or replacement work begins.
         if advance_epoch:
             self._speech_epoch += 1
         if fence_capture:
@@ -2601,8 +2404,6 @@ class DirectRtcSession(BoundControlSession):
         self._update_capture_open()
 
     def _hold_capture_for_client_playout(self) -> None:
-        """Keep ASR closed until the coordinator proves local playout ended."""
-
         confirmation_task = self._playout_confirmation_task
         self._playout_confirmation_task = None
         if (
@@ -2619,8 +2420,6 @@ class DirectRtcSession(BoundControlSession):
         self._playout_capture_hold = True
 
     def _release_playout_capture_hold(self, *, guard_tail: bool = False) -> None:
-        """Release one local-playout fence, optionally after an acoustic tail."""
-
         self._remember_playout_echo_fingerprint()
         confirmation_task = self._playout_confirmation_task
         self._playout_confirmation_task = None
@@ -2697,8 +2496,6 @@ class DirectRtcSession(BoundControlSession):
             )
 
     def _schedule_playout_confirmation_timeout(self) -> None:
-        """Fail closed when published output lacks a client terminal event."""
-
         if not self._playout_capture_hold or self._closed.is_set():
             return
         task = self._playout_confirmation_task
@@ -2739,8 +2536,6 @@ class DirectRtcSession(BoundControlSession):
             await self._bounded_output_cleanup(source.aclose())
         await self._drain_retired_output_tasks()
         if source is not None and (clear or post_close_clear):
-            # A cancellation-resistant capture may finish only after aclose()
-            # releases it. This final clear discards that last stale frame.
             with suppress(Exception):
                 source.clear_queue()
 
@@ -2821,8 +2616,6 @@ class DirectRtcSession(BoundControlSession):
             )
 
     async def _cancel_retired_output_tasks(self) -> None:
-        """Drop references to cancellation-resistant output work boundedly."""
-
         tasks = tuple(self._retired_output_tasks)
         for task in tasks:
             task.cancel()
@@ -2922,9 +2715,6 @@ class DirectRtcSession(BoundControlSession):
                 return
             task = self._teardown_task
             if task is None:
-                # Fence both ingress and egress before the first await. Every
-                # queued callback/frame from the prior lifecycle is now stale,
-                # even when the caller itself is cancelled during cleanup.
                 self._closed.set()
                 self._fence_capture()
                 self._release_playout_capture_hold()
@@ -2937,8 +2727,6 @@ class DirectRtcSession(BoundControlSession):
         await asyncio.shield(task)
 
     async def _teardown_owned(self, *, final_state: str, reason: str) -> None:
-        """Own every bounded cleanup primitive for one terminal lifecycle."""
-
         del reason
         try:
             with suppress(Exception):
@@ -2978,8 +2766,6 @@ class DirectRtcSession(BoundControlSession):
             self._pending_context = None
             self._overrun_reason = None
             self._overrun_wakeup.clear()
-            # Release before draining so no surviving waiter can park a value
-            # the drain has already passed.
             await self._release_owned_waiters()
             while not self._queue.empty():
                 with suppress(asyncio.QueueEmpty):
@@ -3030,8 +2816,6 @@ SessionFactory = Callable[[SessionBinding], SessionRuntime]
 
 
 class SessionSupervisor:
-    """Multiplex assignments without exceeding capacity or retaining secrets."""
-
     def __init__(
         self,
         *,
@@ -3055,8 +2839,6 @@ class SessionSupervisor:
         return len(self._entries)
 
     def session_states(self) -> tuple[tuple[str, int, str], ...]:
-        """Return a bearer-free snapshot for bounded heartbeat generation."""
-
         return tuple(
             (
                 entry.binding.session_id,
@@ -3067,8 +2849,6 @@ class SessionSupervisor:
         )
 
     def retained_sequence_fences(self) -> frozenset[tuple[str, int]]:
-        """Return active and bounded closed fences for transport pruning."""
-
         active = {
             (entry.binding.session_id, entry.binding.generation)
             for entry in self._entries.values()
@@ -3086,8 +2866,6 @@ class SessionSupervisor:
         generation: int,
         media_grant_revision: int,
     ) -> Any:
-        """Return only an exact current Watch bridge assignment."""
-
         entry = self._entries.get(session_id)
         if (
             entry is None
@@ -3101,8 +2879,6 @@ class SessionSupervisor:
         return entry.runtime
 
     async def set_capacity(self, accepted_max_sessions: int) -> None:
-        """Apply the coordinator's no-greater-than-advertised capacity."""
-
         if not 1 <= accepted_max_sessions <= self._advertised_max_sessions:
             raise ProtocolViolation("invalid_accepted_capacity")
         async with self._lock:
@@ -3111,8 +2887,6 @@ class SessionSupervisor:
             self._max_sessions = accepted_max_sessions
 
     async def start(self, binding: SessionBinding) -> bool:
-        """Start, retry, or replace one exactly fenced RTC assignment."""
-
         async with self._lock:
             if self._shutting_down:
                 binding.clear_secrets()
@@ -3179,8 +2953,6 @@ class SessionSupervisor:
             return True
 
     def deliver(self, frame: dict[str, Any]) -> None:
-        """Deliver only to the currently bound generation and grant revision."""
-
         session_id = frame.get("session_id")
         entry = self._entries.get(session_id)
         if entry is None:
@@ -3240,8 +3012,6 @@ class SessionSupervisor:
         media_grant_revision: int,
         reason: str,
     ) -> None:
-        """End exactly one current assignment after all equality checks."""
-
         async with self._lock:
             entry = self._entries.get(session_id)
             if entry is None:
@@ -3269,15 +3039,6 @@ class SessionSupervisor:
         media_grant_revision: int,
         allow_unbound: bool,
     ) -> ClosedSessionRace | None:
-        """Quarantine one attributable control failure without stopping peers.
-
-        A non-bind command is isolatable only when its session and generation
-        exactly match an active or bounded closed fence.  A syntactically
-        attributable bind may establish a failed fence even when capacity was
-        never available.  This keeps the multiplexed pool alive while making
-        the rejected assignment terminal and bounding its sequence state.
-        """
-
         entry: _SessionEntry | None = None
         race_revision = media_grant_revision
         async with self._lock:
@@ -3336,8 +3097,6 @@ class SessionSupervisor:
         )
 
     async def shutdown(self, reason: str) -> None:
-        """Bound cleanup time and erase all queued bearer/text references."""
-
         async with self._lock:
             if self._shutting_down:
                 shutdown_complete = self._shutdown_complete
@@ -3471,8 +3230,6 @@ def _clear_buffered_value(value: Any) -> None:
 
 
 def _completed_waiter_value(task: asyncio.Task[Any] | None) -> Any:
-    """Return a finished waiter's value, or None when it carries none."""
-
     if task is None or not task.done() or task.cancelled():
         return None
     if task.exception() is not None:

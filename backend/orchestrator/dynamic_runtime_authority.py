@@ -1,39 +1,8 @@
-"""Per-runtime LETS authority hand-off for server-hosted dynamic agents.
-
-A draft/generated agent runs as a supervised child process of the
-orchestrator (population ``server_dynamic``).  Under LETS enforce its
-protected-executor seam (``generated_lets_executor.load_protected_executor``
-and ``BaseA2AAgent._verify_and_claim_protected_request``) reads the admitted
-authority binding, its executor audience and its replay-store roots from the
-process environment.  This module derives exactly those values from the
-Plane binding the lifecycle admitted BEFORE the process was spawned, so the
-child can claim the receipts the orchestrator issues for it.
-
-Mirrors the Windows BYO host (``win_agent/byo_host.py::_launch_v3``): the
-binding is server-owned and injected explicitly, never inherited, and every
-runtime gets its own executor audience, replay database root and authority
-anchor root so two runtimes never share a replay store.
-
-Nothing here runs when LETS is off or the admission produced no active
-binding: the caller then spawns with the exact pre-existing environment.
-
-Per-runtime root retention
---------------------------
-The private roots are NOT removed when the runtime's lease closes.  The
-replay database is the runtime's anti-replay state and its evidence of every
-receipt it claimed; the lease can be closed while the child is still
-draining (``stop_draft_agent`` quiesces BEFORE termination), and deleting a
-SQLite database from under a live process is undefined.  Instead
-``sweep_dynamic_runtime_roots`` runs at boot — when no server_dynamic child
-of the previous orchestrator process can still be alive and every current
-runtime gets a fresh UUID — and removes runtime-keyed directories untouched
-for ``LETS_EXECUTOR_RUNTIME_RETENTION_DAYS`` (default 30).  The only
-immediate removal is ``remove_dynamic_runtime_roots`` for a runtime that was
-refused BEFORE spawn: no process ever held those roots, so there is no
-evidence to retain.  The authority anchor and the replay database of one
-runtime are always swept together; an anchor without its database is
-worthless and a database without its anchor can never be re-opened.
+"""Derives a server-hosted generated agent's LETS executor audience and private
+replay/authority directories from the Plane binding admitted before the process
+spawns; mirrors win_agent/byo_host.py's explicit hand-off.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,18 +26,12 @@ logger = logging.getLogger("AstralDeep.LETS.DynamicRuntime")
 
 SERVER_DYNAMIC_POPULATION: Final = "server_dynamic"
 
-#: Boot-time sweep knob: runtime-keyed executor roots untouched for this many
-#: days are removed.  ``0`` removes every non-running runtime root at boot.
 RETENTION_ENV: Final = "LETS_EXECUTOR_RUNTIME_RETENTION_DAYS"
 DEFAULT_RETENTION_DAYS: Final = 30
 _MAX_RETENTION_DAYS: Final = 3650
 _SECONDS_PER_DAY: Final = 86_400
 
-#: ``LETS_EXECUTOR_INSTANCE_ID`` is re-parsed by the child's ``load_lets_config``
-#: with this ceiling (``lets_config._identifier(maximum=128)``).
 _MAX_AUDIENCE_LENGTH: Final = 128
-#: Runtime ids are process UUIDs; the per-runtime directories are keyed by
-#: them, so refuse anything that is not a plain UUID-shaped filename.
 _RUNTIME_ID: Final = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 
 _AUTHORITY_ENV_KEYS: Final = (
@@ -87,22 +50,12 @@ _AUTHORITY_ENV_KEYS: Final = (
 
 
 class DynamicRuntimeAuthorityError(RuntimeError):
-    """Stable, content-free refusal to hand authority to a child runtime."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
 
 
 def _identifier(value: object, code: str) -> str:
-    """Apply the CHILD's identifier predicate so a bad id fails pre-spawn.
-
-    ``generated_lets_executor._identifier_value`` is what the spawned runtime
-    re-applies to every hand-off variable; reusing it (rather than a looser
-    local copy) means internal whitespace or a Unicode category-C character
-    is refused here with a named error instead of as an exit-78 child.
-    """
-
     try:
         return _identifier_value(value, code)
     except ProtectedExecutorError as exc:
@@ -110,14 +63,6 @@ def _identifier(value: object, code: str) -> str:
 
 
 def derive_dynamic_executor_audience(executor_instance_id: str, runtime_id: str) -> str:
-    """Per-runtime receipt audience shared by the orchestrator and the child.
-
-    The orchestrator stamps this on every receipt it requests for the runtime
-    (``DispatchRuntime.executor_audience``) and the child verifies against it
-    (``LETS_EXECUTOR_INSTANCE_ID``).  The separator is filesystem-neutral
-    because both executor paths derive file names from the audience.
-    """
-
     instance = _identifier(executor_instance_id, "executor_instance_id_invalid")
     runtime = _identifier(runtime_id, "runtime_id_invalid")
     if _RUNTIME_ID.fullmatch(runtime) is None:
@@ -130,8 +75,6 @@ def derive_dynamic_executor_audience(executor_instance_id: str, runtime_id: str)
 
 @dataclass(frozen=True, slots=True)
 class DynamicRuntimeAuthority:
-    """Exact non-secret authority the child must hold to claim its receipts."""
-
     owner_id: str
     binding_id: str
     lease_id: str
@@ -152,13 +95,6 @@ class DynamicRuntimeAuthority:
         runtime_id: str,
         executor_instance_id: str,
     ) -> "DynamicRuntimeAuthority":
-        """Bind one ACTIVE Plane record to the runtime the caller is spawning.
-
-        Every identity is taken from the binding only after it matches the
-        caller's own fence, so a stale or foreign binding can never be handed
-        to a child.
-        """
-
         state = getattr(getattr(binding, "state", None), "value", None)
         population = getattr(getattr(binding, "population", None), "value", None)
         if state != "active":
@@ -195,8 +131,7 @@ def _private_subdirectory(root: Path, runtime_id: str, code: str) -> Path:
         if path.is_symlink():
             raise OSError
         path.mkdir(mode=0o700, exist_ok=True)
-        # ``mkdir`` honours the umask; pin the mode so a permissive parent
-        # umask never widens another runtime's replay state.
+        # mkdir honors umask; chmod stops it over-widening this dir
         os.chmod(path, stat.S_IRWXU)
         resolved = path.resolve(strict=True)
         if not resolved.is_dir() or resolved.parent != root.resolve():
@@ -210,13 +145,6 @@ def prepare_dynamic_runtime_roots(
     config: LetsHostConfig,
     runtime_id: str,
 ) -> tuple[Path, Path | None]:
-    """Create the runtime's private (0700) executor DB and authority roots.
-
-    They live directly under the orchestrator's own configured roots, keyed
-    by the runtime id, so the child's ``load_lets_config`` accepts them and
-    no two runtimes share a replay database or an authority anchor.
-    """
-
     if _RUNTIME_ID.fullmatch(runtime_id or "") is None:
         raise DynamicRuntimeAuthorityError("runtime_id_invalid")
     if config.executor_db_root is None:
@@ -242,13 +170,6 @@ def dynamic_runtime_environment(
     database_root: Path,
     authority_root: Path | None,
 ) -> dict[str, str]:
-    """Return ``base_env`` (or the process environment) plus the LETS hand-off.
-
-    Variable names are exactly those read by
-    ``generated_lets_executor.load_protected_executor`` and
-    ``BaseA2AAgent._verify_and_claim_protected_request``.
-    """
-
     environment = dict(os.environ if base_env is None else base_env)
     for key in _AUTHORITY_ENV_KEYS:
         environment.pop(key, None)
@@ -272,8 +193,6 @@ def dynamic_runtime_environment(
 
 
 def _runtime_root_under(root: Path | None, runtime_id: str) -> Path | None:
-    """Resolve ``root/runtime_id`` only when it is a real private subdirectory."""
-
     if root is None or _RUNTIME_ID.fullmatch(runtime_id or "") is None:
         return None
     path = root / runtime_id
@@ -289,12 +208,6 @@ def _runtime_root_under(root: Path | None, runtime_id: str) -> Path | None:
 
 
 def remove_dynamic_runtime_roots(config: Any, runtime_id: str) -> None:
-    """Best-effort removal of a runtime's private roots that NO process used.
-
-    Only for a hand-off refused before spawn.  Never call this for a runtime
-    that ran: its replay database is retained for the boot-time sweep.
-    """
-
     for root in (
         getattr(config, "executor_db_root", None),
         getattr(config, "executor_authority_root", None),
@@ -306,12 +219,6 @@ def remove_dynamic_runtime_roots(config: Any, runtime_id: str) -> None:
 
 
 def retention_days(environ: Mapping[str, str] | None = None) -> int:
-    """Parse ``LETS_EXECUTOR_RUNTIME_RETENTION_DAYS`` (default 30).
-
-    An unusable value falls back to the default rather than to ``0``: a typo
-    must never turn the sweep into "delete everything".
-    """
-
     values = os.environ if environ is None else environ
     raw = values.get(RETENTION_ENV)
     if raw is None or not raw.strip():
@@ -344,18 +251,6 @@ def sweep_dynamic_runtime_roots(
     environ: Mapping[str, str] | None = None,
     now: float | None = None,
 ) -> int:
-    """Remove runtime-keyed executor roots older than the retention window.
-
-    Run at boot.  ``keep`` names runtime ids that are currently running and
-    must never be touched.  Only UUID-shaped non-symlink subdirectories of
-    the configured roots are candidates; anything else under those roots is
-    the operator's and is left alone.  A runtime's replay-database root and
-    authority root are judged TOGETHER (newest mtime across both) and
-    removed together, so a sweep can never orphan one half.  Returns the
-    number of directories removed.  Never raises: a sweep failure is logged,
-    not fatal to boot.
-    """
-
     days = retention_days(environ)
     cutoff = (time.time() if now is None else now) - days * _SECONDS_PER_DAY
     roots = [

@@ -1,11 +1,8 @@
-"""Browser-mediated external identity links for restricted agents.
-
-Astral authentication remains owned by Keycloak.  A trusted external agent may
-separately verify an identity (currently an ORCID iD) and return a short-lived,
-signed assertion.  The resulting link is stored inside the user's existing
-preferences row so this feature is additive and does not require a schema
-migration.
+"""Browser-mediated linking of a verified external identity (e.g. ORCID) to an Astral
+account via signed, short-lived assertions stored in the user's preferences row; used
+by api.py and mcp_server_endpoint.py.
 """
+
 from __future__ import annotations
 
 import base64
@@ -36,11 +33,11 @@ ASSERTION_LIFETIME_SECONDS = 120
 
 
 class IdentityLinkError(ValueError):
-    """A link request or assertion is invalid and must fail closed."""
+    pass
 
 
 class IdentityAlreadyLinkedError(IdentityLinkError):
-    """The verified identity belongs to a different Astral account."""
+    pass
 
 
 def _b64encode(value: bytes) -> str:
@@ -57,7 +54,6 @@ def _b64decode(value: str) -> bytes:
 
 
 def parse_link_secrets(raw: str | None) -> dict[str, bytes]:
-    """Parse the operator-owned ``agent_id -> secret`` JSON map strictly."""
     if raw is None or not raw.strip():
         return {}
     try:
@@ -275,7 +271,6 @@ def claims_with_identity_preferences(preferences: Any, claims: Any) -> dict[str,
 
 
 def public_user_preferences(preferences: Any) -> dict[str, Any]:
-    """Remove server-verified authorization state from the client payload."""
     public = _preferences_dict(preferences)
     public.pop(PREFERENCES_KEY, None)
     return public
@@ -294,7 +289,6 @@ def store_verified_identity(
     plane_runtime: Any | None = None,
     plane_repositories: Any | None = None,
 ) -> None:
-    """Atomically store a one-to-one verified link without replacing preferences."""
     canonical = normalize_orcid(subject) if provider == "orcid" else None
     if canonical is None or not isinstance(state_nonce, str) or not state_nonce:
         raise IdentityLinkError("Invalid external identity")

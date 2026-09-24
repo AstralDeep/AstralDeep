@@ -1,4 +1,8 @@
-"""Closed fixed-reader snapshot uses normal runtime policy without cached authority."""
+"""Tests for the closed fixed-reader tool-policy snapshot
+(orchestrator/tool_permissions.py, AstralPlane tool_policy repository):
+explicit-precedence matching, visibility/draft-exclusion parity with normal runtime,
+and fail-closed inputs.
+"""
 
 from contextlib import contextmanager
 from dataclasses import replace
@@ -87,7 +91,7 @@ def test_explicit_precedence_matches_runtime_and_never_opens_second_transaction(
     policy.snapshot = replace(policy.snapshot, scopes=scopes(scope), overrides=overrides(kind, legacy))
     expected = kind if kind is not None else False if legacy is False else bool(scope)
     assert policy.manager.is_tool_allowed(OWNER, AGENT, TOOL) is expected
-    assert policy.snapshots == 0  # Ordinary runtime never takes the coarse fence.
+    assert policy.snapshots == 0
     previous = policy.transactions
     policy.forbid_transaction = True
     if expected:

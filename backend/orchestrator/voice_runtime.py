@@ -1,9 +1,6 @@
-"""Transactional conversational-voice session lifecycle orchestration.
-
-This layer joins the authenticated REST control plane to durable session rows
-and a direct-RTC media activator.  It never submits a chat query and never sees
-the operator speech endpoint or credential; recognized text still enters the
-ordinary authenticated WebSocket dispatcher.
+"""Transactional lifecycle orchestration for conversational voice sessions, joining the
+REST control plane to voice_sessions.py's durable rows and voice_media.py's
+direct-RTC activator. Used by orchestrator.py and voice_bootstrap.py.
 """
 
 from __future__ import annotations
@@ -39,8 +36,6 @@ MAX_LOCAL_ACTIVATION_STATES = 256
 async def _join_task_outcome_through_cancellation(
     task: asyncio.Task[Any],
 ) -> tuple[Any, BaseException | None, asyncio.CancelledError | None]:
-    """Join retained repository work despite repeated caller cancellation."""
-
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -61,8 +56,6 @@ async def _join_task_outcome_through_cancellation(
 
 @dataclass(frozen=True, slots=True)
 class ActivatedVoiceMedia:
-    """Safe activation receipt; only the client grant is returned over REST."""
-
     assignment_id: str
     worker_identity: str
     worker_grant_issued_at: datetime
@@ -72,8 +65,6 @@ class ActivatedVoiceMedia:
 
 @dataclass(frozen=True, slots=True)
 class _ActiveWorkerAssignment:
-    """Exact non-secret activation fence retained for disconnect repair."""
-
     session: VoiceSessionRecord
     assignment_id: str
     worker_identity: str
@@ -81,16 +72,12 @@ class _ActiveWorkerAssignment:
 
 @dataclass(eq=False, slots=True)
 class _LocalActivationReservation:
-    """Exact request-owned capacity reserved before one local mutation."""
-
     user_id: str
     activation_id: str
 
 
 @dataclass(slots=True)
 class _LocalActivationKeyState:
-    """Bounded FIFO ownership for one content-free activation identity."""
-
     owner: _LocalActivationReservation
     waiters: deque[
         tuple[_LocalActivationReservation, asyncio.Future[None]]
@@ -99,8 +86,6 @@ class _LocalActivationKeyState:
 
 @dataclass(frozen=True, slots=True)
 class _PendingLocalActivationCleanup:
-    """Content-free handoff for one active session not returned to its caller."""
-
     session: VoiceSessionRecord
     create: CreateSession
     reservation: _LocalActivationReservation
@@ -139,8 +124,6 @@ class VoiceMediaActivator(Protocol):
 
 
 class VoiceSessionRuntime:
-    """Generation-fenced API runtime over PostgreSQL and direct RTC."""
-
     def __init__(
         self,
         *,
@@ -222,14 +205,10 @@ class VoiceSessionRuntime:
 
     @property
     def backend_selection(self) -> SpeechBackendSelection:
-        """Return the parse-once process selection shared by assembled services."""
-
         return self._backend_selection
 
     @property
     def speech_backend(self) -> VoiceSpeechBackend:
-        """Expose the selected backend without a mutable runtime projection."""
-
         value = self._backend_selection.value
         assert value is not None
         return value
@@ -242,8 +221,6 @@ class VoiceSessionRuntime:
         self,
         handler: Callable[[str, int, bool], Awaitable[None]],
     ) -> None:
-        """Bind the sole server-owned cadence stream after service assembly."""
-
         if not callable(handler):
             raise TypeError("speech mute handler must be callable")
         if self._speech_mute_handler is not None:
@@ -254,8 +231,6 @@ class VoiceSessionRuntime:
         self,
         handler: Callable[[str, int], Awaitable[None]],
     ) -> None:
-        """Bind intentional source interruption to the serialized stream."""
-
         if not callable(handler):
             raise TypeError("speech stop handler must be callable")
         if self._speech_stop_handler is not None:
@@ -266,8 +241,6 @@ class VoiceSessionRuntime:
         self,
         handler: Callable[[str, int, bool], Awaitable[None]],
     ) -> None:
-        """Bind foreground suspension to the server-owned output gate."""
-
         if not callable(handler):
             raise TypeError("speech suspend handler must be callable")
         if self._speech_suspend_handler is not None:
@@ -278,8 +251,6 @@ class VoiceSessionRuntime:
         self,
         handler: Callable[[VoiceSessionRecord, str], Awaitable[None]],
     ) -> None:
-        """Bind exact-session timer/announcement cleanup after durable end."""
-
         if not callable(handler):
             raise TypeError("session end handler must be callable")
         if self._session_end_handler is not None:
@@ -315,15 +286,6 @@ class VoiceSessionRuntime:
         self,
         handler: Callable[[VoiceSessionRecord], Awaitable[None]],
     ) -> None:
-        """Bind the owner-socket ``voice_session_state`` projection push.
-
-        Every client shipped a ``voice_session_state`` reducer in feature 065
-        (context resync, microphone restore, ended teardown) but the server
-        never emitted the frame; a chat-context switch therefore had no
-        asynchronous confirmation and a reaper-ended session left clients
-        believing a session still existed.
-        """
-
         if not callable(handler):
             raise TypeError("session state publisher must be callable")
         if self._session_state_publisher is not None:
@@ -331,8 +293,6 @@ class VoiceSessionRuntime:
         self._session_state_publisher = handler
 
     async def publish_session_state(self, session: VoiceSessionRecord) -> None:
-        """Best-effort durable-state push; REST results stay authoritative."""
-
         handler = self._session_state_publisher
         if handler is None:
             return
@@ -349,8 +309,6 @@ class VoiceSessionRuntime:
         self,
         session: VoiceSessionRecord,
     ) -> None:
-        """Forget one exact activation after any durable lifecycle end."""
-
         self._forget_worker_assignment(session)
 
     async def get_capability(self, *, user_id: str) -> Mapping[str, Any]:
@@ -368,14 +326,6 @@ class VoiceSessionRuntime:
         selected_chat_id: str | None,
         revision: int,
     ) -> Mapping[str, Any]:
-        """Project one authoritative cross-client composer state.
-
-        This read contains no media bearer or transcript content. It is used by
-        the authenticated WebSocket publisher after registration and after
-        every REST lifecycle mutation, so controls cannot drift from the
-        durable owner/generation state.
-        """
-
         from webrender.chrome.composer_model import (
             VoiceComposerContext,
             VoiceOwner,
@@ -752,10 +702,6 @@ class VoiceSessionRuntime:
             now=now,
         )
         self._require_session_backend(session)
-        # Every authenticated, generation-fenced owner PATCH is also the
-        # reconnect/crash lease heartbeat.  The request may remain a semantic
-        # no-op (and therefore must not reset true-idle time); only server
-        # receipt time extends this independent cleanup lease.
         session = await asyncio.to_thread(
             self._repository.renew_session_lease,
             user_id=user_id,
@@ -812,9 +758,6 @@ class VoiceSessionRuntime:
                     )
                 elif session.speech_muted:
                     await self._media.stop_speech(session)
-            # Keep the persistent server-owned speech gate installed if the
-            # worker capture command fails.  The durable session is already
-            # backgrounded and must not publish unsolicited output.
             await self._media.set_capture(session, False)
         elif request.get("foreground_active") is True:
             if request.get("speech_muted") is not None:
@@ -835,9 +778,6 @@ class VoiceSessionRuntime:
                 expected_media_grant_revision=session.media_grant_revision,
                 now=self._now(),
             )
-            # Release queued speech only after context/capture restoration and
-            # the durable active transition both succeed.  A failed foreground
-            # attempt therefore remains safely suspended for an explicit retry.
             if self._speech_suspend_handler is not None:
                 await self._speech_suspend_handler(
                     session.session_id,
@@ -979,8 +919,6 @@ class VoiceSessionRuntime:
         session_id: str,
         control: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Recover current fences without returning a bearer or identity."""
-
         current = await asyncio.to_thread(
             self._repository.get_session,
             user_id=user_id,
@@ -1007,8 +945,6 @@ class VoiceSessionRuntime:
         control: Mapping[str, Any],
         request: Mapping[str, Any],
     ) -> VoiceHttpResult:
-        """Rotate once, wait for worker application, then expose the grant."""
-
         await self._require_ready()
         now = self._now()
         current = await asyncio.to_thread(
@@ -1206,8 +1142,6 @@ class VoiceSessionRuntime:
         raise VoiceApiError(capability.reason, status_code=status)
 
     def _require_session_backend(self, session: VoiceSessionRecord) -> None:
-        """Refuse non-terminal work when a durable row belongs to another profile."""
-
         if getattr(session, "speech_backend", None) != self.speech_backend.value:
             raise VoiceApiError("backend_mismatch", status_code=409)
 
@@ -1298,8 +1232,6 @@ class VoiceSessionRuntime:
         *,
         replayed: bool = False,
     ) -> VoiceSessionRecord:
-        """Activate durable local ownership without constructing media work."""
-
         exact_reservation = self._require_local_activation_reservation(reservation)
         try:
             if session.ended_at is not None:
@@ -1510,8 +1442,6 @@ class VoiceSessionRuntime:
         self,
         reservation: _LocalActivationReservation,
     ) -> None:
-        """Release only one exact owner/waiter and advance its FIFO key."""
-
         self._local_activation_reservations.discard(reservation)
         key = self._local_activation_key(reservation)
         state = self._local_activation_keys.get(key)
@@ -1809,8 +1739,7 @@ class VoiceSessionRuntime:
         try:
             await self._media.abort(session)
         except BaseException:
-            # Activation cleanup is best effort and must never mask the
-            # original activation exception or cancellation.
+            # Best effort - never masks the original exception
             pass
         try:
             ended = await asyncio.to_thread(
@@ -1853,8 +1782,6 @@ class VoiceSessionRuntime:
         *,
         control: SessionControl,
     ) -> None:
-        """Fail closed one exact media generation without cancelling work."""
-
         try:
             ended = await asyncio.to_thread(
                 self._repository.end_session,
@@ -1881,8 +1808,6 @@ class VoiceSessionRuntime:
         self,
         session: VoiceSessionRecord,
     ) -> bool:
-        """Read-only exact liveness check at every client-grant boundary."""
-
         fence = self._active_worker_assignments.get(session.session_id)
         if (
             fence is None
@@ -1914,8 +1839,6 @@ class VoiceSessionRuntime:
         *,
         fail_open: bool = False,
     ) -> None:
-        """Close worker media and server timers for one durable end fence."""
-
         media_error: Exception | None = None
         notification_error: Exception | None = None
         try:
@@ -1976,9 +1899,6 @@ class VoiceSessionRuntime:
         self,
         ended: VoiceSessionRecord,
     ) -> None:
-        # The durable end is authoritative. A worker may already have fenced
-        # the assignment, or LiveKit may have already removed the room; those
-        # stale cleanup outcomes must not turn a successful DELETE into 503.
         await self._cleanup_ended_session(ended, "user", fail_open=True)
         await self.publish_session_state(ended)
         self._record_session_event(
@@ -1993,8 +1913,6 @@ class VoiceSessionRuntime:
         self,
         session: VoiceSessionRecord,
     ) -> Any | None:
-        """Publish a reversible local epoch before a durable end starts."""
-
         if session.speech_backend != "client_local":
             return None
         handler = self._local_session_end_prepare_handler
@@ -2032,14 +1950,6 @@ class VoiceSessionRuntime:
         released_assignment_ids: tuple[str, ...],
         assignment_is_current: Callable[[str], bool] | None = None,
     ) -> tuple[VoiceSessionRecord, ...]:
-        """Fail closed only exact activations released by one worker transport.
-
-        The pool has already fenced these in-memory assignments. Durable
-        compare-and-swap checks below prevent a delayed disconnect callback
-        from ending a newer assignment, while accepted turns retain their
-        ordinary agentic lifecycle through the repository's media-only end.
-        """
-
         if not isinstance(worker_identity, str) or not worker_identity:
             raise ValueError("invalid_worker_identity")
         if not isinstance(released_session_ids, tuple) or not isinstance(
@@ -2156,8 +2066,6 @@ class VoiceSessionRuntime:
         try:
             return bool(assignment_is_current(session_id))
         except Exception:
-            # Uncertain assignment state is a stale-cleanup denial, never
-            # authority to end a potentially newer media generation.
             logger.warning(
                 "voice_worker_disconnect_reconcile_unavailable "
                 "reason=assignment_check_failed"
@@ -2370,13 +2278,6 @@ def session_state_frame(
     *,
     now: datetime,
 ) -> dict[str, Any]:
-    """Build the manifest ``voice_session_state`` frame for the owner device.
-
-    The field set matches Projection's ``contracts/ui_protocol.json`` exactly; state/reason
-    reuse the same derivation the composer projection applies for the owning
-    device, so REST responses, composer frames, and this push cannot disagree.
-    """
-
     if session.ended_at is not None:
         state = "ended"
         if session.end_reason == "idle":
@@ -2410,8 +2311,6 @@ def session_state_frame(
 
 
 def _session_projection(session: VoiceSessionRecord) -> dict[str, Any]:
-    """Return only the non-secret client session vocabulary."""
-
     projection = {
         "session_id": session.session_id,
         "device_id": session.device_id,
@@ -2437,8 +2336,6 @@ def _session_projection(session: VoiceSessionRecord) -> dict[str, Any]:
             None if session.idle_expires_at is None else _iso(session.idle_expires_at)
         ),
     }
-    # The v1 remote response must remain byte-compatible.  The discriminator
-    # is emitted only for the separately versioned client-local v2 surface.
     if session.speech_backend == "client_local":
         projection["speech_backend"] = "client_local"
     return projection
@@ -2554,8 +2451,6 @@ def _composer_session_message(
     state: str,
     owns_session: bool,
 ) -> str | None:
-    """Describe independent microphone and assistant-speech mute controls."""
-
     if (
         not owns_session
         or session.state != "active"

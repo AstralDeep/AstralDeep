@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-"""Build and install the exact local Astral component composition.
-
-The root ``pyproject.toml`` is the only install-order declaration. Component
-wheels are built from initialized local submodules with index access,
-dependency resolution, and PEP 517 build isolation disabled. A generated lock
-binds the source inputs to the exact wheel bytes; installation then accepts
-only those wheels and verifies pip's PEP 610 archive digest plus required
-installed package data.
+"""Builds and installs the exact local Astral component wheel set declared in root
+pyproject.toml, with index/build isolation disabled, binding a digest lock so only
+verified wheels install; used by retire_restored_sessions.py.
 """
 
 from __future__ import annotations
@@ -121,13 +116,11 @@ _DEPENDENCY_NAME_PATTERN = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 
 class ComponentInstallError(RuntimeError):
-    """The local component contract or an install artifact is invalid."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class ComponentSpec:
-    """One exact first-party package in deterministic install order."""
-
     key: str
     distribution: str
     version: str
@@ -145,8 +138,6 @@ class ComponentSpec:
 
 @dataclass(frozen=True, slots=True)
 class LocalContract:
-    """Validated executable form of the root TOML declaration."""
-
     repository_root: Path
     manifest_path: Path
     components: tuple[ComponentSpec, ...]
@@ -492,8 +483,6 @@ def load_contract(
     require_sources: bool,
     require_gitlinks: bool = False,
 ) -> LocalContract:
-    """Load and validate the root declaration without resolving dependencies."""
-
     repository_root = repository_root.resolve(strict=True)
     root_metadata = _read_toml(repository_root / "pyproject.toml")
     project = root_metadata.get("project")
@@ -577,8 +566,6 @@ def _iter_build_files(component: ComponentSpec, repository_root: Path) -> Iterab
 
 
 def source_digest(component: ComponentSpec, repository_root: Path) -> str:
-    """Digest explicitly declared, non-transient build inputs in canonical order."""
-
     source_root = component.source_root(repository_root).resolve(strict=True)
     framed: list[tuple[str, bytes]] = []
     for path in _iter_build_files(component, repository_root):
@@ -672,7 +659,7 @@ def _pip_environment() -> dict[str, str]:
             "PIP_NO_INDEX": "1",
             "PYTHONHASHSEED": "0",
             "PYTHONDONTWRITEBYTECODE": "1",
-            # ZIP-based wheel timestamps cannot represent dates before 1980.
+            # 1980: earliest date ZIP timestamps can represent
             "SOURCE_DATE_EPOCH": "315532800",
             "TZ": "UTC",
             "UV_NO_CONFIG": "1",
@@ -729,8 +716,6 @@ def _write_lock(path: Path, document: dict[str, Any]) -> None:
 
 
 def build_wheels(contract: LocalContract, wheel_directory: Path, lock_path: Path) -> None:
-    """Build exactly one offline wheel per component and bind every digest."""
-
     wheel_directory = wheel_directory.resolve()
     lock_path = lock_path.resolve()
     if lock_path.parent != wheel_directory:
@@ -860,8 +845,6 @@ def _load_lock(contract: LocalContract, lock_path: Path) -> tuple[dict[str, Any]
 
 
 def install_wheels(contract: LocalContract, lock_path: Path) -> None:
-    """Install only digest-locked local wheels, without resolving dependencies."""
-
     entries = _load_lock(contract, lock_path)
     for component, entry in zip(contract.components, entries, strict=True):
         source_root = component.source_root(contract.repository_root)
@@ -972,8 +955,6 @@ def _verify_import_origin(component: ComponentSpec) -> None:
 
 
 def verify_install(contract: LocalContract, lock_path: Path) -> None:
-    """Verify installed distributions remain bound to the generated wheel lock."""
-
     entries = _load_lock(contract, lock_path)
     for component, entry in zip(contract.components, entries, strict=True):
         source_root = component.source_root(contract.repository_root)
@@ -1020,8 +1001,6 @@ def verify_install(contract: LocalContract, lock_path: Path) -> None:
 
 
 def pip_check(repository_root: Path) -> None:
-    """Require the preinstalled runtime dependency closure to be complete."""
-
     _run(
         (sys.executable, "-m", "pip", "--disable-pip-version-check", "check"),
         cwd=repository_root,
@@ -1029,8 +1008,6 @@ def pip_check(repository_root: Path) -> None:
 
 
 def sync_components(contract: LocalContract) -> None:
-    """Build, install, and verify through an ephemeral digest lock."""
-
     with tempfile.TemporaryDirectory(prefix="astral-component-wheels-") as temp:
         wheel_directory = Path(temp)
         lock_path = wheel_directory / "astral-component-wheels.lock.json"

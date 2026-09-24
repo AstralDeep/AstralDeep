@@ -1,4 +1,6 @@
-"""AttachmentRepository owner-scoped read adapter."""
+"""Tests for orchestrator/attachments/repository.py: owner-scoped reads, pagination, and
+that the public adapter exposes no metadata or blob-mutation bypass.
+"""
 
 from __future__ import annotations
 
@@ -69,7 +71,6 @@ def test_list_filters_by_user_and_category(stub_db):
     assert len(alice_docs) == 1
     assert alice_docs[0].category == "document"
 
-    # Bob's listing must never include alice's rows.
     bob_all, _ = repo.list_for_user("bob")
     assert len(bob_all) == 1
     assert bob_all[0].user_id == "bob"

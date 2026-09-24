@@ -1,4 +1,7 @@
-"""Test runner — invokes pytest and parses JSON reports into the audit database."""
+"""Invokes pytest and Vitest for the qualification test suites and parses their JSON
+reports into qual_audit/database.py records via evidence.py's hash chain; drives
+backend and frontend runs for qual_audit/cli.py.
+"""
 
 import json
 import os
@@ -12,7 +15,6 @@ from qual_audit.database import AuditDatabase
 from qual_audit.evidence import compute_evidence_hash, create_evidence
 from qual_audit.models import Outcome, RunStatus, TestCaseResult, TestRun
 
-# Map pytest outcome strings to our Outcome enum
 _OUTCOME_MAP = {
     "passed": Outcome.PASSED,
     "failed": Outcome.FAILED,
@@ -20,7 +22,6 @@ _OUTCOME_MAP = {
     "skipped": Outcome.SKIPPED,
 }
 
-# Suite name extraction from pytest node IDs
 _SUITE_MAP = {
     "test_tool_poisoning": "tool_poisoning",
     "test_prompt_injection": "prompt_injection",
@@ -33,10 +34,8 @@ _SUITE_MAP = {
 
 
 def _capture_system_state() -> Dict:
-    """Capture current system state for the test run record."""
     state: Dict = {"captured_at": datetime.now(timezone.utc).isoformat()}
 
-    # Git commit hash
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -47,17 +46,14 @@ def _capture_system_state() -> Dict:
     except Exception:
         state["git_commit"] = "unknown"
 
-    # Python version
     state["python_version"] = sys.version
 
-    # Environment
     state["mock_auth"] = os.environ.get("USE_MOCK_AUTH", "false")
 
     return state
 
 
 def _extract_suite(nodeid: str) -> str:
-    """Extract the suite name from a pytest node ID."""
     for key, name in _SUITE_MAP.items():
         if key in nodeid:
             return name
@@ -65,7 +61,6 @@ def _extract_suite(nodeid: str) -> str:
 
 
 def _extract_qualitative(test_result: Dict) -> str:
-    """Extract a qualitative description from the pytest test result."""
     call = test_result.get("call", {})
     if call.get("longrepr"):
         return str(call["longrepr"])[:500]
@@ -77,21 +72,15 @@ def run_backend_tests(
     categories: Optional[List[str]] = None,
     suites_dir: Optional[str] = None,
 ) -> str:
-    """Execute pytest on the test suites and record results in the audit DB.
-
-    Returns the run_id.
-    """
     if suites_dir is None:
         suites_dir = os.path.join(os.path.dirname(__file__), "suites")
 
-    # Create the test run
     run = TestRun(
         system_state=_capture_system_state(),
         categories=categories or list(_SUITE_MAP.values()),
     )
     db.insert_run(run)
 
-    # Build pytest args
     json_file = tempfile.mktemp(suffix=".json")
     args = [
         sys.executable, "-m", "pytest",
@@ -100,7 +89,6 @@ def run_backend_tests(
         "-v", "--tb=short",
     ]
 
-    # Filter by categories if specified
     if categories:
         keyword_expr = " or ".join(
             k for k, v in _SUITE_MAP.items() if v in categories
@@ -108,15 +96,13 @@ def run_backend_tests(
         if keyword_expr:
             args.extend(["-k", keyword_expr])
 
-    # Run pytest
     env = {**os.environ, "USE_MOCK_AUTH": "true"}
     try:
-        subprocess.run(args, env=env, timeout=1800)  # 30 min timeout
+        subprocess.run(args, env=env, timeout=1800)
     except subprocess.TimeoutExpired:
         db.finish_run(run.id, RunStatus.FAILED)
         return run.id
 
-    # Parse the JSON report
     if not os.path.exists(json_file):
         db.finish_run(run.id, RunStatus.FAILED)
         return run.id
@@ -126,12 +112,11 @@ def run_backend_tests(
 
     os.unlink(json_file)
 
-    # Process each test result
     tests = report.get("tests", [])
     for test in tests:
         nodeid = test.get("nodeid", "")
         outcome_str = test.get("outcome", "error")
-        duration = test.get("call", {}).get("duration", 0) * 1000  # to ms
+        duration = test.get("call", {}).get("duration", 0) * 1000
 
         case = TestCaseResult(
             run_id=run.id,
@@ -142,7 +127,6 @@ def run_backend_tests(
             qualitative=_extract_qualitative(test),
         )
 
-        # Create evidence from the test details
         evidence_items = []
         ev = create_evidence(
             case_id=case.id,
@@ -163,7 +147,6 @@ def run_backend_tests(
         for ev in evidence_items:
             db.insert_evidence(ev)
 
-    # Finish the run
     has_failures = any(
         t.get("outcome") in ("failed", "error") for t in tests
     )
@@ -177,10 +160,6 @@ def run_frontend_tests(
     run_id: str,
     frontend_dir: Optional[str] = None,
 ) -> List[str]:
-    """Execute Vitest on frontend tests, parse JSON output, and store in audit DB.
-
-    Appends results to an existing run (run_id). Returns list of case IDs.
-    """
     if frontend_dir is None:
         frontend_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "..", "frontend")

@@ -1,4 +1,7 @@
-"""Feature-065 runtime lifecycle, media ordering, and failure tests."""
+"""Tests for voice runtime session lifecycle (voice_bootstrap.py, voice_coordinator.py,
+voice_sessions.py): activation/takeover, media ordering under mute/stop/background,
+and worker-disconnect assignment fencing.
+"""
 
 from __future__ import annotations
 
@@ -787,7 +790,6 @@ async def test_failed_foreground_transition_retains_server_speech_suspension() -
                 "foreground_reason": "foreground",
             },
         )
-    # Foreground capture never recovered, so queued speech remains fenced.
     assert suspensions == [True]
 
 

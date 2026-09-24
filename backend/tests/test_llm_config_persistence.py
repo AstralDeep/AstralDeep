@@ -1,19 +1,8 @@
-"""Feature 054 — T035: persistence + cross-socket semantics of the per-user
-LLM configuration store.
-
-Real Postgres-backed ``UserLLMConfigStore`` via a real orchestrator:
-
-* configuration is keyed by USER (survives socket disconnect — the gate
-  marker is per-socket, the record is not);
-* cross-user isolation (B never resolves A's record);
-* an undecryptable row is discarded, audited, and treated as unconfigured
-  (FR-010);
-* clearing re-gates every one of the user's connected sockets immediately;
-* partial submissions are rejected per-field with nothing stored;
-* blank-key-keeps-saved-key semantics at the surface level.
-
-References: specs/054-byo-llm-setup/spec.md FR-005/FR-007/FR-009/FR-010.
+"""Tests for llm_config/ws_handlers.py and llm_gate.py against a real Postgres store:
+per-user persistence across disconnect, cross-user isolation, discarding
+undecryptable rows, and multi-socket re-gate on clear.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -129,22 +118,16 @@ def _mandatory_frames(orch):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Survival + isolation
-# ---------------------------------------------------------------------------
-
 async def test_config_survives_socket_disconnect(orch):
     uid = _uid()
     ws = _register(orch, uid)
     await _seed(orch, uid)
     try:
-        orch._ws_llm_gated[id(ws)] = True  # pretend this socket had been gated
+        orch._ws_llm_gated[id(ws)] = True
 
-        # Disconnect cleanup clears ONLY the per-socket gate marker.
         llm_gate.clear_socket(orch, ws)
         assert id(ws) not in orch._ws_llm_gated
 
-        # The persisted record is untouched — a fresh connect is configured.
         cfg = await orch._llm_store.get(uid)
         assert cfg is not None and cfg.api_key == SECRET
         assert await orch.llm_configured_for(uid) is True
@@ -156,7 +139,6 @@ async def test_cross_user_isolation(orch):
     uid_a, uid_b = _uid(), _uid()
     await _seed(orch, uid_a, base_url="https://a.example.com/v1", model="model-a")
     try:
-        # B has no record and never sees A's.
         assert await orch._llm_store.get(uid_b) is None
         assert await orch.llm_configured_for(uid_b) is False
 
@@ -164,28 +146,20 @@ async def test_cross_user_isolation(orch):
         with pytest.raises(orch._LLMUnavailable):
             await orch._resolve_llm_client_for(ws_b)
 
-        # A's own resolution still returns A's record (sanity).
         ws_a = _register(orch, uid_a)
         _, source, resolved = await orch._resolve_llm_client_for(ws_a)
         assert source == orch._CredentialSource.USER
         assert resolved.base_url == "https://a.example.com/v1"
-        # None of A's key material leaked into B's failure path.
         assert SECRET not in json.dumps([d for _, d in orch.sent])
     finally:
         await orch._llm_store.clear(uid_a)
 
-
-# ---------------------------------------------------------------------------
-# FR-010 — undecryptable row ⇒ discarded + unconfigured
-# ---------------------------------------------------------------------------
 
 async def test_undecryptable_row_discarded_and_treated_unconfigured(orch):
     uid = _uid()
     store = orch._llm_store
     await _seed(orch, uid)
     try:
-        # The public Plane record exposes only opaque ciphertext, never the
-        # decrypted secret held by the product store.
         encrypted = await asyncio.to_thread(
             _get_encrypted_user_record,
             orch,
@@ -195,8 +169,6 @@ async def test_undecryptable_row_discarded_and_treated_unconfigured(orch):
         assert encrypted.api_key_ciphertext not in (None, SECRET)
         assert SECRET not in repr(encrypted)
 
-        # Model key rotation/corruption through the typed owner-scoped Plane
-        # repository instead of borrowing a connection or issuing raw SQL.
         await asyncio.to_thread(
             _replace_encrypted_user_ciphertext,
             orch,
@@ -205,27 +177,19 @@ async def test_undecryptable_row_discarded_and_treated_unconfigured(orch):
         )
         store.invalidate(uid)
 
-        # The gate predicate treats the row as absent — no crash.
         assert await orch.llm_configured_for(uid) is False
 
-        # The unusable row was deleted...
         assert await asyncio.to_thread(
             _get_encrypted_user_record,
             orch,
             uid,
         ) is None
-        # ...the discard note was drained into an audit event...
         actions = [e.action_type for e in orch.audit_recorder.events]
         assert "llm_config.discarded_undecryptable" in actions
-        # ...and the queue is empty (drained, not leaked).
         assert store.pop_discard_note() is None
     finally:
         await orch._llm_store.clear(uid)
 
-
-# ---------------------------------------------------------------------------
-# Clear ⇒ immediate re-gate on every socket
-# ---------------------------------------------------------------------------
 
 async def test_clear_regates_every_connected_socket(orch):
     uid = _uid()
@@ -252,38 +216,29 @@ async def test_clear_regate_skips_watch_sockets(orch):
 
     count = await llm_gate.regate_after_clear(orch, uid)
 
-    assert count == 1  # the watch is never pushed the dialog (FR-017)
+    assert count == 1
     assert len(_mandatory_frames(orch)) == 1
 
-
-# ---------------------------------------------------------------------------
-# Partial submissions — rejected per-field, nothing stored
-# ---------------------------------------------------------------------------
 
 def test_validate_config_submission_field_level_errors():
     from llm_config.ws_handlers import validate_config_submission
 
-    # Key-required preset with missing model + key.
     _, errors = validate_config_submission(
         {"provider": "openai", "api_key": "", "model": ""})
     assert set(errors) == {"model", "api_key"}
 
-    # Custom without an endpoint.
     _, errors = validate_config_submission(
         {"provider": "custom", "api_key": "k", "model": "m", "base_url": ""})
     assert "base_url" in errors
 
-    # Non-http(s) endpoint.
     _, errors = validate_config_submission(
         {"provider": "custom", "api_key": "k", "model": "m", "base_url": "ftp://x"})
     assert "base_url" in errors
 
-    # Unknown provider is itself a field error.
     _, errors = validate_config_submission(
         {"provider": "definitely-not-a-provider", "api_key": "k", "model": "m"})
     assert set(errors) == {"provider"}
 
-    # Keyless local-runtime presets permit an empty key.
     fields, errors = validate_config_submission(
         {"provider": "ollama", "api_key": "", "model": "llama3"})
     assert errors == {}
@@ -312,17 +267,13 @@ async def test_partial_submission_stores_nothing_and_skips_probe(orch, monkeypat
     )
 
     assert saved is False
-    assert await orch._llm_store.get(uid) is None  # nothing partial stored
-    assert orch.audit_recorder.events == []        # no audit before the probe
+    assert await orch._llm_store.get(uid) is None
+    assert orch.audit_recorder.events == []
     errors = [json.loads(d) for _, d in orch.sent
               if json.loads(d).get("code") == "llm_config_invalid"]
     assert errors, "per-field rejection must be sent to the client"
     assert set(errors[-1]["fields"]) == {"model", "api_key"}
 
-
-# ---------------------------------------------------------------------------
-# Blank key keeps the saved key (surface-level write-only semantics)
-# ---------------------------------------------------------------------------
 
 async def test_blank_key_resolves_to_saved_key_at_surface(orch):
     from orchestrator.projection_surfaces.llm import (
@@ -334,7 +285,6 @@ async def test_blank_key_resolves_to_saved_key_at_surface(orch):
     ws = _register(orch, uid)
     await _seed(orch, uid)
     try:
-        # Blank submission at the same destination reuses the persisted key.
         fields = {"provider": "custom", "base_url": "https://api.example.com/v1",
                   "api_key": ""}
         key, used_saved = await _resolve_api_key(orch, ws, uid, fields)
@@ -345,7 +295,6 @@ async def test_blank_key_resolves_to_saved_key_at_surface(orch):
                 await _resolve_api_key(orch, ws, uid, changed)
         assert (await orch._llm_store.get(uid)).api_key == SECRET
 
-        # A typed key always wins.
         key, used_saved = await _resolve_api_key(
             orch, ws, uid, dict(fields, base_url="https://other.example/v1",
                                 api_key="sk-brand-new"))
@@ -353,6 +302,5 @@ async def test_blank_key_resolves_to_saved_key_at_surface(orch):
     finally:
         await orch._llm_store.clear(uid)
 
-    # With no record at all, blank stays blank.
     key, used_saved = await _resolve_api_key(orch, ws, uid, {"api_key": ""})
     assert (key, used_saved) == ("", False)

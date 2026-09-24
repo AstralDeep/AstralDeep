@@ -1,18 +1,6 @@
-"""Save and clear a user's TypeSafe key from the settings surface (feature 089, US1).
-
-The shape of this module is set by one rule from the spec: **a rejected save
-must never destroy a working stored key** (FR-003). So the order is fixed --
-acknowledge, validate, probe, and only then persist. A key that fails its probe
-never reaches the store, and the user's previous key is still there.
-
-The probe is a ``models.list()`` call with a 5-second budget and no retries.
-That is a deliberate contrast with the turn budget: a user who has just pressed
-Save is waiting on purpose and would rather wait five seconds than be told
-nothing, whereas a turn is waiting on the user's behalf and must not.
-
-Everything else here is about not leaking the key. It is never logged, never
-put in an audit payload, never echoed back to a surface, and never kept after
-the handler returns. What the surface sees is a status and a fingerprint.
+"""Validates, probes, and persists a user's TypeSafe key from the settings surface: a
+failed probe never reaches typesafe_store, so a rejected save can never overwrite a
+working key. Never logs or audits the raw key.
 """
 
 from __future__ import annotations
@@ -24,27 +12,22 @@ from typing import Any, Optional, Tuple
 
 logger = logging.getLogger("LLMConfig.TypeSafeHandlers")
 
-#: The probe's wall clock. Generous compared with the 1.5 s turn budget,
-#: because the person is standing in front of it.
+# Generous vs the 1.5s turn budget: someone is watching
 PROBE_TIMEOUT_SECONDS = 5.0
 
-#: A save probe costs a request against the user's own quota, so the button is
-#: rate limited per user: at most this many probes in the window.
 PROBE_RATE_LIMIT = 5
 PROBE_RATE_WINDOW_SECONDS = 60.0
 
 MAX_KEY_CHARS = 512
 
-#: In-process probe accounting: user id -> monotonic timestamps.
 _probe_history: dict[str, list[float]] = {}
 
 
 class TypeSafeSaveError(Exception):
-    """A save could not proceed. The message is shown to the user verbatim."""
+    pass
 
 
 def _check_probe_rate(user_id: str, *, now: Optional[float] = None) -> None:
-    """Raise when the user has probed too often. Keeps their quota theirs."""
     moment = now if now is not None else time.monotonic()
     history = [t for t in _probe_history.get(user_id, ()) if moment - t < PROBE_RATE_WINDOW_SECONDS]
     if len(history) >= PROBE_RATE_LIMIT:
@@ -58,7 +41,6 @@ def _check_probe_rate(user_id: str, *, now: Optional[float] = None) -> None:
 
 
 def reset_probe_rate(user_id: Optional[str] = None) -> None:
-    """Forget probe history. Used by tests and by a successful clear."""
     if user_id is None:
         _probe_history.clear()
     else:
@@ -66,7 +48,6 @@ def reset_probe_rate(user_id: Optional[str] = None) -> None:
 
 
 def validate_key(raw: Any) -> str:
-    """Return a usable key or raise with the message the user should see."""
     if not isinstance(raw, str):
         raise TypeSafeSaveError("Enter your TypeSafe API key.")
     key = raw.strip()
@@ -85,12 +66,6 @@ def validate_key(raw: Any) -> str:
 
 
 async def probe_key(key: str, *, timeout: float = PROBE_TIMEOUT_SECONDS) -> None:
-    """Verify the key against TypeSafe. Raise :class:`TypeSafeSaveError` if not.
-
-    ``models.list()`` is the cheapest authenticated call the SDK offers, which
-    is what makes it the right probe: it proves the key works without spending
-    a System One request.
-    """
     from orchestrator.typesafe_routing.budget import is_auth_failure, is_transient
     from orchestrator.typesafe_routing.client import (
         TYPESAFE_API_BASE,
@@ -119,7 +94,7 @@ async def probe_key(key: str, *, timeout: float = PROBE_TIMEOUT_SECONDS) -> None
         raise TypeSafeSaveError(
             "TypeSafe didn't respond in time. Your key was not changed — try again."
         ) from None
-    except Exception as error:  # noqa: BLE001 - classified below
+    except Exception as error:  # noqa: BLE001
         if is_auth_failure(error):
             raise TypeSafeSaveError(
                 "TypeSafe rejected that key. Check it and try again."
@@ -137,7 +112,7 @@ async def probe_key(key: str, *, timeout: float = PROBE_TIMEOUT_SECONDS) -> None
         if closer is not None:
             try:
                 await closer()
-            except Exception:  # pragma: no cover - shutdown is best-effort
+            except Exception:  # pragma: no cover
                 logger.debug("closing the probe client failed", exc_info=True)
 
 
@@ -151,11 +126,6 @@ async def save_key(
     auth_principal: Optional[str] = None,
     probe: Any = None,
 ) -> Tuple[Any, str]:
-    """Validate, probe and persist. Returns ``(status, fingerprint)``.
-
-    Raises :class:`TypeSafeSaveError` with a user-facing message at every step
-    that can fail. The store is only touched once the probe has succeeded.
-    """
     from llm_config.typesafe_store import key_fingerprint
 
     key = validate_key(raw_key)
@@ -165,13 +135,11 @@ async def save_key(
     status = await store.save(user_id, key)
     fingerprint = key_fingerprint(key)
 
-    # A newly accepted key deserves a clean slate: whatever opened this user's
-    # circuit was about the old one.
     try:
         from orchestrator.typesafe_routing.budget import circuit
 
         circuit().reset(user_id)
-    except Exception:  # pragma: no cover - the circuit is best-effort
+    except Exception:  # pragma: no cover
         logger.debug("circuit reset after TypeSafe save failed", exc_info=True)
 
     await _audit(
@@ -194,14 +162,13 @@ async def clear_key(
     actor_user_id: Optional[str] = None,
     auth_principal: Optional[str] = None,
 ) -> bool:
-    """Remove the user's key. Idempotent: a second Remove is not an error."""
     removed = await store.clear(user_id)
     reset_probe_rate(user_id)
     try:
         from orchestrator.typesafe_routing.budget import circuit
 
         circuit().reset(user_id)
-    except Exception:  # pragma: no cover - the circuit is best-effort
+    except Exception:  # pragma: no cover
         logger.debug("circuit reset after TypeSafe clear failed", exc_info=True)
     if removed:
         await _audit(
@@ -226,7 +193,6 @@ async def _audit(
     description: str,
     fingerprint: Optional[str],
 ) -> None:
-    """Record a ``typesafe_credential`` event. Never raises into a save path."""
     if recorder is None:
         return
     from datetime import UTC, datetime
@@ -238,8 +204,6 @@ async def _audit(
 
     inputs_meta: dict[str, Any] = {"action": action}
     if fingerprint is not None:
-        # The fingerprint is not key material: it is a truncated digest whose
-        # only use is telling one saved key from another.
         inputs_meta["key_fingerprint"] = fingerprint
     _assert_no_api_key(inputs_meta)
 
@@ -260,14 +224,13 @@ async def _audit(
                 completed_at=started,
             )
         )
-    except Exception:  # pragma: no cover - auditing must not break a save
+    except Exception:  # pragma: no cover
         logger.warning("TypeSafe credential audit event failed", exc_info=True)
 
 
 async def record_discarded(
     recorder: Any, user_id: str, *, auth_principal: Optional[str] = None
 ) -> None:
-    """Audit an undecryptable row the store discarded."""
     await _audit(
         recorder,
         actor_user_id=user_id,

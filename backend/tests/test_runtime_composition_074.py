@@ -1,4 +1,8 @@
-"""Application binding tests for Plane-backed LETS composition."""
+"""Tests for Plane-backed LETS application composition
+(orchestrator/runtime_composition.py, orchestrator.py): lifecycle binding order,
+close/abort idempotency, retry after failure, and startup ordering across Plane,
+legacy DB, and agents.
+"""
 
 from __future__ import annotations
 
@@ -135,7 +139,6 @@ def test_active_composition_binds_lifecycle_dispatch_and_recovery() -> None:
     }
     assert runtime.start() == ("lifecycle", "effects", "purges")
 
-    # Binding is idempotent after the complete graph has been published.
     runtime.bind(host)
     assert host.dispatch_binding is not None
 

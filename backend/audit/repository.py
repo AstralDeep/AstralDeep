@@ -1,4 +1,7 @@
-"""Product-facing audit facade over AstralPlane's typed audit repositories."""
+"""Product-facing audit facade over AstralPlane's typed audit repositories: shapes
+read/write DTOs, authenticates per owner, and lets callers append audit atomically
+inside their own transaction via insert_in_transaction.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +23,6 @@ from .schemas import AuditEventCreate, AuditEventDTO, ArtifactPointer
 
 
 def _authenticate(key_id: str, payload: bytes) -> bytes:
-    """Adapt Deep's key custody to Plane's complete chain-payload callback."""
-
     if len(payload) < 32:
         raise ValueError("audit chain payload is missing its previous digest")
     digest, _used_key = chain_hmac(payload[:32], payload[32:], key_id=key_id)
@@ -65,7 +66,7 @@ def _record_to_dto(
         if availability_resolver is not None:
             try:
                 item["available"] = bool(availability_resolver(item))
-            except Exception:  # pragma: no cover - availability is advisory
+            except Exception:  # pragma: no cover
                 item["available"] = True
         else:
             item.setdefault("available", True)
@@ -103,8 +104,6 @@ def _record_to_dto(
 
 
 class AuditRepository:
-    """Keep audit policy and DTO shaping in Deep; delegate durability to Plane."""
-
     def __init__(
         self,
         db=None,
@@ -150,13 +149,6 @@ class AuditRepository:
     def insert_in_transaction(
         self, event: AuditEventCreate, *, transaction, plane_runtime,
     ) -> AuditEventDTO:
-        """Append required audit inside the caller's same-runtime transaction.
-
-        The returned DTO is provisional until that transaction commits. Errors
-        propagate so the caller's dependent mutation can roll back; this method
-        neither retries nor publishes. The caller acquires product authority and
-        resource locks before audit, then rechecks its committing authority.
-        """
         if (plane_runtime is not self._audit.plane_runtime or transaction is None
                 or not isinstance(event, AuditEventCreate)):
             raise ValueError("audit transaction context unavailable")
@@ -249,13 +241,6 @@ class AuditRepository:
         return result.first_invalid_event_id
 
     def purge_older_than(self, actor_user_id: str, cutoff: datetime) -> int:
-        """Prune one owner's expired prefix after authenticating its boundary.
-
-        At least one event is retained so the remaining chain has a concrete
-        authenticated boundary. The operator must name the owner explicitly;
-        cross-owner bulk deletion is intentionally unavailable.
-        """
-
         if cutoff.tzinfo is None or cutoff.utcoffset() is None:
             raise ValueError("cutoff must be timezone-aware")
         after_sequence = 0

@@ -1,8 +1,6 @@
-"""Feature 031 US2 — admin-gated approval of auto-created parser drafts (T035).
-
-A non-admin cannot promote an ``auto_attachment`` parser draft (the approval
-gate refuses and audits, and approve_agent is never called); an admin passes
-the gate through to approve_agent. Covers FR-015.
+"""Tests for orchestrator/agentic_creation.py's admin-gated approval of auto-created
+parser drafts: a non-admin is refused and audited, an admin passes through to
+approve_agent, and ordinary drafts skip the admin gate.
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ class _FakeLifecycle:
 
     async def approve_agent(self, draft_id, websocket=None):
         self.approve_called_with = draft_id
-        # Return a non-live status so the heavy global-promotion path is skipped.
         return {"status": "pending_review"}
 
 
@@ -63,9 +60,7 @@ async def test_non_admin_cannot_approve_parser_draft():
     orch = _fake_orch(_DRAFT)
     await agentic_creation._h_draft_approve(
         orch, object(), user_id="uploader", roles=["user"], payload={"draft_id": "d-parquet"})
-    # Gated: approve_agent never reached.
     assert orch._lifecycle.approve_called_with is None
-    # An error/explanation card was surfaced.
     assert orch._sent, "expected a refusal card to be sent"
 
 
@@ -74,13 +69,11 @@ async def test_admin_passes_the_gate():
     orch = _fake_orch(_DRAFT)
     await agentic_creation._h_draft_approve(
         orch, object(), user_id="some-admin", roles=["admin"], payload={"draft_id": "d-parquet"})
-    # Gate passed → approve_agent invoked with the draft id.
     assert orch._lifecycle.approve_called_with == "d-parquet"
 
 
 @pytest.mark.asyncio
 async def test_non_auto_attachment_draft_uses_ownership_not_admin():
-    # A normal (027) draft owned by the caller still approves without admin.
     normal = {"id": "d-normal", "origin": "auto_chat", "agent_slug": "x_agent",
               "agent_name": "X", "user_id": "owner"}
     orch = _fake_orch(normal)

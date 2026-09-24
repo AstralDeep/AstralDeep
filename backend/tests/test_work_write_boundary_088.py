@@ -1,4 +1,8 @@
-"""Actual ASGI parsing observes only the bounded, frozen Work write body."""
+"""Tests for the bounded ASGI Work write body parser
+(backend/orchestrator/work_write_boundary.py): frame length limits, malformed JSON
+refusal, and transport-snapshot isolation from headers and server state.
+"""
+
 import asyncio
 import json
 

@@ -1,4 +1,8 @@
-"""Fail-closed voice service bootstrap tests for Feature 065."""
+"""Tests for voice service bootstrap (voice_bootstrap.py, voice_coordinator.py,
+voice_sessions.py): fail-closed selector handling, local-recognition
+capacity/cancellation reconciliation, and session-cleanup fencing against stale
+authority.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +64,7 @@ class _PlaneRuntime:
     def __init__(self) -> None:
         self.repositories = create_repository_catalog()
 
-    def transaction(self):  # pragma: no cover - construction never opens DB.
+    def transaction(self):  # pragma: no cover
         raise AssertionError("unexpected database access")
 
 
@@ -1060,8 +1064,6 @@ async def test_cancelled_local_recognition_reconciles_late_thread_commit(
 
 @pytest.mark.asyncio
 async def test_repeated_cancel_during_late_bind_promotion_cannot_orphan_turn() -> None:
-    """Promotion must stay joined while its pre-reserved slot lock is blocked."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1143,8 +1145,6 @@ async def test_repeated_cancel_during_late_bind_promotion_cannot_orphan_turn() -
 
 @pytest.mark.asyncio
 async def test_local_rejection_capacity_is_reserved_before_repository_insert() -> None:
-    """The last cleanup slot fences a later insert before it can become durable."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, first = _local_recognition_context(now)
     _, _, second = _local_recognition_context(
@@ -1249,8 +1249,6 @@ _LOCAL_RECOGNITION_CANCELLATION_PHASES = (
 async def test_local_recognition_cancellation_phase_table_terminalizes_commit(
     phase: str,
 ) -> None:
-    """A cancellation after durable insert always owns exact terminal cleanup."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1398,8 +1396,6 @@ _LOCAL_RECOGNITION_REPLAY_CANCELLATION_PHASES = (
 async def test_local_recognition_replay_cancellation_preserves_durable_turn(
     phase: str,
 ) -> None:
-    """A cancelled exact replay owns no durable recognition row."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1514,8 +1510,6 @@ async def test_local_recognition_replay_cancellation_preserves_durable_turn(
 
 @pytest.mark.asyncio
 async def test_exact_recognition_replay_waits_for_originating_cleanup_settlement() -> None:
-    """A replay cannot receive authority that its in-flight origin may reject."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1610,8 +1604,6 @@ async def test_exact_recognition_replay_waits_for_originating_cleanup_settlement
 async def test_distinct_recognition_identities_insert_concurrently(
     identity: str,
 ) -> None:
-    """Only an exact user/client-turn pair is serialized."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     first_session, first_claims, first_frame = _local_recognition_context(now)
     second_user = "user-b" if identity == "different_user" else "user-a"
@@ -1731,8 +1723,6 @@ async def test_distinct_recognition_identities_insert_concurrently(
 
 @pytest.mark.asyncio
 async def test_failed_recognition_rejection_retains_key_until_drain() -> None:
-    """Transient terminalization keeps same-turn replay behind its exact owner."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1808,8 +1798,6 @@ async def test_failed_recognition_rejection_retains_key_until_drain() -> None:
 
 @pytest.mark.asyncio
 async def test_recognition_coordinator_capacity_fails_before_repository_access() -> None:
-    """The bounded key registry refuses a 257th live request before mutation."""
-
     repository = SimpleNamespace(get_controlled_session=Mock())
     services = VoiceServices(
         livekit=None,
@@ -1859,8 +1847,6 @@ async def test_recognition_coordinator_capacity_fails_before_repository_access()
 async def test_exact_recognition_replay_waits_at_every_return_phase(
     phase: str,
 ) -> None:
-    """A successful origin owns its turn key until its return is committed."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -1960,8 +1946,6 @@ async def test_session_cleanup_before_recognition_settlement_never_returns_stale
     cleanup_fails: bool,
     cancelled: bool,
 ) -> None:
-    """A completed session cleanup wins before the bind return boundary."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2058,8 +2042,6 @@ async def test_session_cleanup_before_recognition_settlement_never_returns_stale
 async def test_different_session_cleanup_cannot_invalidate_recognition_return(
     client_turn_id: str,
 ) -> None:
-    """Cleanup serializes only authority owned by its exact session generation."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(
         now,
@@ -2134,8 +2116,6 @@ async def test_different_session_cleanup_cannot_invalidate_recognition_return(
 async def test_replaced_finalized_authority_fails_exact_return_identity(
     replayed: bool,
 ) -> None:
-    """Object-distinct authority for the same key cannot satisfy this request."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2222,8 +2202,6 @@ async def test_existing_authority_replay_cleanup_during_lookup_never_returns_sta
     cleanup_fails: bool,
     cancelled: bool,
 ) -> None:
-    """Session cleanup that wins the replay lookup revokes its exact authority."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2308,8 +2286,6 @@ async def test_existing_authority_replay_cleanup_during_lookup_never_returns_sta
 
 @pytest.mark.asyncio
 async def test_repeated_cancelled_existing_authority_lookup_preserves_replay_authority() -> None:
-    """Lookup cancellation releases only its coordinator, not replay-owned authority."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2381,8 +2357,6 @@ async def test_repeated_cancelled_existing_authority_lookup_preserves_replay_aut
 
 @pytest.mark.asyncio
 async def test_existing_authority_replay_proves_exact_identity_before_no_await_return() -> None:
-    """An object-distinct replacement cannot satisfy the replay return fence."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2469,8 +2443,6 @@ async def test_existing_authority_replay_proves_exact_identity_before_no_await_r
 async def test_existing_authority_replay_settlement_is_exact(
     identity: str,
 ) -> None:
-    """Unrelated session, turn, or user authority cannot disturb replay proof."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2621,8 +2593,6 @@ async def test_cleanup_fence_orders_every_recognition_return_before_abandonment(
     shape: str,
     cleanup_first: bool,
 ) -> None:
-    """The settlement-lock winner is the sole permitted durable ordering."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2742,8 +2712,6 @@ async def test_cleanup_fence_orders_every_recognition_return_before_abandonment(
 
 @pytest.mark.asyncio
 async def test_cancelled_duplicate_cleanup_callers_join_one_retained_operation() -> None:
-    """Repeated cancellation cannot orphan or duplicate exact abandonment."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2822,8 +2790,6 @@ async def test_cancelled_duplicate_cleanup_callers_join_one_retained_operation()
 
 @pytest.mark.asyncio
 async def test_cleanup_cancelled_before_fence_publishes_has_no_side_effect() -> None:
-    """Cancellation while waiting for publication cannot launch abandonment."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -2892,8 +2858,6 @@ async def test_cleanup_cancelled_before_fence_publishes_has_no_side_effect() -> 
 async def test_cleanup_cancellation_after_database_waits_for_reconciliation(
     cleanup_fails: bool,
 ) -> None:
-    """A completed DB call is reconciled under lock before cancellation escapes."""
-
     session = SimpleNamespace(
         user_id="user-a",
         session_id="00000000-0000-4000-8000-000000000031",
@@ -2959,8 +2923,6 @@ async def test_cleanup_cancellation_after_database_waits_for_reconciliation(
 async def test_durable_end_joins_and_prunes_exact_cleanup_state(
     cleanup_state: str,
 ) -> None:
-    """Ended generations retain neither completed nor in-flight cleanup slots."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, _claims, _frame = _local_recognition_context(now)
     ended = SimpleNamespace(
@@ -3019,8 +2981,6 @@ async def test_durable_end_joins_and_prunes_exact_cleanup_state(
 
 @pytest.mark.asyncio
 async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stale() -> None:
-    """Only a successful retry plus fresh ready rotates a closed epoch."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, old_frame = _local_recognition_context(now)
     old_turn = _voice_turn(client_turn_id=old_frame.client_turn_id)
@@ -3161,8 +3121,6 @@ async def test_failed_cleanup_retries_before_fresh_ready_and_old_work_stays_stal
 
 @pytest.mark.asyncio
 async def test_local_cleanup_blocks_announcements_until_ready_delivery() -> None:
-    """A stopped epoch cannot publish new speech before its ready barrier."""
-
     now = datetime.now(UTC)
     session, _claims, frame = _local_recognition_context(now)
     turn = _voice_turn(session_id=session.session_id)
@@ -3208,8 +3166,6 @@ async def test_local_cleanup_blocks_announcements_until_ready_delivery() -> None
 
 @pytest.mark.asyncio
 async def test_post_cleanup_ready_delivery_starts_announcement_sequence_at_one() -> None:
-    """The delivered ready frame is the barrier for a fresh output epoch."""
-
     now = datetime.now(UTC)
     session, claims, recognition = _local_recognition_context(now)
     turn = _voice_turn(session_id=session.session_id)
@@ -3294,8 +3250,6 @@ async def test_post_cleanup_ready_delivery_starts_announcement_sequence_at_one()
 
 @pytest.mark.asyncio
 async def test_later_cleanup_supersedes_inflight_ready_delivery() -> None:
-    """A ready send that predates a later Stop cannot reopen local speech."""
-
     now = datetime.now(UTC)
     session, claims, recognition = _local_recognition_context(now)
 
@@ -3355,8 +3309,6 @@ async def test_later_cleanup_supersedes_inflight_ready_delivery() -> None:
 
 @pytest.mark.asyncio
 async def test_cleanup_supersedes_ready_blocked_in_repository_lookup() -> None:
-    """A Stop during readiness lookup invalidates that stale observation."""
-
     now = datetime.now(UTC)
     session, claims, recognition = _local_recognition_context(now)
     lookup_started = threading.Event()
@@ -3415,8 +3367,6 @@ async def test_cleanup_supersedes_ready_blocked_in_repository_lookup() -> None:
 
 @pytest.mark.asyncio
 async def test_ready_completion_rechecks_live_authority_after_repository_lookup() -> None:
-    """Socket revocation during final lookup leaves the output epoch closed."""
-
     now = datetime.now(UTC)
     session, claims, recognition = _local_recognition_context(now)
     completion_lookup_started = threading.Event()
@@ -3493,8 +3443,6 @@ async def test_ready_completion_rechecks_live_authority_after_repository_lookup(
 async def test_cleanup_joins_prefence_mutation_before_durable_abandonment(
     replayed: bool,
 ) -> None:
-    """A late commit/replay cannot escape the retained cleanup owner."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -3564,8 +3512,6 @@ async def test_cleanup_joins_prefence_mutation_before_durable_abandonment(
 async def test_blocked_cleanup_is_exact_and_does_not_serialize_other_identity(
     identity: str,
 ) -> None:
-    """Cleanup DB work holds no global lock and clears only its exact owner."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     cleanup_session, _claims, _frame = _local_recognition_context(now)
     other_user = "user-b" if identity == "different_user" else "user-a"
@@ -3671,8 +3617,6 @@ async def test_blocked_cleanup_is_exact_and_does_not_serialize_other_identity(
 async def test_pre_durable_session_end_fence_settles_before_every_bind_return(
     shape: str,
 ) -> None:
-    """The reversible pre-CAS fence wins before any later bind return proof."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -3774,8 +3718,6 @@ async def test_pre_durable_session_end_fence_settles_before_every_bind_return(
 async def test_failed_end_reconciles_end_fenced_nonreplay_insert(
     failure_phase: str,
 ) -> None:
-    """A failed CAS terminalizes every non-replay row deferred to its fence."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, frame = _local_recognition_context(now)
     turn = _voice_turn(client_turn_id=frame.client_turn_id)
@@ -3901,8 +3843,6 @@ async def test_failed_end_reconciles_end_fenced_nonreplay_insert(
 
 @pytest.mark.asyncio
 async def test_failed_end_rejects_promotion_during_reconciliation() -> None:
-    """A bind promoted after the failed-end snapshot is not deferred to it."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, claims, first_frame = _local_recognition_context(now)
     second_frame = replace(
@@ -4051,8 +3991,6 @@ async def test_failed_end_rejects_promotion_during_reconciliation() -> None:
 @pytest.mark.asyncio
 async def test_logout_end_fence_precedes_mutation_and_joins_repeated_cancellation(
 ) -> None:
-    """Identity teardown cannot outlive its exact reversible local fence."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     session, _claims, _frame = _local_recognition_context(now)
     ended = SimpleNamespace(
@@ -4124,8 +4062,6 @@ async def test_logout_end_fence_precedes_mutation_and_joins_repeated_cancellatio
 
 @pytest.mark.asyncio
 async def test_logout_retries_exact_generation_after_takeover_race() -> None:
-    """Logout fences B and revokes its blocked bind before ending B."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     first, _claims, _frame = _local_recognition_context(now)
     replacement = SimpleNamespace(
@@ -4284,7 +4220,6 @@ async def test_logout_retries_exact_generation_after_takeover_race() -> None:
     assert end_attempts == prepared
     media.end.assert_awaited_once_with(ended_replacement, "logout")
 
-    # Both the eager stale proof and a repeated durable callback are idempotent.
     await services.handle_runtime_session_end(ended_first, "takeover")
     assert services.local_cleanup_epochs == {}
     assert services.local_end_fences == {}
@@ -4293,8 +4228,6 @@ async def test_logout_retries_exact_generation_after_takeover_race() -> None:
 @pytest.mark.asyncio
 async def test_logout_repeated_cancellation_cannot_escape_between_retries(
 ) -> None:
-    """Caller cancellation cannot strand the replacement after stale A."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     first, _claims, _frame = _local_recognition_context(now)
     replacement = SimpleNamespace(
@@ -4383,8 +4316,6 @@ async def test_logout_repeated_cancellation_cannot_escape_between_retries(
 async def test_logout_identity_retry_bound_is_activation_capacity_plus_one(
     outcome: str,
 ) -> None:
-    """The admitted takeover bound is drained or fails closed without leaks."""
-
     now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
     base, _claims, _frame = _local_recognition_context(now)
     session_count = _MAX_LOCAL_IDENTITY_END_ATTEMPTS + (
@@ -6335,8 +6266,6 @@ async def test_session_runner_preserves_recap_with_immediate_overlapping_handoff
     assert media.calls[-1]["text"] == "Latest request done."
     media.finish()
 
-    # The runner must attempt the due handoff immediately. Waiting until the
-    # 250 ms maximum before scheduling would make normal timer jitter fatal.
     await _eventually(lambda: len(media.calls) == 4)
     assert media.calls[-1]["turn_id"] == earlier.turn_id
     assert media.calls[-1]["kind"] == "progress"

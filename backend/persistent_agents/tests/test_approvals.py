@@ -1,4 +1,8 @@
-"""Immutable attended approval; no caller arguments or replayed execution."""
+"""Tests for persistent_agents/approvals.py: linking approvals to assignments without
+premature dispatch, replay safety, digest/executor mismatch refusal, and
+remote-decision routing between assignment and chat.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock

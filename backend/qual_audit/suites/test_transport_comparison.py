@@ -1,7 +1,6 @@
-"""Category 5: Transport Comparison Benchmarks.
-
-Compares WebSocket and SSE transports for latency, throughput,
-message ordering, reconnection, and concurrency. 10 test cases.
+"""Benchmarks comparing sse_transport.py and ws_transport.py for latency, throughput,
+message ordering, reconnection, and concurrent-connection fairness, using
+benchmark_helpers.py's Timer and BenchmarkResult.
 """
 
 import asyncio
@@ -18,13 +17,8 @@ from qual_audit.ws_transport import create_ws_router
 from qual_audit.suites.benchmark_helpers import BenchmarkResult, Timer
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 @pytest.fixture
 def transport_app():
-    """Minimal FastAPI app with both SSE and WebSocket benchmark routers."""
     app = FastAPI()
     app.include_router(create_sse_router())
     app.include_router(create_ws_router())
@@ -33,36 +27,23 @@ def transport_app():
 
 @pytest.fixture
 def sse_app(transport_app):
-    """Alias for backward compatibility."""
     return transport_app
 
 
 @pytest.fixture
 def sse_client(transport_app):
-    """httpx async client wired to the transport app."""
     transport = ASGITransport(app=transport_app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 @pytest.fixture
 def ws_app(transport_app):
-    """Alias for clarity in WS tests."""
     return transport_app
 
 
-# ---------------------------------------------------------------------------
-# SSE Tests
-# ---------------------------------------------------------------------------
-
 class TestSSETransport:
-    """Benchmark tests for the SSE transport."""
-
     @pytest.mark.asyncio
     async def test_sse_echo_latency(self, sse_client):
-        """TC-001: SSE echo endpoint latency over 100 requests.
-
-        Measures round-trip HTTP POST latency as the SSE baseline.
-        """
         n = 100
         result = BenchmarkResult(transport="sse_echo", sample_count=n)
 
@@ -77,11 +58,10 @@ class TestSSETransport:
         assert result.mean > 0
         ci = result.confidence_interval_95()
         assert ci[0] <= result.mean <= ci[1]
-        result.to_dict()  # ensure serializable
+        result.to_dict()
 
     @pytest.mark.asyncio
     async def test_sse_throughput(self, sse_client):
-        """TC-002: SSE echo throughput — messages per second."""
         n = 200
         start = time.perf_counter()
 
@@ -95,7 +75,6 @@ class TestSSETransport:
 
     @pytest.mark.asyncio
     async def test_sse_message_ordering(self, sse_client):
-        """TC-003: Messages arrive in send order via SSE push."""
         received = []
         for i in range(100):
             resp = await sse_client.post("/sse/echo", json={"seq": i})
@@ -107,11 +86,6 @@ class TestSSETransport:
 
     @pytest.mark.asyncio
     async def test_sse_reconnection_id(self, sse_client):
-        """TC-004: SSE endpoint supports connection identity for reconnection.
-
-        Verifies that the SSE endpoint assigns connection IDs that can
-        be used for targeted message delivery (prerequisite for reconnection).
-        """
         resp1 = await sse_client.post("/sse/echo", json={"session": "a", "seq": 1})
         resp2 = await sse_client.post("/sse/echo", json={"session": "b", "seq": 2})
 
@@ -124,7 +98,6 @@ class TestSSETransport:
 
     @pytest.mark.asyncio
     async def test_sse_concurrent_connections(self, sse_client):
-        """TC-005: 10 concurrent echo streams measure per-connection fairness."""
         n_connections = 10
         msgs_per_conn = 20
 
@@ -146,19 +119,9 @@ class TestSSETransport:
         assert max(means) / max(min(means), 0.001) < 10.0, "Unfair distribution"
 
 
-# ---------------------------------------------------------------------------
-# WebSocket Tests
-# ---------------------------------------------------------------------------
-
 class TestWebSocketTransport:
-    """Benchmark tests for the WebSocket transport."""
-
     @pytest.mark.asyncio
     async def test_ws_echo_latency(self, ws_app):
-        """TC-006: WebSocket echo latency over 100 requests.
-
-        Measures round-trip latency over a persistent WebSocket connection.
-        """
         from starlette.testclient import TestClient
 
         n = 100
@@ -182,7 +145,6 @@ class TestWebSocketTransport:
 
     @pytest.mark.asyncio
     async def test_ws_throughput(self, ws_app):
-        """TC-007: WebSocket echo throughput — messages per second."""
         from starlette.testclient import TestClient
 
         n = 200
@@ -200,7 +162,6 @@ class TestWebSocketTransport:
 
     @pytest.mark.asyncio
     async def test_ws_message_ordering(self, ws_app):
-        """TC-008: Messages arrive in send order via WebSocket."""
         from starlette.testclient import TestClient
 
         received = []
@@ -215,15 +176,12 @@ class TestWebSocketTransport:
 
     @pytest.mark.asyncio
     async def test_ws_reconnection(self, ws_app):
-        """TC-009: WebSocket supports reconnection with session continuity."""
         from starlette.testclient import TestClient
 
         with TestClient(ws_app) as client:
-            # First connection
             with client.websocket_connect("/ws/echo") as ws:
                 ws.send_text(json.dumps({"session": "x", "seq": 1}))
                 resp1 = json.loads(ws.receive_text())
-            # Second connection (reconnection)
             with client.websocket_connect("/ws/echo") as ws:
                 ws.send_text(json.dumps({"session": "x", "seq": 2}))
                 resp2 = json.loads(ws.receive_text())
@@ -235,7 +193,6 @@ class TestWebSocketTransport:
 
     @pytest.mark.asyncio
     async def test_ws_concurrent_connections(self, ws_app):
-        """TC-010: 10 concurrent WebSocket connections measure fairness."""
         from starlette.testclient import TestClient
 
         n_connections = 10

@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""Collect private, diagnostic live evidence for an existing disposable assignment.
-
-The owner supplies a private JSON session outside the repository containing:
-schema_version=1, base_url, owner_sub, access_token, expires_at (RFC 3339),
-assignment_id, and allowed_scenarios (explicitly selected scenario names).
-Optional baseline_file points to an earlier live-monitor report for after-restart.
-This script never logs tokens, creates consent, approves actions, restarts a
-container, or provisions credentials. Controls ends by permanently stopping the
-selected disposable assignment. The bearer token is validated by the product;
-its locally decoded subject/expiry are only additional consistency checks.
-
-Local Docker verification compares actual runtime bytes to the working tree,
-including dirty component sources. It is diagnostic candidate binding, not a
-release attestation. Remote deployments without this binding fail closed.
+"""Collects private diagnostic live evidence for one disposable assignment through the
+product API and Docker, then permanently stops it; never logs tokens, creates
+consent, or provisions credentials.
 """
 from __future__ import annotations
 
@@ -54,7 +43,7 @@ _PACKAGES = {
 
 
 class EvidenceError(Exception):
-    """Only static safe codes, never arbitrary server/process error text."""
+    pass
 
 
 def require(condition, code):
@@ -165,7 +154,7 @@ def private_file(path):
     if os.name != "nt":
         require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0, "session_permissions_not_private")
         return
-    # Never interpolate the path into shell source. Only a boolean leaves ACL inspection.
+    # Path never interpolated into the script; only a bool returns
     code = """$ErrorActionPreference='Stop'
 $acl=[System.IO.File]::GetAccessControl($env:ASTRAL_079_PRIVATE_FILE)
 $me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -184,12 +173,6 @@ Write-Output 'private'
 
 
 def create_private_file(path):
-    """Create exclusively with private permissions before writing any bytes.
-
-    Windows mode 0600 does not establish an NTFS DACL. Passing FileSecurity to
-    CreateNew applies its protected owner-only ACL atomically, so no reader can
-    acquire an inherited broad-read handle before the ACL is tightened.
-    """
     if os.name != "nt":
         return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                        | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -303,7 +286,6 @@ def git(root, *arguments):
 
 
 def runtime_manifest(root=ROOT):
-    """Hash reviewed runtime paths only; never inspect generated user stores."""
     repos = [root, *(root / "components" / name for name in ("AstralPlane", "AstralProjection", "AstralPrimitives", "LETS"))]
     identities = {}
     selected = set()
@@ -314,7 +296,6 @@ def runtime_manifest(root=ROOT):
         status = git(repo, "status", "--porcelain=v1", "-z")
         identities[name] = {"head": head, "working_tree_status_digest": hashlib.sha256(status).hexdigest()}
         paths = git(repo, "ls-files", "--cached", "-z").decode().split("\0")
-        # New authored feature modules are part of the uncommitted candidate.
         new = git(repo, "ls-files", "--others", "--exclude-standard", "-z").decode().split("\0")
         for relative in [*paths, *new]:
             if not relative:
@@ -370,7 +351,6 @@ def deployment_binding(base_url, container, candidate, manifest):
         local = False
     require(local and parts.scheme == "http", "missing_input_local_deployment_binding")
     require(bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", container)), "container_name_invalid")
-    # Select only public identity fields. Full inspect includes credential env vars.
     template = '{"id":{{json .Id}},"image":{{json .Image}},"started_at":{{json .State.StartedAt}},"running":{{json .State.Running}},"ports":{{json .NetworkSettings.Ports}},"mounts":{{json .Mounts}}}'
     identity = strict_json(process(["docker", "inspect", "--format", template, container]))
     require(identity.get("running") is True, "deployment_not_running")
@@ -493,7 +473,6 @@ def quiet_observation(api, assignment_id, source_url, seconds, *, sleep=time.sle
     require(wake and instant(wake) > datetime.now(UTC) + timedelta(seconds=seconds + 2), "missing_input_idle_observation_window")
     sleep(seconds)
     after = safe_snapshot(snapshot(api, assignment_id, source_url))
-    # Delivery acknowledgement may advance independently while the agent waits.
     def comparable(item):
         return {**item, "activity": [{key: value for key, value in row.items()
                                       if key != "notification_state"} for row in item["activity"]]}
@@ -653,7 +632,6 @@ def run(args, *, root=ROOT):
                 compare_restart(baseline, report["snapshot"], report)
                 report["checks"].append("observed_restart_new_fenced_episode_preserves_completed_identities")
             report["upstream_observation"] = "Observed public page baseline/check; no controlled release change asserted."
-        # Re-read actual deployment bytes and candidate state after observation.
         current, current_manifest = runtime_manifest(root)
         require(current == report["candidate"], "candidate_changed_during_observation")
         require(deployment_binding(base_url, args.container, current, current_manifest) == report["deployment"],

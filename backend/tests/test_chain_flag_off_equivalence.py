@@ -1,13 +1,8 @@
-"""T020 (056-delegated-agent-chaining): flag-off byte-equivalence (SC-009).
-
-With ``FF_RECURSIVE_DELEGATION`` off (the default), the chaining seam is
-inert: hop requests are refused before any context/authority work, no audit
-rows are emitted, no dispatch happens, and the direct path's token behavior
-is exactly the flat single-hop exchange. (The 048 property suite,
-``test_delegation.py``, and ``test_tool_permissions.py`` run alongside this
-file in the same suite — their unchanged green run is the other half of the
-equivalence evidence.)
+"""Tests for delegated chaining's flag-off equivalence
+(backend/orchestrator/delegation.py): hop requests refuse before any authority work,
+emit no audit rows, and the direct single-hop token path is untouched.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,9 +33,6 @@ def orch():
     from orchestrator.hooks import HookManager
     from orchestrator.orchestrator import Orchestrator
 
-    # Exercise the real dispatch methods without publishing an
-    # application-scoped Plane graph from this collaborator-injected unit
-    # fixture.
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}
@@ -74,8 +66,6 @@ def orch():
 
 
 def test_flag_defaults_off(monkeypatch):
-    # Fresh instance, not a module reload (a reload would rebind the global
-    # singleton out from under modules that imported it).
     from shared.feature_flags import FeatureFlags
     monkeypatch.delenv("FF_RECURSIVE_DELEGATION", raising=False)
     assert FeatureFlags().is_enabled("recursive_delegation") is False
@@ -105,14 +95,12 @@ async def test_hop_request_inert_with_flag_off(orch, monkeypatch):
     resp = await asyncio.wait_for(fut, timeout=2)
     assert "chaining is disabled" in resp.error["message"]
     orch._execute_with_retry.assert_not_awaited()
-    rec.record.assert_not_awaited()  # inert — zero audit emission
-    assert not orch._chain_budgets  # no budget was even created
+    rec.record.assert_not_awaited()
+    assert not orch._chain_budgets
 
 
 @pytest.mark.asyncio
 async def test_direct_dispatch_token_path_unchanged(orch, monkeypatch):
-    """The flat single-hop exchange is byte-for-byte today's path: the token
-    that _get_delegation_token returns is injected verbatim, no child mint."""
     monkeypatch.setattr(
         orch, "_get_delegation_token", AsyncMock(return_value="flat-token-xyz"))
     seen = {}
@@ -130,8 +118,6 @@ async def test_direct_dispatch_token_path_unchanged(orch, monkeypatch):
 
 
 def test_call_agent_tool_exists_but_holds_no_authority():
-    """The runtime surface ships regardless of the flag (it returns honest
-    errors when mediation refuses); it must expose no token/mint surface."""
     from shared.agent_runtime import AgentRuntime
     surface = [a for a in vars(AgentRuntime) if not a.startswith("__")]
     assert "call_agent_tool" in surface

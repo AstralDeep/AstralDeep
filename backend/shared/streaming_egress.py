@@ -1,10 +1,6 @@
-"""Bounded fixed-destination HTTP egress for the Feature 065 speech worker.
-
-This module deliberately implements only HTTP/1.1 request/response transport.
-The worker's authenticated pool-control WebSocket uses the separately approved
-``websockets`` runtime. Caller-provided URLs, redirects, proxy discovery,
-cookies, netrc credentials, compression, and connection reuse are absent by
-construction.
+"""Bounded HTTP/1.1-only egress transport pinned to one fixed, operator-configured
+origin for the voice speech worker; no redirects, proxies, cookies, or netrc.
+Implements FixedOriginHttpTransport, consumed by voice_agent/speech_adapters.py.
 """
 
 from __future__ import annotations
@@ -44,8 +40,6 @@ _FORBIDDEN_REQUEST_HEADERS = frozenset(
 
 
 class StreamingEgressError(RuntimeError):
-    """Base for content-free failures safe for logs and control frames."""
-
     def __init__(self, reason: str, *, retryable: bool = False) -> None:
         self.reason = reason
         self.retryable = retryable
@@ -53,32 +47,30 @@ class StreamingEgressError(RuntimeError):
 
 
 class EgressConfigurationError(StreamingEgressError):
-    """The fixed origin, request, or limits violate local policy."""
+    pass
 
 
 class EgressResolutionError(StreamingEgressError):
-    """The fixed host could not be resolved to a bounded address set."""
+    pass
 
 
 class EgressConnectionError(StreamingEgressError):
-    """TCP, TLS, or peer validation failed."""
+    pass
 
 
 class EgressTimeoutError(StreamingEgressError):
-    """A bounded DNS, connection, write, read, or total deadline elapsed."""
+    pass
 
 
 class EgressLimitError(StreamingEgressError):
-    """A request, header block, or response body exceeded its hard bound."""
+    pass
 
 
 class EgressProtocolError(StreamingEgressError):
-    """The upstream response used ambiguous or unsupported HTTP framing."""
+    pass
 
 
 class HttpRequestLike(Protocol):
-    """Structural request contract implemented by voice speech adapters."""
-
     path: str
     headers: Mapping[str, str]
     body: bytes
@@ -88,8 +80,6 @@ class HttpRequestLike(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class StreamingHttpResponse:
-    """Bounded HTTP response compatible with ``SpeechTransport`` consumers."""
-
     status: int
     headers: Mapping[str, str]
     body: bytes
@@ -97,8 +87,6 @@ class StreamingHttpResponse:
 
 @dataclass(frozen=True, slots=True)
 class EgressLimits:
-    """Hard transport limits; all timeouts are wall-clock seconds."""
-
     dns_timeout: float = 3.0
     connect_timeout: float = 5.0
     tls_handshake_timeout: float = 5.0
@@ -169,13 +157,6 @@ Connector = Callable[..., Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWr
 
 
 class FixedOriginHttpTransport:
-    """Async GET/POST transport pinned to one operator-configured origin.
-
-    ``_resolver`` and ``_connector`` are explicit test seams. Production callers
-    leave them unset and therefore use the event loop's resolver and a direct
-    numeric-IP ``asyncio.open_connection`` call.
-    """
-
     def __init__(
         self,
         origin: str,
@@ -197,13 +178,9 @@ class FixedOriginHttpTransport:
         self._ssl_context = _tls_context(ssl_context) if self._origin.tls else None
 
     async def post(self, request: HttpRequestLike) -> StreamingHttpResponse:
-        """Send one bounded POST and return body bytes without exposing internals."""
-
         return await self._request("POST", request)
 
     async def get(self, request: HttpRequestLike) -> StreamingHttpResponse:
-        """Send one bounded, body-free GET to the same fixed origin."""
-
         return await self._request("GET", request)
 
     async def _request(
@@ -211,8 +188,6 @@ class FixedOriginHttpTransport:
         method: str,
         request: HttpRequestLike,
     ) -> StreamingHttpResponse:
-        """Apply identical egress policy to the two approved HTTP methods."""
-
         try:
             validated = _validate_request(
                 request,
@@ -462,7 +437,8 @@ def _validate_request(
     *,
     method: str,
 ) -> _Request:
-    del origin  # The fixed origin is intentionally not caller-overridable.
+    # Origin is fixed by config, never by the caller's request
+    del origin
     try:
         path = _validated_path(value.path, allow_root=False)
         headers_value = value.headers

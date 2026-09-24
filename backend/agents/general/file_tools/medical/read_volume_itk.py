@@ -1,4 +1,6 @@
-"""``read_volume_itk`` tool: NRRD / MetaImage (.mha, .mhd) via SimpleITK."""
+"""read_volume_itk tool: parses NRRD and MetaImage (.mha/.mhd) volumes via SimpleITK,
+returning header info plus a middle-slice thumbnail.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +20,6 @@ def read_volume_itk(
     user_id: Optional[str] = None,
     **_ignored: Any,
 ) -> Dict[str, Any]:
-    """Return header info + middle-slice thumbnail for NRRD / MHA / MHD volumes."""
     att, path, err = resolve_attachment(attachment_id, user_id)
     if err is not None:
         return err
@@ -36,7 +37,8 @@ def read_volume_itk(
         return _common.error("parse_failed", f"Failed to read volume: {exc}")
 
     try:
-        arr = sitk.GetArrayFromImage(img)  # numpy; shape is (z,y,x) for 3-D
+        # SimpleITK→numpy reverses axes: array is z,y,x
+        arr = sitk.GetArrayFromImage(img)
     except Exception as exc:
         return _common.error("parse_failed", f"Failed to extract pixel data: {exc}")
 

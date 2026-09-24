@@ -1,4 +1,9 @@
-"""Action receipts, actual-dispatch fences and shared usage bounds."""
+"""Tests for persistent_agents/execution.py: dispatch receipts and fences across
+successful, failed, cancelled and rejected attempts, reservation release on
+permission loss, model usage accounting, and epoch-successor identity across
+pause/resume.
+"""
+
 from tests.helpers.session_consent_088 import synthetic_consent
 import json
 from dataclasses import replace

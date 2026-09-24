@@ -1,4 +1,7 @@
-"""Production worker wiring and control-notice integration guards for Feature 065."""
+"""Tests for voice_agent/main.py's production wiring: control-frame/notice translation,
+speak-validator boundaries, and the production DirectRtcSession/FixedPhraseTTSCache
+builder.
+"""
 
 from __future__ import annotations
 
@@ -618,8 +621,6 @@ def test_production_builder_constructs_direct_rtc_with_shared_speech_adapters() 
     assert runtime._rtc_factory is rtc_factory
     assert runtime._vad is vad_instances[0]
     assert runtime._asr._transport is transport
-    # Feature 066: the production TTS is the bounded fixed-phrase cache
-    # wrapping the exact-profile adapter.
     assert isinstance(runtime._tts, FixedPhraseTTSCache)
     assert runtime._tts._inner._transport is transport
     assert runtime._asr._api_key == "speech-key"

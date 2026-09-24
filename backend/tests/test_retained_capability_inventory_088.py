@@ -1,9 +1,8 @@
-"""T018 retention drift guards, never a substitute for integrated acceptance.
-
-The suite index points at existing behavior tests; its presence does not say
-they passed. Agent importability and synthetic clinical examples are offline
-checks only. Live permissions, credentials, devices and providers remain separate.
+"""Tests that retained legacy agent families (agents/medical/mcp_tools.py,
+orchestrator/local_agents.py) stay importable and registration-safe, with a routed
+behavior suite each; drift guards only, not integrated acceptance.
 """
+
 from __future__ import annotations
 
 import ast
@@ -15,8 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "specs/088-rewrite-integration/source-inventory.json"
 
-# Keep a runnable behavior-suite route for every frozen retained family. These
-# are test paths, not evidence statuses or a second product capability catalog.
 BEHAVIOR_SUITES = {
     "conversation_and_research": ("tests/test_inprocess_dispatch.py",
                                   "agents/web_research/tests/test_registry_contract.py",

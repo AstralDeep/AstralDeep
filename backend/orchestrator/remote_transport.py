@@ -1,27 +1,8 @@
-"""Injectable SSH transport boundary for the remote-compute agents (feature 063).
-
-All remote access flows through the single ``RemoteTransport`` protocol so the whole
-capability is exercisable in tests with no real machine, no SSH server, and no
-network (spec FR-050, SC-015). Production wires ``ParamikoTransport``; tests wire
-``FakeTransport`` via ``set_transport``.
-
-Design invariants (see specs/063-remote-compute-agents/contracts/transport.md):
-- Commands run as a **discrete argv vector** through a **login shell**
-  (``bash -lc 'exec "$@"' _ …``) — proven live to resolve Slurm on a Bright cluster
-  AND to neutralise shell metacharacters, reconciling the login-shell requirement
-  with FR-022 (no shell-string assembly).
-- A connection-time egress gate (``shared.net_guard``) runs before any socket opens,
-  AND the peer address actually connected to is verified against the gate's resolved
-  set (FR-019 anti-rebinding step).
-- Host identity is pinned by SHA256 fingerprint: recorded at first registration,
-  verified on every connection; a mismatch refuses (FR-020). No auto-accept of a
-  *changed* identity on any path.
-- Every remote operation is bounded by a wall-clock deadline; a hang surfaces the
-  ``timeout`` verdict, never an indefinite wait (FR-021).
-- ``paramiko`` is imported **lazily** (inside methods) so this module, the verdict
-  vocabulary, the argv builder, the pure host-key/bounded-read helpers, and
-  ``FakeTransport`` import and test without it.
+"""Injectable SSH transport boundary for remote-compute agents: commands run as a
+login-shell argv vector past an egress gate, yielding a fixed RemoteResult verdict.
+Production wires ParamikoTransport; tests inject FakeTransport via set_transport.
 """
+
 from __future__ import annotations
 
 import base64
@@ -36,15 +17,11 @@ from typing import Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from shared import net_guard
 
-# Hard ceiling on bytes read from a single remote command; verbs bound their own
-# typed fields far tighter (FR-040). This only prevents a runaway stream.
 MAX_OUTPUT_BYTES = 1_048_576
 _RECV_CHUNK = 65536
 
 
 class Verdict(str, Enum):
-    """The fixed result vocabulary (spec FR-034 / contracts/result-vocabulary.md)."""
-
     OK = "ok"
     PARTIAL = "partial"
     UNREACHABLE = "unreachable"
@@ -66,49 +43,37 @@ class Verdict(str, Enum):
 
 
 class RemoteTransportError(Exception):
-    """An unexpected transport-layer bug (not a remote condition).
-
-    Known remote conditions are returned as a ``RemoteResult`` with a vocabulary
-    verdict; only genuinely unexpected errors raise this, for the dispatch layer's
-    generic handler to log — a bug must never masquerade as a remote verdict.
-    """
+    pass
 
 
 class HostKeyMismatch(Exception):
-    """Raised internally when a presented host key does not match the pinned one."""
+    pass
 
 
 @dataclass
 class MachineTarget:
-    """Everything the transport needs to reach one machine — built server-side from
-    a ``remote_machine`` row + decrypted ``machine_credential``. The model never
-    supplies any of these fields (FR-018)."""
-
     machine_id: str
     label: str
     address: str
     port: int
     username: str
-    cred_type: str  # 'ssh_key' | 'password'
-    secret: str = ""  # decrypted PEM or password (transient in memory — FR-014)
+    cred_type: str
+    secret: str = ""
     passphrase: Optional[str] = None
-    host_key_fingerprint: Optional[str] = None  # 'SHA256:...'; None => first registration
+    host_key_fingerprint: Optional[str] = None
 
 
 @dataclass
 class RemoteResult:
-    """A transport outcome. ``data`` carries typed fields for the verb layer; ``stdout``
-    is internal (verbs parse it into typed fields and never pass it to the model)."""
-
     verdict: Verdict
-    machine: str  # label or id, for user-facing messages (FR-035)
+    machine: str
     next_action: str = ""
     data: Dict = field(default_factory=dict)
     stdout: str = ""
-    stderr: str = ""  # bounded; surfaced by verbs to explain a non-zero exit (FR-035)
+    stderr: str = ""
     exit_status: Optional[int] = None
-    host_key: Optional[Dict] = None  # {'type','blob_b64','fingerprint'} captured on first probe
-    retryable: bool = False  # consequential default; reads may override True
+    host_key: Optional[Dict] = None
+    retryable: bool = False
 
     @property
     def ok(self) -> bool:
@@ -116,13 +81,6 @@ class RemoteResult:
 
 
 def build_login_command(argv: List[str]) -> str:
-    """Wrap a discrete argv vector for a login-shell, injection-safe remote exec.
-
-    Produces ``bash -lc 'exec "$@"' _ <shlex-quoted argv...>``. The single sshd-exec
-    parse is covered by ``shlex.quote`` per token; ``exec "$@"`` then re-vectorises so
-    metacharacters in an argument are never interpreted (proven live). ``-l`` sources
-    the login profile so cluster tools (Slurm via env-modules) resolve on PATH.
-    """
     if not argv or not all(isinstance(a, str) for a in argv):
         raise ValueError("argv must be a non-empty list of strings")
     quoted = " ".join(shlex.quote(a) for a in argv)
@@ -130,18 +88,11 @@ def build_login_command(argv: List[str]) -> str:
 
 
 def _sha256_fingerprint(key) -> str:
-    """OpenSSH-style ``SHA256:<base64-nopad>`` fingerprint of a paramiko PKey."""
     digest = hashlib.sha256(key.asbytes()).digest()
     return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
 
 
 def evaluate_host_key(expected_fp: Optional[str], presented_fp: str) -> str:
-    """Pure host-key decision (unit-testable without paramiko).
-
-    Returns 'record' (first registration — no pin yet), 'match' (pin verified), or
-    'mismatch' (a changed/unknown key — MUST refuse). There is no path that returns
-    an accept for a changed pin (FR-020).
-    """
     if expected_fp is None:
         return "record"
     if presented_fp == expected_fp:
@@ -150,10 +101,6 @@ def evaluate_host_key(expected_fp: Optional[str], presented_fp: str) -> str:
 
 
 def _peer_in_resolved(peer_ip: Optional[str], resolved: List[str]) -> bool:
-    """True iff ``peer_ip`` normalises to one of the gate-vetted ``resolved`` addresses.
-
-    Fail-closed: an unparseable peer is treated as not-in-set.
-    """
     if not peer_ip:
         return False
     try:
@@ -171,13 +118,6 @@ def _peer_in_resolved(peer_ip: Optional[str], resolved: List[str]) -> bool:
 
 @runtime_checkable
 class RemoteTransport(Protocol):
-    """The single seam. Every method returns a ``RemoteResult`` with a vocabulary
-    verdict for known remote conditions; unexpected bugs raise ``RemoteTransportError``.
-
-    ``put_file`` writes unconditionally: the destructive ``if_exists`` decision for
-    ``upload_file`` belongs to the confirmation dispatch gate (via ``stat``), not the
-    transport (see contracts/confirmation.md — gate, not tool)."""
-
     def run(self, target: MachineTarget, argv: List[str], *, timeout: float,
             retryable: bool = False) -> RemoteResult: ...
 
@@ -190,8 +130,6 @@ class RemoteTransport(Protocol):
 
 
 class ParamikoTransport:
-    """Production transport. Imports paramiko lazily so the module loads without it."""
-
     def _host_key_policy(self, target: MachineTarget):
         import paramiko
 
@@ -210,8 +148,6 @@ class ParamikoTransport:
                 decision = evaluate_host_key(expected, fp)
                 if decision == "mismatch":
                     raise HostKeyMismatch(f"{hostname}: {fp} != pinned {expected}")
-                # 'record' (first registration — the user's deliberate act, spec R6)
-                # or 'match' => accept. There is NO accept path for a changed pin.
                 return
 
         return _Policy()
@@ -225,24 +161,20 @@ class ParamikoTransport:
             try:
                 return cls.from_private_key(StringIO(pem), password=passphrase)
             except paramiko.PasswordRequiredException:
-                raise  # missing passphrase — a credential problem (mapped to AUTH_FAILED)
+                raise
             except paramiko.SSHException as e:
                 errors.append(f"{cls.__name__}: {e}")
                 continue
         raise paramiko.SSHException("unsupported or invalid private key (" + "; ".join(errors) + ")")
 
     def _connect(self, target: MachineTarget, timeout: float):
-        """Open an authenticated SSH client. Runs the egress gate first, verifies the
-        connected peer is in the vetted set (anti-rebinding), and pins the host key.
-        Returns (client, policy) — ``policy.captured`` holds a first-probe key."""
         import paramiko
 
-        # Egress gate BEFORE any socket (FR-019). Re-resolves at connect time.
         resolved = net_guard.assert_ssh_target_allowed(target.address, target.port)
 
         client = paramiko.SSHClient()
         policy = self._host_key_policy(target)
-        client.set_missing_host_key_policy(policy)  # never load system known_hosts
+        client.set_missing_host_key_policy(policy)
 
         connect_kwargs = dict(
             hostname=target.address, port=target.port, username=target.username,
@@ -253,22 +185,17 @@ class ParamikoTransport:
             try:
                 connect_kwargs["pkey"] = self._load_private_key(target.secret, target.passphrase)
             except paramiko.SSHException as e:
-                # Bad key material or a wrong/missing passphrase is a CREDENTIAL
-                # problem, not a network one — surface it as auth_failed, not
-                # unreachable (FR-034). AuthenticationException maps to AUTH_FAILED.
                 raise paramiko.AuthenticationException(f"private key could not be loaded: {e}") from e
         else:
             connect_kwargs["password"] = target.secret
 
         client.connect(**connect_kwargs)
 
-        # FR-019 step 4: verify the address we actually connected to was one the gate
-        # vetted — closes the DNS-rebinding TOCTOU where paramiko re-resolves a name to
-        # a blocked address after the gate approved a safe one.
+        # Re-checks peer post-connect: closes a DNS-rebinding gap
         peer_ip = None
         try:
             peer_ip = client.get_transport().sock.getpeername()[0]
-        except Exception:  # noqa: BLE001 — treat an unreadable peer as unverifiable
+        except Exception:  # noqa: BLE001
             peer_ip = None
         if not _peer_in_resolved(peer_ip, resolved):
             client.close()
@@ -278,7 +205,6 @@ class ParamikoTransport:
         return client, policy
 
     def _verdict_for_exception(self, exc: Exception) -> Optional[Verdict]:
-        """Map a KNOWN exception to a vocabulary verdict, else None (=> unexpected)."""
         if isinstance(exc, net_guard.BlockedTargetError):
             return Verdict.BLOCKED_ADDRESS
         if isinstance(exc, net_guard.HostResolutionError):
@@ -287,8 +213,7 @@ class ParamikoTransport:
             return Verdict.HOST_KEY_MISMATCH
         if isinstance(exc, (socket.timeout, TimeoutError)):
             return Verdict.TIMEOUT
-        # A remote permission failure (SFTP EACCES/EPERM => PermissionError) must be
-        # distinguished from a network failure — check it BEFORE the OSError catch-all.
+        # Must precede OSError below: PermissionError is a subclass
         if isinstance(exc, PermissionError):
             return Verdict.PERMISSION_DENIED_REMOTE
         if isinstance(exc, (ConnectionError, OSError)):
@@ -305,7 +230,7 @@ class ParamikoTransport:
         ):
             return Verdict.AUTH_FAILED
         if isinstance(exc, paramiko.SSHException):
-            return Verdict.UNREACHABLE  # negotiation/protocol failure
+            return Verdict.UNREACHABLE
         return None
 
     def _result_for_exception(self, target: MachineTarget, exc: Exception,
@@ -313,22 +238,12 @@ class ParamikoTransport:
         verdict = self._verdict_for_exception(exc)
         if verdict is None:
             raise RemoteTransportError(f"unexpected transport error for {target.label}: {exc}") from exc
-        # FR-036/SC-010: a CONSEQUENTIAL (non-retryable) call whose deadline expired
-        # has an unknown outcome — the command may or may not have taken effect.
-        # Surface the honest ``unconfirmed`` (verify before re-issuing), never a
-        # ``timeout`` the caller might treat as safely re-attemptable.
         if verdict is Verdict.TIMEOUT and not retryable:
             verdict = Verdict.UNCONFIRMED
         return RemoteResult(verdict=verdict, machine=target.label,
                             next_action=_NEXT_ACTION.get(verdict, ""), retryable=retryable)
 
     def _read_bounded(self, chan, timeout: float) -> Tuple[bytes, bool]:
-        """Read stdout with a wall-clock deadline and a size cap.
-
-        Returns (bytes, truncated). Raises ``TimeoutError`` if the command produces
-        no output / never completes within ``timeout`` (paramiko-free; testable with a
-        fake channel). Closing the channel on over-cap unblocks a remote stuck on
-        write() so it cannot wedge the worker (the HIGH finding)."""
         deadline = time.monotonic() + timeout
         buf = bytearray()
         while len(buf) <= MAX_OUTPUT_BYTES:
@@ -343,13 +258,10 @@ class ParamikoTransport:
             if time.monotonic() > deadline:
                 chan.close()
                 raise TimeoutError("command exceeded its time bound")
-        chan.close()  # over cap: stop consuming, unblock the remote
+        chan.close()
         return bytes(buf[:MAX_OUTPUT_BYTES]), True
 
     def _drain_stderr(self, chan, cap: int = 16384) -> str:
-        """Best-effort bounded read of buffered stderr AFTER the command has exited
-        (stdout already read to EOF, so stderr is complete). Never raises; used only
-        to explain a non-zero exit — the transport still returns typed verdicts."""
         buf = bytearray()
         try:
             while len(buf) < cap and chan.recv_stderr_ready():
@@ -362,8 +274,6 @@ class ParamikoTransport:
         return bytes(buf).decode("utf-8", "replace")
 
     def _await_exit(self, chan, timeout: float, truncated: bool) -> Optional[int]:
-        """Wait for the exit status within the deadline (never unbounded). Returns None
-        when output was truncated (channel already closed)."""
         if truncated:
             return None
         deadline = time.monotonic() + timeout
@@ -376,7 +286,7 @@ class ParamikoTransport:
 
     def run(self, target: MachineTarget, argv: List[str], *, timeout: float,
             retryable: bool = False) -> RemoteResult:
-        command = build_login_command(argv)  # validate + build BEFORE connecting (fail fast; Fake parity)
+        command = build_login_command(argv)
         client = None
         try:
             client, _ = self._connect(target, timeout)
@@ -389,7 +299,7 @@ class ParamikoTransport:
                                 stdout=out.decode("utf-8", "replace"), stderr=stderr_text,
                                 exit_status=exit_status, retryable=retryable,
                                 data={"truncated": truncated})
-        except Exception as exc:  # noqa: BLE001 — mapped to vocabulary or re-raised
+        except Exception as exc:  # noqa: BLE001
             return self._result_for_exception(target, exc, retryable=retryable)
         finally:
             if client is not None:
@@ -401,7 +311,7 @@ class ParamikoTransport:
             client, _ = self._connect(target, timeout)
             sftp = client.open_sftp()
             try:
-                sftp.get_channel().settimeout(timeout)  # bound the SFTP op (FR-021)
+                sftp.get_channel().settimeout(timeout)
                 try:
                     sftp.stat(remote_path)
                     exists = True
@@ -424,10 +334,8 @@ class ParamikoTransport:
             client, _ = self._connect(target, timeout)
             sftp = client.open_sftp()
             try:
-                sftp.get_channel().settimeout(timeout)  # bound the SFTP op (FR-021)
+                sftp.get_channel().settimeout(timeout)
                 from io import BytesIO
-                # Writes unconditionally: the destructive if_exists decision is the
-                # confirmation gate's job (via stat), not the transport's.
                 sftp.putfo(BytesIO(data), remote_path)
             finally:
                 sftp.close()
@@ -469,13 +377,6 @@ _NEXT_ACTION = {
 
 
 class FakeTransport:
-    """In-memory transport double for tests — no paramiko, no socket.
-
-    Still runs the egress gate on the target address so gate behaviour is exercised
-    end-to-end, and validates argv shape and ordering exactly as ParamikoTransport
-    does (both validate argv before the gate). Configure outcomes via the constructor.
-    """
-
     def __init__(self, *, reachable: bool = True, authenticated: bool = True,
                  host_key: Optional[Dict] = None, files: Optional[Dict[str, bytes]] = None,
                  command_stdout: str = "", command_exit: int = 0, command_stderr: str = "",
@@ -488,7 +389,7 @@ class FakeTransport:
         self.command_exit = command_exit
         self.command_stderr = command_stderr
         self.force_verdict = force_verdict
-        self.calls: List[Dict] = []  # recorded for assertions
+        self.calls: List[Dict] = []
 
     def _gate(self, target: MachineTarget) -> Optional[RemoteResult]:
         try:
@@ -508,8 +409,6 @@ class FakeTransport:
             return blocked
         if self.force_verdict is not None:
             verdict = self.force_verdict
-            # Mirror ParamikoTransport: a consequential timeout surfaces as
-            # ``unconfirmed`` (FR-036/SC-010), so verb tests see production verdicts.
             if verdict is Verdict.TIMEOUT and not retryable:
                 verdict = Verdict.UNCONFIRMED
             return RemoteResult(verdict=verdict, machine=target.label,
@@ -524,7 +423,7 @@ class FakeTransport:
 
     def run(self, target: MachineTarget, argv: List[str], *, timeout: float,
             retryable: bool = False) -> RemoteResult:
-        build_login_command(argv)  # validate argv shape before the gate, as production does
+        build_login_command(argv)
         self.calls.append({"op": "run", "argv": list(argv)})
         pre = self._precheck(target, retryable=retryable)
         if pre is not None:
@@ -548,7 +447,6 @@ class FakeTransport:
         pre = self._precheck(target, retryable=False)
         if pre is not None:
             return pre
-        # Writes unconditionally (the if_exists decision is the confirmation gate's job).
         self.files[remote_path] = data
         return RemoteResult(verdict=Verdict.OK, machine=target.label,
                             data={"path": remote_path, "bytes": len(data)})
@@ -562,13 +460,10 @@ class FakeTransport:
                             data={"authenticated": True}, host_key=self.host_key, retryable=True)
 
 
-# --- Injection seam (mirrors llm_config.client_factory) ------------------------
-
 _transport: Optional[RemoteTransport] = None
 
 
 def get_transport() -> RemoteTransport:
-    """Return the process transport (lazily defaulting to ParamikoTransport)."""
     global _transport
     if _transport is None:
         _transport = ParamikoTransport()
@@ -576,6 +471,5 @@ def get_transport() -> RemoteTransport:
 
 
 def set_transport(transport: Optional[RemoteTransport]) -> None:
-    """Override the transport (tests wire a FakeTransport; None resets to default)."""
     global _transport
     _transport = transport

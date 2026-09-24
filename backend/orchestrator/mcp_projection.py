@@ -1,4 +1,8 @@
-"""Per-principal projection of Astral's live tool catalog into MCP tools."""
+"""Projects the caller's live tool catalog into MCP tool definitions, gating each by the
+normal chat visibility and permission checks, or, for a resolved framework
+credential, by that credential's own scopes alone. Used by mcp_server_endpoint.py.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -9,17 +13,8 @@ from shared.schema_validation import JSON_SCHEMA_2020_12
 
 from orchestrator.tool_visibility import eligible_tool_pairs
 
-#: The pseudo agent id a projected Work tool carries so
-#: ``mcp_server_endpoint.py`` can route ``tools/call`` to
-#: ``orchestrator.work_operations`` instead of ``orchestrator.execute_mcp_tool``
-#: without importing that module here (kept import-light and Deep-internal).
 FRAMEWORK_WORK_AGENT_ID = "__work__"
 
-# 088 T049: Work tools projected ONLY for a resolved framework credential
-# (``claims["_framework_scopes"]`` — never present on an ordinary JWT), gated
-# per tool by the credential's own scope. Only names
-# ``orchestrator.work_operations.DISPATCHABLE_TOOL_NAMES`` lists are here —
-# never advertise a tool this server cannot actually execute.
 _OPERATION_ID = {"type": "string", "description": "The operation id returned by astral_submit_operation."}
 _WORK_TOOL_SPECS: dict[str, dict[str, Any]] = {
     "astral_submit_operation": {
@@ -156,8 +151,6 @@ def _eligible_pairs(
     user_id: str,
     claims: dict[str, Any] | None = None,
 ) -> list[tuple[str, Any]]:
-    """Mirror the normal-chat visibility and permission gates, fail closed."""
-
     disabled = set(orchestrator.tool_permissions.list_disabled_agents(user_id))
     return eligible_tool_pairs(
         orchestrator,
@@ -172,12 +165,6 @@ def project_tools(
     user_id: str,
     claims: dict[str, Any] | None = None,
 ) -> tuple[ProjectedTool, ...]:
-    # 088 T049: a resolved framework credential is a wholly separate, closed
-    # credential class — it never sees the interactive chat-tool catalog
-    # (built-in agents, drafts, BYO agents, ...), only the Work tools its OWN
-    # scopes admit. ``_framework_scopes`` is set exclusively by
-    # ``mcp_authz.authorize_mcp_request``'s framework branch, never present on
-    # an ordinary JWT's claims, so this branch cannot be reached any other way.
     if isinstance(claims, dict) and claims.get("_framework_scopes"):
         return _framework_tools(claims)
     pairs = _eligible_pairs(orchestrator, user_id, claims)

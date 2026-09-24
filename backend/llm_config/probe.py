@@ -1,14 +1,8 @@
-"""Shared connection-probe helper (features 006 + 054).
-
-One implementation of the real ``chat.completions.create(max_tokens=1)``
-probe, used by both the REST endpoint (``POST /api/llm/test``) and — since
-feature 054 — the server-side save path (``llm_config_set`` /
-``chrome_llm_save`` / the admin system-credential save), which MUST NOT
-persist a configuration that has not just passed a probe (spec FR-008).
-
-Credentials are used transiently for a one-shot client and discarded; they
-are never stored or logged here.
+"""Shared connection-probe helper used by llm_config/api.py and every server-side
+credential save path: runs a minimal chat.completions.create and classifies failures,
+without storing or logging the credentials.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,18 +10,11 @@ from typing import Optional, Tuple
 
 from openai import OpenAI
 
-# Feature 060 (FR-055/FR-056): the provider probe must leave enough of the
-# server-owned ten-second credential-save attempt for persistence, gate
-# unlock, and durable terminalization.  The SDK timeout alone is not a hard
-# async bound (DNS/TLS and a stuck worker thread can outlive it), so the call
-# below also has an event-loop-owned deadline.
+# Leaves headroom under the caller's overall save deadline
 PROBE_TIMEOUT_SECONDS: float = 8.0
 
 
 def classify_probe_error(exc: BaseException) -> str:
-    """Map an OpenAI-SDK exception to a Test-Connection ``error_class``
-    (taxonomy from specs/006-user-llm-config/contracts/rest-llm-test.md).
-    """
     s = str(exc).lower()
     if (
         "401" in s
@@ -55,11 +42,6 @@ async def probe_chat_completion(
     *, api_key: str, base_url: str, model: str,
     timeout: float = PROBE_TIMEOUT_SECONDS,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
-    """Run the minimal chat-completions probe.
-
-    Returns ``(ok, error_class, upstream_message)`` — ``error_class`` and
-    ``upstream_message`` are ``None`` on success. Never raises.
-    """
     def _run():
         from .client_factory import openai_auth_kwargs
 

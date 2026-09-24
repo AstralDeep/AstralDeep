@@ -1,25 +1,16 @@
-"""Shared heuristics for turning fetched HTML into readable, chrome-free text.
-
-The web_research and summarizer agents both extract readable text from fetched
-pages with stdlib ``html.parser``. This module centralizes the parts that keep
-that text clean: skipping navigation/boilerplate elements by their class/id/role
-(not just by semantic tag), dropping known boilerplate lines (gov banners, skip
-links, cookie notices), and dropping unbroken junk blobs (base64/serialized
-state) that carry no meaning and overflow the UI. Stdlib only — no new deps.
+"""Shared HTML-to-readable-text heuristics for fetched pages: skips
+navigation/boilerplate chrome and drops unbroken junk-token blobs. Used by
+agents/summarizer and agents/web_research mcp_tools.py to clean fetched page content.
 """
 
 import re
 from typing import List, Sequence, Tuple
 
-#: Void elements never have a matching end tag, so a skipped subtree must not
-#: increment its depth counter on them (or the counter would never unwind).
 VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
     "meta", "param", "source", "track", "wbr",
 })
 
-#: Bare ``menu`` is ambiguous: content lists use it too. Require an explicit
-#: navigation role or a clearly qualified site-navigation class/id instead.
 _SKIP_ATTR_RE = re.compile(
     r"(?:^|[\s_-])(?:nav|navbar|navigation|(?:site|main|global|mobile)[_-]menu|"
     r"megamenu|header|masthead|"
@@ -31,13 +22,10 @@ _SKIP_ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: Explicit ARIA navigation/menu roles and landmarks denote page chrome.
 _SKIP_ROLES = frozenset({
     "navigation", "menu", "menubar", "banner", "search", "contentinfo", "complementary",
 })
 
-#: Whole lines that are pure boilerplate — gov banners, skip links, cookie/legal
-#: chrome — matched after any leading markdown markers are stripped.
 _BOILERPLATE_RE = re.compile(
     r"^(?:skip to (?:main )?content"
     r"|an official website of the .*government"
@@ -56,13 +44,10 @@ _BOILERPLATE_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: A base64/base64url/hex-ish token: the shape of serialized state, hashes, and
-#: inline data blobs. URLs are excluded because they contain ``:`` / ``.`` / ``?``.
 _JUNK_TOKEN_RE = re.compile(r"^[A-Za-z0-9+/=_-]{120,}$")
 
 
 def should_skip_attrs(attrs: Sequence[Tuple[str, object]]) -> bool:
-    """True when an element's class / id / role marks it as navigation/chrome."""
     for name, value in attrs:
         val = "" if value is None else str(value)
         if name in ("class", "id") and val and _SKIP_ATTR_RE.search(val):
@@ -75,7 +60,6 @@ def should_skip_attrs(attrs: Sequence[Tuple[str, object]]) -> bool:
 
 
 def _is_junk_block(block: str) -> bool:
-    """True for a block that is a single very long unbroken non-prose token."""
     b = block.strip()
     if not b or " " in b or "\n" in b:
         return False
@@ -83,12 +67,6 @@ def _is_junk_block(block: str) -> bool:
 
 
 def clean_page_text(text: str) -> str:
-    """Drop boilerplate lines and unbroken junk-token blobs from extracted text.
-
-    Blocks are the ``\\n\\n``-separated units the extractors emit. A block is
-    dropped when, after stripping any leading markdown markers, it matches a
-    boilerplate pattern, or when it is a lone base64/serialized-state token.
-    """
     kept: List[str] = []
     for block in text.split("\n\n"):
         b = block.strip()
@@ -104,6 +82,5 @@ def clean_page_text(text: str) -> str:
 
 
 def source_markdown(url: str) -> str:
-    """A markdown source-attribution line for auditability of fetched content."""
     clean = str(url or "").strip()
     return f"Source: [{clean}]({clean})"

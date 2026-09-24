@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""Run Android's separately pinned next-major toolchain in an isolated copy.
-
-The declaration may truthfully say that the requested major is not published
-yet. That state is never a passing canary: the default command exits with
-``EX_UNAVAILABLE``. CI may explicitly request an availability diagnostic, which
-re-queries the official AGP and Gradle metadata and succeeds until stable public
-releases exist for both majors. Prereleases never activate the canary. Once
-exact stable artifacts are declared by a separately authorized future change,
-the runner replaces only the isolated copy's AGP/wrapper pins, proves the
-versions resolved by Gradle itself, and runs configuration, lint, tests, and
-assembly with warnings as errors.
+"""Runs Android's separately pinned next-major Gradle/AGP toolchain against an isolated
+checkout copy, replacing only that copy's pins once stable public releases exist;
+exits EX_UNAVAILABLE rather than pass when they don't.
 """
 
 from __future__ import annotations
@@ -112,8 +104,6 @@ KNOWN_BLOCKERS = (
 
 
 class CanaryError(RuntimeError):
-    """Base class for stable next-major canary failures."""
-
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -121,21 +111,19 @@ class CanaryError(RuntimeError):
 
 
 class CanaryConfigError(CanaryError):
-    """Raised when pins or source configuration cannot prove the contract."""
+    pass
 
 
 class CanaryUnavailable(CanaryError):
-    """Raised when both stable official next-major artifacts are not published."""
+    pass
 
 
 class CanaryExecutionError(CanaryError):
-    """Raised when the isolated next-major Gradle execution fails."""
+    pass
 
 
 @dataclass(frozen=True)
 class CanaryPins:
-    """Strict, separately declared Android next-major toolchain inputs."""
-
     availability: str
     availability_checked_on: str
     agp_major: int
@@ -152,8 +140,6 @@ class CanaryPins:
 
 @dataclass(frozen=True)
 class ShippingToolchain:
-    """Exact AGP and Gradle versions declared by the shipping Android source."""
-
     agp_version: str
     gradle_version: str
 
@@ -231,14 +217,6 @@ def _official_https_url(value: str, *, key: str, hosts: frozenset[str]) -> str:
 
 
 def load_pins(path: Path | str) -> CanaryPins:
-    """Load and fail-closed validate one exact canary declaration.
-
-    ``unreleased`` declarations must use the literal ``UNRELEASED`` instead of
-    a guessed version/checksum. ``available`` declarations require exact
-    stable versions whose majors match their independent major pins and an
-    official Gradle distribution URL plus lowercase SHA-256.
-    """
-
     path = Path(path).resolve()
     values = _read_properties(path)
     if values["schema_version"] != "1":
@@ -357,8 +335,6 @@ def load_pins(path: Path | str) -> CanaryPins:
 
 
 def inspect_shipping_toolchain(source_root: Path | str) -> ShippingToolchain:
-    """Read exact shipping AGP and Gradle pins from the Android source tree."""
-
     source_root = Path(source_root).resolve()
     try:
         catalog = (source_root / "gradle" / "libs.versions.toml").read_text(
@@ -383,8 +359,6 @@ def inspect_shipping_toolchain(source_root: Path | str) -> ShippingToolchain:
 
 
 def verify_migration_blockers_removed(source_root: Path | str) -> None:
-    """Reject known AGP/Gradle-10 removal blockers in shipping build logic."""
-
     source_root = Path(source_root).resolve()
     for relative, pattern in KNOWN_BLOCKERS:
         path = source_root / relative
@@ -430,8 +404,6 @@ def _fetch_official_metadata(url: str) -> bytes:
 
 
 def _has_major(versions: Sequence[str], major: int) -> bool:
-    """Return whether official metadata contains a stable release for ``major``."""
-
     for version in versions:
         match = STABLE_VERSION.fullmatch(version)
         if match is not None and int(match.group("major")) == major:
@@ -442,8 +414,6 @@ def _has_major(versions: Sequence[str], major: int) -> bool:
 def probe_official_availability(
     pins: CanaryPins, *, fetcher: MetadataFetcher = _fetch_official_metadata
 ) -> dict[str, bool]:
-    """Report whether each target major has a stable official release."""
-
     try:
         agp_root = ET.fromstring(fetcher(pins.agp_metadata_url))
         agp_versions = [
@@ -473,8 +443,6 @@ def probe_official_availability(
 def validate_unreleased_declaration(
     pins: CanaryPins, availability: Mapping[str, bool]
 ) -> None:
-    """Fail when official metadata makes an unreleased declaration stale."""
-
     if pins.availability != "unreleased":
         raise CanaryConfigError(
             "availability_state_mismatch", "expected an unreleased declaration"
@@ -599,6 +567,7 @@ def _one_resolved(pattern: re.Pattern[str], output: str, label: str) -> str:
     return matches[0]
 
 
+# Removal warnings must fail here; that's the canary's point
 def run_canary(
     properties_path: Path | str,
     *,
@@ -606,13 +575,6 @@ def run_canary(
     temp_parent: Path | str | None = None,
     command_runner: CommandRunner = _default_command_runner,
 ) -> dict[str, Any]:
-    """Execute the exact next-major pins in a temporary Android checkout.
-
-    The temporary directory is removed by ``TemporaryDirectory`` after success,
-    a Gradle failure, a timeout, or a version assertion failure. Every Gradle
-    invocation includes ``--warning-mode=fail`` so removal warnings are fatal.
-    """
-
     pins = load_pins(properties_path)
     if source_root is None:
         source_root = (
@@ -711,8 +673,6 @@ def _write_report(path: Path | None, report: Mapping[str, Any]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the canary or an explicit official-unavailability diagnostic."""
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("properties", type=Path)
     parser.add_argument("--source-root", type=Path)

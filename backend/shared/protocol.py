@@ -1,13 +1,8 @@
+"""Wire message types for MCP tool calls, UI render/update frames, Agent2Agent
+registration, and voice/conversation protocols, each self-validating. Imported by
+every agent's mcp_server.py and the orchestrator's dispatch and chat pipelines.
 """
-Protocol message types for inter-agent communication.
 
-Defines:
-- MCP Protocol: MCPRequest, MCPResponse
-- UI Protocol: UIEvent, UIRender, UIUpdate, UIAppend
-- A2A Protocol: AgentCard, AgentSkill, RegisterAgent, RegisterUI
-- Tool Streaming: ToolStreamData, ToolStreamEnd, ToolStreamCancel
-  (see specs/001-tool-stream-ui/contracts/protocol-messages.md §B)
-"""
 import json
 import re
 import uuid
@@ -39,7 +34,7 @@ _VOICE_CONTROL_BINDING_MAX_LIFETIME = timedelta(minutes=10)
 
 
 class ProtocolValidationError(ValueError):
-    """A wire value failed its public protocol contract."""
+    pass
 
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
@@ -53,8 +48,6 @@ MCP_RESULT_COMPLETE = "complete"
 
 
 class MCPProtocolError(ProtocolValidationError):
-    """A modern MCP envelope cannot be processed safely."""
-
     def __init__(
         self,
         code: int,
@@ -78,8 +71,6 @@ class MCPProtocolError(ProtocolValidationError):
 
 
 def _known_dataclass_fields(cls: type, data: Mapping[str, Any]) -> Dict[str, Any]:
-    """Keep additive wire fields from crashing a version-skewed reader."""
-
     valid_fields = {item.name for item in fields(cls)}
     return {key: value for key, value in data.items() if key in valid_fields}
 
@@ -126,14 +117,6 @@ def _require_rfc3339_utc(value: object, field_name: str) -> str:
 
 
 def _validate_chat_selection(value: object) -> None:
-    """The closed version-1 composer selection shape (088 T011/T037).
-
-    Mirrors ``orchestrator.work_submit._selected_ids`` exactly — the same
-    input is accepted or refused identically whether it arrives on an
-    interactive Work admission or on an ordinary chat message. Existence and
-    freshness of the referenced heads are NOT checked here (that happens once,
-    per turn, against the live Plane rows); this is shape only.
-    """
     if (
         not isinstance(value, dict)
         or set(value) != {"version", "agent", "skills", "notes"}
@@ -307,7 +290,6 @@ def _reject_json_duplicate_keys(
 def _reject_json_constant(_value: str) -> None:
     raise ProtocolValidationError("message contains a non-finite JSON number")
 
-# --- Base Message ---
 @dataclass
 class Message:
     type: str
@@ -331,9 +313,6 @@ class Message:
             raise ProtocolValidationError("message must be a JSON object")
         msg_type = data.get('type')
         if msg_type == 'mcp_request':
-            # Filter unknown keys so older peers parsing newer MCP envelopes
-            # (and vice versa) survive additive fields instead of silently
-            # dropping the frame and leaving its caller to time out.
             return MCPRequest(**_known_dataclass_fields(MCPRequest, data))
         elif msg_type == 'mcp_response':
             return MCPResponse(**_known_dataclass_fields(MCPResponse, data))
@@ -424,40 +403,18 @@ class Message:
             return VoiceLocalPlayoutEvent.from_dict(data)
         return Message(**data)
 
-# --- MCP Protocol Wrappers ---
 @dataclass
 class MCPRequest(Message):
-    """A tool-call request from orchestrator to agent.
-
-    For streaming tools (001-tool-stream-ui), the orchestrator sets the
-    following conventional keys inside ``params`` (no schema change required
-    because params is already an open dict):
-
-    - ``_stream``: ``True`` when the orchestrator wants the agent to treat
-      the request as long-lived and emit ``ToolStreamData`` chunks instead of
-      a single ``MCPResponse``.
-    - ``_stream_id``: The canonical ``stream_id`` the agent must echo on
-      every emitted chunk so the orchestrator can correlate them back to the
-      originating ``StreamSubscription``.
-
-    Agents that do not understand these keys (e.g. when ``FF_TOOL_STREAMING``
-    is off) MUST ignore them and run the tool to completion as a normal
-    one-shot call.
-    """
     type: str = "mcp_request"
     request_id: str = ""
     method: str = ""
     params: Dict[str, Any] = field(default_factory=dict)
-    # 064 Phase A: per-request modern MCP metadata stays on the envelope. It
-    # must never be injected into params["arguments"], because several agents
-    # intentionally splat that mapping into a tool signature.
+    # Never merge into params — some agents splat params as kwargs
     protocol_version: Optional[str] = None
     caller_capabilities: Optional[Dict[str, Any]] = None
     caller_info: Optional[Dict[str, Any]] = None
 
     def validate_protocol_metadata(self, *, allow_legacy: bool = True) -> None:
-        """Validate modern metadata without inferring cross-request state."""
-
         modern_declared = any(
             value is not None
             for value in (
@@ -494,14 +451,7 @@ class MCPResponse(Message):
     result: Optional[Any] = None
     error: Optional[Dict[str, Any]] = None
     ui_components: Optional[List[Dict[str, Any]]] = None
-    # Feature 004: correlation_id propagated from the orchestrator's
-    # ToolDispatchAudit context so every produced UI component can be
-    # tagged with the originating tool dispatch's audit correlation_id.
-    # The orchestrator stamps this onto the response after the audit
-    # context closes; agents do not set it.
     correlation_id: Optional[str] = None
-    # 064 Phase A: the internal snake_case projection of MCP Result.resultType
-    # plus the SHOULD-level identity of the responder.
     result_type: str = MCP_RESULT_COMPLETE
     responder_info: Optional[Dict[str, Any]] = None
 
@@ -526,16 +476,6 @@ class MCPResponse(Message):
 
 @dataclass
 class AgentHopRequest(Message):
-    """056 US1 — an agent's request for a MEDIATED hop to a peer agent's tool.
-
-    Sent by ``AgentRuntime.call_agent_tool`` over the agent's existing control
-    channel (the in-process loopback for built-ins, the agent WebSocket for
-    networked agents) — never a peer connection. The orchestrator resolves the
-    hop against its OWN dispatch record for ``parent_request_id`` (the
-    initiator supplies no authority) and re-enters the full single-path gate
-    stack under a freshly minted child delegation. Backend-internal: not part
-    of the client UI protocol (ui_protocol.json unchanged).
-    """
     type: str = "agent_hop_request"
     request_id: str = ""
     parent_request_id: str = ""
@@ -546,27 +486,16 @@ class AgentHopRequest(Message):
 
 @dataclass
 class AgentHopResponse(Message):
-    """056 US1 — the mediated hop's outcome, delivered back to the initiator.
-
-    ``response`` carries the peer MCPResponse fields (result/error/
-    ui_components). For in-process initiators the orchestrator resolves the
-    awaiting future directly; this frame is the networked-agent delivery.
-    """
     type: str = "agent_hop_response"
     request_id: str = ""
     response: Optional[Dict[str, Any]] = None
 
-# --- UI Protocol ---
 @dataclass
 class UIEvent(Message):
     type: str = "ui_event"
     action: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
     session_id: Optional[str] = None
-    # Feature 060: client-created operation identity is carried at the frame
-    # boundary as well as in payload for thin-client compatibility.  These
-    # fields are optional only for direct/internal legacy seams; the finite
-    # connection ingress requires both before admission.
     submission_id: Optional[str] = None
     request_generation: Optional[str] = None
     connection_generation: Optional[str] = None
@@ -577,8 +506,6 @@ class UIEvent(Message):
         self.validate()
 
     def validate(self) -> None:
-        """Validate the open action payload and every supplied scope identity."""
-
         if self.type != "ui_event":
             raise ProtocolValidationError("type must be ui_event")
         _require_snake_case(self.action, "action")
@@ -591,8 +518,6 @@ class UIEvent(Message):
                 )
             VoiceOrigin.from_dict(self.payload["voice_origin"])
         if "selection" in self.payload:
-            # 088 T011/T037 — additive optional composer selection; absent on
-            # every message today, so this branch is presently never taken.
             if self.action != "chat_message":
                 raise ProtocolValidationError(
                     "selection is valid only on the chat_message action"
@@ -652,8 +577,6 @@ class UIEvent(Message):
 
     @property
     def voice_origin(self) -> Optional["VoiceOrigin"]:
-        """Return a validated voice binding without mutating the open payload."""
-
         value = self.payload.get("voice_origin")
         if value is None:
             return None
@@ -666,13 +589,6 @@ class UIEvent(Message):
 
 @dataclass(frozen=True)
 class VoiceOrigin:
-    """Immutable proof-bearing origin copied onto a normal chat message.
-
-    This parser validates the complete public shape only. Equality with
-    server-created turn state, proof freshness, and constant-time proof
-    verification remain at the authenticated ingress boundary (T071).
-    """
-
     schema_version: str
     session_id: str
     generation: int
@@ -756,8 +672,6 @@ class VoiceOrigin:
 
 @dataclass
 class CorrelatedNewChat(UIEvent):
-    """Strict idempotent ordinary ``new_chat`` action used by voice start."""
-
     action: str = "new_chat"
     schema_version: str = _VOICE_SCHEMA_VERSION
 
@@ -838,8 +752,6 @@ class CorrelatedNewChat(UIEvent):
 
 @dataclass
 class ChatCreated(Message):
-    """Strict owner-validated reply to :class:`CorrelatedNewChat`."""
-
     type: str = "chat_created"
     schema_version: str = _VOICE_SCHEMA_VERSION
     connection_generation: str = ""
@@ -920,8 +832,6 @@ class ChatCreated(Message):
 
 @dataclass
 class VoiceControlBinding(Message):
-    """One-use delivery frame for an opaque, memory-only control bearer."""
-
     type: str = "voice_control_binding"
     schema_version: str = _VOICE_SCHEMA_VERSION
     device_id: str = ""
@@ -960,8 +870,6 @@ class VoiceControlBinding(Message):
         received_at: datetime,
         credential_expires_at: datetime,
     ) -> None:
-        """Reject a stale bearer or one that outlives its bounded authority."""
-
         self.validate()
         received = _require_aware_datetime(received_at, "received_at")
         credential_expiry = _require_aware_datetime(
@@ -980,8 +888,6 @@ class VoiceControlBinding(Message):
             )
 
     def redacted_dict(self) -> Dict[str, Any]:
-        """Return the only representation safe for diagnostics."""
-
         self.validate()
         return {
             "type": self.type,
@@ -1016,8 +922,6 @@ class VoiceControlBinding(Message):
 
 
 class VoiceControlBindingMemory:
-    """Ephemeral per-socket binding slot with rotation and expiry fencing."""
-
     __slots__ = ("_current",)
 
     def __init__(self) -> None:
@@ -1033,8 +937,6 @@ class VoiceControlBindingMemory:
         received_at: datetime,
         credential_expires_at: datetime,
     ) -> None:
-        """Install a fresh bearer and irreversibly supersede the prior one."""
-
         if not isinstance(binding, VoiceControlBinding):
             raise ProtocolValidationError("binding must be a voice control binding")
         binding.validate_lifetime(
@@ -1063,8 +965,6 @@ class VoiceControlBindingMemory:
         connection_generation: str,
         at: datetime,
     ) -> Optional[VoiceControlBinding]:
-        """Return only a live exact-scope binding, clearing expired memory."""
-
         _require_uuid4(device_id, "device_id")
         _require_uuid4(connection_generation, "connection_generation")
         now = _require_aware_datetime(at, "at")
@@ -1082,8 +982,6 @@ class VoiceControlBindingMemory:
         return current
 
     def clear(self) -> None:
-        """Drop the bearer synchronously on socket/auth teardown."""
-
         self._current = None
 
 
@@ -1103,8 +1001,6 @@ _VOICE_LOCAL_KINDS = {
 
 @dataclass
 class _VoiceLocalCommon(Message):
-    """Shared strict identity fence for client-local schema-v2 frames."""
-
     type: str = ""
     schema_version: str = "2"
     speech_backend: str = "client_local"
@@ -1524,8 +1420,6 @@ class VoiceLocalPlayoutEvent(_VoiceLocalCommon):
 
 @dataclass
 class UserMessageAcknowledged(Message):
-    """Durable message acceptance with complete retry correlation."""
-
     type: str = "user_message_acked"
     schema_version: str = _VOICE_SCHEMA_VERSION
     chat_id: str = ""
@@ -1575,8 +1469,6 @@ class UserMessageAcknowledged(Message):
 
 @dataclass
 class VoiceSubmissionRejected(Message):
-    """Terminal, fully correlated refusal of one voice-origin submission."""
-
     type: str = "voice_submission_rejected"
     schema_version: str = _VOICE_SCHEMA_VERSION
     session_id: str = ""
@@ -1668,8 +1560,6 @@ class VoiceSubmissionRejected(Message):
 
 @dataclass
 class VoicePlayoutEvent(Message):
-    """Content-free local playout observation; never a UI action or task."""
-
     type: str = "voice_playout_event"
     schema_version: str = _VOICE_SCHEMA_VERSION
     device_id: str = ""
@@ -1797,8 +1687,6 @@ class VoicePlayoutEvent(Message):
         return data
 
     def to_wire_json(self) -> str:
-        """Serialize without recursively invoking validation."""
-
         return _voice_json(self._wire_dict())
 
     def to_json(self) -> str:
@@ -1818,41 +1706,23 @@ class VoicePlayoutEvent(Message):
         return frame
 
 
-# --- Feature 004 UI event action names ---------------------------------
-# The UIEvent message above is open (action is a free string; payload is
-# a free dict) so adding new actions does not require a new dataclass.
-# These constants exist purely to make the wire contract greppable and to
-# document the valid set in one place.
-
-# Client → server
 UI_ACTION_COMPONENT_FEEDBACK = "component_feedback"
 UI_ACTION_FEEDBACK_RETRACT = "feedback_retract"
 UI_ACTION_FEEDBACK_AMEND = "feedback_amend"
 
-# Server → client (delivered as ui_event messages on the same socket).
 UI_ACTION_COMPONENT_FEEDBACK_ACK = "component_feedback_ack"
 UI_ACTION_COMPONENT_FEEDBACK_ERROR = "component_feedback_error"
 UI_ACTION_FEEDBACK_RETRACT_ACK = "feedback_retract_ack"
 UI_ACTION_FEEDBACK_AMEND_ACK = "feedback_amend_ack"
 
-# Optional metadata key attached to each component dict in UIRender.components
-# when the component originated from a tool dispatch. The value is the
-# audit-log correlation_id of that dispatch (string). Frontend consumers
-# treat this as an opaque identifier used to scope feedback submissions.
 UI_RENDER_META_CORRELATION_ID = "_source_correlation_id"
 
 @dataclass
 class UIRender(Message):
     type: str = "ui_render"
     components: List[Dict[str, Any]] = field(default_factory=list)
-    target: str = "canvas"  # "canvas" for SDUI main area, "chat" for floating chat panel
-    # Feature 026: server-rendered HTML for web clients (orchestrator renders
-    # astralprims primitives via webrender). Structured `components` remain on
-    # the wire for programmatic/non-web consumers (FR-018).
+    target: str = "canvas"
     html: Optional[str] = None
-    # Feature 051: spoken rendition attached ONLY for watch-profile sockets
-    # ({"ssml": ..., "text": ...}); ABSENT — not null — everywhere else
-    # (contracts/spoken-rendition.md).
     speech: Optional[Dict[str, str]] = None
 
     def to_json(self) -> str:
@@ -1865,7 +1735,7 @@ class UIRender(Message):
 class UIUpdate(Message):
     type: str = "ui_update"
     components: List[Dict[str, Any]] = field(default_factory=list)
-    html: Optional[str] = None  # Feature 026: server-rendered HTML (see UIRender)
+    html: Optional[str] = None
 
 @dataclass
 class UIAppend(Message):
@@ -1876,19 +1746,9 @@ class UIAppend(Message):
 
 @dataclass
 class UIUpsert(Message):
-    """Feature 028 — partial workspace update (additive to the 026 contract).
-
-    Each op carries BOTH the ROTE-adapted structured component dict and the
-    web renderer's HTML projection of exactly that dict, mirroring the
-    ``ui_stream_data`` dual shape so non-web targets consume the structured
-    layer (026 FR-018). ``op`` is ``"upsert"`` (replace node by
-    ``data-component-id``, else append) or ``"remove"``.
-    """
     type: str = "ui_upsert"
     chat_id: str = ""
     ops: List[Dict[str, Any]] = field(default_factory=list)
-    # Feature 051: spoken rendition of this delivery's upserted content for
-    # watch-profile sockets; absent elsewhere (contracts/spoken-rendition.md).
     speech: Optional[Dict[str, str]] = None
 
     def to_json(self) -> str:
@@ -1900,31 +1760,15 @@ class UIUpsert(Message):
 
 @dataclass
 class AuthRequired(Message):
-    """Feature 028 — server→client auth recovery signal.
-
-    Replaces the dead-end in-chat error Alert on ``register_ui`` validation
-    failure. The client re-fetches ``/auth/session`` (which silently
-    refreshes server-side) and retries ``register_ui``; if the session is
-    truly gone it redirects to ``/auth/login?next=…``.
-    """
     type: str = "auth_required"
-    reason: str = "invalid"  # "expired" | "invalid" | "hard_cap"
+    reason: str = "invalid"
 
 @dataclass
 class ChromeRender(Message):
-    """Feature 027 — server-rendered application chrome push.
-
-    Additive to the 026 protocol: carries trusted, server-rendered chrome
-    HTML (top bar / settings-surface modal) for the web shell's named
-    regions. Canvas/chat content continues to flow as UIRender/UIUpdate
-    with components+html (FR-018 untouched). Empty ``html`` for the modal
-    region clears it (close).
-    """
     type: str = "chrome_render"
-    region: str = "modal"  # "modal" | "topbar"
+    region: str = "modal"
     html: str = ""
-    mode: str = "replace"  # reserved; only "replace" in 027
-    # Owner surfaces are independently correlated, never conversation generations.
+    mode: str = "replace"
     surface_key: Optional[str] = None
     request_generation: Optional[str] = None
 
@@ -1941,38 +1785,18 @@ class ChromeRender(Message):
 
 @dataclass
 class ChromeMenu(Message):
-    """Feature 042 — the server-owned chrome model pushed to native clients.
-
-    Carries the same ``ChromeModel.to_dict()`` the web shell renders and
-    ``GET /api/chrome/menu`` returns, so every client (web, Windows, Android,
-    future iOS) renders identical chrome from one definition (Constitution
-    XII). Emitted right after ``register_ui`` for native SDUI targets, and
-    re-emitted on a role/flag change. Web clients ignore it (their shell is
-    already server-rendered from the same model).
-    """
     type: str = "chrome_menu"
     model: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ChromeSurface(Message):
-    """Feature 043 — a settings surface delivered to a native SDUI client.
-
-    The structured twin of ``ChromeRender``'s web-HTML modal: carries the
-    surface's ``astralprims`` component dicts (ROTE-adapted for the device) so
-    the Windows/Android clients render it through the SAME component renderer
-    they use for the chat canvas (Constitution II/XII) — no web view, no
-    per-client hand-built surface. Web clients keep receiving ``ChromeRender``
-    HTML; a native client that receives this renders ``components`` into its
-    modal/sheet and wires the components' ``chrome_*`` actions back over the
-    existing ``ui_event`` path. Empty ``components`` clears/closes the modal.
-    """
     type: str = "chrome_surface"
-    region: str = "modal"          # "modal" (parity with ChromeRender.region)
+    region: str = "modal"
     surface_key: str = ""
     title: str = ""
     admin_only: bool = False
     components: List[Dict[str, Any]] = field(default_factory=list)
-    mode: str = "replace"          # reserved; only "replace" today
+    mode: str = "replace"
     request_generation: Optional[str] = None
 
     def to_json(self) -> str:
@@ -1986,17 +1810,8 @@ class ChromeSurface(Message):
         return json.dumps(data)
 
 
-# --- Feature 060: canonical reliability protocol ----------------------
 @dataclass
 class ConversationCommitReady(Message):
-    """Prelude that opens a commit fence for a server-originated update.
-
-    Client-originated turns already open their request generation before the
-    request is sent. Detached work (for example, a long-running tool result)
-    has no such live client request, so the server advertises one fresh UUID4
-    immediately before the corresponding complete commit snapshot.
-    """
-
     type: str = "conversation_commit_ready"
     schema_version: int = 1
     chat_id: str = ""
@@ -2032,23 +1847,12 @@ class ConversationCommitReady(Message):
         return frame
 
 
-# Feature 066 T023 (deliberate cross-client contract extension): the closed
-# set of variants a canonical text part may carry. A lifted caption keeps its
-# weight through commit/hydration; every other authoring variant still
-# normalizes away. Mirrored by the web (client.js validateSnapshotShape),
-# Windows (protocol.py), Android (Wire.kt) and Apple (ConversationContinuity)
-# decoders and documented in specs/060-…/contracts/conversation-continuity.md.
+# Also mirrored in the web, Windows, Android, and Apple decoders
 CANONICAL_TEXT_PART_VARIANTS = frozenset({"caption"})
 
 
 @dataclass
 class ConversationSnapshot(Message):
-    """One complete authoritative committed conversation projection.
-
-    Transcript and canvas travel in the same frame so clients can validate
-    them off-thread and replace both in one reducer action.
-    """
-
     type: str = "conversation_snapshot"
     schema_version: int = 1
     snapshot_id: str = ""
@@ -2062,8 +1866,6 @@ class ConversationSnapshot(Message):
     canvas: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        """Validate the complete snapshot without mutating client state."""
-
         if self.type != "conversation_snapshot":
             raise ProtocolValidationError("type must be conversation_snapshot")
         if self.schema_version != 1 or isinstance(self.schema_version, bool):
@@ -2133,7 +1935,6 @@ class ConversationSnapshot(Message):
             raise ProtocolValidationError(f"{prefix} must be an object")
         part_type = part.get("type")
         if part_type == "text":
-            # 066 T023: exactly {type, text} plus an OPTIONAL bounded variant.
             valid = (
                 set(part) in ({"type", "text"}, {"type", "text", "variant"})
                 and isinstance(part.get("text"), str)
@@ -2147,12 +1948,7 @@ class ConversationSnapshot(Message):
                 part.get("components"), list
             )
         elif part_type == "structured":
-            # The rendition must be VISIBLE, not merely a string: every Apple
-            # client guards `continuityNonBlank(plain_text)` (which trims
-            # first) and decodes a snapshot all-or-nothing, so a blank part
-            # discards the whole conversation and that rail never hydrates.
-            # The canonical contract therefore holds the strictest client's
-            # rule — a part no client can render is not canonical.
+            # Blank plain_text breaks Apple's all-or-nothing snapshot decode
             valid = (
                 set(part) == {"type", "value", "plain_text"}
                 and isinstance(part.get("plain_text"), str)
@@ -2186,8 +1982,6 @@ class ConversationSnapshot(Message):
 
 @dataclass
 class OperationStatus(Message):
-    """Server-owned durable operation progress and terminal projection."""
-
     type: str = "operation_status"
     operation_id: str = ""
     action: str = ""
@@ -2313,8 +2107,6 @@ AGENT_LIFECYCLE_REASON_CODES = frozenset(
 
 @dataclass
 class AgentLifecycle(Message):
-    """Canonical user-facing projection of one authoritative agent runtime."""
-
     type: str = "agent_lifecycle"
     agent_id: str = ""
     revision_id: Optional[str] = None
@@ -2372,8 +2164,6 @@ class AgentLifecycle(Message):
 
 
 class FrameDisposition(str, Enum):
-    """Deterministic client-reducer decision for a scoped server frame."""
-
     APPLY = "apply"
     REPLAY = "replay"
     REVISION_CONFLICT = "revision_conflict"
@@ -2388,8 +2178,6 @@ class FrameDisposition(str, Enum):
 
 @dataclass(frozen=True)
 class TransientFrameScope:
-    """Generation and sequence fence carried by disposable preview frames."""
-
     chat_id: str
     connection_generation: str
     request_generation: str
@@ -2406,8 +2194,6 @@ class TransientFrameScope:
 
 @dataclass
 class ConversationFrameFence:
-    """Purpose-aware reducer fence for committed and transient chat frames."""
-
     chat_id: str
     connection_generation: str
     request_generation: str
@@ -2430,8 +2216,6 @@ class ConversationFrameFence:
         )
 
     def accept_snapshot(self, frame: ConversationSnapshot) -> FrameDisposition:
-        """Return the canonical reducer disposition and advance only on apply."""
-
         frame.validate()
         if (
             frame.chat_id != self.chat_id
@@ -2468,8 +2252,6 @@ class ConversationFrameFence:
         return FrameDisposition.APPLY
 
     def accept_transient(self, frame: TransientFrameScope) -> FrameDisposition:
-        """Accept only current-base, strictly increasing preview overlays."""
-
         frame.validate()
         if (
             frame.chat_id != self.chat_id
@@ -2493,8 +2275,6 @@ class ConversationFrameFence:
 
 @dataclass(frozen=True)
 class RuntimeFence:
-    """Complete durable host/runtime generation fence for personal agents."""
-
     agent_id: str
     host_id: str
     host_session_id: str
@@ -2523,8 +2303,6 @@ class RuntimeFence:
         _require_uint64(self.lifecycle_generation, "lifecycle_generation")
 
     def bind_process(self, process_id: str) -> "RuntimeFence":
-        """Return the one legal post-launch fence; an existing bind is final."""
-
         if self.process_id is not None:
             raise ProtocolValidationError("process_id is already bound")
         _require_uuid4(process_id, "process_id")
@@ -2545,7 +2323,6 @@ class RuntimeFence:
         fence.validate(allow_prelaunch=fence.process_id is None)
         return fence
 
-# --- Agent2Agent Protocol ---
 @dataclass
 class AgentSkill:
     name: str
@@ -2554,12 +2331,9 @@ class AgentSkill:
     input_schema: Optional[Dict[str, Any]] = None
     output_schema: Optional[Dict[str, Any]] = None
     tags: List[str] = field(default_factory=list)
-    # Required scope — one of orchestrator.tool_permissions.VALID_SCOPES, which
-    # is authoritative: tools:read, tools:write, tools:search, tools:system,
-    # tools:files (027), tools:execute (039). A scope outside that set has no
-    # grantable permission surface and its tool is denied at dispatch.
+    # Must be one of tool_permissions.VALID_SCOPES (authoritative)
     scope: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Optional metadata (e.g. streamable config)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -2608,9 +2382,6 @@ class AgentCard:
 class RegisterAgent(Message):
     type: str = "register_agent"
     agent_card: Optional[AgentCard] = None
-    # 028 FR-016 (additive): shared-secret presented at registration; the
-    # orchestrator refuses keyless registrations outside dev mode when
-    # AGENT_API_KEY is configured/required (fail closed).
     api_key: Optional[str] = None
 
     def to_json(self) -> str:
@@ -2626,43 +2397,26 @@ class RegisterAgent(Message):
             data['agent_card'] = AgentCard.from_dict(data['agent_card'])
         return RegisterAgent(**data)
 
-# --- Agent Creation Protocol ---
 @dataclass
 class AgentCreationProgress(Message):
-    """Progress update during agent creation/refinement/approval."""
     type: str = "agent_creation_progress"
     draft_id: str = ""
-    step: str = ""          # e.g., "generating_template", "generating_tools", "security_scan", "writing_files"
-    message: str = ""       # human-readable progress message
-    status: str = ""        # pending | generating | generated | testing | analyzing | approved | rejected | live | error
-    detail: Optional[Dict[str, Any]] = None  # optional extra data (e.g., security report)
+    step: str = ""
+    message: str = ""
+    status: str = ""
+    detail: Optional[Dict[str, Any]] = None
 
 @dataclass
 class ToolProgress(Message):
-    """Real-time progress update during tool execution.
-
-    Agents can send these messages during long-running tool calls so the
-    orchestrator can forward them to the UI client immediately.
-    """
     type: str = "tool_progress"
     tool_name: str = ""
     agent_id: str = ""
     message: str = ""
-    percentage: Optional[int] = None  # 0-100, or None if indeterminate
+    percentage: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-# --- Tool Streaming (001-tool-stream-ui) ---
 @dataclass
 class ToolStreamData(Message):
-    """One streaming chunk from an agent tool back to the orchestrator.
-
-    Sent by an agent in response to an ``MCPRequest`` whose ``params._stream``
-    is ``True``. The orchestrator forwards (after ROTE adaptation and per-
-    subscriber authorization) to every websocket subscribed to the
-    corresponding ``StreamSubscription`` as a ``ui_stream_data`` message.
-
-    See specs/001-tool-stream-ui/contracts/protocol-messages.md §B2.
-    """
     type: str = "tool_stream_data"
     request_id: str = ""
     stream_id: str = ""
@@ -2672,18 +2426,11 @@ class ToolStreamData(Message):
     components: List[Dict[str, Any]] = field(default_factory=list)
     raw: Optional[Any] = None
     terminal: bool = False
-    error: Optional[Dict[str, Any]] = None  # see §A5: code, message, phase, attempt, next_retry_at_ms, retryable
+    error: Optional[Dict[str, Any]] = None
 
 
 @dataclass
 class ToolStreamEnd(Message):
-    """Sent by an agent when a streaming tool's async generator returns
-    naturally (no more data, no error). Orchestrator forwards as a final
-    ``ui_stream_data`` chunk with ``terminal: true`` and removes the
-    subscription.
-
-    See specs/001-tool-stream-ui/contracts/protocol-messages.md §B4.
-    """
     type: str = "tool_stream_end"
     request_id: str = ""
     stream_id: str = ""
@@ -2691,14 +2438,6 @@ class ToolStreamEnd(Message):
 
 @dataclass
 class ToolStreamCancel(Message):
-    """Sent by the orchestrator to an agent to ask it to stop a streaming
-    tool. Triggered by user-leaves-chat, explicit unsubscribe, token
-    revocation, or dormant TTL expiry. The agent MUST close the underlying
-    async generator (which propagates ``GeneratorExit`` to any ``finally``
-    cleanup) within 1 second.
-
-    See specs/001-tool-stream-ui/contracts/protocol-messages.md §B3.
-    """
     type: str = "tool_stream_cancel"
     request_id: str = ""
     stream_id: str = ""
@@ -2706,25 +2445,12 @@ class ToolStreamCancel(Message):
 
 @dataclass
 class AuditAppend(Message):
-    """Server→client live audit-log append (feature 003-agent-audit-log).
-
-    Sent on the user's existing WebSocket immediately after a new audit
-    row is inserted. The ``event`` payload matches the ``AuditEventDTO``
-    JSON Schema (see backend/audit/schemas.py and
-    specs/003-agent-audit-log/contracts/audit-event-schema.json) — it
-    is a strict subset of the underlying database row that omits
-    internal AU-9 fields. Server-side filtering by user_id is mandatory:
-    a connection authenticated as user A MUST NEVER receive an
-    ``audit_append`` whose event belongs to user B (FR-007 / FR-019).
-    """
     type: str = "audit_append"
     event: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class AgentHostRegistration:
-    """Structured runtime-contract advertisement from a desktop agent host."""
-
     host_id: str
     supported_runtime_contract_versions: tuple[int, ...]
     runtime_lock_sha256: str
@@ -2788,8 +2514,6 @@ class AgentHostRegistration:
 
 @dataclass
 class AgentHostRegistered(Message):
-    """Server-issued acknowledgement that makes a host session eligible."""
-
     type: str = "agent_host_registered"
     host_id: str = ""
     host_session_id: str = ""
@@ -2823,8 +2547,6 @@ class AgentHostRegistered(Message):
 
 @dataclass(frozen=True)
 class PersonalAgentHostCapability:
-    """Immutable candidate-owned host applicability for one platform."""
-
     supported: bool = False
     runtime_contract_versions: tuple[int, ...] = ()
     source_feature: Optional[str] = None
@@ -2886,8 +2608,6 @@ class PersonalAgentHostCapability:
 
 @dataclass(frozen=True)
 class PersonalAgentHostCapabilities:
-    """Immutable personal-agent host capability partition."""
-
     macos: PersonalAgentHostCapability = field(
         default_factory=PersonalAgentHostCapability
     )
@@ -2903,8 +2623,6 @@ class PersonalAgentHostCapabilities:
 
 @dataclass(frozen=True)
 class CandidateCapabilities:
-    """Immutable top-level candidate capability partition."""
-
     personal_agent_host: PersonalAgentHostCapabilities = field(
         default_factory=PersonalAgentHostCapabilities
     )
@@ -2919,8 +2637,6 @@ class CandidateCapabilities:
 
 @dataclass(frozen=True)
 class CandidateCapabilityMap:
-    """Candidate-owned applicability map shared by dashboard and UI config."""
-
     capabilities: CandidateCapabilities = field(default_factory=CandidateCapabilities)
 
     def __post_init__(self) -> None:
@@ -2952,9 +2668,6 @@ class CandidateCapabilityMap:
         )
 
 
-#: Feature 076 — the closed verb vocabulary a computer host may announce. The
-#: server never sends a verb outside this set; the host never executes one
-#: outside the subset it announced (FR-014).
 COMPUTER_HOST_VERBS: frozenset = frozenset({
     "screenshot", "list_windows", "get_clipboard", "read_file", "list_dir", "wait",
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text",
@@ -2969,18 +2682,12 @@ _COMPUTER_HOST_MAX_SCREENS = 8
 
 @dataclass(frozen=True)
 class ComputerHostDescriptor:
-    """Feature 076: what a desktop client announces when its owner has switched
-    on "Allow remote control". Additive on ``register_ui`` (``computer_host``);
-    absent means the socket is not a controllable host. Validation is strict and
-    fail-closed — a malformed descriptor is dropped (the UI still registers) and
-    the socket is simply not a host."""
-
     host_id: str
     name: str
     platform: str
     client_version: str
-    screens: tuple  # of dicts {index, width, height, scale, primary}
-    verbs: tuple    # of str, subset of COMPUTER_HOST_VERBS
+    screens: tuple
+    verbs: tuple
     protocol: int = COMPUTER_HOST_PROTOCOL
 
     def validate(self) -> None:
@@ -3075,39 +2782,14 @@ class RegisterUI(Message):
     capabilities: List[str] = field(default_factory=list)
     session_id: Optional[str] = None
     token: Optional[str] = None
-    # Feature 065: stable, non-secret installation identity. It identifies a
-    # client but grants no authority without the authenticated connection and
-    # short-lived control binding.
     device_id: Optional[str] = None
-    device: Optional[Dict[str, Any]] = None  # ROTE: frontend device capabilities
-    # Feature 006: optional initial LLM config carried from the user's
-    # browser localStorage at register time. Shape: {api_key, base_url, model}.
-    # Stored only in per-WebSocket memory on the server (never persisted).
+    device: Optional[Dict[str, Any]] = None
     llm_config: Optional[Dict[str, Any]] = None
-    # Feature 016-persistent-login (FR-015): True when the client reached
-    # the authenticated state via a silent resume from a stored credential
-    # (i.e., the OIDC `onSigninCallback` did NOT fire on this page load).
-    # False (default) for fresh interactive logins and for older clients
-    # that pre-date this feature. Drives the audit action_type selection.
     resumed: bool = False
-    # Feature 060: one fresh UUID4 per fenced connection plus an optional
-    # account-scoped resume payload. Legacy registrations may omit both, but a
-    # resume locator is never accepted without its connection fence.
     connection_generation: Optional[str] = None
     resume: Optional[Dict[str, Any]] = None
-    # Feature 058 (BYO agents): this socket belongs to a DESKTOP HOST able to
-    # write a delivered agent bundle to disk and supervise it as a child
-    # process. Additive + default False, so a browser tab (which must never be
-    # handed a code bundle) is a non-host by omission, exactly like every
-    # pre-058 client. `host_session_id` identifies the host instance across
-    # reconnects; it is echoed on the agent_tunnel frames the host relays.
     agent_host: AgentHostRegistration | bool | None = False
     host_session_id: Optional[str] = None
-    # Feature 076 (remote computer control): this socket belongs to a desktop
-    # whose owner switched on "Allow remote control". Additive + default None,
-    # so every pre-076 client (and every browser tab) is a non-host by
-    # omission. A malformed descriptor never blocks registration: from_json
-    # drops it and the socket simply is not a host (fail-closed).
     computer_host: Optional[ComputerHostDescriptor] = None
 
     def to_json(self) -> str:
@@ -3116,8 +2798,6 @@ class RegisterUI(Message):
         if self.resume is not None:
             data["resume"] = dict(self.resume)
         if self.device_id is None:
-            # Preserve legacy RegisterUI wire bytes: this field is additive
-            # and absent, rather than null, until a client adopts feature 065.
             data.pop("device_id", None)
         if isinstance(self.agent_host, AgentHostRegistration):
             data["agent_host"] = self.agent_host.to_dict()
@@ -3183,16 +2863,12 @@ class RegisterUI(Message):
     @staticmethod
     def from_json(json_str: str) -> 'RegisterUI':
         data = json.loads(json_str)
-        # Filter unknown keys so older servers parsing newer payloads (and
-        # vice versa) don't crash on additive fields.
         valid_fields = {f.name for f in RegisterUI.__dataclass_fields__.values()}
         data = {k: v for k, v in data.items() if k in valid_fields}
         if isinstance(data.get("agent_host"), dict):
             data["agent_host"] = AgentHostRegistration.from_dict(data["agent_host"])
         raw_computer_host = data.pop("computer_host", None)
         if raw_computer_host is not None:
-            # Feature 076: a malformed descriptor must not cost the client its
-            # session — it only costs it host eligibility (FR-002, fail-closed).
             try:
                 data["computer_host"] = ComputerHostDescriptor.from_dict(raw_computer_host)
             except ProtocolValidationError:
@@ -3202,84 +2878,38 @@ class RegisterUI(Message):
         return registration
 
 
-# --- Feature 006: User-Configurable LLM Subscription -------------------
 @dataclass
 class LLMConfigSet(Message):
-    """Client→server: user saved/updated their personal LLM configuration.
-
-    The ``config`` dict carries ``api_key``, ``base_url``, ``model`` — all
-    three required and non-empty. Server-side validation rejects any
-    malformed payload with an ``error`` reply (code ``llm_config_invalid``)
-    and does NOT mutate the per-WebSocket credential store.
-    """
     type: str = "llm_config_set"
     config: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class LLMConfigClear(Message):
-    """Client→server: user cleared their personal LLM configuration.
-
-    Pops the per-WebSocket credential entry. Subsequent LLM-dependent
-    calls fall back to the operator's ``.env`` default credentials (or
-    fail closed if those are also unavailable).
-    """
     type: str = "llm_config_clear"
 
 
 @dataclass
 class LLMConfigAck(Message):
-    """Server→client: acknowledgement for ``llm_config_set`` / ``llm_config_clear``."""
     type: str = "llm_config_ack"
     ok: bool = True
 
 
 @dataclass
 class LLMUsageReport(Message):
-    """Server→client: per-call token-usage report.
-
-    Emitted ONLY when the LLM call was served using the user's personal
-    credentials (``credential_source == 'user'``). Calls served using
-    the operator default are NOT reported, so the per-user token-usage
-    counters in the browser only reflect the user's own spend.
-
-    ``total_tokens`` / ``prompt_tokens`` / ``completion_tokens`` may be
-    ``None`` when the upstream response omitted the ``usage`` block.
-    """
     type: str = "llm_usage_report"
-    feature: str = ""           # call-site identifier, e.g. "tool_dispatch"
+    feature: str = ""
     model: str = ""
     total_tokens: Optional[int] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
-    outcome: str = "success"     # "success" | "failure"
-    at: str = ""                 # ISO 8601 timestamp
+    outcome: str = "success"
+    at: str = ""
 
 
-# --- Streaming tool metadata validation (001-tool-stream-ui) ---
 def validate_streaming_metadata(metadata: Dict[str, Any]) -> None:
-    """Validate the streaming-related fields of an ``AgentSkill.metadata``.
-
-    Called by the orchestrator at ``RegisterAgent`` time for any tool whose
-    metadata declares ``streamable: True``. Raises ``ValueError`` with a
-    human-readable message on the first invariant violation.
-
-    Required when streamable=True:
-    - ``streaming_kind`` MUST be ``"push"`` or ``"poll"``.
-
-    Optional but constrained:
-    - ``min_fps`` and ``max_fps`` (default 5/30) MUST satisfy
-      ``1 <= min_fps <= max_fps <= 60``.
-    - ``max_chunk_bytes`` (default 65536) MUST be ``<= 1 << 20`` (1 MiB hard
-      ceiling — anything larger indicates a tool that should be paginated,
-      not streamed).
-    - ``default_interval_s`` (poll only) MUST be a positive number when
-      present.
-
-    See specs/001-tool-stream-ui/contracts/protocol-messages.md §B5.
-    """
     if not metadata.get("streamable"):
-        return  # nothing to validate
+        return
     kind = metadata.get("streaming_kind")
     if kind not in ("push", "poll"):
         raise ValueError(

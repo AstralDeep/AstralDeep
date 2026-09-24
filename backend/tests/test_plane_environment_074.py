@@ -1,4 +1,7 @@
-"""Host-configuration tests for the application-scoped Plane runtime."""
+"""Tests for backend/orchestrator/plane_composition.py's host configuration: database
+URL and split-config escaping, blob and personal-agent artifact root defaults, and
+fail-closed startup on an invalid Plane environment.
+"""
 
 from __future__ import annotations
 

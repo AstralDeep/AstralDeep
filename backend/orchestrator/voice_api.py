@@ -1,8 +1,6 @@
-"""Authenticated Feature-065 conversational-voice control API.
-
-The media and speech planes are deliberately absent from this router.  Clients
-may request server-owned session state and short-lived media grants, but cannot
-submit audio, choose a speech endpoint/model/voice, or obtain service secrets.
+"""Authenticated HTTP router for voice session control — create/takeover/update/end,
+media grants, consent — that deliberately excludes the media and speech planes, so
+clients here can never submit audio, pick a backend, or read secrets.
 """
 
 from __future__ import annotations
@@ -31,8 +29,6 @@ from orchestrator.voice_control_binding import VoiceControlBindingError
 
 
 class _VoiceApiRoute(APIRoute):
-    """Project dependency-time authentication failures on v2 only."""
-
     def get_route_handler(self) -> Any:
         handler = super().get_route_handler()
 
@@ -190,16 +186,12 @@ class UpdateSessionRequest(GenerationRequest):
 
 @dataclass(frozen=True, slots=True)
 class VoiceHttpResult:
-    """Runtime result with an explicit HTTP status and safe response payload."""
-
     payload: Mapping[str, Any] | None = None
     status_code: int = 200
     headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class VoiceApiError(RuntimeError):
-    """Typed, content-free runtime refusal mapped to a problem response."""
-
     def __init__(
         self,
         code: str,
@@ -216,8 +208,6 @@ class VoiceApiError(RuntimeError):
 
 
 class _CapabilityRateLimiter:
-    """Bounded fixed-window limiter for the authenticated readiness surface."""
-
     def __init__(
         self,
         *,
@@ -305,12 +295,6 @@ async def get_voice_status(
     request: Request,
     user_id: str = Depends(require_user_id),
 ) -> Response:
-    """FR-034 operator surface: admitted workers, load, recent admission refusals.
-
-    Every field is credential-free; the fixed speech profile is public
-    configuration.  Speech-preflight verdicts stay in worker logs (FR-036).
-    """
-
     try:
         _require_remote_v1(request)
         _status_rate_limiter(request).check(user_id)
@@ -573,8 +557,6 @@ async def get_voice_media_grant_state(
     request: Request,
     user_id: str = Depends(require_user_id),
 ) -> Response:
-    """Return current owner/grant fences without any bearer material."""
-
     try:
         _require_remote_v1(request)
         checked_session_id = _uuid4(session_id, "invalid_session_id")
@@ -597,8 +579,6 @@ async def refresh_voice_media_grant(
     request: Request,
     user_id: str = Depends(require_user_id),
 ) -> Response:
-    """Rotate one reconnect grant through the durable UUID4 CAS."""
-
     try:
         _require_remote_v1(request)
         checked_session_id = _uuid4(session_id, "invalid_session_id")
@@ -626,8 +606,6 @@ async def consent_to_sensitive_voice_recap(
     request: Request,
     user_id: str = Depends(require_user_id),
 ) -> Response:
-    """Accept one fresh result-bound consent without widening authority."""
-
     try:
         checked_session_id = _uuid4(session_id, "invalid_session_id")
         if not isinstance(result_id, str) or _OPAQUE_ID.fullmatch(result_id) is None:
@@ -662,7 +640,7 @@ def _capability_rate_limiter(request: Request) -> _CapabilityRateLimiter:
 
 
 def _status_rate_limiter(request: Request) -> _CapabilityRateLimiter:
-    # A separate bucket so status polling can never starve capability checks.
+    # Separate from capability's bucket so polling can't starve it
     return _installed_rate_limiter(request, "voice_status_rate_limiter")
 
 
@@ -705,8 +683,6 @@ def _runtime(request: Request) -> Any:
 def _configured_speech_backend(
     request: Request,
 ) -> VoiceSpeechBackend | None:
-    """Resolve one startup authority and fail closed on projection drift."""
-
     orchestrator = _orchestrator(request)
     runtime = getattr(orchestrator, "voice_runtime", None)
     services = getattr(orchestrator, "voice_services", None)
@@ -748,8 +724,6 @@ def _configured_speech_backend(
 
 
 def _require_remote_v1(request: Request) -> None:
-    """Keep the legacy surface exact and fail closed on local deployments."""
-
     orchestrator = _orchestrator(request)
     if (
         getattr(orchestrator, "voice_runtime", None) is None
@@ -873,8 +847,6 @@ async def _publish_composer(
     *,
     selected_chat_id: str | None = None,
 ) -> None:
-    """Best-effort WS projection after the durable REST decision."""
-
     try:
         device_id = (
             control.get("device_id")
@@ -907,8 +879,6 @@ async def _publish_composer(
         if inspect.isawaitable(result):
             await result
     except Exception:
-        # The REST decision and generation fence remain authoritative. A
-        # disconnected UI receives the projection after its next registration.
         return
 
 
@@ -1122,9 +1092,6 @@ def _status_for_code(code: object) -> int:
         "idempotency_conflict",
         "activation_id_payload_mismatch",
         "context_sync_pending",
-        # The repository raises ContextSyncPending("chat_context_sync_pending")
-        # and StaleSessionFence("session_already_ended"); both are ordinary
-        # generation-fence conflicts, not service unavailability (503).
         "chat_context_sync_pending",
         "session_already_ended",
         "sensitive_consent_scope_mismatch",

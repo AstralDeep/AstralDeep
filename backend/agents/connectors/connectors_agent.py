@@ -1,17 +1,8 @@
+"""Bundles the Office, Dev, Runtime, and Creative connector tool slices as MCP tools via
+mcp_server.py; every external credential is optional, so each tool degrades to a
+preview or stub without one.
 """
-Claude Connectors Agent — US-22
 
-Bundles connector tools as MCP tools:
-- Office: Excel, PowerPoint, Word, Outlook, Pitch Templates
-- Dev: Code Review, Constitution Critique
-- Runtime: Adaptive Intelligence
-- Creative: Blender, Adobe CC, Canva, Dashboards, Graphs, Design
-
-Optional external-service credentials (declared in ``card_metadata`` so the
-orchestrator's settings UI can surface them) are all ``required: False`` —
-the agent is fully usable with none of them; individual tools degrade to
-their preview/stub behavior when their credential is absent.
-"""
 import asyncio
 import os
 import sys

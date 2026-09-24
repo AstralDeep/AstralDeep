@@ -1,4 +1,7 @@
-"""Authenticated strict REST-v2 client-local voice API tests."""
+"""Contract tests for the authenticated strict REST-v2 client-local voice API
+(voice_api.py, voice_backend.py, voice_control_binding.py): bounded no-store
+responses, closed conflict mapping, and strict create/takeover shapes.
+"""
 
 from __future__ import annotations
 

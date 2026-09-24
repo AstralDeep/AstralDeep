@@ -1,4 +1,6 @@
-"""read_czi keeps random-access parsing inside a scoped Plane lease."""
+"""Tests for agents/general/file_tools/medical/read_czi.py: random-access parsing stays
+inside a scoped Plane parser lease.
+"""
 
 from __future__ import annotations
 

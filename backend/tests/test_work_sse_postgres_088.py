@@ -1,10 +1,8 @@
-"""Bounded Work SSE delivery and the versioned decide command over real IAM.
-
-Only external JWKS/refresh replies are synthetic. The mounted router, cookie
-rows, Plane operations/actions, audit rows and every SQL wait are real. A
-minimal ASGI driver reads the event stream incrementally and can disconnect
-on demand, which ``httpx.ASGITransport`` (buffered, no live disconnect) cannot.
+"""Tests for Work SSE delivery and the decide command (backend/orchestrator/work_api.py,
+work_service.py): revision streaming, disconnect/expiry handling, resume via
+Last-Event-ID, and no cross-token substitution mid-stream.
 """
+
 import asyncio
 import json
 import time
@@ -47,8 +45,6 @@ def read_headers(fixture, kind="cookie", **token_changes):
 
 
 class Stream:
-    """Drive one GET through the ASGI app, reading SSE frames as they arrive."""
-
     def __init__(self, app, path, request_headers, query=b""):
         self._app = app
         self.scope = {
@@ -106,10 +102,6 @@ class Stream:
         return event
 
     async def next(self, timeout=5):
-        """Return the next non-comment event, or None once the response ended.
-
-        ``timeout`` bounds the whole wait, not each keepalive comment chunk.
-        """
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             while b"\n\n" in self._buffer:
@@ -157,7 +149,6 @@ async def test_stream_emits_revision_events_for_committed_controls_without_block
         assert "authority" not in json.dumps(first) and "checkpoint" not in json.dumps(first)
         started = time.monotonic()
         paused = await _control(app, fixture, record, "pause", 1)
-        # A concurrent control commits promptly: the stream holds no transaction.
         assert paused.status_code == 200 and time.monotonic() - started < 2
         second = await stream.next()
         assert second["event"] == "revision" and second["id"] == paused.json()["operation"]["revision"]
@@ -180,7 +171,6 @@ async def test_original_bearer_expiry_mid_stream_ends_with_bounded_error_and_no_
         final = await stream.next(timeout=6)
         finished = time.time()
         assert final == {"id": 1, "event": "error", "data": {"error": "work_authentication_required"}}
-        # Ended against the actual signed credential's deadline, not later.
         assert expiry - 0.5 <= finished <= expiry + 1.5
         assert await stream.next() is None and stream.ended
         await asyncio.wait_for(stream.task, 5)
@@ -227,8 +217,6 @@ async def test_same_issuance_rotation_never_substitutes_the_original_verified_to
         assert (await stream.next())["event"] == "revision"
         fixture[0].update_tokens(fixture[2], access_token=rotated, refresh_token="synthetic-next-sse-refresh")
         verified.clear()
-        # Only the stream verifies during this quiet window: every tick still
-        # presents the original token, never the rotated same-issuance one.
         with pytest.raises(TimeoutError):
             await stream.next(timeout=0.4)
         assert len(verified) >= 2 and set(verified) == {original_token} and rotated != original_token
@@ -247,8 +235,6 @@ async def test_last_event_id_and_after_revision_resume_without_duplicate_frames(
         await asyncio.sleep(0.3)
         cancelled = await _control(app, fixture, record, "cancel", current)
         event = await stream.next()
-        # Nothing was replayed for the already-seen revision; the first frame
-        # is the later committed control.
         assert event["event"] == "revision" and event["id"] == cancelled.json()["operation"]["revision"]
         assert event["data"]["operation"]["disposition"] == "cancelled"
         assert stream.ticks >= 1
@@ -258,7 +244,6 @@ async def test_last_event_id_and_after_revision_resume_without_duplicate_frames(
         with pytest.raises(TimeoutError):
             await stream.next(timeout=0.3)
         assert stream.status == 200 and stream.ticks >= 1
-    # A Last-Event-ID ahead of the store is an explicit resync, never trusted state.
     async with Stream(app, _path(record), {**read_headers(fixture), "last-event-id": str(latest + 50)}) as stream:
         event = await stream.next()
         assert event["event"] == "revision" and event["data"]["resync_required"] is True
@@ -321,7 +306,6 @@ async def test_refusals_before_streaming_are_ordinary_closed_json(mounted, fixtu
         assert unauthenticated.status_code == 401 and unauthenticated.json() == {"error": "work_authentication_required"}
         expired = await client.get(_path(record), headers=read_headers(fixture, "bearer", exp=int(time.time()) - 1))
         assert expired.status_code == 401 and record.assignment_id not in expired.text
-        # A buffered client only returns once the bounded stream ends.
         with_token = await client.get(_path(record), params={"token": fixture[3](), "max_seconds": "1"},
                                       headers={"Last-Event-ID": ""})
         assert with_token.status_code == 200

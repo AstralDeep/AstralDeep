@@ -1,16 +1,8 @@
-"""REST API for the onboarding subsystem (feature 005-tooltips-tutorial).
-
-Two routers:
-
-* ``onboarding_user_router`` — per-user state read/write and the
-  ``GET /api/tutorial/steps`` step list. ``actor_user_id`` is exclusively
-  derived from the validated JWT (mirrors feature 003's strict per-user
-  policy). Any request that includes a user-override query parameter is
-  rejected with HTTP 400.
-* ``onboarding_admin_router`` — admin-gated step CRUD, archive/restore,
-  and revision history. Gated by the existing ``verify_admin`` dependency
-  from :mod:`backend.orchestrator.auth`.
+"""REST API for onboarding: onboarding_user_router (per-user state, actor strictly from
+the JWT) and onboarding_admin_router (step CRUD, archive/restore, revisions; gated by
+orchestrator.auth.verify_admin). Backed by repository.py.
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,15 +47,13 @@ onboarding_user_router = APIRouter(tags=["Onboarding"])
 onboarding_admin_router = APIRouter(prefix="/api/admin/tutorial", tags=["Onboarding Admin"])
 
 
-# Query/path parameters that must NEVER be honored as a user-id override.
-# Feature 003 / FR-007 / FR-019 — the owning user is exclusively the JWT subject.
+# Never honor these as a user-id override — JWT is the only owner
 _FORBIDDEN_QUERY_PARAMS = frozenset(
     {"actor_user_id", "user_id", "user", "sub", "as_user", "owner_id"}
 )
 
 
 def _reject_user_overrides(request: Request) -> None:
-    """Raise 400 if the caller includes any user-id override parameter."""
     for key in request.query_params.keys():
         if key.lower() in _FORBIDDEN_QUERY_PARAMS:
             raise HTTPException(
@@ -101,10 +91,6 @@ def _is_admin(payload: dict) -> bool:
     return "admin" in roles
 
 
-# ---------------------------------------------------------------------------
-# User-side endpoints
-# ---------------------------------------------------------------------------
-
 @onboarding_user_router.get(
     "/api/onboarding/state",
     response_model=OnboardingStateResponse,
@@ -133,8 +119,6 @@ async def put_onboarding_state(
     repo = _repo(request)
     is_admin_caller = _is_admin(payload)
 
-    # Validate last_step_id, if supplied: it must reference a non-archived
-    # step the caller is allowed to see.
     if body.last_step_id is not None:
         audience = repo.get_step_audience(body.last_step_id)
         if audience is None:
@@ -148,7 +132,6 @@ async def put_onboarding_state(
                 detail="last_step_id references an admin-only step",
             )
 
-    # Reject the disallowed terminal → in_progress transition (FR-001).
     prior = repo.get_state(user_id)
     if (
         body.status == "in_progress"
@@ -163,8 +146,6 @@ async def put_onboarding_state(
         user_id=user_id, status=body.status, last_step_id=body.last_step_id,
     )
 
-    # Audit emission — *after* the DB write succeeds, so a queued audit
-    # always reflects a real persisted state change.
     auth_principal = _principal_of(payload)
     last_slug = new_state.last_step_slug
     if (prior_status is None or prior_status == "not_started") and body.status == "in_progress":
@@ -214,10 +195,6 @@ async def post_dismiss_onboarding(
     user_id: str = Depends(require_user_id),
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    US-17: Record a soft dismissal. After 2 dismissals the tour is permanently skipped.
-    Until then, the tour will re-prompt after a 24-hour cooldown (enforced by the frontend).
-    """
     _reject_user_overrides(request)
     repo = _repo(request)
     new_state = repo.record_dismissal(user_id, max_dismissals=2)
@@ -242,15 +219,10 @@ async def list_tutorial_steps(
     repo = _repo(request)
     include_admin = _is_admin(payload)
     steps = repo.list_steps_for_user(include_admin=include_admin)
-    # User view strips admin-only fields (archived_at, updated_at).
     return JSONResponse(
         content={"steps": [s.to_user_view() for s in steps]},
     )
 
-
-# ---------------------------------------------------------------------------
-# Admin-side endpoints
-# ---------------------------------------------------------------------------
 
 @onboarding_admin_router.get(
     "/steps",
@@ -322,7 +294,6 @@ async def update_step_admin(
     repo = _repo(request)
     actor = admin.get("sub") or "admin"
 
-    # Build the patch dict from fields the caller actually set.
     patch: Dict[str, Any] = {}
     if "audience" in body.model_fields_set:
         patch["audience"] = body.audience
@@ -337,8 +308,7 @@ async def update_step_admin(
     if "body" in body.model_fields_set:
         patch["body"] = body.body
 
-    # Cross-field validation: target_kind / target_key consistency must hold
-    # *after* the patch is applied. Fetch current row to validate the merged shape.
+    # Fetch current row first — validation applies to the merged shape
     current = repo.get_step(step_id)
     if current is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -446,10 +416,6 @@ async def list_revisions_admin(
     return RevisionListResponse(revisions=revisions)
 
 
-# ---------------------------------------------------------------------------
-# Feature 025 — onboarding personalization panels (server-generated, US1/T019)
-# ---------------------------------------------------------------------------
-
 @onboarding_user_router.get(
     "/api/onboarding/personalize/{step}",
     summary="Server-generated personalization panel for an onboarding step",
@@ -459,12 +425,6 @@ async def get_personalize_panel(
     request: Request,
     user_id: str = Depends(require_user_id),
 ):
-    """Return a ParamPicker panel (``_ui_components``) for a personalization step.
-
-    Steps: ``profession`` | ``skills`` | ``personality`` (matching the seeded
-    sdui tutorial steps). The skills panel ranks the user's available agent
-    tools by relevance to their stated profession/goals (FR-003/FR-007/FR-011).
-    """
     from personalization import panels as _panels
     from personalization.skills_reco import recommend_skills
 

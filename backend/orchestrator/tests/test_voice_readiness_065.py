@@ -1,4 +1,7 @@
-"""Bounded exact-profile capability tests for Feature 065."""
+"""Tests for orchestrator/livekit_service.py's readiness probe: redacted exact-profile
+responses, failure precedence across media/worker/capacity, bounded/expiring cache,
+and coalesced concurrent cold starts.
+"""
 
 from __future__ import annotations
 

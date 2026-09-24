@@ -1,11 +1,9 @@
-"""033 Wave-0 — _call_llm optional enhancement params (C-N14 + C-U12).
-
-Covers the reasoning-budget knob and enforced-structured-output plumbing
-threaded through ``Orchestrator._call_llm``, plus the capability-probe
-fallback that keeps a plainer OpenAI-compatible endpoint working when it
-rejects either param. Pure Python — a bare ``Orchestrator.__new__`` stub with
-a fake completions client; no DB, no socket, no real LLM.
+"""Tests for Orchestrator._call_llm's optional params
+(backend/orchestrator/orchestrator.py): reasoning-effort and structured-output
+plumbing, capability-probe fallback on provider rejection, bounded retry, and
+redaction.
 """
+
 from __future__ import annotations
 
 import sys
@@ -48,12 +46,6 @@ class _StatusError(Exception):
 
 
 class _FakeCompletions:
-    """Records every create() kwargs; behavior driven by ``fail_on``.
-
-    ``fail_on`` is a callable(kwargs) -> Optional[str]; returning a string
-    raises an Exception with that message, returning None succeeds.
-    """
-
     def __init__(self, fail_on=None, content="ok"):
         self.calls = []
         self._fail_on = fail_on or (lambda kw: None)
@@ -86,9 +78,6 @@ def _bare_orch(completions, *, default_effort=None):
     orch._llm_audit_principals = lambda ws: ("u", "p")
 
     async def _resolve(ws):
-        # Feature 054: _resolve_llm_client_for is async and resolves either
-        # the caller's persisted record (USER) or the admin system record
-        # (SYSTEM) — websocket=None here is a system-context call.
         return (_FakeClient(completions), CredentialSource.SYSTEM, resolved)
 
     orch._resolve_llm_client_for = _resolve
@@ -107,10 +96,6 @@ def _bare_orch(completions, *, default_effort=None):
     orch._audits = audits
     return orch
 
-
-# --------------------------------------------------------------------------
-# C-U12 — reasoning-budget knob
-# --------------------------------------------------------------------------
 
 async def test_reasoning_effort_passed_when_set():
     comp = _FakeCompletions()
@@ -150,12 +135,7 @@ async def test_no_effort_means_no_param():
     assert "reasoning_effort" not in comp.calls[0]
 
 
-# --------------------------------------------------------------------------
-# Capability-probe fallback (shared by both params)
-# --------------------------------------------------------------------------
-
 async def test_unsupported_effort_is_stripped_and_retried():
-    # First call (with reasoning_effort) 400s; the retry without it succeeds.
     def fail_on(kw):
         return "400 unknown parameter: reasoning_effort" if "reasoning_effort" in kw else None
 
@@ -163,10 +143,9 @@ async def test_unsupported_effort_is_stripped_and_retried():
     orch = _bare_orch(comp)
     msg, _ = await orch._call_llm(None, [{"role": "user", "content": "hi"}],
                                   reasoning_effort="high")
-    assert msg is not None                      # the call ultimately succeeds
-    assert len(comp.calls) == 2                 # one rejected, one clean retry
+    assert msg is not None
+    assert len(comp.calls) == 2
     assert "reasoning_effort" not in comp.calls[1]
-    # remembered for this (base_url, model) so future calls skip it
     assert "reasoning_effort" in orch._llm_unsupported_params[("https://ep/v1", "m1")]
 
 
@@ -178,17 +157,12 @@ async def test_remembered_param_not_resent_on_next_call():
     orch = _bare_orch(comp)
     await orch._call_llm_json(None, [{"role": "user", "content": "hi"}])
     n_after_first = len(comp.calls)
-    # second structured call: response_format already known-unsupported → never sent
     await orch._call_llm_json(None, [{"role": "user", "content": "hi"}])
     assert "response_format" not in comp.calls[-1]
-    # only ONE extra call (no second rejection round-trip)
     assert len(comp.calls) == n_after_first + 1
 
 
 async def test_strip_retry_does_not_consume_real_retry_budget(monkeypatch):
-    # The enhancement param is rejected once, then a transient error happens
-    # on every clean attempt — we should still get the full MAX_RETRIES (3)
-    # clean attempts, i.e. 1 rejected + 3 transient = 4 total calls.
     state = {"n": 0}
 
     def fail_on(kw):
@@ -210,11 +184,10 @@ async def test_strip_retry_does_not_consume_real_retry_budget(monkeypatch):
     msg, _ = await orch._call_llm(None, [{"role": "user", "content": "hi"}],
                                   reasoning_effort="high")
     assert msg is None
-    assert state["n"] == Orchestrator.MAX_RETRIES   # 3 real attempts preserved
+    assert state["n"] == Orchestrator.MAX_RETRIES
 
 
 async def test_transient_error_not_misread_as_param_problem():
-    # A 503 with an active enhancement param must NOT strip the param.
     assert Orchestrator._llm_unsupported_extras(
         "503 Service Unavailable", {"reasoning_effort": "high"}) == set()
 
@@ -232,10 +205,6 @@ async def test_generic_400_drops_all_extras():
         {"response_format": {}, "reasoning_effort": "high"})
     assert drop == {"response_format", "reasoning_effort"}
 
-
-# --------------------------------------------------------------------------
-# C-N14 — enforced structured output
-# --------------------------------------------------------------------------
 
 async def test_call_llm_json_object_request_and_parse():
     comp = _FakeCompletions(content='{"a": 1, "b": "two"}')
@@ -270,11 +239,10 @@ async def test_call_llm_json_returns_none_on_garbage():
     comp = _FakeCompletions(content="this is not json at all")
     orch = _bare_orch(comp)
     out = await orch._call_llm_json(None, [{"role": "user", "content": "hi"}])
-    assert out is None  # caller keeps its own repair/fallback path
+    assert out is None
 
 
 async def test_call_llm_json_falls_back_when_format_unsupported():
-    # response_format 400s; retry without it still returns parseable content.
     def fail_on(kw):
         return "400 response_format is not supported" if "response_format" in kw else None
 
@@ -284,11 +252,6 @@ async def test_call_llm_json_falls_back_when_format_unsupported():
     assert out == {"y": 9}
     assert len(comp.calls) == 2
     assert "response_format" not in comp.calls[1]
-
-
-# --------------------------------------------------------------------------
-# Provider failure disposition, bounded retry, and redaction
-# --------------------------------------------------------------------------
 
 
 def _disable_retry_sleep(monkeypatch):

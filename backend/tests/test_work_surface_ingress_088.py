@@ -1,11 +1,9 @@
-"""Work reads through real finite socket ingress and actual PostgreSQL admission.
-
-The registration boundary verifies the fixture's signed JWT, then installs its
-normal private claims without launching dashboard/voice startup. All subsequent
-UI frame parsing, bounded enqueue/admission/lane dispatch, Work handler, read
-policy/rendering, and connection drain are production code. Only transport and
-external institutional replies are synthetic; no provider or chat is created.
+"""Tests for Work reads through socket ingress and admission
+(backend/orchestrator/work_admission.py, work_surface_authority.py,
+projection_surfaces/work.py): bounded enqueue, navigation invalidation, and
+cookie/lifetime guards.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -74,7 +72,6 @@ class Ingress:
                     return value
 
     async def barrier(self):
-        # A pong proves the preceding navigation frame passed _route_ui_frame.
         self.socket.feed(json.dumps({"type": "ping"}))
         await self.arrived(lambda value: value.get("type") == "pong")
 
@@ -157,8 +154,6 @@ async def ingress(surface, runtime, monkeypatch):
 
 
 async def forbidden_audit(**_kwargs):
-    # Audit record content/privacy has separate qualification. Do not create
-    # untracked background global-recorder work in this ingress routing fixture.
     return None
 
 
@@ -247,8 +242,6 @@ async def test_navigation_invalidates_active_work_before_its_queued_handler(ingr
     state.request()
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        # Let the real ingress invalidate navigation immediately, while replacing
-        # only its later non-Work application handler so no chat can be created.
         actual = state.orch.handle_ui_message
         async def handle(ws, raw):
             frame = json.loads(raw)

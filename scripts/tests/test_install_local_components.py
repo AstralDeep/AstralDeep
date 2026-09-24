@@ -1,4 +1,7 @@
-"""Focused tests for exact local component wheel installation."""
+"""Tests for scripts/install_local_components.py: contract declaration parsing, offline
+no-resolver wheel build/install ordering, digest-bound verification, and fail-closed
+tampering checks.
+"""
 
 from __future__ import annotations
 

@@ -1,9 +1,7 @@
-"""Shared helpers for connector tools that talk to external HTTP services.
-
-Wraps ``shared.external_http`` so each connector (Outlook / Canva / Adobe)
-gets uniform credential-test verdicts and user-facing error strings without
-each tool re-implementing the exception mapping.
+"""Shared helpers wrapping shared.external_http so the Outlook, Canva, and Adobe
+connector tools get uniform credential-test verdicts and user-facing error strings.
 """
+
 from typing import Dict
 
 from shared.external_http import (
@@ -16,7 +14,6 @@ from shared.external_http import (
 
 
 def verdict_for_exception(exc: Exception) -> Dict[str, str]:
-    """Map an ``ExternalHttpError`` to a ``credential_test`` verdict dict."""
     if isinstance(exc, AuthFailedError):
         return {"credential_test": "auth_failed", "detail": str(exc)}
     if isinstance(exc, (ServiceUnreachableError, EgressBlockedError, RateLimitedError)):
@@ -25,7 +22,6 @@ def verdict_for_exception(exc: Exception) -> Dict[str, str]:
 
 
 def user_facing_error(exc: Exception, service: str) -> str:
-    """Map an ``ExternalHttpError`` to a chat-renderable string for ``service``."""
     if isinstance(exc, AuthFailedError):
         return f"The saved {service} credentials were rejected. Update them in the agent's settings."
     if isinstance(exc, ServiceUnreachableError):

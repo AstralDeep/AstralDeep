@@ -1,12 +1,8 @@
-"""Feature 052 (T023) — per-file static asset versioning + immutable caching.
-
-Covers the version map (per-file sha1[:12], subdirectories, memoization,
-content sensitivity), the shell %%ASTRAL_V:<path>%% token substitution, and
-the _NoCacheStaticFiles header matrix from
-specs/052-perf-comment-hygiene/contracts/static-asset-caching.md: a matching
-?v= gets a year-long immutable Cache-Control, everything else keeps the
-legacy no-cache + ETag flow (unversioned @font-face requests included).
+"""Tests for per-file static asset versioning and immutable caching
+(orchestrator/orchestrator.py, astralprojection/resources.py): the hash map, shell
+token substitution, and the cache-control matrix for matched vs stale ?v=.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -29,7 +25,6 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 
 
 def _seed_static(root: Path) -> None:
-    """Create a miniature static tree with a nested fonts/ directory."""
     (root / "client.js").write_text("var x = 1;", encoding="utf-8")
     (root / "astral.css").write_text(".a{color:red}", encoding="utf-8")
     fonts = root / "fonts"
@@ -38,12 +33,10 @@ def _seed_static(root: Path) -> None:
 
 
 def _sha12(data: bytes) -> str:
-    """The map's hash convention: sha1 of the file bytes, first 12 hex chars."""
     return hashlib.sha1(data).hexdigest()[:12]
 
 
 def test_version_map_hashes_every_file_including_subdirs(tmp_path):
-    """Every file appears under its forward-slash relpath with sha1[:12]."""
     _seed_static(tmp_path)
     versions = _static_version_map(str(tmp_path))
     assert versions["client.js"] == _sha12(b"var x = 1;")
@@ -52,7 +45,6 @@ def test_version_map_hashes_every_file_including_subdirs(tmp_path):
 
 
 def test_version_map_is_memoized_per_directory(tmp_path):
-    """The map is built once per directory and reused for the process life."""
     _seed_static(tmp_path)
     first = _static_version_map(str(tmp_path))
     (tmp_path / "client.js").write_text("var x = 2;", encoding="utf-8")
@@ -60,7 +52,6 @@ def test_version_map_is_memoized_per_directory(tmp_path):
 
 
 def test_changed_content_changes_hash_in_a_fresh_directory(tmp_path):
-    """Different bytes yield a different version (URL change by construction)."""
     d1 = tmp_path / "a"
     d2 = tmp_path / "b"
     for d in (d1, d2):
@@ -75,7 +66,6 @@ def test_changed_content_changes_hash_in_a_fresh_directory(tmp_path):
 
 
 def test_apply_asset_versions_substitutes_every_token(tmp_path):
-    """%%ASTRAL_V:<path>%% tokens become that file's hash; unknown paths 'dev'."""
     _seed_static(tmp_path)
     shell = (
         '<link href="/static/astral.css?v=%%ASTRAL_V:astral.css%%">'
@@ -91,7 +81,6 @@ def test_apply_asset_versions_substitutes_every_token(tmp_path):
 
 
 def test_real_shell_template_tokens_all_resolve():
-    """The checked-in shell's tokens all resolve against the real static dir."""
     static = Path(str(static_root()))
     shell = template_path("shell.html").read_text(encoding="utf-8")
     assert "%%ASTRAL_V:" in shell
@@ -101,7 +90,6 @@ def test_real_shell_template_tokens_all_resolve():
 
 
 def _client(tmp_path):
-    """A Starlette TestClient with the versioned static mount."""
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
     app = Starlette()
@@ -110,7 +98,6 @@ def _client(tmp_path):
 
 
 def test_matching_version_gets_immutable_cache_control(tmp_path):
-    """?v= equal to the current hash => year-long immutable caching."""
     _seed_static(tmp_path)
     versions = _static_version_map(str(tmp_path))
     client = _client(tmp_path)
@@ -120,7 +107,6 @@ def test_matching_version_gets_immutable_cache_control(tmp_path):
 
 
 def test_subdirectory_asset_gets_immutable_cache_control(tmp_path):
-    """The fonts/ subdirectory participates in the versioned contract."""
     _seed_static(tmp_path)
     versions = _static_version_map(str(tmp_path))
     client = _client(tmp_path)
@@ -131,7 +117,6 @@ def test_subdirectory_asset_gets_immutable_cache_control(tmp_path):
 
 
 def test_unversioned_request_keeps_no_cache_and_etag_flow(tmp_path):
-    """No ?v= (the @font-face case) => today's no-cache revalidation flow."""
     _seed_static(tmp_path)
     client = _client(tmp_path)
     resp = client.get("/static/fonts/inter-latin.woff2")
@@ -145,7 +130,6 @@ def test_unversioned_request_keeps_no_cache_and_etag_flow(tmp_path):
 
 
 def test_mismatched_version_keeps_no_cache(tmp_path):
-    """A stale/wrong ?v= must never be cached as immutable."""
     _seed_static(tmp_path)
     client = _client(tmp_path)
     resp = client.get("/static/client.js?v=aaaaaaaaaaaa")

@@ -1,10 +1,8 @@
-"""Dual run record + Markdown report + differentiation summary (T024).
-
-Writes a machine-readable ``verdicts.json`` and a stakeholder-readable
-``report.md`` derived from the SAME record (so they cannot disagree), to a
-gitignored, per-run-namespaced directory (FR-008 / FR-028 / FR-029 / FR-031).
-The differentiation claim is enumerated only from what the run observed (FR-029).
+"""Dual run record and Markdown report (backend/verification/config.py, evidence.py,
+verdict.py): writes verdicts.json and report.md from the same record, with
+differentiation claims grounded only in passing verdicts.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,8 +34,6 @@ def _coverage(evidence: Dict[str, CapturedEvidence]) -> Dict[str, List[str]]:
 
 
 def _differentiation(verdicts: List[Verdict], coverage: Dict[str, List[str]]) -> List[str]:
-    """Enumerate, from evidence actually collected, what a text-only assistant
-    cannot do. Each entry is gated on a corroborating PASS verdict (FR-029)."""
     passed = {
         v.refs.get("check")
         for v in verdicts
@@ -119,7 +115,6 @@ def _render_markdown(record: Dict[str, Any]) -> str:
         lines.append(f"- Flags: {', '.join(record['flags'])}")
     lines.append("")
 
-    # Verdict table grouped by persona x property.
     lines.append("## Verdicts")
     lines.append("")
     lines.append("| Persona | Property | Check | Outcome | Evidence |")
@@ -152,7 +147,6 @@ def _render_markdown(record: Dict[str, Any]) -> str:
 
 
 def write_report(record: Dict[str, Any], run_dir: str) -> Dict[str, str]:
-    """Write ``verdicts.json`` + ``report.md`` into ``run_dir``; return paths."""
     os.makedirs(run_dir, exist_ok=True)
     json_path = os.path.join(run_dir, "verdicts.json")
     md_path = os.path.join(run_dir, "report.md")

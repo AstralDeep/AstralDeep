@@ -1,10 +1,6 @@
-"""Feature 089 (T016): saving, showing and clearing a TypeSafe key.
-
-The requirement this file exists to hold is FR-003: **a rejected save must
-never destroy a working stored key.** Everything else here -- the write-only
-field, the status line, the gate isolation -- is about the same idea from a
-different angle: the settings page can only ever improve the user's position,
-never worsen it by accident.
+"""Tests for saving, showing, and clearing a TypeSafe key in
+llm_config/typesafe_store.py: a rejected save never destroys a working stored key,
+the key stays write-only, and its handlers stay isolated from the LLM first-run gate.
 """
 
 from __future__ import annotations
@@ -59,9 +55,6 @@ def _probe_rejects(message: str = "TypeSafe rejected that key."):
     return _probe
 
 
-# -- validation -----------------------------------------------------------
-
-
 @pytest.mark.parametrize("bad", ["", "   ", None, 7, b"bytes"])
 def test_an_empty_or_non_string_key_is_refused(bad) -> None:
     with pytest.raises(TypeSafeSaveError):
@@ -75,7 +68,6 @@ def test_an_oversized_key_is_refused() -> None:
 
 
 def test_a_key_with_a_space_is_refused_with_a_useful_message() -> None:
-    """The usual cause is pasting the surrounding sentence, not the key."""
     with pytest.raises(TypeSafeSaveError) as caught:
         validate_key("ts_live_AAA BBB")
     assert "space" in str(caught.value).lower()
@@ -93,9 +85,6 @@ def test_a_validation_message_never_contains_the_key() -> None:
             assert bad not in str(error)
 
 
-# -- the probe gate (FR-003) ---------------------------------------------
-
-
 def test_a_successful_save_stores_the_key(typesafe_store) -> None:
     status, fingerprint = run(
         save_key(typesafe_store, USER, KEY, probe=_probe_ok)
@@ -106,7 +95,6 @@ def test_a_successful_save_stores_the_key(typesafe_store) -> None:
 
 
 def test_a_rejected_save_leaves_the_stored_key_untouched(typesafe_store) -> None:
-    """FR-003, stated as plainly as the code allows."""
     run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
 
     with pytest.raises(TypeSafeSaveError):
@@ -123,7 +111,6 @@ def test_a_rejected_first_save_stores_nothing(typesafe_store) -> None:
 
 
 def test_an_invalid_key_never_reaches_the_probe(typesafe_store) -> None:
-    """A malformed key should not cost a request against the user's quota."""
     probed: list = []
 
     async def _probe(key: str) -> None:
@@ -135,7 +122,6 @@ def test_an_invalid_key_never_reaches_the_probe(typesafe_store) -> None:
 
 
 def test_a_successful_save_resets_the_users_circuit(typesafe_store) -> None:
-    """Whatever opened the circuit was about the old key."""
     from orchestrator.typesafe_routing.budget import UserCircuit, circuit, set_circuit
 
     set_circuit(UserCircuit())
@@ -145,9 +131,6 @@ def test_a_successful_save_resets_the_users_circuit(typesafe_store) -> None:
     run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
 
     assert circuit().allows(USER, fingerprint=key_fingerprint(KEY)) is True
-
-
-# -- the probe rate limit -------------------------------------------------
 
 
 def test_the_probe_is_rate_limited_per_user(typesafe_store) -> None:
@@ -161,18 +144,13 @@ def test_the_probe_is_rate_limited_per_user(typesafe_store) -> None:
 def test_the_rate_limit_is_per_user_not_global(typesafe_store) -> None:
     for _ in range(PROBE_RATE_LIMIT):
         run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
-    # A second user is unaffected by the first user's attempts.
     run(save_key(typesafe_store, "another-user", KEY, probe=_probe_ok))
-
-
-# -- clearing -------------------------------------------------------------
 
 
 def test_clear_removes_the_key_and_is_idempotent(typesafe_store) -> None:
     run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
     assert run(clear_key(typesafe_store, USER)) is True
     assert typesafe_store.get_key_sync(USER) is None
-    # A second Remove on an already-clean page is a no-op, not an error.
     assert run(clear_key(typesafe_store, USER)) is False
 
 
@@ -181,9 +159,6 @@ def test_clear_frees_the_rate_limit(typesafe_store) -> None:
         run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
     run(clear_key(typesafe_store, USER))
     run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
-
-
-# -- audit ----------------------------------------------------------------
 
 
 def test_a_save_is_audited_without_the_key(typesafe_store) -> None:
@@ -196,8 +171,6 @@ def test_a_save_is_audited_without_the_key(typesafe_store) -> None:
     rendered = repr(event)
     assert KEY not in rendered
     assert event.action_type == "typesafe_credential.saved"
-    # The fingerprint is not key material; it is a truncated digest whose only
-    # use is telling one saved key from another.
     assert event.inputs_meta["key_fingerprint"] == key_fingerprint(KEY)
 
 
@@ -226,9 +199,6 @@ def test_an_audit_failure_never_breaks_a_save(typesafe_store) -> None:
     assert typesafe_store.get_key_sync(USER).api_key == KEY
 
 
-# -- the rendered surface -------------------------------------------------
-
-
 def _orch(typesafe_store=None, data_sharing_store=None, llm_store=None):
     return SimpleNamespace(
         _llm_store=llm_store,
@@ -251,13 +221,11 @@ def test_the_section_renders_with_a_write_only_field(typesafe_store) -> None:
     html = _render(_orch(typesafe_store))
     assert "TypeSafe routing (optional)" in html
     assert 'type="password"' in html and 'name="typesafe_api_key"' in html
-    assert 'value=""' in html  # never echoed back
+    assert 'value=""' in html
     assert 'data-ui-action="chrome_typesafe_save"' in html
 
 
 def test_the_section_is_hidden_during_first_run(typesafe_store) -> None:
-    """One required credential at a time; an optional second reads as a second
-    requirement."""
     html = _render(_orch(typesafe_store), {"first_run": True})
     assert "TypeSafe routing (optional)" not in html
     assert "chrome_typesafe_save" not in html
@@ -326,11 +294,7 @@ def test_the_surface_survives_a_store_that_raises() -> None:
     assert "Not set" in html
 
 
-# -- gate isolation (FR-004) ---------------------------------------------
-
-
 def test_the_handlers_are_not_allowed_while_the_llm_gate_is_closed() -> None:
-    """A TypeSafe key cannot be used to get past first-run setup."""
     from orchestrator.chrome_events import _LLM_GATE_ALLOWED_ACTIONS
 
     assert "chrome_typesafe_save" not in _LLM_GATE_ALLOWED_ACTIONS
@@ -338,11 +302,6 @@ def test_the_handlers_are_not_allowed_while_the_llm_gate_is_closed() -> None:
 
 
 def _handler_source(name: str) -> str:
-    """The source of one handler, read by walking the module's AST.
-
-    Splitting on text would break the moment a handler moved; the AST gives the
-    exact function body whatever the file looks like.
-    """
     import ast
     import pathlib
 
@@ -354,49 +313,25 @@ def _handler_source(name: str) -> str:
 
 
 def test_the_save_handler_never_unlocks_the_first_run_gate() -> None:
-    """A TypeSafe key is not the LLM gate: saving one must not open it."""
     assert "unlock_after_save" not in _handler_source("_handle_typesafe_save")
 
 
 def test_the_clear_handler_never_regates_the_user() -> None:
-    """Removing a TypeSafe key returns the user to standard routing, which is
-    a working state, not a gated one."""
     assert "regate_after_clear" not in _handler_source("_handle_typesafe_clear")
 
 
 def test_the_llm_save_handler_still_unlocks_the_gate() -> None:
-    """The control: the gate logic is untouched for the credential that gates."""
     assert "unlock_after_save" in _handler_source("_handle_save")
 
 
 def test_the_save_is_not_routed_to_an_executor_that_cannot_perform_it() -> None:
-    """The TypeSafe save must reach a handler that actually saves.
-
-    It was listed in ``_LLM_CREDENTIAL_SAVE_ACTIONS`` so it would travel the
-    durable credential path, on the reasoning that it is the same kind of
-    write. The reasoning was sound; the change was not. That set routes an
-    action to ``_handle_llm_credential_operation``, which only knows how to
-    perform an LLM config set, and the TypeSafe store has no fenced commit for
-    it to call. A save from the web client therefore did nothing at all -- no
-    probe, no persistence, no message, no log line.
-
-    This test replaces the one that pinned the routing. Nothing pinned the
-    routing to an executor that could honour it, which is how the feature's
-    headline capability shipped inert. Restoring durability means adding a
-    fenced TypeSafe commit first, and then this test changes with it.
-    """
     from orchestrator.orchestrator import _LLM_CREDENTIAL_SAVE_ACTIONS
 
     assert "chrome_typesafe_save" not in _LLM_CREDENTIAL_SAVE_ACTIONS
-    # The handler it reaches instead is the one that performs the save.
     assert "save_key" in _handler_source("_handle_typesafe_save")
 
 
-# -- probe behavior -------------------------------------------------------
-
-
 def test_the_probe_budget_is_generous_compared_with_the_turn_budget() -> None:
-    """The user pressed Save and is waiting on purpose; a turn is not."""
     from orchestrator.typesafe_routing.budget import TURN_BUDGET_SECONDS
 
     assert typesafe_handlers.PROBE_TIMEOUT_SECONDS > TURN_BUDGET_SECONDS

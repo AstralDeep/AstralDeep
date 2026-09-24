@@ -1,6 +1,7 @@
+"""MCP server for the Medical agent: dispatches tool/call requests from medical_agent.py
+to mcp_tools.py, classifying upstream errors as retryable or not.
 """
-MCP Server — dispatches tool calls to registered tool functions.
-"""
+
 import os
 import sys
 import json

@@ -1,4 +1,7 @@
-"""Canonical operation and personal-agent lifecycle behavior for feature 060."""
+"""Tests for canonical operation and agent-lifecycle state building
+(orchestrator/agent_lifecycle.py, chrome_events.py, shared/protocol.py): exact flag
+projections, revision sequencing, and owner-scoped publication.
+"""
 
 from __future__ import annotations
 

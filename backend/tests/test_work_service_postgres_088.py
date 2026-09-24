@@ -1,10 +1,8 @@
-"""Partial T027 reads against the real Plane facade and isolated PostgreSQL.
-
-Synthetic operations use database-issued interactive session incarnations and
-real database-clock observations through the public repositories. This read-only
-fixture does not qualify external IAM or enable dispatch. Only the explicit
-future-version fixture uses SQL, to reproduce storage written by a newer Plane.
+"""Tests for the work read service (backend/orchestrator/work_service.py, work_api.py):
+owner-scoped pagination, metadata disclosure boundaries, and that reads never trigger
+writes or expose future-schema payloads.
 """
+
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -106,7 +104,6 @@ async def test_real_owner_pagination_legacy_isolation_and_read_only_projection(r
     row = first["operations"][0]
     assert row["title"] == "Public task title" and row["kind"] == "chat"
     assert row["disposition"] == "queued" and row["revision"] == 1
-    # No usage observation exists yet; the facade must not invent a zero.
     assert "tokens" not in row["usage"]["spent"]
     assert "spend_micro_units" not in row["usage"]["spent"]
     assert "private" not in str(row) and "authority" not in str(row)
@@ -120,18 +117,14 @@ async def test_real_owner_pagination_legacy_isolation_and_read_only_projection(r
 
 @pytest.mark.asyncio
 async def test_metadata_envelope_discloses_money_status_without_measurement_fields(records):
-    """T052: the money disclosure joins the read; timing stays on its own route."""
     _, service, ids, _ = records
     operation = await service.get("owner", {"sub": "owner"}, ids[0])
     assert set(operation) == {
         "id", "revision", "instruction_revision", "control_epoch", "title", "kind",
         "disposition", "lifecycle", "phase", "created_at", "updated_at", "next_wake_at",
         "deadline_at", "schema_supported", "safe_error_code", "usage"}
-    # Plane already records that no price has been reported; dropping that made
-    # an unknown spend and a reported spend read identically.
     assert operation["usage"]["money_status"] == "unknown"
     assert set(operation["usage"]) == {"spent", "daily", "outstanding", "money_status"}
-    # The ledger/timing read is a separate disclosure, never folded in here.
     assert not {"tasks", "intervals", "claim_count", "observed_ms"} & set(operation)
     measurements = await service.measurements("owner", {"sub": "owner"}, ids[0])
     assert measurements["id"] == operation["id"]
@@ -161,7 +154,6 @@ async def test_real_poll_observes_committed_control_and_no_poll_side_effect(reco
 async def test_future_operation_payload_is_opaque_but_safe_outer_identity_is_readable(records):
     _, service, ids, _ = records
     def future_record(tx, repo):
-        # Fixture-only corruption/forward-version simulation in the isolated schema.
         tx.execute(
             "UPDATE persistent_assignment SET data=jsonb_set(data, '{operation}', %s::jsonb) WHERE id=%s",
             ('{"version":3,"kind":{"private":"opaque"},"deadline_at":"private","authority":"private"}', ids[0]))
@@ -193,6 +185,4 @@ async def test_http_reads_never_perform_synchronous_profile_persistence(records,
         for suffix in ("", "/" + ids[0], "/" + ids[0] + "/poll"):
             response = await client.get("/api/work/v1/operations" + suffix)
             assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-    # An inherited helper catches profile-write exceptions, so HTTP 200 alone
-    # would hide blocking I/O or a swallowed loop-guard rejection.
     assert profile_calls == []

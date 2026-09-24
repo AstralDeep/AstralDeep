@@ -1,3 +1,8 @@
+"""Tests for draft-generation claim reclaim (orchestrator/draft_plane_store.py) over
+Plane's drafts repository: expired-claim reclaim, exact lost-ack recovery, and
+bounded/ordered expired-claim inventory, matched against the in-memory double.
+"""
+
 from __future__ import annotations
 
 import json

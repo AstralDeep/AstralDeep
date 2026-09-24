@@ -1,4 +1,7 @@
-"""Real local HTTP/process tests for the private feature-088 transport."""
+"""Real local HTTP/process tests for the isolated-transport egress worker:
+request/response framing, cancellation, backpressure, spawn failure, and parent/child
+cleanup, over shared/isolated_http.py and process_supervision.py.
+"""
 
 from __future__ import annotations
 
@@ -417,8 +420,6 @@ def test_direct_worker_real_http_and_expired_before_network(server):
 
 
 def test_parent_death_closes_real_child_socket(server, tmp_path):
-    # A task-owned grandparent kills only this disposable caller. The normal
-    # helper observes private pipe EOF and kills its own isolated process group.
     script = tmp_path / "caller.py"
     script.write_text(
         "import asyncio,sys\n"
@@ -525,8 +526,6 @@ def test_isolated_transport_does_not_read_or_substitute_netrc(server, monkeypatc
         return get_netrc_auth(url)
 
     monkeypatch.setattr(requests.sessions, "get_netrc_auth", lookup)
-    # Establish the real Requests behavior with this synthetic fixture. The
-    # existing helper's default remains unchanged by the explicit opt-in.
     external_http.request("GET", server[0], api_key=_PRIVATE,
                           allowed_private_hosts=["127.0.0.1"])
     assert calls

@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""Fail-closed changed executable-line coverage across maintained languages.
-
-The collector deliberately owns only policy and report parsing. Coverage producers
-remain platform-native, while this script selects an immutable event-aware Git
-comparison, maps changed source lines to their reports, unions repeated observations,
-and emits one deterministic JSON decision.
+"""Computes fail-closed changed-line coverage across languages by mapping a Git diff's
+changed lines to parsed native coverage reports (Cobertura, Kover, V8/Istanbul,
+xccov) and emitting one deterministic pass/fail JSON decision.
 """
 
 from __future__ import annotations
@@ -79,8 +76,6 @@ HUNK_HEADER = re.compile(
 
 
 class CoveragePolicyError(RuntimeError):
-    """A stable fail-closed policy or input error."""
-
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -89,8 +84,6 @@ class CoveragePolicyError(RuntimeError):
 
 @dataclass(frozen=True)
 class CoverageTarget:
-    """One report-producing maintained-code partition."""
-
     key: str
     language: str
     roots: tuple[str, ...]
@@ -99,8 +92,6 @@ class CoverageTarget:
 
 @dataclass(frozen=True)
 class CoverageProducer:
-    """One independently produced native report slot."""
-
     key: str
     target_key: str
     flag: str
@@ -110,8 +101,6 @@ class CoverageProducer:
 
 @dataclass(frozen=True)
 class CoverageRepositoryProfile:
-    """One repository's owned producer set and composed path namespace."""
-
     producer_keys: tuple[str, ...]
     source_prefix: str = ""
     deferred_targets: tuple[str, ...] = ()
@@ -119,16 +108,12 @@ class CoverageRepositoryProfile:
 
 @dataclass(frozen=True)
 class CandidateBlob:
-    """One regular source blob anchored to the immutable candidate tree."""
-
     object_id: str
     size_bytes: int
 
 
 @dataclass(frozen=True)
 class CandidateSourceWitness:
-    """Candidate-bound physical and Python-executable source facts."""
-
     line_count: int
     executable_lines: frozenset[int] | None = None
     sha256: str | None = None
@@ -136,8 +121,6 @@ class CandidateSourceWitness:
 
 @dataclass(frozen=True)
 class BoundCoverageReport:
-    """Stable report bytes plus raw and semantic content identities."""
-
     path: Path
     content: bytes
     sha256: str
@@ -151,8 +134,6 @@ class BoundCoverageReport:
 
 @dataclass(frozen=True)
 class RevisionSelection:
-    """Unresolved event-authoritative base and candidate identities."""
-
     event_name: str
     base_sha: str
     candidate_sha: str
@@ -162,8 +143,6 @@ class RevisionSelection:
 
 @dataclass
 class CoverageData:
-    """Unique source-line observations parsed from one or more reports."""
-
     files: set[str] = field(default_factory=set)
     observed: set[tuple[str, int]] = field(default_factory=set)
     executable: set[tuple[str, int]] = field(default_factory=set)
@@ -347,8 +326,6 @@ PRODUCER_BY_KEY = {producer.key: producer for producer in COVERAGE_PRODUCERS}
 REPOSITORY_PROFILES = {
     "monorepo": CoverageRepositoryProfile(tuple(PRODUCER_BY_KEY)),
     "deep": CoverageRepositoryProfile(("backend", "voice_worker", "tooling")),
-    # The authorized backend/browser release keeps every server and browser
-    # producer strict while reporting the explicitly paused native scope.
     "projection-web": CoverageRepositoryProfile(
         ("projection_python", "javascript"),
         "components/AstralProjection",
@@ -425,12 +402,6 @@ def _is_test_or_generated(path: str) -> bool:
 
 
 def classify_path(path: str) -> CoverageTarget | None:
-    """Return the explicit maintained-code coverage target for a repo path.
-
-    Tests, generated/build output, vendored JavaScript, and declarative build files
-    are intentionally excluded by concrete path and suffix rules.
-    """
-
     path = _repo_path(path)
     if _is_test_or_generated(path):
         return None
@@ -505,13 +476,6 @@ def select_revisions(
     candidate_sha: str | None,
     main_ref: str = "refs/heads/main",
 ) -> RevisionSelection:
-    """Select immutable revision inputs from a PR, main push, or manual run.
-
-    Pull requests and main pushes are event-authoritative: explicit values may only
-    repeat, never replace, the event identities. Manual runs require explicit SHAs
-    (CLI values or workflow-dispatch inputs) and are later ancestry-verified.
-    """
-
     event = (event_name or "manual").strip()
     payload = event_payload or {}
     if event == "pull_request":
@@ -609,8 +573,6 @@ def _validate_sha_text(value: str, label: str) -> str:
 
 
 def validate_revisions(repo: Path, selection: RevisionSelection) -> RevisionSelection:
-    """Resolve exact commits and prove a non-zero base ancestor of the candidate."""
-
     repo = repo.resolve()
     base_input = _validate_sha_text(selection.base_sha, "base_sha")
     candidate_input = _validate_sha_text(selection.candidate_sha, "candidate_sha")
@@ -659,8 +621,6 @@ def read_changed_lines(
     *,
     source_prefix: str = "",
 ) -> dict[str, set[int]]:
-    """Read added/modified candidate lines from a NUL-delimited immutable Git diff."""
-
     raw_paths = _git(
         repo,
         [
@@ -724,8 +684,6 @@ def read_changed_lines(
 
 
 def _read_report(path: Path) -> bytes:
-    """Read one unchanged regular file through a stable descriptor."""
-
     try:
         before_path = path.lstat()
     except OSError as exc:
@@ -737,12 +695,7 @@ def _read_report(path: Path) -> bytes:
             "unparseable_report",
             f"coverage report must be a regular non-symlink file: {path}",
         )
-    # Python's Windows CRT opens descriptors in text mode unless O_BINARY is
-    # explicit.  ``os.read`` would then translate CRLF to LF while ``fstat``
-    # continues to report the physical byte length, producing a false
-    # ``invalid size`` failure and hashing bytes other than the artifact that
-    # was bound.  O_BINARY is zero/absent on POSIX, so Linux behavior is
-    # unchanged.
+    # Windows text-mode CRLF would corrupt the byte hash
     flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -805,8 +758,6 @@ def _read_report(path: Path) -> bytes:
 
 
 def _semantic_report_content(coverage: CoverageData) -> bytes:
-    """Serialize only normalized source observations, never producer metadata."""
-
     value = {
         "files": sorted(coverage.files),
         "observed": sorted([path, line] for path, line in coverage.observed),
@@ -825,8 +776,6 @@ def _semantic_report_content(coverage: CoverageData) -> bytes:
 
 
 def _native_report_content(content: bytes, target_key: str) -> bytes:
-    """Canonicalize native observations without applying target path filters."""
-
     target = TARGET_BY_KEY[target_key]
     if target.report_kind == "cobertura":
         root = ET.fromstring(content)
@@ -904,9 +853,6 @@ def _native_report_content(content: bytes, target_key: str) -> bytes:
     else:
         document = _strict_json(content)
         if document.get("format") is not None:
-            # Domain facts are bound by the normalized semantic identity and
-            # exact report digest. This independent observation identity must
-            # still detect copied counts after an envelope is stripped/renamed.
             document = document["coverage"]
         value = {
             "kind": "xccov",
@@ -937,8 +883,6 @@ def _native_report_content(content: bytes, target_key: str) -> bytes:
 def _apply_producer_source_aliases(
     coverage: CoverageData, producer_key: str | None
 ) -> CoverageData:
-    """Map worker-runtime copies back to the candidate sources that built them."""
-
     aliases = VOICE_WORKER_SOURCE_ALIASES if producer_key == "voice_worker" else {}
     if not aliases:
         return coverage
@@ -984,8 +928,6 @@ def _coverage_report_binding(
 def coverage_report_identity(
     content: bytes, target_key: str, *, producer_key: str | None = None
 ) -> dict[str, Any]:
-    """Return raw and semantic identities for already-bound report bytes."""
-
     identity, _coverage = _coverage_report_binding(
         content,
         target_key,
@@ -996,14 +938,6 @@ def coverage_report_identity(
 
 
 def _normalized_report_path(raw: str, target: CoverageTarget) -> str | None:
-    """Map a producer path from its first repository anchor only.
-
-    Projection-native targets first map a child-checkout owner root into the
-    composed namespace. Otherwise the first repository anchor is authoritative;
-    looking for a later generic anchor that happens to match ``target`` would let
-    an absolute ``backend/scripts/...`` path masquerade as root ``scripts/...``.
-    """
-
     value = raw.strip().replace("\\", "/")
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme in {"file", "http", "https"}:
@@ -1167,8 +1101,6 @@ def _cobertura_sources(root: ET.Element) -> list[str]:
 def _cobertura_path(
     raw: str, sources: Sequence[str], target: CoverageTarget
 ) -> str | None:
-    """Resolve coverage.py filenames against their declared source roots."""
-
     candidates: set[str] = set()
     direct = _normalized_report_path(raw, target)
     if direct is not None:
@@ -1191,8 +1123,6 @@ def _cobertura_path(
 
 
 def _native_csharp_lines(node: ET.Element, label: str) -> dict[int, int]:
-    """Validate one native class or method's explicit, unique line witness."""
-
     containers = _direct_children(node, "lines")
     if len(containers) != 1 or not len(containers[0]):
         raise CoveragePolicyError("unparseable_report", f"{label} lacks one nonempty lines manifest")
@@ -1219,8 +1149,6 @@ def _native_csharp_lines(node: ET.Element, label: str) -> dict[int, int]:
 
 
 def _native_csharp_methods(node: ET.Element) -> tuple[dict[int, int], int]:
-    """Require method witnesses to agree exactly with the enclosing class."""
-
     containers = _direct_children(node, "methods")
     if len(containers) != 1 or not len(containers[0]):
         raise CoveragePolicyError("unparseable_report", "native C# class lacks one methods manifest")
@@ -1245,14 +1173,6 @@ def _native_csharp_methods(node: ET.Element) -> tuple[dict[int, int], int]:
 
 
 def _parse_native_csharp_cobertura(root: ET.Element, target: CoverageTarget) -> CoverageData:
-    """Validate native per-class totals before unioning repeated source lines.
-
-    Microsoft.CodeCoverage repeats its method lines at class level and counts
-    shared compiler-closure lines once per class in root totals. Those copies
-    are accepted only with identical hit counts and one unambiguous source
-    manifest. Python's stricter, flat Cobertura contract remains separate.
-    """
-
     sources = _cobertura_sources(root)
     declared_total = _integer(root.get("lines-valid"), label="native C# lines-valid")
     declared_covered = _integer(root.get("lines-covered"), label="native C# lines-covered")
@@ -1427,8 +1347,6 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                 raise CoveragePolicyError(
                     "unparseable_report", "Kover sourcefile lacks a name"
                 )
-            # JaCoCo can emit empty Kotlin inline-origin records. They carry
-            # no observations and must not count as mapped maintained files.
             if (
                 source.attrib == {"name": name}
                 and len(source) == 0
@@ -1463,10 +1381,7 @@ def _parse_kover(content: bytes, target: CoverageTarget) -> CoverageData:
                         )
                     normalized_lines.add(observation)
                     data.observed.add(observation)
-                # Kover legitimately emits physical source-line observations
-                # with no mapped JVM instructions (mi=0, ci=0), notably around
-                # coroutine/inline lowering. They are not executable LINE
-                # counter members and must not be counted as missed coverage.
+                # Kover: mi=0/ci=0 near coroutine inlining isn't a miss
                 if covered + missed == 0:
                     continue
                 executable_lines += 1
@@ -1713,10 +1628,6 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
         )
     data = CoverageData()
     if document.get("format") is not None:
-        # This validates diagnostic native report structure, not the binary.
-        # Protected normalization independently reconstructs these domains from
-        # retained tested artifacts; its existing attested manifest binds the
-        # exact final report bytes before release authority is considered.
         policy = _native_domain_policy()
         try:
             envelope = policy.parse_native_report(document)
@@ -1763,7 +1674,6 @@ def _parse_xccov(content: bytes, target: CoverageTarget) -> CoverageData:
 
 
 def _native_domain_policy() -> Any:
-    """Load the fixed native-domain policy sibling, never a candidate import."""
     path = Path(__file__).resolve().with_name("native_xccov_domain.py")
     if not path.is_file() or path.is_symlink():
         raise CoveragePolicyError("native_domain_policy_unavailable", "native domain policy unavailable")
@@ -1776,11 +1686,6 @@ def _native_domain_policy() -> Any:
 
 
 def _missing_apple_lines(coverage: CoverageData, path: str, changed: set[int]) -> set[int]:
-    """Require native observations through the independently mapped source end.
-
-    No trailing row or hit is manufactured. Legacy reports retain physical-line
-    completeness; native domains must first pass exact candidate source binding.
-    """
     observed = {line for source, line in coverage.observed if source == path}
     missing = changed - observed
     facts = coverage.native_domains.get(path)
@@ -1792,7 +1697,6 @@ def _missing_apple_lines(coverage: CoverageData, path: str, changed: set[int]) -
 def _validate_native_source_bindings(
     repo: Path, candidate_sha: str, reports: Mapping[str, Sequence[BoundCoverageReport]], *, source_prefix: str
 ) -> None:
-    """Match every domain source hash/length to the immutable candidate tree."""
     records = [artifact.coverage for artifacts in reports.values() for artifact in artifacts if artifact.coverage.native_domains]
     if not records:
         return
@@ -1802,8 +1706,7 @@ def _validate_native_source_bindings(
     witnesses = _candidate_source_witnesses(repo, blobs, paths & set(blobs), required_python_paths=set())
     component = "components/AstralProjection"
     if missing and not source_prefix and all(path.startswith(component + "/") for path in missing):
-        # Deep's tree owns one immutable gitlink; child HEAD and working bytes
-        # cannot replace its exact source objects during report validation.
+        # Uses the pinned gitlink SHA, not the submodule's checkout
         entry = _git(repo, ["ls-tree", "-z", "--full-tree", candidate_sha, "--", component])
         match = re.fullmatch(rb"160000 commit ([0-9a-f]{40})\tcomponents/AstralProjection\x00", entry)
         if match is None:
@@ -1826,8 +1729,6 @@ def _validate_native_source_bindings(
 def _parse_coverage_content(
     content: bytes, target_key: str, *, source: Path
 ) -> CoverageData:
-    """Parse already-bounded report bytes so identity and policy use one read."""
-
     try:
         target = TARGET_BY_KEY[target_key]
     except KeyError as exc:
@@ -1851,8 +1752,6 @@ def _parse_coverage_content(
 
 
 def parse_coverage_report(path: Path, target_key: str) -> CoverageData:
-    """Parse one Cobertura/Kover, V8/Istanbul, or xccov report."""
-
     return _parse_coverage_content(_read_report(path), target_key, source=path)
 
 
@@ -1878,8 +1777,6 @@ def _unique_report_inputs(
     reports: Mapping[str, Sequence[Path]],
     producer_slots: Mapping[str, Path] | None = None,
 ) -> dict[str, list[BoundCoverageReport]]:
-    """Read each producer artifact once and reject aliased evidence globally."""
-
     seen_paths: dict[Path, str] = {}
     seen_files: dict[tuple[int, int], str] = {}
     seen_payloads: dict[tuple[int, str], str] = {}
@@ -1961,8 +1858,6 @@ def _path_matches_root(path: str, root: str) -> bool:
 
 
 def _producer_applies_to_path(slot_key: str, path: str) -> bool:
-    """Return whether a strict producer is responsible for one maintained path."""
-
     classified = classify_path(path)
     if classified is None or classified.key != PRODUCER_BY_KEY[slot_key].target_key:
         return False
@@ -2000,8 +1895,6 @@ def _producer_applies_to_path(slot_key: str, path: str) -> bool:
 
 
 def _producer_owned_coverage(coverage: CoverageData, slot_key: str) -> CoverageData:
-    """Exclude observations outside a strict producer's owned source partition."""
-
     def owned(path: str) -> bool:
         return _producer_applies_to_path(slot_key, path)
 
@@ -2021,8 +1914,6 @@ def _candidate_source_blobs(
     *,
     source_prefix: str = "",
 ) -> dict[str, CandidateBlob]:
-    """Inventory regular blobs from one immutable candidate tree."""
-
     output = _git(repo, ["ls-tree", "-r", "-z", "-l", "--full-tree", candidate_sha])
     prefix = _repo_path(source_prefix) if source_prefix else ""
     blobs: dict[str, CandidateBlob] = {}
@@ -2067,8 +1958,6 @@ def _matching_source_lines(
     pattern: re.Pattern[str],
     multiline_map: Mapping[int, int],
 ) -> set[int]:
-    """Map regex matches to source lines with linear incremental scanning."""
-
     lines: set[int] = set()
     last_start = 0
     last_start_line = 0
@@ -2086,14 +1975,6 @@ def _matching_source_lines(
 
 
 def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[int]:
-    """Derive the pinned native producer's interpreter-stable statement witness.
-
-    This is the stdlib-only equivalent of Coverage.py 7.15.2's statement parser:
-    recursive ``co_lines()`` observations are mapped to logical statement headers,
-    then its exact default exclusions and docstring rules are applied. Nullable line
-    metadata from newer interpreters is ignored explicitly.
-    """
-
     try:
         encoding, _lines = tokenize.detect_encoding(io.BytesIO(content).readline)
         source = content.decode(encoding)
@@ -2218,8 +2099,6 @@ def _candidate_source_witnesses(
     *,
     required_python_paths: set[str] | None = None,
 ) -> dict[str, CandidateSourceWitness]:
-    """Batch-read bounded candidate blobs and derive source completeness facts."""
-
     required = required_python_paths or set()
     if len(paths) > MAX_CANDIDATE_WITNESS_PATHS:
         raise CoveragePolicyError(
@@ -2356,8 +2235,6 @@ def _strict_producer_contributions(
     required_producer_keys: Sequence[str] | None = None,
     source_prefix: str = "",
 ) -> dict[str, int]:
-    """Require one useful native report in every repository-owned slot."""
-
     expected_slots = set(required_producer_keys or PRODUCER_BY_KEY)
     unknown_slots = expected_slots - set(PRODUCER_BY_KEY)
     if unknown_slots:
@@ -2612,13 +2489,6 @@ def evaluate_changed_coverage(
     required_producer_keys: Sequence[str] | None = None,
     source_prefix: str = "",
 ) -> dict[str, Any]:
-    """Evaluate changed executable lines and return a deterministic decision.
-
-    Repeated reports are unioned by normalized ``(source path, line)``. Every
-    applicable target must supply parseable coverage and map every changed source
-    file before per-language and combined thresholds are evaluated.
-    """
-
     threshold = _threshold(fail_under)
     report_inputs = _unique_report_inputs(reports, producer_slots)
     slot_by_path: dict[Path, str] = {}
@@ -2897,8 +2767,6 @@ def _load_event(path: str | None, event_name: str | None) -> Mapping[str, Any] |
 
 
 class _SingleReportAction(argparse.Action):
-    """Reject repeated producer flags instead of silently taking the last path."""
-
     def __call__(
         self,
         parser: argparse.ArgumentParser,
@@ -2948,8 +2816,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the collector CLI, always writing deterministic pass/fail JSON."""
-
     args = _parser().parse_args(argv)
     event_name = args.event_name or os.environ.get("GITHUB_EVENT_NAME")
     event_path = args.event_path or os.environ.get("GITHUB_EVENT_PATH")

@@ -1,12 +1,8 @@
-"""First-party user-token denylist (H2).
-
-Delegated / agent-service / MCP tokens are minted by this orchestrator for a
-NON-user purpose, yet they carry the human's ``sub``, the human's roles, the
-realm ``iss`` and an allow-listed ``azp`` — so signature + azp + issuer alone
-accept them as an interactive user session. These tests pin the denylist that
-refuses them, and pin that it stays a DENYLIST: a real Keycloak
-confidential-client token carries ``aud="account"`` and must keep working.
+"""Tests for the first-party user-token denylist (orchestrator/auth.py, mcp_authz.py):
+delegated/agent-service/MCP tokens are refused by actor/audience/delegation claims
+while ordinary Keycloak user tokens (aud=account) keep working.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +31,6 @@ def _creds(token: str = "a.b.c") -> HTTPAuthorizationCredentials:
 
 @pytest.fixture
 def jwks_env(monkeypatch):
-    """Real (non-mock) validator path with the JWKS fetch + decode stubbed."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
@@ -59,10 +54,6 @@ def _validate(payload: dict, monkeypatch):
     return asyncio.run(get_current_user_payload(_Req(), _creds()))
 
 
-# ---------------------------------------------------------------------------
-# (1) The shared predicate
-# ---------------------------------------------------------------------------
-
 def test_predicate_accepts_plain_user_claims():
     ok, reason = auth_clients.is_first_party_user_claims(
         {"sub": "u1", "azp": "astral-frontend"})
@@ -70,8 +61,6 @@ def test_predicate_accepts_plain_user_claims():
 
 
 def test_predicate_accepts_account_audience():
-    """Keycloak confidential clients set aud="account" — the whole reason the
-    check must be a denylist and verify_aud must stay off."""
     ok, _ = auth_clients.is_first_party_user_claims(
         {"sub": "u1", "aud": "account", "azp": "astral-frontend"})
     assert ok
@@ -93,13 +82,6 @@ def test_predicate_rejects_delegation_flag():
 
 
 def test_predicate_accepts_the_live_realm_user_token_shape():
-    """An ordinary interactive login carries the agent-service audience.
-
-    Captured verbatim from a real session on the deployment realm: the
-    delegation setup grants ``astral-agent-service`` to the FRONTEND client by
-    protocol mapper, so an interactive token carries it too. Denylisting that
-    audience refuses every real user — this pins the regression.
-    """
     live = {
         "sub": "58e0d4ff-f006-4fbe-aa13-109c6d51c99d",
         "azp": "astral-frontend",
@@ -122,15 +104,9 @@ def test_predicate_rejects_non_dict():
 
 
 def test_mcp_audience_literal_matches_mcp_authz():
-    """shared/ cannot import orchestrator/, so the literal is duplicated —
-    pin the two together."""
     from orchestrator.mcp_authz import MCP_AUDIENCE
     assert auth_clients.MCP_AUDIENCE == MCP_AUDIENCE
 
-
-# ---------------------------------------------------------------------------
-# (2) The REST dependency (JWKS branch)
-# ---------------------------------------------------------------------------
 
 def test_rest_accepts_first_party_token(jwks_env):
     payload = {"sub": "u1", "azp": "astral-frontend", "aud": "account",
@@ -139,8 +115,6 @@ def test_rest_accepts_first_party_token(jwks_env):
 
 
 def test_rest_accepts_token_without_iss(jwks_env):
-    """The issuer binding is present-and-mismatched only — a token with no iss
-    claim keeps flowing (matches Orchestrator.validate_token)."""
     assert _validate({"sub": "u1", "azp": "astral-frontend"}, jwks_env)["sub"] == "u1"
 
 

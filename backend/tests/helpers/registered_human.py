@@ -1,8 +1,8 @@
-"""Signed synthetic socket ingress for focused tests over a real Plane graph.
-
-Only test IAM is supplied. Product signature, caller, owner, composition and
-guidance validation remain enabled; no production endpoint uses this helper.
+"""Builds a signed synthetic human-socket turn over a real AstralPlane graph for focused
+tests, exercising orchestrator/human_request_authority.py's real signature and
+composition checks.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -32,8 +32,6 @@ def registered_human_turn(orch, websocket, message, chat_id, *, user_id):
     pending = None
     try:
         claims, _ = identity.claims_and_token({"sub": identity.run_id + "_owner"})
-        # Existing test records use fixed owner IDs. Signing those IDs is
-        # deliberately confined to this test helper, not the harness issuer.
         claims.update(sub=user_id, preferred_username=user_id,
                       realm_access={"roles": ["user"]})
         token = jwt.encode(claims, identity.private_key, algorithm="RS256",

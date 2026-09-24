@@ -1,9 +1,6 @@
-"""Lightweight performance timing for feature 052.
-
-perf_span emits one structured log line per measured span so the measurement
-protocol in specs/052-perf-comment-hygiene/quickstart.md can compute
-percentiles straight from the orchestrator log. Context values must be short
-identifiers (surface keys, chat ids) — never message content or PHI.
+"""Structured performance-span logger: perf_span() times a block and emits one `perf
+<name> duration_ms=<int> ...` log line even if it raises;
+backend/scripts/perf_report.py aggregates these into per-span P50/P95.
 """
 
 import logging
@@ -15,11 +12,6 @@ logger = logging.getLogger("astral.perf")
 
 @contextmanager
 def perf_span(name, **ctx):
-    """Time the wrapped block and log ``perf <name> duration_ms=<int> k=v ...``.
-
-    The line is emitted even when the block raises, so failed operations are
-    measured too; the exception always propagates.
-    """
     start = time.monotonic()
     try:
         yield

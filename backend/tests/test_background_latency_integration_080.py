@@ -1,16 +1,6 @@
-"""080-runtime-metrics: BackgroundTaskManager latency-observation seam (US2).
-
-These integration tests drive the real ``BackgroundTaskManager`` lifecycle
-(submit / completion / failure / cancellation / queued expiration) over the
-existing explicit ``InMemoryWorkAdmissionRepository`` and a synthetic clock, and
-assert that the new latency helper is invoked at the manager's existing
-once-per-task ``_observe_terminal`` guard — not once per subscriber send.
-
-Against unchanged ``main`` the manager never calls
-``observe_background_operation``; every ``background_operations`` assertion is
-therefore EXPECTED RED until feature 080 wires the seam.  A deliberately
-throwing collector proves the task result, cancellation and cleanup still
-succeed when telemetry fails.
+"""Tests that BackgroundTaskManager's real lifecycle (submit, complete, fail, cancel,
+expire) invokes the latency observer exactly once per task at _observe_terminal, and
+that a throwing collector never breaks completion.
 """
 
 from __future__ import annotations
@@ -42,8 +32,6 @@ class _Clock:
 
 
 class _RecordingObservability:
-    """Duck-typed collector capturing the new background-latency observations."""
-
     def __init__(self) -> None:
         self.operation_events: list[tuple] = []
         self.admission_statuses: list[tuple] = []
@@ -71,8 +59,6 @@ class _RecordingObservability:
 
 
 class _ThrowingBackgroundObservability(_RecordingObservability):
-    """Records the attempt, then fails — lifecycle must remain unaffected."""
-
     def observe_background_operation(self, operation) -> None:
         super().observe_background_operation(operation)
         raise RuntimeError("private-observer-payload-080")
@@ -253,8 +239,6 @@ async def test_repeated_terminal_observation_counts_latency_once() -> None:
     await _settle(mgr)
     assert len(observability.background_operations) == 1
 
-    # Redundant terminal observations (reconnect / duplicate delivery) must not
-    # re-count latency: the once-per-task guard already fired.
     for _ in range(3):
         await mgr._observe_terminal(task)
 
@@ -279,7 +263,6 @@ async def test_throwing_collector_does_not_break_completion(caplog, collector_ty
 
     assert task.status is TaskStatus.COMPLETED
     assert task._operation.state is OperationState.COMPLETED
-    # The helper was attempted and its failure was contained.
     assert observability.background_operations
     assert "private-observer-payload-080" not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)

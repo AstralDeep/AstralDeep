@@ -1,4 +1,8 @@
-"""Tests for the cron/interval/one-shot evaluator + governance (feature 025, T039)."""
+"""Tests for scheduler/cron.py and governance.py: interval/one-shot/cron evaluation
+including timezone-aware and weekday-skipping cases, invalid-expression errors, and
+the job-cap/interval-floor governance checks.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -17,8 +21,6 @@ def _dt(ms: int) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
 
 
-# ── interval ──────────────────────────────────────────────────────────────
-
 def test_interval_adds_duration():
     after = _ms(2026, 5, 27, 9, 0)
     nxt = compute_next_run_ms("interval", "15m", "UTC", after)
@@ -36,8 +38,6 @@ def test_interval_invalid_raises():
         compute_next_run_ms("interval", "soon", "UTC", _ms(2026, 5, 27, 9, 0))
 
 
-# ── one_shot ────────────────────────────────────────────────────────────--
-
 def test_one_shot_future_returns_time():
     after = _ms(2026, 5, 27, 9, 0)
     nxt = compute_next_run_ms("one_shot", "2026-05-27T11:00:00Z", "UTC", after)
@@ -49,27 +49,21 @@ def test_one_shot_past_returns_none():
     assert compute_next_run_ms("one_shot", "2026-05-27T08:00:00Z", "UTC", after) is None
 
 
-# ── cron ────────────────────────────────────────────────────────────────--
-
 def test_cron_daily_at_7am_utc():
-    after = _ms(2026, 5, 27, 9, 0)  # Wed 09:00 → next 07:00 is tomorrow
+    after = _ms(2026, 5, 27, 9, 0)
     nxt = _dt(compute_next_run_ms("cron", "0 7 * * *", "UTC", after))
     assert (nxt.hour, nxt.minute) == (7, 0)
     assert nxt.date() == datetime(2026, 5, 28).date()
 
 
 def test_cron_weekday_mornings_skips_weekend():
-    # 2026-05-29 is a Friday 08:00; "0 7 * * 1-5" next should be Fri? No—07:00
-    # already passed at 08:00, so next weekday 07:00 is Mon 2026-06-01.
     after = _ms(2026, 5, 29, 8, 0)
     nxt = _dt(compute_next_run_ms("cron", "0 7 * * 1-5", "UTC", after))
     assert (nxt.hour, nxt.minute) == (7, 0)
-    assert nxt.weekday() == 0  # Monday
+    assert nxt.weekday() == 0
 
 
 def test_cron_timezone_aware():
-    # 0 9 * * * in New York; from a UTC instant, result is 09:00 local → 13:00 UTC (EDT).
-    # Requires the IANA tz database (system zoneinfo or the `tzdata` package).
     pytest.importorskip("zoneinfo")
     try:
         from zoneinfo import ZoneInfo
@@ -78,7 +72,7 @@ def test_cron_timezone_aware():
         pytest.skip("IANA tz database not installed (add the `tzdata` package)")
     after = _ms(2026, 5, 27, 0, 0)
     nxt = _dt(compute_next_run_ms("cron", "0 9 * * *", "America/New_York", after))
-    assert nxt.hour in (13, 14)  # 13 during EDT
+    assert nxt.hour in (13, 14)
 
 
 def test_cron_invalid_field_raises():
@@ -90,8 +84,6 @@ def test_cron_must_have_five_fields():
     with pytest.raises(ScheduleError):
         compute_next_run_ms("cron", "0 7 * *", "UTC", _ms(2026, 5, 27, 9, 0))
 
-
-# ── governance ──────────────────────────────────────────────────────────--
 
 def test_job_cap_enforced():
     with pytest.raises(GovernanceError) as ei:
@@ -112,5 +104,5 @@ def test_interval_floor_enforced():
 def test_valid_job_passes_governance():
     validate_new_job(active_job_count=3, max_active=25,
                      schedule_kind="interval", schedule_expr="5m",
-                     min_interval_seconds=60)  # no raise
+                     min_interval_seconds=60)
     assert interval_seconds("interval", "5m") == 300

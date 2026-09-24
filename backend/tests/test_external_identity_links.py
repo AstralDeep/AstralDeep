@@ -1,4 +1,8 @@
-"""Signed direct-ORCID link handoff and preference projection coverage."""
+"""Tests for signed direct-ORCID link handoff (orchestrator/external_identity_links.py,
+api.py, AstralPlane identity repository): signature/expiry validation, typed-boundary
+replay rejection, and the start/callback API flow.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -98,9 +102,9 @@ def test_tampered_and_expired_tokens_fail_closed():
     state, _assertion = _handoff()
     body, signature = state.rsplit(".", 1)
     mac = bytearray(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)))
+    # Flips a decoded byte, not a base64 padding bit
     mac[0] ^= 1
     tampered_signature = base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
-    # Change an authenticated byte, not the final base64 character's padding bits.
     with pytest.raises(IdentityLinkError):
         decode_signed_payload(
             f"{body}.{tampered_signature}",

@@ -1,24 +1,8 @@
-"""Feature 055 (US5, T044) — share REST routes.
-
-``POST/GET /api/share``, ``DELETE /api/share/{id}`` and the PUBLIC
-``GET /share/{token}`` behind ``FF_ARTIFACT_SHARING`` (default OFF,
-fail-closed):
-
-* flag off ⇒ every route 404s with FastAPI's route-absent body;
-* mint returns ``{id, share_url, created_at, expires_at}`` exactly once —
-  no separate token field, no token material in the owner listing;
-* the public serve needs NO auth, returns the mint-time snapshot verbatim
-  with the contract's noindex / no-store / no-referrer / CSP headers;
-* revoke is owner-scoped, idempotent, and immediate (the next public open
-  refuses with the uniform 404);
-* the PHI gate refusal maps to 403 ``{error: "phi_blocked"}``.
-
-Routes run over a real FastAPI app + TestClient against the REAL
-``ShareGrantStore`` and live Postgres ``share_grant`` table (the store's
-methods keep all DB work off the event loop, so LOOP_GUARD_ENFORCE=1 holds);
-the orchestrator is mocked only as the snapshot source. Each test user is
-uuid-unique and purges its own grant rows on teardown.
+"""Tests for the artifact-sharing REST routes (orchestrator/api.py, artifact_share.py)
+behind FF_ARTIFACT_SHARING: flag-off 404s, one-time mint, unauthenticated public
+serve, owner-scoped revoke, and the PHI-gate refusal.
 """
+
 from __future__ import annotations
 
 import os
@@ -50,15 +34,8 @@ from shared.feature_flags import flags  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fixtures / helpers
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
 def mock_auth(monkeypatch):
-    """Keep this module independent of collection-time environment writes."""
-
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
 
 
@@ -175,11 +152,6 @@ def _grant_rows(plane_runtime, user_id):
     return [_plain(row) for row in rows]
 
 
-# ---------------------------------------------------------------------------
-# Flag off — fail-closed 404 everywhere
-# ---------------------------------------------------------------------------
-
-
 def test_flag_off_all_routes_404(plane_runtime, client, user):
     prior = flags._flags.get("artifact_sharing")
     flags._flags["artifact_sharing"] = False
@@ -198,29 +170,21 @@ def test_flag_off_all_routes_404(plane_runtime, client, user):
         flags._flags["artifact_sharing"] = prior
 
 
-# ---------------------------------------------------------------------------
-# Mint + public serve
-# ---------------------------------------------------------------------------
-
-
 def test_mint_returns_url_once_and_serves_unauthenticated(
     plane_runtime, client, user, sharing_on
 ):
     r = _mint(client, user)
     assert r.status_code == 201
     body = r.json()
-    # The raw token appears exactly once, inside share_url — no token field.
     assert set(body) == {"id", "share_url", "created_at", "expires_at"}
     assert body["share_url"].startswith("/share/")
 
-    # PUBLIC serve: no Authorization header at all.
     pub = client.get(body["share_url"])
     assert pub.status_code == 200
     assert pub.headers["content-type"].startswith("text/html")
     assert pub.text.startswith("<!DOCTYPE html>")
     assert "Quarterly revenue" in pub.text
     assert "<script" not in pub.text
-    # Contract headers (rest-endpoints.md §GET /share/{token}).
     assert pub.headers["X-Robots-Tag"] == "noindex, nofollow"
     assert pub.headers["Cache-Control"] == "no-store"
     assert pub.headers["Referrer-Policy"] == "no-referrer"
@@ -234,7 +198,6 @@ def test_mint_returns_url_once_and_serves_unauthenticated(
 
 def test_serve_is_the_mint_time_snapshot_not_live(client, orch, user, sharing_on):
     r = _mint(client, user)
-    # The workspace changes after mint — the link must keep serving the snapshot.
     orch.workspace.aget_by_component_id.return_value = None
     pub = client.get(r.json()["share_url"])
     assert pub.status_code == 200
@@ -255,22 +218,15 @@ def test_unknown_token_uniform_404(client, user, sharing_on):
     assert (r.status_code, r.json()) == (404, {"detail": "Not Found"})
 
 
-# ---------------------------------------------------------------------------
-# Revoke — immediate, owner-scoped, idempotent
-# ---------------------------------------------------------------------------
-
-
 def test_revoke_immediately_stops_public_serving(client, user, sharing_on):
     minted = _mint(client, user).json()
     assert client.get(minted["share_url"]).status_code == 200
 
     r = client.delete(f"/api/share/{minted['id']}", headers=_auth(user))
     assert r.status_code == 200
-    # The very next public open refuses with the uniform body.
     pub = client.get(minted["share_url"])
     assert (pub.status_code, pub.json()) == (404, {"detail": "Not Found"})
 
-    # Idempotent second revoke; unknown id → 404.
     assert client.delete(f"/api/share/{minted['id']}", headers=_auth(user)).status_code == 200
     assert client.delete("/api/share/999999999", headers=_auth(user)).status_code == 404
 
@@ -281,11 +237,6 @@ def test_stranger_cannot_revoke(client, user, sharing_on):
     r = client.delete(f"/api/share/{minted['id']}", headers=_auth(stranger))
     assert r.status_code == 404
     assert client.get(minted["share_url"]).status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Owner listing
-# ---------------------------------------------------------------------------
 
 
 def test_list_owner_metadata_never_token_material(client, user, sharing_on):
@@ -299,14 +250,8 @@ def test_list_owner_metadata_never_token_material(client, user, sharing_on):
     for s in shares:
         assert "token_sha256" not in s
         assert "snapshot_html" not in s and "snapshot_json" not in s
-    # Neither raw token ever appears in the listing payload.
     for minted in (a, b):
         assert minted["share_url"].split("/share/")[1] not in r.text
-
-
-# ---------------------------------------------------------------------------
-# Refusals
-# ---------------------------------------------------------------------------
 
 
 def test_phi_refusal_is_403_phi_blocked(plane_runtime, client, user, sharing_on):
@@ -335,7 +280,6 @@ def test_empty_canvas_is_404(client, orch, user, sharing_on):
 
 
 def _no_session(monkeypatch):
-    """No astral_session cookie resolves (real deployments without a login)."""
     async def _none(request):
         return None
     monkeypatch.setattr(web_auth, "ensure_session", _none)
@@ -349,8 +293,6 @@ def test_api_routes_require_auth(client, user, sharing_on, monkeypatch):
 
 
 def test_unauthenticated_browser_navigation_redirects(client, sharing_on, monkeypatch):
-    """GET navigation (Accept prefers text/html) with no session: 302 to
-    login; non-GET stays 401 even when the browser asks for HTML."""
     _no_session(monkeypatch)
     accept = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
     r = client.get("/api/share", headers=accept, follow_redirects=False)
@@ -362,8 +304,6 @@ def test_unauthenticated_browser_navigation_redirects(client, sharing_on, monkey
 
 
 def test_cookie_session_mock_mode_mints_and_lists(plane_runtime, client, sharing_on):
-    """No Authorization header at all — the astral_session cookie path
-    (USE_MOCK_AUTH=true makes ensure_session return the test_user session)."""
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
                                         "component_id": "wc_shared"})
     try:
@@ -375,7 +315,6 @@ def test_cookie_session_mock_mode_mints_and_lists(plane_runtime, client, sharing
         assert listed.status_code == 200
         assert minted_id in [s["id"] for s in listed.json()["shares"]]
     finally:
-        # Delete exactly the cookie-session grant without broad fixture cleanup.
         if r.status_code == 201:
             with plane_runtime.transaction() as transaction:
                 transaction.execute(
@@ -387,8 +326,6 @@ def test_cookie_session_mock_mode_mints_and_lists(plane_runtime, client, sharing
 def test_cookie_session_real_mode_mints(
     plane_runtime, client, user, sharing_on, monkeypatch
 ):
-    """Non-mock: the faked session's access token flows through the SAME JWKS
-    verification path as a Bearer token (test_download_auth.py pattern)."""
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
@@ -410,3 +347,33 @@ def test_cookie_session_real_mode_mints(
                                         "component_id": "wc_shared"})
     assert r.status_code == 201
     assert _grant_rows(plane_runtime, user)[0]["id"] == r.json()["id"]
+
+
+def test_dashboard_with_dates_and_large_values_mints_and_serves(
+    plane_runtime, client, orch, user, sharing_on
+):
+    component = dict(COMPONENT, title="Lexington forecast", children=[
+        {"type": "text", "content": "Forecast 2026-09-23: population 12345678"},
+    ])
+    orch.workspace.aget_by_component_id.return_value["component_data"] = component
+    response = _mint(client, user)
+    assert response.status_code == 201
+    public = client.get(response.json()["share_url"])
+    assert public.status_code == 200
+    assert "Lexington forecast" in public.text
+    assert "2026-09-23" in public.text
+    assert "12345678" in public.text
+    assert len(_grant_rows(plane_runtime, user)) == 1
+
+
+@pytest.mark.parametrize("content", ["MRN: A0099123", "SSN 123-45-6789", "DOB: 1980-04-12"])
+def test_patient_identifiers_refuse_share_without_creating_public_grant(
+    plane_runtime, client, orch, user, sharing_on, content
+):
+    orch.workspace.aget_by_component_id.return_value["component_data"] = dict(
+        COMPONENT, children=[{"type": "text", "content": content}],
+    )
+    response = _mint(client, user)
+    assert response.status_code == 403
+    assert response.json() == {"error": "phi_blocked"}
+    assert _grant_rows(plane_runtime, user) == []

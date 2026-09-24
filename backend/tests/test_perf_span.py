@@ -1,4 +1,7 @@
-"""Tests for the shared perf_span timing helper (feature 052, T001)."""
+"""Tests for backend/shared/perf.py's perf_span timing helper: structured log line
+format, duration measurement, logging on exception, and omission of trailing context
+when none is given.
+"""
 
 import logging
 import re
@@ -9,7 +12,6 @@ from shared.perf import perf_span
 
 
 def test_perf_span_emits_structured_line(caplog):
-    """A completed span logs `perf <name> duration_ms=<int>` plus context pairs."""
     with caplog.at_level(logging.INFO, logger="astral.perf"):
         with perf_span("surface.render.agents", surface="agents", user="u1"):
             pass
@@ -20,7 +22,6 @@ def test_perf_span_emits_structured_line(caplog):
 
 
 def test_perf_span_duration_reflects_elapsed_time(caplog):
-    """The logged duration is a plausible millisecond integer for the block."""
     with caplog.at_level(logging.INFO, logger="astral.perf"):
         with perf_span("t"):
             pass
@@ -30,7 +31,6 @@ def test_perf_span_duration_reflects_elapsed_time(caplog):
 
 
 def test_perf_span_logs_even_when_block_raises(caplog):
-    """The span logs on exception and the exception still propagates."""
     with caplog.at_level(logging.INFO, logger="astral.perf"):
         with pytest.raises(ValueError):
             with perf_span("boom", chat="c9"):
@@ -41,7 +41,6 @@ def test_perf_span_logs_even_when_block_raises(caplog):
 
 
 def test_perf_span_without_context_has_no_trailing_space(caplog):
-    """No context kwargs means the line ends at the duration field."""
     with caplog.at_level(logging.INFO, logger="astral.perf"):
         with perf_span("bare"):
             pass

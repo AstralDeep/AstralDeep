@@ -1,8 +1,8 @@
-"""Unregistered acceptance with real JWT, Plane, policy and atomic audit.
-
-Only external JWKS/refresh replies and PHI model output are synthetic. Each test
-uses a task-owned PostgreSQL schema; no endpoint, runner or physical tool runs.
+"""Tests for work submission admission (backend/orchestrator/work_submit.py,
+work_submit_authority.py): receipt creation, retry idempotence, policy refusal, and
+audit atomicity across ordinary and chat-kind submissions.
 """
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
@@ -567,7 +567,6 @@ async def test_cookie_without_durable_incarnation_cannot_borrow_current_row(
 
 
 def chat_command(**changes):
-    """The closed chat body: same limits, no source, no selection, no retention choice."""
     from llm_config import research_profile as profile
     values = {"kind": "chat", "source": None,
               "limits": {"model_calls": 1, "tool_calls": 1, "tokens": profile.RESERVED_TOKENS,
@@ -578,7 +577,6 @@ def chat_command(**changes):
 
 @pytest.fixture
 async def chat_service(service, runtime, fixture, monkeypatch, tmp_path):
-    """The source-only service plus the fixed USER model preflight chat needs."""
     from cryptography.fernet import Fernet
     from llm_config import research_profile as profile
     from llm_config.user_store import UserLLMConfigStore
@@ -650,7 +648,6 @@ async def test_chat_kind_allowlist_refuses_sources_selection_and_short_budgets(
 
 @pytest.mark.asyncio
 async def test_chat_kind_requires_the_model_preflight(service, fixture, runtime):
-    """Source-only acceptance never admits a turn it cannot qualify a model for."""
     with pytest.raises(AssignmentError) as caught:
         await service.submit(await context(fixture, runtime), chat_command())
     assert (caught.value.code, caught.value.status_code) == ("work_chat_profile_unavailable", 503)

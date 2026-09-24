@@ -1,10 +1,6 @@
-"""Fail-closed host configuration for the external LETS warden.
-
-This module is intentionally limited to local configuration and readiness
-posture.  It performs no network I/O and does not construct a LETS client.
-Secret files are represented by validated references; token and private-key
-contents are never read here.  A caller must provide the pinned LETS manifest
-signature verifier before an active configuration can become ready.
+"""Fail-closed local configuration and readiness posture for the external LETS warden:
+no network I/O, no client construction, and secret file contents are never read.
+Feeds lets_client.py and lets_composition.py once a manifest verifier is supplied.
 """
 
 from __future__ import annotations
@@ -59,7 +55,6 @@ _POSITIVE_INTEGER = re.compile(r"^[1-9][0-9]*$")
 _NON_NEGATIVE_INTEGER = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _DECIMAL = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 _DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-# Mirrors LETS ``require_key_id``: ASCII, HTTP-header-safe key identifiers.
 _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~:/+-]{0,511}$")
 _COHORTS = frozenset(INITIAL_GOVERNED_COHORTS)
 _MANIFEST_FIELDS = frozenset(
@@ -81,8 +76,6 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class LetsConfigError(ValueError):
-    """A stable, value-free configuration denial safe for logs."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -90,8 +83,6 @@ class LetsConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SecretFileReference:
-    """A nonempty regular-file reference whose contents remain unread."""
-
     path: Path = field(repr=False)
     size_bytes: int = field(repr=False)
 
@@ -101,13 +92,6 @@ class SecretFileReference:
 
 @dataclass(frozen=True, slots=True)
 class LetsIdentityConfig:
-    """Per-request EdDSA service-identity minting parameters.
-
-    The Ed25519 seed stays unread here; only its file reference is retained.
-    Every other field is public JWT metadata that the warden already holds in
-    its identity key registry, so the redacted view exposes counts only.
-    """
-
     seed_file: SecretFileReference = field(repr=False)
     kid: str = field(repr=False)
     issuer: str = field(repr=False)
@@ -126,8 +110,6 @@ class LetsIdentityConfig:
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedTrustManifest:
-    """Safe metadata retained after external signature authentication."""
-
     path: Path = field(repr=False)
     sha256: str
     tenant_id: str
@@ -141,8 +123,6 @@ class AuthenticatedTrustManifest:
 
 @dataclass(frozen=True, slots=True)
 class LetsHostConfig:
-    """Validated local LETS configuration with no plaintext credentials."""
-
     master_enabled: bool
     mode: LetsMode
     environment: str
@@ -180,14 +160,6 @@ class LetsHostConfig:
         *,
         authenticate_manifest: ManifestAuthenticator | None = None,
     ) -> "LetsHostConfig":
-        """Strictly parse one environment mapping.
-
-        Only the mode and master flag are relevant while mode is ``off``;
-        dormant LETS variables are deliberately ignored to preserve flag-off
-        behavior.  Active modes require the complete local trust and executor
-        posture.
-        """
-
         values = os.environ if environ is None else environ
         master_enabled = _master_flag(values)
         mode = _mode(values)
@@ -215,9 +187,6 @@ class LetsHostConfig:
             "LETS_SERVICE_TOKEN_FILE",
             invalid_code="invalid_service_token_file",
         )
-        # Minted mode is keyed on LETS_IDENTITY_SEED_FILE alone.  A static
-        # token file combined with ANY LETS_IDENTITY_* variable is ambiguous
-        # operator intent and is refused before either block is parsed.
         if service_token is not None and _identity_variables_present(values):
             raise LetsConfigError("conflicting_service_identity")
         identity = _identity(values)
@@ -287,9 +256,6 @@ class LetsHostConfig:
             "missing_signed_trust_manifest",
         )
         if authenticate_manifest is None:
-            # Production startup obtains manifest authority only from a
-            # separately mounted operator trust bundle.  Tests/compositions
-            # may still inject an equivalent authenticator explicitly.
             from orchestrator.lets_manifest import (
                 OperatorTrustError,
                 build_manifest_authenticator,
@@ -340,8 +306,6 @@ class LetsHostConfig:
 
     @property
     def service_identity_mode(self) -> Literal["token_file", "minted"] | None:
-        """How the warden client authenticates: a static bearer or per-request JWTs."""
-
         if self.identity is not None:
             return "minted"
         if self.service_token_file is not None:
@@ -349,8 +313,6 @@ class LetsHostConfig:
         return None
 
     def redacted(self) -> dict[str, object]:
-        """Return diagnostics that contain no file paths or secret material."""
-
         return {
             "master_enabled": self.master_enabled,
             "mode": self.mode,
@@ -374,8 +336,6 @@ class LetsHostConfig:
 
 @dataclass(frozen=True, slots=True)
 class LetsReadiness:
-    """No-network configuration posture for application readiness decisions."""
-
     mode: LetsMode
     status: Literal["disabled", "configured", "degraded", "blocked"]
     reason: str
@@ -387,8 +347,6 @@ class LetsReadiness:
 
 @dataclass(frozen=True, slots=True)
 class LetsConfigLoad:
-    """Configuration plus the mode-specific response to a local denial."""
-
     config: LetsHostConfig | None
     readiness: LetsReadiness
 
@@ -398,14 +356,6 @@ def load_lets_config(
     *,
     authenticate_manifest: ManifestAuthenticator | None = None,
 ) -> LetsConfigLoad:
-    """Load config and project invalid active config into readiness posture.
-
-    Invalid mode, invalid master-flag syntax, and an active mode behind a false
-    master flag remain startup errors.  Other active configuration errors are
-    represented as shadow degradation or enforce blocking without exposing the
-    rejected value.
-    """
-
     values = os.environ if environ is None else environ
     master_enabled = _master_flag(values)
     mode = _mode(values)
@@ -625,12 +575,6 @@ def _identity_variables_present(values: Mapping[str, str]) -> bool:
 
 
 def _identity(values: Mapping[str, str]) -> LetsIdentityConfig | None:
-    """Parse the minted-identity block; ``None`` unless the seed file is set.
-
-    ``LETS_IDENTITY_SEED_FILE`` alone selects minted mode; the remaining
-    ``LETS_IDENTITY_*`` variables are validated only once it is present.
-    """
-
     seed_file = _optional_file(
         values,
         "LETS_IDENTITY_SEED_FILE",

@@ -1,22 +1,8 @@
-"""030: /api/download auth — Bearer (unchanged) + GET-only session-cookie fallback.
-
-The web client renders ``<a href="/api/download/...">`` anchors; a browser
-anchor click sends the ``astral_session`` cookie but cannot attach an
-Authorization header. The route's auth dependency
-(``orchestrator.auth.require_download_user_id``) therefore tries the existing
-Bearer/``?token=`` path first and, on a GET with no token, resolves the cookie
-session via ``orchestrator.web_auth.ensure_session`` and validates its access
-token through the exact same JWT path (``get_current_user_payload``).
-
-Pins:
-- Bearer and ``?token=`` still work exactly as before.
-- Cookie path: valid session -> 200; absent/erroring session -> 401;
-  session token that fails JWKS validation -> 401.
-- Bearer wins over cookie (ensure_session never called when a token exists).
-- Cookie fallback is GET-only.
-- Path traversal still 403; cross-user paths still 404.
-- request.state.audit_claims is populated on the cookie path (audit attribution).
+"""Tests for /api/download auth (orchestrator/auth.py, web_auth.py): Bearer and
+query-token paths stay unchanged, a GET-only session-cookie fallback authenticates
+via JWKS, and path-traversal/cross-user access stay blocked.
 """
+
 import os
 import shutil
 import sys
@@ -27,7 +13,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import orchestrator.web_auth as web_auth  # noqa: E402  (after sys.path insert)
+import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.auth import auth_router, require_download_user_id  # noqa: E402
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -36,10 +22,6 @@ FILE_NAME = "report.csv"
 FILE_BODY = b"a,b\n1,2\n"
 CROSS_USER_FILE = "secret.txt"
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mock_auth_env(monkeypatch):
@@ -58,7 +40,6 @@ def app():
     app = FastAPI()
     app.include_router(auth_router)
 
-    # Captures request.state.audit_claims the way audit.middleware reads it.
     captured = {}
     app.state.captured_audit = captured
 
@@ -68,8 +49,6 @@ def app():
         captured["claims"] = getattr(request.state, "audit_claims", None)
         return response
 
-    # Non-GET probe sharing the download dependency: pins that the cookie
-    # fallback is GET-only.
     @app.post("/test/download-auth")
     async def _probe(user_id: str = Depends(require_download_user_id)):
         return {"user_id": user_id}
@@ -84,7 +63,6 @@ def client(app):
 
 @pytest.fixture
 def user_file():
-    """``report.csv`` for test_user; ``secret.txt`` ONLY for other_user."""
     session_dirs = []
     for user, name, body in (
         ("test_user", FILE_NAME, FILE_BODY),
@@ -96,8 +74,6 @@ def user_file():
             f.write(body)
         session_dirs.append(d)
     yield
-    # Remove ONLY the test session dirs — tmp/<user>/ may hold real data in
-    # the shared dev container.
     for d in session_dirs:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -108,10 +84,6 @@ def _session(token="dev-token", sub="test_user"):
                 "created_at": 0, "resumed": True, "sid": "test-sid"}
     return _ensure
 
-
-# ---------------------------------------------------------------------------
-# Bearer / ?token= paths (must be unchanged)
-# ---------------------------------------------------------------------------
 
 def test_bearer_token_still_works(mock_auth_env, client, user_file):
     res = client.get(
@@ -139,12 +111,7 @@ def test_bearer_takes_precedence_over_cookie(mock_auth_env, client, user_file, m
     assert res.status_code == 200, res.text
 
 
-# ---------------------------------------------------------------------------
-# Cookie-session fallback
-# ---------------------------------------------------------------------------
-
 def test_cookie_session_serves_file(mock_auth_env, client, user_file, monkeypatch):
-    """No Authorization header at all — the session cookie path must work."""
     monkeypatch.setattr(web_auth, "ensure_session", _session())
     res = client.get(f"/api/download/{SESSION_ID}/{FILE_NAME}")
     assert res.status_code == 200, res.text
@@ -178,7 +145,6 @@ def test_session_resolution_error_is_401(mock_auth_env, client, user_file, monke
 
 
 def test_cookie_token_failing_jwks_validation_is_401(real_auth_env, client, user_file, monkeypatch):
-    """A session whose access token does not validate must be rejected."""
     monkeypatch.setattr(web_auth, "ensure_session", _session(token="not-a-real-jwt"))
 
     async def _jwks(url, token=None):
@@ -190,7 +156,6 @@ def test_cookie_token_failing_jwks_validation_is_401(real_auth_env, client, user
 
 
 def test_cookie_token_valid_via_jwks(real_auth_env, client, user_file, monkeypatch):
-    """Non-mock: the session's access token flows through the real JWKS path."""
     monkeypatch.setattr(web_auth, "ensure_session", _session(token="signed.jwt.token"))
 
     async def _jwks(url, token=None):
@@ -207,18 +172,12 @@ def test_cookie_token_valid_via_jwks(real_auth_env, client, user_file, monkeypat
 
 
 def test_cookie_fallback_is_get_only(mock_auth_env, client, monkeypatch):
-    """A valid cookie session must NOT authenticate non-GET requests."""
     monkeypatch.setattr(web_auth, "ensure_session", _session())
     res = client.post("/test/download-auth")
     assert res.status_code == 401, res.text
 
 
-# ---------------------------------------------------------------------------
-# Scoping invariants (must be unchanged)
-# ---------------------------------------------------------------------------
-
 def test_path_traversal_still_403(mock_auth_env, client, user_file):
-    # %2e%2e decodes to ".." server-side without httpx normalizing it away.
     res = client.get(
         f"/api/download/{SESSION_ID}/%2e%2e",
         headers={"Authorization": "Bearer dev-token"},
@@ -227,7 +186,6 @@ def test_path_traversal_still_403(mock_auth_env, client, user_file):
 
 
 def test_cross_user_file_still_404(mock_auth_env, client, user_file):
-    """test_user asking for a file that only exists under other_user -> 404."""
     res = client.get(
         f"/api/download/{SESSION_ID}/{CROSS_USER_FILE}",
         headers={"Authorization": "Bearer dev-token"},
@@ -236,7 +194,6 @@ def test_cross_user_file_still_404(mock_auth_env, client, user_file):
 
 
 def test_cookie_path_keeps_user_scoping(mock_auth_env, client, user_file, monkeypatch):
-    """Cookie auth resolves to the SESSION user — other users' files stay 404."""
     monkeypatch.setattr(web_auth, "ensure_session", _session())
     res = client.get(f"/api/download/{SESSION_ID}/{CROSS_USER_FILE}")
     assert res.status_code == 404, res.text

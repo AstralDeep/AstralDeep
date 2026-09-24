@@ -1,4 +1,7 @@
-"""Typed in-memory Plane boundary for remote-compute tests."""
+"""Typed in-memory AstralPlane repository doubles (remote machines, credentials, tracked
+jobs, remote proposals) for remote-compute tests, wired through
+orchestrator/plane_repository_context.py.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Deterministic cadence and playout evidence tests for Feature 065."""
+"""Tests for orchestrator/voice_coordinator.py's speech cadence scheduler: phrase
+catalog validation, ack/deadline timing, stale-control rejection, multi-turn
+arbitration, playout completion, and recovery from missed handoff budgets.
+"""
 
 from __future__ import annotations
 
@@ -440,7 +443,7 @@ def test_wait_mute_terminal_and_progress_preemption_cancel_stale_audio() -> None
     scheduler.set_muted(TURN_1, True)
     assert scheduler.next_decision() is None
     scheduler.set_muted(TURN_1, False)
-    assert scheduler.next_decision() is None  # muted terminal is not burst-replayed
+    assert scheduler.next_decision() is None
 
 
 def test_two_turn_arbitration_is_serial_and_preserves_positive_handoff_budget() -> None:
@@ -468,8 +471,6 @@ def test_two_turn_arbitration_is_serial_and_preserves_positive_handoff_budget() 
     fake.advance(4)
     scheduler.finish(second, _completion(second, fake))
     fake.advance(HANDOFF_BUDGET_SECONDS + 0.001)
-    # There is no equally-due pending turn, so ordinary scheduler latency does
-    # not manufacture a false handoff violation.
     assert scheduler.next_decision() is None
 
 
@@ -933,11 +934,6 @@ def test_scheduler_starts_due_handoff_without_consuming_its_latency_budget() -> 
 
 
 def test_missed_handoff_budget_defers_stale_progress_instead_of_failing() -> None:
-    # One missed 250 ms stream handoff used to latch the scheduler failed
-    # forever (every later call raised speech_scheduler_failed), killing all
-    # speech for the rest of the session. It now degrades: the stale
-    # ordinary progress quantum is dropped, its cadence re-anchors at now,
-    # and the scheduler keeps working.
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
@@ -959,10 +955,6 @@ def test_missed_handoff_budget_defers_stale_progress_instead_of_failing() -> Non
 
 
 def test_start_forgives_handoff_budget_consumed_by_reservation() -> None:
-    # Reservation/preparation occurs between offer and start in the runner
-    # and holds a durable announcement claim by then. A slow reservation
-    # therefore speaks the already-selected quantum late instead of failing
-    # the stream; the genuinely-unusable bound is the latest-start check.
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
@@ -983,11 +975,6 @@ def test_start_forgives_handoff_budget_consumed_by_reservation() -> None:
 
 
 def test_second_consecutive_handoff_miss_speaks_deferred_progress_late() -> None:
-    # Starvation bound: under a sustained missed-handoff regime a turn is
-    # never deferred twice in a row — on the second consecutive miss its
-    # progress quantum stays due and is spoken late. The degrade counters
-    # exist so the runner can log a recurrence (the pre-fix raise was the
-    # signal that diagnosed the 2026-08-05 live failure).
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)
@@ -1017,10 +1004,6 @@ def test_second_consecutive_handoff_miss_speaks_deferred_progress_late() -> None
 
 
 def test_terminal_announcement_survives_missed_handoff_budget() -> None:
-    # The live 2026-08-05 failure: contention between overlapping turns
-    # missed one handoff deadline and the terminal announcement was lost
-    # (voice_terminal_announcement_unavailable). The terminal quantum must
-    # survive the missed budget and still be spoken.
     fake = FakeClock()
     scheduler = SpeechCadenceScheduler(_clock(fake))
     _add_turn(scheduler, TURN_1, sequence=1, next_due_at=NOW)

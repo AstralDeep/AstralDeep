@@ -1,16 +1,8 @@
-"""Taint gate (C-S2) wired into the REAL dispatch path, ``FF_TAINT_TRACKING``
-ON — the production-readiness fixes for turning the flag on:
-
-1. A read-only page fetch is NOT a sink: ``web_search -> fetch_page(<result
-   url>)`` in the same chat is no longer denied.
-2. User intent: a value the user typed VERBATIM in the current message is
-   user-supplied for the check, even if a prior untrusted source emitted it.
-3. A taint denial for a built-in agent leaves an ``agent_tool_call`` audit
-   row (``tool.<name>.denied``), recorded non-blocking.
-
-A call that passes the gate falls through to the "No agent available"
-sentinel (the tool's agent isn't registered), which proves it got past.
+"""Tests for orchestrator/taint.py wired into real tool dispatch: read-only fetches are
+not sinks, text the user typed verbatim this turn is exempt, and a taint denial for a
+built-in agent leaves a non-blocking audit row.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,7 +33,6 @@ def orch(orchestrator_factory, monkeypatch):
 
 @pytest.fixture
 def recorded(monkeypatch):
-    """Capture every audit row the process-wide recorder receives."""
     from audit import recorder as rec_mod
     rows = []
     fake = MagicMock()
@@ -76,7 +67,6 @@ def _err(resp):
 
 
 def _taint_search_result(orch, chat="c1"):
-    """Simulate web_search having emitted URL as a plain string leaf."""
     from orchestrator import taint
     tracker = orch._taint_tracker(chat)
     tracker.record_output([{"type": "text", "content": URL}],
@@ -85,10 +75,6 @@ def _taint_search_result(orch, chat="c1"):
     assert tracker.trust_of(URL) == taint.UNTRUSTED
     return tracker
 
-
-# --------------------------------------------------------------------------- #
-# (1) read-only fetch is not a sink
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_search_then_fetch_page_is_not_denied(orch):
@@ -116,10 +102,6 @@ async def test_untrusted_value_into_a_real_sink_is_still_denied(orch):
     assert "untrusted" in _err(resp)
 
 
-# --------------------------------------------------------------------------- #
-# (2) user-intent exemption
-# --------------------------------------------------------------------------- #
-
 @pytest.mark.asyncio
 async def test_value_typed_by_user_passes_the_sink(orch):
     _taint_search_result(orch)
@@ -138,9 +120,6 @@ async def test_user_exemption_is_exact_not_fuzzy(orch):
 
 @pytest.mark.asyncio
 async def test_user_exemption_reads_the_contextvar_request(orch):
-    """handle_chat_message threads the turn's text through the task-local
-    context var; the gate must honour it even when the per-chat map is
-    empty."""
     from orchestrator import orchestrator as om
     _taint_search_result(orch)
     token = om._ACTIVE_REQUEST_TEXT.set(f"send {URL} to bob")
@@ -154,10 +133,6 @@ async def test_user_exemption_reads_the_contextvar_request(orch):
         om._ACTIVE_REQUEST_TEXT.reset(token)
     assert "No agent available" in _err(resp)
 
-
-# --------------------------------------------------------------------------- #
-# (3) denial is audited
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_taint_denial_leaves_an_audit_row(orch, recorded):
@@ -175,7 +150,6 @@ async def test_taint_denial_leaves_an_audit_row(orch, recorded):
     assert row.actor_user_id == "u1"
     assert row.inputs_meta.get("gate") == "taint"
     assert "untrusted" in (row.outcome_detail or "")
-    # Never the values — only arg metadata.
     assert URL not in json.dumps(row.inputs_meta)
     assert "bob@x" not in json.dumps(row.inputs_meta)
 
@@ -218,10 +192,6 @@ async def test_allowed_call_emits_no_denied_row(orch, recorded):
     await _dispatch(orch, "fetch_page", {"url": URL}, request="read it")
     assert not [r for r in recorded if r.action_type.endswith(".denied")]
 
-
-# --------------------------------------------------------------------------- #
-# escalate semantics unchanged: internal data still flows
-# --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_internal_data_into_a_sink_is_not_enforced(orch):

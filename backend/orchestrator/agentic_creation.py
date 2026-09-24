@@ -1,17 +1,8 @@
-"""Agentic agent/tool creation from chat.
-
-Implements the orchestrator meta-tools (``create_capability``,
-``extend_agent``). When the chat LLM determines no offered tool can serve the
-user's request, it calls a meta-tool; the handler auto-creates a draft through
-the existing lifecycle, self-tests it, and returns an in-chat card with
-approve / refine / discard decisions. Nothing reaches the live fleet without
-explicit user approval; live-agent revisions re-pass the security gate before
-a backed-up, rollback-safe swap.
-
-Audit: one correlation_id per capability gap — the draft id (a uuid4)
-— pairing ``lifecycle.gap_detected`` with the terminal lifecycle events
-(event_class ``agent_lifecycle``).
+"""Implements the orchestrator meta-tools create_capability/extend_agent: drafts an
+agent, self-tests it via a VirtualWebSocket turn, and returns an
+approve/refine/discard chat card gated by explicit user approval.
 """
+
 import asyncio
 import hashlib
 import json
@@ -32,8 +23,8 @@ logger = logging.getLogger("Orchestrator.AgenticCreation")
 
 META_AGENT_ID = "__orchestrator__"
 
-SELF_TEST_TIMEOUT_S = 120          # bound per attempt
-SELF_TEST_MAX_AUTO_REFINES = 1     # bound on auto-refine retries
+SELF_TEST_TIMEOUT_S = 120
+SELF_TEST_MAX_AUTO_REFINES = 1
 
 SYSTEM_PROMPT_ADDENDUM = """
 CAPABILITY GAPS (create_capability / extend_agent):
@@ -70,7 +61,6 @@ def _parser_repository(orch):
 
 
 def meta_tool_definitions() -> List[Dict[str, Any]]:
-    """OpenAI-style tool definitions for the orchestrator meta-tools."""
     return [
         {
             "type": "function",
@@ -131,32 +121,20 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
 
 
 def should_inject(draft_agent_id: Optional[str]) -> bool:
-    """Meta-tools are offered on normal chat turns only.
-
-    Excluded: draft-test sessions (the draft's own tools are under test) and
-    turns where the feature flag is off. Text-only turns are excluded at the
-    call site.
-    """
     return flags.is_enabled("agentic_creation") and not draft_agent_id
 
 
 def gap_fingerprint(agent_name: str, tools_spec: Optional[List[Dict]] = None,
                     extra: str = "") -> str:
-    """Stable fingerprint of a requested capability (dedup key)."""
     names = sorted((t.get("name") or "").strip().lower() for t in (tools_spec or []))
     basis = "|".join([(agent_name or "").strip().lower(), *names, (extra or "").strip().lower()])
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
-# ---------------------------------------------------------------------------
-# Audit helpers
-# ---------------------------------------------------------------------------
-
 async def _audit(user_id: str, action_type: str, description: str,
                  correlation_id: str, outcome: str = "success",
                  chat_id: Optional[str] = None, agent_id: Optional[str] = None,
                  inputs_meta: Optional[Dict] = None) -> None:
-    """Record an ``agent_lifecycle`` audit event (best-effort, never raises)."""
     try:
         from datetime import datetime, timezone
 
@@ -182,12 +160,7 @@ async def _audit(user_id: str, action_type: str, description: str,
         logger.debug("agentic: audit record failed (%s)", action_type, exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Evolutionary archive (C-N4) — surrogate cheap-reject + archive on success
-# ---------------------------------------------------------------------------
-
 def _read_draft_code(orch, draft: Dict[str, Any]) -> str:
-    """Best-effort read of a draft's generated ``mcp_tools.py`` (empty on miss)."""
     try:
         agents_dir = orch.lifecycle_manager._agents_dir
         path = os.path.join(agents_dir, draft["agent_slug"], "mcp_tools.py")
@@ -199,32 +172,10 @@ def _read_draft_code(orch, draft: Dict[str, Any]) -> str:
         return ""
 
 
-#: Surrogate score at/above which a fresh draft is "high-confidence" enough to
-#: skip the costly behavioural self-test (the static security/spec gate at
-#: approval still runs). Tunable via ``DRAFT_ARCHIVE_SKIP_SCORE``.
 _SKIP_SELF_TEST_SCORE = float(os.getenv("DRAFT_ARCHIVE_SKIP_SCORE", "0.85"))
 
 
 def _maybe_skip_self_test(orch, draft: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """C-N4 surrogate predictor: when the archive feature is ON, use the cheap
-    static rubric to skip the expensive behavioural self-test.
-
-    Two skip paths, both flag-gated:
-
-    * **High-confidence skip** — ``surrogate_score`` ≥ :data:`_SKIP_SELF_TEST_SCORE`:
-      the draft looks well-formed, so trade the redundant behavioural run for
-      the predictor and synthesise a *passing* verdict (the security/spec gate
-      at approval still runs).
-    * **Cheap-reject skip** — :func:`draft_archive.should_skip_self_test`
-      (surrogate below the reject floor): the draft is predicted to fail, so
-      don't pay for a self-test at all; synthesise a *failing* verdict that
-      routes into the normal auto-refine loop.
-
-    Returns a self-test-shaped dict to USE (a skip happened), or ``None`` to
-    fall through to the real :func:`_self_test_draft`. Fail-open: OFF / any
-    error / a mid-range score returns ``None`` so the real self-test runs
-    exactly as before.
-    """
     try:
         from orchestrator import draft_archive
         if not draft_archive.archive_enabled():
@@ -262,14 +213,12 @@ def _maybe_skip_self_test(orch, draft: Dict[str, Any]) -> Optional[Dict[str, Any
                 "self_test_skipped": True,
                 "tested_at": int(time.time() * 1000),
             }
-    except Exception:  # pragma: no cover — surrogate is best-effort
+    except Exception:  # pragma: no cover
         logger.debug("archive: surrogate pre-check failed", exc_info=True)
     return None
 
 
 def _archive_on_success(orch, draft: Dict[str, Any], self_test: Dict[str, Any]) -> None:
-    """C-N4: archive a passing draft's code as a future exemplar. No-op unless
-    the archive flag is on and the self-test passed. Never raises."""
     try:
         from orchestrator import draft_archive
         if not draft_archive.archive_enabled():
@@ -279,8 +228,6 @@ def _archive_on_success(orch, draft: Dict[str, Any], self_test: Dict[str, Any]) 
         code = _read_draft_code(orch, draft)
         if not code:
             return
-        # Prefer the surrogate score the skip-path already computed; otherwise
-        # treat a real passing self-test as a strong (1.0) exemplar.
         score = self_test.get("surrogate_score")
         if not isinstance(score, (int, float)) or score <= 0:
             score = 1.0
@@ -292,16 +239,11 @@ def _archive_on_success(orch, draft: Dict[str, Any], self_test: Dict[str, Any]) 
             draft_uuid=str(draft.get("draft_uuid") or draft.get("id") or ""),
             source_state_revision=int(draft.get("state_revision") or 0),
         )
-    except Exception:  # pragma: no cover — archiving is best-effort
+    except Exception:  # pragma: no cover
         logger.debug("archive: record-on-success failed", exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Self-test
-# ---------------------------------------------------------------------------
-
 def _summarize_outputs(outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Distill a VirtualWebSocket capture into a self-test verdict."""
     tools_called: List[str] = []
     error_messages: List[str] = []
     component_count = 0
@@ -317,8 +259,6 @@ def _summarize_outputs(outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
             for comp in frame.get("components") or []:
                 if not isinstance(comp, dict):
                     continue
-                # Fallback tool attribution: tool-produced components carry
-                # _source_tool tags even when chat_step frames are absent.
                 src_tool = comp.get("_source_tool")
                 if src_tool and src_tool not in tools_called:
                     tools_called.append(src_tool)
@@ -348,17 +288,6 @@ def _summarize_outputs(outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 async def _self_test_draft(orch, draft: Dict[str, Any], user_request: str,
                            user_id: str, attachments=None) -> Dict[str, Any]:
-    """Run the user's originating request as a draft-test chat turn.
-
-    Executes on a ``VirtualWebSocket`` (audit-attributable, no real socket)
-    in an isolated chat so the user's conversation is not polluted. Bounded
-    by ``SELF_TEST_TIMEOUT_S``.
-
-    ``attachments`` lets an auto-created *parser* draft self-test against the
-    exact uploaded file that triggered its creation — the structured
-    attachment block is injected so the draft's ``parse_<ext>`` tool runs on
-    the real file.
-    """
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 
     test_chat_id = await run_generation(
@@ -367,12 +296,6 @@ async def _self_test_draft(orch, draft: Dict[str, Any], user_request: str,
     task = BackgroundTask(task_id=f"selftest-{draft['id'][:8]}", chat_id=test_chat_id,
                           user_id=user_id)
     vws = VirtualWebSocket(task)
-    # 056 US2 (FR-012): a self-test is a machine turn — derive its authority at
-    # the SAME shared seam scheduled runs and parser replays use, so the draft's
-    # tools dispatch delegated under the owner's standing consent in production
-    # instead of being refused fail-closed. An AuthoritySkip is not fatal: the
-    # self-test still runs (unchanged dev behavior) and production refuses its
-    # real-agent dispatches exactly as it does today.
     from orchestrator.chain_authority import AuthoritySkip
     authority = await orch.derive_machine_authority(
         user_id=user_id, agent_id=None, turn_class="draft_self_test")
@@ -402,8 +325,6 @@ async def _self_test_draft(orch, draft: Dict[str, Any], user_request: str,
 
 
 def _redteam_allowed_scopes(draft: Dict[str, Any]) -> List[str]:
-    """The scopes a fresh draft may use without it counting as escalation: the
-    draft's declared scopes if present, else the read-class default."""
     sc = draft.get("scopes") or draft.get("declared_scopes")
     if isinstance(sc, (list, tuple)) and sc:
         return [str(s).lower() for s in sc]
@@ -411,10 +332,6 @@ def _redteam_allowed_scopes(draft: Dict[str, Any]) -> List[str]:
 
 
 async def _run_redteam_gate(orch, draft: Dict[str, Any], user_id: str):
-    """Drive the draft through the seeded adversarial scenarios and return a
-    RedTeamVerdict. Returns None on a harness/infrastructure error so the
-    caller proceeds to the standard gate (fail-open on errors; the verdict
-    itself fails CLOSED on a real violation)."""
     try:
         from orchestrator import redteam
         results: List[Dict[str, Any]] = []
@@ -444,10 +361,6 @@ async def _run_redteam_gate(orch, draft: Dict[str, Any], user_id: str):
         return None
 
 
-# ---------------------------------------------------------------------------
-# In-chat cards
-# ---------------------------------------------------------------------------
-
 def _decision_buttons(draft_id: str, revision: bool = False) -> List[Dict[str, Any]]:
     approve_action = "revision_apply" if revision else "draft_approve"
     discard_action = "revision_discard" if revision else "draft_discard"
@@ -461,7 +374,6 @@ def _decision_buttons(draft_id: str, revision: bool = False) -> List[Dict[str, A
 
 def creation_card(draft: Dict[str, Any], self_test: Dict[str, Any],
                   revision: bool = False, note: str = "") -> Dict[str, Any]:
-    """The approve/refine/discard card presented in chat."""
     status = self_test.get("status", "unknown")
     verdict = {"passed": "✓ Self-test passed", "failed": "✗ Self-test failed",
                "timeout": "✗ Self-test timed out"}.get(status, "Self-test pending")
@@ -475,10 +387,6 @@ def creation_card(draft: Dict[str, Any], self_test: Dict[str, Any],
         lines.append(Text(content=note, variant="caption").to_dict())
     what = "Draft revision" if revision else "Draft agent"
     return Card(
-        # Stable author identity: every state of this draft's card carries the
-        # same id, so decision outcomes REPLACE the actionable card on the
-        # canvas instead of leaving stale Approve/Refine/Discard buttons
-        # clickable after a decision was already made.
         id=f"draft-card-{draft['id']}",
         title=f"{what}: {draft.get('agent_name', 'unnamed')}",
         content=lines + _decision_buttons(draft["id"], revision=revision),
@@ -489,14 +397,9 @@ def _error_card(message: str) -> Dict[str, Any]:
     return Alert(message=message, variant="error").to_dict()
 
 
-# ---------------------------------------------------------------------------
-# Meta-tool dispatch
-# ---------------------------------------------------------------------------
-
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: str, chat_id: Optional[str],
                            websocket=None) -> MCPResponse:
-    """Entry point for ``__orchestrator__`` pseudo-agent tool calls."""
     try:
         if tool_name == "create_capability":
             return await _create_capability(orch, args, user_id=user_id,
@@ -538,7 +441,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
         fingerprint,
     )
     if existing:
-        # Route repeat requests to the staged draft, never duplicate.
         self_test = json.loads(existing.get("self_test") or "{}")
         card = creation_card(existing, self_test,
                              note="This capability is already staged — decide on the existing draft.")
@@ -563,7 +465,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
                  correlation_id=draft_id, outcome="in_progress", chat_id=chat_id,
                  inputs_meta={"gap_fingerprint": fingerprint, "draft_id": draft_id})
 
-    # Generate + start + self-test (≤1 auto-refine on failure).
     draft = await lifecycle.generate_code(draft_id, websocket=websocket)
     if draft.get("status") in ("error", "rejected"):
         await _audit(user_id, "lifecycle.auto_created", "Generation failed",
@@ -576,8 +477,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
                            ui_components=[card])
 
     draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
-    # C-N4 surrogate cheap-skip: a high-confidence draft skips the costly
-    # behavioural self-test (flag-gated; falls through to the real run otherwise).
     self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
         or await _self_test_draft(orch, draft, user_request, user_id)
 
@@ -593,8 +492,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
         if draft.get("status") == "error":
             break
         draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
-        # The surrogate re-scores the (now refined) code; a high-confidence
-        # refinement skips the costly run, a still-weak one is cheap-rejected.
         self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
             or await _self_test_draft(orch, draft, user_request, user_id)
 
@@ -604,7 +501,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
         draft_id,
         self_test=json.dumps(self_test),
     )
-    # C-N4: a passing draft becomes a future codegen exemplar (flag-gated).
     stored_draft = await run_generation(
         draft_store.get_draft_agent, draft_id
     )
@@ -633,12 +529,7 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
     )
 
 
-# ---------------------------------------------------------------------------
-# Live-agent revision (extend_agent → staged draft → gated swap)
-# ---------------------------------------------------------------------------
-
 def _live_agent_dir_and_draft(orch, agent_id: str):
-    """Resolve a live, lifecycle-managed agent's draft row + directory."""
     lifecycle = orch.lifecycle_manager
     row = lifecycle._get_draft_by_agent_id(agent_id)
     if not row or row.get("status") != "live":
@@ -653,18 +544,6 @@ def _read_text_file(path: str) -> str:
 
 
 def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
-    """Compile, write, and gate one revision in the generation executor.
-
-    Returns ``(report, validation)`` where ``validation`` is ``None`` when the
-    security gate refused the code before the validator (which EXECUTES the
-    tools) could run — the H4 pre-execution contract.
-    """
-
-    # Gate BEFORE writing (H4): flagged code must never touch the agents tree
-    # that discovery/start scans. The generate_code path asserts exactly this
-    # (its test checks the tools file does not exist on a block); the revision
-    # path must hold the same contract rather than writing first and gating
-    # after.
     compile(new_code, "mcp_tools.py", "exec")
     report = lifecycle.security.analyze(
         new_code, filename=f"{rev['agent_slug']}/mcp_tools.py"
@@ -674,9 +553,6 @@ def _stage_revision_code(lifecycle, rev, live_row, rev_dir, new_code):
     os.makedirs(rev_dir, exist_ok=True)
     with open(os.path.join(rev_dir, "mcp_tools.py"), "w", encoding="utf-8") as stream:
         stream.write(new_code)
-    # Validate the STAGED bytes — the revision slug's own directory. This
-    # used to point at the live agent's slug, so the validator imported the
-    # unmodified live file and never inspected the staged code at all.
     validation = lifecycle.validator.validate(
         new_code, rev["agent_slug"], lifecycle._agents_dir
     )
@@ -703,7 +579,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         return MCPResponse(error={"message": "extend_agent needs agent_id and instruction",
                                   "retryable": False})
 
-    # Ownership gate: only the owner may stage a revision.
     draft_store = _draft_store(orch)
     ownership = await run_generation(draft_store.get_agent_ownership, agent_id)
     user = await run_generation(draft_store.get_user, user_id) or {}
@@ -754,9 +629,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
                  correlation_id=rev_id, outcome="in_progress", chat_id=chat_id,
                  agent_id=agent_id, inputs_meta={"draft_id": rev_id, "revises_agent_id": agent_id})
 
-    # Stage: refine a copy of the live agent's tools file via the generator,
-    # then gate-check the staged code with the validator harness (its sample
-    # executions are the revision's self-test — no clone process needed).
     rev_dir = os.path.join(lifecycle._agents_dir, rev["agent_slug"])
     try:
         live_tools = os.path.join(live_dir, "mcp_tools.py")
@@ -774,8 +646,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         )
         sec_blocker = getattr(report, "max_severity", None)
         sec_name = getattr(sec_blocker, "name", str(sec_blocker or "")).upper()
-        # validation is None when the security gate refused the staged code
-        # before the validator (which executes it) could run.
         passed = validation is not None and validation.passed
         validator_summary = (
             f"validator: {validation.tools_passed}/{validation.tools_tested} tools passed"
@@ -792,9 +662,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
         await run_generation(
             draft_store.update_draft_agent,
             rev_id,
-            # A security refusal wrote NO file (H4 gates before the write), so
-            # the draft is not "generated" — leaving it so would offer Apply and
-            # Refine for code that does not exist on disk.
             status="error" if validation is None else "generated",
             self_test=json.dumps(self_test),
             security_report=json.dumps(report.to_dict()),
@@ -826,10 +693,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
                  chat_id=chat_id, agent_id=agent_id)
 
     if validation is None:
-        # The security gate refused before the staged write, so there is no
-        # mcp_tools.py in the revision slug. A decision card would offer Apply
-        # (which would report the misleading "Staged revision file missing") and
-        # Refine (which would fail reading a file that was never created).
         return MCPResponse(
             result={"status": "revision_refused", "draft_id": rev_id,
                     "security": sec_name or "NONE"},
@@ -854,13 +717,6 @@ async def _extend_agent(orch, args: Dict[str, Any], *, user_id: str,
 
 
 async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Gate + swap a staged revision into its live agent.
-
-    The live agent's code changes only inside this function, and every
-    failure path restores the backup before restart — a failed gate or
-    restart never leaves the live agent modified.
-    Returns {applied: bool, detail: str}.
-    """
     lifecycle = orch.lifecycle_manager
     draft_store = _draft_store(orch)
     agent_id = rev.get("revises_agent_id") or ""
@@ -876,9 +732,6 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
         return {"applied": False, "detail": "Staged revision file missing"}
     new_code = await run_generation(_read_text_file, staged)
 
-    # Re-run the full gate on the staged code at apply time (it may be stale).
-    # A HIGH/CRITICAL security report returns validation=None — the staged
-    # code was refused before the validator could execute it (H4).
     report, validation = await run_generation(
         _gate_revision_code, lifecycle, rev, live_row, new_code
     )
@@ -907,8 +760,6 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
 
     live_tools = os.path.join(live_dir, "mcp_tools.py")
     backup = live_tools + ".bak027"
-    # Snapshot scopes so the restart doesn't widen them (start_draft_agent
-    # re-enables all scopes for testing; live agents must keep theirs).
     scopes_snapshot = {}
     try:
         scopes_snapshot = dict(
@@ -969,13 +820,10 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
         except OSError:
             pass
 
-    # Success: clean up the staged clone + row.
     try:
         await lifecycle.delete_draft(rev["id"])
     except Exception:
         logger.warning("agentic: revision cleanup failed for %s", rev["id"], exc_info=True)
-    # Feature 040 (US2): a revision reintroduces (possibly un-reviewed) code, so
-    # reset any owner-safe marker on the live agent — re-approval is required.
     try:
         from orchestrator import agent_trust
         await agent_trust.reset_on_revision(
@@ -990,10 +838,6 @@ async def apply_revision(orch, rev: Dict[str, Any], user_id: str) -> Dict[str, A
                  correlation_id=rev["id"], agent_id=agent_id)
     return {"applied": True, "detail": f"Revision applied — {agent_id} restarted with the new tools."}
 
-
-# ---------------------------------------------------------------------------
-# Decision handlers (chat cards + drafts surface; registered via chrome_events)
-# ---------------------------------------------------------------------------
 
 async def _owned_draft(
     orch, user_id: str, payload: Dict[str, Any]
@@ -1013,8 +857,6 @@ async def _owned_draft(
 async def _decidable_draft(
     orch, user_id: str, roles, payload: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
-    """Draft the caller may refine/discard: the owner, OR an admin acting on an
-    auto-created attachment parser (origin ``auto_attachment``)."""
     draft_id = str(payload.get("draft_id") or "")
     draft = (
         await run_generation(_draft_store(orch).get_draft_agent, draft_id)
@@ -1035,15 +877,6 @@ async def _send_chat_card(orch, websocket, component: Dict[str, Any]):
 
 async def _replace_card_state(orch, websocket, user_id: str, draft_id: str,
                               card: Dict[str, Any]) -> None:
-    """Swap the canvas decision card for its post-decision state.
-
-    The creation card persists in the chat's workspace under the stable
-    author id ``draft-card-<draft_id>``; upserting a card with the same id
-    morphs it in place on every socket, so a decided draft can no longer be
-    re-actioned from stale buttons. Best-effort: a missing active chat
-    (e.g. decision made from the Drafts surface) is fine — the chat bubble
-    already communicated the outcome.
-    """
     try:
         chat_id = orch._ws_active_chat.get(id(websocket)) if websocket is not None else None
         if not chat_id:
@@ -1056,17 +889,12 @@ async def _replace_card_state(orch, websocket, user_id: str, draft_id: str,
 
 
 def _terminal_card(draft_id: str, title: str, message: str) -> Dict[str, Any]:
-    """Button-less end-state card that replaces the decision card."""
     return Card(id=f"draft-card-{draft_id}", title=title, content=[
         Text(content=message, variant="caption").to_dict(),
     ]).to_dict()
 
 
 async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
-    """Promote an approved attachment parser to a global, public capability and
-    mark the registry live so every user's future uploads of that type resolve
-    to ``covered``. Best-effort; never raises.
-    """
     try:
         from orchestrator import attachment_autoparse
         parser_repo = _parser_repository(orch)
@@ -1080,7 +908,6 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
         requested_by = row.get("requested_by")
         tool_name = attachment_autoparse._tool_name_for(extension)
 
-        # Make the agent public (global), then mark the registry live.
         try:
             await run_generation(
                 _draft_store(orch).set_agent_visibility,
@@ -1098,9 +925,6 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
                 approved_by=approved_by,
             )
 
-        # Enable the (read-only) scopes the parser needs for the originating
-        # user so it's usable immediately; other users pick it up via the
-        # public-catalog consent path (feature 030).
         try:
             scopes = await run_generation(
                 orch.tool_permissions.scopes_required_by_tools, agent_id
@@ -1116,10 +940,6 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
         except Exception:
             logger.debug("autoparse: scope grant failed", exc_info=True)
 
-        # The parser is live and the uploader is scoped, so re-run their
-        # original request and deliver the parsed result into the original
-        # chat. If the original turn can't be recovered/replayed, fall back to
-        # the notify ("ask again to read your file").
         if requested_by:
             replayed = await attachment_autoparse.auto_continue_after_go_live(
                 orch,
@@ -1144,13 +964,6 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
 
 
 async def _h_draft_approve(orch, websocket, user_id, roles, payload):
-    """Approve a draft: existing security gate → live.
-
-    Auto-created attachment-parser drafts (origin ``auto_attachment``) require
-    the **admin** role to approve and are promoted **globally** (public,
-    available to all users), not into the approver's private fleet. Non-admins
-    are refused and audited.
-    """
     draft_id = str(payload.get("draft_id") or "")
     raw_draft = (
         await run_generation(_draft_store(orch).get_draft_agent, draft_id)
@@ -1159,7 +972,6 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
     is_autoparse = bool(raw_draft and raw_draft.get("origin") == "auto_attachment")
 
     if is_autoparse:
-        # Admin-only approval; the uploader (owner) cannot self-approve.
         if "admin" not in (roles or []):
             await _audit(user_id, "lifecycle.rejected",
                          f"Non-admin approval attempt on parser draft {draft_id}",
@@ -1174,11 +986,6 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
             await _send_chat_card(orch, websocket, _error_card("Draft not found (it may have been discarded)."))
             return None
 
-    # Adversarial red-team gate before promotion. Drive the draft through the
-    # seeded adversarial scenarios; if it makes an out-of-scope tool call,
-    # attempts egress, or emits PHI on any of them, BLOCK promotion
-    # (fail-closed on a real violation). Flag-gated (default OFF); a harness
-    # error returns None and falls through to the standard security gate.
     from orchestrator import redteam
     if redteam.redteam_enabled():
         rt = await _run_redteam_gate(orch, draft, user_id)
@@ -1212,8 +1019,6 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
         agent_id = f"{draft['agent_slug'].replace('_', '-')}-1"
         if is_autoparse:
             await _promote_parser_global(orch, draft, agent_id, approved_by=user_id)
-        # C-N4: an approved (now-live) draft is a strong exemplar for future
-        # codegen of similar capability gaps. Flag-gated + best-effort.
         try:
             approved_draft = await run_generation(
                 _draft_store(orch).get_draft_agent,
@@ -1221,8 +1026,6 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
             ) or draft
             approved_self_test = json.loads(approved_draft.get("self_test") or "{}")
             if approved_self_test.get("status") != "passed":
-                # Approval is itself a success signal even if the self-test
-                # verdict isn't recorded as "passed" (e.g. revision gate-check).
                 approved_self_test = {"status": "passed"}
             await run_generation(
                 _archive_on_success, orch, approved_draft, approved_self_test
@@ -1256,14 +1059,12 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
 
 
 async def _h_draft_refine(orch, websocket, user_id, roles, payload):
-    """Refine a draft conversationally."""
     draft = await _decidable_draft(orch, user_id, roles, payload)
     if draft is None:
         await _send_chat_card(orch, websocket, _error_card("Draft not found (it may have been discarded)."))
         return None
     message = str(payload.get("message") or (payload.get("fields") or {}).get("message") or "").strip()
     if not message:
-        # Render an inline refine-input card.
         await _send_chat_card(orch, websocket, Card(title=f"Refine {draft['agent_name']}", content=[
             {"type": "param_picker", "title": "What should change?",
              "fields": [{"name": "message", "kind": "text", "label": "Describe the fix/change"}],
@@ -1286,19 +1087,15 @@ async def _h_draft_refine(orch, websocket, user_id, roles, payload):
         latest or draft, self_test,
         revision=bool(draft.get("revises_agent_id")), note=note)
     await _send_chat_card(orch, websocket, refreshed)
-    # Same stable id → the canvas card morphs to the refreshed state.
     await _replace_card_state(orch, websocket, user_id, draft["id"], refreshed)
     return None
 
 
 async def _h_draft_discard(orch, websocket, user_id, roles, payload):
-    """Decline/discard a draft (declined drafts are removed)."""
     draft = await _decidable_draft(orch, user_id, roles, payload)
     if draft is None:
         await _send_chat_card(orch, websocket, _error_card("Draft not found (already discarded?)."))
         return None
-    # If this is an auto-created parser, mark its registry row discarded so the
-    # format can be re-attempted by a later upload.
     if draft.get("origin") == "auto_attachment":
         try:
             from orchestrator.attachments.parser_repo import STATUS_DISCARDED
@@ -1332,7 +1129,6 @@ async def _h_draft_discard(orch, websocket, user_id, roles, payload):
 
 
 async def _h_revision_apply(orch, websocket, user_id, roles, payload):
-    """Apply a staged revision to its live agent (gate → swap → rollback-safe)."""
     rev = await _owned_draft(orch, user_id, payload)
     if rev is None or not rev.get("revises_agent_id"):
         await _send_chat_card(orch, websocket, _error_card("Revision not found."))

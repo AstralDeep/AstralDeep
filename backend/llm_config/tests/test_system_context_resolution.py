@@ -1,12 +1,8 @@
-"""Feature 054 — system-context credential resolution (factory level).
-
-Successor to the retired ``test_background_jobs_use_operator_default.py``
-(feature 006 FR-011): background/server-initiated work now uses the
-admin-managed SYSTEM record exclusively — the operator-default env path
-is gone. Orchestrator-level resolution (websocket → context) is covered
-in ``test_call_llm_credential_resolution.py``; this file stays at the
-store + factory level.
+"""Tests for llm_config/client_factory.py's system-context resolution: an absent system
+record raises LLMUnavailable, a configured user is never borrowed for system calls,
+and llm_call audits credential_source='system'.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -39,16 +35,12 @@ def test_system_record_builds_system_client(store):
 
 
 def test_absent_system_record_raises_llmunavailable(store):
-    """No admin credential ⇒ honest degradation, never a silent success
-    (US4-AS1/AS2, FR-020)."""
     assert store.get_system_sync() is None
     with pytest.raises(LLMUnavailable, match="system credential"):
         build_llm_client(None, CredentialSource.SYSTEM)
 
 
 def test_system_context_never_borrows_a_user_record(store):
-    """Even with users fully configured, the system context resolves the
-    system table only — absent ⇒ LLMUnavailable (no fallback)."""
     store.set_sync("alice", provider="custom",
                    base_url="https://userA.example/v1", model="a-model",
                    api_key="sk-userA-1234567890abcdef")
@@ -69,8 +61,6 @@ def test_cleared_system_record_regates_next_resolution(store):
 
 
 async def test_system_call_audits_credential_source_system(fake_recorder):
-    """FR-021: the llm_call audit vocabulary handles SYSTEM — value
-    "system", description labelled "system credential"."""
     await record_llm_call(
         fake_recorder,
         actor_user_id="system",

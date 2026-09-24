@@ -1,9 +1,8 @@
-"""Optional LLM-as-judge enrichment (T025 / FR-003 / D1).
-
-A SECOND opinion only — never the basis for a pass. It runs only when a real LLM
-is available (so it resolves to ``na`` in CI / scripted-LLM mode). The deterministic
-counter-check remains the gate; a judge that disagrees forces ``uncertain``.
+"""Optional LLM-as-judge enrichment (backend/verification/checks/base.py, verdict.py): a
+second opinion only, never the sole basis for a pass; resolves to n/a without a real
+LLM, and disagreement forces an uncertain verdict.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,11 +24,6 @@ _PROMPT = (
 
 
 def interpret_judge_response(text: Optional[str]) -> Optional[Outcome]:
-    """Parse a judge model reply into an Outcome (pure / unit-testable).
-
-    Returns ``Outcome.PASS``/``Outcome.FAIL``, or ``None`` (na) when the reply is
-    missing or unparseable — never guesses a pass.
-    """
     if not text:
         return None
     cleaned = text.strip().strip("`")
@@ -51,15 +45,9 @@ def interpret_judge_response(text: Optional[str]) -> Optional[Outcome]:
 
 
 def make_llm_judge(call_llm: Optional[Callable[..., Any]] = None):
-    """Build a judge coroutine. With no real ``call_llm``, the judge is ``na``.
-
-    ``call_llm`` matches the orchestrator's ``_call_llm`` contract and returns
-    ``(message, usage)`` where ``message.content`` is the model's reply.
-    """
-
     async def _judge(check: Check, evidence: CapturedEvidence, inputs: Dict[str, Any]) -> Optional[Outcome]:
         if call_llm is None:
-            return None  # na — no LLM available (CI / scripted mode)
+            return None
         payload = {
             "check": check.check_id,
             "property": check.property,

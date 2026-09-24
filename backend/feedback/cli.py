@@ -1,16 +1,8 @@
-"""Server-only CLI for the feedback subsystem.
-
-Subcommands:
-
-* ``compute-quality`` — runs one quality-signal computation cycle now.
-* ``generate-proposals`` — runs the proposal generator once now.
-* ``pre-pass-once`` — runs the synthesizer's loop pre-pass once now.
-
-Invoked from the orchestrator container, e.g.::
-
-    docker exec astraldeep bash -c \
-        "cd /app/backend && python -m feedback.cli compute-quality"
+"""Server-only CLI for the feedback subsystem's background jobs (compute-quality,
+generate-proposals, pre-pass-once), invoked via python -m feedback.cli from the
+orchestrator container.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,7 +35,6 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _build_repo():
-    # Lazy imports — avoids pulling FastAPI / orchestrator deps when unused.
     global _COMPOSITION
     from orchestrator.plane_composition import compose_plane_from_environment
     from .repository import FeedbackRepository
@@ -81,8 +72,6 @@ async def _cmd_generate_proposals(args: argparse.Namespace) -> int:
 
 
 async def _cmd_pre_pass_once(args: argparse.Namespace) -> int:
-    # The pre-pass runs inside the synthesizer's loop. Calling it here is an
-    # ops escape hatch to force a screening pass over recent feedback now.
     try:
         from orchestrator.knowledge_synthesis import run_safety_pre_pass_once
     except ImportError:

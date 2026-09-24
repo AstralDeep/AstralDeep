@@ -1,10 +1,8 @@
-"""T033 (056-delegated-agent-chaining): orphaned sub-tasks are cancelled,
-audited, and their partial output DISCARDED (FR-023).
-
-If the parent turn ends, its socket goes away, or the budget is exhausted,
-in-flight sub-tasks must not keep running and their partial results must never
-be silently attached to a later turn.
+"""Tests for orchestrator/subtasks.py orphan handling: sub-tasks are cancelled and
+audited when the parent turn ends, disconnects, or exhausts its budget, and their
+partial output is discarded rather than attached later.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,12 +23,6 @@ from shared.feature_flags import flags  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def chaining_on(monkeypatch, user_skills_disabled):
-    # ``user_skills_disabled``: feature 088 makes ``subtasks.handle_meta_tool``
-    # require the parent turn's captured guidance origin, which these fake
-    # orchestrators never hold, so every sub-task would be refused
-    # ``guidance_read_unavailable`` before the decomposition seam under test
-    # ran. The guidance inheritance itself is pinned over the real Plane by
-    # ``test_skill_turn_handoffs_088.py``.
     monkeypatch.setitem(flags._flags, "recursive_delegation", True)
 
 
@@ -64,10 +56,9 @@ async def test_parent_cancellation_cancels_subtasks(captured):
     async def _slow(vws, message, chat_id, **kw):
         started.set()
         try:
-            await asyncio.sleep(30)  # would outlive the parent
+            await asyncio.sleep(30)
             finished.append(message)
         finally:
-            # Whatever it produced before cancellation must be discarded.
             await vws.send_json({"type": "chat_message",
                                  "payload": {"text": "partial work"}})
 
@@ -85,15 +76,12 @@ async def test_parent_cancellation_cancels_subtasks(captured):
     kinds = {r.action_type for r in rows}
     assert "delegation.subtask.orphaned" in kinds
     assert "delegation.subtask.cancelled" in kinds
-    # The orphan record is an interrupted outcome, not a success.
     orphan = next(r for r in rows if r.action_type == "delegation.subtask.orphaned")
     assert orphan.outcome == "interrupted"
 
 
 @pytest.mark.asyncio
 async def test_cancelled_subtask_partials_are_discarded(captured):
-    """A cancelled sub-task's captured outputs are cleared, so nothing can be
-    attached to a later turn."""
     seen_task = {}
 
     async def _slow(vws, message, chat_id, **kw):
@@ -128,7 +116,7 @@ async def test_timeout_discards_partials_and_reports_honestly(captured, monkeypa
         user_id="u1", chat_id="c1", websocket=MagicMock())
     results = resp.result["subtasks"]
     assert all(r["status"] == "timeout" for r in results)
-    assert all(r["digest"] == "" for r in results)  # no partial leaked upstream
+    assert all(r["digest"] == "" for r in results)
     rows = [c.args[0] for c in captured.record.await_args_list]
     assert [r for r in rows if r.action_type == "delegation.subtask.timeout"]
 
@@ -144,5 +132,4 @@ async def test_subtask_socket_binding_is_always_released(captured):
     await subtasks.handle_meta_tool(
         o, "delegate_subtasks", {"subtasks": SPECS},
         user_id="u1", chat_id="c1", websocket=ws)
-    # Only the parent socket remains — no leaked virtual sockets.
     assert list(o.ui_sessions) == [ws]

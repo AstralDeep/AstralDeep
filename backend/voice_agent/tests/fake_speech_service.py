@@ -1,7 +1,6 @@
-"""Strict in-memory OpenAI-compatible speech service for worker tests.
-
-The helper binds only to an ephemeral loopback port, retains request bytes only
-for the lifetime of the test, and has no dependency on the product backend.
+"""In-memory loopback OpenAI-compatible ASR/TTS stub for voice-worker tests, standing in
+for the real Speaches service; used by test_speech_adapters_065.py and
+test_livekit_integration_065.py.
 """
 
 from __future__ import annotations
@@ -33,8 +32,6 @@ class FakeResponse:
 
 
 class StrictFakeSpeechService:
-    """One bounded loopback-only speech origin with explicit response queues."""
-
     def __init__(self, *, api_key: str = "speech-test-key") -> None:
         self.api_key = api_key
         self.requests: list[RecordedRequest] = []

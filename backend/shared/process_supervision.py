@@ -1,12 +1,6 @@
-"""Bounded, tree-aware supervision for backend-owned child processes.
-
-Every child receives one continuous fixed-size reader per output pipe.  Output is
-diagnostic only: complete logical lines are retained in per-stream rings while
-old data and overlong-line suffixes are counted and discarded.  Each chunk is
-also forwarded verbatim to the supervisor's own matching stream, so ``docker
-logs`` reflects the running children instead of only the supervisor's ~22
-lines.  Termination uses one total deadline for the process tree, both
-readers, and both pipes.
+"""Bounded, tree-aware supervision for backend-owned child processes: one fixed-size
+diagnostic reader per pipe and a single deadline for tree, reader, and pipe cleanup.
+Used by start.py and orchestrator/agent_lifecycle.py to run agent subprocesses.
 """
 
 from __future__ import annotations
@@ -26,15 +20,11 @@ from typing import Any, BinaryIO, Mapping, Sequence
 
 
 class OutputStream(str, Enum):
-    """A supervised diagnostic output stream."""
-
     STDOUT = "stdout"
     STDERR = "stderr"
 
 
 class ProcessState(str, Enum):
-    """Lifecycle state published only after its required cleanup boundary."""
-
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
@@ -44,8 +34,6 @@ class ProcessState(str, Enum):
 
 
 class TerminationReason(str, Enum):
-    """Server-owned reasons that require complete process-tree cleanup."""
-
     STOP = "stop"
     QUIT = "quit"
     CANCEL = "cancel"
@@ -54,8 +42,6 @@ class TerminationReason(str, Enum):
 
 @dataclass(frozen=True)
 class ProcessSupervisionLimits:
-    """Immutable resource and cleanup bounds for every supervised child."""
-
     read_chunk_bytes: int = 16 * 1024
     maximum_logical_line_bytes: int = 64 * 1024
     ring_capacity_bytes_per_stream: int = 256 * 1024
@@ -85,8 +71,6 @@ DEFAULT_PROCESS_SUPERVISION_LIMITS = ProcessSupervisionLimits()
 
 @dataclass(frozen=True)
 class ProcessOwner:
-    """Logical owner of a child process."""
-
     owner_kind: str
     owner_id: str
 
@@ -97,8 +81,6 @@ class ProcessOwner:
 
 @dataclass(frozen=True)
 class StreamSnapshot:
-    """Immutable bounded stream diagnostics."""
-
     stream: OutputStream
     lines: tuple[bytes, ...]
     total_bytes: int
@@ -115,8 +97,6 @@ class StreamSnapshot:
 
 @dataclass(frozen=True)
 class ProcessSnapshot:
-    """Immutable child state after, or during, supervision."""
-
     process_id: uuid.UUID
     owner: ProcessOwner
     pid: int
@@ -133,8 +113,6 @@ class ProcessSnapshot:
 
 
 class BoundedStreamReader:
-    """Continuously consume one binary pipe using only fixed 16 KiB reads."""
-
     def __init__(
         self,
         *,
@@ -192,7 +170,7 @@ class BoundedStreamReader:
         if storage_bytes <= self._limits.ring_capacity_bytes_per_stream:
             self._lines.append((line, storage_bytes))
             self._retained_bytes += storage_bytes
-        else:  # Defensive for non-default custom limits.
+        else:
             self._dropped_bytes += storage_bytes
             self._dropped_lines += 1
         self._partial.clear()
@@ -212,8 +190,6 @@ class BoundedStreamReader:
             cursor = newline + 1
 
     def close_pipe(self) -> None:
-        """Idempotently close the owned pipe and publish that fact."""
-
         with self._condition:
             if self._pipe_closed:
                 return
@@ -224,27 +200,18 @@ class BoundedStreamReader:
                 self._condition.notify_all()
 
     def _forward_chunk(self, chunk: bytes) -> None:
-        """Tee one chunk to the supervisor's matching stream, fail-open.
-
-        Forwarding is a straight passthrough of the fixed-size read — nothing
-        accumulates — so the bounded-memory contract of the ring is untouched.
-        A broken host stream must never take the reader (or the child) down.
-        """
-
         try:
             host = sys.stdout if self.stream is OutputStream.STDOUT else sys.stderr
             buffer = getattr(host, "buffer", None)
             if buffer is not None:
                 buffer.write(chunk)
-            else:  # Text-only host stream (tests may swap in StringIO).
+            else:
                 host.write(chunk.decode("utf-8", errors="replace"))
             host.flush()
         except (OSError, ValueError, AttributeError):
-            pass
+            pass  # Swallowed: a broken host stream must not kill the reader
 
     def run(self) -> None:
-        """Consume until EOF, finalize a trailing line, and close the pipe."""
-
         try:
             while True:
                 chunk = self._pipe.read(self._limits.read_chunk_bytes)
@@ -276,8 +243,6 @@ class BoundedStreamReader:
                 self._condition.notify_all()
 
     def wait_for_line(self, *, prefix: bytes, timeout: float) -> bytes:
-        """Return the first currently retained line with ``prefix``."""
-
         if self._private_output:
             raise ValueError("private output cannot be read")
         deadline = time.monotonic() + timeout
@@ -296,8 +261,6 @@ class BoundedStreamReader:
                 self._condition.wait(remaining)
 
     def snapshot(self) -> StreamSnapshot:
-        """Return one immutable view without exposing the mutable ring."""
-
         with self._condition:
             return StreamSnapshot(
                 stream=self.stream,
@@ -316,8 +279,6 @@ class BoundedStreamReader:
 
 
 class SupervisedProcess:
-    """One child process, its process tree, and its continuous pipe readers."""
-
     def __init__(
         self,
         *,
@@ -366,8 +327,6 @@ class SupervisedProcess:
         return self._process.returncode
 
     def poll(self) -> int | None:
-        """Compatibility poll for existing readiness and lifecycle code."""
-
         return self._process.poll()
 
     def _windows_taskkill(self, *, force: bool, timeout: float) -> None:
@@ -401,7 +360,7 @@ class SupervisedProcess:
             except ProcessLookupError:
                 return
             return
-        if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        if os.name == "nt":  # pragma: no cover
             if not force and reason is TerminationReason.QUIT:
                 try:
                     self._process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -413,14 +372,12 @@ class SupervisedProcess:
                 timeout=self._limits.termination_deadline_seconds / 3,
             )
             return
-        try:  # pragma: no cover - unsupported fallback
+        try:  # pragma: no cover
             self._process.kill() if force else self._process.terminate()
         except OSError:
             return
 
     def process_tree_alive(self) -> bool:
-        """Return whether the supervised process group/tree still exists."""
-
         if os.name == "posix":
             try:
                 os.killpg(self.pid, 0)
@@ -462,8 +419,6 @@ class SupervisedProcess:
         return ProcessState.EXITED if returncode == 0 else ProcessState.FAILED
 
     def _monitor_exit(self) -> None:
-        """Settle output and any surviving descendants after an unobserved exit."""
-
         self._process.wait()
         deadline = time.monotonic() + self._limits.termination_deadline_seconds
         if self.process_tree_alive():
@@ -474,8 +429,6 @@ class SupervisedProcess:
         )
 
     def snapshot(self) -> ProcessSnapshot:
-        """Return current or terminal state without waiting."""
-
         if self._terminal_snapshot is not None:
             return self._terminal_snapshot
         stdout = self._readers[OutputStream.STDOUT].snapshot()
@@ -571,8 +524,6 @@ class SupervisedProcess:
             return self._terminal_snapshot
 
     def wait(self, timeout: float | None = None) -> ProcessSnapshot:
-        """Wait for exit, then settle descendants, readers, and pipes."""
-
         if self._terminal_snapshot is not None:
             return self._terminal_snapshot
         self._process.wait(timeout=timeout)
@@ -592,13 +543,9 @@ class SupervisedProcess:
         prefix: bytes,
         timeout: float,
     ) -> bytes:
-        """Wait for a bounded diagnostic line from one continuously read pipe."""
-
         return self._readers[stream].wait_for_line(prefix=prefix, timeout=timeout)
 
     def terminate(self, *, reason: TerminationReason) -> ProcessSnapshot:
-        """Terminate the complete tree within one total cleanup deadline."""
-
         started = time.monotonic()
         deadline = started + self._limits.termination_deadline_seconds
         self._begin_termination(reason)
@@ -606,8 +553,6 @@ class SupervisedProcess:
 
 
 class ProcessSupervisor:
-    """Factory and owner-level cleanup boundary for supervised children."""
-
     def __init__(
         self,
         *,
@@ -628,8 +573,6 @@ class ProcessSupervisor:
         private_output: bool = False,
         **popen_kwargs: Any,
     ) -> SupervisedProcess:
-        """Spawn one isolated process group with continuous bounded readers."""
-
         if not isinstance(process_id, uuid.UUID):
             raise TypeError("process_id must be a UUID")
         command = tuple(os.fspath(value) for value in argv)
@@ -657,7 +600,7 @@ class ProcessSupervisor:
         platform_kwargs: dict[str, Any] = {}
         if os.name == "posix":
             platform_kwargs["start_new_session"] = True
-        elif os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        elif os.name == "nt":  # pragma: no cover
             creationflags = int(popen_kwargs.pop("creationflags", 0))
             platform_kwargs["creationflags"] = (
                 creationflags | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -701,8 +644,6 @@ class ProcessSupervisor:
     def terminate(
         self, process_id: uuid.UUID, *, reason: TerminationReason
     ) -> ProcessSnapshot:
-        """Terminate one registered child."""
-
         with self._lock:
             process = self._processes[process_id]
         return process.terminate(reason=reason)
@@ -710,8 +651,6 @@ class ProcessSupervisor:
     def terminate_all(
         self, *, reason: TerminationReason = TerminationReason.QUIT
     ) -> tuple[ProcessSnapshot, ...]:
-        """Terminate every child under one shared five-second deadline."""
-
         started = time.monotonic()
         deadline = started + self.limits.termination_deadline_seconds
         with self._lock:
@@ -724,8 +663,6 @@ class ProcessSupervisor:
         )
 
     def snapshots(self) -> tuple[ProcessSnapshot, ...]:
-        """Return immutable snapshots in deterministic logical-ID order."""
-
         with self._lock:
             processes = sorted(
                 self._processes.values(), key=lambda process: str(process.process_id)

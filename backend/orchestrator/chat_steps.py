@@ -1,31 +1,9 @@
-"""Persistent step recorder for in-chat progress notifications.
-
-Feature 014-progress-notifications, US2 / FR-007 through FR-013, FR-020/021.
-
-The recorder is created once per active chat turn and given the WebSocket the
-turn arrived on. It exposes a small lifecycle API:
-
-* :meth:`start` — register a step (tool call / agent hand-off / orchestrator
-  phase), persist an ``in_progress`` row, emit a ``chat_step`` event, and
-  return a stable ``step_id`` the caller uses for completion/error.
-* :meth:`complete` — mark a step ``completed`` with its truncated result.
-* :meth:`error` — mark a step ``errored`` with a redacted message.
-* :meth:`cancel_all_in_flight` — invoked by the cancel_task handler; marks
-  every in-progress step ``cancelled`` (FR-020/021).
-* :meth:`is_terminal` — used by the orchestrator to drop late-arriving
-  results from cancelled steps (R6 best-effort discard policy).
-
-All payloads pass through :func:`shared.phi_redactor.redact` before being
-persisted or transmitted (FR-009b, defense-in-depth at the write boundary).
-The recorder never raises into the caller — failures are structured-logged
-and the caller's lifecycle continues unaffected.
-
-See also:
-
-* contracts/chat_step_event.md for the wire shape.
-* data-model.md for the ``chat_steps`` schema.
-* research.md R1, R4, R5, R6 for design rationale.
+"""Per-turn recorder for in-chat progress notifications:
+start/complete/error/cancel_all_in_flight persist step rows and emit chat_step events
+on the turn's WebSocket. Used by orchestrator.py to track and cancel in-flight tool
+calls.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -66,7 +44,6 @@ def _now_ms() -> int:
 
 
 def _record_to_step(record: Any) -> Dict[str, Any]:
-    """Normalise a detached Plane record into the wire shape consumers expect."""
     return {
         "id": record.step_id,
         "chat_id": record.conversation_id,
@@ -85,15 +62,6 @@ def _record_to_step(record: Any) -> Dict[str, Any]:
 
 
 class ChatStepRecorder:
-    """Records lifecycle events for one chat turn's persistent step trail.
-
-    A new recorder is constructed per active turn so it can hold per-turn
-    state (the in-flight set used by ``cancel_all_in_flight``) without a
-    shared registry. The recorder is safe to construct with ``websocket=None``
-    or ``safe_send=None`` — persistence still happens; the WebSocket emit is
-    skipped silently.
-    """
-
     def __init__(
         self,
         *,
@@ -113,7 +81,6 @@ class ChatStepRecorder:
         self.user_id = user_id
         self.turn_message_id = turn_message_id
         self._in_flight: Dict[str, str] = {}
-        # Cache the terminal status for late-arriving result discard checks.
         self._statuses: Dict[str, str] = {}
         repository, runtime = repository_from(
             "chat_steps",
@@ -127,11 +94,7 @@ class ChatStepRecorder:
             legacy_database=db,
         )
 
-    # ------------------------------------------------------------------
-    # Lifecycle entry points
-    # ------------------------------------------------------------------
     async def start(self, kind: str, name: str, args: Any = None) -> str:
-        """Register a new in-progress step. Returns its ``step_id``."""
         step_id = uuid.uuid4().hex
         args_text, args_trunc = redact(args, kind="args")
         started = _now_ms()
@@ -149,9 +112,7 @@ class ChatStepRecorder:
                 args_was_truncated=args_trunc,
                 started_at=started,
             )
-        except Exception as exc:  # pragma: no cover — defensive
-            # "step_name", not "name": `name` is a reserved LogRecord attribute
-            # and putting it in `extra` makes the logging call itself raise.
+        except Exception as exc:  # pragma: no cover
             logger.error(
                 "chat_steps.start_persist_failed",
                 extra={"chat_id": self.chat_id, "kind": kind, "step_name": name, "error": str(exc)},
@@ -179,10 +140,7 @@ class ChatStepRecorder:
                 "ended_at": None,
             }
         )
-        # "step_name", not "name": `name` is a reserved LogRecord attribute and
-        # `extra` may not overwrite it — logging raises KeyError at INFO level,
-        # which the caller's defensive except turned into step_id=None, leaving
-        # every step permanently in_progress (no complete/error ever recorded).
+        # 'name' is reserved on LogRecord — use step_name instead
         logger.info(
             "chat_steps.started",
             extra={"step_id": step_id, "chat_id": self.chat_id, "kind": kind, "step_name": name},
@@ -190,9 +148,7 @@ class ChatStepRecorder:
         return step_id
 
     async def complete(self, step_id: str, result: Any = None) -> None:
-        """Mark a step ``completed`` with its truncated result summary."""
         if self._statuses.get(step_id) in _TERMINAL_STATUSES:
-            # Late completion after cancel — drop per R6.
             logger.info(
                 "chat_steps.late_complete_dropped",
                 extra={"step_id": step_id, "chat_id": self.chat_id},
@@ -208,7 +164,6 @@ class ChatStepRecorder:
         )
 
     async def error(self, step_id: str, exc) -> None:
-        """Mark a step ``errored``. ``exc`` may be an Exception or a string."""
         if self._statuses.get(step_id) in _TERMINAL_STATUSES:
             logger.info(
                 "chat_steps.late_error_dropped",
@@ -226,20 +181,8 @@ class ChatStepRecorder:
         )
 
     async def cancel_all_in_flight(self) -> None:
-        """Mark every still-in-progress step as ``cancelled`` (FR-020/021).
-
-        Defensive: each candidate is re-checked against the DB before being
-        flipped to ``cancelled``. A row that already reached a terminal
-        state in the DB (e.g. ``complete()`` raced ahead and updated the
-        row before this code observed it) is skipped — we never overwrite
-        a real terminal state with a cancellation marker.
-        """
-        # Snapshot first — _terminate mutates _in_flight.
         snapshot = list(self._in_flight.keys())
         for step_id in snapshot:
-            # Re-check the DB. If the row is already in a terminal state,
-            # respect that and clear the in-memory entry without emitting
-            # a contradictory cancelled event.
             try:
                 record = await self._steps.call_async(
                     self._steps.repository.get_step,
@@ -255,7 +198,7 @@ class ChatStepRecorder:
                         extra={"step_id": step_id, "status": status},
                     )
                     continue
-            except Exception:  # pragma: no cover — defensive
+            except Exception:  # pragma: no cover
                 pass
             await self._terminate(
                 step_id,
@@ -266,16 +209,8 @@ class ChatStepRecorder:
             )
 
     def is_terminal(self, step_id: str) -> bool:
-        """True once a step has reached any terminal state.
-
-        Used by the orchestrator before integrating a tool result so
-        late-arriving responses from cancelled steps are dropped per R6.
-        """
         return self._statuses.get(step_id) in _TERMINAL_STATUSES
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
     async def _terminate(
         self,
         step_id: str,
@@ -300,7 +235,7 @@ class ChatStepRecorder:
                 result_was_truncated=result_was_truncated,
                 error_message=error_message,
             )
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:  # pragma: no cover
             logger.error(
                 "chat_steps.terminate_persist_failed",
                 extra={"step_id": step_id, "status": status, "error": str(exc)},
@@ -309,9 +244,6 @@ class ChatStepRecorder:
         self._in_flight.pop(step_id, None)
         self._statuses[step_id] = status
 
-        # The Plane mutation returns the canonical detached state.  Persistence
-        # failures remain non-fatal to the caller and emit the bounded fallback
-        # shape retained by the original progress-notification contract.
         payload = (
             _record_to_step(record)
             if record is not None
@@ -350,7 +282,7 @@ class ChatStepRecorder:
             sent = self.safe_send(self.websocket, json.dumps(envelope, default=str))
             if asyncio.iscoroutine(sent):
                 await sent
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:  # pragma: no cover
             logger.warning(
                 "chat_steps.emit_failed",
                 extra={"chat_id": self.chat_id, "error": str(exc)},

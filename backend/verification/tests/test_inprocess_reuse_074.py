@@ -1,4 +1,7 @@
-"""Live proof that reusable verification run IDs never reuse retired blob owners."""
+"""Live test that reusable verification run IDs never reuse retired blob owners
+(backend/verification/drivers/in_process.py, backend/orchestrator/offline_grant.py,
+AstralPlane repositories).
+"""
 
 from __future__ import annotations
 

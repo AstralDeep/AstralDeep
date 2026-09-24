@@ -1,8 +1,6 @@
-"""Short-lived purpose-bound tickets for the Feature-065 watch PCM bridge.
-
-Tickets are signed capabilities, never authentication replacements.  Their
-nonce is deterministically remintable during the bounded REST replay window,
-while the worker consumes its digest once in memory before accepting audio.
+"""Short-lived, purpose-bound signed tickets for the watch PCM bridge: a
+replay-remintable nonce during the REST window, consumed once by the worker. Used by
+orchestrator/voice_media.py, voice_runtime.py, and voice_agent/watch_ticket.py.
 """
 
 from __future__ import annotations
@@ -27,8 +25,6 @@ _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class WatchTicketError(RuntimeError):
-    """Content-free ticket refusal safe for a WebSocket close reason."""
-
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
@@ -70,8 +66,6 @@ def derive_watch_nonce(
     device_id: str,
     connection_generation: str,
 ) -> bytes:
-    """Derive one replay-remintable nonce without retaining its bearer."""
-
     checked_secret = _secret(secret)
     fields = (
         _text(user_id, "invalid_user_id", 255),

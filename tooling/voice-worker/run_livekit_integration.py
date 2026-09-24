@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Run the locked Feature 065 RTC integration lane without persistent secrets."""
+"""Runs the locked RTC integration lane through docker compose without persistent
+secrets, building and tearing down one isolated credential-ephemeral project.
+"""
 
 from __future__ import annotations
 
@@ -86,16 +88,11 @@ def _compose(project: str, *args: str) -> list[str]:
 
 
 def main() -> int:
-    """Build, run, and tear down one isolated credential-ephemeral project."""
-
     if shutil.which("docker") is None or not COMPOSE_FILE.is_file():
         print("voice_livekit_integration_unavailable", file=sys.stderr)
         return 2
 
     environment = os.environ.copy()
-    # Compose resolves required interpolation variables even for a build-only
-    # invocation. Use inert placeholders until the potentially slow image build
-    # is complete so the real 90-second room grants cannot expire in a cold cache.
     environment.update(
         {
             "VOICE_INTEGRATION_LIVEKIT_API_KEY": "build-placeholder-key",

@@ -1,4 +1,7 @@
-"""Feature-065 shipped web composer, accessibility, and asset guards."""
+"""Tests for the voice composer shell and client (AstralProjection
+webrender/chrome/composer_model.py): accessible controls beside typed chat, a
+hash-pinned same-origin LiveKit URL, and required frame handlers.
+"""
 
 from __future__ import annotations
 
@@ -97,8 +100,6 @@ def test_shell_hosts_accessible_voice_controls_without_replacing_typed_chat() ->
     assert terminal_notice["aria-atomic"] == "true"
     assert terminal_notice["hidden"] is None
     assert parser.tags_by_id["astral-input"] == "textarea"
-    # Feature 089: the a8p composer bar is one wide field that grows from a
-    # single row; the voice controls sit beside it, not under it.
     assert parser.by_id["astral-input"]["rows"] == "1"
     assert parser.by_id["astral-input"]["aria-label"] == "Message"
     assert "readonly" not in parser.by_id["astral-input"]
@@ -106,21 +107,12 @@ def test_shell_hosts_accessible_voice_controls_without_replacing_typed_chat() ->
     assert "astral-voice-audio" in parser.by_id
 
     shell = SHELL_PATH.read_text(encoding="utf-8")
-    # The 088 composer presents typed entry first, then its voice controls.
     assert shell.index('id="astral-input"') < shell.index(
         'id="astral-voice-controls"'
     )
 
 
 def test_shell_hands_client_the_hash_pinned_local_livekit_url() -> None:
-    """The SDK is lazily injected by client.js, so the shell publishes its URL.
-
-    Updated for the 067 page-load fix: the eager ``<script src=…livekit…>`` tag
-    is gone (it cost every page load a 561 KB download + parse whether or not
-    the user ever spoke). The bundle is still first-party, same-origin and
-    hash-pinned — only the moment it loads changed — so the supply-chain half of
-    this contract is asserted exactly as before.
-    """
     parser = _shell_parser()
     shell = SHELL_PATH.read_text(encoding="utf-8")
     sources = [script.get("src") for script in parser.scripts if script.get("src")]
@@ -135,12 +127,9 @@ def test_shell_hands_client_the_hash_pinned_local_livekit_url() -> None:
     assert len(LIVEKIT_PATH.read_bytes()) > 100_000
     assert actual_digest == expected_digest
 
-    # no eager tag — the bundle never blocks or burdens a page load again
     assert not any(source and "livekit" in source for source in sources)
-    # …but the versioned same-origin URL reaches the client, before client.js
     assert f'window.__ASTRAL_LIVEKIT_URL__ = "{livekit_url}"' in shell
     assert shell.index("__ASTRAL_LIVEKIT_URL__") < shell.index(f'src="{client}"')
-    # every livekit reference in the shell stays first-party
     for match in re.finditer(r"[\"'](\S*livekit\S*)[\"']", shell):
         assert match.group(1).startswith("/static/"), match.group(1)
 

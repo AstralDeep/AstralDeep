@@ -1,10 +1,6 @@
-"""Pre-build Docker-context sentinel checks for feature 074.
-
-This memory-light gate implements only the documented Docker ignore pattern
-forms used by this repository (root-relative paths, ``*``, ``?``, ``**``, and
-last-match-wins negation). It deliberately does not invoke Docker and is not an
-engine-equivalence proof; a real image build remains a later qualification
-step.
+"""Pre-build test verifying the Docker build context excludes nested sensitive state via
+this repository's .dockerignore rules, implementing the documented glob subset
+without invoking Docker.
 """
 
 from __future__ import annotations
@@ -24,7 +20,6 @@ class _Rule:
 
 
 def _docker_glob_expression(pattern: str) -> re.Pattern[str]:
-    """Compile the Docker glob subset present in this repository's rules."""
     if any(token in pattern for token in ("[", "]", "\\")):
         raise AssertionError(
             f"extend the sentinel matcher before using this pattern form: {pattern!r}"
@@ -81,9 +76,6 @@ def _is_excluded(relative_path: str, rules: tuple[_Rule, ...]) -> bool:
     excluded = False
     prefixes = _path_prefixes(relative_path)
     for rule in rules:
-        # Excluding a directory excludes its descendants. The negated forms in
-        # this file target the complete candidate path, so they cannot
-        # accidentally reopen a descendant of an excluded directory.
         candidates = prefixes if rule.exclude else (relative_path,)
         if any(rule.expression.fullmatch(candidate) for candidate in candidates):
             excluded = rule.exclude

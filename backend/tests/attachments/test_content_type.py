@@ -1,4 +1,7 @@
-"""content_type allow-list and consistency checks."""
+"""Tests for orchestrator/attachments/content_type.py: extension-to-category/MIME
+mapping, legacy binary-format flags, compound-suffix normalization, and per-category
+size caps.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +37,7 @@ def test_legacy_binary_formats_are_marked():
 @pytest.mark.parametrize("ext,mime,ok", [
     ("pdf", "application/pdf", True),
     ("pdf", "application/octet-stream", False),
-    ("docx", "application/zip", True),       # docx is a zip
+    ("docx", "application/zip", True),
     ("png", "image/png", True),
     ("png", "image/jpeg", False),
     ("py",  "text/x-python", True),
@@ -47,9 +50,6 @@ def test_is_consistent(ext, mime, ok):
 
 def test_is_consistent_unknown_extension_is_false():
     assert ct.is_consistent("dwg", "application/octet-stream") is False
-
-
-# Medical imaging extensions -------------------------------------------------
 
 
 @pytest.mark.parametrize("name,ext,category", [
@@ -73,8 +73,6 @@ def test_medical_extensions_are_accepted(name, ext, category):
 
 
 def test_compound_extension_takes_precedence_over_last_dot():
-    # Without compound-suffix handling, ``.nii.gz`` would resolve to ``gz`` and
-    # ``.ome.tif`` to ``tif``. Regression guard for the path we special-case.
     assert ct.normalise_extension("brain.nii.gz") == "nii.gz"
     assert ct.normalise_extension("x.ome.tif") == "ome.tif"
     assert ct.normalise_extension("x.ome.tiff") == "ome.tiff"
@@ -84,5 +82,4 @@ def test_max_bytes_for_category_caps():
     assert ct.max_bytes_for_category("document") == 30 * 1024 * 1024
     assert ct.max_bytes_for_category("image") == 30 * 1024 * 1024
     assert ct.max_bytes_for_category("medical") == 2 * 1024 * 1024 * 1024
-    # Unknown → strictest known cap (never accidentally widens the ceiling).
     assert ct.max_bytes_for_category("__unknown__") == 30 * 1024 * 1024

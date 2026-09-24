@@ -1,23 +1,8 @@
-"""Feature 076 — remote computer control: contract + behaviour tests.
-
-No PostgreSQL, no network: the host registry and session manager run against a
-fake orchestrator whose sockets capture frames; the confirmation gate runs
-against the in-memory AstralPlane proposal repository (same seam as 063).
-
-Pins (spec SC-003/SC-004 + contracts/verbs.md, contracts/transport.md):
-- the verb registry equals the policy (scopes, tiers, timeouts, destructive
-  classification identity, never retryable);
-- a malformed ``computer_host`` descriptor costs eligibility, never the session;
-- the registry is owner-scoped and per-host addressed; a response is accepted
-  only from the socket that holds the host;
-- a session needs a live host acknowledgement, one controller at a time, and
-  ends on consent revocation / host loss / idle / max / silence;
-- an unattended turn may run only ``list_computers``; a consequential verb is
-  refused with a proposal card on first reach and never executes;
-- screenshots become image parts after the tool messages, are pruned to the
-  newest N, and are stripped (once) when the provider rejects images;
-- flag off ⇒ no agent dir, no menu input, disabled surface, ignored events.
+"""Tests for remote computer control (backend/orchestrator/computer_hosts.py,
+computer_sessions.py, computer_use_policy.py, remote_confirmation.py): the
+verb/policy registry, owner-scoped sessions, and the approval gate.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,8 +29,6 @@ from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_so
 OWNER = "user-1"
 OTHER = "user-2"
 
-
-# ── fakes ──────────────────────────────────────────────────────────────────────
 
 class _WS:
     def __init__(self, user=OWNER, chat=None):
@@ -117,7 +100,6 @@ async def _online_host(orch: _FakeOrch, name="RYZENROLL", user=OWNER):
 
 
 async def _session(orch: _FakeOrch, host, controller: _WS, chat="chat-1"):
-    """Start a session and satisfy the acknowledgement with a heartbeat."""
     task = asyncio.create_task(orch.computer_sessions.start(OWNER, host, controller, chat))
     await asyncio.sleep(0)
     live = orch.computer_sessions.live_for_host(OWNER, host.host_id)
@@ -125,8 +107,6 @@ async def _session(orch: _FakeOrch, host, controller: _WS, chat="chat-1"):
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "heartbeat", live.session_id, None)
     return await task
 
-
-# ── verb contract ─────────────────────────────────────────────────────────────
 
 def test_registry_equals_policy():
     from agents.computer_use.mcp_tools import TOOL_REGISTRY
@@ -156,8 +136,8 @@ def test_opening_a_terminal_is_a_command_by_another_route():
     assert policy.is_destructive("open_app", {"app": r"C:\Program Files\Foo\foo.exe"}) is False
     assert policy.is_destructive("write_file", {"path": "C:/x"}) is True
     assert policy.is_destructive("click", {"x": 1, "y": 1}) is False
-    assert "run_command" not in policy.ALL_VERBS  # Constitution VII: no arbitrary-shell verb
-    assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True  # unattended: all refused
+    assert "run_command" not in policy.ALL_VERBS
+    assert rc.is_destructive_unattended("open_app", {"app": "notepad"}, "computer-use-1") is True
 
 
 def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
@@ -176,15 +156,13 @@ def test_gate_policy_table_covers_both_agents_and_063_is_unchanged():
     assert p076.classification is policy.DESTRUCTIVE_CLASSIFICATION
     assert p076.gate_unclassified_unattended is True
     assert rc.policy_for("weather-1") is None
-    assert rc.classification_for("remove_path") == "always"           # 063 default table
+    assert rc.classification_for("remove_path") == "always"
     assert rc.classification_for("write_file", "computer-use-1") == "always"
     assert rc.classification_for("click", "computer-use-1") is None
     assert rc.is_destructive_unattended("screenshot", {}, "computer-use-1") is True
     assert rc.is_destructive_unattended("list_computers", {}, "computer-use-1") is False
-    assert rc.is_destructive_unattended("list_machines", {}) is False  # 063 read verb
+    assert rc.is_destructive_unattended("list_machines", {}) is False
 
-
-# ── protocol ──────────────────────────────────────────────────────────────────
 
 def test_descriptor_round_trip_and_validation():
     d = ComputerHostDescriptor.from_dict(_descriptor())
@@ -213,10 +191,8 @@ def test_register_ui_keeps_session_when_descriptor_is_malformed_and_carries_good
     assert bad.token == "t"
     plain = RegisterUI.from_json(json.dumps({"type": "register_ui", "token": "t"}))
     assert plain.computer_host is None
-    assert "computer_host" not in json.loads(plain.to_json())  # pre-076 wire bytes preserved
+    assert "computer_host" not in json.loads(plain.to_json())
 
-
-# ── registry ──────────────────────────────────────────────────────────────────
 
 async def test_registry_is_owner_scoped_and_resolves_names():
     orch = _FakeOrch()
@@ -263,9 +239,7 @@ async def test_request_response_correlation_and_socket_binding():
         await asyncio.sleep(0.01)
         req = ws.frames("computer_request")[-1]
         assert req["verb"] == "click" and req["session_id"] == "cs_x" and req["deadline_ms"] == 10000
-        # A phone can never answer for a host — dropped.
         assert orch.computer_hosts.handle_response(phone, OWNER, {"request_id": req["request_id"], "ok": True, "result": {}}) is False
-        # Another user can never answer — dropped.
         assert orch.computer_hosts.handle_response(ws, OTHER, {"request_id": req["request_id"], "ok": True, "result": {}}) is False
         assert orch.computer_hosts.handle_response(ws, OWNER, {"request_id": req["request_id"], "ok": True,
                                                               "result": {"x": 1, "y": 2}}) is True
@@ -304,8 +278,6 @@ async def test_typed_host_error_and_host_loss_fail_pending_requests():
     assert exc.value.code == "host_offline"
 
 
-# ── sessions ──────────────────────────────────────────────────────────────────
-
 async def test_session_needs_host_ack_and_pushes_to_every_owner_socket():
     orch = _FakeOrch()
     ws, host = await _online_host(orch)
@@ -313,11 +285,10 @@ async def test_session_needs_host_ack_and_pushes_to_every_owner_socket():
     stranger = orch.add(_WS(user=OTHER))
     session = await _session(orch, host, phone)
     assert session.state == "active" and session.controller_label == "Android phone"
-    assert str(uuid.UUID(session.session_id)) == session.session_id  # audit correlation_id is a UUID column
+    assert str(uuid.UUID(session.session_id)) == session.session_id
     assert ws.frames("computer_session")[-1]["state"] == "active"
     assert phone.frames("computer_session")[-1]["session_id"] == session.session_id
     assert stranger.frames("computer_session") == []
-    # re-join from the same controller returns the same session
     again = await orch.computer_sessions.start(OWNER, host, phone, "chat-1")
     assert again is session
 
@@ -344,7 +315,7 @@ async def test_one_controller_at_a_time_and_takeover_when_it_is_gone():
     with pytest.raises(ComputerHostError) as exc:
         await orch.computer_sessions.start(OWNER, host, tablet, "chat-2")
     assert exc.value.code == "controlled_by_other"
-    orch.ui_clients.remove(phone)  # the phone dropped off
+    orch.ui_clients.remove(phone)
     taken = await orch.computer_sessions.start(OWNER, host, tablet, "chat-2")
     assert taken is session and session.controller_ws_id == id(tablet) and session.chat_id == "chat-2"
 
@@ -359,7 +330,6 @@ async def test_session_transitions_and_host_events():
     assert phone.frames("computer_session")[-1]["state"] == "paused"
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "resumed", session.session_id, None)
     assert session.state == "active"
-    # a stranger's or foreign host event is ignored
     await orch.computer_sessions.on_host_event(OTHER, host.host_id, "stopped", session.session_id, None)
     assert session.state == "active"
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "stopped", session.session_id, None)
@@ -396,8 +366,6 @@ async def test_sweep_enforces_idle_max_and_silence(monkeypatch):
     assert s3.reason == "max_duration"
 
 
-# ── the dispatch gate ─────────────────────────────────────────────────────────
-
 class _FakeDB:
     def __init__(self):
         self.rows: dict = {}
@@ -427,7 +395,6 @@ def test_unattended_turn_may_only_list_computers():
         out = rc.evaluate(orch, None, "computer-use-1", verb, {"computer": "x"}, "chat", OWNER)
         assert out is not None and out[0].startswith("unattended_refused")
     assert rc.evaluate(orch, None, "computer-use-1", "list_computers", {}, "chat", OWNER) is None
-    # 063 read verbs keep their status-poll allowance
     assert rc.evaluate(orch, None, "remote-compute-1", "list_machines", {}, "chat", OWNER) is None
 
 
@@ -440,8 +407,6 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
     out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"}, "chat", OWNER)
     assert out is not None and out[0].startswith("confirmation_required")
-    # the proposal row carries a non-empty machine id even when the model omitted
-    # `computer` (single online host) — the store refuses an empty one
     orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZEN")))
     out_nohost = rc.evaluate(orch, ws, "computer-use-1", "write_file", {"path": "C:/x.txt", "content": "y"}, "chat", OWNER)
     assert out_nohost is not None
@@ -449,35 +414,28 @@ def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
     assert any(len(r["machine_id"]) == 36 for r in db.rows.values())
     card = out[1][0]
     assert card["type"] == "card" and "Confirm an action on" in card["title"]
-    # 076 cards carry an explicit workspace id so a decision can replace them in place
     assert card["id"].startswith("au_approval_") and rc.policy_for("computer-use-1").card_as_result is True
     assert rc.policy_for("remote-compute-1").card_as_result is False
     buttons = [c for c in card["content"] if c["type"] == "button"]
     assert {b["payload"]["decision"] for b in buttons} == {"approve", "decline"}
     assert any("Delete on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
     assert len(db.rows) == 2 and all(r["status"] == "pending" for r in db.rows.values())
-    # confirm_action rides the same card
     out = rc.evaluate(orch, ws, "computer-use-1", "confirm_action", {"summary": "Buy the ticket"}, "chat", OWNER)
     assert out is not None and "Buy the ticket" in json.dumps(out[1])
-    # opening a terminal is a command by another route → card; opening Notepad is not
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "notepad"}, "chat", OWNER) is None
     out = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
     assert out is not None and "Open a terminal" in json.dumps(out[1])
-    # the model is told to END ITS TURN, and a repeat reach re-uses the pending card
     assert "STOP NOW" in out[0] and "end your turn" in out[0]
     rows_before = len(db.rows)
     again = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
     assert again[0] == out[0] and len(db.rows) == rows_before
     assert again[1][0]["type"] == "alert" and "Still waiting" in again[1][0]["message"]
-    # 063 keeps one card per reach (its own tests pin that) — unaffected
     r1 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
     r2 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
     assert r1[1][0]["type"] == "card" and r2[1][0]["type"] == "card"
 
 
 async def test_approval_runs_the_verb_then_resumes_the_task():
-    """Approve → the stored verb is re-dispatched through the gate stack, then a
-    continuation turn carrying the result lands on the same chat."""
     db = _FakeDB()
     orch = _gate_orch(db)
     ws = _Hashable()
@@ -490,10 +448,7 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
         return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None)
 
     from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
-    # In production the orchestrator module runs as __main__, so the ContextVar
-    # the running instance's module holds is NOT the importable one; the
-    # continuation must clear the var of the module the instance came from.
-    # Model that with a distinct var on this test module (the fake's module).
+    # __main__ gets separate module globals from a normal import
     global _CONNECTION_OPERATION_CONTEXT_MAIN
     import contextvars
     _CONNECTION_OPERATION_CONTEXT_MAIN = contextvars.ContextVar("test_main_operation", default=None)
@@ -503,8 +458,6 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     orch = main_orch
 
     async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
-        # the continuation must NOT inherit the approval click's connection
-        # operation (its fence goes stale when the click finishes) — on either var
         renders.append((message, chat_id, display_message, user_id,
                         (_CONNECTION_OPERATION_CONTEXT.get(), _CONNECTION_OPERATION_CONTEXT_MAIN.get())))
 
@@ -536,11 +489,9 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
     assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
     assert calls[0][1][rc._MARKER] == proposal_id
     assert renders and renders[0][1] == "chat-1" and renders[0][2].startswith("✓ Approved")
-    assert renders[0][4] == (None, None)  # detached turn: no inherited (soon-stale) fence, on either module's var
-    # the approval unlocked terminal typing on the owner's live session
+    assert renders[0][4] == (None, None)
     assert grant_session.terminal_ok is True
     assert "Wednesday" in renders[0][0] and "open_app" in renders[0][0]
-    # the pending-card memory is cleared by the decision, so a new reach gets a new card
     assert len(db.rows) == 1
     out2 = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
                        "chat-1", OWNER)
@@ -548,10 +499,7 @@ async def test_approval_runs_the_verb_then_resumes_the_task():
 
 
 async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry():
-    """The owner approves; the re-dispatch cannot even be attempted because the
-    computer is paused (someone at the PC). The approval is kept for one retry
-    with identical arguments — no second card — and the continuation says so."""
-    rc._PENDING_CARDS.clear()  # module memory left by the previous test
+    rc._PENDING_CARDS.clear()
     db = _FakeDB()
     orch = _gate_orch(db)
     ws = _Hashable()
@@ -582,20 +530,15 @@ async def test_approved_verb_that_could_not_run_keeps_its_approval_for_one_retry
     await rc.handle_decision(orch, ws, OWNER, {"proposal_id": proposal_id, "decision": "approve"})
     await asyncio.sleep(0.05)
     assert renders and "could NOT run yet" in renders[0] and "EXACTLY the same arguments" in renders[0]
-    # the retry with identical arguments passes the gate once, without a card …
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is None
     assert len(db.rows) == 1
-    # … and only once
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
     assert len(db.rows) == 2
-    # different arguments never ride an old approval
     rc._RETRY_GRACE[(OWNER, "computer-use-1", "open_app", rc._fingerprint(args))] = ("x", time.time() + 60)
     assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "cmd", "computer": "RyzenRoll"},
                        "chat-1", OWNER) is not None
     rc._RETRY_GRACE.clear()
 
-
-# ── multimodal assembly ───────────────────────────────────────────────────────
 
 def _bare_orchestrator():
     from orchestrator.orchestrator import Orchestrator
@@ -637,7 +580,7 @@ def test_results_without_images_add_nothing_and_bad_images_are_ignored():
 
 def test_provider_rejection_heuristic():
     o = _bare_orchestrator()
-    assert o._llm_rejects_images(SimpleNamespace(status_code=400, __str__=lambda s: "image_url is not supported")) is False or True  # shape check only
+    assert o._llm_rejects_images(SimpleNamespace(status_code=400, __str__=lambda s: "image_url is not supported")) is False or True
     class _E(Exception):
         status_code = 400
     assert o._llm_rejects_images(_E("Invalid content type. image_url is only supported by certain models.")) is True
@@ -656,8 +599,6 @@ def test_compaction_counts_an_image_part_as_a_fixed_cost():
     assert estimate_tokens(msgs) < 2_000
     assert _IMAGE_PART_CHARS // CHARS_PER_TOKEN == 1_500
 
-
-# ── flag off ──────────────────────────────────────────────────────────────────
 
 def test_flag_off_keeps_the_agent_and_menu_input_absent(monkeypatch):
     from orchestrator import chrome_availability, local_agents
@@ -682,8 +623,6 @@ async def test_flag_off_surface_and_events_are_inert(monkeypatch):
     assert "not enabled" in out[2]
 
 
-# ── surface ───────────────────────────────────────────────────────────────────
-
 async def test_surface_lists_hosts_with_the_right_controls(monkeypatch):
     from orchestrator.projection_surfaces import my_computers
     from shared.feature_flags import flags
@@ -700,7 +639,6 @@ async def test_surface_lists_hosts_with_the_right_controls(monkeypatch):
     assert [c["title"] for c in cards] == ["RYZENROLL", "LAPTOP"]
     actions = json.dumps(cards[0])
     assert "chrome_computer_session_start" in actions and "chrome_computer_forget" not in actions
-    # another user sees nothing
     assert "RYZENROLL" not in await my_computers.render(orch, OTHER, [], {})
 
     phone = orch.add(_WS(chat="chat-1"))
@@ -720,11 +658,7 @@ async def test_surface_lists_hosts_with_the_right_controls(monkeypatch):
     assert "Stopped" in out[2] and live.state == "ended"
 
 
-# ── the agent's verbs end to end against a fake host ─────────────────────────
-
 class _FakeHostSocket(_WS):
-    """A host socket that answers every computer_request like the Windows client."""
-
     def __init__(self, orch, answers):
         super().__init__()
         self.orch = orch
@@ -762,10 +696,10 @@ def _answers(verb, args):
 async def test_agent_verbs_against_a_fake_host(monkeypatch):
     from agents.computer_use import mcp_tools
     orch = _AgentOrch()
-    mcp_tools.register_deps(orch)  # inside the running loop → _LOOP is this loop
+    mcp_tools.register_deps(orch)
     host_ws = orch.add(_FakeHostSocket(orch, _answers))
     host, _ = orch.computer_hosts.register(OWNER, host_ws, ComputerHostDescriptor.from_dict(_descriptor()))
-    orch.add(_WS(chat="chat-1"))  # the controlling phone, bound to chat-1
+    orch.add(_WS(chat="chat-1"))
     ctx = {"user_id": OWNER, "session_id": "chat-1"}
 
     empty = await asyncio.to_thread(mcp_tools.list_computers, user_id=OTHER)
@@ -773,11 +707,9 @@ async def test_agent_verbs_against_a_fake_host(monkeypatch):
     listed = await asyncio.to_thread(mcp_tools.list_computers, **ctx)
     assert listed["_data"]["computers"][0]["name"] == "RYZENROLL" and listed["_data"]["computers"][0]["session"] is None
 
-    # no session yet → typed refusal, nothing sent to the host
     before = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
     assert before["_data"]["code"] == "no_session" and host_ws.frames("computer_request") == []
 
-    # start_session needs the host's heartbeat ack — supply it from the fake host
     async def _ack_when_pushed():
         for _ in range(200):
             await asyncio.sleep(0.005)
@@ -808,28 +740,22 @@ async def test_agent_verbs_against_a_fake_host(monkeypatch):
     assert (await asyncio.to_thread(mcp_tools.open_app, app="cmd /c del *", **ctx))["_data"]["code"] == "out_of_range"
     wins = await asyncio.to_thread(mcp_tools.list_windows, **ctx)
     assert wins["_data"]["windows"][0]["title"] == "Untitled - Notepad"
-    # keyboard verbs carry the session's terminal grant to the host
     assert (await asyncio.to_thread(mcp_tools.type_text, text="hello", **ctx))["_data"]["chars"] == 5
     assert host_ws.frames("computer_request")[-1]["args"] == {"text": "hello", "terminal_ok": False}
     session.grant_terminal(60)
     await asyncio.to_thread(mcp_tools.press_keys, keys="enter", **ctx)
     assert host_ws.frames("computer_request")[-1]["args"] == {"keys": "enter", "terminal_ok": True}
 
-    # the model asked for an unsupported verb name on this host → typed
     host.descriptor["verbs"] = ["screenshot"]
     assert (await asyncio.to_thread(mcp_tools.click, x=1, y=1, **ctx))["_data"]["code"] == "unsupported"
 
-    # pause → input verbs refuse; `wait` still works (server-side, reports the
-    # state — it is the one thing the model is told to do while paused)
     await orch.computer_sessions.on_host_event(OWNER, host.host_id, "paused", session.session_id, "local_input")
     paused = await asyncio.to_thread(mcp_tools.screenshot, **ctx)
     assert paused["_data"]["code"] == "paused"
     before = len(host_ws.frames("computer_request"))
     waited = await asyncio.to_thread(mcp_tools.wait, seconds=0.1, **ctx)
     assert waited["_data"]["state"] == "paused" and waited["_data"]["pause_reason"] == "local_input"
-    assert len(host_ws.frames("computer_request")) == before  # no host round-trip
-    # a resume that does not hold (the desktop re-pauses because the person is
-    # still active) is reported as paused with the wait hint, never as active
+    assert len(host_ws.frames("computer_request")) == before
     monkeypatch.setattr(mcp_tools, "RESUME_SETTLE_SECONDS", 0.05)
     orig_resume = orch.computer_sessions.resume
 
@@ -871,7 +797,7 @@ async def test_consent_switch_is_offered_only_to_a_host_capable_desktop(monkeypa
     from shared.feature_flags import flags
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "computer_use")
     orch = _FakeOrch()
-    phone = orch.add(_WS())                      # no computer_host_capable capability
+    phone = orch.add(_WS())
     desktop = orch.add(_WS())
     orch.ui_sessions[desktop]["_client_capabilities"] = ["render", "stream", "computer_host_capable"]
 
@@ -894,7 +820,6 @@ async def test_consent_switch_is_offered_only_to_a_host_capable_desktop(monkeypa
     assert '"enabled": true' in json.dumps(card) and "Allow remote control" in json.dumps(card)
     assert "computer_host_consent" in html and "Allow remote control" in html
 
-    # once the desktop announced itself the card offers the OFF switch
     orch.computer_hosts.register(OWNER, desktop, ComputerHostDescriptor.from_dict(_descriptor()))
     token = current_surface_socket.set(desktop)
     try:
@@ -903,6 +828,5 @@ async def test_consent_switch_is_offered_only_to_a_host_capable_desktop(monkeypa
         current_surface_socket.reset(token)
     card = next(c for c in comps if c.get("title") == "This computer")
     assert "Stop allowing" in json.dumps(card) and '"enabled": false' in json.dumps(card)
-    # a surface rendered outside any render call (no socket) never shows the card
     assert not any(c.get("title") == "This computer"
                    for c in await my_computers.components(orch, OWNER, [], {}))

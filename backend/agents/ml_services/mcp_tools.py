@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""Union MCP tool registry for the ML Services agent.
-
-Merges the three per-service tool slices (classify / forecaster / llm_factory)
-into one ``TOOL_REGISTRY`` and adds the single ``_credentials_check`` internal
-tool that probes all three optional credential bundles and reports a per-bundle
-verdict plus an aggregate one.
-
-Tool-name layout (feature 029 consolidation contract):
-
-- The five verbs CLASSify and Forecaster shared are exposed twice with
-  service prefixes: ``classify_submit_dataset`` … ``classify_delete_dataset``
-  and ``forecaster_submit_dataset`` … ``forecaster_delete_dataset``.
-- Every other tool keeps its original name: ``set_column_types``,
-  ``get_ml_options``, ``propose_training_config``, ``get_output_log``,
-  ``set_column_roles``, ``list_models``, ``chat_with_model``,
-  ``create_embedding``, ``transcribe_audio``.
+"""Union MCP tool registry for the ML Services agent: merges classify_tools.py,
+forecaster_tools.py, and llm_factory_tools.py into one TOOL_REGISTRY and adds
+_credentials_check, which probes all three optional credential bundles.
 """
 import logging
 import os
@@ -38,39 +25,17 @@ LONG_RUNNING_TOOLS: Set[str] = (
     | llm_factory_tools.LONG_RUNNING_TOOLS
 )
 
-# (registry key, display label, bundle, per-service probe) for the union
-# credential check. Order fixed: CLASSify, Forecaster, LLM-Factory.
 _BUNDLE_PROBES = (
     ("classify", "CLASSify", _wrapper.CLASSIFY_BUNDLE, classify_tools._credentials_check),
     ("forecaster", "Forecaster", _wrapper.FORECASTER_BUNDLE, forecaster_tools._credentials_check),
     ("llm_factory", "LLM-Factory", _wrapper.LLM_FACTORY_BUNDLE, llm_factory_tools._credentials_check),
 )
 
-# Aggregate-verdict precedence over the configured bundles: any hard auth
-# failure outranks reachability problems, which outrank shape surprises.
+# Order is the precedence: auth_failed > unreachable > unexpected
 _VERDICT_PRECEDENCE = ("auth_failed", "unreachable", "unexpected")
 
 
 def _credentials_check(**kwargs) -> Dict[str, Any]:
-    """Probe all three optional credential bundles and report per-bundle verdicts.
-
-    Each configured bundle (both of its keys saved and non-empty) is probed
-    with the same per-service logic the predecessor agents used; bundles with
-    no saved credentials are reported as ``not_configured`` and excluded from
-    the aggregate verdict, because all three bundles are optional.
-
-    Args:
-        **kwargs: Tool kwargs carrying ``_credentials`` (the union credential
-            map holding any of the six CLASSIFY_*/FORECASTER_*/LLM_FACTORY_*
-            keys) and optionally ``_credentials_stale``.
-
-    Returns:
-        An MCP UI response dict whose single Card holds a three-row status
-        Table, and whose ``_data`` carries the aggregate ``credential_test``
-        verdict (``ok`` / ``auth_failed`` / ``unreachable`` / ``unexpected``),
-        a human-readable ``detail`` summary, and the per-bundle verdict map
-        under ``bundles``.
-    """
     credentials = kwargs.get("_credentials", {}) or {}
     bundles: Dict[str, Dict[str, str]] = {}
     rows = []

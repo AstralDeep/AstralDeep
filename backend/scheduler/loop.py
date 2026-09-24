@@ -1,10 +1,6 @@
-"""Lease-renewed PostgreSQL scheduler dispatch (features 025 and 060).
-
-With the feature-060 operation coordinator bound, polling materializes and
-claims durable occurrences and every post-commit claim receives an independent
-lease keeper before admission queueing.  The small legacy path is retained for
-isolated feature-025 callers that deliberately provide no coordinator; the
-production orchestrator binds one shared coordinator through its task manager.
+"""Lease-renewed PostgreSQL dispatch loop that materializes, claims, and runs due
+scheduled occurrences through scheduler/store.py and work_admission.py, independently
+renewing the occurrence claim and operation fence leases per handler.
 """
 
 from __future__ import annotations
@@ -35,8 +31,6 @@ logger = logging.getLogger("scheduler.loop")
 
 
 class ClaimLeaseKeeper:
-    """Renew one occurrence claim independently at ``lease / 3`` or faster."""
-
     def __init__(self, store, claim: OccurrenceClaim, *, lease_seconds: int) -> None:
         if lease_seconds < 5 or lease_seconds > 60:
             raise ValueError("scheduled claim lease must be between 5 and 60 seconds")
@@ -95,18 +89,11 @@ class ClaimLeaseKeeper:
 
 
 class OperationLeaseKeeper:
-    """Renew one selected operation fence independently at ``lease / 4``.
-
-    The occurrence claim and operation execution slot are separate durable
-    authorities.  Keeping only the occurrence lease alive would allow a long
-    handler to continue after its operation generation had already expired.
-    """
-
     _RENEWAL_DIVISOR = 4
 
     def __init__(self, coordinator: WorkAdmissionCoordinator, fence) -> None:
         lease_seconds = coordinator.slot_lease.total_seconds()
-        if lease_seconds <= 0:  # pragma: no cover - coordinator validates it
+        if lease_seconds <= 0:  # pragma: no cover
             raise ValueError("operation execution lease must be positive")
         self.coordinator = coordinator
         self.fence = fence
@@ -153,9 +140,6 @@ class OperationLeaseKeeper:
                 self.lost.set()
                 return
             except Exception:
-                # Failure to prove continued ownership is authority loss.  The
-                # handler is stopped and its occurrence is made retryable; it
-                # must never continue merely because the error was transient.
                 logger.exception(
                     "scheduler operation execution lease renewal failed",
                     extra={"operation_id": str(self.fence.operation_id)},
@@ -166,8 +150,6 @@ class OperationLeaseKeeper:
 
 
 class SchedulerLoop:
-    """Poll, claim, renew, and dispatch scheduled work under durable fences."""
-
     _HANDLER_CANCEL_GRACE_SECONDS = 0.25
 
     def __init__(
@@ -222,7 +204,7 @@ class SchedulerLoop:
                         "scheduler reconciled %s interrupted legacy run(s)",
                         reconciled,
                     )
-            except Exception:  # pragma: no cover - legacy compatibility
+            except Exception:  # pragma: no cover
                 logger.warning("scheduler reconcile failed", exc_info=True)
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
@@ -264,7 +246,7 @@ class SchedulerLoop:
         while not self._stop.is_set():
             try:
                 await self._tick()
-            except Exception:  # pragma: no cover - loop must never die
+            except Exception:  # pragma: no cover
                 logger.exception("scheduler tick failed")
             try:
                 await asyncio.wait_for(
@@ -300,7 +282,7 @@ class SchedulerLoop:
                     self._job_coro,
                     job,
                 )
-            except Exception:  # pragma: no cover - legacy compatibility
+            except Exception:  # pragma: no cover
                 logger.exception("failed to dispatch legacy job %s", job.get("id"))
 
     async def _dispatch_claim(self, claim: OccurrenceClaim) -> None:
@@ -462,10 +444,7 @@ class SchedulerLoop:
                     summary="Scheduled claim became stale",
                 )
         except StaleExecutionFenceError:
-            # The handler can finish concurrently with the lease keeper
-            # discovering a rotated/expired operation fence.  The fenced
-            # commit is the final authority: classify that race as retryable
-            # lease loss, never as an application failure or successful run.
+            # Lease-keeper race: this is retryable loss, never a failure
             if attempt is not None:
                 try:
                     await asyncio.to_thread(
@@ -556,14 +535,6 @@ class SchedulerLoop:
         *,
         reason: str,
     ) -> bool:
-        """Fence a handler promptly even if its coroutine suppresses cancellation.
-
-        Python cannot forcibly terminate a cancellation-resistant coroutine.
-        The durable occurrence/operation fences remain the output authority;
-        this method prevents the dispatcher and shutdown path from waiting
-        without bound and retains the remainder until it actually exits.
-        """
-
         if task.done():
             await asyncio.gather(task, return_exceptions=True)
             return True
@@ -618,6 +589,4 @@ class SchedulerLoop:
             pass
 
     async def _job_coro(self, virtual_ws, job):
-        """Legacy coroutine handed to ``BackgroundTaskManager.submit``."""
-
         return await self.runner.run_job(job)

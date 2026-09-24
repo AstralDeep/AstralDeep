@@ -1,4 +1,6 @@
-"""Operator mistakes cannot silently enlarge unattended execution limits."""
+"""Tests for persistent_agents/config.py: disabled by default, operator bounds are
+honored, and invalid concurrency values are refused.
+"""
 
 import pytest
 from persistent_agents.config import RunnerConfig
