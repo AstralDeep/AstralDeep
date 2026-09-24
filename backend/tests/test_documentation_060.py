@@ -70,7 +70,7 @@ def test_byo_guide_is_explicitly_unignored_and_reachable_from_deep_docs() -> Non
     assert "!docs/byo-client-agents.md" in ignore
     assert _git(REPO_ROOT, "check-ignore", "-q", "--no-index", str(GUIDE), check=False).returncode == 1
     for relative in (
-        "CLAUDE.md",
+        "AGENTS.md",
         "docs/production-deployment.md",
     ):
         assert "byo-client-agents.md" in (REPO_ROOT / relative).read_text(
@@ -332,6 +332,7 @@ def test_current_maintained_documentation_targets_resolve() -> None:
     sources = validator.maintained_markdown_files(candidates)
 
     selected = {path.as_posix() for path in sources}
+    assert "AGENTS.md" in selected
     assert GUIDE.relative_to(REPO_ROOT).as_posix() in selected
     assert validator.validate_markdown_links(REPO_ROOT, sources, candidates) == ()
 

@@ -1,12 +1,12 @@
-# AstralDeep Codex Guide
+# AstralDeep Agent Guide
 
-This is the durable repository guide for Codex. Keep it focused on stable rules and routing; feature history belongs in `specs/`, Git, and the optional knowledge vault.
+This is the single repository instruction file for all coding agents, including Codex and Claude. Update `AGENTS.md` directly; do not create a separate agent-specific instruction file. Keep it focused on stable rules and routing; feature history belongs in `specs/`, Git, and the optional knowledge vault.
 
 ## Authority and freshness
 
 - `.specify/memory/constitution.md` is the highest-authority engineering policy. Read it before planning architecture, security, schema, dependency, UI, protocol, or client changes.
 - For feature intent, use the active feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records. A spec describes intent; verify implementation claims against the live tree and tests.
-- The live branch, working tree, and current code are the source of truth for present state. `CLAUDE.md` is a useful generated history digest, but it can lag or contain superseded technology notes.
+- The live branch, working tree, and current code are the source of truth for present state. Older generated feature digests remain in Git history; their technology notes may be superseded and are not current instructions.
 - Before feature work, check `git status --short --branch`, recent commits, `.specify/feature.json`, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec or `feature.json` on `main` is the work currently in progress.
 - Work may continue on another machine. Do not edit an active feature branch/spec, overwrite handoff artifacts, or recreate work merely because it is absent from the current checkout. Inspect remotes and ask when ownership is genuinely ambiguous.
 - Prefer paths supplied by the current workspace and repository-relative paths. Absolute paths recorded in old docs or the knowledge vault are historical, not commands.
@@ -45,6 +45,8 @@ The UI contract is:
 - `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`: authoritative native clients and their parity/drift guards.
 - `specs/`: numbered Spec Kit feature artifacts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
+
+For deployment and agent workflows, read [production deployment](docs/production-deployment.md), [BYO client agents](docs/byo-client-agents.md), [remote compute agents](docs/remote-compute-agents.md), and [authoring agents and skills](docs/your-own-agents-and-skills.md).
 
 The pinned `components/AstralPrimitives` repository owns primitive definitions and Python serialization. It is a separate release train; do not edit or publish it as an incidental AstralDeep change.
 
@@ -92,6 +94,8 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
   ad-hoc deployed SQL or introduce a second migration framework.
 
 ## Spec Kit with Codex
+
+All agent integrations share this `AGENTS.md`. The repository's context updater routes both Claude and Codex here. If an older installed skill or template names a different instruction file, update this file instead, including its Spec Kit markers; do not recreate the retired file. Preserve the installed integration manifests so upgrades can identify local customizations.
 
 Codex discovers the repository-local skills in `.agents/skills/`. Invoke them with `$skill-name` (not Claude's slash-command spelling). Start a new Codex task/session after skill installation or updates so discovery refreshes.
 
@@ -157,7 +161,9 @@ Client gates:
 - Windows: set `QT_QPA_PLATFORM=offscreen`, then run `python -m pytest components/AstralProjection/windows-client/tests -q` with the client requirements installed.
 - Android (from `components/AstralProjection/android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
 - Apple (macOS only): run `swift test --package-path components/AstralProjection/apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `components/AstralProjection/apple-clients/README.md`.
-- AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Its publish workflow does not run tests for you.
+- AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Publication checks do not replace PR qualification.
+
+When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
 
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
@@ -190,7 +196,7 @@ When available, the local knowledge vault is the sibling repository at `../kos-w
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or
 release changes state, or a durable decision is made — update the vault before declaring the
-checkpoint complete. First read that vault's `CLAUDE.md`, refresh the repository anchor, revise the
+checkpoint complete. First read that vault's `AGENTS.md`, refresh the repository anchor, revise the
 affected curated pages (never `raw/`), update `index.md` and `log.md`, then commit and push the vault
 when its remote is available. The machine-written `sessions/` breadcrumb is not a substitute for the
 curated update. Keep the vault commit separate from product-repository commits, and report explicitly

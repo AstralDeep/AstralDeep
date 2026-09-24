@@ -130,7 +130,6 @@ def maintained_markdown_files(
         path
         for path in tracked_files
         if path.suffix.lower() == ".md"
-        and path.name != "CLAUDE.md"
         and (not path.parts or path.parts[0] not in excluded_roots)
     )
 
