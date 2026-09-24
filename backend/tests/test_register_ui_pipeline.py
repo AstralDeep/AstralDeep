@@ -155,7 +155,7 @@ async def test_register_ui_delivers_welcome_and_dashboard(
     assert orch._registered_events[id(ws)].is_set()
     assert orch._ws_welcome.get(id(ws)) is True
 
-    assert frame_types.index("rote_config") < frame_types.index("system_config")
+    assert frame_types.index("rote_config") > frame_types.index("system_config")
 
     rote_frame = next(f for f in ws.task.outputs if f.get("type") == "rote_config")
     assert set(rote_frame) == {"type", "device_profile", "speech_server_available"}

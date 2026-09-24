@@ -27,11 +27,7 @@ logger = logging.getLogger("Orchestrator.Chrome.LLM")
 TITLE = "LLM settings"
 SUBTITLE = "Your provider, your keys, and what leaves this machine"
 ICON = "\u2699"
-SECTIONS = (
-    ("provider", "Provider"),
-    ("routing", "Smart routing"),
-    ("sharing", "Data sharing"),
-)
+SECTIONS = (("provider", "Provider"),)
 
 
 def footer_html() -> str:
@@ -453,9 +449,9 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         )
 
     return (
+        f"<div data-ui-form data-llm-endpoints='{_provider_endpoints_json()}' "
+        'data-section="provider" class="space-y-4 astral-llm-settings">'
         f"{intro}"
-        f"<div data-ui-form data-llm-endpoints='{_provider_endpoints_json()}' class=\"space-y-4\">"
-        '<div data-section="provider">'
         '<div class="bg-white/5 border border-white/10 rounded-lg p-4 space-y-3">'
         f'<div class="flex items-center justify-between">'
         f'<span class="{_LABEL_TEXT_CLS}">AI provider</span>{saved_badge}</div>'
@@ -470,9 +466,8 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         f"{_model_field(model, models)}</label>"
         "</div>"
         f'<div class="flex flex-wrap gap-2 mt-3">{clear_btn}</div>'
-        "</div>"
-        f'<div data-section="routing">{typesafe_block}</div>'
-        f'<div data-section="sharing">{data_sharing_block}</div>'
+        f"{typesafe_block}"
+        f'<div class="astral-llm-sharing">{data_sharing_block}</div>'
         "</div>"
     )
 

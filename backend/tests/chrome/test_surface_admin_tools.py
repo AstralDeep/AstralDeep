@@ -272,6 +272,7 @@ def test_render_denies_empty_roles():
 
 
 def test_quality_tab_is_default_and_lists_signals_and_proposals():
+    assert run(admin_tools.title(admin_orch(), "admin1", {})) == "Tool quality"
     html = run(admin_tools.render(admin_orch(), "admin1", ["admin"], {}))
     assert 'data-admin-tab="quality"' in html
     assert "Underperforming tools" in html
@@ -286,7 +287,9 @@ def test_quality_tab_is_default_and_lists_signals_and_proposals():
     assert "data-ui-form" in html and 'data-ui-collect="true"' in html
     assert 'name="rationale"' in html
     assert "<script>" not in html and "&lt;script&gt;" in html
-    assert "Tool quality" in html and "Tutorial admin" in html
+    assert "Tool quality" in html and "Runtime diagnostics" in html
+    assert 'data-admin-tab-btn="tutorial"' not in html
+    assert "Tutorial admin" not in html
 
 
 def test_quality_tab_empty_states():
@@ -303,6 +306,7 @@ def test_quality_tab_missing_subsystem():
 
 
 def test_tutorial_tab_lists_steps_including_archived():
+    assert run(admin_tools.title(admin_orch(), "admin1", {"tab": "tutorial"})) == "Tutorial admin"
     orch = admin_orch()
     html = run(admin_tools.render(orch, "admin1", ["admin"], {"tab": "tutorial"}))
     assert 'data-admin-tab="tutorial"' in html
@@ -312,6 +316,8 @@ def test_tutorial_tab_lists_steps_including_archived():
     assert 'data-ui-action="chrome_admin_step_archive"' in html
     assert 'data-ui-action="chrome_admin_step_restore"' in html
     assert "New step" in html
+    assert 'role="tablist"' not in html
+    assert 'data-admin-tab-btn="quality"' not in html
 
 
 def test_tutorial_edit_form_prefills_step_values():

@@ -58,10 +58,16 @@ def _make_fake(*, validate=None):
     async def llm_configured_for(user_id):
         return True
 
+    async def replay_user_tasks(ws, user_id):
+        return None
+
     fake = types.SimpleNamespace(
         ui_sessions={},
         _registered_events={},
         _ff_llm_first_run=False,
+        _ws_active_chat={},
+        _ws_welcome={},
+        _replay_user_tasks=replay_user_tasks,
         llm_configured_for=llm_configured_for,
         audit_recorder=None,
         rote=ROTE(),
@@ -124,6 +130,9 @@ def _run_and_drain(coro):
 
 @pytest.mark.parametrize("same_owner", [False, True])
 def test_verified_registration_retires_only_the_previous_owners_rote_cache(same_owner, auth_audit):
+    from orchestrator.orchestrator import ConnectionContext
+    from uuid import uuid4
+
     async def validate(_token):
         return {"sub": "previous" if same_owner else "replacement"}
 
@@ -132,9 +141,26 @@ def test_verified_registration_retires_only_the_previous_owners_rote_cache(same_
     fake.ui_sessions[socket] = {"sub": "previous"}
     original = [{"type": "text", "component_id": "old-result", "content": "Previous owner result"}]
     fake.rote.adapt(socket, original)
-    _run_and_drain(fake.handle_ui_message(socket, _register_msg(token="synthetic-valid-token")))
+    context = ConnectionContext(socket, uuid4(), time.monotonic() + 30,
+        registered=same_owner, work_registrations_pending=1)
+    fake._connection_contexts = {id(socket): context}
+    send = fake._safe_send
+    async def send_when_ready(ws, payload):
+        if json.loads(payload).get("type") == "rote_config":
+            assert context.registered and context.work_registrations_pending == 0
+        await send(ws, payload)
+    fake._safe_send = send_when_ready
+    async def register():
+        ready = await Orchestrator._run_ui_registration(
+            fake, context, _register_msg(token="synthetic-valid-token"))
+        if not context.registered:
+            assert "rote_config" not in _types(fake)
+            context.registered = True
+            await Orchestrator._publish_registration_ready(fake, context, ready)
+    _run_and_drain(register())
     assert fake.ui_sessions[socket]["sub"] == ("previous" if same_owner else "replacement")
     assert "rote_config" in _types(fake)
+    assert _types(fake).count("rote_config") == 1
     assert fake.rote.get_cached_components(socket) == (original if same_owner else None)
 
 

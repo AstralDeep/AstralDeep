@@ -139,6 +139,12 @@ def test_render_empty_state_form_structure():
     assert "chrome_llm_clear" not in html
     assert "sk-..." in html
     assert "not configured" in html
+    assert llm_surface.SECTIONS == (("provider", "Provider"),)
+    assert html.count("data-ui-form") == 1
+    assert html.count("data-section=") == 1
+    assert 'data-section="provider"' in html
+    assert html.count('name="typesafe_api_key"') == 1
+    assert html.count('name="data_sharing_acknowledged"') == 1
 
 
 def test_render_provider_dropdown_offers_all_presets():

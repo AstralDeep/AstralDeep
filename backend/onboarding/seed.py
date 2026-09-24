@@ -1,11 +1,11 @@
-"""Idempotent seed for the canonical onboarding tutorial-step content: creates missing
-default steps via Plane without overwriting admin edits. Run at orchestrator startup.
+"""Reconciles canonical tutorial content at startup through Plane's revision API.
+Creates missing steps and refreshes system-owned copy while preserving admin edits.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Final
 
@@ -41,71 +41,76 @@ def _step(
 DEFAULT_TUTORIAL_STEPS: Final = (
     _step(
         "welcome-tour", "user", 10, "none", None, "Welcome to AstralDeep",
-        "AstralDeep is a chat-first workspace: ask in plain language and agents answer with live, interactive results. This one-minute tour points out the main controls. Use Next and Back to move through it, or Skip tour at any time — you can replay it later from Settings, under Take the tour.",
+        "Ask in plain language and your agents answer with interactive results. This tour opens the controls it describes on desktop and mobile. Use Next and Back, or Skip tour at any time. Replay it from Settings → Take the tour.",
     ),
     _step(
         "meet-the-canvas", "user", 20, "static", "canvas.workspace",
         "The canvas — where results appear",
-        "The highlighted area is your canvas. When agents respond with rich components — dashboards, charts, tables, timelines, cited briefs — they land here and stay with the chat, so later answers can build on earlier ones. On a fresh account it starts with example requests you can run with one click.",
+        "Your conversation and interactive results appear here. Scroll through the chat to revisit answers. Each component's toolbar lets you expand, download or share it. Before a chat starts, the dashboard offers example requests.",
     ),
     _step(
-        "turn-on-agents", "user", 30, "static", "canvas.workspace",
+        "turn-on-agents", "user", 30, "static", "sidebar.agents",
         "Turn your agents on",
-        "New accounts start with every agent switched off, so replies are plain text until you say otherwise. The fastest fix is the welcome card on the canvas: Enable recommended agents switches on read-only access for the built-in agents in one click — search, data, file and system reads, never write. While your agents are all off, the same buttons appear under replies answered without them — and you can enable or fine-tune agents any time from Agents & permissions in Settings.",
+        "Enable agents in Agents & permissions. Open an agent, review its tools, then save the permissions you want to grant. New accounts start with agents switched off. The tour only shows these controls; it does not change your permissions.",
     ),
     _step(
         "ask-in-plain-language", "user", 40, "static", "chat.input",
         "Ask in plain language",
-        "This is the chat panel — type what you need and press Send. Try a live weather dashboard, a cited research brief on a topic you care about, or a summary of a web page. Agents pick the right tools, stream their progress, and render results to the canvas. Follow-up messages refine what's already there, and every chat keeps its own canvas and history.",
+        "Type your request here, then press Enter or the send arrow. Shift+Enter adds a line. Use the paperclip for files and the microphone for voice. The three-dot menu contains Advanced options, background work and the Workspace timeline.",
     ),
     _step(
         "open-settings-menu", "user", 50, "static", "topbar.settings",
         "Settings — everything else lives here",
-        "The Settings button in the top bar opens the menu for your account: Agents & permissions, LLM settings, Personalization, Audit log, Theme, and the Workspace timeline — plus the User guide, this tour, and sign out. The next few steps walk through the ones worth knowing on day one.",
+        "Settings is the gear beside your account at the bottom of the sidebar. On a phone, open the hamburger menu to find it. Settings pages use a navigation rail on wide screens and a horizontally scrollable navigation row on small screens.",
     ),
     _step(
         "agents-and-permissions", "user", 60, "static", "sidebar.agents",
         "Agents & permissions",
-        "This is the fine-grained companion to the one-click enable: browse every agent available to you (the built-ins live under the Public tab), open one to see its tools, then switch whole permission sections on or off — or override a single tool — and press Save permissions. Nothing an agent does ever exceeds what you've granted here, and you can change your mind at any time.",
+        "Browse available agents, including built-in agents under Public. Open an agent to review tool permissions and save any changes. You can return here to reduce or revoke access whenever you need.",
+    ),
+    _step(
+        "configure-your-model", "user", 65, "static", "sidebar.llm",
+        "Connect your AI provider",
+        "LLM settings holds your provider, endpoint, model and optional TypeSafe routing in one place. Review the data-sharing acknowledgement before saving. Saved API keys stay hidden; test your connection after changing the configuration.",
     ),
     _step(
         "personalize-your-assistant", "user", 70, "static", "sidebar.personalization",
         "Make it yours",
-        "Personalization is where the assistant learns to work your way: set your profession and goals, review the durable memory it keeps across sessions, enable skills, and manage scheduled jobs and dreaming — the background pass that promotes recurring signals into long-term memory. Personality shapes tone only; it never weakens privacy or safety rules.",
+        "Use Personalization to set your profession, goals and preferred tone, and review memory and background activity. Your preferences shape answers without changing tool permissions or privacy controls.",
     ),
     _step(
         "review-your-audit-log", "user", 80, "static", "sidebar.audit",
         "Your private audit log",
-        "Every sign-in, agent action, and tool call on your account is recorded in an append-only, signed log that only you can see. Open it any time to verify exactly what happened — filter by event class or outcome, and drill into any entry for the full details.",
+        "Review recorded activity for your account, including agent actions and tool calls. Filter by event class or outcome, then open an entry to inspect its details.",
     ),
     _step(
         "workspace-timeline", "user", 90, "static", "topbar.timeline",
         "Step back through your workspace",
-        "The history icon up here opens your Workspace timeline — a read-only snapshot of your canvas after each turn of the conversation, so you can see how a result took shape. Browsing the past never changes the present — your live workspace stays exactly as you left it.",
+        "Workspace timeline is in the three-dot menu beside the message box. It opens snapshots from earlier turns, so you can review how a result developed without changing your live workspace.",
     ),
     _step(
         "help-anytime", "user", 100, "static", "sidebar.guide",
         "Help, whenever you need it",
-        "The User guide covers every surface in more depth — attachments, voice, themes, privacy, and what data stays yours. And if you ever want this walkthrough again, Take the tour sits right above it in this menu.",
+        "The User guide explains attachments, voice, themes, privacy and other features. Take the tour is a separate Settings page whenever you want to repeat this walkthrough.",
     ),
     _step(
         "tour-complete", "user", 110, "none", None, "You're all set",
-        "That's the tour. Enable your agents if you haven't yet, then ask your first question — or run one of the examples waiting on the canvas. Happy building.",
+        "Close the tour and ask a question, or try a dashboard example. Your chats stay in History in the sidebar. Use New Chat for a separate conversation.",
     ),
     _step(
         "admin-tool-quality", "admin", 200, "static", "sidebar.tool-quality",
         "Admin: Tool quality",
-        "Tool quality lists underperforming tools across all agents, flagged by failure rate and negative feedback over a rolling window — so you can spot trouble before users report it. Each entry shows the dispatch counts and categories behind the flag.",
+        "Review flagged tools and their recent failures or feedback. Tool quality also has runtime diagnostics. Tutorial editing lives on its own Tutorial admin page.",
     ),
     _step(
         "admin-knowledge-proposals", "admin", 210, "static", "sidebar.tool-quality",
         "Admin: Knowledge proposals",
-        "When the system finds a likely fix for a flagged tool, it drafts a knowledge-update proposal with the evidence and the exact diff. Review it on the same Tool quality surface and Approve & apply or Reject — nothing changes without an admin decision.",
+        "Inspect the evidence behind a flagged tool and any proposed knowledge update before deciding whether to apply it. Opening this page or taking the tour does not approve changes.",
     ),
     _step(
         "admin-edit-this-tour", "admin", 220, "static", "sidebar.tutorial-admin",
         "Admin: Edit this tour",
-        "Tutorial admin lets you reshape this tour: edit any step's title, copy, audience, order, or highlight target; add new steps; or archive ones you no longer want (and restore them later). Changes go live the next time anyone starts the tour, and every edit is kept in the step's revision history.",
+        "Edit step titles, text, audience, order and highlight targets here. You can add, archive or restore steps. Changes apply when the next tour starts, and revision history preserves edits. Product updates preserve your customized steps.",
     ),
 )
 
@@ -127,6 +132,7 @@ def seed_tutorial_steps(
     )
     observed_at = datetime.now(timezone.utc)
     created = 0
+    refreshed = 0
     with context.transaction() as transaction:
         for values in DEFAULT_TUTORIAL_STEPS:
             result = context.repository.create_seed_if_absent(
@@ -136,7 +142,29 @@ def seed_tutorial_steps(
                 observed_at=observed_at,
             )
             created += int(result.created)
-    logger.info("Tutorial seed reconciled (%s defaults created)", created)
+            if result.created or result.record.archived_at is not None:
+                continue
+            changes = {
+                key: value for key, value in values.items()
+                if key != "slug" and getattr(result.record, key) != value
+            }
+            if not changes:
+                continue
+            revisions = context.repository.list_revisions(
+                transaction, step_id=result.record.step_id, limit=1,
+            )
+            if not revisions or revisions[0].editor_id != _SEED_EDITOR:
+                continue
+            context.repository.update_with_revision(
+                transaction,
+                step_id=result.record.step_id,
+                expected_updated_at=result.record.updated_at,
+                changes=changes,
+                editor_id=_SEED_EDITOR,
+                updated_at=max(observed_at, result.record.updated_at + timedelta(microseconds=1)),
+            )
+            refreshed += 1
+    logger.info("Tutorial seed reconciled (%s created, %s refreshed)", created, refreshed)
     return created
 
 

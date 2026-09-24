@@ -431,12 +431,20 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
         if selection:
             state, notes = await _selection_state(orch, service, caller, action, request)
         else:
-            state, notes = await _state(service, caller, action, request)
+            try:
+                state, notes = await _state(service, caller, action, request)
+            except AssignmentError as exc:
+                errors = {"explicit_note_sensitive_content_refused": "sensitive",
+                          "explicit_note_privacy_unavailable": "privacy_unavailable",
+                          "explicit_note_changed": "changed", "explicit_note_not_found": "not_found"}
+                if exc.code not in errors:
+                    raise
+                state, notes = {"status": "unavailable", "error": errors[exc.code]}, ()
         _service_current(orch, service, caller)
         token.assert_current(orch, websocket, caller, request_generation)
         device = _device_type(orch, websocket)
         view = build_guidance_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
-        if device == "browser":
+        if device in {"browser", "mobile", "tablet"}:
             body = render_html(view)
             if action == "chrome_turn_selection_set":
                 body = ('<div data-chrome-surface="guidance" data-astral-selection="'

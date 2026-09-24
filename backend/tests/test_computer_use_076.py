@@ -634,12 +634,18 @@ async def test_surface_lists_hosts_with_the_right_controls(monkeypatch):
     html = await my_computers.render(orch, OWNER, [], {})
     assert "RYZENROLL" in html and "chrome_computer_session_start" in html
     assert "LAPTOP" in html and "chrome_computer_forget" in html
+    assert '<table class="astral-computers-table">' in html and '<th scope="col">Status</th>' in html
+    assert 'data-label="Actions"' in html and "1 online · 2 total" in html
     comps = await my_computers.components(orch, OWNER, [], {})
     cards = [c for c in comps if c["type"] == "card"]
     assert [c["title"] for c in cards] == ["RYZENROLL", "LAPTOP"]
     actions = json.dumps(cards[0])
     assert "chrome_computer_session_start" in actions and "chrome_computer_forget" not in actions
-    assert "RYZENROLL" not in await my_computers.render(orch, OTHER, [], {})
+    empty = await my_computers.render(orch, OTHER, [], {})
+    assert "RYZENROLL" not in empty and "LAPTOP" not in empty
+    assert "No computers connected" in empty and "Allow remote control" in empty
+    assert 'data-ui-action="chrome_open"' in empty and "Refresh" in empty
+    assert "Commands and file changes require your approval" in empty
 
     phone = orch.add(_WS(chat="chat-1"))
     task = asyncio.create_task(my_computers.HANDLERS["chrome_computer_session_start"](
