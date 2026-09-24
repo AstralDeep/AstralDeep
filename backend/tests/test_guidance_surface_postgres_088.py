@@ -169,7 +169,7 @@ async def test_navigation_requires_exact_original_caller_not_same_owner_replacem
         guidance.capture_navigation(notes.orch, pending=object())
 
 
-@pytest.mark.parametrize("device", ["browser", "ios", "watch"])
+@pytest.mark.parametrize("device", ["browser", "mobile", "tablet", "ios", "watch"])
 async def test_actual_built_snapshot_delivery_is_correlated_and_no_setup_gate(notes, monkeypatch, device):
     await invoke(notes, "chrome_note_save", save())
     notes.orch.rote.get_profile = lambda _: DeviceProfile.from_dict({"device_type": device})
@@ -183,6 +183,8 @@ async def test_actual_built_snapshot_delivery_is_correlated_and_no_setup_gate(no
             pending.message["payload"], caller.owner_id, request_generation=pending.request_generation,
             guidance_navigation=token)
     assert notes.sent[-1]["surface_key"] == "guidance"
+    assert notes.sent[-1]["type"] == ("chrome_render" if device in {"browser", "mobile", "tablet"}
+                                      else "chrome_surface")
     assert notes.sent[-1]["request_generation"] == pending.request_generation
     assert "Prefer short paragraphs." in json.dumps(notes.sent[-1])
     assert token.closed and not notes.orch._guidance_navigation
@@ -297,7 +299,7 @@ async def test_authenticated_chrome_wrapper_passes_only_its_original_pending_tok
     assert len(notes.sent) == 1 and notes.sent[0]["request_generation"] == pending.request_generation
 
 
-async def test_actual_wire_duplicates_are_validated_then_removed_only_from_note_fields(notes):
+async def test_actual_wire_duplicates_are_validated_then_removed_only_from_note_fields(notes, monkeypatch):
     payload = save()
     pending, token = capture(notes, "chrome_note_save", payload, duplicate_envelope=True)
     caller = await pending.authenticate()
@@ -309,6 +311,14 @@ async def test_actual_wire_duplicates_are_validated_then_removed_only_from_note_
     assert "Note saved." in notes.sent[0]["html"]
     with pytest.raises(AssignmentError):
         guidance._request("chrome_note_save", payload)
+    monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: SimpleNamespace(contains_phi=lambda _: True))
+    refused = save(value="A synthetic private value that must not be reflected.")
+    await invoke(notes, "chrome_note_save", refused, complete=True)
+    assert "may contain sensitive information" in notes.sent[-1]["html"]
+    assert "Back to notes" in notes.sent[-1]["html"]
+    assert refused["fields"]["value"] not in notes.sent[-1]["html"]
+    state, current = await invoke(notes)
+    assert len(current) == 1 and current[0].metadata.note_id == payload["note_id"]
 
 
 @pytest.mark.parametrize("key", ["submission_id", "request_generation", "connection_generation"])

@@ -8409,13 +8409,24 @@ class Orchestrator:
         self,
         context: ConnectionContext,
         raw: str,
-    ) -> None:
+    ) -> Any:
+        ready = None
         try:
-            await self.handle_ui_message(context.websocket, raw)
+            ready = await self.handle_ui_message(context.websocket, raw)
         except Exception:
             logger.exception("UI registration frame failed")
         finally:
             context.work_registrations_pending -= 1
+        await Orchestrator._publish_registration_ready(self, context, ready)
+        return ready
+
+    async def _publish_registration_ready(self, context, ready):
+        if (isinstance(ready, tuple) and len(ready) == 2
+                and context.registered and not context.closing
+                and context.work_registrations_pending == 0
+                and getattr(self, "_connection_contexts", {}).get(id(context.websocket)) is context
+                and self.ui_sessions.get(context.websocket) is ready[0]):
+            await self._safe_send(context.websocket, ready[1])
 
     async def _route_ui_frame(
         self,
@@ -8519,6 +8530,8 @@ class Orchestrator:
                 context.connection_generation = (
                     supplied_generation or _uuid.uuid4()
                 )
+                if registration_task.done():
+                    await self._publish_registration_ready(context, registration_task.result())
                 queued = list(context.preregistration)
                 context.preregistration.clear()
                 for queued_raw in queued:
@@ -9688,11 +9701,6 @@ class Orchestrator:
 
                     device_info = msg.device or {}
                     rote_profile = self.rote.register_device(websocket, device_info)
-                    await self._safe_send(websocket, json.dumps({
-                        "type": "rote_config",
-                        "device_profile": rote_profile.to_dict(),
-                        "speech_server_available": self.speech_server_available(),
-                    }))
 
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
@@ -9888,6 +9896,15 @@ class Orchestrator:
                     logger.info(
                         "perf register_ui.total duration_ms=%d user=%s",
                         int((time.monotonic() - _register_started) * 1000), user_id)
+                    ready = json.dumps({
+                        "type": "rote_config",
+                        "device_profile": self.rote.get_profile(websocket).to_dict(),
+                        "speech_server_available": self.speech_server_available(),
+                    })
+                    context = getattr(self, "_connection_contexts", {}).get(id(websocket))
+                    if context is not None and context.work_registrations_pending:
+                        return user_data, ready
+                    await self._safe_send(websocket, ready)
                 else:
                     logger.warning("UI registration failed: Invalid or missing token")
                     try:

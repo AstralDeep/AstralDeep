@@ -609,7 +609,7 @@ async def _render_declarative(orch, user_id: str, params: Dict[str, Any]) -> str
         state = {"status": "unavailable"}
     view = build_declarative_agents_view(state)
     back = (f'<button type="button" class="{_BTN} mb-2" data-ui-action="chrome_author_list">'
-            "← My agents &amp; skills</button>")
+            "← My agents &amp; skills</button>" if params.get("mode", "list") == "list" else "")
     return back + render_html(view)
 
 
@@ -622,8 +622,9 @@ async def _declarative_components(orch, user_id: str, params: Dict[str, Any]) ->
     except AssignmentError:
         state = {"status": "unavailable"}
     view = build_declarative_agents_view(state)
-    return [_sdui.button("← My agents & skills", "chrome_author_list")] + [
-        item.to_dict() for item in view.components]
+    back = ([_sdui.button("← My agents & skills", "chrome_author_list")]
+            if params.get("mode", "list") == "list" else [])
+    return back + [item.to_dict() for item in view.components]
 
 
 async def _h_declarative_view(orch, websocket, user_id, roles, payload):
@@ -641,12 +642,44 @@ async def _h_declarative_command(orch, websocket, user_id, roles, payload):
         return _refused()
     caller = _declarative_caller(orch, user_id)
     try:
-        body = DeclarativeAgentRequest.model_validate(payload if isinstance(payload, dict) else {})
+        body = _declarative_form_request(caller, payload)
     except Exception:
         raise DeclarativeAgentError("declarative_command_invalid", 422) from None
     result = await orch.declarative_agents.command(caller=caller, body=body)
     notice = _DECLARATIVE_NOTICES.get(result.receipt.command, "Saved.")
     return (SURFACE_KEY, {"declarative": {"mode": "list"}}, notice_block("success", notice))
+
+
+def _declarative_form_request(caller, payload):
+    from orchestrator.human_request_authority import _HumanSocketRequest
+
+    if type(payload) is not dict:
+        raise ValueError
+    values = dict(payload)
+    for key in ("submission_id", "request_generation", "connection_generation"):
+        if key not in values:
+            continue
+        pending = caller._binding.socket_request
+        if (type(pending) is not _HumanSocketRequest
+                or values[key] != getattr(pending, key)
+                or pending.message.get(key) != values[key]):
+            raise ValueError
+        pending.assert_socket()
+        del values[key]
+    if "fields" in values:
+        fields = values.pop("fields")
+        expected = ({"display_name", "definition"} if values.get("command") in {"create", "revise"}
+                    else {"display_name"} if values.get("command") == "clone" else set())
+        if type(fields) is not dict or set(fields) != expected or set(fields) & set(values):
+            raise ValueError
+        fields = dict(fields)
+        if "definition" in fields:
+            raw = fields["definition"]
+            if type(raw) is not str or len(raw.encode("utf-8")) > MAX_DECLARATIVE_DEFINITION_BYTES:
+                raise ValueError
+            fields["definition"] = json.loads(raw)
+        values.update(fields)
+    return DeclarativeAgentRequest.model_validate(values)
 
 
 def _payload(data: Dict[str, Any]) -> str:

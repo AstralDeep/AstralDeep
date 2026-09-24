@@ -62,27 +62,30 @@ def _is_admin(roles) -> bool:
     return "admin" in (roles or [])
 
 
+async def title(orch, user_id, params) -> str:
+    return "Tutorial admin" if (params or {}).get("tab") == "tutorial" else "Tool quality"
+
+
 async def render(orch, user_id, roles, params) -> str:
     if not _is_admin(roles):
         logger.warning("admin_tools render denied for non-admin user %s", user_id)
         return chrome_error_block("Admin role required to view this surface.")
     params = params or {}
     tab = params.get("tab") or "quality"
-    if tab not in ("quality", "diagnostics", "tutorial"):
+    if tab == "tutorial":
+        return await asyncio.to_thread(_render_tutorial, orch, params)
+    if tab not in ("quality", "diagnostics"):
         tab = "quality"
     if tab == "quality":
         body = await asyncio.to_thread(_render_quality, orch)
-    elif tab == "diagnostics":
-        body = await asyncio.to_thread(_render_diagnostics, orch, roles)
     else:
-        body = await asyncio.to_thread(_render_tutorial, orch, params)
+        body = await asyncio.to_thread(_render_diagnostics, orch, roles)
     return _tab_bar(tab) + body
 
 
 def _tab_bar(active: str) -> str:
     buttons = []
-    for key, label in (("quality", "Tool quality"), ("diagnostics", "Runtime diagnostics"),
-                       ("tutorial", "Tutorial admin")):
+    for key, label in (("quality", "Tool quality"), ("diagnostics", "Runtime diagnostics")):
         payload = json.dumps({"surface": SURFACE_KEY, "params": {"tab": key}})
         if key == active:
             cls = ("bg-astral-primary/20 text-astral-primary "
@@ -96,7 +99,7 @@ def _tab_bar(active: str) -> str:
             f"data-ui-payload='{esc(payload)}'>{esc(label)}</button>"
         )
     inner = "".join(buttons)
-    return f'<div class="flex items-center gap-2" role="tablist">{inner}</div>'
+    return f'<div class="flex flex-wrap items-center gap-2 mb-4" role="tablist">{inner}</div>'
 
 
 def _render_diagnostics(orch, roles) -> str:

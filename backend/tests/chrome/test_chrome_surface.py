@@ -52,6 +52,7 @@ def stub_surfaces(monkeypatch):
     sdui_mod.TITLE = "Stub SDUI"
 
     async def sdui_render(orch, user_id, roles, params):
+        orch.rendered_params = dict(params)
         return "<div id='stub-html'>web</div>"
 
     async def sdui_components(orch, user_id, roles, params):
@@ -109,8 +110,12 @@ def test_native_session_gets_chrome_surface_frame(stub_surfaces, device):
 
 def test_web_session_still_gets_chrome_render_html(stub_surfaces):
     orch = FakeOrch(device="browser")
+    orch._ws_active_chat = {id(orch.ws): "active-chat"}
+    payload = {"surface": "stub_sdui", "params": {"mode": "list"}}
     run(chrome_events.handle_chrome_event(
-        orch, orch.ws, "chrome_open", {"surface": "stub_sdui"}, "u1"))
+        orch, orch.ws, "chrome_open", payload, "u1"))
+    assert payload == {"surface": "stub_sdui", "params": {"mode": "list"}}
+    assert orch.rendered_params == {"mode": "list", "chat_id": "active-chat"}
     html = _last(orch, "chrome_render")["html"]
     assert "stub-html" in html and 'role="dialog"' in html
     assert not any(f.get("type") == "chrome_surface" for f in orch.sent)

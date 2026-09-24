@@ -78,7 +78,9 @@ def _session_line(h: Dict[str, Any]) -> str:
 def _host_html(h: Dict[str, Any]) -> str:
     hid = esc(h["host_id"])
     screens = ", ".join(f'{s["width"]}×{s["height"]}' for s in h.get("screens") or []) or "?"
-    status = "online" if h["online"] else f"offline · last seen {_ago(h['last_seen'])}"
+    status = "Online" if h["online"] else "Offline"
+    status_class = "success" if h["online"] else "neutral"
+    last_seen = "Ready to connect" if h["online"] else f"Last seen {_ago(h['last_seen'])}"
     s = h.get("session")
     buttons: List[str] = []
     if h["online"]:
@@ -103,12 +105,16 @@ def _host_html(h: Dict[str, Any]) -> str:
         buttons.append(f'<button type="button" class="{_BTN}" data-ui-action="chrome_computer_forget" '
                        f"data-ui-payload='{{\"host_id\":\"{hid}\"}}'>Forget</button>")
     return (
-        '<div class="bg-white/5 border border-white/10 rounded-lg px-3 py-2">'
-        '<div class="flex items-center justify-between gap-3">'
-        f'<div class="text-sm"><div class="text-astral-text font-medium">{esc(h["name"])}</div>'
-        f'<div class="text-astral-muted">{esc(h["platform"])} · {esc(screens)} · {esc(status)} · '
-        f'{esc(_session_line(h))}</div></div>'
-        f'<div class="flex gap-2 shrink-0">{"".join(buttons)}</div></div></div>')
+        '<tr>'
+        '<td data-label="Computer"><div>'
+        f'<div class="text-astral-text font-medium">{esc(h["name"])}</div>'
+        f'<div class="text-xs text-astral-muted">{esc(h["platform"])} · {esc(screens)}</div></div></td>'
+        '<td data-label="Status"><div>'
+        f'<span class="astral-badge astral-badge-{status_class}">{status}</span>'
+        f'<div class="text-xs text-astral-muted">{esc(last_seen)}</div></div></td>'
+        f'<td data-label="Session" class="text-sm text-astral-muted">{esc(_session_line(h))}</td>'
+        '<td data-label="Actions">'
+        f'<div class="astral-computers-actions flex flex-wrap gap-2">{"".join(buttons)}</div></td></tr>')
 
 
 def _this_computer_html(tc: Optional[Dict[str, Any]]) -> str:
@@ -122,8 +128,8 @@ def _this_computer_html(tc: Optional[Dict[str, Any]]) -> str:
         state = 'Remote control is <b>off</b> for this computer.'
         btn = (f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="computer_host_consent" '
                f"data-ui-payload='{{\"enabled\":true}}'>Allow remote control</button>")
-    return ('<div class="bg-white/5 border border-astral-primary/30 rounded-lg px-3 py-2">'
-            '<div class="flex items-center justify-between gap-3">'
+    return ('<div class="bg-white/5 border border-astral-primary/30 rounded-lg p-4">'
+            '<div class="flex flex-wrap items-center justify-between gap-3">'
             f'<div class="text-sm"><div class="text-astral-text font-medium">This computer</div>'
             f'<div class="text-astral-muted">{state} While a session runs, a banner with Pause and Stop '
             'stays on screen, and using the mouse or keyboard here pauses it.</div></div>'
@@ -134,10 +140,44 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     if not _enabled():
         return f'<p class="text-sm text-astral-muted">{esc(_DISABLED_MSG)}</p>'
     rows = _rows(orch, user_id)
-    body = ('<div class="space-y-2">' + "".join(_host_html(h) for h in rows) + '</div>'
-            if rows else f'<p class="text-sm text-astral-muted">{esc(_EMPTY)}</p>')
-    return (f'<div class="space-y-4"><div class="text-sm text-astral-muted">{esc(_INTRO)}</div>'
-            f'{_this_computer_html(_this_computer(orch, user_id, params))}{body}</div>')
+    online_count = sum(bool(h["online"]) for h in rows)
+    summary = f"{online_count} online · {len(rows)} total" if rows else "Connect your first desktop"
+    body = (
+        '<div class="astral-computers-table-wrap">'
+        '<table class="astral-computers-table">'
+        '<caption class="astral-sr-only">Your connected computers and remote control sessions</caption>'
+        '<thead><tr><th scope="col">Computer</th><th scope="col">Status</th>'
+        '<th scope="col">Session</th><th scope="col">Actions</th></tr></thead>'
+        f'<tbody>{"".join(_host_html(h) for h in rows)}</tbody></table></div>'
+        if rows else
+        '<div class="astral-computers-empty bg-white/5 border border-white/10 rounded-lg p-4 space-y-3">'
+        '<svg class="astral-computers-empty-icon" width="32" height="32" viewBox="0 0 24 24" '
+        'fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+        '<rect x="3" y="3" width="18" height="13" rx="2"/>'
+        '<path d="M8 21h8m-4-5v5"/></svg>'
+        '<h3 class="text-astral-text font-semibold">No computers connected</h3>'
+        '<p class="text-sm text-astral-muted">Connect a desktop to work with its screen, apps, '
+        'and files from this device.</p>'
+        '<ol class="astral-computers-setup text-sm text-astral-muted">'
+        '<li>Open the AstralDeep desktop client and sign in to this account.</li>'
+        '<li>Go to Settings → Remote control and turn on Allow remote control.</li>'
+        '<li>Refresh this list, choose your computer, then ask for what you need in chat.</li>'
+        '</ol></div>'
+    )
+    return (
+        '<div class="astral-computers space-y-4">'
+        '<div class="astral-computers-heading flex flex-wrap items-center justify-between gap-3">'
+        '<div><h3 class="text-astral-text font-semibold">Connected computers</h3>'
+        f'<p class="text-sm text-astral-muted">{esc(summary)}</p></div>'
+        f'<button type="button" class="{_BTN}" data-ui-action="chrome_open" '
+        'data-ui-payload=\'{"surface":"my_computers"}\'>Refresh</button></div>'
+        f'{_this_computer_html(_this_computer(orch, user_id, params))}{body}'
+        '<div class="astral-computers-safety bg-white/5 border border-white/10 rounded-lg p-4 space-y-2">'
+        '<h3 class="text-sm text-astral-text font-medium">You stay in control</h3>'
+        '<p class="text-sm text-astral-muted">Commands and file changes require your approval. '
+        'Anyone at the computer can pause or stop a session; using its mouse or keyboard pauses it.</p>'
+        '</div></div>'
+    )
 
 
 async def components(orch: Any, user_id: str, roles: Any, params: Any):

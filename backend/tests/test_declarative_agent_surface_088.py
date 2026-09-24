@@ -5,7 +5,10 @@ handlers over real IAM, owner scoping, and exact-receipt replay.
 
 from __future__ import annotations
 
+import json
+import time
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -80,8 +83,11 @@ async def test_flag_off_refuses_before_touching_iam(declarations, monkeypatch):
 
 async def test_create_command_renders_in_the_list_view(wired):
     state = wired
+    payload = body(display_name="Evidence agent").model_dump(exclude_none=True)
+    payload["fields"] = {"display_name": payload.pop("display_name"),
+                         "definition": json.dumps(payload.pop("definition"))}
     surface, params, notice = await dispatch(
-        state, authoring._h_declarative_command, body(display_name="Evidence agent").model_dump())
+        state, authoring._h_declarative_command, payload)
     assert surface == authoring.SURFACE_KEY
     assert params == {"declarative": {"mode": "list"}}
     assert "Agent created." in notice
@@ -106,6 +112,43 @@ async def test_exact_receipt_replay_through_the_handler_creates_no_second_row(wi
 async def test_malformed_command_payload_is_a_closed_refusal(declarations):
     with pytest.raises(AssignmentError, match="declarative_command_invalid"):
         await dispatch(declarations, authoring._h_declarative_command, {"not": "a valid command"})
+
+
+async def test_browser_form_keeps_socket_envelope_and_definition_validation(wired):
+    from orchestrator import auth, human_request_authority
+    from orchestrator.orchestrator import ConnectionContext
+    from tests.test_human_socket_authority_088 import Socket
+
+    orch = wired.api.orch
+    socket = Socket({"type": "websocket", "headers": [], "query_string": b""})
+    context = ConnectionContext(socket, uuid4(), time.monotonic() + 30,
+        registered=True, connection_generation=uuid4())
+    token = wired.api.fixture[3]()
+    orch.ui_sessions = {socket: {**await auth.verify_user(await auth.verify_production_token(token)),
+                                "_raw_token": token}}
+    orch._connection_contexts = {id(socket): context}
+    payload = body().model_dump(exclude_none=True)
+    payload["fields"] = {"display_name": payload.pop("display_name"),
+                         "definition": json.dumps(payload.pop("definition"))}
+    envelope = {"submission_id": str(uuid4()), "request_generation": str(uuid4()),
+                "connection_generation": str(context.connection_generation)}
+    payload.update(envelope)
+    message = {"type": "ui_event", "action": "chrome_declarative_command", "payload": payload,
+               **envelope}
+    pending = human_request_authority.capture_human_socket_request(
+        wired.boundary, websocket=socket, context=context, message=message)
+    try:
+        current = await pending.authenticate()
+        await dispatch(wired, authoring._h_declarative_command, payload, owner_caller=current)
+        assert counts(wired) == (1, 1, 1, 1)
+        for invalid in ({**payload, "request_generation": str(uuid4())},
+                        {**payload, "fields": {**payload["fields"], "definition": "not JSON"}},
+                        {**payload, "display_name": "conflicting name"}):
+            with pytest.raises(AssignmentError, match="declarative_command_invalid"):
+                await dispatch(wired, authoring._h_declarative_command, invalid, owner_caller=current)
+        assert counts(wired) == (1, 1, 1, 1)
+    finally:
+        pending.close()
 
 
 async def test_history_activate_archive_delete_round_trip_through_the_handler(wired):

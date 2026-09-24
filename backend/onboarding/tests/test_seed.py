@@ -6,10 +6,12 @@ and legacy steps are archived or absent.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from onboarding import seed
 from onboarding.seed import seed_tutorial_steps
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -17,10 +19,11 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 USER_FLOW = {
     "welcome-tour": (10, "none", None),
     "meet-the-canvas": (20, "static", "canvas.workspace"),
-    "turn-on-agents": (30, "static", "canvas.workspace"),
+    "turn-on-agents": (30, "static", "sidebar.agents"),
     "ask-in-plain-language": (40, "static", "chat.input"),
     "open-settings-menu": (50, "static", "topbar.settings"),
     "agents-and-permissions": (60, "static", "sidebar.agents"),
+    "configure-your-model": (65, "static", "sidebar.llm"),
     "personalize-your-assistant": (70, "static", "sidebar.personalization"),
     "review-your-audit-log": (80, "static", "sidebar.audit"),
     "workspace-timeline": (90, "static", "topbar.timeline"),
@@ -73,7 +76,7 @@ def _fetch_step(database, slug: str) -> dict | None:
     return dict(row)
 
 
-def test_seed_creates_the_canonical_user_flow(fresh_seed):
+def test_seed_creates_the_canonical_user_flow(fresh_seed, monkeypatch, request):
     for slug, (order, kind, key) in USER_FLOW.items():
         row = _fetch_step(fresh_seed, slug)
         assert row is not None, f"seed must create the {slug!r} step"
@@ -82,6 +85,62 @@ def test_seed_creates_the_canonical_user_flow(fresh_seed):
         assert row["target_kind"] == kind, slug
         assert row["target_key"] == key, slug
         assert row["archived_at"] is None, slug
+
+    repository = fresh_seed.repositories.tutorials
+    defaults = tuple(
+        {**seed.DEFAULT_TUTORIAL_STEPS[0], "slug": f"pytest-{request.node.name}-{name}"}
+        for name in ("system", "admin", "archived")
+    )
+    monkeypatch.setattr(seed, "DEFAULT_TUTORIAL_STEPS", defaults)
+    records = []
+    with fresh_seed.transaction() as transaction:
+        for index, values in enumerate(defaults):
+            record = repository.create_with_revision(
+                transaction,
+                **{**values, "body": "Outdated system tutorial"},
+                editor_id=seed._SEED_EDITOR,
+                observed_at=datetime.now(timezone.utc),
+            )
+            if index == 1:
+                record = repository.update_with_revision(
+                    transaction, step_id=record.step_id,
+                    expected_updated_at=record.updated_at,
+                    changes={"body": "Administrator's custom tutorial"},
+                    editor_id=f"pytest-{request.node.name}-editor",
+                    updated_at=record.updated_at + timedelta(microseconds=1),
+                ).record
+            if index == 2:
+                record = repository.set_archived_with_revision(
+                    transaction, step_id=record.step_id,
+                    expected_updated_at=record.updated_at, archived=True,
+                    editor_id=seed._SEED_EDITOR,
+                    updated_at=record.updated_at + timedelta(microseconds=1),
+                ).record
+            records.append(record)
+
+    snapshots = []
+    for _ in range(2):
+        assert seed_tutorial_steps(
+            plane_runtime=fresh_seed,
+            plane_repositories=fresh_seed.repositories,
+        ) == 0
+        with fresh_seed.transaction() as transaction:
+            snapshots.append(tuple(
+                (repository.get(transaction, step_id=record.step_id),
+                 repository.list_revisions(transaction, step_id=record.step_id))
+                for record in records
+            ))
+    assert snapshots[0] == snapshots[1]
+    refreshed, revisions = snapshots[0][0]
+    assert refreshed.body == defaults[0]["body"]
+    assert refreshed.updated_at > records[0].updated_at
+    assert len(revisions) == 2
+    assert revisions[0].change_kind == "update"
+    assert revisions[0].previous["body"] == "Outdated system tutorial"
+    assert revisions[0].current["body"] == defaults[0]["body"]
+    for index in (1, 2):
+        assert snapshots[0][index][0] == records[index]
+        assert len(snapshots[0][index][1]) == 2
 
 
 def test_seed_creates_the_canonical_admin_flow(fresh_seed):
@@ -105,19 +164,15 @@ def test_turn_on_agents_step_explains_enablement(fresh_seed):
     assert any(phrase in body_lower for phrase in ("turn", "switch on", "enable")), (
         f"step body must instruct the user to turn on agents: {row['body']!r}"
     )
-    assert "enable recommended agents" in body_lower, (
-        "step body must name the consent card's actual button"
-    )
-    assert "read-only" in body_lower and "never write" in body_lower, (
-        "step body must state the read-only, never-write grant"
-    )
+    assert "agents & permissions" in body_lower
+    assert "does not change your permissions" in body_lower
 
 
 def test_user_flow_is_strictly_ordered(fresh_seed):
     sequence = [
         "welcome-tour", "meet-the-canvas", "turn-on-agents",
         "ask-in-plain-language", "open-settings-menu", "agents-and-permissions",
-        "personalize-your-assistant", "review-your-audit-log",
+        "configure-your-model", "personalize-your-assistant", "review-your-audit-log",
         "workspace-timeline", "help-anytime", "tour-complete",
     ]
     orders = [_fetch_step(fresh_seed, slug)["display_order"] for slug in sequence]
