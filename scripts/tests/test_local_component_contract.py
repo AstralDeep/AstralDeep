@@ -63,9 +63,9 @@ EXPECTED: dict[str, dict[str, Any]] = {
     },
     "astral-primitives": {
         "distribution": "astralprims",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "path": "components/AstralPrimitives",
-        "contract": "0.3.0",
+        "contract": "0.4.0",
         "availability": "required-embedded",
         "import": "astralprims",
         "extras": [],
@@ -128,7 +128,7 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         "setuptools==83.0.0",
         "wheel==0.45.1",
         "hatchling==1.27.0",
-        "uv_build==0.12.3",
+        "uv_build==0.12.15",
     ]
 
     manifest_path = REPOSITORY_ROOT / local["manifest"]

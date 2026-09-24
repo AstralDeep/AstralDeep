@@ -67,7 +67,7 @@ def test_make_bootstrap_and_lifecycle_require_full_composition_preflight() -> No
     assert "git submodule update --init --recursive" in makefile
     assert "setuptools==83.0.0" in makefile
     assert "hatchling==1.27.0" in makefile
-    assert "uv_build==0.12.3" in makefile
+    assert "uv_build==0.12.15" in makefile
     assert "-r backend/requirements.txt" in makefile
     assert "composition-preflight:" in makefile
     assert "scripts/verify_composition.py" in makefile

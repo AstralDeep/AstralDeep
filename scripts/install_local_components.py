@@ -37,7 +37,7 @@ BUILD_TOOL_REQUIREMENTS = (
     "setuptools==83.0.0",
     "wheel==0.45.1",
     "hatchling==1.27.0",
-    "uv_build==0.12.3",
+    "uv_build==0.12.15",
 )
 EXPECTED_INSTALL_ORDER = (
     "astral-primitives",

@@ -29,7 +29,7 @@ WEB_CI := components/AstralProjection/tooling/web-ci
 PROJECTION := components/AstralProjection
 COMPONENT_INSTALLER := $(PYTHON) scripts/install_local_components.py
 COMPOSITION_VERIFIER := $(PYTHON) scripts/verify_composition.py
-COMPONENT_BUILD_TOOLS := setuptools==83.0.0 wheel==0.45.1 hatchling==1.27.0 uv_build==0.12.3
+COMPONENT_BUILD_TOOLS := setuptools==83.0.0 wheel==0.45.1 hatchling==1.27.0 uv_build==0.12.15
 
 FEATURE_060_FOCUSED_TESTS := \
 	tests/test_release_contract_schemas.py \
