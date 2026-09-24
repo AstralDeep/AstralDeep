@@ -44,6 +44,12 @@ REVIEWED_079_FINGERPRINT = (
     "756b338f3054bb8f509a2b94f0ac7c8b9b1b8cc3:"
     "scripts/tests/test_verify_persistent_agents_079.py:generic-api-key:35"
 )
+REVIEWED_089_FINGERPRINTS = {
+    "fdb27520616773aaa35e169977882426536e10d2:scripts/typesafe_canary_scan.py:typesafe-system-one-key:40",
+    "d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesafe-system-one-key:40",
+    "d38a02f1f56c9778d9ba6ae4fa8b25de1123ebee:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315",
+    "9ac6826aaea3484cff265e8a054cc1d81dbfe60c:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315",
+}
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -134,17 +140,29 @@ def test_python_ci_lock_hashes_every_exact_transitive_block() -> None:
     assert all(locked.get(name) == version for name, version in direct.items())
 
 
-def test_ci_uses_one_hash_lock_for_every_python_test_tool_install() -> None:
+def test_ci_uses_approved_hash_locks_for_every_python_test_tool_install() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     for job_name in (
         "lint",
-        "release-tooling-tests",
         "component-contract-tests",
         "composition-declarations",
     ):
         job = _workflow_job(workflow, job_name)
         assert LOCK_INSTALL in job
         assert "cache-dependency-path: tooling/python-ci/requirements.lock.txt" in job
+
+    release = _workflow_job(workflow, "release-tooling-tests")
+    assert "python -m venv --system-site-packages /tmp/tooling" in release
+    assert (
+        "/tmp/tooling/bin/python -m pip install --require-hashes "
+        "-r tooling/backend-ci/requirements.lock.txt" in release
+    )
+    assert "cache-dependency-path: tooling/backend-ci/requirements.lock.txt" in release
+    assert '"$(cat build/backend-web/image-id.txt)" -euc' in release
+    assert 'org.opencontainers.image.revision' in release
+    assert '= "$(git rev-parse HEAD)"' in release
+    backend_lock = _pins(REPO_ROOT / "tooling/backend-ci/requirements.lock.txt")
+    assert all(backend_lock.get(name) == version for name, version in _pins(INPUT).items())
 
     assert "pip install ruff" not in workflow
     assert "pip install diff-cover" not in workflow
@@ -178,10 +196,11 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 22
+    assert len(fingerprints) == 24
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
+    assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
@@ -192,14 +211,18 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     )
 
 
-def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> None:
+def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
     assert "RELEASE_TOOL_TESTS=(" in job
     assert 'test "${#RELEASE_TOOL_TESTS[@]}" -gt 0' in job
     assert "coverage run --source=scripts" in job
     assert "coverage report --fail-under=90" in job
-    omissions = set(re.findall(r"--omit=([^\s\\]+)", job))
+    omissions = {
+        path
+        for argument in re.findall(r"--omit=([^\s\\]+)", job)
+        for path in argument.split(",")
+    }
     assert omissions == {
         "scripts/windows_release_candidate.py",
         "scripts/export_work_contract.py",
@@ -208,6 +231,8 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
 
     expected_scripts = {
         "apple_coverage_artifacts.py",
+        "backend_web_service_materials.py",
+        "backend_web_test_reporter.py",
         "native_xccov_domain.py",
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
@@ -215,18 +240,27 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
+        "initialize_backend_web_services.py",
         "install_local_components.py",
         "prepare_release_evidence.py",
+        "probe_backend_web_auth.py",
+        "probe_backend_web_functional.py",
+        "produce_backend_web_qualification.py",
+        "rehearse_backend_web_state.py",
         "retire_restored_sessions.py",
         "run_android_next_major_canary.py",
+        "run_backend_web_qualification.py",
+        "run_backend_web_tests.py",
         "run_candidate_staging.py",
         "validate_release_evidence.py",
+        "validate_backend_web_evidence.py",
         "verify_component_ownership.py",
         "verify_composition.py",
         "verify_migration_provenance.py",
         "verify_primitive_coverage.py",
         "verify_persistent_agents_079.py",
         "verify_release_evidence_bootstrap.py",
+        "wait_backend_web_services.py",
         "windows_release_candidate.py",
     }
     assert {path.name for path in (REPO_ROOT / "scripts").glob("*.py")} == (
@@ -248,6 +282,14 @@ def test_release_tooling_job_covers_owned_scripts_with_one_exact_omission() -> N
         "backend/tests/test_extract_release_artifact_060.py",
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
+        "scripts/tests/test_backend_web_auth.py",
+        "scripts/tests/test_backend_web_evidence.py",
+        "scripts/tests/test_backend_web_functional.py",
+        "scripts/tests/test_backend_web_gate.py",
+        "scripts/tests/test_backend_web_producer.py",
+        "scripts/tests/test_backend_web_qualification.py",
+        "scripts/tests/test_backend_web_services.py",
+        "scripts/tests/test_backend_web_state.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_retire_restored_sessions.py",
         "scripts/tests/test_verify_component_ownership.py",

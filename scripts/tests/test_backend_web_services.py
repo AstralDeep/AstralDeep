@@ -46,8 +46,18 @@ def ownership(monkeypatch):
 def generated(tmp_path, ownership):
     root = tmp_path / "materials"
     root.mkdir()
+    source = tmp_path / "lets/deploy/production/acceptance"
+    source.mkdir(parents=True)
+    (source / "signer_helper.py").write_bytes(b"synthetic signer helper bytes\n")
+    (source / "init_node.py").write_text(
+        'identity = "https://identity.production-acceptance"\n'
+        'name = "lets-production-acceptance"\n'
+        'command = ["lets-provider", "--production"]\n'
+        'def configure():\n    staged = _object(CONFIG)\n',
+        encoding="utf-8",
+    )
     result = materials.generate_materials(
-        root, QID, ROOT / "components/LETS", operator_uid=1234
+        root, QID, tmp_path / "lets", operator_uid=1234
     )
     return root, result, ownership
 
@@ -154,6 +164,9 @@ def test_materials_bind_real_tls_owner_subjects_scopes_and_fresh_keys(generated)
         "classification": "synthetic",
     }
     assert (root / "init_warden.py", 10001, 10001) in owners
+    assert (root / "warden/signer/signer_helper.py").read_bytes() == (
+        b"synthetic signer helper bytes\n"
+    )
     assert (root / "keycloak", 1000, 1000) in owners
     assert (root / "app", 1234, 1234) in owners
     initializer = (root / "init_warden.py").read_text()

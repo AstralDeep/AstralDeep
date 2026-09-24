@@ -517,7 +517,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: tooling/python-ci/requirements.lock.txt
+          cache-dependency-path: tooling/backend-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: backend-image
@@ -549,7 +549,14 @@ jobs:
             backend/tests/test_extract_release_artifact_060.py
             backend/tests/test_release_evidence_bootstrap.py
             scripts/tests/test_component_build_surfaces_074.py
+            scripts/tests/test_backend_web_auth.py
+            scripts/tests/test_backend_web_evidence.py
+            scripts/tests/test_backend_web_functional.py
             scripts/tests/test_backend_web_gate.py
+            scripts/tests/test_backend_web_producer.py
+            scripts/tests/test_backend_web_qualification.py
+            scripts/tests/test_backend_web_services.py
+            scripts/tests/test_backend_web_state.py
             scripts/tests/test_install_local_components.py
             scripts/tests/test_retire_restored_sessions.py
             scripts/tests/test_verify_component_ownership.py

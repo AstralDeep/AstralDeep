@@ -32,12 +32,12 @@ docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=2g
   --env POSTGRES_DB=ad_gate_tests \
   postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4 >/dev/null
 for attempt in $(seq 1 60); do
-  if docker exec "$namespace-pg" pg_isready -U astral -d ad_gate_tests >/dev/null 2>&1; then break; fi
+  if docker exec "$namespace-pg" pg_isready -h 127.0.0.1 -U astral -d ad_gate_tests >/dev/null 2>&1; then break; fi
   sleep 1
 done
-docker exec "$namespace-pg" pg_isready -U astral -d ad_gate_tests
-docker exec "$namespace-pg" createdb -U astral ad_gate_smoke
-docker exec "$namespace-pg" createdb -U astral ad_gate_development
+docker exec "$namespace-pg" pg_isready -h 127.0.0.1 -U astral -d ad_gate_tests
+docker exec --env PGPASSWORD=isolated_ci_only "$namespace-pg" createdb -h 127.0.0.1 -U astral ad_gate_smoke
+docker exec --env PGPASSWORD=isolated_ci_only "$namespace-pg" createdb -h 127.0.0.1 -U astral ad_gate_development
 
 set +e
 docker run --name "$namespace-negative" --network none --cpus=1 --memory=1g \
