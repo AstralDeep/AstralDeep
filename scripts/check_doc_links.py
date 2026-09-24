@@ -145,9 +145,9 @@ def maintained_markdown_files(
 
     Numbered ``specs/`` are immutable design history and intentionally retain
     links to files that existed at that feature's point in time. Generated
-    agent/Spec-Kit instructions and ``CLAUDE.md`` are likewise not current
-    operator documentation. ``--all`` remains available for an explicit
-    historical audit.
+    agent/Spec-Kit skills are likewise not current operator documentation.
+    Repository ``AGENTS.md`` guides remain included. ``--all`` remains
+    available for an explicit historical audit.
     """
 
     excluded_roots = frozenset({".agents", ".specify", "specs"})
@@ -155,7 +155,6 @@ def maintained_markdown_files(
         path
         for path in tracked_files
         if path.suffix.lower() == ".md"
-        and path.name != "CLAUDE.md"
         and (not path.parts or path.parts[0] not in excluded_roots)
     )
 
