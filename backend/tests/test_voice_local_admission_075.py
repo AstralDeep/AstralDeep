@@ -884,7 +884,7 @@ async def test_local_socket_handlers_fail_closed_with_correlated_rejections() ->
 
 
 @pytest.mark.asyncio
-async def test_local_final_enters_through_real_connection_ingress_once() -> None:
+async def test_local_final_enters_through_real_connection_ingress_once(user_skills_disabled) -> None:
     final = _final()
     services = SimpleNamespace(
         admit_local_final=AsyncMock(
@@ -986,7 +986,7 @@ async def test_local_final_verification_precedes_durable_operation_replay_lookup
 
 
 @pytest.mark.asyncio
-async def test_same_socket_local_final_retry_is_verified_before_any_suppression() -> None:
+async def test_same_socket_local_final_retry_is_verified_before_any_suppression(user_skills_disabled) -> None:
     final = _final()
     verify = AsyncMock(return_value="Café\nstatus")
     services = SimpleNamespace(
@@ -1023,6 +1023,7 @@ async def test_same_socket_local_final_retry_is_verified_before_any_suppression(
 @pytest.mark.parametrize("reuse", ["altered_text", "invalid_digest"])
 async def test_same_socket_altered_local_final_reuse_is_rejected_and_cleaned(
     reuse: str,
+    user_skills_disabled,
 ) -> None:
     final = _final()
     verify = AsyncMock(
@@ -1084,6 +1085,7 @@ async def test_same_socket_altered_local_final_reuse_is_rejected_and_cleaned(
 async def test_terminal_local_replay_scrubs_through_actual_admission_pump(
     state: OperationState,
     projection_fails: bool,
+    user_skills_disabled,
 ) -> None:
     final = _final(text="private replay text")
     services = SimpleNamespace(
@@ -1169,6 +1171,7 @@ async def test_ingress_capacity_refusal_verifies_and_cleans_local_final() -> Non
 @pytest.mark.parametrize("outcome", ["exception", "conflict", "projection_failure"])
 async def test_admission_refusal_branches_clean_exact_local_final(
     outcome: str,
+    user_skills_disabled,
 ) -> None:
     final = _final()
     services = SimpleNamespace(
