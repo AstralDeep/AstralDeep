@@ -1,6 +1,5 @@
-"""Builds the web shell's landing payload - welcome.py's example scenarios plus the
-agent directory - injected only into the web client, never sent over the websocket to
-native clients. Used by orchestrator.py.
+"""Builds the account-filtered landing catalog from welcome scenarios and visible agents.
+The web shell and negotiated native console share this payload through orchestrator.py.
 """
 
 from __future__ import annotations

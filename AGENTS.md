@@ -209,7 +209,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `088-rewrite-integration`: `specs/088-rewrite-integration/plan.md`
+- `090-native-ui-v2`: `specs/090-native-ui-v2/plan.md`
 
 ## Active Technologies
 
