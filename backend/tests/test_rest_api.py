@@ -304,7 +304,7 @@ class TestChatEndpoints:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
-    def test_send_message(self, client):
+    def test_send_message(self, client, user_skills_disabled):
         resp = client.post("/api/chats", headers=AUTH_HEADER)
         chat_id = resp.json()["chat_id"]
 
@@ -388,7 +388,7 @@ class TestAgentEndpoints:
 
 
 class TestSendMessageCreatesChat:
-    def test_send_message_to_unknown_chat_creates_it(self, client, orch):
+    def test_send_message_to_unknown_chat_creates_it(self, client, orch, user_skills_disabled):
         import uuid
         chat_id = f"rest-auto-{uuid.uuid4()}"
         resp = client.post(

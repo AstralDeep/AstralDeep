@@ -5,6 +5,7 @@ an unrecognized host tool fails closed.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 import importlib
 import json
@@ -168,12 +169,18 @@ async def test_unrecognized_host_tool_is_fail_closed():
 @pytest.mark.asyncio
 async def test_subtask_keeps_private_ceiling_and_agent_binding(monkeypatch):
     from orchestrator import subtasks
+    from orchestrator import turn_guidance_authority as guidance
     from orchestrator.chain_authority import ChainBudget
 
     orch, socket, _ = _host(scopes=("tools:read",), agent_id="specific-agent")
     orch.history = SimpleNamespace(create_chat=MagicMock(return_value="child-chat"))
     orch._chain_budgets = {}
     seen = []
+    parent = SimpleNamespace(origin=SimpleNamespace(owner_id="owner"))
+    inherit = MagicMock(return_value=parent)
+    use = MagicMock(side_effect=lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(guidance, "inherit_turn_guidance", inherit)
+    monkeypatch.setattr(guidance, "use_turn_guidance", use)
 
     async def child_turn(child, *args, **kwargs):
         binding = orch.ui_sessions[child]
@@ -196,8 +203,13 @@ async def test_subtask_keeps_private_ceiling_and_agent_binding(monkeypatch):
         orch, {"title": "Read", "instruction": "Read approved source"},
         user_id="owner", parent_chat_id="chat", parent_ws=socket,
         allowed_tools=["read"], budget=ChainBudget(turn_id="turn", chat_id="chat"),
-        correlation_id="review",
+        correlation_id="review", guidance_parent=parent,
     )
     assert result.status == "ok"
     assert len(seen) == 1
+    inherit.assert_called_once()
+    assert inherit.call_args.args == (parent,)
+    assert inherit.call_args.kwargs["expected_orchestrator"] is orch
+    assert inherit.call_args.kwargs["chat_id"] == "child-chat"
+    use.assert_called_once_with(parent, expected_orchestrator=orch)
     assert list(orch.ui_sessions) == [socket]

@@ -168,7 +168,9 @@ def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
         "PYTHON_DOTENV_DISABLED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join((str(POLICY_ROOT / "scripts"),
-                                      str(root / "backend"), str(root))),
+                                      str(root / "backend"), str(root),
+                                      str(root / "components/AstralPlane/src"),
+                                      str(root / "components/LETS/src"))),
         "COVERAGE_FILE": str(output / ".coverage"),
         "ASTRAL_ENV": "development",
     })

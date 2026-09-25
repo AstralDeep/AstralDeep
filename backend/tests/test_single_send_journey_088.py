@@ -126,6 +126,7 @@ async def journey(metadata, runtime, fixture, tmp_path, monkeypatch):
     monkeypatch.setattr(orch, "_deliver_round_components", AsyncMock(return_value=[]))
     monkeypatch.setattr(orch, "_send_or_replace_components", AsyncMock(return_value=[]))
     monkeypatch.setattr(orch, "_emit_llm_usage_report", AsyncMock(), raising=False)
+    monkeypatch.setattr(orch, "summarize_chat_title", AsyncMock())
 
     orch.agent_cards[RESEARCH_AGENT] = AgentCard(
         name="Web research", description="public research", agent_id=RESEARCH_AGENT,
@@ -311,4 +312,3 @@ async def test_the_separately_approved_effect_then_proceeds_exactly_once():
     replay = rc.evaluate(orch, object(), "remote-compute-1", "cancel_job",
                          dict(args, **{rc._MARKER: pid}), "chat", "sc002-owner")
     assert replay is not None and "no longer valid" in replay[0]
-

@@ -329,7 +329,7 @@ def _components_json(call) -> str:
 
 
 @pytest.mark.asyncio
-async def test_rich_components_chat_summary_has_no_provenance_caption(orch):
+async def test_rich_components_chat_summary_has_no_provenance_caption(orch, user_skills_disabled):
     _register(orch)
     ws = _ws(orch)
     chat_id = await _chat(orch)
