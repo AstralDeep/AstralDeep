@@ -76,7 +76,7 @@ def _selection_reference(value, key):
 
 def _selection_input(value):
     _require(type(value) is dict and set(value) == {"version", "agent", "skills", "notes"})
-    _require(value["version"] == 1)
+    _require(type(value["version"]) is int and value["version"] == 1)
     agent = value["agent"]
     if agent is not None:
         _require(type(agent) is dict and set(agent) == {"agent_id", "revision_id"})
@@ -463,9 +463,14 @@ async def deliver(orch, websocket, user_id, action, payload, request_generation,
             frame = ChromeRender(html=render_modal_shell(view.title, body, "guidance", nav_html=nav_html),
                 surface_key="guidance", request_generation=request_generation).to_json()
         else:
-            components = ComponentAdapter.adapt_guidance_surface(state, orch.rote.get_profile(websocket))
+            profile = orch.rote.get_profile(websocket)
+            components = ComponentAdapter.adapt_guidance_surface(
+                state, profile, surface_capabilities=capabilities)
+            selected = (_selection_input(_selection_payload(state["selected"]))
+                        if selection and action == "chrome_turn_selection_set"
+                        and profile.console_contract == "console/v2" else None)
             frame = ChromeSurface(surface_key="guidance", title=view.title, components=components,
-                                  request_generation=request_generation).to_json()
+                                  request_generation=request_generation, selection=selected).to_json()
         await service.verify_snapshot(caller=caller, notes=notes)
         try:
             async with asyncio.timeout_at(caller._deadline):

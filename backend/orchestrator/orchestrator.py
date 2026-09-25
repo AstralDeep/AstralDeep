@@ -9705,8 +9705,13 @@ class Orchestrator:
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
                         if _dt in ("windows", "android", "ios", "macos") or (
-                            _dt == "watch" and isinstance(user_data.get("_client_capabilities"), list)
-                            and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
+                            _dt == "watch" and (
+                                getattr(rote_profile, "console_contract", None) == "console/v2"
+                                or (
+                                    isinstance(user_data.get("_client_capabilities"), list)
+                                    and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
+                                )
+                            )
                         ):
                             from orchestrator.chrome_availability import (
                                 projection_native_chrome_availability,
@@ -9721,7 +9726,12 @@ class Orchestrator:
                                 **projection_native_chrome_availability(user_data),
                             )
                             if _dt == "watch":
-                                _menu = project_watch_menu_model(_menu)
+                                _menu = project_watch_menu_model(
+                                    _menu, profile=rote_profile,
+                                    client_capabilities=user_data.get("_client_capabilities", ()),
+                                )
+                            from orchestrator.native_console import attach_native_console
+                            _menu = await attach_native_console(self, _menu, user_data, rote_profile)
                             await self._safe_send(websocket, ChromeMenu(model=_menu).to_json())
                     except Exception as _e:  # pragma: no cover
                         logger.debug(f"chrome_menu push failed (non-fatal): {_e}")
@@ -22458,6 +22468,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
             try:
                 shell = _shell_resource.read_text(encoding="utf-8")
+                from webrender.chrome.console_model import render_console_labels
+                shell = render_console_labels(shell)
             except Exception:
                 logger.exception("astralprojection: shell template missing")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)

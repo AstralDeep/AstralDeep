@@ -158,7 +158,7 @@ async def render(orch, user_id, roles, params) -> str:
     )
 
 
-async def components(orch, user_id, roles, params):
+async def components(orch, user_id, roles, params, *, console_contract=""):
     from webrender.chrome.surfaces import _sdui
 
     agent_id = str((params or {}).get("agent_id") or "")
@@ -174,10 +174,19 @@ async def components(orch, user_id, roles, params):
     examples = _examples(card)
     if examples:
         out.append(_sdui.text("Try one of these", "h3"))
-        out.append(_sdui.container(
-            [_sdui.button(e["title"], "chat_message", {"message": e["prompt"]})
-             for e in examples],
-            direction="column"))
+        if console_contract == "console/v2":
+            out.extend(_sdui.card(example["title"], [
+                _sdui.text(example["prompt"]),
+                _sdui.container([
+                    _sdui.button("Run", "chat_message", {"message": example["prompt"]}, "primary"),
+                    _sdui.button("Load", "compose_prompt", {"message": example["prompt"]}),
+                ], direction="row"),
+            ]) for example in examples)
+        else:
+            out.append(_sdui.container(
+                [_sdui.button(e["title"], "chat_message", {"message": e["prompt"]})
+                 for e in examples],
+                direction="column"))
     skills = list(getattr(card, "skills", None) or [])
     if skills:
         out.append(_sdui.text(f"Tools it can reach ({len(skills)})", "h3"))
