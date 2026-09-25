@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/091-windows-ui-v2`
 **Created**: 2026-09-25
-**Status**: Specified; implementation and live qualification pending
+**Status**: Implemented in the local Windows branch; final qualification and live acceptance remain open
 **Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. Product commits remain local.
 
 ## User Scenarios & Testing
@@ -83,7 +83,7 @@ A user navigates the server-provided settings surfaces, changes theme and uses c
 
 ## Assumptions
 
-- The user authorizes a separate Windows feature 091 after remote-tree collision checks; feature 090 is reserved by the Mac even though not published.
+- The user authorizes a separate Windows feature 091 after remote-tree collision checks; feature 090 remains owned by the Mac. Its initial shared checkpoint is published and integrated; later shared corrections remain unpublished at the latest fetch.
 - The vault's 54-image reference at 92e4ed0 supersedes its earlier incomplete 470a390 archive; both source anchors are preserved. Live web behavior remains authoritative.
 - Shared console/v2/ROTE changes are owned by the Mac feature. Published Deep 4e2eae70 / Projection 1d4a864 handoff is the integration base and explicitly delegates Windows qualification alongside its consumer; existing-contract renderer work is independent.
 - Existing Keycloak sign-in is performed by the user; no credentials or authentication bypass will be introduced.

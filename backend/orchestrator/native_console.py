@@ -10,7 +10,7 @@ from webrender.chrome.console_model import CONSOLE_CONTRACT, build_console_model
 
 async def attach_native_console(orch, menu: dict, claims: dict, profile) -> dict:
     kind = getattr(getattr(profile, "device_type", None), "value", None)
-    if kind not in {"ios", "macos", "android", "watch"}:
+    if kind not in {"ios", "macos", "android", "watch", "windows"}:
         return menu
     if getattr(profile, "console_contract", None) != CONSOLE_CONTRACT:
         return menu

@@ -23,10 +23,10 @@ Pre/post design passes: server definitions and ROTE retained; existing primitive
 - `components/AstralProjection/windows-client/astral_client/app.py`: native shell/feed integration and authenticated actions.
 - `astral_client/console.py`: bounded console/presentation decoding; native widgets consume server data.
 - `astral_client/protocol.py`, `protocol_manifest.py`: actual capability aggregation and frame handling.
-- `astral_client/renderer.py`, `charts.py`: six native primitives and export/state behavior.
+- `astral_client/renderer.py`, `composites.py`: six native primitives and export/state behavior.
 - `astral_client/theme.py`, `AstralDeep.spec`: shared typography and packaging.
 - `windows-client/tests/`: behavior, malformed/denial, resize/focus/state/export regressions.
-- Deep `backend/orchestrator/native_console.py`, Projection `backend/rote/adapter.py`: Windows qualification only with negotiation and exact supported types.
+- Deep `backend/orchestrator/native_console.py`, Projection `backend/rote/capabilities.py`: Windows qualification only with negotiation and exact supported types.
 - `specs/091-windows-ui-v2/verification.md`: exact checks/gaps; vault screenshots and curated checkpoints.
 
 ## Execution
