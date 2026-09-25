@@ -16,7 +16,7 @@ Consume shared console/v2 and ROTE checkpoint Deep 4e2eae70 / Projection 1d4a864
 
 ## Constitution Check
 
-Pre/post design passes: server definitions and ROTE retained; existing primitives only; Keycloak/owner/permission/confirmation paths reused; Python 3.11 and source-header convention; no migrations. Theme uses shared roles and font asset. Registration advertises implemented types and actual capabilities. Coverage, lint, relevant complete suites, image/boot/secret checks and real authenticated backend/worker walkthrough remain completion requirements. Local evidence is diagnostic; no product push, merge, release, signing or bootstrap exception. Missing hardware/sign-in/service evidence remains incomplete, never waived.
+Pre/post design passes: server definitions and ROTE retained; existing primitives only; Keycloak/owner/permission/confirmation paths reused; Python 3.11 and source-header convention; no migrations. Theme uses shared roles and font asset. Registration advertises implemented types and actual capabilities. Coverage, lint, relevant complete suites, image/boot/secret checks and real authenticated backend/worker walkthrough remain completion requirements. Local evidence is diagnostic. The owner's later instruction authorizes task commits and branch pushes; no merge, release, signing or bootstrap exception is authorized. Missing hardware/sign-in/service evidence remains incomplete, never waived.
 
 ## Project Structure
 
@@ -35,7 +35,7 @@ Pre/post design passes: server definitions and ROTE retained; existing primitive
 2. Parallel bounded work: shell integration; native primitives; capability/decoder/shared qualification, with exclusive app.py ownership.
 3. Integrate settings, selection and state-preserving full-screen behavior and security regressions.
 4. Run coverage/relevant CI; inspect live web and Windows with real dependencies; retain privacy-safe evidence.
-5. Review and commit products locally; commit/push curated vault updates with explicit gaps.
+5. Review and commit task changes, push the separate Windows branches under the owner's later authorization, and commit/push curated vault updates with explicit gaps.
 
 ## Complexity Tracking
 

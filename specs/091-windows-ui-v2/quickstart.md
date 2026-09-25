@@ -5,4 +5,4 @@
 3. Build exact candidate backend with real Keycloak/PostgreSQL/voice worker; ordinary user sign-in, no copied tokens or bypass.
 4. Compare web/Windows at seven manifest sizes: scenarios, history, search, settings/themes, composer/attachments/Advanced, successful result collapse/expand/fullscreen, export/share and continuity.
 5. Exercise keyboard, available touch, four display scales, and voice capture/playback/interruption/recovery; record unavailable checks.
-6. Record screenshot hashes/dimensions/source/backend identities in vault; update curated pages/index/log and push vault only.
+6. Record screenshot hashes/dimensions/source/backend identities in vault; update curated pages/index/log and push the vault. The owner has also authorized committing and pushing reviewed task work to the separate Windows branches; record exact qualification gaps with that handoff.
