@@ -148,6 +148,83 @@ async def test_unknown_identity_and_host_flag_off_cannot_be_overridden(monkeypat
     assert all(actions(c) == [] for c in out["canvas"]["components"])
 
 
+@pytest.mark.parametrize("device", ["browser", "android", "windows"])
+@pytest.mark.parametrize("distinct_rows", [False, True])
+def test_snapshot_consolidation_retains_duplicate_identity_denial(device, distinct_rows):
+    host, socket = harness(device)
+    originals = [table(), table(rows=[["different"]] if distinct_rows else [["1"]])]
+    before = copy.deepcopy(originals)
+    result = host._adapt_conversation_snapshot(socket, snapshot(originals))
+    received = result["canvas"]["components"]
+    assert len(received) == (2 if distinct_rows else 1)
+    assert all(component["component_id"] == "wc_table" for component in received)
+    assert all(actions(component) == [] for component in received)
+    assert all("versions" not in component for component in received)
+    assert "private prior body" not in json.dumps(result)
+    assert originals == before
+    assert host.rote.get_cached_components(socket) == before
+
+
+@pytest.mark.parametrize("device", ["browser", "android", "windows"])
+def test_snapshot_consolidation_keeps_unambiguous_survivor_actions(device):
+    host, socket = harness(device)
+    originals = [table(), table(component_id="wc_second")]
+    before = copy.deepcopy(originals)
+    value = snapshot(originals)
+    value["transcript"] = [{"parts": [{"type": "text", "text": "Retained transcript"},
+                                     {"type": "components", "components": [{"type": "text", "content": "Earlier result"}]}]}]
+    result = host._adapt_conversation_snapshot(socket, value)
+    received, = result["canvas"]["components"]
+    assert received["component_id"] == "wc_second"
+    assert actions(received) == ["refine", "history", "csv", "share"]
+    assert received["versions"] == [{"version_no": 1, "reason": "", "created_at": "", "title": ""}]
+    assert "private prior body" not in json.dumps(result)
+    assert result["transcript"][0]["parts"][0]["text"] == "Retained transcript"
+    assert originals == before
+    assert host.rote.get_cached_components(socket) == before
+
+
+@pytest.mark.parametrize("device", ["browser", "android", "windows"])
+@pytest.mark.parametrize("workspace_state", ["absent", "empty", "unavailable"])
+@pytest.mark.parametrize("distinct_rows", [False, True])
+async def test_snapshot_duplicate_identity_stays_denied_after_resize_fallback(
+    device, workspace_state, distinct_rows, monkeypatch,
+):
+    import audit.hooks
+    host, socket = harness(device)
+    host.ui_sessions = {socket: {"sub": "owner"}}
+    host.speech_server_available = lambda: False
+    monkeypatch.setattr(audit.hooks, "record_ws_action", AsyncMock())
+
+    def workspace(*_args):
+        if workspace_state == "unavailable":
+            raise RuntimeError("synthetic storage failure")
+        return []
+
+    host._canvas_components = workspace
+    if workspace_state == "absent":
+        host._ws_active_chat.clear()
+    original = [table(), table(rows=[["different"]] if distinct_rows else [["1"]])]
+    before = copy.deepcopy(original)
+    result = host._adapt_conversation_snapshot(socket, snapshot(original))
+    assert all(actions(component) == [] for component in result["canvas"]["components"])
+    await host.handle_ui_message(socket, json.dumps({
+        "type": "ui_event", "action": "update_device", "payload": {"device": {
+            "device_type": device, "viewport_width": 320, "supported_types": ["text"],
+        }},
+    }))
+    await asyncio.sleep(0)
+    frames = [json.loads(call.args[1]) for call in host._safe_send.await_args_list]
+    assert [frame["type"] for frame in frames] == ["rote_config", "ui_update"]
+    received = frames[-1]["components"]
+    assert len(received) == 2
+    assert all(component["component_id"] == "wc_table" for component in received)
+    assert all(actions(component) == [] for component in received)
+    assert all("versions" not in component for component in received)
+    assert "private prior body" not in json.dumps(frames)
+    assert original == before and host.rote.get_cached_components(socket) == before
+
+
 async def test_html_failure_keeps_the_same_safe_native_inventory(monkeypatch):
     import webrender
     host, socket = harness("android")

@@ -12004,17 +12004,23 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any]):
         from orchestrator.canvas_consolidation import consolidate_canvas
+        from rote.adapter import ComponentAdapter
+        from rote.capabilities import DeviceType
 
-        snapshot["canvas"]["components"] = consolidate_canvas(snapshot["canvas"]["components"])
+        canonical_canvas = snapshot["canvas"]["components"]
+        presentation_canvas = consolidate_canvas(canonical_canvas)
         for message in snapshot["transcript"]:
             for part in message["parts"]:
                 if part.get("type") == "components":
                     part["components"] = self.rote.adapt(
                         websocket, part["components"]
                     )
-        canonical_canvas = snapshot["canvas"]["components"]
-        snapshot["canvas"]["components"] = self.rote.adapt(websocket, canonical_canvas)
+        adapted_canvas = self.rote.adapt(websocket, canonical_canvas)
         profile = self.rote.get_profile(websocket)
+        if presentation_canvas != canonical_canvas:
+            adapted_canvas = (presentation_canvas if profile.device_type == DeviceType.BROWSER
+                              else ComponentAdapter.adapt(presentation_canvas, profile))
+        snapshot["canvas"]["components"] = adapted_canvas
         target = "native" if _is_native_device(profile) else "web"
         return augment_conversation_snapshot_for_target(
             snapshot, profile, target=target, canonical_canvas=canonical_canvas

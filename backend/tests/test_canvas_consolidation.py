@@ -294,14 +294,20 @@ def test_reasoning_on_canvas_is_not_repeated_in_rail_and_ordinary_prose_stays():
         {"type": "text", "text": "Answer"}]
 
 
-def test_snapshot_adapter_consolidates_before_rote(monkeypatch):
-    seen = []
-    rote = SimpleNamespace(adapt=lambda ws, comps: seen.append(comps) or comps, get_profile=lambda ws: None)
-    fake = SimpleNamespace(rote=rote)
-    snapshot = {"transcript": [], "canvas": {"components": [table(), table()]}}
-    result = Orchestrator._adapt_conversation_snapshot(fake, None, snapshot)
-    assert len(seen[0]) == 1
+def test_snapshot_adapter_preserves_raw_identity_and_consolidates_presentation():
+    from rote.rote import ROTE
+
+    fake = SimpleNamespace(rote=ROTE())
+    socket = object()
+    fake.rote.register_device(socket, {})
+    originals = [table(component_id="source"), table(component_id="result")]
+    before = copy.deepcopy(originals)
+    snapshot = {"transcript": [], "canvas": {"components": originals}}
+    result = Orchestrator._adapt_conversation_snapshot(fake, socket, snapshot)
+    assert fake.rote.get_cached_components(socket) == before
     assert len(result["canvas"]["components"]) == 1
+    assert result["canvas"]["components"][0]["component_id"] == "result"
+    assert originals == before
 
 
 @pytest.mark.parametrize("nested", [False, True])
