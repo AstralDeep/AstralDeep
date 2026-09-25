@@ -35,6 +35,7 @@ from voice_agent.speech_adapters import (
     KOKORO_MODEL,
     KOKORO_SAMPLE_RATE,
     KOKORO_VOICE,
+    SHORT_TERMINAL_PHRASE_TEXTS,
     SpeechPreflight,
     SpeachesBatchSTT,
     SpeachesTTS,
@@ -432,9 +433,13 @@ async def test_locked_worker_real_livekit_speech_round_trip_is_ephemeral() -> No
                 "/v1/models",
                 "/v1/audio/transcriptions",
                 "/v1/audio/speech",
+                *["/v1/audio/speech"] * len(SHORT_TERMINAL_PHRASE_TEXTS),
                 "/v1/audio/transcriptions",
                 "/v1/audio/speech",
             ]
+            assert [
+                json.loads(request.body)["input"] for request in service.requests[2:-2]
+            ] == ["On it!", *SHORT_TERMINAL_PHRASE_TEXTS]
             runtime_asr = service.requests[-2]
             runtime_tts = service.requests[-1]
             assert ASR_MODEL.encode("utf-8") in runtime_asr.body

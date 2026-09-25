@@ -86,11 +86,13 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
         "browser:release",
         "check:package-manager",
         "check:product-isolation",
+        "coverage:browser",
         "coverage:node",
         "coverage:union",
         "lint",
         "test:coverage-conversion",
         "test:coverage-conversion:browser",
+        "test:coverage-conversion:browser-cli",
         "test:coverage-conversion:node",
         "test:coverage-union",
         "test:product-isolation",
@@ -110,6 +112,8 @@ def test_web_ci_manifest_is_private_exact_and_ci_only() -> None:
     )
     assert "node-v8-cli.test.mjs" in scripts["test:coverage-conversion:node"]
     assert "coverage-conversion-cli.mjs" in scripts["coverage:node"]
+    assert scripts["coverage:browser"] == "node browser-v8-cli.mjs"
+    assert scripts["test:coverage-conversion:browser-cli"] == "node --test tests/browser-v8-cli.test.mjs"
     assert scripts["coverage:union"] == "node coverage-union-cli.mjs"
     assert "coverage-union.test.mjs" in scripts["test:coverage-union"]
     assert "coverage-union-cli.test.mjs" in scripts["test:coverage-union"]

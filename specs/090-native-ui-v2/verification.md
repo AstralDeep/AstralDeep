@@ -169,3 +169,49 @@ The pre-commit Linux diagnostic uses the previous runtime image. Its installed P
 
 
 The Apple CI review found the required watch job omitted the navigation scheme. A follow-up requires both model and navigation suites, rejects either suite failure before coverage export, and retains both raw result bundles. Apple's native `xcresulttool merge` successfully combines the local104pass/one-skip unit and10pass UI artifacts. Updated workflow/provenance tests pass89/89, including shell execution for success, either test-lane failure and merge failure; failure paths never export a success report. Native product source bytes are unchanged by this CI correction.
+
+
+## September 25 clean candidate CI and live runtime checkpoint
+
+The candidate used for the following clean runs is Deep `d2a61145a1b75fef3cc2dd7280d17d2392f6b941` with Projection `ce0c1588546c485e8253197def0ac0eadbc97fd0`, checked out independently at `/tmp/astral-090-qualified-candidate`. These are local commits, not new remote publication. Reports retain their original candidate identity.
+
+| Check | Result | Local evidence |
+| --- | --- | --- |
+| Clean no-cache backend image and committed boot gate | Build, configured production/development health, unauthenticated protected-route denial pass; missing-secret production exits 78 | `/tmp/astral-090-clean-image-build.log`, candidate `build/backend-web/boot-*.json` and `boot-negative.exit` |
+| Projection Python owning suite with coverage | 3,235 passed | `/tmp/astral-090-clean-projection-full.log` |
+| Full browser and responsive matrix | 334 browser and 105 responsive tests passed | `/tmp/astral-090-clean-browser-ci.log`, `/tmp/astral-090-clean-responsive-ci.log` |
+| JavaScript tools, lint, offline producer and union | 49 tool tests and 40 offline tests passed; ESLint and four-lane union passed | Candidate Projection `build/backend-web/javascript.json`; `/tmp/astral-090-clean-offline-worker.log` |
+| Strict immutable projection-web changed coverage | 160/161 executable changed lines, 99.38%, passed | Candidate Projection `build/backend-web/changed-coverage.json` |
+| Clean voice-worker image/suite | 372 passed, 2 explicit skips; 4,094/4,537 lines, 90.24% | `/tmp/astral-090-clean-voice-tests.log`, candidate `build/065/coverage/voice-worker.xml` |
+| Source-free release-tooling lane | 1,660 passed, 6 skipped, 4 workflow-declared deselections; 94% coverage | `/tmp/astral-090-clean-release-tooling-qualified.log` |
+| Built SDK in fresh environment | 46 passed, 1 skipped | `/tmp/astral-090-clean-sdk-tests.log` |
+| Source-free component contracts/declarations | 273 passed, 3 declared deselections; exact four-component declarations passed | `/tmp/astral-090-clean-component-contracts.log`, `/tmp/astral-090-clean-composition-declarations.log` |
+| Thin UI contract CI lane | 339 passed, 1 skipped | `/tmp/astral-090-clean-ui-contracts.log` |
+| Source-free documentation links | 28 Markdown files passed | `/tmp/astral-090-clean-doc-links.log` |
+| Android committed-source/APK/class identity closure | Passed | `/tmp/astral-090-android-candidate-verify.log`, `/private/tmp/astral-android-qualified-coverage/` |
+
+The initial source-free tooling run failed two documentation tests because Docker Desktop's bind-mount UID triggered Git's dubious-ownership check. Its rerun declares only the owned `/workspace` mount safe through the disposable runner environment. Product source, workflow checks and deselections are unchanged. The passing rerun supersedes that local runner failure.
+
+The optional real LiveKit round-trip test exercised audio successfully but had an unchanged stale expected request sequence: speech preflight now probes the shared terminal phrase vocabulary. A narrow working-tree test repair imports `SHORT_TERMINAL_PHRASE_TEXTS`, expects every preflight synthesis request and verifies the exact input sequence. `.venv/bin/python tooling/voice-worker/run_livekit_integration.py` then passes 1/1 in 2.30 seconds (`/tmp/astral-090-livekit-fixture-qualified.log`). This test-only repair is not part of the d2a61145 clean candidate above. It retains real RTC and nonzero received audio assertions and uses disposable grants and a synthetic speech provider; it is not physical native microphone acceptance.
+
+The local app now runs the clean backend image `sha256:491d12c49e756997423de9a12d396f8b80099e7936d3b0be42c7f3a2deb9a069` and worker image `sha256:7cfe01d708babc31197333b7c4c1bfff6a518af6535fe5c8078e19fb8878ec7b`, both labeled d2a61145. Existing product configuration and database were preserved. Local `/healthz` and `/readyz` return 200; the installed component-wheel lock verifies. Worker speech preflight passes on attempt 1, then the normal authenticated web UI advertises available voice. Runtime identities and health are retained at `/tmp/astral-090-live-runtime.json`.
+
+Using the existing signed-in browser session after reload, the landing example completed a real six-dice request with response text and a six-item structured result (total 18). Full-screen open/return retained that result, and resizing from 1440×900 to 390×844 retained the values with document width exactly 390. No microphone was activated. Fresh browser screenshot file export was denied by the tool's configured workspace restriction and the inline capture stalled; those attempts are not archived evidence. The earlier pushed reference and native capture sets remain intact.
+
+Full committed backend/module and exact Plane PostgreSQL suites are still running at this checkpoint. Xcode27 still cannot satisfy the pinned Xcode26.6/17F113 canonical iOS mapping policy. Current-source Swift 91.40% and Kotlin 93.82% measurements remain local diagnostics, and owner-dependent authenticated iPhone/iPad/watch/Android audio and visual acceptance remain open. No complete-CI, protected producer, remote publication, merge or release claim is made.
+
+
+The exact Plane CI lane subsequently completed: `uv lock --check`, `uv sync --frozen --group ci`, Ruff and full PostgreSQL pytest passed, with 4,087 passed, nine Windows-specific skips in 1,267.68 seconds and 91.23% branch-inclusive coverage (owning threshold 88.75%). Evidence is `/tmp/astral-090-clean-plane-ci.log` and the clean candidate's `components/AstralPlane/build/backend-web/`. The recorded changed-coverage disposition is not applicable because baseline and candidate both pin `e8b5ee62fe0d448552d1c022ed54d64f7b8ddd17`. Its disposable PostgreSQL container was removed after completion. Main backend/module qualification remains active. Opening the rebuilt Mac app through the native UI tool remains blocked by the locked desktop; no unlock or microphone action was performed.
+
+
+## September 25 full-backend baseline contract repairs
+
+The first 17 explicit backend module suites completed, including persistent agents936, personalization445, scheduler156, security34 and shared249. During the 11,914-test main suite, three failures appeared. An independent archive of Deep341f58c5 and Projection7cb7e254 reproduces all three with source imports from those exact baseline trees (`/tmp/astral-090-baseline-three-contracts.log`). No native implementation regression is inferred from those unchanged failures.
+
+The working-tree repairs are confined to tests. The JavaScript manifest allowlist now includes and validates the two already-committed browser coverage commands. The snapshot source contract checks synchronous insertion into the v2 live-turn body, including the empty canvas and retained overlay paths, rather than the retired `canvas.replaceChildren` structure; request/purpose/revision assertions remain. A diagnostic alternative ambiguous-component fixture used distinct table values with the same ID and passed the denial checks; that change has been reverted. The original identical-table failure must remain active because raw ambiguity still needs to be preserved after presentation consolidation. The diagnostic39/39 result (`/tmp/astral-090-three-contract-repairs-qualified.log`) is not a qualification of that defect. The manifest and snapshot repairs remain; Ruff passes. A preliminary local Docker run needed the same narrowly scoped owned-mount Git `safe.directory` environment as release tooling; no product permission or test assertion was weakened.
+
+The original immutable d2a61145 full run continues unchanged and contains the known baseline failures. Its final report must not be labeled green or relabeled as the working-tree repairs. Remaining failures, current patched-suite verification and final coverage are still pending.
+
+The concurrent Windows091 checkpoint88006b5 identifies an owned production repair for that same ambiguity/cache seam, locally at Deep94353536. Its raw canonical inventory is retained for chrome authority and ROTE cache while only the initial presentation is consolidated. Origin does not yet expose091, so this task has restored the original regression and requested a shared-fix handoff through kos-wiki rather than recreating the other machine's active work. The two independent stale tooling/source-contract repairs remain in this working tree.
+
+The retained manifest/snapshot repairs pass all16 tests in their complete files (`/tmp/astral-090-two-contract-repairs-qualified.log`). Two additional documentation failures in the full run reproduce Git's dubious-ownership denial on the Docker Desktop bind mount. All19 unchanged documentation tests pass with only `/workspace` and its owned Projection checkout added to the disposable runner's safe-directory environment (`/tmp/astral-090-doc-ownership-qualified.log`). These focused results do not rewrite the original run's failures.

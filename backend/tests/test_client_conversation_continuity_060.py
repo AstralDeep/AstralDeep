@@ -149,9 +149,14 @@ def test_snapshot_reducer_is_purpose_aware_and_atomic(client_source: str) -> Non
 
     commit = _normalized(_function(client_source, "commitSnapshotCandidate"))
     assert "chat.replaceChildren" in commit
-    assert "canvas.replaceChildren" in commit
+    assert "ensureLiveTurn()" in commit
+    assert "liveTurn.body.insertBefore(candidate.canvasRoot, overlay)" in commit
+    assert "liveTurn.body.appendChild(candidate.canvasRoot)" in commit
+    assert "if (candidate.emptyCanvas) showCanvasEmpty()" in commit
+    assert "await " not in commit
     assert "lastCommittedRenderRevision" in commit
     assert commit.index("candidate") < commit.index("chat.replaceChildren")
+    assert commit.index("chat.replaceChildren") < commit.index("ensureLiveTurn()")
 
 
 def test_transient_reducer_is_request_scoped_and_never_advances_commit(

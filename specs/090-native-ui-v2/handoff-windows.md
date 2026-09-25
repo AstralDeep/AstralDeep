@@ -38,3 +38,14 @@ Shared manifest inventory for additive console metadata, final fixtures/drift ch
 The current partial macOS app build succeeds. Earlier 52 real-browser tests and targeted shared/Core/renderer/export suites passed; see `verification.md` for exact commands and remaining reruns. Full backend CI, final native coverage, iOS/watchOS qualification, signed-in visual/voice checks and Android work remain open. The local Xcode27 toolchain differs from the hosted pin. Do not infer passing CI from this handoff push.
 
 Windows qualification should follow its existing CI/offscreen tests and real signed-in desktop walkthrough against the source-bound backend, including resizing, selection/owner denials, result continuity, export/share, microphone/worker playback and recovery. Record progress in kos-wiki before reporting checkpoints complete.
+
+
+## Later local implementation checkpoint — September 25
+
+The initial published handoff above remains Deep `4e2eae707e108ee868212cec653ae107fdb15518` / Projection `1d4a8642a888279dd42a67181412901960b50217`. Its descriptions of unfinished Apple/watch/Android work describe that initial publication only. Current reviewed local commits are Deep `d2a61145a1b75fef3cc2dd7280d17d2392f6b941` / Projection `ce0c1588546c485e8253197def0ac0eadbc97fd0`; they have not been pushed and are not yet available through origin.
+
+The local implementation now includes Apple/watch and Android console/v2 negotiation and renderers, current shared dispositions/provenance/export assets, native voice transcript/result hydration, the Mac composer correction, and bounded voice guidance contention recovery. Watch uses shared ROTE stack/push presentation, server-owned availability and labeled handoff when a surface exceeds its supported capabilities; its ten navigation scenarios pass. Windows remains excluded from this task's edits and must retain its separately owned negotiation work.
+
+Clean Projection tests pass 3,235; browser/responsive suites pass 334/105; strict web changed coverage is 99.38%. Local Mac294, iOS277, iOSUI31, watch104 plus one staging-only skip, watchUI10, Core283 and Android core161/app392/device116 pass. The complete Plane suite passes 4,087 with nine Windows-only skips and 91.23% coverage. Full backend CI, canonical pinned-toolchain evidence and owner-dependent native acceptance remain open. See `verification.md` and the updated kos-wiki page for exact result identities and superseded diagnostics. Do not substitute local or synthetic results for hosted/staging/native physical acceptance.
+
+The shared contract's negotiation boundary remains deliberate: this task does not enable unimplemented Windows support or edit Windows source. Coordinate final composition/manifest integration after both owned branches are qualified. The vault retains the original 54 web references plus separately identified current Android and watch captures; none of the newer fixture images replaces the web ground truth.
