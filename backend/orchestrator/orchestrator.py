@@ -13937,6 +13937,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     raise SkillCatalogError("skill_authentication_required", 401)
                 _current_user_skills = await _skill_facade.list(caller=_skill_caller)
             except AssignmentError as exc:
+                logger.warning("Current turn skill catalog refused: %s (%s)",
+                               exc.code, exc.status_code)
                 raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
             finally:
                 if _skill_caller is not None:

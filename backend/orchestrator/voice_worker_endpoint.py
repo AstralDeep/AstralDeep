@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from anyio import CancelScope
 from fastapi import APIRouter, WebSocket
 from starlette.responses import Response
 from starlette.websockets import WebSocketDisconnect
@@ -731,12 +732,17 @@ async def _cleanup_connection(
         if hook is not None:
             await hook(receipt, released)
 
-    cleanup_task = asyncio.create_task(cleanup())
-    try:
-        await asyncio.shield(cleanup_task)
-    except asyncio.CancelledError:
-        await cleanup_task
-        raise
+    with CancelScope(shield=True):
+        cleanup_task = asyncio.create_task(cleanup())
+        cancelled: asyncio.CancelledError | None = None
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+        cleanup_task.result()
+        if cancelled is not None:
+            raise cancelled
 
 
 __all__ = [
