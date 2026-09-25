@@ -209,7 +209,7 @@ Finish with an evidence-backed summary: files changed, behavior changed, exact t
 <!-- SPECKIT START -->
 ## Active Feature Plan
 
-- `090-native-ui-v2`: `specs/090-native-ui-v2/plan.md`
+- `091-windows-ui-v2`: `specs/091-windows-ui-v2/plan.md`
 
 ## Active Technologies
 
