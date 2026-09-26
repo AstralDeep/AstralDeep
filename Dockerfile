@@ -44,6 +44,7 @@ RUN apt-get update \
         libmagic1 \
         build-essential \
         cmake \
+        libssl-dev \
         git \
     && rm -rf /var/lib/apt/lists/*
 

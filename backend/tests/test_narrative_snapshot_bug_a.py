@@ -128,7 +128,7 @@ async def _cleanup(orch, user_id: str, chat_id: str | None) -> None:
             pass
 
 
-async def test_first_turn_card_narrative_survives_commit_snapshot(orch):
+async def test_first_turn_card_narrative_survives_commit_snapshot(orch, user_skills_disabled):
     user_id = f"buga-{uuid.uuid4().hex[:10]}"
     await asyncio.to_thread(_seed_user, orch, user_id)
     ws, context = _connect(orch, user_id)

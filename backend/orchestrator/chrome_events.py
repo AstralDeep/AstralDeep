@@ -329,7 +329,10 @@ async def _render_surface_sdui(orch, websocket, user_id, roles, surface_key: str
         await _push_surface(orch, websocket, surface_key, title, False, [_sdui.placeholder(title)])
         return
     try:
-        comps = list(await builder(orch, user_id, roles, params or {}) or [])
+        options = {}
+        if surface_key == "agent_intro":
+            options["console_contract"] = getattr(orch.rote.get_profile(websocket), "console_contract", "")
+        comps = list(await builder(orch, user_id, roles, params or {}, **options) or [])
     except Exception:
         logger.exception("chrome: surface %s components() failed", surface_key)
         await _push_surface(orch, websocket, surface_key, title, False,

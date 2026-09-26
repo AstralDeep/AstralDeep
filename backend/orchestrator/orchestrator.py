@@ -9705,8 +9705,13 @@ class Orchestrator:
                     try:
                         _dt = getattr(rote_profile.device_type, "value", str(rote_profile.device_type))
                         if _dt in ("windows", "android", "ios", "macos") or (
-                            _dt == "watch" and isinstance(user_data.get("_client_capabilities"), list)
-                            and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
+                            _dt == "watch" and (
+                                getattr(rote_profile, "console_contract", None) == "console/v2"
+                                or (
+                                    isinstance(user_data.get("_client_capabilities"), list)
+                                    and ({"work_read_v1", "guidance_notes_v1"} & set(user_data["_client_capabilities"]))
+                                )
+                            )
                         ):
                             from orchestrator.chrome_availability import (
                                 projection_native_chrome_availability,
@@ -9721,7 +9726,12 @@ class Orchestrator:
                                 **projection_native_chrome_availability(user_data),
                             )
                             if _dt == "watch":
-                                _menu = project_watch_menu_model(_menu)
+                                _menu = project_watch_menu_model(
+                                    _menu, profile=rote_profile,
+                                    client_capabilities=user_data.get("_client_capabilities", ()),
+                                )
+                            from orchestrator.native_console import attach_native_console
+                            _menu = await attach_native_console(self, _menu, user_data, rote_profile)
                             await self._safe_send(websocket, ChromeMenu(model=_menu).to_json())
                     except Exception as _e:  # pragma: no cover
                         logger.debug(f"chrome_menu push failed (non-fatal): {_e}")
@@ -9900,6 +9910,7 @@ class Orchestrator:
                         "type": "rote_config",
                         "device_profile": self.rote.get_profile(websocket).to_dict(),
                         "speech_server_available": self.speech_server_available(),
+                        "viewport_snapshot_supported": True,
                     })
                     context = getattr(self, "_connection_contexts", {}).get(id(websocket))
                     if context is not None and context.work_registrations_pending:
@@ -10864,17 +10875,36 @@ class Orchestrator:
 
                 elif msg.action == "update_device":
                     registration = self.ui_sessions.get(websocket)
+                    viewport_binding = getattr(self, "_conversation_scopes", {}).get(id(websocket))
                     device_info = msg.payload.get("device") or {}
                     old_profile = self.rote.get_profile(websocket)
                     canonical_cached = self.rote.get_cached_components(websocket) or []
                     new_profile, re_adapted, profile_changed = self.rote.update_device(websocket, device_info)
-                    await self._safe_send(websocket, json.dumps({
+                    viewport_refresh = (msg.snapshot_purpose is not None or "snapshot_purpose" in msg.payload
+                                        or "base_render_revision" in msg.payload)
+                    device_ack = {
                         "type": "rote_config",
                         "device_profile": new_profile.to_dict(),
                         "speech_server_available": self.speech_server_available(),
-                    }))
+                        "viewport_snapshot_supported": True,
+                    }
+                    if viewport_refresh:
+                        device_ack.update({
+                            "chat_id": msg.payload.get("chat_id"),
+                            "connection_generation": msg.connection_generation or msg.payload.get("connection_generation"),
+                            "request_generation": msg.request_generation or msg.payload.get("request_generation"),
+                        })
+                    await self._safe_send(websocket, json.dumps(device_ack))
                     if (self.ui_sessions.get(websocket) is not registration
                             or self._get_user_id(websocket) != user_id):
+                        return
+                    if viewport_refresh:
+                        from orchestrator.viewport_hydration import refresh_viewport_snapshot
+                        await refresh_viewport_snapshot(
+                            self, websocket, msg, user_id, registration,
+                            self._conversation_authority(_CONNECTION_OPERATION_CONTEXT.get(), websocket),
+                            viewport_binding,
+                        )
                         return
                     handled_via_workspace = False
                     if profile_changed:
@@ -11629,6 +11659,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             "purpose": purpose,
             "base_render_revision": base_render_revision,
             "frame_sequence": 0,
+            "snapshot_completed": False,
         }
         self._conversation_scopes[id(websocket)] = binding
         return binding
@@ -11992,19 +12023,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         stage.mark_dirty()
         return message_id
 
-    def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any]):
+    def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any], *, cache: bool = True):
         from orchestrator.canvas_consolidation import consolidate_canvas
+        from rote.adapter import ComponentAdapter
+        from rote.capabilities import DeviceType
 
-        snapshot["canvas"]["components"] = consolidate_canvas(snapshot["canvas"]["components"])
+        canonical_canvas = snapshot["canvas"]["components"]
+        presentation_canvas = consolidate_canvas(canonical_canvas)
         for message in snapshot["transcript"]:
             for part in message["parts"]:
                 if part.get("type") == "components":
                     part["components"] = self.rote.adapt(
-                        websocket, part["components"]
+                        websocket, part["components"], cache=cache,
                     )
-        canonical_canvas = snapshot["canvas"]["components"]
-        snapshot["canvas"]["components"] = self.rote.adapt(websocket, canonical_canvas)
+        adapted_canvas = self.rote.adapt(websocket, canonical_canvas, cache=cache)
         profile = self.rote.get_profile(websocket)
+        if presentation_canvas != canonical_canvas:
+            adapted_canvas = (presentation_canvas if profile.device_type == DeviceType.BROWSER
+                              else ComponentAdapter.adapt(presentation_canvas, profile))
+        snapshot["canvas"]["components"] = adapted_canvas
         target = "native" if _is_native_device(profile) else "web"
         return augment_conversation_snapshot_for_target(
             snapshot, profile, target=target, canonical_canvas=canonical_canvas
@@ -12047,7 +12084,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             request_generation=request_generation,
             purpose="hydration",
         )
-        self._bind_conversation_scope(
+        binding = self._bind_conversation_scope(
             websocket,
             chat_id=chat_id,
             connection_generation=connection_generation,
@@ -12056,7 +12093,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             base_render_revision=snapshot["render_revision"],
         )
         self._ws_active_chat[id(websocket)] = chat_id
-        await self._safe_send(
+        delivered = await self._safe_send(
             websocket,
             json.dumps(
                 snapshot,
@@ -12065,6 +12102,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 allow_nan=False,
             ),
         )
+        if delivered and self._conversation_scopes.get(id(websocket)) is binding:
+            binding["snapshot_completed"] = True
         return snapshot
 
     async def _publish_conversation_snapshot(
@@ -12197,6 +12236,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         "committed_render_revision"
                     ]
                     binding["frame_sequence"] = 0
+                    if self._conversation_scopes.get(id(candidate)) is binding:
+                        binding["snapshot_completed"] = True
             except Exception:
                 logger.warning(
                     "committed conversation snapshot delivery failed",
@@ -13927,6 +13968,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     raise SkillCatalogError("skill_authentication_required", 401)
                 _current_user_skills = await _skill_facade.list(caller=_skill_caller)
             except AssignmentError as exc:
+                logger.warning("Current turn skill catalog refused: %s (%s)",
+                               exc.code, exc.status_code)
                 raise SkillCatalogError("skill_lookup_unavailable", exc.status_code) from None
             finally:
                 if _skill_caller is not None:
@@ -22458,6 +22501,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
             try:
                 shell = _shell_resource.read_text(encoding="utf-8")
+                from webrender.chrome.console_model import render_console_labels
+                shell = render_console_labels(shell)
             except Exception:
                 logger.exception("astralprojection: shell template missing")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)

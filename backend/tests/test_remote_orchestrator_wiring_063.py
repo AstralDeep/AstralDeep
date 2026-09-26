@@ -204,6 +204,7 @@ async def _drive_start(monkeypatch, *, remote_compute: bool):
             recover_once=_recover_publications,
             start=lambda: None,
         ),
+        explicit_notes=SimpleNamespace(expiry_loop=_noop_loop),
         _track_startup_background_task=_discard_background,
         _jwks_warm_loop=_noop_loop,
         _personal_agent_watchdog_task=None,

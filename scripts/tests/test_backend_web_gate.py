@@ -146,6 +146,7 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
             assert kwargs["env"]["COVERAGE_FILE"] == str(output / ".coverage")
             assert kwargs["env"]["PYTHONPATH"].split(gate.os.pathsep) == [
                 str(gate.POLICY_ROOT / "scripts"), str(root / "backend"), str(root),
+                str(root / "components/AstralPlane/src"), str(root / "components/LETS/src"),
             ]
             assert "backend_web_test_reporter" in command
             if scenario == "timeout":

@@ -29,7 +29,7 @@ class StartupObserved(Exception):
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(monkeypatch, enabled):
     from orchestrator import session_store
-    from persistent_agents import approvals, runner, service
+    from persistent_agents import runtime
     monkeypatch.setattr(session_store, "assert_production_posture", Mock())
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
     created_service = SimpleNamespace(approval_executor=None)
@@ -37,9 +37,9 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     factory = Mock(return_value=created_service)
     runner_factory = Mock(return_value=created_runner)
     bridge = Mock(return_value=object())
-    monkeypatch.setattr(service, "AssignmentService", factory)
-    monkeypatch.setattr(runner, "AssignmentRunner", runner_factory)
-    monkeypatch.setattr(approvals, "AssignmentApprovalBridge", bridge)
+    monkeypatch.setattr(runtime, "AssignmentService", factory)
+    monkeypatch.setattr(runtime, "AssignmentRunner", runner_factory)
+    monkeypatch.setattr(runtime, "AssignmentApprovalBridge", bridge)
 
     def background(coroutine, *, name):
         coroutine.close()

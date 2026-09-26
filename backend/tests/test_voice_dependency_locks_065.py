@@ -64,6 +64,18 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
         "53a13f8fdc29757212ffe792ce361a8e17ef4e4acd52c3f723b726c84f62d15f"
     ),
 }
+CURRENT_DEPENDENCY_AUTHORITIES = {
+    **FEATURE_075_DEPENDENCY_AUTHORITIES,
+    "Dockerfile": "04f2a968ce4ae650800bdc44c03b9ed9978e132f5b7b64880158a339f17c83eb",
+    "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
+    "backend/requirements.txt": "fe67aa0d442cb441aa930cb28050f3480740c7e0557d24c02fa9d7d41fa7599c",
+    "pyproject.toml": "99fcbd9308994d324f36e4d5f9cfa72b4f326ae6306f4c975645d9c6445c03d5",
+    "tooling/backend-ci/requirements.in": "6fc8c8dd178365a4c3102506b6f7b8a64ec7088c9b4484746ace40b9f3883fdf",
+    "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",
+    "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",
+    "tooling/ui-ci/requirements.lock.txt": "4a975d1c0adf7dcbd389cf4829513501780ee58af545a229a921ed8e66985570",
+    "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
+}
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {
     "roots": frozenset({".github", "backend", "scripts", "tooling"}),
     "excluded_parts": frozenset(
@@ -316,7 +328,7 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
         assert re.search(r"(?m)^jsonschema(?:\[.*\])?\s*[=<>~!]", text) is None, path
 
 
-def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
+def test_dependency_authorities_match_reviewed_inventory_and_baseline() -> None:
     base_tracked = _git_tracked_paths(
         "ls-tree", "-r", "--name-only", FEATURE_075_BASE_COMMIT
     )
@@ -327,20 +339,14 @@ def test_feature_075_adds_no_runtime_model_development_or_lock_drift() -> None:
     current_observed = {
         path for path in current_tracked if _deep_dependency_authority_kind(path) is not None
     }
-    expected = set(FEATURE_075_DEPENDENCY_AUTHORITIES)
-
-    assert base_observed == expected
-    assert current_observed == expected
+    assert base_observed == set(FEATURE_075_DEPENDENCY_AUTHORITIES)
+    assert current_observed == set(CURRENT_DEPENDENCY_AUTHORITIES)
     for relative, expected_sha256 in FEATURE_075_DEPENDENCY_AUTHORITIES.items():
         base_bytes = _git_blob(FEATURE_075_BASE_COMMIT, relative)
         base_sha256 = hashlib.sha256(base_bytes).hexdigest()
         assert base_sha256 == expected_sha256, relative
-        expected_current = base_bytes
-        if relative in {"Dockerfile", "pyproject.toml"}:
-            assert base_bytes.count(b"setuptools==80.9.0") == 1, relative
-            expected_current = base_bytes.replace(
-                b"setuptools==80.9.0", b"setuptools==83.0.0", 1)
-        assert (REPO_ROOT / relative).read_bytes() == expected_current, relative
+    for relative, expected_sha256 in CURRENT_DEPENDENCY_AUTHORITIES.items():
+        assert hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest() == expected_sha256, relative
 
 
 def test_deep_dependency_authority_policy_is_scoped_and_complete() -> None:

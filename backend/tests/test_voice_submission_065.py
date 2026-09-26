@@ -246,7 +246,7 @@ async def test_voice_dispatch_keeps_destination_bound_and_redacts_ws_audit(
 
 
 @pytest.mark.asyncio
-async def test_llm_unconfigured_rejects_admitted_voice_before_ack() -> None:
+async def test_llm_unconfigured_rejects_admitted_voice_before_ack(user_skills_disabled) -> None:
     websocket = object()
     raw = _voice_frame()
     origin = SimpleNamespace(**raw["payload"]["voice_origin"])

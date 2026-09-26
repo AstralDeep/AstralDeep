@@ -13,10 +13,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import inspect
 import json
+import logging
 import time
+import traceback
 from starlette.websockets import WebSocketState
 
 from astralplane.repositories.history import SessionConsentObservation
+from astralplane.repositories import RepositoryConflictError
 from orchestrator import auth
 from orchestrator.human_request_authority import (
     CurrentHumanCaller, _Composition, _expiry, _socket_policy,
@@ -28,9 +31,16 @@ from orchestrator.work_admission import (
 from persistent_agents.models import AssignmentError
 
 _TURN = contextvars.ContextVar("private_turn_guidance", default=None)
+logger = logging.getLogger(__name__)
 
 
-def _refuse():
+def _refuse(*, cause=None):
+    frames = (traceback.extract_tb(cause.__traceback__, limit=-4) if cause is not None
+              else traceback.extract_stack(limit=2)[:-1])
+    locations = ",".join(f"{frame.filename.rsplit('/', 1)[-1]}:{frame.name}:{frame.lineno}" for frame in frames)
+    logger.warning("guidance read refused check=%s error=%s at=%s",
+                   "dependency" if cause is not None else "authority",
+                   type(cause).__name__ if cause is not None else "none", locations)
     raise AssignmentError("guidance_read_unavailable", 503)
 
 
@@ -641,9 +651,12 @@ class TurnGuidanceReader:
         self._local(expected_orchestrator)
         if not callable(callback):
             _refuse()
+        callback_started = False
         def invoke(tx):
+            nonlocal callback_started
             self._turn.origin.binding.session_repository.bound_request_execution_waits(tx)
             self._current(tx)
+            callback_started = True
             value = callback(tx, self.repositories)
             if inspect.isawaitable(value):
                 if inspect.iscoroutine(value):
@@ -653,13 +666,22 @@ class TurnGuidanceReader:
             return value
         try:
             async with asyncio.timeout_at(self._deadline):
-                result = await self._turn.origin.binding.adapter.run_in_transaction(invoke)
-                self._local(expected_orchestrator)
-                return result
+                for attempt in range(4):
+                    try:
+                        result = await self._turn.origin.binding.adapter.run_in_transaction(invoke)
+                    except RepositoryConflictError as exc:
+                        if (attempt == 3 or callback_started or self._turn.voice is None
+                                or getattr(exc.__context__, "pgcode", None) != "55P03"):
+                            raise
+                        await asyncio.sleep(0.05 * (attempt + 1))
+                        self._local(expected_orchestrator)
+                    else:
+                        self._local(expected_orchestrator)
+                        return result
         except AssignmentError:
             raise
-        except Exception:
-            _refuse()
+        except Exception as exc:
+            _refuse(cause=exc)
 
     async def verify_delivery(self):
         try:
@@ -674,8 +696,8 @@ class TurnGuidanceReader:
                 self._local(self._orch)
         except AssignmentError:
             raise
-        except Exception:
-            _refuse()
+        except Exception as exc:
+            _refuse(cause=exc)
 
 
 async def acquire_turn_guidance_reader(*, expected_orchestrator, websocket, chat_id):

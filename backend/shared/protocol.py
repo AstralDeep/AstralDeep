@@ -1798,6 +1798,7 @@ class ChromeSurface(Message):
     components: List[Dict[str, Any]] = field(default_factory=list)
     mode: str = "replace"
     request_generation: Optional[str] = None
+    selection: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -1807,6 +1808,16 @@ class ChromeSurface(Message):
             raise ProtocolValidationError("correlated chrome surface must be an owner surface")
         else:
             data.pop("request_generation")
+        if self.selection is None:
+            data.pop("selection")
+        else:
+            if self.surface_key != "guidance" or self.region != "modal" or self.mode != "replace":
+                raise ProtocolValidationError("selection requires a correlated guidance modal")
+            empty = {"version": 1, "agent": None, "skills": [], "notes": []}
+            if not (self.selection == empty and type(self.selection.get("version")) is int):
+                _validate_chat_selection(self.selection)
+            if self.selection["agent"] is not None:
+                _require_uuid4(self.selection["agent"]["agent_id"], "selection.agent.agent_id")
         return json.dumps(data)
 
 

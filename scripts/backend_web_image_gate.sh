@@ -136,6 +136,12 @@ url="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_tests"
 docker run --init --name "$namespace-test" --network "container:$namespace-dev" --cpus=2 --memory=4g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --user "$(id -u):$(id -g)" --env HOME=/tmp \
+  --env GIT_CONFIG_COUNT=5 \
+  --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/workspace \
+  --env GIT_CONFIG_KEY_1=safe.directory --env GIT_CONFIG_VALUE_1=/workspace/components/AstralPlane \
+  --env GIT_CONFIG_KEY_2=safe.directory --env GIT_CONFIG_VALUE_2=/workspace/components/AstralProjection \
+  --env GIT_CONFIG_KEY_3=safe.directory --env GIT_CONFIG_VALUE_3=/workspace/components/AstralPrimitives \
+  --env GIT_CONFIG_KEY_4=safe.directory --env GIT_CONFIG_VALUE_4=/workspace/components/LETS \
   --env DATABASE_URL="$url" --env ASTRALPLANE_TEST_DATABASE_URL="$url" \
   --env ASTRALPLANE_TEST_POSTGRES_DSN="$url" --env ASTRAL_TEST_ISOLATED=1 \
   --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
