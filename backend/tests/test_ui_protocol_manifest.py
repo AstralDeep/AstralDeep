@@ -4,6 +4,7 @@ component type sent or dispatched must be manifested.
 """
 
 import copy
+import importlib
 import json
 import re
 from pathlib import Path
@@ -95,7 +96,6 @@ SWEEP_ALLOWLIST = {
 _TYPE_LITERAL = re.compile(r'"type": "([a-z_]+)"')
 _DATACLASS_DEFAULT = re.compile(r'type: str = "([a-z_]+)"')
 _ACTION_LITERAL = re.compile(r'action == "([a-z_]+)"')
-_CHROME_KEY = re.compile(r'"((?:chrome|draft|revision)_[a-z_]+)"\s*:')
 
 
 def _manifest():
@@ -422,19 +422,13 @@ def test_accept_actions_cover_dispatch():
     actions = set(_ACTION_LITERAL.findall(orch_src))
     actions -= {"block", "modify", "session_resumed"}
 
-    for rel in ["orchestrator/chrome_events.py", "orchestrator/agentic_creation.py"]:
-        src = (BACKEND / rel).read_text(encoding="utf-8")
-        actions |= set(_CHROME_KEY.findall(src))
-    from webrender.chrome import surfaces as projection_surfaces
+    from orchestrator.projection_surfaces import SURFACE_MODULES
 
-    surface_roots = (
-        BACKEND / "orchestrator" / "projection_surfaces",
-        Path(projection_surfaces.__file__).resolve().parent,
-    )
-    for surfaces in surface_roots:
-        for path in surfaces.glob("*.py"):
-            actions |= set(_CHROME_KEY.findall(path.read_text(encoding="utf-8")))
-    actions -= {"draft_id", "draft_status", "revision_staged"}
+    for module_path in [*SURFACE_MODULES.values(), "orchestrator.agentic_creation"]:
+        handlers = getattr(importlib.import_module(module_path), "HANDLERS", {})
+        assert all(isinstance(action, str) and callable(handler)
+                   for action, handler in handlers.items())
+        actions.update(handlers)
 
     missing = sorted(actions - manifested)
     assert not missing, f"dispatched ui_event actions missing from the manifest: {missing}"

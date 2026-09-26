@@ -35,7 +35,7 @@ def orch(orchestrator_factory):
 
 
 @pytest.mark.asyncio
-async def test_leading_system_message_is_identical_across_turns(orch):
+async def test_leading_system_message_is_identical_across_turns(orch, user_skills_disabled):
     _register_tool_agent(orch)
     ws = _fake_ws(orch)
     chat_id = f"prefix-{uuid.uuid4().hex[:8]}"

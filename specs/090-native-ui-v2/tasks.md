@@ -8,22 +8,22 @@
 
 ## Phase 2: Shared foundation
 
-- [ ] T004 Add valid/malformed/legacy console contract and breakpoint fixtures in `components/AstralProjection/contracts/fixtures/` and tests in `components/AstralProjection/tests/rote/` and `tests/chrome/`.
-- [ ] T005 Implement negotiated console chrome and ROTE presentation/capability-change adaptation in `components/AstralProjection/backend/webrender/chrome/` and `backend/rote/`; preserve non-negotiating Windows/watch payloads.
-- [ ] T006 Reuse authenticated landing catalog and shared chrome delivery in `backend/orchestrator/web_landing.py` and `orchestrator.py`; add owner/role/denial tests under `backend/tests/` and `backend/orchestrator/tests/`.
-- [ ] T007 Extend the existing native guidance selection and agent-intro surface contract in `backend/orchestrator/projection_surfaces/`, shared Projection builders/adapters and `components/AstralProjection/contracts/ui_protocol.json`, preserving request/owner/connection fences and ordinary dispatch.
+- [x] T004 Add valid/malformed/legacy console contract and breakpoint fixtures in `components/AstralProjection/contracts/fixtures/` and tests in `components/AstralProjection/tests/rote/` and `tests/chrome/`.
+- [x] T005 Implement negotiated console chrome and ROTE presentation/capability-change adaptation in `components/AstralProjection/backend/webrender/chrome/` and `backend/rote/`; preserve non-negotiating Windows/watch payloads.
+- [x] T006 Reuse authenticated landing catalog and shared chrome delivery in `backend/orchestrator/web_landing.py` and `orchestrator.py`; add owner/role/denial tests under `backend/tests/` and `backend/orchestrator/tests/`.
+- [x] T007 Extend the existing native guidance selection and agent-intro surface contract in `backend/orchestrator/projection_surfaces/`, shared Projection builders/adapters and `components/AstralProjection/contracts/ui_protocol.json`, preserving request/owner/connection fences and ordinary dispatch.
 - [ ] T008 Verify web behavior/shared-definition extraction through `components/AstralProjection/tooling/web-ci/tests/` and preserve exact web reference appearance; qualify relevant Python source changes at90% changed-line coverage.
 
 ## Phase 3: Apple experience (US1)
 
 Goal: match the web on iPhone, iPad and Mac. Independent test: same signed-in landing, chat/result, history, fullscreen, composer and settings walkthrough at comparable dimensions. Exclude the bottom web voice warning and verify native voice-worker connection, recording, playback and failure recovery during T015–T016.
 
-- [ ] T009 [US1] Add console/ROTE/selection decoding, capability aggregation and malformed-state tests in `components/AstralProjection/apple-clients/AstralCore/Sources/` and `Tests/`; update native dispositions/mirrors while preserving watch-specific fallback correctness.
-- [ ] T010 [US1] Integrate console/ROTE/selection in `components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift`, including reset/reconnect/owner fences, Load/Run behavior and current viewport/scale/input/voice aggregation; test in `AstralAppTests/`.
-- [ ] T011 [US1] Implement sidebar/drawer, History, agent search, account/settings and landing scenarios in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/RootView.swift`, `ChatListView.swift` and native console views; match reference layouts.
-- [ ] T012 [US1] Implement single conversation feed, response previews/actions, reasoning/summary placement and fullscreen in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ChatView.swift`, retaining component/capture state and stale-action denials.
-- [ ] T013 [US1] Implement bottom composer/More/selection and settings rail/sheet in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ChatView.swift` and `Screens.swift`; retain attachments, voice, server settings and mandatory setup.
-- [ ] T014 [US1] Render all six v2 types and use licensed Open Sans in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ComponentView.swift`, native component views/resources and app-target typography; test values/actions/fallbacks/accessible labels.
+- [x] T009 [US1] Add console/ROTE/selection decoding, capability aggregation and malformed-state tests in `components/AstralProjection/apple-clients/AstralCore/Sources/` and `Tests/`; update native dispositions/mirrors while preserving watch-specific fallback correctness.
+- [x] T010 [US1] Integrate console/ROTE/selection in `components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift`, including reset/reconnect/owner fences, Load/Run behavior and current viewport/scale/input/voice aggregation; test in `AstralAppTests/`.
+- [x] T011 [US1] Implement sidebar/drawer, History, agent search, account/settings and landing scenarios in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/RootView.swift`, `ChatListView.swift` and native console views; match reference layouts.
+- [x] T012 [US1] Implement single conversation feed, response previews/actions, reasoning/summary placement and fullscreen in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ChatView.swift`, retaining component/capture state and stale-action denials.
+- [x] T013 [US1] Implement bottom composer/More/selection and settings rail/sheet in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ChatView.swift` and `Screens.swift`; retain attachments, voice, server settings and mandatory setup.
+- [x] T014 [US1] Render all six v2 types and use licensed Open Sans in `components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ComponentView.swift`, native component views/resources and app-target typography; test values/actions/fallbacks/accessible labels.
 - [ ] T015 [US1] Run strict formatting, core/drift/mirror tests, affected app/UI tests, unsigned iOS/macOS builds and watch shared-core regressions from `components/AstralProjection/.github/workflows/apple-ci.yml`; resolve failures and measure changed coverage.
 - [ ] T016 [US1] Exercise real iPhone/iPad/macOS against Docker, including keyboard/rotation/split-view/resize/theme/history/fullscreen/selection/denied actions; save comparisons and exact results in `specs/090-native-ui-v2/verification.md` and vault; commit/push vault checkpoint before Android edits.
 
@@ -33,11 +33,11 @@ Goal: match the web on iPhone, iPad and Mac. Independent test: same signed-in la
 
 Goal: match accepted Apple/web behavior on phone/tablet. Independent test: same live walkthrough plus rotation/keyboard and capability-change checks. Exclude the bottom web voice warning and verify native voice-worker connection, recording, playback and failure recovery during T022–T023. This phase cannot start before T016 records Apple implementation and available verification.
 
-- [ ] T017 [US2] Add console/ROTE/selection models, validation, capability aggregation and dispositions in `components/AstralProjection/android-client/core/`; add contract/reset/invalid-input tests.
-- [ ] T018 [US2] Integrate server model, actual viewport/input/voice capabilities, owner-scoped selection and draft/Run behavior in `components/AstralProjection/android-client/app/src/main/`; retain authenticated transport and continuity fences.
-- [ ] T019 [US2] Implement sidebar/drawer/History/agent catalog/landing and settings rail/sheet in `components/AstralProjection/android-client/app/src/main/`, matching the saved reference and shared ROTE verdict.
-- [ ] T020 [US2] Implement conversation/result/fullscreen/composer/More in `components/AstralProjection/android-client/app/src/main/`, preserving state, attachments/voice/export/share and stale/denied operation handling.
-- [ ] T021 [US2] Add six v2 component renderers and licensed font resource under `components/AstralProjection/android-client/app/src/main/`; test accessibility/data/action semantics.
+- [x] T017 [US2] Add console/ROTE/selection models, validation, capability aggregation and dispositions in `components/AstralProjection/android-client/core/`; add contract/reset/invalid-input tests.
+- [x] T018 [US2] Integrate server model, actual viewport/input/voice capabilities, owner-scoped selection and draft/Run behavior in `components/AstralProjection/android-client/app/src/main/`; retain authenticated transport and continuity fences.
+- [x] T019 [US2] Implement sidebar/drawer/History/agent catalog/landing and settings rail/sheet in `components/AstralProjection/android-client/app/src/main/`, matching the saved reference and shared ROTE verdict.
+- [x] T020 [US2] Implement conversation/result/fullscreen/composer/More in `components/AstralProjection/android-client/app/src/main/`, preserving state, attachments/voice/export/share and stale/denied operation handling.
+- [x] T021 [US2] Add six v2 component renderers and licensed font resource under `components/AstralProjection/android-client/app/src/main/`; test accessibility/data/action semantics.
 - [ ] T022 [US2] Run wrapper lint/unit/coverage/build plus committed instrumentation producer from `components/AstralProjection/.github/workflows/android-ci.yml`; resolve baseline/new failures and enforce changed-code coverage.
 - [ ] T023 [US2] Verify Android phone/tablet live against Docker, rotation/keyboard/resize, current themes and matching reference flows; record evidence in `specs/090-native-ui-v2/verification.md` and vault.
 
@@ -67,3 +67,8 @@ FR001→T002–T003; FR002→T003/T024/T025; FR003→T016–T017; FR004→T011�
 ## September 25 collaboration checkpoint
 
 The owner requested publishing the work-in-progress090 branch for the Windows agent. `handoff-windows.md` records ownership, the complete pushed screenshot matrix and unfinished qualification. T003 is complete; implementation task boxes remain open until their full acceptance criteria pass.
+
+
+## September 25 local implementation checkpoint
+
+Shared contract, Apple shell/rendering and Android shell/rendering implementation tasks are checked against current source and their passing regression suites. Coverage diagnostics now measure91.40% Swift and93.82% Kotlin. The remaining qualification tasks stay open for immutable candidate coverage, full CI, composed-image checks and authenticated form-factor acceptance. Current evidence and screenshot identities are in `verification.md` and the pushed kos-wiki checkpointa88f14f. Watch implementation and10navigation tests are present; T029 stays open for its remaining live acceptance. The owner is away; no authentication or physical-audio success is inferred from fixtures.

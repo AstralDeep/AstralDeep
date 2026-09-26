@@ -194,6 +194,8 @@ async def test_expiry_after_real_audit_table_wait_rolls_back_prior_write(bound, 
             runtime.repositories.history.sessions.bound_request_execution_waits(tx)
             guard.assert_current(tx, assignments=bound[0])
             tx.execute("UPDATE web_session SET resumed=true WHERE sid=%s", (fixture[2],))
+            assert tx.fetch_one("SHOW lock_timeout")["lock_timeout"] == "100ms"
+            tx.execute("SET LOCAL lock_timeout = '1s'")
             entered.set()
             tx.fetch_one("SELECT count(*) AS count FROM audit_events")
             guard.assert_current(tx, assignments=bound[0])

@@ -3,6 +3,7 @@ The native surfaces retain existing correlation, visibility and legacy wire beha
 """
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -93,6 +94,8 @@ async def test_console_agent_intro_offers_visible_example_load_and_normal_run(vi
     output = await agent_intro.components(orch, "owner", [], {"agent_id": "dice"},
                                          console_contract="console/v2")
     assert seen == [(orch, "owner", "dice")]
+    assert output[0]["console_role"] == "surface_subtitle"
+    assert output[0]["content"] == agent_intro.SUBTITLE
     buttons = [node for node in nodes(output) if node.get("type") == "button"]
     load = next(button for button in buttons if button["label"] == "Load")
     run = next(button for button in buttons if button["label"] == "Run")
@@ -110,6 +113,22 @@ async def test_legacy_agent_intro_retains_run_only_shape(visible, contract):
     buttons = [node for node in nodes(output) if node.get("type") == "button"]
     assert [button["action"] for button in buttons] == ["chat_message", "chrome_open"]
     assert buttons[0]["label"] == "Two dice"
+    assert not any(node.get("console_role") == "surface_subtitle" for node in nodes(output))
+
+
+@pytest.mark.asyncio
+async def test_native_intro_fixture_matches_current_server_definition(visible):
+    card, _ = visible
+    fixture = json.loads((Path(__file__).parents[2] / "components/AstralProjection/contracts/fixtures/console/agent-intro.json").read_text())
+    card.name = fixture["title"]
+    card.description = "Rolls dice and reports every roll and the total — the smallest honest end-to-end test of routing, permissions and rendering."
+    card.skills = [SimpleNamespace(id="roll_dice", name="Roll dice")]
+    card.metadata["examples"] = [
+        {"title": "Six dice", "prompt": "Roll exactly six six-sided dice and show the normalized results."},
+        {"title": "Many rolls", "prompt": "Roll 100 six-sided dice and chart how often each face came up"},
+    ]
+    assert await agent_intro.components(object(), "owner", [], {"agent_id": "dice_roller"},
+                                        console_contract="console/v2") == fixture["components"]
 
 
 @pytest.mark.asyncio

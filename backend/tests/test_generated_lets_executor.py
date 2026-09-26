@@ -480,7 +480,7 @@ def test_generated_runner_v3_authority_contract_and_legacy_refusal(monkeypatch):
     )["agent_main.py"]
     generated_module = types.ModuleType("generated_authority_contract")
     exec(
-        compile(source, "generated_authority_contract.py", "exec"),
+        compile(source, "<generated_authority_contract>", "exec"),
         generated_module.__dict__,
     )
     fence = {
@@ -594,7 +594,7 @@ async def test_generated_server_claims_exactly_once_at_physical_actuator(
     )["mcp_server.py"]
     generated_module = types.ModuleType("generated_demo_mcp_server")
     generated_module.__file__ = "generated_demo_mcp_server.py"
-    exec(compile(source, "generated_demo_mcp_server.py", "exec"), generated_module.__dict__)
+    exec(compile(source, "<generated_demo_mcp_server>", "exec"), generated_module.__dict__)
     server = generated_module.MCPServer()
 
     agent = BaseA2AAgent.__new__(BaseA2AAgent)
@@ -693,7 +693,7 @@ def test_generated_byo_dispatch_checks_full_wire_arguments_before_actuation(
         agent_name="Demo", description="description", agent_id=AGENT_ID
     )["agent_main.py"]
     generated_module = types.ModuleType("generated_byo_agent")
-    exec(compile(source, "generated_byo_agent.py", "exec"), generated_module.__dict__)
+    exec(compile(source, "<generated_byo_agent>", "exec"), generated_module.__dict__)
 
     response = generated_module.dispatch(
         {

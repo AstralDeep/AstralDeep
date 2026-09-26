@@ -83,7 +83,7 @@ def _composition() -> dict[str, object]:
             "astral-primitives": component(
                 "https://github.com/AstralDeep/AstralPrimitives.git",
                 "components/AstralPrimitives",
-                "0.3.0",
+                "0.4.0",
             ),
             "lets": lets,
         },
@@ -102,7 +102,7 @@ def _composition() -> dict[str, object]:
                 "migration_sha256": SHA256,
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
-            "primitives": {"package_version": "0.3.0", "contract_sha256": SHA256},
+            "primitives": {"package_version": "0.4.0", "contract_sha256": SHA256},
             "lets": {
                 "release": "v1.0.11",
                 "api_version": "v1",
@@ -179,6 +179,7 @@ def test_composition_accepts_exported_component_contract_identifiers() -> None:
     [
         ("astral-projection", "astralprojection.contract/v2"),
         ("astral-plane", "astralplane.contract/v2"),
+        ("astral-primitives", "0.3.0"),
     ],
 )
 def test_composition_rejects_wrong_component_contract(

@@ -134,7 +134,8 @@ def test_deep_ci_does_not_duplicate_projection_voice_or_client_jobs() -> None:
         "coverage-gate:",
     ):
         assert f"\n  {stale_job}" not in workflow
-    assert "components/AstralProjection/" not in workflow
+    for client in ("apple-clients", "android-client", "windows-client"):
+        assert f"components/AstralProjection/{client}/" not in workflow
     assert not (DEEP_WORKFLOWS / "android-ci.yml").exists()
     assert not (DEEP_WORKFLOWS / "apple-ci.yml").exists()
 
@@ -151,7 +152,14 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     instrumented = workflow.split("  instrumented:", 1)[1].split(
         "  android-required:", 1
     )[0]
-    assert "connectedDebugAndroidTest" in instrumented
+    assert "-PastralCoverage=true :app:prepareCoverageInputs" in instrumented
+    assert "../scripts/android_coverage.py prepare" in instrumented
+    assert "../scripts/android_coverage.py device" in instrumented
+    assert "--serial emulator-5554 --lane fixtures" in instrumented
+    assert "../scripts/android_coverage.py report" in instrumented
+    assert "--lanes fixtures" in instrumented
+    assert "android-app-device-and-unit-coverage" in instrumented
+    assert "path: build/088/android-coverage/" in instrumented
     assert "github.event_name == 'schedule'" not in instrumented
     assert "needs.instrumented.result" in workflow
     assert "needs.build-test.result" in workflow

@@ -22,7 +22,8 @@ def _set_flag(monkeypatch, enabled: bool) -> None:
         flags, "is_enabled", lambda name: enabled and name == "remote_compute")
 
 
-def test_deep_resolves_every_projection_chrome_input(monkeypatch):
+@pytest.mark.parametrize("work_enabled", [False, True])
+def test_deep_resolves_every_projection_chrome_input(monkeypatch, work_enabled):
     from dreaming import pulse
     from shared.feature_flags import flags
 
@@ -30,7 +31,8 @@ def test_deep_resolves_every_projection_chrome_input(monkeypatch):
     monkeypatch.setattr(
         flags,
         "is_enabled",
-        lambda name: name in {"byo_agents", "remote_compute", "computer_use", "user_skills"},
+        lambda name: name in {"byo_agents", "remote_compute", "computer_use", "user_skills"}
+        or (work_enabled and name == "persistent_agents"),
     )
     assert projection_chrome_availability() == {
         "pulse_enabled": True,
@@ -38,6 +40,8 @@ def test_deep_resolves_every_projection_chrome_input(monkeypatch):
         "remote_enabled": True,
         "computer_enabled": True,
         "skills_enabled": True,
+        "notes_enabled": True,
+        "work_enabled": work_enabled,
         "export_enabled": False,
         "share_enabled": False,
     }
@@ -58,6 +62,8 @@ def test_deep_chrome_availability_fails_closed(monkeypatch):
         "remote_enabled": False,
         "computer_enabled": False,
         "skills_enabled": False,
+        "notes_enabled": True,
+        "work_enabled": False,
         "export_enabled": False,
         "share_enabled": False,
     }

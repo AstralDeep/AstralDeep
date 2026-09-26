@@ -139,6 +139,7 @@ async def test_actual_server_startup_respects_flag_and_installs_the_qualified_pa
     host._personal_agent_watchdog_loop = idle
     host._personal_agent_watchdog_task = None
     host._monitor_agents = idle
+    host.explicit_notes = SimpleNamespace(expiry_loop=idle)
     host._start_phi_warm = lambda: None
     host.lifecycle_manager = SimpleNamespace(
         reconcile_orphaned_draft_permissions=lambda: 0,

@@ -211,12 +211,36 @@ def test_orchestrator_validate_token_uses_shared_jwks_cache():
     assert "get_jwks" in src
 
 
-def test_orchestrator_auth_module_uses_shared_jwks_cache():
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [False, True])
+async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, invalid):
+    from unittest.mock import AsyncMock, Mock
+
+    from fastapi import HTTPException
+    from fastapi.security import HTTPAuthorizationCredentials
     import orchestrator.auth as auth_mod
 
-    module_src = inspect.getsource(auth_mod)
-    assert "shared.jwks_cache" in module_src
-
-    fn_src = inspect.getsource(auth_mod.get_current_user_payload)
-    assert "shared.jwks_cache" in fn_src
-    assert "get_jwks" in fn_src
+    authority = "https://idp.example/realms/test"
+    keys = {"keys": [{"kid": "test-key"}]}
+    payload = {"sub": "owner", "iss": authority, "azp": "astral-frontend"}
+    cache = AsyncMock(return_value=keys)
+    decode = Mock(side_effect=ValueError("invalid signature") if invalid else None,
+                  return_value=payload)
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
+    monkeypatch.setattr(auth_mod, "_get_keycloak_config", lambda: (authority, "astral-frontend", ""))
+    monkeypatch.setattr(jwks_cache, "get_jwks", cache)
+    monkeypatch.setattr(auth_mod.jose_jwt, "decode", decode)
+    request = types.SimpleNamespace(method="GET", query_params={}, state=types.SimpleNamespace())
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="synthetic-token")
+    if invalid:
+        with pytest.raises(HTTPException) as error:
+            await auth_mod.get_current_user_payload(request, credentials)
+        assert error.value.status_code == 401
+        assert not hasattr(request.state, "audit_claims")
+    else:
+        assert await auth_mod.get_current_user_payload(request, credentials) == payload
+        assert request.state.audit_claims == payload
+    cache.assert_awaited_once_with(f"{authority}/protocol/openid-connect/certs", token="synthetic-token")
+    decode.assert_called_once_with("synthetic-token", keys, algorithms=["RS256"],
+                                   options={"verify_aud": False, "verify_at_hash": False})

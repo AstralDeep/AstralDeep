@@ -7,8 +7,8 @@ Implementation intent; exact fixtures/manifest declarations accompany code and m
 - Device descriptor declares `console_contract: "console/v2"`; absent/unknown values retain legacy behavior.
 - Authenticated `chrome_menu.model.console` contains a version discriminator and shared presentation content.
 - Existing `rote_config.device_profile.console` contains versioned layout derived by ROTE from viewport/capabilities. No new push type/auth mechanism.
-- Six existing v2 types are delivered only when console contract and exact supported type are advertised. Otherwise retain existing ROTE fallbacks. Windows remains excluded in this checkpoint until its separate implementation; watch server support is prepared but the legacy watch client does not yet opt in.
-- Watch console support prepares stack navigation, one column, full-screen pushed surfaces and optional capability-based `availability` objects on catalog/menu/composer items. A handoff carries a server message; it must not be presented as a working native action. Generic watch picker support remains excluded; authenticated strict notes forms use the scoped guidance capability.
+- Six existing v2 types are delivered only when console contract and exact supported type are advertised. Otherwise retain existing ROTE fallbacks. Windows remains excluded from this feature until its separate implementation. Apple, watch and Android clients negotiate console/v2 with their actual supported types; watch retains its primitive fallbacks.
+- Watch console support uses stack navigation, one column, full-screen pushed surfaces and capability-based `availability` objects on catalog/menu/composer items. A handoff carries a server message; it must not be presented as a working native action. Generic watch picker support remains excluded; authenticated strict notes forms use the scoped guidance capability.
 - Supported-type/rendering-capability changes must trigger re-adaptation, including at unchanged width.
 
 ## Shared content and placement

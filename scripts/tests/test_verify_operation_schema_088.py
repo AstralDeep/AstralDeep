@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from test_verify_composition import (
     COMPONENT_PATHS,
-    EXPECTED_PLANE_MIGRATION_SHA256,
     REPOSITORY_ROOT,
     _codes,
     _repin_component,
@@ -33,6 +32,9 @@ ASSIGNMENT_SQL = ("CREATE TABLE assignment (id UUID)",)
 OPERATION_SQL = (
     "ALTER TABLE assignment ADD COLUMN profile TEXT",
     "CREATE TABLE receipt (note TEXT DEFAULT 'β')",
+)
+EXPECTED_PLANE_MIGRATION_SHA256 = (
+    "35741bd0de148f836cd8b75b160531013836a61bd46b9e17e7790641412979d8"
 )
 REGISTRY = (
     "ASSIGNMENT_ALIAS = ASSIGNMENT_SCHEMA_STATEMENTS\n"
@@ -90,7 +92,7 @@ def test_both_reviewed_imports_match_independent_canonical_digest_without_execut
     assert not marker.exists()
 
 
-def test_exact_pinned_operation_and_assignment_files_match_qualified_088_digest() -> None:
+def test_exact_pinned_operation_and_assignment_files_match_current_digest() -> None:
     root = REPOSITORY_ROOT / COMPONENT_PATHS["astral-plane"]
     assert composition._plane_migration_digest(root) == EXPECTED_PLANE_MIGRATION_SHA256
 

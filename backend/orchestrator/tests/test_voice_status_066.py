@@ -7,6 +7,7 @@ route.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -365,8 +366,17 @@ class _StatusSelf:
         self.worker_endpoint = endpoint
 
 
-def test_voice_status_projection_shape_and_stamps() -> None:
+def test_voice_status_projection_shape_and_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
     client, pool, endpoint, _clock = _app()
+    registered_on_server = threading.Event()
+    register_worker = pool.register_worker
+
+    async def register_and_signal(*args, **kwargs):
+        receipt = await register_worker(*args, **kwargs)
+        registered_on_server.set()
+        return receipt
+
+    monkeypatch.setattr(pool, "register_worker", register_and_signal)
     challenge = _request_challenge(client)
     with client.websocket_connect(
         WORKER_CONTROL_PATH,
@@ -374,6 +384,7 @@ def test_voice_status_projection_shape_and_stamps() -> None:
     ) as socket:
         socket.send_text(json.dumps(_registration()))
         assert socket.receive_json()["type"] == "worker_registered"
+        assert registered_on_server.wait(timeout=5)
         endpoint.refusals.record("authentication", "invalid_authentication")
 
         value = VoiceServices.voice_status(_StatusSelf(pool, endpoint))

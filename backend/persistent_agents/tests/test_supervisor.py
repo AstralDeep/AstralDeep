@@ -44,7 +44,8 @@ async def supervisor(service, monkeypatch):
     claim = SimpleNamespace(assignment=record, fence=SimpleNamespace(claim_generation=1))
     executor = SimpleNamespace(record=record, claim=claim, operation_fence=object(), binding=object(),
         approved_action_id=None,
-        refresh=AsyncMock(), action=AsyncMock(return_value={"text": "Release", "revision_digest": "a"*64}))
+        refresh=AsyncMock(), action=AsyncMock(return_value={
+            "text": "Release", "revision_digest": "a"*64, "truncated": False, "redacted": False}))
     executor.fork = lambda socket: executor
     monkeypatch.setattr("persistent_agents.runner.safe_text", AsyncMock())
     return SimpleNamespace(runner=runner, service=service, record=record, claim=claim,
@@ -349,7 +350,12 @@ async def test_unchanged_source_skips_models_and_notifications(supervisor):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("finding", ["Relevant release change", "UNCHANGED"])
 async def test_episode_reads_source_then_durably_joins_tasks_once(supervisor, finding):
-    record = supervisor.record
+    record = replace(supervisor.record, checkpoint={
+        "cursor": {"revision": "b"*64, "sequence": 1},
+        "last_observation": {"text": "Previous release", "revision_digest": "b"*64,
+                             "truncated": False, "redacted": False},
+    })
+    supervisor.executor.record = record
     source_event = None
     async def call(method, **kwargs):
         nonlocal record, source_event
@@ -357,7 +363,8 @@ async def test_episode_reads_source_then_durably_joins_tasks_once(supervisor, fi
             return ()
         if method == "record_source_batch":
             source_event = kwargs["batch"].events[0]
-            record = replace(record, checkpoint={"cursor": thaw(kwargs["batch"].next_cursor)})
+            record = replace(record, checkpoint={**thaw(record.checkpoint),
+                                                 "cursor": thaw(kwargs["batch"].next_cursor)})
             return record, (source_event,)
         if method == "put_task_plan":
             record = replace(record, tasks=tuple(thaw(task) for task in kwargs["tasks"]))
@@ -376,6 +383,7 @@ async def test_episode_reads_source_then_durably_joins_tasks_once(supervisor, fi
     await supervisor.runner.episode(supervisor.executor)
     assert supervisor.runner._task.await_count == 1
     kwargs = supervisor.runner._finish.call_args.kwargs
+    assert kwargs["checkpoint"]["observation"]["kind"] == "changed"
     assert len(kwargs["receipts"]) == len(kwargs["incorporations"]) == 1
     assert kwargs["receipts"][0]["event_id"] == source_event.event_id
     if finding == "UNCHANGED":
