@@ -12,6 +12,18 @@ Status: implemented and under qualification; not merged, deployed, released, or 
 
 ## Commands and results
 
+### Resumed native verification and lifecycle fixes
+
+Projection `3a76954c374cd9c3daf7d6b1818fd2459699e1e2` supersedes503b962 for Windows source. It rejects stale authentication callbacks after account replacement, sign-out or close; Run uses the normal send path including staged attachments while retaining the scenario prompt; attachment controls wrap, scroll into keyboard focus and expose complete filenames; category height includes polished controls even before a refreshed catalog becomes visible. Explicit unavailable voice activation shows actionable feedback without the passive web footer. No shared protocol, backend runtime, schema, dependency, Apple/Android source or090 artifact changed in this correction.
+
+The six-file regression run (`test_auth_lifecycle.py`, `test_message_routing.py`, `test_launch_timing.py`, `test_console_shell.py`, `test_composer_geometry.py`, `test_attachments.py`) finished **170 passed, 1 failed in370.80s**. Its failing catalog-rebuild assertion exposed hidden newly added buttons being omitted from Qt layout sizing. The correction retains the visibility assertion and expands it across eight ROTE fixtures: **16 category checks passed in18.35s**, with all five new measurement lines covered on a separate16-pass coverage run. Ruff and staged diff checks pass. The full Windows suite is now running against committed3a76954; prior1537-pass results below do not qualify these new edits.
+
+After the user unlocked Windows and completed normal PKCE, Computer Use capture/input recovered. Live working-source evidence binds `build/windows-091/live-native-fixed-source.json`; it includes the committed authentication/composer fixes but predates the final catalog-rebuild measurement correction. A real six-dice request returned **4,6,3,3,2,6 (total24)**. Preview, collapse/expand, full-screen and Escape retained values; the visible focus ring returned to the full-screen opener. The harness's accessibility focus field lagged the visible state and is not used as proof of focus. Load prompt did not dispatch. Run retained the prompt like web.
+
+Authenticated export displayed **Canvas saved** and wrote4466bytes of server-authorized HTML containing all six rolls and total24, SHA256`c615fc4eb4089ccf56a571ecba38484df0ec5b150f9326726ff04e446e289097`. No credential/token was extracted. Clicking native Voice displayed **No microphone is available; typed chat still works.** The device probe reports microphone absent, output available, permission authorized; worker Whisper/Kokoro preflight passes in8.172s. Real capture/reply/playback/recovery remain unverified. Captures are1442×875/876 including native frame, not a claim of1440×900 logical acceptance. Saved evidence is under `build/windows-091/live-retry/` pending curated archival.
+
+Fresh origin inspection still reports shared090 Deep4e2eae70/Projection1d4a864. The latest vault99cdcae records Mac-local Deepc18fd38d/Projection5cd0b6c and a full-CI benchmark failure; those revisions are unavailable here. The vault's owner-reported Windows-finished statement is not acceptance evidence; remaining gates below stay open.
+
 ### Final Windows qualification and branch handoff
 
 This checkpoint supersedes the running/failing-packaging status in the dated sections below. Product source is Deep `94353536f00b1e2d18102474cf0b01cc8822a0a6` with Projection `503b96287b4fbe7ae3a87bea6cb4c4b976b2c981`; subsequent handoff edits are documentation only. The owner authorizes branch publication. Acceptance remains incomplete.
@@ -123,7 +135,7 @@ The final executable changed-line measurement compares against exact Projection 
 
 ## Remaining acceptance gates
 
-1. Recheck live resizing after the corrected envelope, including 320/390/768/1024/1280/1440/1920 logical widths where available; touch hardware availability; keyboard navigation and focus; real Windows DPI/monitor transitions. Offscreen fixture dimensions alone are insufficient.
+1. Recheck live resizing after the corrected envelope at1440×900,1280×800,1024×768,834×1194,768×1024,390×844 and320×740; touch hardware availability; keyboard navigation and focus; real Windows DPI/monitor transitions. Extra1920-wide coverage is useful but does not replace the required834×1194case. Offscreen fixture dimensions alone are insufficient.
 2. Verify the corrected theme transition, native voice media/cleanup/recovery, attachments, Advanced with real revision selection, conversation reopening/state, and a saved authorized export. Record unavailable share/catalog capabilities honestly.
 3. Connected frozen smokes require valid staging through normal user authentication. The final503b962 executable passes the actual offline GUI/retry test and all separate archive/helper checks; native settings restoration is verified.
 4. Finish latest coverage, affected admission tests, final lint/composition/CI checks and security review. Inherited shared Projection failures and complete backend CI remain unresolved, not waived. Do not modify another machine's 090 artifacts to hide those failures.

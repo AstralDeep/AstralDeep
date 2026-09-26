@@ -1,6 +1,6 @@
 # Windows UI v2 handoff
 
-The separate Windows work uses `codex/091-windows-ui-v2` in Deep and Projection. Source qualification binds Deep `94353536f00b1e2d18102474cf0b01cc8822a0a6` and Projection `503b96287b4fbe7ae3a87bea6cb4c4b976b2c981`; later handoff commits contain documentation only. Read [verification](verification.md) for exact commands, results, prior failures and remaining gaps. This is implemented work under qualification, not complete acceptance or release.
+The separate Windows work uses `codex/091-windows-ui-v2` in Deep and Projection. Current Windows source is Projection `3a76954c374cd9c3daf7d6b1818fd2459699e1e2`; its full suite and replacement package are under qualification. Prior full results bind Deep `94353536f00b1e2d18102474cf0b01cc8822a0a6` and Projection `503b96287b4fbe7ae3a87bea6cb4c4b976b2c981`. Read [verification](verification.md) for exact commands, results, prior failures and remaining gaps. This is implemented work under qualification, not complete acceptance or release.
 
 ## Shared ownership
 
@@ -22,7 +22,7 @@ The final unsigned executable is `components/AstralProjection/windows-client/dis
 
 ## Remaining work
 
-1. Obtain the user's normal native Keycloak sign-in. The ignored `build/windows-091/live_native.py` launcher connects the source client to local94353536 using ordinary PKCE, with token fallback disabled. Do not type credentials or manufacture/copy tokens.
+1. The user completed native PKCE and live capture/input recovered. The ignored `build/windows-091/live_native.py` launcher connects the source client to local94353536 with token fallback disabled. Synthetic dice24, fullscreen/collapse and saved authorized export pass; no microphone is exposed. Do not type credentials or manufacture/copy tokens.
 2. Verify current native resize at reference logical dimensions, keyboard/focus, physical125/150/200% DPI/monitor transitions, attachments, real Advanced revision selection, conversation/state restoration, saved authorized export and available share actions. Current hardware reports no touch support; keep that limitation explicit.
 3. Verify real native microphone capture, worker reply, playback, interruption and recovery. Keep the web-only passive voice warning absent while preserving actionable native errors.
 4. Integrate the exact published090 fixture/provenance/voice corrections when available, then rerun affected shared gates and finish complete backend/connected packaged qualification without weakening assertions or deadlines. Current Projection has five inherited failures; the initial complete backend run stopped at its four-hour bound. No full-CI pass is claimed.

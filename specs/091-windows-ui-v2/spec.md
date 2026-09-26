@@ -87,7 +87,7 @@ A user navigates the server-provided settings surfaces, changes theme and uses c
 - The vault's 54-image reference at 92e4ed0 supersedes its earlier incomplete 470a390 archive; both source anchors are preserved. Live web behavior remains authoritative.
 - Shared console/v2/ROTE changes are owned by the Mac feature. Published Deep 4e2eae70 / Projection 1d4a864 handoff is the integration base and explicitly delegates Windows qualification alongside its consumer; existing-contract renderer work is independent.
 - Existing Keycloak sign-in is performed by the user; no credentials or authentication bypass will be introduced.
-- No new primitive, schema migration, product release, remote product push or cross-client implementation is authorized by this Windows task.
+- The owner subsequently authorized committing and pushing task work to its branches. No new primitive, schema migration, product release or cross-client implementation is authorized by this Windows task.
 
 ## Clarifications
 
