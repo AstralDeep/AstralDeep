@@ -147,6 +147,9 @@ async def test_stream_emits_revision_events_for_committed_controls_without_block
         assert first["data"]["revision"] == 1 and first["data"]["changed"] is True
         assert first["data"]["operation"]["id"] == record.assignment_id
         assert "authority" not in json.dumps(first) and "checkpoint" not in json.dumps(first)
+        with pytest.raises(TimeoutError):
+            await stream.next(timeout=0.3)
+        assert stream.ticks >= 1
         started = time.monotonic()
         paused = await _control(app, fixture, record, "pause", 1)
         assert paused.status_code == 200 and time.monotonic() - started < 2
