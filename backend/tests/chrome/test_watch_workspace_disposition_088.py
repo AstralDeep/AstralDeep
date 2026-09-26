@@ -25,8 +25,10 @@ def register_chrome_branch():
              and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
                      and child.func.id == "ChromeMenu" for child in ast.walk(node))]
     assert len(gates) == 1, "registration must have one shared native chrome delivery gate"
-    module = ast.parse("async def deliver(_dt, self, websocket, user_data):\n"
-                       "    rote_profile = DeviceProfile.from_dict({'device_type': _dt})\n")
+    module = ast.parse(
+        "async def deliver(_dt, self, websocket, user_data):\n"
+        "    rote_profile = DeviceProfile.from_dict({'device_type': _dt})\n"
+    )
     module.body[0].body.append(copy.deepcopy(gates[0]))
     namespace = {"DeviceProfile": DeviceProfile}
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)

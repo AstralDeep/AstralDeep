@@ -16,7 +16,7 @@ def profile(kind="ios", contract="console/v2"):
     return SimpleNamespace(device_type=SimpleNamespace(value=kind), console_contract=contract)
 
 
-@pytest.mark.parametrize("kind", ["ios", "macos", "android", "watch"])
+@pytest.mark.parametrize("kind", ["ios", "macos", "android", "watch", "windows"])
 async def test_native_console_uses_owner_filtered_shared_landing(kind):
     orch = make_orch()
     menu = {"version": 2, "topbar": [], "menu": []}
@@ -35,7 +35,7 @@ async def test_native_console_uses_owner_filtered_shared_landing(kind):
     assert "owner_email" not in str(result)
 
 
-@pytest.mark.parametrize("kind,contract", [("windows", "console/v2"), ("watch", ""),
+@pytest.mark.parametrize("kind,contract", [("windows", ""), ("windows", "console/v3"), ("watch", ""),
                                           ("ios", "console/v3"), ("ios", None)])
 async def test_legacy_and_deferred_clients_keep_exact_menu(kind, contract):
     menu = {"version": 2, "topbar": [], "menu": []}
