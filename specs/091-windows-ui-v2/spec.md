@@ -2,8 +2,8 @@
 
 **Feature Branch**: `codex/091-windows-ui-v2`
 **Created**: 2026-09-25
-**Status**: Implemented in the local Windows branch; final qualification and live acceptance remain open
-**Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. Product commits remain local.
+**Status**: Draft implementation; screenshot fidelity, resize consumer, final qualification and live acceptance remain incomplete
+**Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. The owner authorizes branch pushes and draft PRs; no merge or release.
 
 ## User Scenarios & Testing
 

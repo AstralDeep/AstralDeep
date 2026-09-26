@@ -1,29 +1,23 @@
-# Windows UI v2 handoff
+# Windows UI v2 draft handoff
 
-The separate Windows work uses `codex/091-windows-ui-v2` in Deep and Projection. Current Windows source is Projection `8a392370ce6d871df7caaad61a84ae52def22915`; the owner authorizes pushing and opening draft PRs against the shared `codex/090-native-ui-v2` branches. Its final focused cohort passes470tests; the broader partition/package/Linux qualification follows. The preceding complete source-frozen run at `3a76954` passed1586tests with10skips and98.39% changed coverage. Read [verification](verification.md) for exact commands, source identities, prior failures and remaining gaps. This is implemented work under qualification, not complete acceptance or release.
+Windows work is on `codex/091-windows-ui-v2` in Deep and Projection. The owner requested immediate branch publication and PRs. **Visual fidelity to the kos-wiki screenshots is not accepted, and the client is not complete or merge-ready.** Functional test results do not establish screenshot parity.
 
-## Shared ownership
+## Current source
 
-Published shared090 remains Deep `4e2eae707e108ee868212cec653ae107fdb15518` / Projection `1d4a8642a888279dd42a67181412901960b50217`. Refreshed vault `432dfac` reports newer local Mac work at Deep `5065aa04` / Projection `81fddb7`, but it is not remotely available yet. Do not recreate it or edit090 artifacts. The committed-result resize defect requires coordinated fresh scoped hydration on the existing snapshot contract; the vault records the exact investigation and constraints. Keep the stale transient guard intact.
+Projection `e0419ddaad927a64c575eac21bfcc26f54378a3a` integrates published shared Projection `162486570a101cbc00f2ae48dbc33ce73c5d3308`. Deep integrates shared `711d428210e20150e665b81931feb0512156b89e` and pins the combined component. The canonical UI-protocol digest is `25b964ce64553db80cf2789991eb3565bb86c66cc9792849aa496101ef35585d`. Four-source composition and immutable Projection ledger/export checks pass. LETS, Plane and Primitives remain at their existing pins. Windows-authored changes do not modify 090 artifacts or Apple/Android sources.
 
-The snapshot identity/cache correction is shared behavior discovered by Windows qualification. Separate commit `f82a5ddcecf74ccea620e01a6ec6461809ffca30` on `codex/091-snapshot-identity-fix` is based directly on published090 with exactly these three files and no Windows pins or artifacts:
+The Windows scoped viewport hydration consumer is **not implemented**. Its incomplete, untested prototype was removed from active source and preserved only in ignored `build/windows-091/viewport-consumer-recovery/`. The shared contract is available; no competing protocol or post-snapshot guard relaxation was introduced.
 
-- `backend/orchestrator/orchestrator.py`
-- `backend/tests/test_component_chrome_delivery_088.py`
-- `backend/tests/test_canvas_consolidation.py`
+## Evidence and gaps
 
-Its canonical file blobs match the tested94353536 repair. The vault records its exact published commit for the Mac task to integrate. Preserve raw identities for chrome and the public ROTE cache; keep consolidated initial presentation. Do not change the original ambiguous-ID denial test to use distinct data.
+See [verification](verification.md) for exact source-bound results and failures. Prior complete Windows source `3a76954` passed 1,586 tests, 10 skips and 98.39% changed coverage, including all 700 supervision trials. The later lifecycle cohort passed 470 tests; corrected socket/generation fixtures passed 157. The later broad run recorded 1,699 passes and two fixture failures; the superseding rerun was stopped incomplete. These are not a final combined-source suite pass.
 
-## Local runtime and evidence
+Prior Deep d105 / Projection 8a Linux qualification passed 152 affected tests, boot/dependency/composition checks and changed coverage. The 8a executable builds and passes six read-only package checks; its GUI/connected acceptance remains open. Final combined-source CI and screenshot comparison are pending. Draft PRs target 090; Projection core CI filters to main and will not run automatically for that base.
 
-The loopback development backend runs image `sha256:4e531d5a3b0a49261093bbe4628e532e04216111d47b1997444670849899a168`, labeled94353536, with unchanged environment and existing data mounts. The ignored override is `build/windows-091/local-candidate.compose.yml`; ordinary Compose without that override still names its previous image tag. Do not overwrite credentials or reset data when resuming. Worker speech preflight passes; native audio is unverified.
+Remaining blockers: faithful screenshot-based geometry/typography/control layout, the Windows viewport consumer, current-source full CI/coverage, authenticated attachments and Advanced selection, connected frozen acceptance, real microphone/worker playback, physical DPI and the complete logical-size matrix. Desktop input recovery failed; current captures are read-only evidence. No credential or authentication bypass was used.
 
-The final unsigned executable is `components/AstralProjection/windows-client/dist/AstralDeep.exe`, SHA256 `6cec49b1c2c4bd9691a6cec46df1b6aabe924de775705c7ebc836f64e3825bc3`. It remains an ignored local diagnostic artifact. Build logs, JUnit, coverage and exact-source Linux reports are under `build/windows-091/`. Curated evidence and source-bound screenshots are in kos-wiki; the offscreen scaling captures are not physical-display acceptance.
+## Local runtime and cleanup
 
-## Remaining work
+The local development backend remains on image `sha256:906ba6a782f69aeb6993490c01599234e43d8a1cc828de737f653a21ce53be14` (d105), with unchanged configuration/data mounts. It does not run the new shared resize source. Worker, LiveKit and application PostgreSQL remain available. The unsigned 8a executable SHA256 is `32302ec1b8058d8a4cad85805dbbc7676b7656b7bf57b338b43700d8e2020a9d`.
 
-1. The user completed native PKCE and live capture/input recovered. The ignored `build/windows-091/live_native.py` launcher connects the source client to local94353536 with token fallback disabled. Synthetic dice24, fullscreen/collapse and saved authorized export pass; no microphone is exposed. Do not type credentials or manufacture/copy tokens.
-2. Verify current native resize at reference logical dimensions, keyboard/focus, physical125/150/200% DPI/monitor transitions, attachments, real Advanced revision selection, conversation/state restoration, saved authorized export and available share actions. Current hardware reports no touch support; keep that limitation explicit.
-3. Verify real native microphone capture, worker reply, playback, interruption and recovery. Keep the web-only passive voice warning absent while preserving actionable native errors.
-4. Integrate the exact published090 fixture/provenance/voice corrections when available, then rerun affected shared gates and finish complete backend/connected packaged qualification without weakening assertions or deadlines. Current Projection has five inherited failures; the initial complete backend run stopped at its four-hour bound. No full-CI pass is claimed.
-5. Continue curated vault/index/log/screenshot checkpoints and branch pushes under the owner's authorization. No merge, production deployment, signing or release is authorized.
+Temporary test Docker resources are being removed under the owner's cleanup request. Historical logs and qualification artifacts remain under ignored `build/windows-091/`; incomplete driver drafts are not ready to execute. No merge, release or production deployment is authorized.

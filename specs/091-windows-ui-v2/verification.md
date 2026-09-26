@@ -10,6 +10,10 @@ Status: implemented and under qualification; not merged, deployed, released, or 
 - Shared console/v2 labels, catalogs, actions and ROTE geometry remain authoritative. Windows negotiates the existing contract and implements six already-defined primitives. No new primitive, protocol, schema migration, runtime dependency or web wrapper was introduced.
 - Windows-only disposition metadata records implemented guidance and export/share behavior. Other clients' disposition cells and 090 feature artifacts were not edited.
 
+## Publication boundary — September 26
+
+The owner requests immediate PR publication and cleanup, and explicitly rejects the current visual fidelity. **Screenshot parity is not achieved.** Further viewport work was stopped; its incomplete protocol/module prototype is preserved only in ignored recovery files and removed from active source. Projection is clean at `e0419dd`. The newly available shared contract is integrated, but its Windows consumer, final composed qualification and visual acceptance remain open. Earlier source-specific passes below must not be read as a completed Windows client. PRs are drafts with these blockers stated prominently.
+
 ## Commands and results
 
 ### September 26 published shared integration checkpoint
