@@ -1,6 +1,6 @@
-"""Benchmarks that asyncio.gather parallel dispatch beats sequential dispatch using real
-MCP calls to the weather, general, and medical agent servers; writes results to a
-sidecar JSON file for latex_export.py's console summary.
+"""Benchmarks sequential and parallel batches through the real weather, general and
+medical MCP servers, warming geocoding before timing three requests per agent.
+Writes response-validated measurements for latex_export.py's console summary.
 """
 
 import asyncio
@@ -48,6 +48,8 @@ AGENT_CALLS: List[Tuple] = [
     (MedicalMCPServer(), "search_patients", {"min_age": 30, "max_age": 60, "condition": "diabetes"}, "medical_agent"),
 ]
 
+BENCHMARK_CALLS = AGENT_CALLS * 3
+
 
 def _invoke_tool(server, tool_name: str, arguments: dict) -> MCPResponse:
     request = _build_request(tool_name, arguments, request_id=f"bench_{tool_name}")
@@ -58,21 +60,43 @@ async def _invoke_tool_async(server, tool_name: str, arguments: dict) -> MCPResp
     return await asyncio.to_thread(_invoke_tool, server, tool_name, arguments)
 
 
+def _require_success(results, calls):
+    assert len(results) == len(calls)
+    for (_, _, _, label), response in zip(calls, results):
+        assert isinstance(response, MCPResponse), label
+        assert response.error is None, f"{label}: {response.error}"
+        assert response.result is not None or response.ui_components is not None, label
+
+
+async def _warm_agents():
+    results = await asyncio.gather(
+        *[_invoke_tool_async(server, tool, args) for server, tool, args, _ in AGENT_CALLS]
+    )
+    _require_success(results, AGENT_CALLS)
+
+
+async def _measure_batch(*, parallel):
+    start = time.perf_counter()
+    if parallel:
+        results = await asyncio.gather(
+            *[_invoke_tool_async(server, tool, args) for server, tool, args, _ in BENCHMARK_CALLS]
+        )
+    else:
+        results = [
+            await _invoke_tool_async(server, tool, args)
+            for server, tool, args, _ in BENCHMARK_CALLS
+        ]
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    _require_success(results, BENCHMARK_CALLS)
+    return elapsed_ms, results
+
+
 class TestParallelDispatch:
     @pytest.mark.asyncio
     async def test_sequential_vs_parallel_latency(self):
-        sequential_start = time.perf_counter()
-        sequential_results = []
-        for server, tool, args, _label in AGENT_CALLS:
-            result = await _invoke_tool_async(server, tool, args)
-            sequential_results.append(result)
-        sequential_ms = (time.perf_counter() - sequential_start) * 1000
-
-        parallel_start = time.perf_counter()
-        parallel_results = await asyncio.gather(
-            *[_invoke_tool_async(server, tool, args) for server, tool, args, _label in AGENT_CALLS]
-        )
-        parallel_ms = (time.perf_counter() - parallel_start) * 1000
+        await _warm_agents()
+        sequential_ms, sequential_results = await _measure_batch(parallel=False)
+        parallel_ms, parallel_results = await _measure_batch(parallel=True)
 
         speedup = sequential_ms / parallel_ms
         _write_benchmark("latency", {
@@ -80,51 +104,35 @@ class TestParallelDispatch:
             "parallel_ms": round(parallel_ms, 1),
             "speedup": round(speedup, 2),
             "agent_count": len(AGENT_CALLS),
+            "request_count": len(BENCHMARK_CALLS),
+            "requests_per_agent": 3,
         })
 
         assert parallel_ms < sequential_ms, (
             f"Parallel ({parallel_ms:.1f}ms) should be faster than "
             f"sequential ({sequential_ms:.1f}ms)"
         )
-
-        assert len(sequential_results) == len(list(parallel_results))
+        assert len(sequential_results) == len(parallel_results)
 
     @pytest.mark.asyncio
     async def test_parallel_dispatch_correctness(self):
         results = await asyncio.gather(
-            *[_invoke_tool_async(server, tool, args) for server, tool, args, _label in AGENT_CALLS]
+            *[_invoke_tool_async(server, tool, args) for server, tool, args, _ in AGENT_CALLS]
         )
-
-        assert len(results) == len(AGENT_CALLS)
-
-        for i, ((_server, _tool, _args, label), response) in enumerate(zip(AGENT_CALLS, results)):
-            assert isinstance(response, MCPResponse), (
-                f"Result {i} ({label}) is not an MCPResponse"
-            )
-            assert response.error is None, (
-                f"Result {i} ({label}) returned error: {response.error}"
-            )
-            assert response.result is not None or response.ui_components is not None, (
-                f"Result {i} ({label}) has no result data"
-            )
+        _require_success(results, AGENT_CALLS)
 
     @pytest.mark.asyncio
     async def test_parallel_speedup_factor(self):
+        await _warm_agents()
         n_trials = 3
         speedups = []
-
-        for _ in range(n_trials):
-            seq_start = time.perf_counter()
-            for server, tool, args, _label in AGENT_CALLS:
-                await _invoke_tool_async(server, tool, args)
-            seq_ms = (time.perf_counter() - seq_start) * 1000
-
-            par_start = time.perf_counter()
-            await asyncio.gather(
-                *[_invoke_tool_async(s, t, a) for s, t, a, _ in AGENT_CALLS]
-            )
-            par_ms = (time.perf_counter() - par_start) * 1000
-
+        for trial in range(n_trials):
+            if trial % 2:
+                par_ms, _ = await _measure_batch(parallel=True)
+                seq_ms, _ = await _measure_batch(parallel=False)
+            else:
+                seq_ms, _ = await _measure_batch(parallel=False)
+                par_ms, _ = await _measure_batch(parallel=True)
             speedups.append(seq_ms / par_ms)
 
         avg_speedup = sum(speedups) / len(speedups)
@@ -132,6 +140,8 @@ class TestParallelDispatch:
             "n_trials": n_trials,
             "avg_speedup": round(avg_speedup, 2),
             "individual": [round(s, 2) for s in speedups],
+            "request_count": len(BENCHMARK_CALLS),
+            "requests_per_agent": 3,
         })
 
         assert avg_speedup > 1.0, (
