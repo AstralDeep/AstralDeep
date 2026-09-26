@@ -1,3 +1,10 @@
+# Current stopped checkpoint — 2026-09-26
+
+Owner stopped implementation and requested WIP publication. Projection cdec4a63a8fba1cb0279dccca9384377ee09d5f8 is pushed; Deep pins it. Both remote Windows branches were refreshed, preserving concurrent merged 090 work. **No final combined-suite, coverage or visual acceptance pass.** The Windows viewport consumer is now implemented and has 54 focused passes /98% module coverage; the previous “unimplemented” entries below are historical. Settings/dialog has32focused passes /97% adapter coverage. The current console/composer run was stopped with failures present. See [current handoff](handoff.md) for exact remaining gaps, runtime identity, diagnostic screenshot provenance and unsafe packaged-profile tests.
+
+Current narrow backend evidence:140 unique cases,5current admission,310ROTE/chrome and18Chromium passes. Original setup failures/skips remain. Native capture/input failed after prescribed recovery; current physical DPI and native live resize/voice/attachments are unverified. Diagnostic screenshots are not parity acceptance. Earlier complete-suite/coverage results below remain bound to their original source.
+
+---
 # Windows UI v2 verification — 2026-09-25
 
 Status: implemented and under qualification; not merged, deployed, released, or ready for acceptance. The owner has now authorized committing and pushing task work to its branches. Deep and Projection remain on `codex/091-windows-ui-v2`; publication status is recorded at each checkpoint. Feature 090 remains owned by the other machine.
@@ -180,3 +187,4 @@ The final executable changed-line measurement compares against exact Projection 
 3. Connected frozen smokes require valid staging through normal user authentication. The final503b962 executable passes the actual offline GUI/retry test and all separate archive/helper checks; native settings restoration is verified.
 4. Finish latest coverage, affected admission tests, final lint/composition/CI checks and security review. Inherited shared Projection failures and complete backend CI remain unresolved, not waived. Do not modify another machine's 090 artifacts to hide those failures.
 5. Keep published Windows handoff branches and the isolated shared identity fix coordinated with090. Current source/pins are committed and locally qualified to the exact limits above; full acceptance remains open. Refresh and commit/push curated vault pages, image metadata, index and log at each checkpoint. Never stage ignored runtime artifacts, credentials, generated user code, or user data.
+
