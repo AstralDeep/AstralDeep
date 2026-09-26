@@ -12,6 +12,28 @@ Status: implemented and under qualification; not merged, deployed, released, or 
 
 ## Commands and results
 
+### Final session-renewal and narrow-window candidate
+
+Projection `8a392370ce6d871df7caaad61a84ae52def22915` adds expiry-aware normal Keycloak renewal and reuses ordinary registration/resume on the same owner-bound transport. It preserves queued submissions and unchanged conversation controls while fencing retired socket, voice, host and GUI callbacks. Account replacement clears audit data and rejects late results using owner/dialog/request identity. No credentials are logged, copied between sessions or persisted by this change; no new wire contract or dependency is introduced.
+
+Result headings now stack above their existing actions when their measured width requires it. Actionable status text wraps literal long words with native focus rendering and keyboard-scrollable overflow bounded to one-third of the window. Focused header/banner checks pass **13 tests in10.70s** with **144/145 changed lines (99.31%)**; the initial geometry failure remains recorded and its assertion was retained.
+
+The final authentication/transport/voice/workspace/attachment cohort passes **470 tests in37.12s**. The last repair's changed executable coverage is auth **38/38 (100%)**, protocol **152/161 (94.41%)**, app **199/209 (95.22%)**. Exact commands, source hashes and the earlier failed fixture runs are retained in `build/windows-091/auth-refresh-final-evidence.json` and adjacent logs. Independent review and root inspection cover credential expiry, queued owner transitions, fresh accepted hydration and audit isolation; Ruff and diff checks pass.
+
+The broader non-stress Windows partition is running on this immutable source, with reports `windows-final-8a39237.*`. It excludes only `test_byo_supervision_060.py`; that file, its supervisor implementation, resource accessor and fixture inputs are unchanged from the completed `3a76954` full run below. All700 process trials passed there. This split does not claim a new complete-suite run. A fresh frozen package and Linux candidate gates follow the clean composition pin. Live renewal, upload/Advanced and final UI captures remain to be verified.
+
+The owner now explicitly requests branch pushes and PRs. Draft Windows integration PRs will target the published `codex/090-native-ui-v2` branches so the Windows delta is reviewable without taking over the other machine's feature. Shared result resize and unpublished shared CI repairs remain blockers to acceptance, not blockers to this authorized draft handoff. No merge, release or production deployment is authorized.
+
+### Completed lifecycle baseline and new live findings
+
+The source-frozen Projection `3a76954c374cd9c3daf7d6b1818fd2459699e1e2` run completed **1586 passed, 10 skipped, 50 warnings in1860.53s**. This includes all700 process-supervision trials. Exact command and reports are `build/windows-091/windows-full-3a76954.{log,xml,json}`, its JUnit XML and coverage data. `diff-cover` against shared `1d4a864`, with staged/unstaged edits excluded, reports **2384/2423 changed lines (98.39%)**; the90% threshold is unchanged.
+
+Its clean frozen build completed in160.843s with unchanged inputs:101245901bytes, SHA256`27530bf07e8f28e4c0e3011765f68ae72c67ca245156c4fb8e82ac5ca4fc1f84`. Six read-only packaged checks passed in11.03s; native closure has132entries, no unexpected or ambient DLLs, and all20 required ICU symbols. This executable has not received its own GUI/connected qualification.
+
+Later live checks exposed three remaining defects: a narrow result title and long status message can clip; a healthy socket can retain expired credentials while attachment upload returns401 and Advanced fails; committed result layouts do not readapt after resizing until History hydration. Header/banner and credential-renewal repairs are in progress and are **not qualified by the preceding frozen run**. The resize defect is coordinated through vault `d33da8ddb269cc08b82518b5ed36f27ec3955db4`: retain the completed-snapshot stale-frame guard and use the existing snapshot contract with a fresh scoped hydration request, coordinated with the shared owner. No load-chat workaround, local ROTE fork or competing protocol has been introduced.
+
+The live narrow captures are392×875 and322×771 including the native frame; they do not establish every requested logical viewport or physical DPI setting. New Chat followed by History preserved the six-dice total24; successful export and actionable no-microphone feedback remain verified. Successful upload, post-renewal Advanced/selection, native capture/playback, physical DPI changes, tall viewports and connected packaged tests remain open. The shared090 remote anchors are still Deep4e2eae70/Projection1d4a864; later Mac repairs recorded in the vault remain unpublished.
+
 ### Resumed native verification and lifecycle fixes
 
 Projection `3a76954c374cd9c3daf7d6b1818fd2459699e1e2` supersedes503b962 for Windows source. It rejects stale authentication callbacks after account replacement, sign-out or close; Run uses the normal send path including staged attachments while retaining the scenario prompt; attachment controls wrap, scroll into keyboard focus and expose complete filenames; category height includes polished controls even before a refreshed catalog becomes visible. Explicit unavailable voice activation shows actionable feedback without the passive web footer. No shared protocol, backend runtime, schema, dependency, Apple/Android source or090 artifact changed in this correction.

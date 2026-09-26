@@ -1,10 +1,10 @@
 # Windows UI v2 handoff
 
-The separate Windows work uses `codex/091-windows-ui-v2` in Deep and Projection. Current Windows source is Projection `3a76954c374cd9c3daf7d6b1818fd2459699e1e2`; its full suite and replacement package are under qualification. Prior full results bind Deep `94353536f00b1e2d18102474cf0b01cc8822a0a6` and Projection `503b96287b4fbe7ae3a87bea6cb4c4b976b2c981`. Read [verification](verification.md) for exact commands, results, prior failures and remaining gaps. This is implemented work under qualification, not complete acceptance or release.
+The separate Windows work uses `codex/091-windows-ui-v2` in Deep and Projection. Current Windows source is Projection `8a392370ce6d871df7caaad61a84ae52def22915`; the owner authorizes pushing and opening draft PRs against the shared `codex/090-native-ui-v2` branches. Its final focused cohort passes470tests; the broader partition/package/Linux qualification follows. The preceding complete source-frozen run at `3a76954` passed1586tests with10skips and98.39% changed coverage. Read [verification](verification.md) for exact commands, source identities, prior failures and remaining gaps. This is implemented work under qualification, not complete acceptance or release.
 
 ## Shared ownership
 
-Published shared090 remains Deep `4e2eae707e108ee868212cec653ae107fdb15518` / Projection `1d4a8642a888279dd42a67181412901960b50217`. The vault reports newer local Mac work, including Deep `d2a61145` / Projection `ce0c158`, but it is not remotely available yet. Do not recreate it or edit090 artifacts.
+Published shared090 remains Deep `4e2eae707e108ee868212cec653ae107fdb15518` / Projection `1d4a8642a888279dd42a67181412901960b50217`. Refreshed vault `432dfac` reports newer local Mac work at Deep `5065aa04` / Projection `81fddb7`, but it is not remotely available yet. Do not recreate it or edit090 artifacts. The committed-result resize defect requires coordinated fresh scoped hydration on the existing snapshot contract; the vault records the exact investigation and constraints. Keep the stale transient guard intact.
 
 The snapshot identity/cache correction is shared behavior discovered by Windows qualification. Separate commit `f82a5ddcecf74ccea620e01a6ec6461809ffca30` on `codex/091-snapshot-identity-fix` is based directly on published090 with exactly these three files and no Windows pins or artifacts:
 
