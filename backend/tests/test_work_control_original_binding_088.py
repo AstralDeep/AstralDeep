@@ -114,6 +114,8 @@ async def test_caller_observation_expiring_during_original_session_lock_wait_ref
     def assertion():
         with runtime.transaction() as tx:
             runtime.repositories.history.sessions.bound_request_execution_waits(tx)
+            assert tx.fetch_one("SHOW lock_timeout")["lock_timeout"] == "100ms"
+            tx.execute("SET LOCAL lock_timeout = '1s'")
             entered.set()
             combined.assert_current(tx, assignments=bound[0])
     try:

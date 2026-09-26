@@ -830,7 +830,7 @@ async def test_production_turn_seam_emits_one_complete_post_rote_commit_snapshot
     class Rote:
         profile = DeviceProfile.default()
 
-        def adapt(self, _socket, components):
+        def adapt(self, _socket, components, *, cache=True):
             return copy.deepcopy(components)
 
         def get_profile(self, _socket):
