@@ -282,9 +282,16 @@ def _passing_suites(monkeypatch, *, timeout_suite=None):
     return timeouts
 
 
+GROUP_SUITES = {
+    "tests": ["backend-tests"],
+    "persistent_agents": ["backend-persistent_agents-tests"],
+    "modules": [name for name in ALL_SUITES
+                if name not in {"backend-tests", "backend-persistent_agents-tests"}],
+}
+
+
 @pytest.mark.parametrize("group,expected", [
-    (None, ALL_SUITES), ("all", ALL_SUITES), ("tests", ["backend-tests"]),
-    ("modules", [name for name in ALL_SUITES if name != "backend-tests"]),
+    (None, ALL_SUITES), ("all", ALL_SUITES), *GROUP_SUITES.items(),
 ])
 def test_suite_groups_plan_whole_suites_and_record_the_group(tmp_path, monkeypatch, group, expected):
     root = _tree(tmp_path)
@@ -299,14 +306,13 @@ def test_suite_groups_plan_whole_suites_and_record_the_group(tmp_path, monkeypat
     assert evidence["status"] == "pass"
 
 
-def test_tests_and_modules_groups_partition_the_complete_plan(tmp_path):
+def test_whole_suite_groups_partition_the_complete_plan(tmp_path):
     commands = gate.suite_commands(_tree(tmp_path))
-    tests = gate.group_commands(commands, "tests")
-    modules = gate.group_commands(commands, "modules")
+    groups = {group: gate.group_commands(commands, group) for group in GROUP_SUITES}
+    assert gate.GROUPS == ("all", "tests", "persistent_agents", "modules")
     assert gate.group_commands(commands, "all") == commands
-    assert [name for _cwd, _path, name in tests] == ["backend-tests"]
-    assert sorted(tests + modules) == sorted(commands)
-    assert not set(tests) & set(modules)
+    assert {group: [name for _cwd, _path, name in selected] for group, selected in groups.items()} == GROUP_SUITES
+    assert sorted(command for selected in groups.values() for command in selected) == sorted(commands)
     with pytest.raises(ValueError, match="unknown suite group"):
         gate.group_commands(commands, "everything")
 
@@ -331,9 +337,9 @@ def test_each_suite_is_bounded_by_thirty_minutes_and_a_timeout_fails(tmp_path, m
     root = _tree(tmp_path)
     output = root / "evidence"
     timeouts = _passing_suites(monkeypatch, timeout_suite="backend-persistent_agents-tests")
-    assert gate.run(root, output, group="modules") == 1
+    assert gate.run(root, output) == 1
     assert gate.SUITE_TIMEOUT_SECONDS == 1800
-    assert set(timeouts.values()) == {1800}
+    assert timeouts == dict.fromkeys(ALL_SUITES, 1800)
     evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
     results = {item["suite"]: item for item in evidence["suites"]}
     assert results["backend-persistent_agents-tests"]["exit_code"] == 124
@@ -363,7 +369,8 @@ if arguments[:1] == ["run"] and any(argument.endswith("-negative") for argument 
 
 
 @pytest.mark.parametrize("group,expected", [
-    (None, "all"), ("all", "all"), ("tests", "tests"), ("modules", "modules"), ("everything", None),
+    (None, "all"), ("all", "all"), ("tests", "tests"), ("persistent_agents", "persistent_agents"),
+    ("modules", "modules"), ("everything", None),
 ])
 def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, group, expected):
     log = tmp_path / "docker.jsonl"

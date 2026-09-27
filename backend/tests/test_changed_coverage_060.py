@@ -1662,6 +1662,7 @@ def _deep_owner_decision(
     reports: dict[str, Path],
     output: Path,
     *policy: str,
+    mode: str = "strict",
 ) -> tuple[int, dict[str, object]]:
     arguments = [
         "--repo",
@@ -1675,7 +1676,7 @@ def _deep_owner_decision(
         "--repository-profile",
         "deep",
         "--coverage-mode",
-        "strict",
+        mode,
         "--fail-under",
         "90",
         "--output",
@@ -1688,11 +1689,45 @@ def _deep_owner_decision(
     return exit_code, json.loads(output.read_text(encoding="utf-8"))
 
 
-def _not_applicable(base: str, candidate: str) -> dict[str, object]:
+REPORT_SLOTS = {
+    "--backend-python": ("backend", "backend_python"),
+    "--voice-worker-python": ("voice_worker", "backend_python"),
+    "--tooling-python": ("tooling", "tooling_python"),
+    "--projection-python": ("projection_python", "projection_python"),
+    "--javascript": ("javascript", "javascript"),
+}
+
+
+def _slot_identities(reports: dict[str, Path]) -> dict[str, object]:
+    identities: dict[str, object] = {}
+    for flag, report in reports.items():
+        slot, target = REPORT_SLOTS[flag]
+        identities[slot] = {
+            "path": report.as_posix(),
+            **collector.coverage_report_identity(
+                report.read_bytes(), target, producer_key=slot
+            ),
+            "producer_slot": slot,
+        }
+    return identities
+
+
+def _not_applicable(
+    base: str,
+    candidate: str,
+    *,
+    profile: str,
+    changed: list[str],
+    reports: dict[str, Path],
+    contributions: dict[str, int],
+    maintained: tuple[str, ...] = (),
+    deferred: tuple[str, ...] = (),
+) -> dict[str, object]:
     return {
         "schema_version": 1,
         "status": "not-applicable",
         "reason": "no_measurable_changed_lines",
+        "repository_profile": profile,
         "base_sha": base,
         "candidate_sha": candidate,
         "fail_under": 90.0,
@@ -1701,6 +1736,13 @@ def _not_applicable(base: str, candidate: str) -> dict[str, object]:
             "base_source": "manual.base_sha",
             "candidate_source": "manual.candidate_sha",
         },
+        "diff": {
+            "changed_paths": changed,
+            "maintained_paths": list(maintained),
+            "deferred_maintained_paths": list(deferred),
+        },
+        "producer_slots": _slot_identities(reports),
+        "producer_contributions": contributions,
     }
 
 
@@ -1715,12 +1757,16 @@ def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
     }
     if change == "gitlink-and-composition":
         candidate = _repin_composition(repo, base)
+        changed = ["components/AstralPrimitives", "config/astral-composition.json"]
+        maintained: tuple[str, ...] = ()
     else:
         (repo / "backend" / "service.py").write_text(
             "# rationale\nfirst = 1\nsecond = 2\nthird = 3\n", encoding="utf-8"
         )
         candidate = _commit(repo, "comment")
         backend["backend/service.py"] = {2: 1, 3: 1, 4: 1}
+        changed = ["backend/service.py"]
+        maintained = ("backend/service.py",)
     reports = _deep_owner_reports(tmp_path, backend)
 
     exit_code, document = _deep_owner_decision(
@@ -1728,7 +1774,15 @@ def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
         "--empty-diff", "not-applicable",
     )
     assert exit_code == 0
-    assert document == _not_applicable(base, candidate)
+    assert document == _not_applicable(
+        base,
+        candidate,
+        profile="deep",
+        changed=changed,
+        maintained=maintained,
+        reports=reports,
+        contributions={"backend": 6, "voice_worker": 3, "tooling": 3},
+    )
 
     for policy in ((), ("--empty-diff", "error")):
         exit_code, document = _deep_owner_decision(
@@ -1739,15 +1793,23 @@ def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
         assert document["error"]["code"] == "unexpected_empty_executable_diff"
 
 
+@pytest.mark.parametrize(
+    "relative,deferred",
+    [("apple-clients/Scripts/x.py", False), ("windows-client/runtime.py", True)],
+)
 def test_opt_in_policy_records_unmeasured_projection_web_paths_as_not_applicable(
-    tmp_path: Path,
+    tmp_path: Path, relative: str, deferred: bool
 ) -> None:
     repo, original, _reports, slots = _projection_strict_case(tmp_path)
-    helper = repo / "apple-clients" / "Scripts" / "x.py"
-    helper.parent.mkdir(parents=True)
-    helper.write_text("value = 1\n", encoding="utf-8")
-    candidate = _commit(repo, "unmeasured helper")
+    changed = repo / relative
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text("value = 1\n", encoding="utf-8")
+    candidate = _commit(repo, "unmeasured or deferred path")
     output = tmp_path / "decision.json"
+    reports = {
+        "--projection-python": slots["projection_python"],
+        "--javascript": slots["javascript"],
+    }
     arguments = [
         "--repo",
         str(repo),
@@ -1761,24 +1823,60 @@ def test_opt_in_policy_records_unmeasured_projection_web_paths_as_not_applicable
         "projection-web",
         "--coverage-mode",
         "strict",
-        "--projection-python",
-        str(slots["projection_python"]),
-        "--javascript",
-        str(slots["javascript"]),
         "--fail-under",
         "90",
         "--output",
         str(output),
     ]
+    for flag, report in reports.items():
+        arguments.extend((flag, str(report)))
+    composed = f"components/AstralProjection/{relative}"
 
     assert collector.main([*arguments, "--empty-diff", "not-applicable"]) == 0
     assert json.loads(output.read_text(encoding="utf-8")) == _not_applicable(
-        original.candidate_sha, candidate
+        original.candidate_sha,
+        candidate,
+        profile="projection-web",
+        changed=[composed],
+        deferred=(composed,) if deferred else (),
+        reports=reports,
+        contributions={"projection_python": 5, "javascript": 1},
     )
 
     assert collector.main(arguments) == 1
     document = json.loads(output.read_text(encoding="utf-8"))
     assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+
+def test_not_applicable_policy_requires_strict_coverage_mode(tmp_path: Path) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    candidate = _repin_composition(repo, base)
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, {}, tmp_path / "partial.json",
+        "--empty-diff", "not-applicable", mode="partial",
+    )
+    assert exit_code == 1
+    assert document["status"] == "error"
+    assert document["error"] == {
+        "code": "invalid_empty_diff_policy",
+        "message": "the not-applicable empty-diff policy requires strict coverage mode",
+    }
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, {}, tmp_path / "default.json", mode="partial"
+    )
+    assert exit_code == 1
+    assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+    with pytest.raises(collector.CoveragePolicyError) as rejected:
+        collector.evaluate_changed_coverage(
+            tmp_path / "absent",
+            _selection(repo, base, candidate),
+            {},
+            empty_diff="not-applicable",
+        )
+    assert rejected.value.code == "invalid_empty_diff_policy"
 
 
 @pytest.mark.parametrize(

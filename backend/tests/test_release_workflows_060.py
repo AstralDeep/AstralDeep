@@ -1688,12 +1688,13 @@ def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable()
             assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
 
 
-def test_backend_suites_run_as_two_whole_suite_groups_with_merged_coverage() -> None:
+def test_backend_suites_run_as_three_whole_suite_groups_with_merged_coverage() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    groups = ("tests", "persistent_agents", "modules")
     web = _workflow_job(workflow, "backend-web")
     assert (
         "    strategy:\n      fail-fast: false\n      matrix:\n        group:\n"
-        "          - tests\n          - modules\n"
+        + "".join(f"          - {group}\n" for group in groups)
     ) in web
     assert "ASTRAL_GATE_GROUP: ${{ matrix.group }}" in web
     assert 'bash scripts/backend_web_image_gate.sh "$(cat build/backend-web/image-id.txt)" tests' in web
@@ -1705,13 +1706,14 @@ def test_backend_suites_run_as_two_whole_suite_groups_with_merged_coverage() -> 
     assert "needs: [backend-web, voice-worker-test]" in coverage
     downloads = [
         f"name: backend-web-test-evidence-{group}\n          path: build/backend-web-groups/{group}\n"
-        for group in ("tests", "modules")
+        for group in groups
     ]
     merge = coverage.index("python scripts/merge_backend_web_coverage.py --root . --output build/backend-web")
     check = coverage.index("python scripts/check_changed_coverage.py")
     assert all(coverage.index(download) < merge for download in downloads)
     assert merge < check
-    for group in ("tests", "modules"):
+    assert coverage.count("--evidence build/backend-web-groups/") == len(groups)
+    for group in groups:
         assert f"--evidence build/backend-web-groups/{group}" in coverage
     for report in (
         "--backend-python build/backend-web/backend-python.xml",

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Merges the raw coverage data of the backend-web tests and modules suite groups into the
+"""Merges the raw coverage data of the backend-web whole-suite groups into the
 backend-python.xml and tooling-python.xml reports one complete run_backend_web_tests.py pass
-writes, for check_changed_coverage.py. It admits only passing group evidence that partitions
-the checkout's complete suite plan, remaps the container-recorded paths onto the checkout, and
-writes the reports with the runner's own report writer.
+writes, for check_changed_coverage.py. It admits only passing evidence from every group, each
+holding exactly its assigned suites of the checkout's complete plan, remaps the
+container-recorded paths onto the checkout, and writes the reports with the runner's writer.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from typing import Any
 from coverage import CoverageData, CoverageException
 
 
-GROUPS = ("modules", "tests")
 RECORDED_ROOT = "/workspace"
 PLAN_KEYS = {"schema_version", "group", "source_commit", "runner_sha256", "reporter_sha256", "suites"}
 SUITE_KEYS = {"suite", "cwd", "path"}
@@ -37,6 +36,7 @@ def _load_runner() -> Any:
 
 
 runner = _load_runner()
+GROUPS = tuple(sorted(group for group in runner.GROUPS if group != "all"))
 
 
 def _document(path: Path) -> Any:
@@ -66,21 +66,37 @@ def _group_plan(directory: Path) -> dict[str, Any]:
     return plan
 
 
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _suites(root: Path, commands: Sequence[tuple[Path, str, str]]) -> list[tuple[str, str, str]]:
+    return sorted((name, cwd.relative_to(root).as_posix(), path) for cwd, path, name in commands)
+
+
+def _planned(plan: dict[str, Any]) -> list[tuple[str, str, str]]:
+    return sorted((item["suite"], item["cwd"], item["path"]) for item in plan["suites"])
+
+
 def validate_groups(root: Path, directories: Sequence[Path]) -> None:
     plans = [_group_plan(directory) for directory in directories]
     if sorted(plan["group"] for plan in plans) != list(GROUPS):
-        raise ValueError("exactly one tests group and one modules group are required")
-    runner_digest = hashlib.sha256(Path(runner.__file__).read_bytes()).hexdigest()
+        raise ValueError("exactly one evidence directory per suite group is required: " + ", ".join(GROUPS))
     identities = {(plan["source_commit"], plan["runner_sha256"], plan["reporter_sha256"]) for plan in plans}
-    if len(identities) != 1 or plans[0]["runner_sha256"] != runner_digest:
-        raise ValueError("suite groups come from different sources or suite runners")
+    if len(identities) != 1:
+        raise ValueError("suite groups come from different sources, suite runners or reporters")
+    runner_path = Path(runner.__file__)
+    if (plans[0]["runner_sha256"], plans[0]["reporter_sha256"]) != (
+            _digest(runner_path), _digest(runner_path.with_name("backend_web_test_reporter.py"))):
+        raise ValueError("suite groups were not produced by this suite runner and reporter")
     if plans[0]["source_commit"] != runner.source_identity(root):
         raise ValueError("suite groups were not produced from this checkout")
-    planned = sorted((item["suite"], item["cwd"], item["path"]) for plan in plans for item in plan["suites"])
-    complete = sorted((name, cwd.relative_to(root).as_posix(), path)
-                      for cwd, path, name in runner.suite_commands(root))
-    if planned != complete:
+    commands = runner.suite_commands(root)
+    if sorted(suite for plan in plans for suite in _planned(plan)) != _suites(root, commands):
         raise ValueError("suite groups do not partition one complete suite plan")
+    for plan in plans:
+        if _planned(plan) != _suites(root, runner.group_commands(commands, plan["group"])):
+            raise ValueError(f"the {plan['group']} group does not hold exactly its assigned suites")
 
 
 def _group_data(directory: Path, prefix: str) -> CoverageData:
@@ -113,9 +129,12 @@ def merge(root: Path, directories: Sequence[Path], output: Path, *,
     combined_path.unlink(missing_ok=True)
     combined = CoverageData(basename=str(combined_path))
     target = f"{root}/"
-    for data in groups:
-        combined.update(data, map_path=lambda source: target + source[len(prefix):])
-    combined.write()
+    try:
+        for data in groups:
+            combined.update(data, map_path=lambda source: target + source[len(prefix):])
+        combined.write()
+    except CoverageException as exc:
+        raise ValueError(f"group coverage data could not be combined: {exc}") from exc
     environ = dict(os.environ) | {"COVERAGE_FILE": str(combined_path), "PYTHONDONTWRITEBYTECODE": "1"}
     if not runner.write_coverage_reports(root, output, environ):
         raise ValueError("coverage reports could not be written from the merged group data")

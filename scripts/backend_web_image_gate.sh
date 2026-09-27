@@ -10,7 +10,7 @@ group="${ASTRAL_GATE_GROUP:-all}"
 [[ "$phase" == tests || "$phase" == boot ]]
 [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
 case "$group" in
-  all | tests | modules) ;;
+  all | tests | persistent_agents | modules) ;;
   *) echo "unknown backend suite group: $group" >&2; exit 2 ;;
 esac
 root="$(pwd)"

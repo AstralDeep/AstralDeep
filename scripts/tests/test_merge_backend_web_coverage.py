@@ -1,6 +1,6 @@
-"""Tests for scripts/merge_backend_web_coverage.py: merged tests and modules group coverage
-equals one complete run_backend_web_tests.py pass, and incomplete, inconsistent or unusable
-group evidence is refused.
+"""Tests for scripts/merge_backend_web_coverage.py: the merged coverage of every whole-suite
+group equals one complete run_backend_web_tests.py pass, and incomplete, misassigned,
+inconsistent or unusable group evidence is refused.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from coverage import CoverageData
+from coverage.exceptions import DataError
 
 from scripts import merge_backend_web_coverage as merge
 from scripts import run_backend_web_tests as gate
@@ -29,6 +30,7 @@ WORKSPACE = {
         "def decide(value):\n    if value > 0:\n        return 'positive'\n    return 'other'\n"
     ),
     "backend/service/idle.py": "def idle():\n    return 0\n",
+    "backend/service/audit.py": "def audit(entries):\n    return len(entries)\n",
     "backend/tests/test_decide.py": (
         "from service.decide import decide\n\n\ndef test_positive():\n"
         "    assert decide(1) == 'positive'\n"
@@ -38,6 +40,10 @@ WORKSPACE = {
     "backend/persistent_agents/tests/test_agents.py": (
         "from service.decide import decide\n\n\ndef test_other():\n"
         "    assert decide(-1) == 'other'\n"
+    ),
+    "backend/audit/tests/test_audit.py": (
+        "from service.audit import audit\n\n\ndef test_audit():\n"
+        "    assert audit([1, 2]) == 2\n"
     ),
     "scripts/tool.py": "def tool(flag):\n    if flag:\n        return 1\n    return 0\n",
     "scripts/tests/test_tool.py": (
@@ -107,13 +113,14 @@ def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
     for key in ("COVERAGE_FILE", "COVERAGE_PROCESS_START", "COVERAGE_RCFILE"):
         monkeypatch.delenv(key, raising=False)
     evidence = workspace / "build"
-    for group in ("all", "tests", "modules"):
+    for group in gate.GROUPS:
         assert gate.run(workspace, evidence / group, group=group) == 0
+    assert merge.GROUPS == ("modules", "persistent_agents", "tests")
     repository = (tmp_path / "repository").resolve()
     subprocess.run(["git", "clone", "-q", str(workspace), str(repository)], check=True)
 
     output = repository / "build/backend-web"
-    merge.merge(repository, [evidence / "tests", evidence / "modules"], output,
+    merge.merge(repository, [evidence / group for group in merge.GROUPS], output,
                 recorded_root=str(workspace))
 
     for report, target in (("backend-python.xml", "backend_python"),
@@ -124,13 +131,14 @@ def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
         assert _semantic_identity(merged, target) == _semantic_identity(complete, target)
         assert _sources(complete) == [str(workspace)]
         assert _sources(merged) == [str(repository)]
-    assert _report_facts(evidence / "tests/backend-python.xml") != _report_facts(
-        evidence / "all/backend-python.xml")
+    for group in merge.GROUPS:
+        assert _report_facts(evidence / group / "backend-python.xml") != _report_facts(
+            evidence / "all/backend-python.xml")
     measured = CoverageData(basename=str(output / ".coverage"))
     measured.read()
     assert measured.measured_files() == {
         str(repository / relative) for relative in (
-            "backend/service/__init__.py", "backend/service/decide.py",
+            "backend/service/__init__.py", "backend/service/audit.py", "backend/service/decide.py",
             "backend/service/idle.py", "scripts/tool.py",
         )
     }
@@ -153,7 +161,7 @@ def _checkout(tmp_path: Path) -> Path:
 def _evidence(tmp_path: Path, root: Path, recorded: Path) -> dict[str, Path]:
     commands = gate.suite_commands(root)
     directories = {}
-    for group in ("tests", "modules"):
+    for group in merge.GROUPS:
         directory = tmp_path / group
         directory.mkdir()
         suites = [{"suite": name, "cwd": cwd.relative_to(root).as_posix(), "path": path}
@@ -188,8 +196,18 @@ def _replace_data(directory: Path, change) -> None:
     data.write()
 
 
+def _move_tooling(groups: dict[str, Path]) -> None:
+    _rewrite(groups["modules"], "suite-plan.json", lambda document: document["suites"].pop())
+    _rewrite(groups["modules"], "test-results.json", lambda document: document["suites"].pop())
+    _rewrite(groups["persistent_agents"], "suite-plan.json", lambda document: document["suites"].append(
+        {"suite": "tooling", "cwd": ".", "path": "scripts/tests"}))
+    _rewrite(groups["persistent_agents"], "test-results.json", lambda document: document["suites"].append(
+        {"suite": "tooling", "status": "pass"}))
+
+
 EVIDENCE_REFUSALS = {
-    "one-group": lambda groups, recorded: groups.pop("modules"),
+    "missing-group": lambda groups, recorded: groups.pop("persistent_agents"),
+    "single-group": lambda groups, recorded: [groups.pop(group) for group in ("modules", "persistent_agents")],
     "duplicate-group": lambda groups, recorded: [
         _rewrite(groups["modules"], name, lambda document: document.update(group="tests"))
         for name in ("suite-plan.json", "test-results.json")],
@@ -212,6 +230,13 @@ EVIDENCE_REFUSALS = {
     "stale-runner": lambda groups, recorded: [
         _rewrite(directory, "suite-plan.json", lambda document: document.update(runner_sha256="0" * 64))
         for directory in groups.values()],
+    "different-reporter": lambda groups, recorded: _rewrite(
+        groups["persistent_agents"], "suite-plan.json",
+        lambda document: document.update(reporter_sha256="0" * 64)),
+    "stale-reporter": lambda groups, recorded: [
+        _rewrite(directory, "suite-plan.json", lambda document: document.update(reporter_sha256="0" * 64))
+        for directory in groups.values()],
+    "misassigned-suite": lambda groups, recorded: _move_tooling(groups),
     "missing-suite": lambda groups, recorded: [
         _rewrite(groups["modules"], name, lambda document: document["suites"].pop())
         for name in ("suite-plan.json", "test-results.json")],
@@ -247,8 +272,9 @@ EVIDENCE_REFUSALS = {
             {str(recorded / "backend/../../outside.py"): {(-1, 1)}})),
 }
 REFUSAL_REASONS = {
-    "one-group": "exactly one tests group and one modules group",
-    "duplicate-group": "exactly one tests group and one modules group",
+    "missing-group": "exactly one evidence directory per suite group",
+    "single-group": "exactly one evidence directory per suite group",
+    "duplicate-group": "exactly one evidence directory per suite group",
     "complete-group": "does not hold a backend-web suite group plan",
     "malformed-plan": "does not hold a backend-web suite group plan",
     "unversioned-plan": "does not hold a backend-web suite group plan",
@@ -259,9 +285,12 @@ REFUSAL_REASONS = {
     "failed-results": "does not hold passing results",
     "partial-results": "does not hold passing results",
     "result-source": "does not hold passing results",
-    "group-source": "different sources or suite runners",
-    "different-runner": "different sources or suite runners",
-    "stale-runner": "different sources or suite runners",
+    "group-source": "different sources, suite runners or reporters",
+    "different-runner": "different sources, suite runners or reporters",
+    "different-reporter": "different sources, suite runners or reporters",
+    "stale-runner": "not produced by this suite runner and reporter",
+    "stale-reporter": "not produced by this suite runner and reporter",
+    "misassigned-suite": "does not hold exactly its assigned suites",
     "missing-suite": "do not partition one complete suite plan",
     "duplicated-suite": "do not partition one complete suite plan",
     "unreadable-plan": "is not readable JSON evidence",
@@ -318,7 +347,7 @@ def test_merge_writes_reports_from_remapped_data_and_fails_when_they_cannot_be_w
         return len(written) == 1
 
     monkeypatch.setattr(merge.runner, "write_coverage_reports", write)
-    merge.merge(root, [groups["modules"], groups["tests"]], output, recorded_root=str(recorded) + "/")
+    merge.merge(root, list(reversed(groups.values())), output, recorded_root=str(recorded) + "/")
     assert written == [(root, output, {str(root / "backend/service.py")}, True)]
     with pytest.raises(ValueError, match="could not be written"):
         merge.merge(root, list(groups.values()), output, recorded_root=str(recorded))
@@ -328,10 +357,11 @@ def test_cli_merges_or_reports_a_refusal(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(merge, "merge", lambda root, groups, output, *, recorded_root: calls.append(
         (root, groups, output, recorded_root)))
-    arguments = ["--root", str(tmp_path), "--output", str(tmp_path / "out"),
-                 "--evidence", str(tmp_path / "tests"), "--evidence", str(tmp_path / "modules")]
+    arguments = ["--root", str(tmp_path), "--output", str(tmp_path / "out")]
+    for group in merge.GROUPS:
+        arguments += ["--evidence", str(tmp_path / group)]
     assert merge.main(arguments) == 0
-    assert calls == [(tmp_path.resolve(), [(tmp_path / "tests").resolve(), (tmp_path / "modules").resolve()],
+    assert calls == [(tmp_path.resolve(), [(tmp_path / group).resolve() for group in merge.GROUPS],
                       (tmp_path / "out").resolve(), "/workspace")]
 
     def refuse(*_arguments, **_keywords):
@@ -340,3 +370,29 @@ def test_cli_merges_or_reports_a_refusal(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(merge, "merge", refuse)
     assert merge.main([*arguments, "--recorded-root", "/container"]) == 1
     assert "suite groups do not partition one complete suite plan" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("operation", ["update", "write"])
+def test_merge_refuses_group_data_that_coverage_cannot_combine(tmp_path, monkeypatch, capsys, operation):
+    root = _checkout(tmp_path)
+    recorded = tmp_path / "recorded"
+    groups = _evidence(tmp_path, root, recorded)
+    monkeypatch.setattr(merge.runner, "source_identity", lambda checkout: "a" * 40)
+    written = []
+    monkeypatch.setattr(merge.runner, "write_coverage_reports",
+                        lambda *arguments: written.append(arguments) or True)
+
+    def fail(*_arguments, **_keywords):
+        raise DataError("Can't combine branch coverage data with statement data")
+
+    monkeypatch.setattr(merge.CoverageData, operation, fail)
+    with pytest.raises(ValueError, match="group coverage data could not be combined"):
+        merge.merge(root, list(groups.values()), tmp_path / "merged", recorded_root=str(recorded))
+    arguments = ["--root", str(root), "--output", str(tmp_path / "merged"),
+                 "--recorded-root", str(recorded)]
+    for directory in groups.values():
+        arguments += ["--evidence", str(directory)]
+    assert merge.main(arguments) == 1
+    assert ("backend-web coverage merge refused: group coverage data could not be combined: "
+            "Can't combine branch coverage data with statement data") in capsys.readouterr().err
+    assert written == []

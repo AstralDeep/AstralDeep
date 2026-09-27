@@ -109,6 +109,7 @@ jobs:
       matrix:
         group:
           - tests
+          - persistent_agents
           - modules
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -391,18 +392,23 @@ jobs:
           path: build/backend-web-groups/tests
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          name: backend-web-test-evidence-persistent_agents
+          path: build/backend-web-groups/persistent_agents
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
           name: backend-web-test-evidence-modules
           path: build/backend-web-groups/modules
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: voice-worker-coverage
           path: build/065/coverage
-      - name: Merge the raw coverage of both whole-suite groups into complete-run reports
+      - name: Merge the raw coverage of every whole-suite group into complete-run reports
         run: |
           set -euo pipefail
           python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
           python scripts/merge_backend_web_coverage.py --root . --output build/backend-web \
             --evidence build/backend-web-groups/tests \
+            --evidence build/backend-web-groups/persistent_agents \
             --evidence build/backend-web-groups/modules
       - name: Enforce immutable event or reviewed PR-base comparison
         env:

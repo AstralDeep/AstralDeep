@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Runs every backend/module test suite, or its whole-suite tests or modules group, in
-isolated processes against a caller-provisioned disposable PostgreSQL server and writes
-JUnit results and coverage reports; a CI test producer only, not a production-readiness
-decision. merge_backend_web_coverage.py reuses its plan and report writer for the groups.
+"""Runs every backend/module test suite, or one whole-suite group of them, in isolated
+processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
+and coverage reports; a CI test producer only, not a production-readiness decision.
+merge_backend_web_coverage.py reuses its plan and report writer for the groups.
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from uuid import uuid4
 
 
 POLICY_ROOT = Path(__file__).resolve().parents[1]
-GROUPS = ("all", "tests", "modules")
+DEDICATED_GROUP_SUITES = {"tests": "backend-tests", "persistent_agents": "backend-persistent_agents-tests"}
+GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
 SUITE_TIMEOUT_SECONDS = 1800
 
 
@@ -53,9 +54,11 @@ def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
 def group_commands(commands: list[tuple[Path, str, str]], group: str) -> list[tuple[Path, str, str]]:
     if group == "all":
         return commands
-    if group in {"tests", "modules"}:
-        return [command for command in commands
-                if (command[2] == "backend-tests") == (group == "tests")]
+    if group in DEDICATED_GROUP_SUITES:
+        return [command for command in commands if command[2] == DEDICATED_GROUP_SUITES[group]]
+    if group == "modules":
+        dedicated = set(DEDICATED_GROUP_SUITES.values())
+        return [command for command in commands if command[2] not in dedicated]
     raise ValueError(f"unknown suite group {group!r}")
 
 

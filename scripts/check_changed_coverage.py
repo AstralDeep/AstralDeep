@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import hashlib
 import importlib.util
 import io
@@ -2102,16 +2103,32 @@ def _selection_record(selection: RevisionSelection) -> dict[str, str]:
 
 
 def _not_applicable_decision(
-    selection: RevisionSelection, threshold: Decimal
+    selection: RevisionSelection,
+    threshold: Decimal,
+    *,
+    repository_profile: str,
+    changed: Mapping[str, set[int]],
+    maintained: Mapping[str, CoverageTarget],
+    deferred_paths: Sequence[str],
+    producer_slots: Mapping[str, Mapping[str, Any]],
+    producer_contributions: Mapping[str, int],
 ) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "not-applicable",
         "reason": "no_measurable_changed_lines",
+        "repository_profile": repository_profile,
         "base_sha": selection.base_sha,
         "candidate_sha": selection.candidate_sha,
         "fail_under": float(threshold),
         "selection": _selection_record(selection),
+        "diff": {
+            "changed_paths": sorted(changed),
+            "maintained_paths": sorted(maintained),
+            "deferred_maintained_paths": sorted(deferred_paths),
+        },
+        "producer_slots": dict(producer_slots),
+        "producer_contributions": dict(producer_contributions),
     }
 
 
@@ -2517,6 +2534,11 @@ def evaluate_changed_coverage(
         raise CoveragePolicyError(
             "invalid_empty_diff_policy", f"unknown empty-diff policy {empty_diff!r}"
         )
+    if empty_diff == "not-applicable" and not strict_producers:
+        raise CoveragePolicyError(
+            "invalid_empty_diff_policy",
+            "the not-applicable empty-diff policy requires strict coverage mode",
+        )
     threshold = _threshold(fail_under)
     report_inputs = _unique_report_inputs(reports, producer_slots)
     slot_by_path: dict[Path, str] = {}
@@ -2610,8 +2632,19 @@ def evaluate_changed_coverage(
         if strict_producers
         else {}
     )
+    not_applicable = functools.partial(
+        _not_applicable_decision,
+        selection,
+        threshold,
+        repository_profile=repository_profile,
+        changed=changed,
+        maintained=maintained,
+        deferred_paths=deferred_paths,
+        producer_slots=producer_summary,
+        producer_contributions=producer_contributions,
+    )
     if not maintained:
-        return _not_applicable_decision(selection, threshold)
+        return not_applicable()
 
     target_data: dict[str, CoverageData] = {}
     report_summary: dict[str, Any] = {}
@@ -2695,7 +2728,7 @@ def evaluate_changed_coverage(
             )
     if not line_records:
         if empty_diff == "not-applicable":
-            return _not_applicable_decision(selection, threshold)
+            return not_applicable()
         raise CoveragePolicyError(
             "unexpected_empty_executable_diff",
             "coverage reports map no executable added or modified lines",
@@ -2835,8 +2868,8 @@ def _parser() -> argparse.ArgumentParser:
         default="error",
         help=(
             "error fails an immutable diff with no measurable changed lines; "
-            "not-applicable records it as an explicit not-applicable decision "
-            "after the same report validation"
+            "not-applicable, allowed only with strict coverage mode, records it "
+            "as an explicit not-applicable decision after the same report validation"
         ),
     )
     parser.add_argument(
