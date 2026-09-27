@@ -154,19 +154,11 @@ jobs:
             throw "PyInstaller did not produce AstralDeep.exe"
           }
 
-      - name: Clear the native QSettings key
-        shell: pwsh
-        run: |
-          reg.exe delete HKCU\Software\AstralDeep\WindowsClient /f 2>$null
-          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
-            throw "could not clear the WindowsClient QSettings key"
-          }
-          exit 0
-
       - name: Preflight the actual frozen profile, runtime, and lock
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $env:ASTRAL_WINDOWS_PROFILE_ID = [guid]::NewGuid().ToString('D')
           # AstralDeep.exe is built WINDOWED (console=False in AstralDeep.spec).
           # PowerShell's call operator returns immediately for a GUI subsystem
           # binary and never sets $LASTEXITCODE, so the previous check compared

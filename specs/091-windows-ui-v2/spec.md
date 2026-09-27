@@ -2,8 +2,15 @@
 
 **Feature Branch**: `codex/091-windows-ui-v2`
 **Created**: 2026-09-25
-**Status**: Draft implementation; screenshot fidelity, resize consumer, final qualification and live acceptance remain incomplete
+**Status**: Implemented and locally qualified; physical-display, authenticated interaction and real voice acceptance remain open
 **Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. The owner authorizes branch pushes and draft PRs; no merge or release.
+
+## September 26 continuation constraints
+
+- The owner requested refreshing the Astral, LETS and kos-wiki repositories and continuing the existing 091 Windows implementation against the complete archived web screenshot reference.
+- After completing ordinary Keycloak sign-in, the owner instructed: "figure out the windows app without using computer use. im trying to work". This continuation uses offscreen Qt rendering, automated tests and non-visible packaged checks. It must not activate or manipulate the user's desktop.
+- Synthetic screenshots and Qt scale emulation must remain distinguishable from authenticated dispatch, physical Windows DPI transitions, microphone capture and speaker playback. Those acceptance requirements remain recorded when unperformed.
+- Earlier publication records below describe their own handoff checkpoints. This continuation retains local product commits and publishes only the preauthorized curated wiki checkpoint.
 
 ## User Scenarios & Testing
 

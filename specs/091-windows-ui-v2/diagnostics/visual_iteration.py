@@ -11,18 +11,18 @@ import re
 import sys
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[2]
-PROJECTION = ROOT / 'components/AstralProjection'
+ROOT = Path(__file__).resolve().parents[3]
+PROJECTION = Path(os.environ.get('ASTRAL_PROJECTION_ROOT', ROOT / 'components/AstralProjection')).expanduser().resolve()
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['ASTRAL_WIN_AGENT'] = '0'
-sys.path[:0] = [str(PROJECTION / 'windows-client'), str(PROJECTION / 'windows-client/tests')]
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QPushButton
-from PySide6.QtTest import QTest
-from astral_client import app as appmod
-from test_message_routing import _FakeClient
-from test_console_shell import MENU, GEOMETRY, CONNECTION
-from test_composer_geometry import DEVICE, frame
+sys.path[:0] = [str(PROJECTION), str(PROJECTION / 'src'), str(PROJECTION / 'backend'), str(PROJECTION / 'windows-client'), str(PROJECTION / 'windows-client/tests')]
+from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from astral_client import app as appmod  # noqa: E402
+from test_message_routing import _FakeClient  # noqa: E402
+from test_console_shell import MENU, GEOMETRY, CONNECTION  # noqa: E402
+from test_composer_geometry import DEVICE, frame  # noqa: E402
 
 def literal_assignments(path, wanted):
     result = {}
@@ -57,37 +57,41 @@ spec = importlib.util.spec_from_file_location('visual_composer', PROJECTION / 'b
 composer = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = composer
 spec.loader.exec_module(composer)
-out = ROOT / 'build/windows-091/visual-iteration'
-out.mkdir(exist_ok=True)
-application = QApplication([])
-appmod.configure(application)
-settings = QSettings(str(out / 'diagnostic.ini'), QSettings.Format.IniFormat)
-with patch.object(appmod, 'OrchestratorClient', _FakeClient), patch.object(appmod, 'QSettings', lambda *a, **k: settings), patch.object(appmod.MainWindow, '_start_integrity_check', lambda self: None), patch.object(appmod.MainWindow, '_init_workspace', lambda self: None), patch.object(appmod, 'load_or_create_voice_device_id', lambda: DEVICE):
-    window = appmod.MainWindow('ws://127.0.0.1:9/ws', '', connect=False)
-    window.client.connection_generation = CONNECTION
-    window._continuity.bind_connection(CONNECTION)
-    window._on_message({'type':'chrome_menu','model':menu})
-    window._on_message({'type':'rote_config','device_profile':{'console':GEOMETRY[5]['presentation']}})
-    window.show()
-    window._voice_widget.apply_composer_state(frame(composer), CONNECTION)
-    results = []
-    for geometry in [row for row in reversed(GEOMETRY) if row['viewport'] in [[1440,900],[1280,800],[1024,768],[834,1194],[768,1024],[390,844],[320,740]]]:
-        width,height = geometry['viewport']
-        window.resize(width,height)
-        window._on_message({'type':'rote_config','device_profile':{'console':geometry['presentation']}})
-        for _ in range(8):
+def main():
+    out = ROOT / 'build/windows-091/visual-iteration'
+    out.mkdir(parents=True, exist_ok=True)
+    application = QApplication([])
+    appmod.configure(application)
+    settings = QSettings(str(out / 'diagnostic.ini'), QSettings.Format.IniFormat)
+    with patch.object(appmod, 'OrchestratorClient', _FakeClient), patch.object(appmod, 'create_settings', lambda *a, **k: settings), patch.object(appmod.MainWindow, '_start_integrity_check', lambda self: None), patch.object(appmod.MainWindow, '_init_workspace', lambda self: None), patch.object(appmod, 'load_or_create_voice_device_id', lambda: DEVICE):
+        window = appmod.MainWindow('ws://127.0.0.1:9/ws', '', connect=False)
+        window.client.connection_generation = CONNECTION
+        window._continuity.bind_connection(CONNECTION)
+        window._on_message({'type':'chrome_menu','model':menu})
+        window._on_message({'type':'rote_config','device_profile':{'console':GEOMETRY[5]['presentation']}})
+        window.show()
+        window._voice_widget.apply_composer_state(frame(composer), CONNECTION)
+        results = []
+        for geometry in [row for row in reversed(GEOMETRY) if row['viewport'] in [[1440,900],[1280,800],[1024,768],[834,1194],[768,1024],[390,844],[320,740]]]:
+            width,height = geometry['viewport']
+            window.resize(width,height)
+            window._on_message({'type':'rote_config','device_profile':{'console':geometry['presentation']}})
+            for _ in range(8):
+                QApplication.processEvents()
+                QTest.qWait(20)
+            shell = window._console_shell
+            shell._size_controls()
+            window._input.clearFocus()
             QApplication.processEvents()
-            QTest.qWait(20)
-        shell = window._console_shell
-        shell._size_controls()
-        window._input.clearFocus()
-        QApplication.processEvents()
-        assert (window.width(),window.height()) == (width,height)
-        window.grab().save(str(out / f'landing-{width}x{height}.png'))
-        widgets = {name: getattr(shell,name) for name in ['sidebar','header','title','subtitle','categories_scroll','scenarios','composer']}
-        positions = {name:[widget.mapTo(window, widget.rect().topLeft()).x(),widget.mapTo(window,widget.rect().topLeft()).y(),widget.width(),widget.height()] for name,widget in widgets.items()}
-        results.append({'size':[width,height],'widgets':positions})
-    (out / 'geometry.json').write_text(json.dumps(results,indent=2))
-    window.close()
+            assert (window.width(),window.height()) == (width,height)
+            window.grab().save(str(out / f'landing-{width}x{height}.png'))
+            widgets = {name: getattr(shell,name) for name in ['sidebar','header','title','subtitle','categories_scroll','scenarios','composer']}
+            positions = {name:[widget.mapTo(window, widget.rect().topLeft()).x(),widget.mapTo(window,widget.rect().topLeft()).y(),widget.width(),widget.height()] for name,widget in widgets.items()}
+            results.append({'size':[width,height],'widgets':positions})
+        (out / 'geometry.json').write_text(json.dumps(results,indent=2))
+        window.close()
 
 
+
+if __name__ == "__main__":
+    main()

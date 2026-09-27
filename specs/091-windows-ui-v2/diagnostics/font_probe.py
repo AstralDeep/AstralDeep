@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-root = Path(__file__).resolve().parents[2]
+root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(root / "components/AstralProjection/windows-client"))
-from PySide6 import __version__
-from PySide6.QtGui import QFont, QFontDatabase, QFontInfo, QFontMetricsF
-from PySide6.QtWidgets import QApplication, QLabel
-from astral_client import theme
+from PySide6 import __version__  # noqa: E402
+from PySide6.QtGui import QFont, QFontDatabase, QFontInfo, QFontMetricsF  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from astral_client import theme  # noqa: E402
 
 app = QApplication([])
 theme.configure_fonts(app)
@@ -39,5 +39,6 @@ for family in [theme.FONT, "'Open Sans'", "'Segoe UI'"]:
                              line_spacing=metrics.lineSpacing()))
 report = {"qt_binding":__version__,"styles":QFontDatabase.styles("Open Sans"),"measurements":rows}
 path = root / "build/windows-091/font-probe.json"
+path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(report,indent=2))
 print(json.dumps(report,indent=2))

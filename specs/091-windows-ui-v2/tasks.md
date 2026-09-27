@@ -33,11 +33,15 @@ Independent test: six primitives/actions including invalid data; settings/themes
 
 ## Qualification and checkpoints
 
-- [ ] T014 Run full Windows offscreen suite, affected Deep/ROTE/web suites, >=90% changed-line coverage and relevant CI gates; resolve failures without weakening tests; record exact commands in `verification.md` (FR-012).
+- [x] T014 Run full Windows offscreen suite, affected Deep/ROTE/web suites, >=90% changed-line coverage and relevant CI gates; resolve failures without weakening tests; record exact commands in `verification.md` (FR-012).
 - [ ] T015 Inspect live authenticated web success/fullscreen and test Windows with matching backend/worker across acceptance matrix; record gaps in `verification.md` (FR-001–FR-010).
 - [ ] T016 Review security/state/capability seams; commit/push authorized Windows branches and update/push curated vault pages, screenshot manifest, index and log (FR-009, FR-011, FR-012).
 
-## Dependencies and strategy
+## Current September 26 continuation
+
+Implementation and automated qualification are complete: 1965 non-supervision tests passed with 10 declared skips, 16 supervision tests passed, changed executable coverage is 97.69%, the exact Linux root suite passes 3269 tests, and the frozen candidate passes six executable checks plus offscreen startup/retry. The seven-size/53-view diagnostic matrix and 300 Qt scaling executions are complete. These fulfill the local automated portion of T013/T014; physical display/touch, real voice and authenticated connected acceptance remain explicitly open in T010/T013/T015. T016 local commits and curated wiki checkpoint are completed separately; product pushes are not part of this continuation. See verification.md and handoff.md.
+
+## Historical dependencies and strategy
 
 September 25 qualification checkpoint: implementation checkmarks describe source plus scoped regression coverage only. T009 includes production-styled narrow active-voice geometry, wrapped feedback, minimum targets and preserved focus. The complete current Windows suite passes1537tests with10skips and2252/2298changed lines (98.00%). The rebuilt executable passes six packaged checks, actual offline GUI/retry and unsigned-helper refusal; Linux affected backend152passes. T010 and T013–T016 retain real worker/display, shared failing/incomplete CI and final publication/acceptance obligations. Exact current results,32offscreen scaling captures and remaining gaps are in `verification.md`. Shared090 corrections beyond published Deep4e2eae70/Projection1d4a864 remain unavailable; Mac has requested the isolated Windows-owned identity fix through the vault.
 
