@@ -1,7 +1,8 @@
 """Migrates a throwaway AstralPlane PostgreSQL database once, seals it against connections,
 and hands each test its own CREATE DATABASE … TEMPLATE clone instead of a full migration
-replay; the session `plane_template` fixture backs the engine `plane` fixture in
-persistent_agents/tests/test_engine_postgres.py.
+replay. The session `plane_template` fixture backs the engine `plane` fixture in
+persistent_agents/tests/test_engine_postgres.py, and voice_plane_runtime.py keeps a
+process-wide public-schema template for its isolated runtimes.
 """
 
 from __future__ import annotations

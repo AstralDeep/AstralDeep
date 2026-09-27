@@ -1,20 +1,19 @@
 """Isolated PostgreSQL-backed AstralPlane runtime builder for voice, history, and
-work-admission integration tests: creates and migrates a throwaway database and
-exposes seed/query helpers.
+work-admission integration tests: clones a throwaway database from a public-schema
+template that plane_template.py migrates once per process, and exposes seed/query helpers.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
-import re
-import uuid
+import threading
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 import psycopg2
 import pytest
-from psycopg2 import sql
 from psycopg2.pool import ThreadedConnectionPool
 
 from astralplane import create_repository_catalog
@@ -25,8 +24,17 @@ from astralplane.database.migrations import (
     MIGRATION_REGISTRY,
     MigrationRunner,
 )
+from tests.helpers.plane_template import (
+    DatabaseCreationError,
+    TemplateDatabase,
+    cloned_database,
+    create_template,
+    database_dsn,
+    drop_database,
+)
 
-_DATABASE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_TEMPLATES: dict[str, TemplateDatabase] = {}
+_TEMPLATES_LOCK = threading.Lock()
 
 
 def build_test_database_url() -> str:
@@ -104,63 +112,37 @@ class VoicePlaneTestRuntime:
         self._pool.close()
 
 
+def _migrate_template(template: TemplateDatabase) -> None:
+    VoicePlaneTestRuntime(database_dsn(template.server_dsn, template.name)).close()
+
+
+def voice_plane_template() -> TemplateDatabase:
+    admin_params = psycopg2.extensions.parse_dsn(build_test_database_url())
+    admin_params["dbname"] = "postgres"
+    admin_dsn = psycopg2.extensions.make_dsn(**admin_params)
+    with _TEMPLATES_LOCK:
+        template = _TEMPLATES.get(admin_dsn)
+        if template is None:
+            template = create_template(
+                admin_dsn, prefix="voice_template", migrate=_migrate_template
+            )
+            # Callers are plain context managers, so no pytest session teardown can drop it
+            atexit.register(drop_database, admin_dsn, template.name)
+            _TEMPLATES[admin_dsn] = template
+        return template
+
+
 @contextmanager
 def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]:
-    base_params = psycopg2.extensions.parse_dsn(build_test_database_url())
-    admin_params = dict(base_params)
-    admin_params["dbname"] = "postgres"
-    database_name = f"{prefix}_{uuid.uuid4().hex}"
-    if not _DATABASE_NAME.fullmatch(database_name):
-        raise ValueError("isolated voice database name is outside the safe contract")
-
-    created = False
-    runtime: VoicePlaneTestRuntime | None = None
-    try:
+    with ExitStack() as cleanup:
         try:
-            admin = psycopg2.connect(**admin_params)
-            admin.autocommit = True
-            try:
-                with admin.cursor() as cursor:
-                    cursor.execute(
-                        sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(
-                            sql.Identifier(database_name)
-                        )
-                    )
-            finally:
-                admin.close()
-            created = True
-        except psycopg2.Error as exc:  # pragma: no cover
-            pytest.skip(
-                "cannot create isolated PostgreSQL database: "
-                f"{type(exc).__name__}"
-            )
-
-        fixture_params = dict(base_params)
-        fixture_params["dbname"] = database_name
-        runtime = VoicePlaneTestRuntime(
-            psycopg2.extensions.make_dsn(**fixture_params)
-        )
+            template = voice_plane_template()
+            database = cleanup.enter_context(cloned_database(template, prefix=prefix))
+        except DatabaseCreationError as exc:  # pragma: no cover
+            pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
+        runtime = VoicePlaneTestRuntime(database_dsn(template.server_dsn, database))
+        cleanup.callback(runtime.close)
         yield runtime
-    finally:
-        if runtime is not None:
-            runtime.close()
-        if created:
-            admin = psycopg2.connect(**admin_params)
-            admin.autocommit = True
-            try:
-                with admin.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                        "WHERE datname = %s AND pid <> pg_backend_pid()",
-                        (database_name,),
-                    )
-                    cursor.execute(
-                        sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                            sql.Identifier(database_name)
-                        )
-                    )
-            finally:
-                admin.close()
 
 
 def ensure_voice_plane_runtime(runtime: VoicePlaneTestRuntime) -> VoicePlaneTestRuntime:
@@ -213,5 +195,6 @@ __all__ = (
     "isolated_plane_runtime",
     "isolated_voice_plane_runtime",
     "plane_work_admission_repository",
+    "voice_plane_template",
     "voice_session_repository",
 )
