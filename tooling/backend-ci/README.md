@@ -7,9 +7,9 @@ client protocol dispositions, data isolation and LETS tests remain in scope.
 
 The required Deep CI aggregate now includes:
 
-- Python 3.11 tests from every backend `tests/` and `qual_audit/suites/`
-  directory, the explicitly named concurrency probes, and release-tooling
-  tests. Suites run in separate processes to avoid module/conftest collisions.
+- Python 3.11 tests from every backend `tests/` or `suites/` directory, the
+  explicitly named concurrency probes, and release-tooling tests. Suites run
+  in separate processes to avoid module/conftest collisions.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
   complete PostgreSQL suite. The test producer refuses absent/mismatched
   database URLs and requires an `ad_gate_` database plus an explicit isolation

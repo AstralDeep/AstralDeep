@@ -64,11 +64,6 @@ DISPOSITIONS = {
         _BRIDGE_REASON, "deferred-native",
         "3845ca506bac7d040082f29a31f0bbfac497b7ff65b01007e58ef32a3bbeb8c7",
     ),
-    "test_synonym_evasion": (
-        "qual_audit.suites.test_tool_poisoning.TestStaticAnalysisLimitations", "backend/qual_audit/suites/test_tool_poisoning.py",
-        "pytest.xfail", "Static regex analysis cannot detect semantically disguised threats", "expected-limitation-not-passed",
-        "e4d9174670eb0c50bcd98b07d5c02079306a3129c1da68d4c5217fd7ea5ecc18",
-    ),
 }
 CHECKS = SUITES | {
     "python-javascript-lint", "changed-coverage", "component-integrity", "secret-history",

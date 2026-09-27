@@ -16,7 +16,7 @@ from scripts import backend_web_test_reporter
 
 
 def _tree(tmp_path):
-    for name in ("tests", "persistent_agents/tests", "audit/tests", "qual_audit/suites",
+    for name in ("tests", "persistent_agents/tests", "audit/tests", "evaluation/suites",
                  "voice_agent/tests", "agents/journal_review/tests"):
         path = tmp_path / "backend" / name / "test_example.py"
         path.parent.mkdir(parents=True)
@@ -24,10 +24,10 @@ def _tree(tmp_path):
     return tmp_path
 
 
-def test_inventory_includes_module_and_academic_suites_and_separates_worker(tmp_path):
+def test_inventory_includes_module_and_suites_directories_and_separates_worker(tmp_path):
     paths = {path.as_posix() for path in gate.suite_paths(_tree(tmp_path))}
     assert paths == {"tests", "persistent_agents/tests", "audit/tests",
-                     "qual_audit/suites", "agents/journal_review/tests"}
+                     "evaluation/suites", "agents/journal_review/tests"}
 
 
 def test_inventory_rejects_missing_core_suite(tmp_path):
