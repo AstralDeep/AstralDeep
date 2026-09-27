@@ -1,14 +1,13 @@
 """Tests for persistent_agents/runner.py, execution.py and service.py through a real
-Plane/Postgres engine: source-change detection, stop/pause/resume across restarts,
-completion allowance bounds, and monitoring's initial/unchanged/changed
-classification.
+Plane/Postgres engine cloned per test from tests/helpers/plane_template.py's
+session-migrated template: source-change detection, stop/pause/resume across restarts,
+completion allowance bounds, and monitoring's initial/unchanged/changed classification.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -17,7 +16,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from astralplane.api import create_postgres_runtime
 from astralplane.database.revision import SCHEMA_REVISION
 from astralplane.repositories.assignment_models import (
     AssignmentControl,
@@ -32,44 +30,19 @@ from persistent_agents.runner import AssignmentRunner
 from persistent_agents.runtime_values import digest, thaw
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
-
-
-class _FixtureReconciler:
-    name = "assignment-engine-test"
-    version = "1"
-
-    def reconcile(self, context):
-        return {"fixture": "isolated-assignment-engine"}
+from tests.helpers.plane_template import cloned_database, engine_runtime
 
 
 @pytest.fixture
-def plane():
-    dsn = os.environ.get("ASTRALPLANE_TEST_POSTGRES_DSN")
-    if not dsn:
-        pytest.skip("isolated ASTRALPLANE_TEST_POSTGRES_DSN required")
-    import psycopg2
-    from psycopg2.extensions import make_dsn
-    from psycopg2.sql import SQL, Identifier
-    admin = psycopg2.connect(dsn)
-    admin.autocommit = True
-    schema = "engine_079_" + uuid4().hex
-    with admin.cursor() as cursor:
-        cursor.execute(SQL("CREATE SCHEMA {}").format(Identifier(schema)))
-    runtime = None
-    try:
-        runtime = create_postgres_runtime(
-            make_dsn(dsn, options=f"-csearch_path={schema},pg_catalog"),
-            identity=schema, reconcilers=(_FixtureReconciler(),), maximum_connections=8,
-        )
-        runtime.initialize(expected_revision=SCHEMA_REVISION)
-        assert runtime.health().ready
-        yield runtime
-    finally:
-        if runtime is not None:
+def plane(plane_template):
+    with cloned_database(plane_template, prefix="engine") as database:
+        runtime = engine_runtime(plane_template.server_dsn, database)
+        try:
+            runtime.initialize(expected_revision=SCHEMA_REVISION)
+            assert runtime.health().ready
+            yield runtime
+        finally:
             runtime.close()
-        with admin.cursor() as cursor:
-            cursor.execute(SQL("DROP SCHEMA {} CASCADE").format(Identifier(schema)))
-        admin.close()
 
 
 class _Host:

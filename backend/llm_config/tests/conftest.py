@@ -1,6 +1,7 @@
 """Shared fixtures for the llm_config test suite: in-memory Plane repository doubles for
-the encrypted LLM/TypeSafe/data-sharing tables, a generated-per-test Fernet key, and
-store/recorder fixtures built on them.
+the encrypted LLM/TypeSafe/data-sharing tables, a generated-per-test Fernet key,
+store/recorder fixtures built on them, and the session-migrated Plane template that the
+imported engine `plane` fixture clones.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from astralplane.repositories.secrets import (
 from cryptography.fernet import Fernet
 
 from llm_config.user_store import UserLLMConfigStore
+from tests.helpers.plane_template import plane_template  # noqa: F401
 
 
 def _stored_time(value: object | None) -> datetime:
