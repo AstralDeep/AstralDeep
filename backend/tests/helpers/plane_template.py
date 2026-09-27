@@ -13,15 +13,12 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-import psycopg2
 import pytest
 from astralplane.api import PlaneRuntime, create_postgres_runtime
 from astralplane.database.revision import SCHEMA_REVISION
-from psycopg2 import sql
-from psycopg2.extensions import make_dsn
 
 ENGINE_SCHEMA = "assignment_engine"
 _DATABASE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -34,7 +31,7 @@ class DatabaseCreationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class TemplateDatabase:
-    server_dsn: str
+    server_dsn: str = field(repr=False)
     name: str
 
 
@@ -47,10 +44,14 @@ class EngineReconciler:
 
 
 def database_dsn(server_dsn: str, database: str) -> str:
+    from psycopg2.extensions import make_dsn
+
     return make_dsn(server_dsn, dbname=database)
 
 
 def engine_runtime(server_dsn: str, database: str) -> PlaneRuntime:
+    from psycopg2.extensions import make_dsn
+
     return create_postgres_runtime(
         make_dsn(server_dsn, dbname=database,
                  options=f"-csearch_path={ENGINE_SCHEMA},pg_catalog"),
@@ -62,6 +63,8 @@ def engine_runtime(server_dsn: str, database: str) -> PlaneRuntime:
 
 @contextmanager
 def _autocommit_cursor(dsn: str) -> Iterator[Any]:
+    import psycopg2
+
     with closing(psycopg2.connect(dsn)) as connection:
         connection.autocommit = True
         with connection.cursor() as cursor:
@@ -76,6 +79,9 @@ def _unique_name(prefix: str) -> str:
 
 
 def _create_database(server_dsn: str, database: str, template: str) -> None:
+    import psycopg2
+    from psycopg2 import sql
+
     try:
         with _autocommit_cursor(server_dsn) as cursor:
             cursor.execute(sql.SQL("CREATE DATABASE {} TEMPLATE {}").format(
@@ -85,6 +91,8 @@ def _create_database(server_dsn: str, database: str, template: str) -> None:
 
 
 def drop_database(server_dsn: str, database: str) -> None:
+    from psycopg2 import sql
+
     with _autocommit_cursor(server_dsn) as cursor:
         cursor.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
             sql.Identifier(database)))
@@ -101,6 +109,8 @@ def client_connections(server_dsn: str, database: str) -> int:
 
 
 def _seal(template: TemplateDatabase) -> None:
+    from psycopg2 import sql
+
     with _autocommit_cursor(template.server_dsn) as cursor:
         cursor.execute(sql.SQL("ALTER DATABASE {} ALLOW_CONNECTIONS false").format(
             sql.Identifier(template.name)))
@@ -139,6 +149,8 @@ def cloned_database(template: TemplateDatabase, *, prefix: str) -> Iterator[str]
 
 
 def _migrate_engine(template: TemplateDatabase) -> None:
+    from psycopg2 import sql
+
     with _autocommit_cursor(database_dsn(template.server_dsn, template.name)) as cursor:
         cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(ENGINE_SCHEMA)))
     runtime = engine_runtime(template.server_dsn, template.name)
@@ -155,7 +167,7 @@ def plane_template() -> Iterator[TemplateDatabase]:
     server_dsn = os.environ.get("ASTRALPLANE_TEST_POSTGRES_DSN")
     if not server_dsn:
         pytest.skip("isolated ASTRALPLANE_TEST_POSTGRES_DSN required")
-    template = create_template(server_dsn, prefix="engine_template", migrate=_migrate_engine)
+    template = create_template(server_dsn, prefix="ad_test_plane_tpl_engine", migrate=_migrate_engine)
     try:
         yield template
     finally:

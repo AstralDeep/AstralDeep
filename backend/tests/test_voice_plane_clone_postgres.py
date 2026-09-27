@@ -13,7 +13,10 @@ import pytest
 from astralplane.database.migrations import CURRENT_DATA_PLANE_REVISION, MIGRATION_REGISTRY
 
 from tests.helpers.plane_template import client_connections, database_dsn
-from tests.helpers.voice_plane_runtime import isolated_voice_plane_runtime, voice_plane_template
+from tests.helpers.voice_plane_runtime import (
+    isolated_voice_plane_runtime,
+    voice_plane_template_or_skip,
+)
 
 
 def _identity(runtime):
@@ -58,16 +61,16 @@ def test_isolated_runtimes_are_independent_clones_at_the_current_revision():
 
 
 def test_isolated_runtime_database_is_dropped_on_exit():
-    template = voice_plane_template()
+    template = voice_plane_template_or_skip()
     with isolated_voice_plane_runtime("voice_clone_drop") as runtime:
         name = _identity(runtime)["database"]
         assert _database_exists(template, name)
     assert not _database_exists(template, name)
-    assert voice_plane_template() is template
+    assert voice_plane_template_or_skip() is template
 
 
 def test_voice_template_is_sealed_without_client_connections():
-    template = voice_plane_template()
+    template = voice_plane_template_or_skip()
     assert client_connections(template.server_dsn, template.name) == 0
     with pytest.raises(psycopg2.OperationalError, match="not currently accepting connections"):
         psycopg2.connect(database_dsn(template.server_dsn, template.name))

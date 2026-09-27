@@ -35,7 +35,7 @@ from tests.helpers.plane_template import cloned_database, engine_runtime
 
 @pytest.fixture
 def plane(plane_template):
-    with cloned_database(plane_template, prefix="engine") as database:
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as database:
         runtime = engine_runtime(plane_template.server_dsn, database)
         try:
             runtime.initialize(expected_revision=SCHEMA_REVISION)

@@ -124,7 +124,7 @@ def voice_plane_template() -> TemplateDatabase:
         template = _TEMPLATES.get(admin_dsn)
         if template is None:
             template = create_template(
-                admin_dsn, prefix="voice_template", migrate=_migrate_template
+                admin_dsn, prefix="ad_test_plane_tpl_voice", migrate=_migrate_template
             )
             # Callers are plain context managers, so no pytest session teardown can drop it
             atexit.register(drop_database, admin_dsn, template.name)
@@ -132,11 +132,18 @@ def voice_plane_template() -> TemplateDatabase:
         return template
 
 
+def voice_plane_template_or_skip() -> TemplateDatabase:
+    try:
+        return voice_plane_template()
+    except DatabaseCreationError as exc:
+        pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
+
+
 @contextmanager
 def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]:
     with ExitStack() as cleanup:
+        template = voice_plane_template_or_skip()
         try:
-            template = voice_plane_template()
             database = cleanup.enter_context(cloned_database(template, prefix=prefix))
         except DatabaseCreationError as exc:  # pragma: no cover
             pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
@@ -196,5 +203,6 @@ __all__ = (
     "isolated_voice_plane_runtime",
     "plane_work_admission_repository",
     "voice_plane_template",
+    "voice_plane_template_or_skip",
     "voice_session_repository",
 )

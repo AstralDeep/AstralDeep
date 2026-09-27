@@ -59,7 +59,7 @@ def test_clone_is_ready_at_schema_revision_without_replaying_migrations(plane):
 
 
 def test_two_clones_hold_independent_data(plane, plane_template):
-    with cloned_database(plane_template, prefix="engine") as name:
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
         other = engine_runtime(plane_template.server_dsn, name)
         try:
             other.initialize(expected_revision=SCHEMA_REVISION)
@@ -84,7 +84,7 @@ def test_concurrent_clones_of_the_sealed_template_succeed(plane_template):
     def clone():
         try:
             start.wait(timeout=10)
-            with cloned_database(plane_template, prefix="engine") as name:
+            with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
                 created.append(_database_exists(plane_template, name))
         except BaseException as exc:
             errors.append(exc)
@@ -98,7 +98,7 @@ def test_concurrent_clones_of_the_sealed_template_succeed(plane_template):
 
 
 def test_clone_is_dropped_even_with_an_open_connection(plane_template):
-    with cloned_database(plane_template, prefix="engine") as name:
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
         leaked = psycopg2.connect(database_dsn(plane_template.server_dsn, name))
     try:
         assert not _database_exists(plane_template, name)
@@ -109,6 +109,6 @@ def test_clone_is_dropped_even_with_an_open_connection(plane_template):
 
 
 def test_missing_template_is_a_creation_error(plane_template):
-    missing = TemplateDatabase(plane_template.server_dsn, "engine_template_" + uuid4().hex)
-    with pytest.raises(DatabaseCreationError), cloned_database(missing, prefix="engine"):
+    missing = TemplateDatabase(plane_template.server_dsn, "ad_test_plane_tpl_engine_" + uuid4().hex)
+    with pytest.raises(DatabaseCreationError), cloned_database(missing, prefix="ad_test_plane_clone_engine"):
         pytest.fail("a clone of a missing template must not be created")
