@@ -2,8 +2,19 @@
 
 **Feature Branch**: `codex/091-windows-ui-v2`
 **Created**: 2026-09-25
-**Status**: Draft implementation; screenshot fidelity, resize consumer, final qualification and live acceptance remain incomplete
-**Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. The owner authorizes branch pushes and draft PRs; no merge or release.
+**Status**: Done — owner approved the current Windows implementation on 2026-09-26
+**Input**: Implement web UI v2 appearance and behavior in AstralDeep's native Windows client; preserve security, state and server ownership. The owner now authorizes pushing and merging this implementation. Store publication, signing and deployment are not requested.
+
+## Owner acceptance — September 26
+
+The owner requested a stopping point, approved the build as close enough, authorized push and merge, and instructed that the Windows client be marked done. This supersedes the earlier local-only/no-merge handoff. The owner then explicitly directed the app back to the sandbox backend for production use. The task-created local selector was removed, restoring the unchanged bundled sandbox profile; no remote server deployment was performed. Unperformed physical-display, authenticated-session and real-audio checks, plus the intermittent aggregate Qt test crash, remain recorded evidence limitations and follow-ups rather than passing results.
+
+## September 26 continuation constraints
+
+- The owner requested refreshing the Astral, LETS and kos-wiki repositories and continuing the existing 091 Windows implementation against the complete archived web screenshot reference.
+- After completing ordinary Keycloak sign-in, the owner instructed: "figure out the windows app without using computer use. im trying to work". This continuation uses offscreen Qt rendering, automated tests and non-visible packaged checks. It must not activate or manipulate the user's desktop.
+- Synthetic screenshots and Qt scale emulation must remain distinguishable from authenticated dispatch, physical Windows DPI transitions, microphone capture and speaker playback. Those acceptance requirements remain recorded when unperformed.
+- Earlier publication records below describe their own handoff checkpoints. Those publication limits are superseded by the owner acceptance above.
 
 ## User Scenarios & Testing
 

@@ -7,6 +7,7 @@ import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 import uuid
 
 import pytest
@@ -19,7 +20,7 @@ def resize_frame(connection):
     tree = ast.parse(source.read_text(encoding="utf-8"))
     client = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "OrchestratorClient")
     method = next(node for node in client.body if isinstance(node, ast.FunctionDef) and node.name == "update_device")
-    namespace = {"copy": copy, "json": json, "uuid": uuid, "WindowsProtocolError": ValueError}
+    namespace = {"copy": copy, "json": json, "uuid": uuid, "Optional": Optional, "WindowsProtocolError": ValueError}
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
     frames = []
 

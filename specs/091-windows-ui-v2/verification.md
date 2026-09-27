@@ -1,3 +1,103 @@
+# Current Windows implementation checkpoint — 2026-09-26
+
+## Owner-approved local-backend correction — 2026-09-26
+
+The owner reported that the supplied executable displayed the legacy layout. The binary had been rebuilt, but its normal bundled profile targeted `wss://sandbox.ai.uky.edu/ws`; the matching backend was running locally. No managed/persisted override existed. Public remote health/asset checks do not establish its native backend revision, so the precise remote rejection remains unproven. The prior report failed to validate the intended launch target.
+
+The owner selected local testing now, sandbox only after approval, then explicitly approved the implementation as close enough and requested push/merge and Windows completion. This is owner acceptance with recorded limitations, not a claim that every test passed. The owner subsequently clarified that the app must point at sandbox for production use, accepting that it may not behave exactly right. Only the task-created persisted local override was removed, restoring the bundled sandbox profile. No remote server deployment was performed.
+
+Projection `9b44995f6ca3bba682ea28525ce7361acd8566f2` adds an explicit `local_backend` profile (strict loopback WebSocket, HTTPS remote Keycloak with direct PKCE, no developer fallback or legacy agent keys), a local launcher, a Local testing window title and separate local runtime settings. The task briefly selected that local profile, then removed only its own selector after the owner chose sandbox. Local testing uses isolated resume state, workspace choice and remote-control consent; the normal sandbox profile remains unchanged. Production/all-local generic profile guards remain unchanged. No dependency, primitive, schema migration, shared wire contract, feature flag or other-client implementation changed.
+
+The rebuilt unsigned EXE is `../AstralProjection/windows-client/dist/AstralDeep.exe`, 101,308,954 bytes, SHA256 `96bc5b1335a00478385fc1b4fbfadff26dd6b964c26bf497954ae84e623ab6bf`. Build command `.venv-release-a/Scripts/python.exe -m PyInstaller --noconfirm --clean AstralDeep.spec` passed in 85.619s. All 54 freeze input hashes stayed unchanged. The old executable/evidence are retained in `build/windows-091/profile-isolation/pre-local-backend-target/`.
+
+Current checks, run with `QT_QPA_PLATFORM=offscreen`:
+
+- `python -m pytest windows-client/tests/test_local_backend_profile.py windows-client/tests/test_deployment_profile_060.py windows-client/tests/test_settings_profiles.py windows-client/tests/test_launch_timing.py windows-client/tests/test_release_smoke.py windows-client/tests/test_packaged_console_bootstrap.py -q --cov=astral_client --cov=main --cov-branch`: **137 passed, 4 packaged skips, 11.65s**. `diff-cover .../local-target-complete-coverage.xml --compare-branch c2c9f06dacc0574f6d0784f0f1db6255cdb893a0 --fail-under=90`: **42/42 changed executable lines, 100%**.
+- With `ASTRAL_WINDOWS_EXE` set to the new binary, `python -m pytest tests/test_packaged_console_bootstrap.py -k frozen -q`: **4 passed, 8 deselected, 8.91s**. Real frozen entrypoints receive bounded synthetic loopback WebSocket frames through explicit and persisted profiles. Valid v2 activates the current visible shell and hides legacy controls; legacy responses fail qualification with `console_bootstrap_incomplete`. These are fixture-transport checks, not live authentication acceptance.
+- Frozen package checks (`test_packaged_release.py` archive/font/helper/profile/worker checks plus `test_helper_integrity_075.py::test_unsigned_candidate_embeds_exact_digest_and_remains_unavailable`): **6 passed, 3.85s**.
+- Ruff on changed Python and `git diff --check` pass. Independent profile/startup review passes **114 tests with 8 packaged skips**. Expanded/scoped unspecified IPv6 endpoints are rejected; runtime isolation occurs after profile selection and before GUI settings access.
+- The earlier correction aggregate passed **2022 tests, 14 skips, 74.39s** before the final runtime-isolation addition. The latest aggregate (`local-ready-tests.log`) **aborted with native access violation 0xC0000005** at `QApplication.setStyleSheet` during the first result-presentation style setup. This is not a passing full latest suite. Reproduction cohorts pass **89**, **393 with 12 skips**, and the exact ordered prefix through the failing boundary **1378 with 13 skips, 56.73s**; no further code change or proven fix followed.
+
+Evidence is under ignored `build/windows-091/local-backend/`, `local-target-complete-*`, `local-target-diff-cover.json`, `local-ready-tests.log` and `smoke-style-prefix-{1,2,3}.log`. The local `/readyz` returned `ok`. No Computer Use, visible launch or sign-in was performed in this correction. Authenticated local behavior, physical displays and real audio remain unverified follow-ups accepted by the owner. The earlier 53-view gallery retains its original source identity; it is not relabeled as a capture of this later executable.
+
+
+The Windows implementation is locally qualified on `codex/091-windows-ui-v2`, with Projection `c2c9f06dacc0574f6d0784f0f1db6255cdb893a0` pinned by this Deep commit. Product commits remain local and unpushed. The owner requested continuation against the kos-wiki screenshots and then explicitly prohibited Computer Use while working. This continuation uses offscreen Qt, automated tests and hidden packaged execution only. It does not claim physical-display, authenticated interaction, microphone or speaker acceptance, merge, signing or release.
+
+## Source and implemented behavior
+
+The six primary repositories were refreshed before work: Deep main `2ef2b0f1`, Projection main `03be0bf`, Plane `e8b5ee62`, Primitives `d7b45410`, LETS `0333cd6c` and kos-wiki `4be05c8`. Existing Windows work was preserved and merged main was incorporated into Deep as `8045666a`. The final Projection pin includes the Windows continuation; Plane, Primitives and LETS pins are unchanged.
+
+The native shell now follows the reference sidebar/drawer, header, initial narrow landing, scenario cards, typography, composer, More menu, transcript, result preview/fullscreen, Settings navigation, agent rows and detail dialogs. Sign out now remains in the scrolling Settings navigation on desktop and at the end of its horizontal phone strip, matching the shared reference; the mandatory authentication footer is unchanged. Modal backdrops blur an in-memory native shell image. Initial 320/390 layouts settle through their owned viewport resize timer without a manual diagnostic repair. Surface adapters retain server text, actions, exact payloads and disabled state, and fall back for unrecognized structures.
+
+Viewport hydration validates a candidate reducer before rendering, stages theme changes until commit, rechecks owner/request scope after rendering, and preserves draft controls, focus and selections. Native menu headings and sign-out use ordinary Qt actions. Retired silent-refresh callbacks cannot emit through a deleted window. Explicit UUID4 settings profiles isolate diagnostics, resume state, voice identity, deployment and BYO/tool profiles; an unset profile retains the existing normal application namespace. Tests and candidate workflows no longer delete the user's default settings key.
+
+No new dependency, primitive, wire contract, schema migration, feature flag or authentication bypass was introduced. Other native clients and feature 090 artifacts were not edited. Existing Keycloak, owner isolation, dispatch and signature gates remain in force.
+
+## Completed local verification
+
+All paths below are relative to Deep `build/windows-091/` unless stated otherwise. Source manifests distinguish earlier failed or superseded runs from the final bytes.
+
+| Check | Result and evidence |
+| --- | --- |
+| Windows offscreen non-supervision partition | **1965 passed, 10 skipped**, 64.42s; `windows-native-final.log`, JUnit, coverage XML/JSON. |
+| Changed executable Python coverage against Projection origin/main | **97.69%**; `windows-native-final-diff-cover.json`; required threshold remains 90%. |
+| Process supervision | **16 passed**, 700 behavior trials plus 100 registry-release cycles; current supervisor and test hashes match. `windows-supervision-summary.json` and `windows-supervision-reproduction.json`. Five-second deadline unchanged; maximum tree termination 4016ms. |
+| Qt scaling | **75 passed at each of 100/125/150/200%**, 300 executions; `windows-native-final-dpi-summary.json`. This is offscreen scale emulation, not physical monitor transitions. |
+| Projection Linux root suite | **3269 passed, no skips** on exact archived source plus staged overlay; `profile-isolation/projection-python-final.log` and `frozen-qualification.json`. |
+| Affected backend viewport and Windows admission | **61 passed** plus **2 PostgreSQL admission tests passed**; `profile-isolation/backend-viewport-isolated.log`, `backend-admission-postgres.log`. |
+| Projection ROTE/chrome/workflow slice | **1960 passed**; included in the root suite, not an additional disjoint total. `profile-isolation/projection-rote-chrome-ci.log`. |
+| Deep release workflow tests | **88 passed, 3 declared skips**; `profile-isolation/deep-workflows-linux.log`. |
+| Speech helper | **37 deterministic tests plus 1 synthetic-PCM SAPI host test passed** with exact .NET SDK 10.0.400; no microphone or audible playback. Two helper builds matched. |
+| Frozen client | **6 executable checks passed** plus real offscreen startup/retry with matching isolated window/BYO/tool profiles; 54 freeze inputs unchanged. `profile-isolation/FROZEN-BUILD.md` and `frozen-qualification.json`. |
+| Composition and source hygiene | Exact component verification and local-component gitlink validation passed; Ruff and `git diff --check` passed. |
+| Tracked diagnostic helpers | All four helpers executed against the exact embedded component; **339/345 changed executable lines (98.26%)** covered. `diagnostics-final-coverage.xml` and `diagnostics-final-diff-cover.json`. |
+
+The non-supervision run skips nine packaged cases when `ASTRAL_WINDOWS_EXE` is absent and one backend header comparison whose relative fixture is unavailable in the standalone component. Six safe executable nodes run separately; a separate actual frozen offscreen run covers startup/retry. Connected packaged tests and visible native acceptance remain open, not silently converted into passes. Supervision coverage is kept separate from the final client coverage to avoid combining line maps from earlier imported GUI source.
+
+Earlier logs retain the manifest mismatch, blocked-GUI auth wait, first-phone width failures, native menu/teardown aborts and an incomplete 74% aggregate. Corrections keep the original assertions and deadlines. Test-owned native roots now close, delete and flush on the GUI thread, with native invalidation checks. The later 150% run exposed a stale QWidgetItem wrapper returned as a QWindow. Isolated ownership probes reproduced native item leaks after parent deletion and an old wrapper aliasing a new native allocation. FlowLayout now constructs destructor-aware Python widget items and drains owned items when the layout is destroyed, preserving transferred items and widgets. Eight new lifecycle regressions failed against the prior implementation; the repaired 131-test cohort passed with full composites.py statement/branch coverage. The final aggregate and scale results above include this repair. Original aborts, the 150% failure and before/after ownership probes remain under build/windows-091/.
+
+## Reproduction
+
+From the standalone Projection root, with its prepared Python 3.11.15 / PySide6 6.11.1 environment:
+
+```powershell
+$env:QT_QPA_PLATFORM = 'offscreen'
+$env:PYTHONUTF8 = '1'
+$env:PYTHONPATH = 'windows-client'
+$env:COVERAGE_FILE = 'Y:/WORK/MCP/AstralDeep/build/windows-091/.coverage-native-final'
+windows-client/.venv/Scripts/python.exe -m pytest windows-client/tests --ignore=windows-client/tests/test_byo_supervision_060.py --cov=astral_client --cov-branch --cov-report=xml:Y:/WORK/MCP/AstralDeep/build/windows-091/windows-native-final.xml --cov-report=json:Y:/WORK/MCP/AstralDeep/build/windows-091/windows-native-final.json --junitxml=Y:/WORK/MCP/AstralDeep/build/windows-091/windows-native-final-junit.xml -vv --tb=short -o faulthandler_timeout=45 --durations=10
+windows-client/.venv/Scripts/diff-cover.exe Y:/WORK/MCP/AstralDeep/build/windows-091/windows-native-final.xml --compare-branch origin/main --fail-under=90 --format json:Y:/WORK/MCP/AstralDeep/build/windows-091/windows-native-final-diff-cover.json
+```
+
+The supervision manifest records an equivalent reconstructed command because the original shell text was not saved. Exact DPI commands and hashes are in their per-scale reports. Frozen builds use `windows-client/.venv-release-a/Scripts/python.exe -m PyInstaller --noconfirm --clean AstralDeep.spec` from `windows-client`; the six explicit node IDs and offline runtime arguments are retained in `profile-isolation/run_frozen_safe_checks.ps1` and `frozen-qualification.json`.
+
+The backend commands, from `/app/backend` in the isolated image, were `python -m pytest tests/test_viewport.py tests/test_viewport_hydration.py tests/chrome/test_windows_console_admission.py -q --tb=short -p no:cacheprovider`, then `python -m pytest tests/test_viewport_hydration_admission.py -q --tb=short -p no:cacheprovider` with an isolated PostgreSQL database. Workflow checks used the same flags with `tests/test_release_workflows_060.py`. Temporary test containers, network and volume were removed.
+
+## Visual evidence and remaining acceptance
+
+The tracked `diagnostics/diagnostic_matrix.py` generates 53 synthetic views: landing, agent introduction, chat selection, composer More, agent settings, successful result and fullscreen at 1440×900, 1280×800, 1024×768, 834×1194, 768×1024, 390×844 and 320×740, plus drawers at four narrow sizes. The archived provider error is historical and is not manufactured as a successful test. Final captures, per-image/reference digests, source identities, review notes and the offline comparison gallery live in kos-wiki `assets/astral-native-ui-v2/windows/consistency-2026-09-26/`.
+
+From Deep, reproduce with `../AstralProjection/windows-client/.venv/Scripts/python.exe specs/091-windows-ui-v2/diagnostics/diagnostic_matrix.py --projection-root components/AstralProjection --reference-root ../../kos-wiki/assets/astral-native-ui-v2/web-reference --output build/windows-091/diagnostic-matrix`. The helper forces offscreen mode and isolated synthetic transport. It records the offscreen virtual screen's popup clamp and composites the intended production anchor explicitly. It never reads account history or credentials.
+
+Native/browser antialiasing and small rounding differences remain. Current source has eleven agents versus the historical reference account's ten; synthetic Operator/Member identity replaces the historical account. The spec explicitly omits the passive web-only voice availability banner. These are not pixel-identical or authenticated screenshots. Physical DPI/multi-monitor transitions, touch, live resize/History/attachment/Advanced/renewal, real dispatch, worker microphone capture/playback and connected packaged tests remain unverified under the user's no-Computer-Use constraint.
+
+Executable: `../AstralProjection/windows-client/dist/AstralDeep.exe`, version `0.5.2`, 101,308,021 bytes, SHA256 `3f19af0316d434ecb8a75c8b65128e0c17fa2fc95063190c4d37b5a93bec8f3c`. It is an unsigned local diagnostic candidate; the embedded helper signature gate correctly fails closed. No installer/store or release publication occurred.
+
+The local backend is healthy on image `sha256:a59b2447c214ae7fffb8068c9ff6f81254e6fb1229609a842fc86375b90b6aa9`, built from Deep `8045666a` with the earlier Projection pin. Seven relevant baked backend files match current host source (`backend-source-identity.json`). This does not claim that the later Windows-only component pin was rebuilt into that backend image. No backend behavior was changed by this continuation.
+
+---
+
+## Historical source-bound checkpoints
+
+The following entries retain the previous stopped and published states for provenance. The current checkpoint above supersedes their present-tense implementation status.
+
+# Current stopped checkpoint — 2026-09-26
+
+Owner stopped implementation and requested WIP publication. Projection cdec4a63a8fba1cb0279dccca9384377ee09d5f8 is pushed; Deep pins it. Both remote Windows branches were refreshed, preserving concurrent merged 090 work. **No final combined-suite, coverage or visual acceptance pass.** The Windows viewport consumer is now implemented and has 54 focused passes /98% module coverage; the previous “unimplemented” entries below are historical. Settings/dialog has32focused passes /97% adapter coverage. The current console/composer run was stopped with failures present. See [current handoff](handoff.md) for exact remaining gaps, runtime identity, diagnostic screenshot provenance and unsafe packaged-profile tests.
+
+Current narrow backend evidence:140 unique cases,5current admission,310ROTE/chrome and18Chromium passes. Original setup failures/skips remain. Native capture/input failed after prescribed recovery; current physical DPI and native live resize/voice/attachments are unverified. Diagnostic screenshots are not parity acceptance. Earlier complete-suite/coverage results below remain bound to their original source.
+
+---
 # Windows UI v2 verification — 2026-09-25
 
 Status: implemented and under qualification; not merged, deployed, released, or ready for acceptance. The owner has now authorized committing and pushing task work to its branches. Deep and Projection remain on `codex/091-windows-ui-v2`; publication status is recorded at each checkpoint. Feature 090 remains owned by the other machine.
@@ -180,3 +280,4 @@ The final executable changed-line measurement compares against exact Projection 
 3. Connected frozen smokes require valid staging through normal user authentication. The final503b962 executable passes the actual offline GUI/retry test and all separate archive/helper checks; native settings restoration is verified.
 4. Finish latest coverage, affected admission tests, final lint/composition/CI checks and security review. Inherited shared Projection failures and complete backend CI remain unresolved, not waived. Do not modify another machine's 090 artifacts to hide those failures.
 5. Keep published Windows handoff branches and the isolated shared identity fix coordinated with090. Current source/pins are committed and locally qualified to the exact limits above; full acceptance remains open. Refresh and commit/push curated vault pages, image metadata, index and log at each checkpoint. Never stage ignored runtime artifacts, credentials, generated user code, or user data.
+

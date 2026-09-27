@@ -1,5 +1,7 @@
 # Tasks — Windows UI v2
 
+**Status: Done — owner approved on 2026-09-26 and authorized push/merge.** Checkmarks for acceptance close the feature at the owner’s requested stopping point; they do not turn unperformed checks or the retained Qt failure into passing tests.
+
 ## Setup and foundation
 
 - [x] T001 Refresh/clean repositories with owner permission, inventory remote spec trees and reserve separate Windows ownership in `specs/091-windows-ui-v2/spec.md` (FR-011).
@@ -21,7 +23,7 @@ Independent test: real synthetic request; attachment/selection/voice, collapse/e
 
 - [x] T008 [US2] Test conversation/result/selection transitions and owner resets in `windows-client/tests/test_console_shell.py` (FR-003, FR-004, FR-009).
 - [x] T009 [US2] Implement bottom composer, More/Advanced, correlated selection and ordered feed with one live result canvas in `astral_client/app.py` (FR-003, FR-004, FR-009).
-- [ ] T010 [US2] Verify voice controls/errors and absence of passive web banner in `windows-client/tests/`, then real worker capture/playback/recovery in `verification.md` (FR-010).
+- [x] T010 [US2] Verify voice controls/errors and absence of passive web banner in `windows-client/tests/`, then real worker capture/playback/recovery in `verification.md` (FR-010). Owner accepted the stopping point; real worker microphone/playback remains a follow-up.
 
 ## US3 — Presentation/settings/primitives
 
@@ -29,16 +31,24 @@ Independent test: six primitives/actions including invalid data; settings/themes
 
 - [x] T011 [P] [US3] Test and implement six existing primitive renderers in `astral_client/renderer.py`, `composites.py` and `tests/test_console_primitives.py`, including export, actions, zero/non-finite data and accessible feedback (FR-006).
 - [x] T012 [US3] Implement responsive shared settings/surfaces, theme/typography and packaging in `astral_client/app.py`, `theme.py`, `AstralDeep.spec` with tests (FR-005).
-- [ ] T013 [US3] Test logical resizing, keyboard/focus, input aggregation and DPI scaling; record source-bound screenshots in vault `assets/astral-native-ui-v2/windows/` (FR-005, FR-007, FR-012).
+- [x] T013 [US3] Test logical resizing, keyboard/focus, input aggregation and DPI scaling; record source-bound screenshots in vault `assets/astral-native-ui-v2/windows/` (FR-005, FR-007, FR-012). Automated dimensions/scales are recorded; physical display/touch remains a follow-up accepted by the owner.
 
 ## Qualification and checkpoints
 
-- [ ] T014 Run full Windows offscreen suite, affected Deep/ROTE/web suites, >=90% changed-line coverage and relevant CI gates; resolve failures without weakening tests; record exact commands in `verification.md` (FR-012).
-- [ ] T015 Inspect live authenticated web success/fullscreen and test Windows with matching backend/worker across acceptance matrix; record gaps in `verification.md` (FR-001–FR-010).
-- [ ] T016 Review security/state/capability seams; commit/push authorized Windows branches and update/push curated vault pages, screenshot manifest, index and log (FR-009, FR-011, FR-012).
+- [x] T014 Run full Windows offscreen suite, affected Deep/ROTE/web suites, >=90% changed-line coverage and relevant CI gates; resolve failures without weakening tests; record exact commands in `verification.md` (FR-012).
+- [x] T015 Inspect live authenticated web success/fullscreen and test Windows with matching backend/worker across acceptance matrix; record gaps in `verification.md` (FR-001–FR-010). Closed by owner acceptance with authenticated connected gaps retained.
+- [x] T016 Review security/state/capability seams; commit/push authorized Windows branches and update/push curated vault pages, screenshot manifest, index and log (FR-009, FR-011, FR-012).
 
-## Dependencies and strategy
+## Owner-approved stopping point
+
+The executable supports isolated local testing, but the owner subsequently selected the normal sandbox backend for production use. The task-created local override has been removed; ordinary Keycloak PKCE and the bundled sandbox profile are restored. The rebuilt package passes four console-bootstrap transport cases and six package checks; 137 focused source checks pass with four packaged skips, and all 42 changed executable lines are covered. The latest aggregate encountered a retained intermittent Qt access violation; bounded reproductions pass but do not establish a fix. The owner explicitly accepts this state. Publication identities and actual merge results are maintained in the curated wiki checkpoint.
+
+## Earlier September 26 qualification
+
+Implementation and automated qualification are complete: 1965 non-supervision tests passed with 10 declared skips, 16 supervision tests passed, changed executable coverage is 97.69%, the exact Linux root suite passes 3269 tests, and the frozen candidate passes six executable checks plus offscreen startup/retry. The seven-size/53-view diagnostic matrix and 300 Qt scaling executions are complete. These fulfill the local automated portion of T013/T014; physical display/touch, real voice and authenticated connected acceptance remain explicitly open in T010/T013/T015. This source-bound result is historical; the owner-approved publication above supersedes its earlier local-only limit. See verification.md and handoff.md.
+
+## Historical dependencies and strategy
 
 September 25 qualification checkpoint: implementation checkmarks describe source plus scoped regression coverage only. T009 includes production-styled narrow active-voice geometry, wrapped feedback, minimum targets and preserved focus. The complete current Windows suite passes1537tests with10skips and2252/2298changed lines (98.00%). The rebuilt executable passes six packaged checks, actual offline GUI/retry and unsigned-helper refusal; Linux affected backend152passes. T010 and T013–T016 retain real worker/display, shared failing/incomplete CI and final publication/acceptance obligations. Exact current results,32offscreen scaling captures and remaining gaps are in `verification.md`. Shared090 corrections beyond published Deep4e2eae70/Projection1d4a864 remain unavailable; Mac has requested the isolated Windows-owned identity fix through the vault.
 
-T001–T003 establish baseline. T004 and T011 run independently; T005 follows decoder/renderers before qualification. T006–T009 share app.py ownership and proceed sequentially. Settings can follow shell. Final gates depend on integration. US1 is the first usable increment; all three stories remain required. Parallel example: primitive renderer work versus console decoding versus shell preparation, with separate files. The owner now authorizes task commits and branch pushes; no090artifact edits, merge or release is authorized.
+T001–T003 establish baseline. T004 and T011 run independently; T005 follows decoder/renderers before qualification. T006–T009 share app.py ownership and proceed sequentially. Settings can follow shell. Final gates depend on integration. US1 is the first usable increment; all three stories remain required. Parallel example: primitive renderer work versus console decoding versus shell preparation, with separate files. The latest owner instruction authorizes task commits, branch pushes and merge; 090 edits and product release remain outside scope.

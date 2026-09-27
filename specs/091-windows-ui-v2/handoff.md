@@ -1,23 +1,11 @@
-# Windows UI v2 draft handoff
+# Windows UI v2 — owner approved, 2026-09-26
 
-Windows work is on `codex/091-windows-ui-v2` in Deep and Projection. The owner requested immediate branch publication and PRs. **Visual fidelity to the kos-wiki screenshots is not accepted, and the client is not complete or merge-ready.** Functional test results do not establish screenshot parity.
+**Windows 091 is done by explicit owner approval.** The owner requested a stopping point, approved the current implementation as close enough, and authorized pushing and merging both product repositories. See [verification.md](verification.md) for source-bound checks and remaining limitations; actual PR/merge identities are recorded in kos-wiki.
 
-## Current source
+The current executable is `../AstralProjection/windows-client/dist/AstralDeep.exe`, SHA256 `96bc5b1335a00478385fc1b4fbfadff26dd6b964c26bf497954ae84e623ab6bf`, built from Projection `9b44995f6ca3bba682ea28525ce7361acd8566f2`. Opening it normally selects the bundled `wss://sandbox.ai.uky.edu/ws` profile, as the owner explicitly requested for production use. The task-created local override was removed; ordinary Keycloak PKCE remains required. An optional local-testing launcher remains available with separate runtime settings, but it is not the selected launch target.
 
-Projection `e0419ddaad927a64c575eac21bfcc26f54378a3a` integrates published shared Projection `162486570a101cbc00f2ae48dbc33ce73c5d3308`. Deep integrates shared `711d428210e20150e665b81931feb0512156b89e` and pins the combined component. The canonical UI-protocol digest is `25b964ce64553db80cf2789991eb3565bb86c66cc9792849aa496101ef35585d`. Four-source composition and immutable Projection ledger/export checks pass. LETS, Plane and Primitives remain at their existing pins. Windows-authored changes do not modify 090 artifacts or Apple/Android sources.
+Keep the app pointed at sandbox, per the latest owner instruction. No remote server deployment or signed/store release was performed by this push/merge task. No Computer Use or visible app launch is permitted while the owner works. Only the user performs sign-in.
 
-The Windows scoped viewport hydration consumer is **not implemented**. Its incomplete, untested prototype was removed from active source and preserved only in ignored `build/windows-091/viewport-consumer-recovery/`. The shared contract is available; no competing protocol or post-snapshot guard relaxation was introduced.
+Latest correction: 137 focused source tests pass with four packaged skips, changed-line coverage is 100% (42/42), four actual frozen console-bootstrap fixture checks pass and six package checks pass. The broad final aggregate hit an intermittent Qt access violation; the exact prefix through that boundary passes, but no fix is proven. Physical-display, authenticated-session and real-audio acceptance remain recorded follow-ups, not silently passed checks. Owner approval closes the feature despite these limitations.
 
-## Evidence and gaps
-
-See [verification](verification.md) for exact source-bound results and failures. Prior complete Windows source `3a76954` passed 1,586 tests, 10 skips and 98.39% changed coverage, including all 700 supervision trials. The later lifecycle cohort passed 470 tests; corrected socket/generation fixtures passed 157. The later broad run recorded 1,699 passes and two fixture failures; the superseding rerun was stopped incomplete. These are not a final combined-source suite pass.
-
-Prior Deep d105 / Projection 8a Linux qualification passed 152 affected tests, boot/dependency/composition checks and changed coverage. The 8a executable builds and passes six read-only package checks; its GUI/connected acceptance remains open. Final combined-source CI and screenshot comparison are pending. Draft PRs target 090; Projection core CI filters to main and will not run automatically for that base.
-
-Remaining blockers: faithful screenshot-based geometry/typography/control layout, the Windows viewport consumer, current-source full CI/coverage, authenticated attachments and Advanced selection, connected frozen acceptance, real microphone/worker playback, physical DPI and the complete logical-size matrix. Desktop input recovery failed; current captures are read-only evidence. No credential or authentication bypass was used.
-
-## Local runtime and cleanup
-
-The local development backend remains on image `sha256:906ba6a782f69aeb6993490c01599234e43d8a1cc828de737f653a21ce53be14` (d105), with unchanged configuration/data mounts. It does not run the new shared resize source. Worker, LiveKit and application PostgreSQL remain available. The unsigned 8a executable SHA256 is `32302ec1b8058d8a4cad85805dbbc7676b7656b7bf57b338b43700d8e2020a9d`.
-
-Temporary test Docker resources are being removed under the owner's cleanup request. Historical logs and qualification artifacts remain under ignored `build/windows-091/`; incomplete driver drafts are not ready to execute. No merge, release or production deployment is authorized.
+No new dependency, shared protocol, primitive, migration, feature flag or other-client implementation was introduced. The executable is unsigned and has not been published as a product release. The earlier comparison gallery remains at kos-wiki `assets/astral-native-ui-v2/windows/consistency-2026-09-26/`, with its original capture hashes and source identities.
