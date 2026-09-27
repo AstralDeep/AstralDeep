@@ -1,6 +1,7 @@
 """Shared pytest fixtures for backend/tests: strips ambient feature-flag env vars for
-hermeticity and builds/tears down real Orchestrator and
-credential/typesafe/data-sharing store fixtures.
+hermeticity, builds/tears down real Orchestrator and credential/typesafe/data-sharing
+store fixtures, and exposes the session-migrated Plane template that the engine `plane`
+fixture clones.
 """
 
 from __future__ import annotations
@@ -86,6 +87,7 @@ def user_skills_disabled(monkeypatch):
 
 
 from tests.plugins.event_loop_guard import event_loop_guard  # noqa: E402,F401
+from tests.helpers.plane_template import plane_template  # noqa: E402,F401
 
 
 @pytest.fixture
