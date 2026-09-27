@@ -284,6 +284,7 @@ jobs:
             --event-name manual --base-sha "$base_component" \
             --candidate-sha "$candidate_component" \
             --repository-profile projection-web --coverage-mode strict \
+            --empty-diff not-applicable \
             --projection-python components/AstralProjection/build/backend-web/projection-python.xml \
             --javascript components/AstralProjection/build/backend-web/javascript.json \
             --fail-under 90 --output components/AstralProjection/build/backend-web/changed-coverage.json
@@ -364,7 +365,7 @@ jobs:
           retention-days: 14
 
   backend-changed-coverage:
-    name: Nonempty immutable changed Python coverage at least 90 percent
+    name: Immutable changed Python coverage at least 90 percent
     needs: [backend-web, voice-worker-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -396,6 +397,7 @@ jobs:
           python scripts/check_changed_coverage.py --repo . \
             --event-name "$GITHUB_EVENT_NAME" --event-path "$GITHUB_EVENT_PATH" \
             "${revision_args[@]}" --repository-profile deep --coverage-mode strict \
+            --empty-diff not-applicable \
             --backend-python build/backend-web/backend-python.xml \
             --tooling-python build/backend-web/tooling-python.xml \
             --voice-worker-python build/065/coverage/voice-worker.xml \

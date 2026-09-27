@@ -1603,6 +1603,258 @@ def test_unexpected_empty_executable_selection_fails(
     assert failure.value.code == "unexpected_empty_executable_diff"
 
 
+def _deep_owner_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "deep"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    for relative in (
+        "backend/service.py",
+        "backend/other.py",
+        "backend/voice_agent/worker.py",
+        "scripts/tool.py",
+    ):
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("first = 1\nsecond = 2\nthird = 3\n", encoding="utf-8")
+    composition = repo / "config" / "astral-composition.json"
+    composition.parent.mkdir()
+    composition.write_text('{"components": {}}\n', encoding="utf-8")
+    return repo, _commit(repo, "base")
+
+
+def _repin_composition(repo: Path, base: str) -> str:
+    (repo / "config" / "astral-composition.json").write_text(
+        '{"components": {"astral-primitives": {}}}\n', encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralPrimitives",
+    )
+    _git(repo, "commit", "-m", "repin")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _deep_owner_reports(
+    tmp_path: Path,
+    backend: dict[str, dict[int, int]],
+    *,
+    tooling: str = "scripts/tool.py",
+) -> dict[str, Path]:
+    return {
+        "--backend-python": _cobertura_many(tmp_path / "backend.xml", backend),
+        "--voice-worker-python": _cobertura(
+            tmp_path / "voice.xml", "backend/voice_agent/worker.py", {1: 1, 2: 1, 3: 1}
+        ),
+        "--tooling-python": _cobertura(tmp_path / "tooling.xml", tooling, {1: 1, 2: 1, 3: 1}),
+    }
+
+
+def _deep_owner_decision(
+    repo: Path,
+    base: str,
+    candidate: str,
+    reports: dict[str, Path],
+    output: Path,
+    *policy: str,
+) -> tuple[int, dict[str, object]]:
+    arguments = [
+        "--repo",
+        str(repo),
+        "--event-name",
+        "manual",
+        "--base-sha",
+        base,
+        "--candidate-sha",
+        candidate,
+        "--repository-profile",
+        "deep",
+        "--coverage-mode",
+        "strict",
+        "--fail-under",
+        "90",
+        "--output",
+        str(output),
+        *policy,
+    ]
+    for flag, report in reports.items():
+        arguments.extend((flag, str(report)))
+    exit_code = collector.main(arguments)
+    return exit_code, json.loads(output.read_text(encoding="utf-8"))
+
+
+def _not_applicable(base: str, candidate: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "not-applicable",
+        "reason": "no_measurable_changed_lines",
+        "base_sha": base,
+        "candidate_sha": candidate,
+        "fail_under": 90.0,
+        "selection": {
+            "event_name": "manual",
+            "base_source": "manual.base_sha",
+            "candidate_source": "manual.candidate_sha",
+        },
+    }
+
+
+@pytest.mark.parametrize("change", ["gitlink-and-composition", "non-executable-lines"])
+def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
+    tmp_path: Path, change: str
+) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    backend = {
+        "backend/service.py": {1: 1, 2: 1, 3: 1},
+        "backend/other.py": {1: 1, 2: 1, 3: 1},
+    }
+    if change == "gitlink-and-composition":
+        candidate = _repin_composition(repo, base)
+    else:
+        (repo / "backend" / "service.py").write_text(
+            "# rationale\nfirst = 1\nsecond = 2\nthird = 3\n", encoding="utf-8"
+        )
+        candidate = _commit(repo, "comment")
+        backend["backend/service.py"] = {2: 1, 3: 1, 4: 1}
+    reports = _deep_owner_reports(tmp_path, backend)
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, reports, tmp_path / "decision.json",
+        "--empty-diff", "not-applicable",
+    )
+    assert exit_code == 0
+    assert document == _not_applicable(base, candidate)
+
+    for policy in ((), ("--empty-diff", "error")):
+        exit_code, document = _deep_owner_decision(
+            repo, base, candidate, reports, tmp_path / "default.json", *policy
+        )
+        assert exit_code == 1
+        assert document["status"] == "error"
+        assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+
+def test_opt_in_policy_records_unmeasured_projection_web_paths_as_not_applicable(
+    tmp_path: Path,
+) -> None:
+    repo, original, _reports, slots = _projection_strict_case(tmp_path)
+    helper = repo / "apple-clients" / "Scripts" / "x.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("value = 1\n", encoding="utf-8")
+    candidate = _commit(repo, "unmeasured helper")
+    output = tmp_path / "decision.json"
+    arguments = [
+        "--repo",
+        str(repo),
+        "--event-name",
+        "manual",
+        "--base-sha",
+        original.candidate_sha,
+        "--candidate-sha",
+        candidate,
+        "--repository-profile",
+        "projection-web",
+        "--coverage-mode",
+        "strict",
+        "--projection-python",
+        str(slots["projection_python"]),
+        "--javascript",
+        str(slots["javascript"]),
+        "--fail-under",
+        "90",
+        "--output",
+        str(output),
+    ]
+
+    assert collector.main([*arguments, "--empty-diff", "not-applicable"]) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == _not_applicable(
+        original.candidate_sha, candidate
+    )
+
+    assert collector.main(arguments) == 1
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+
+@pytest.mark.parametrize(
+    "condition,code",
+    [
+        ("uncovered", None),
+        ("unmapped-report", "producer_unmapped_changed_file"),
+        ("missing-report", "missing_report"),
+        ("missing-slot", "incomplete_report_matrix"),
+        ("unproductive-report", "unproductive_report"),
+    ],
+)
+def test_opt_in_policy_never_relaxes_measurable_or_incomplete_evidence(
+    tmp_path: Path, condition: str, code: str | None
+) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    backend = {
+        "backend/service.py": {1: 1, 2: 0, 3: 1},
+        "backend/other.py": {1: 1, 2: 1, 3: 1},
+    }
+    if condition in {"uncovered", "unmapped-report"}:
+        (repo / "backend" / "service.py").write_text(
+            "first = 1\nsecond = 20\nthird = 3\n", encoding="utf-8"
+        )
+        candidate = _commit(repo, "measurable change")
+    else:
+        candidate = _repin_composition(repo, base)
+    if condition == "unmapped-report":
+        backend.pop("backend/service.py")
+    reports = _deep_owner_reports(
+        tmp_path,
+        backend,
+        tooling="scripts/absent.py" if condition == "unproductive-report" else "scripts/tool.py",
+    )
+    if condition == "missing-report":
+        reports["--backend-python"] = tmp_path / "absent.xml"
+    if condition == "missing-slot":
+        reports.pop("--voice-worker-python")
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, reports, tmp_path / "decision.json",
+        "--empty-diff", "not-applicable",
+    )
+
+    assert exit_code == 1
+    if code is None:
+        assert document["status"] == "fail"
+        assert document["languages"]["python"]["percent"] == 0
+        assert {failure["code"] for failure in document["failures"]} == {
+            "coverage_below_threshold"
+        }
+    else:
+        assert document["status"] == "error"
+        assert document["error"]["code"] == code
+
+
+def test_empty_diff_policy_rejects_unknown_values(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as failure:
+        collector._parser().parse_args(
+            ["--empty-diff", "pass", "--output", str(tmp_path / "decision.json")]
+        )
+    assert failure.value.code == 2
+    assert collector._parser().parse_args(
+        ["--output", str(tmp_path / "decision.json")]
+    ).empty_diff == "error"
+
+    selection = collector.RevisionSelection(
+        "manual", "a" * 40, "b" * 40, "manual.base_sha", "manual.candidate_sha"
+    )
+    with pytest.raises(collector.CoveragePolicyError) as rejected:
+        collector.evaluate_changed_coverage(
+            tmp_path, selection, {}, empty_diff="pass"
+        )
+    assert rejected.value.code == "invalid_empty_diff_policy"
+
+
 def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
     tmp_path: Path,
 ) -> None:

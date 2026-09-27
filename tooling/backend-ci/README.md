@@ -21,7 +21,10 @@ The required Deep CI aggregate now includes:
   no-secrets production boot with exit 78.
 - Locked voice-worker image tests, with no conditional green no-op.
 - At least 90% changed Python coverage, against immutable event identities.
-  Empty/self comparisons fail closed. Manual qualification requires the
+  Self comparisons fail closed. CI passes `--empty-diff not-applicable`, so an
+  immutable diff with no measurable changed lines is recorded as an explicit
+  `not-applicable` decision after the same report validation; release tooling
+  omits the flag and still fails closed on it. Manual qualification requires the
   immutable reviewed PR base via `base_sha`; this maintenance branch started
   at `b3ae2dc549928aeaee518ad60c9428790f67fc05`. Component comparisons use that
   base's exact gitlinks. The deployed baseline

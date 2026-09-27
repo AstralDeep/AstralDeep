@@ -1672,6 +1672,21 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
     assert "name: voice-worker-image" not in workflow
 
 
+def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    for job_id in ("backend-changed-coverage", "projection-backend-web"):
+        command = _workflow_job(workflow, job_id).partition(
+            "python scripts/check_changed_coverage.py"
+        )[2]
+        assert command, f"{job_id} does not run the changed-coverage gate"
+        assert "--coverage-mode strict" in command
+        assert "--empty-diff not-applicable" in command
+        assert "--fail-under 90" in command
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        if path != CI_WORKFLOW:
+            assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
+
+
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     guard = (
         "github.event_name != 'workflow_dispatch' || "
