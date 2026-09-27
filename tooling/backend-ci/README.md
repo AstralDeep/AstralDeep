@@ -37,13 +37,16 @@ The required Deep CI aggregate now includes:
   records paused native paths; it does not change the complete Projection
   release profile. Responsive interactions run in Chromium, Firefox and WebKit.
 
-The complete-root diagnostic reached 32% after 35 minutes on this machine.
-An isolated `EXPLAIN ANALYZE` attributed about 366 of 480 milliseconds per
-schema verification to repeated dependency-catalog scans. The CI test job has
-a four-hour budget and each suite a three-hour timeout; the Plane job has a
-three-hour budget. These bounds are based on partial diagnostics; a complete
-run's duration has not yet been established. A timeout fails the gate and retains
-the partial log; it never turns an unfinished suite into a pass.
+Every CI job has at most a 30-minute budget, and the suite runner gives each
+suite a 30-minute (1800 s) timeout. The backend suites run as a two-job matrix
+of whole-suite groups: `tests` is the `backend/tests` suite and `modules` is
+every other backend suite, both concurrency probes and the tooling suite. The
+changed-coverage job merges the two groups' raw coverage data with
+`scripts/merge_backend_web_coverage.py` into the same `backend-python.xml` and
+`tooling-python.xml` one complete run writes. The merge refuses group evidence
+that failed, comes from another checkout or runner, or does not partition the
+complete suite plan. A timeout fails the gate and retains the partial log; it
+never turns an unfinished suite into a pass.
 
 `requirements.lock.txt` is CI-only. Its validator versions match the existing
 voice-contract validator's reviewed versions. Neither this lock nor the test
@@ -64,6 +67,9 @@ The shell gate creates its own Docker namespace, PostgreSQL server, test and
 smoke databases and synthetic keys, and removes its containers on exit. It
 does not read `.env`, publish ports, or mount live database/blob directories.
 Use a clean checkout: tests may create fixture files under their source tree.
+Set `ASTRAL_GATE_GROUP` to `tests` or `modules` to run one whole-suite group;
+the default, `all`, runs every suite. Protected qualification clears any
+inherited gate settings, so it always runs every suite in one pass.
 
 For a separately verified policy checkout, set `ASTRAL_GATE_POLICY_ROOT` to
 that checkout and keep the working directory at the candidate checkout. The

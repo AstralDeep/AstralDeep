@@ -152,3 +152,22 @@ def test_cli_incomplete_is_nonzero_and_does_not_authorize(args, monkeypatch, cap
 
 def test_protected_module_loading_uses_policy_tree():
     assert producer.module("run_backend_web_qualification").BASELINE_PLANE == producer.BASELINE_PLANE
+
+
+def test_protected_gate_runs_every_suite_whatever_gate_settings_are_inherited(args, monkeypatch):
+    for key, value in {"ASTRAL_GATE_GROUP": "tests", "ASTRAL_GATE_NAMESPACE": "ad-gates-inherited",
+                       "ASTRAL_GATE_POLICY_ROOT": "/inherited-policy"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(producer, "verify_context", lambda _: SimpleNamespace())
+    def initialize(**_kwargs):
+        raise RuntimeError("services unavailable")
+    monkeypatch.setattr(producer, "module", lambda name: SimpleNamespace(CHECKS={"backend-complete"}, initialize=initialize))
+    calls = []
+    monkeypatch.setattr(producer, "execute", lambda arguments, **kwargs: calls.append((arguments, kwargs)))
+    producer.produce(args)
+    [(arguments, kwargs)] = calls
+    assert arguments == ["bash", str(producer.ROOT / "scripts/backend_web_image_gate.sh"), args.candidate_image, "tests"]
+    environment = kwargs["environment"]
+    assert "ASTRAL_GATE_GROUP" not in environment
+    assert environment["ASTRAL_GATE_POLICY_ROOT"] == str(producer.ROOT)
+    assert re.fullmatch(r"ad-bwq-gates-[0-9a-f]{32}", environment["ASTRAL_GATE_NAMESPACE"])

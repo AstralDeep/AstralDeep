@@ -26,7 +26,7 @@ jobs:
   backend-image:
     name: Clean backend production image build
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -100,12 +100,16 @@ jobs:
           retention-days: 14
 
   backend-web:
-    name: Python 3.11 complete backend and isolated PostgreSQL
+    name: Python 3.11 backend ${{ matrix.group }} group and isolated PostgreSQL
     needs: [backend-image]
     runs-on: ubuntu-24.04
-    # Observed complete-root diagnostic: 35 minutes at 32%; catalogue
-    # verification is CPU-bound. Keep all tests and leave time for modules.
-    timeout-minutes: 240
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - tests
+          - modules
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -123,6 +127,8 @@ jobs:
           name: backend-image
           path: build/backend-web
       - name: Load and test the exact built artifact
+        env:
+          ASTRAL_GATE_GROUP: ${{ matrix.group }}
         run: |
           set -euo pipefail
           docker load --input build/backend-web/image.tar.gz
@@ -132,7 +138,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: backend-web-test-evidence
+          name: backend-web-test-evidence-${{ matrix.group }}
           path: build/backend-web
           include-hidden-files: true
           if-no-files-found: error
@@ -301,7 +307,7 @@ jobs:
   plane-postgres:
     name: Exact Plane complete PostgreSQL suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 30
     env:
       ASTRALPLANE_TEST_POSTGRES_DSN: postgresql://astral:isolated_ci_only@127.0.0.1:5432/ad_gate_plane
       ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}
@@ -377,14 +383,27 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: tooling/backend-ci/requirements.lock.txt
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: backend-web-test-evidence
-          path: build/backend-web
+          name: backend-web-test-evidence-tests
+          path: build/backend-web-groups/tests
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-web-test-evidence-modules
+          path: build/backend-web-groups/modules
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: voice-worker-coverage
           path: build/065/coverage
+      - name: Merge the raw coverage of both whole-suite groups into complete-run reports
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
+          python scripts/merge_backend_web_coverage.py --root . --output build/backend-web \
+            --evidence build/backend-web-groups/tests \
+            --evidence build/backend-web-groups/modules
       - name: Enforce immutable event or reviewed PR-base comparison
         env:
           MANUAL_BASE_SHA: ${{ inputs.base_sha }}
@@ -406,7 +425,10 @@ jobs:
         if: always()
         with:
           name: backend-changed-coverage-decision
-          path: build/backend-web/changed-coverage.json
+          path: |
+            build/backend-web/changed-coverage.json
+            build/backend-web/backend-python.xml
+            build/backend-web/tooling-python.xml
           if-no-files-found: error
 
   lint:
@@ -559,6 +581,7 @@ jobs:
             scripts/tests/test_backend_web_qualification.py
             scripts/tests/test_backend_web_services.py
             scripts/tests/test_backend_web_state.py
+            scripts/tests/test_merge_backend_web_coverage.py
             scripts/tests/test_install_local_components.py
             scripts/tests/test_retire_restored_sessions.py
             scripts/tests/test_verify_component_ownership.py
@@ -775,6 +798,7 @@ jobs:
       - voice-worker-test
       - secret-scan
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Enforce every hosted owner gate
         run: |

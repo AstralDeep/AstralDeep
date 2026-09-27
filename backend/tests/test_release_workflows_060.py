@@ -1549,6 +1549,7 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
         "scripts/tests/test_backend_web_gate.py",
+        "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
@@ -1685,6 +1686,59 @@ def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable()
     for path in sorted(WORKFLOWS.glob("*.yml")):
         if path != CI_WORKFLOW:
             assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_backend_suites_run_as_two_whole_suite_groups_with_merged_coverage() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    web = _workflow_job(workflow, "backend-web")
+    assert (
+        "    strategy:\n      fail-fast: false\n      matrix:\n        group:\n"
+        "          - tests\n          - modules\n"
+    ) in web
+    assert "ASTRAL_GATE_GROUP: ${{ matrix.group }}" in web
+    assert 'bash scripts/backend_web_image_gate.sh "$(cat build/backend-web/image-id.txt)" tests' in web
+    assert "name: backend-web-test-evidence-${{ matrix.group }}" in web
+    assert "include-hidden-files: true" in web
+    assert "name: backend-web-test-evidence\n" not in workflow
+
+    coverage = _workflow_job(workflow, "backend-changed-coverage")
+    assert "needs: [backend-web, voice-worker-test]" in coverage
+    downloads = [
+        f"name: backend-web-test-evidence-{group}\n          path: build/backend-web-groups/{group}\n"
+        for group in ("tests", "modules")
+    ]
+    merge = coverage.index("python scripts/merge_backend_web_coverage.py --root . --output build/backend-web")
+    check = coverage.index("python scripts/check_changed_coverage.py")
+    assert all(coverage.index(download) < merge for download in downloads)
+    assert merge < check
+    for group in ("tests", "modules"):
+        assert f"--evidence build/backend-web-groups/{group}" in coverage
+    for report in (
+        "--backend-python build/backend-web/backend-python.xml",
+        "--tooling-python build/backend-web/tooling-python.xml",
+        "--voice-worker-python build/065/coverage/voice-worker.xml",
+    ):
+        assert report in coverage[check:]
+
+
+def test_every_ci_job_is_bounded_by_thirty_minutes() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    limits = {}
+    for job_id in _job_ids(workflow):
+        match = re.search(r"(?m)^    timeout-minutes: (\d+)$", _workflow_job(workflow, job_id))
+        assert match, f"{job_id} has no job timeout"
+        limits[job_id] = int(match.group(1))
+    assert max(limits.values()) <= 30
+    assert {
+        job_id: limits[job_id]
+        for job_id in (
+            "backend-image", "backend-web", "plane-postgres", "projection-backend-web",
+            "voice-worker-test", "gates",
+        )
+    } == {
+        "backend-image": 30, "backend-web": 30, "plane-postgres": 30,
+        "projection-backend-web": 30, "voice-worker-test": 30, "gates": 5,
+    }
 
 
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:

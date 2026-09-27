@@ -103,7 +103,9 @@ def produce(args):
             observations.append({"phase": name, "status": "failed", "exit_code": 1})
             return None
 
-    gate_environment = clean_environment() | {
+    gate_environment = {
+        key: value for key, value in clean_environment().items() if not key.startswith("ASTRAL_GATE_")
+    } | {
         "ASTRAL_GATE_NAMESPACE": "ad-bwq-gates-" + identifier,
         "ASTRAL_GATE_POLICY_ROOT": str(ROOT),
     }
