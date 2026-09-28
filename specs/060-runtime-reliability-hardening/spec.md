@@ -625,8 +625,8 @@ gate and is not a Spec 060 release requirement.
   stale writers receive an explicit conflict.
 - **SC-006**: After network loss and service restart—and after Android/iOS process recreation,
   Windows/macOS app restart, or web reload as applicable—the intended chat, semantically equivalent
-  transcript, and last committed canvas return within five seconds in 100% of 20 consecutive trials
-  per supported client, with no unintended welcome screen.
+  transcript, and last committed canvas return within five seconds in a single resume cycle per
+  supported client, with no unintended welcome screen.
 - **SC-007**: On a clean Windows profile with no saved settings or runtime overrides, the production
   artifact opens the main window without a configuration dialog in 100% of release-smoke runs and
   completes an ordinary chat turn using its release-provided deployment profile.

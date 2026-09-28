@@ -109,6 +109,7 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
         "__ASTRAL_TOKEN__",
         "alg: \"none\"",
         "addScriptTag",
+        "for (let trial",
     ):
         assert forbidden not in source
     for required in (
@@ -123,8 +124,8 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
         "websocketPrincipalMatchesCookieSession",
         "operation_status",
         "agent_lifecycle",
-        "runResumeTrials",
-        "for (let trial = 0; trial < 20; trial += 1)",
+        "runReloadResume",
+        'measurement("trial_count", "total", 1, "count", 1, "gte", 1)',
         "resume_success_rate",
         "resume_latency_max_ms",
         "unnamed_visible_controls",

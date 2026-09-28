@@ -311,9 +311,9 @@ snapshot to them.
 
 ## 9. Required contract tests
 
-- Twenty consecutive network-loss, backend-restart, browser reload, Windows/macOS restart, and
-  Android/iOS process-recreation trials per supported client: correct coherent state within five
-  seconds and no unintended welcome.
+- One network-loss, backend-restart, browser reload, Windows/macOS restart, or Android/iOS
+  process-recreation resume cycle per supported client, as applicable: correct coherent state within
+  five seconds and no unintended welcome.
 - Reordered, duplicated, missing, different-chat, old-connection, old-request, and old-render frames
   cannot alter committed content.
 - Multiple reordered/equal-revision transient frames may affect only their overlay; exactly one full

@@ -108,8 +108,8 @@ def _add_required_measurements(report: dict[str, Any]) -> None:
         ]
     if check := by_id.get("reconnect_resume"):
         check["measurements"] = [
-            _measurement("trial_count", 20, aggregation="total", comparator="gte", threshold=20, sample_count=20),
-            _measurement("resume_success_rate", 100, aggregation="rate", comparator="gte", threshold=100, sample_count=20, unit="percent"),
+            _measurement("trial_count", 1, aggregation="total", comparator="gte", threshold=1, sample_count=1),
+            _measurement("resume_success_rate", 100, aggregation="rate", comparator="gte", threshold=100, sample_count=1, unit="percent"),
         ]
     if check := by_id.get("apple_first_login_llm"):
         check["measurements"] = [

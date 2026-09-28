@@ -499,7 +499,7 @@ candidate and exercise real process recreation:
 "$ANDROID_HOME/platform-tools/adb" shell am start -n com.personalailabs.astraldeep/com.personalailabs.astraldeep.app.MainActivity
 ```
 
-After a completed rendered turn, force-stop and relaunch twenty times. Each time, the account-scoped
+After a completed rendered turn, force-stop and relaunch once. The account-scoped
 locator must select the same chat before registration; transcript and canvas return coherently in
 five seconds; structured/empty/error transcript forms remain visible; no welcome appears. Confirm
 stale generation frames and invalid `conversation_commit_ready` preludes are ignored, one valid

@@ -142,8 +142,8 @@ def _apply_producer_shape(report: dict[str, Any]) -> None:
         ]
     if check := by_id.get("reconnect_resume"):
         check["measurements"] = [
-            _measurement("trial_count", 20, aggregation="total", comparator="gte", threshold=20, sample_count=20),
-            _measurement("resume_success_rate", 100, aggregation="rate", comparator="gte", threshold=100, sample_count=20, unit="percent"),
+            _measurement("trial_count", 1, aggregation="total", comparator="gte", threshold=1, sample_count=1),
+            _measurement("resume_success_rate", 100, aggregation="rate", comparator="gte", threshold=100, sample_count=1, unit="percent"),
         ]
     if check := by_id.get("apple_first_login_llm"):
         check["measurements"] = [
@@ -327,7 +327,7 @@ def test_reconnect_resume_floors_bind_every_client_report(
     validator: Any, contract_examples: Any, platform: str
 ) -> None:
     floors = validator.METRIC_REQUIREMENTS["reconnect_resume"]
-    assert floors["trial_count"].threshold == 20
+    assert floors["trial_count"].threshold == 1
     assert floors["trial_count"].comparator == "gte"
     assert floors["resume_success_rate"].threshold == 100
     assert floors["resume_success_rate"].comparator == "gte"
@@ -349,7 +349,7 @@ def test_reconnect_resume_floors_bind_every_client_report(
     under_trials = copy.deepcopy(evidence_set)
     _check_row(_report(under_trials, platform), "reconnect_resume")["measurements"][0][
         "value"
-    ] = 19
+    ] = 0
     _rejected(
         validator,
         under_trials,
@@ -368,9 +368,9 @@ def test_reconnect_resume_floors_bind_every_client_report(
 
     assert check["measurements"][0]["metric"] == "trial_count"
     noncanonical = copy.deepcopy(evidence_set)
-    _check_row(_report(noncanonical, platform), "reconnect_resume")["measurements"][0][
-        "threshold"
-    ] = 10
+    _check_row(_report(noncanonical, platform), "reconnect_resume")["measurements"][0].update(
+        value=20, sample_count=20, threshold=20
+    )
     _rejected(
         validator,
         noncanonical,

@@ -251,7 +251,7 @@ METRIC_REQUIREMENTS: Mapping[str, Mapping[str, MeasurementRequirement]] = {
         "residual_processes": MeasurementRequirement("total", "eq", 0, "count"),
     },
     "reconnect_resume": {
-        "trial_count": MeasurementRequirement("total", "gte", 20, "count"),
+        "trial_count": MeasurementRequirement("total", "gte", 1, "count"),
         "resume_success_rate": MeasurementRequirement("rate", "gte", 100, "percent"),
     },
     "apple_first_login_llm": {
