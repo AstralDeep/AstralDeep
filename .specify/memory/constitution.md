@@ -312,7 +312,8 @@ and the happy path works."
   reference a tracked issue.
 - Tests MUST exercise the golden path, edge cases, and error
   conditions for the changed behavior — in addition to
-  satisfying the 90% coverage gate from Principle III.
+  satisfying the 90% coverage gate from Principle III where it
+  applies.
 - New features MUST include observability appropriate to their
   surface area (structured logs for failures, metrics for
   user-visible operations) sufficient to diagnose production
@@ -502,7 +503,8 @@ constitution requires it.
      orchestrator. The suite MAY run as separate parallel jobs
      of whole suites; the required suite set is still complete.
   3. **Coverage** — the changed-code coverage gate at ≥ 90%
-     (Principle III).
+     (Principle III), recorded as not applicable when a change
+     contains no measurable executable lines.
   4. **Image build** — the production container image MUST
      build from a clean checkout on every run.
   5. **Boot smoke** — the built image MUST answer its liveness
@@ -817,4 +819,4 @@ guidance when conflicts arise.
   before merge, and known shortfalls are tracked as follow-up
   work until closed.
 
-**Version**: 6.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-28
+**Version**: 6.0.1 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-28

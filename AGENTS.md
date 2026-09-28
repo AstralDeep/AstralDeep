@@ -58,7 +58,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
 - The code documents itself (Constitution VI, v4.0.0). Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
-- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live network, no clock-bound or wall-clock-performance assertions, per-test retries only (Constitution XI, v5.0.0).
+- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only (Constitution XI, v5.0.0).
 - Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization, including Spec Kit commit hooks. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
 - Do not push, merge, release, submit to a store, or mutate external issue trackers unless the request or invoked workflow explicitly calls for it. Permission to create local commits does not authorize those actions.
 - Use targeted parallel research/review when it improves coverage, then personally verify critical seams and integrate the findings. Agent reports are evidence leads, not proof by themselves.
@@ -160,7 +160,7 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 
 Important: `backend/pytest.ini` discovers `tests` and `persistent_agents/tests`. The command above is not every nested module suite. For merge-level confidence, mirror the explicit invocations in `.github/workflows/ci.yml`, including the module suites and relevant feature-flag posture, and run any touched package's local tests explicitly.
 
-CI runs the backend suites as three whole-suite groups — `tests`, `persistent_agents`, and `modules` — each within the Constitution XI 30-minute budget. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass for local use.
+CI runs the backend suites as three whole-suite groups — `tests`, `persistent_agents`, and `modules` — each within the Constitution XI 30-minute budget. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass, for local use and on the protected qualification path, where `scripts/produce_backend_web_qualification.py` runs the image gate at its default group.
 
 Client gates:
 
