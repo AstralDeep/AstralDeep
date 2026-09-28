@@ -32,12 +32,6 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def bounded_supervisor(monkeypatch):
-    monkeypatch.setenv("PERSISTENT_AGENTS_TICK_SECONDS", "1")
-    monkeypatch.setenv("PERSISTENT_AGENTS_LEASE_SECONDS", "15")
-
-
 def retry_command(runner):
     source = runner.service.tool_bound("web-research-1:fetch_page")
     body = json.loads(research_command(

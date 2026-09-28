@@ -289,7 +289,7 @@ async def test_the_ws_dial_carries_the_key_and_the_agent_registers():
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         await ws.send_str(json.dumps({"type": "register_agent", "agent_card": CARD}))
-        await ws.receive()
+        await ws.close()
         return ws
 
     runner = await _serve([
@@ -298,7 +298,7 @@ async def test_the_ws_dial_carries_the_key_and_the_agent_registers():
     ], 9176)
     o = _orch()
     o.register_agent = lambda ws, parsed: _noop()
-    o._agent_listen_loop = lambda ws, aid: _noop()
+    o._agent_listen_loop = lambda ws, aid: ws.close()
     try:
         await o.discover_agent("http://127.0.0.1:9176")
     finally:

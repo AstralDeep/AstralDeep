@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from orchestrator import web_auth
 from orchestrator.api import operation_router
+from persistent_agents.config import RunnerConfig
 from persistent_agents.runtime import start_assignment_runtime
 from persistent_agents.tests.test_research_execution_postgres_088 import (
     fixture as fixture,
@@ -42,6 +43,9 @@ async def integrated(research, fixture, monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
     monkeypatch.setitem(flags._flags, "persistent_agents", True)
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate", lambda: op.executor.service.phi_gate)
+    # A 15 s default tick and 15 s environment lease floor would make each wait a timeout
+    monkeypatch.setattr(RunnerConfig, "from_environment",
+                        classmethod(lambda cls: cls(tick_seconds=1, lease_seconds=5)))
     runner = start_assignment_runtime(orch)
     app = FastAPI()
     app.state.orchestrator = orch
