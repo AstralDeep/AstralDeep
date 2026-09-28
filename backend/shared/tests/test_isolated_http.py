@@ -11,6 +11,7 @@ import gzip
 import io
 import json
 import os
+import select
 import signal
 import struct
 import subprocess
@@ -34,7 +35,7 @@ _PRIVATE = "private-http-synthetic-sentinel"
 @pytest.fixture
 def server():
     seen = []
-    entered, disconnected = threading.Event(), threading.Event()
+    entered, disconnected, stopped = threading.Event(), threading.Event(), threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -61,10 +62,9 @@ def server():
             self.end_headers()
             try:
                 if self.path == "/drip":
-                    for _ in range(300):
+                    while not stopped.wait(0.01):
                         self.wfile.write(b"x")
                         self.wfile.flush()
-                        time.sleep(0.01)
                 else:
                     self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
@@ -85,6 +85,7 @@ def server():
     try:
         yield f"http://127.0.0.1:{http.server_port}", seen, entered, disconnected
     finally:
+        stopped.set()
         http.shutdown()
         http.server_close()
         thread.join(2)
@@ -178,14 +179,12 @@ async def test_actual_egress_refusal_does_not_connect(server, children):
 
 @pytest.mark.asyncio
 async def test_actual_slow_drip_has_total_deadline_and_socket_closes(server, children):
-    start = time.monotonic()
     with pytest.raises(transport.IsolatedHttpError, match="^deadline$"):
         await transport.request("GET", server[0] + "/drip", timeout_seconds=0.6,
                                 allowed_private_hosts=("127.0.0.1",))
-    assert time.monotonic() - start < 0.6 + transport.CLEANUP_SECONDS
     assert server[2].is_set()
-    assert await asyncio.to_thread(server[3].wait, 2)
     assert children[0].snapshot().process_tree_terminated
+    assert await asyncio.to_thread(server[3].wait)
 
 
 @pytest.mark.asyncio
@@ -198,29 +197,43 @@ async def test_cancellation_reaps_real_request(server, children):
     with pytest.raises(transport.IsolatedHttpCancelled) as error:
         await task
     assert error.value.cleanup_confirmed
-    assert await asyncio.to_thread(server[3].wait, 2)
     assert children[0].snapshot().process_tree_terminated
+    assert await asyncio.to_thread(server[3].wait)
 
 
 @pytest.mark.asyncio
 async def test_delayed_spawn_cancellation_never_transmits(server, children, monkeypatch):
-    original = ProcessSupervisor.spawn
-    entered = threading.Event()
+    original, settle = ProcessSupervisor.spawn, transport._settle
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
 
     def delayed(self, **kwargs):
-        entered.set()
-        time.sleep(0.2)
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
         return original(self, **kwargs)
 
+    async def cleanup_started(task, deadline):
+        cleaning.set()
+        return await settle(task, deadline)
+
     monkeypatch.setattr(ProcessSupervisor, "spawn", delayed)
+    monkeypatch.setattr(transport, "_settle", cleanup_started)
     task = asyncio.create_task(transport.request(
         "GET", server[0], allowed_private_hosts=("127.0.0.1",)
     ))
-    assert await asyncio.to_thread(entered.wait, 1)
-    task.cancel()
+    try:
+        waiter = asyncio.ensure_future(entered.wait())
+        await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+        assert entered.is_set() and not task.done()
+        task.cancel()
+        await cleaning.wait()
+    finally:
+        release.set()
     with pytest.raises(transport.IsolatedHttpCancelled) as error:
         await task
     assert error.value.cleanup_confirmed
+    assert children[0].snapshot().termination_reason is TerminationReason.CANCEL
     assert not server[1]
 
 
@@ -378,25 +391,32 @@ async def test_pipe_backpressure_and_stalled_reader_timeout():
 
 @pytest.mark.asyncio
 async def test_cleanup_uncertainty_and_repeated_cancellation_are_explicit():
+    release = asyncio.Event()
+    unbounded = time.monotonic() + 3600
+
     async def complete():
-        await asyncio.sleep(0.06)
+        await release.wait()
         return True
 
     async def clean():
-        return await transport._settle(asyncio.create_task(complete()), time.monotonic() + 1)
+        return await transport._settle(asyncio.create_task(complete()), unbounded)
 
     task = asyncio.create_task(clean())
-    await asyncio.sleep(0.01)
-    task.cancel()
-    await asyncio.sleep(0.01)
-    task.cancel()
+    await asyncio.sleep(0)
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    release.set()
     assert await task == (True, True)
+    release.clear()
     pending = asyncio.create_task(complete())
     assert await transport._settle(pending, time.monotonic() + 0.001) == (False, False)
+    release.set()
     await pending
     cancelled = asyncio.create_task(complete())
     cancelled.cancel()
-    assert await transport._settle(cancelled, time.monotonic() + 1) == (False, True)
+    assert await transport._settle(cancelled, unbounded) == (False, True)
 
 
 @pytest.mark.asyncio
@@ -419,6 +439,28 @@ def test_direct_worker_real_http_and_expired_before_network(server):
     assert len(server[1]) == 1
 
 
+class _ExitWatch:
+    def __init__(self, pid):
+        if hasattr(os, "pidfd_open"):
+            self._handle = os.pidfd_open(pid)
+        else:
+            self._handle = select.kqueue()
+            self._handle.control([select.kevent(pid, select.KQ_FILTER_PROC,
+                select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 0)
+
+    def wait(self):
+        if isinstance(self._handle, int):
+            select.select([self._handle], [], [])
+        else:
+            self._handle.control(None, 1)
+
+    def close(self):
+        if isinstance(self._handle, int):
+            os.close(self._handle)
+        else:
+            self._handle.close()
+
+
 def test_parent_death_closes_real_child_socket(server, tmp_path):
     script = tmp_path / "caller.py"
     script.write_text(
@@ -439,19 +481,15 @@ def test_parent_death_closes_real_child_socket(server, tmp_path):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert server[2].wait(3)
-        child_pid = int(parent.stdout.readline())
-        parent.kill()
-        output = parent.communicate(timeout=3)
-        assert _PRIVATE.encode() not in b"".join(output)
-        assert server[3].wait(3)
-        deadline = time.monotonic() + 3
-        while True:
-            try:
-                os.kill(child_pid, 0)
-            except ProcessLookupError:
-                break
-            assert time.monotonic() < deadline, "orphaned helper was not reaped"
-            time.sleep(0.01)
+        exited = _ExitWatch(int(parent.stdout.readline()))
+        try:
+            parent.kill()
+            output = parent.communicate(timeout=3)
+            assert _PRIVATE.encode() not in b"".join(output)
+            exited.wait()
+        finally:
+            exited.close()
+        assert server[3].wait()
     finally:
         if parent.poll() is None:
             parent.kill()

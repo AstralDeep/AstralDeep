@@ -278,17 +278,18 @@ def test_http_response_is_bounded_and_malformed_body_is_sanitized(stores, monkey
 def test_timeout_is_bounded_without_busy_polling(stores, monkeypatch):
     sessions, _, owner, sid = stores
     monkeypatch.setattr(ss, "REFRESH_WAIT_SECONDS", .03)
-    calls = []
+    calls, abandoned = [], []
 
     async def exchange(refresh, access):
         calls.append(refresh)
-        await asyncio.sleep(2)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            abandoned.append(refresh)
 
-    start = time.monotonic()
     with pytest.raises(ss.SessionRefreshUnavailable, match="time limit"):
         asyncio.run(sessions.refresh_credential(sid, owner_id=owner, exchange=exchange))
-    assert time.monotonic() - start < 1
-    assert calls == ["refresh-initial"]
+    assert calls == abandoned == ["refresh-initial"]
 
 
 def test_legacy_exact_token_match_requires_consent_without_rebinding(stores, runtime, monkeypatch):

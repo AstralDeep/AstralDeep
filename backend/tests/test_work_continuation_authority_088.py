@@ -19,6 +19,8 @@ from astralplane.repositories.history import SessionExecutionObservation
 from orchestrator import session_authority as execution, web_auth
 from orchestrator.work_submit_authority import authenticate_work_submission_request
 from persistent_agents.runtime_values import digest, thaw
+from tests.helpers.database_waits import database_wait_bound
+from tests.helpers.database_clock import advance_session_clock, database_now
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_operation_session_authority_088 import create_operation, set_operation
 from tests.test_request_session_authority_088 import fixture as fixture
@@ -318,10 +320,9 @@ def test_operation_sql_reads_refuse_while_actual_table_blocker_stays_held(fixtur
                     block()
                 return signing_key[1]
             monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
-        started = time.monotonic()
-        with pytest.raises(execution.SessionAuthorityUnavailable):
+        with pytest.raises(execution.SessionAuthorityUnavailable) as refused:
             asyncio.run(resolve(fixture, runtime, paused))
-        assert time.monotonic() - started < 3
+        assert database_wait_bound(refused.value) is not None
         assert runtime._pool.snapshot.borrowed == 1
     assert len(fixture[-1]) == int(stage == "final")
 
@@ -330,14 +331,14 @@ def test_request_expiry_after_final_assignment_read_refuses_control(fixture, run
     paused = control(runtime, create_operation(fixture, runtime))
     original = runtime.repositories.assignments.get_operation
     reads = []
-    expires = time.time() + 2
+    expires = database_now(runtime).timestamp() + 12
     def reread(tx, **kwargs):
         value = original(tx, **kwargs)
         reads.append(value)
-        if len(reads) == 2:
-            time.sleep(max(0, expires - time.time()) + .05)
         return value
     monkeypatch.setattr(runtime.repositories.assignments, "get_operation", reread)
+    advance_session_clock(monkeypatch, runtime.repositories.history.sessions,
+                          to=datetime.fromtimestamp(expires, timezone.utc), when=lambda: len(reads) == 2)
     async def scenario():
         selected = await context(fixture, runtime, exp=expires)
         with pytest.raises(execution.SessionAuthorityUnavailable):

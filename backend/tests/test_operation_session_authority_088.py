@@ -24,6 +24,8 @@ from astralplane.repositories.history import SessionExecutionObservation
 
 from orchestrator import auth, session_authority as sa, web_auth
 from persistent_agents.runtime_values import digest, thaw
+from tests.helpers.database_waits import database_wait_bound
+from tests.helpers.database_clock import advance_session_clock, database_now
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_request_session_authority_088 import fixture as fixture
 from tests.test_request_session_authority_088 import runtime as runtime
@@ -314,10 +316,9 @@ def test_each_database_boundary_is_bounded_while_blocker_remains(fixture, runtim
             monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
         else:
             block()
-        started = time.monotonic()
-        with pytest.raises(sa.SessionAuthorityUnavailable):
+        with pytest.raises(sa.SessionAuthorityUnavailable) as refused:
             refresh(fixture, runtime, record)
-        assert time.monotonic() - started < 3
+        assert database_wait_bound(refused.value) is not None
         assert runtime._pool.snapshot.borrowed == 1
         with runtime.transaction() as probe:
             assert probe.fetch_one("SELECT 1 AS alive")["alive"] == 1
@@ -383,23 +384,24 @@ def test_session_hard_expiry_caps_current_observation(fixture, runtime):
 
 
 def test_operation_deadline_expiring_during_capture_prevents_http(fixture, runtime, monkeypatch):
-    record = create_operation(fixture, runtime, deadline_seconds=1)
+    record = create_operation(fixture, runtime, deadline_seconds=120)
+    deadline = datetime.fromisoformat(record.operation["deadline_at"])
     capture = fixture[0].capture_incarnation_execution_reference
     captured = []
     def after_deadline(**kwargs):
-        time.sleep(1.05)
         value = capture(**kwargs)
         captured.append(value.state.observed_at)
-        return value
+        return replace(value, state=replace(value.state,
+            observed_at=max(value.state.observed_at, deadline)))
     monkeypatch.setattr(fixture[0], "capture_incarnation_execution_reference", after_deadline)
     with pytest.raises(sa.SessionAuthorityUnavailable):
         refresh(fixture, runtime, record)
-    assert len(captured) == 1 and fixture[-1] == []
+    assert len(captured) == 1 and captured[0] < deadline and fixture[-1] == []
 
 
 def test_second_session_guard_rechecks_db_time_after_operation_reread(fixture, runtime, monkeypatch):
     record = create_operation(fixture, runtime)
-    expiry = int(time.time()) + 2
+    expiry = int(database_now(runtime).timestamp()) + 12
     async def exchange(*args):
         return {"access_token": fixture[3](exp=expiry), "refresh_token": "expiry-persisted"}
     monkeypatch.setattr(web_auth, "_exchange_session_refresh", exchange)
@@ -413,15 +415,16 @@ def test_second_session_guard_rechecks_db_time_after_operation_reread(fixture, r
         if observation.valid_until.timestamp() == expiry:
             guarded.append("attempt")
         return check(transaction, observation=observation)
-    def delayed_reread(transaction, **kwargs):
+    def reread(transaction, **kwargs):
         result = get_operation(transaction, **kwargs)
         reads.append(result)
         if len(reads) == 2:
             assert guarded == ["attempt"]
-            time.sleep(max(0, expiry - time.time()) + .05)
         return result
     monkeypatch.setattr(repository, "assert_current_execution", observed_guard)
-    monkeypatch.setattr(assignments, "get_operation", delayed_reread)
+    monkeypatch.setattr(assignments, "get_operation", reread)
+    advance_session_clock(monkeypatch, repository, to=datetime.fromtimestamp(expiry, timezone.utc),
+                          when=lambda: len(reads) == 2)
     with pytest.raises(sa.SessionAuthorityUnavailable):
         refresh(fixture, runtime, record)
     assert len(reads) == 2 and guarded == ["attempt", "attempt"]

@@ -101,7 +101,8 @@ class Stream:
                 event["data"] = json.loads(value)
         return event
 
-    async def next(self, timeout=5):
+    async def next(self, timeout=5, *, ticks=None):
+        target = None if ticks is None else self.ticks + ticks
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             while b"\n\n" in self._buffer:
@@ -109,6 +110,8 @@ class Stream:
                 parsed = self._parse(frame)
                 if parsed is not None:
                     return parsed
+                if target is not None and self.ticks >= target:
+                    return None
             if self.ended:
                 return None
             remaining = deadline - asyncio.get_running_loop().time()
@@ -125,6 +128,18 @@ class Stream:
         while (event := await self.next(timeout)) is not None:
             events.append(event)
         return events
+
+    async def idle(self, ticks):
+        event = await self.next(ticks=ticks)
+        assert event is None and not self.ended, "an idle stream only emits keep-alive ticks"
+
+
+class FrozenClock:
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
 
 
 async def _control(app, fixture, record, command, revision):
@@ -147,12 +162,9 @@ async def test_stream_emits_revision_events_for_committed_controls_without_block
         assert first["data"]["revision"] == 1 and first["data"]["changed"] is True
         assert first["data"]["operation"]["id"] == record.assignment_id
         assert "authority" not in json.dumps(first) and "checkpoint" not in json.dumps(first)
-        with pytest.raises(TimeoutError):
-            await stream.next(timeout=0.3)
-        assert stream.ticks >= 1
-        started = time.monotonic()
+        await stream.idle(2)
         paused = await _control(app, fixture, record, "pause", 1)
-        assert paused.status_code == 200 and time.monotonic() - started < 2
+        assert paused.status_code == 200 and not stream.task.done() and not stream.ended
         second = await stream.next()
         assert second["event"] == "revision" and second["id"] == paused.json()["operation"]["revision"]
         assert second["data"]["operation"]["disposition"] == "paused"
@@ -165,16 +177,19 @@ async def test_stream_emits_revision_events_for_committed_controls_without_block
 
 
 async def test_original_bearer_expiry_mid_stream_ends_with_bounded_error_and_no_further_frames(
-    mounted, fixture,
+    mounted, fixture, monkeypatch,
 ):
     _, app, record = mounted
-    expiry = int(time.time()) + 3
+    clock = FrozenClock()
+    monkeypatch.setattr(work_api, "time", clock)
+    expiry = int(clock.now) + 300
     async with Stream(app, _path(record), read_headers(fixture, "bearer", exp=expiry)) as stream:
         assert (await stream.next())["event"] == "revision"
-        final = await stream.next(timeout=6)
-        finished = time.time()
+        clock.now = expiry - 0.001
+        await stream.idle(2)
+        clock.now = expiry
+        final = await stream.next()
         assert final == {"id": 1, "event": "error", "data": {"error": "work_authentication_required"}}
-        assert expiry - 0.5 <= finished <= expiry + 1.5
         assert await stream.next() is None and stream.ended
         await asyncio.wait_for(stream.task, 5)
     assert fixture[-1] == []
@@ -207,11 +222,13 @@ async def test_same_issuance_rotation_never_substitutes_the_original_verified_to
 ):
     _, app, record = mounted
     original_token = (await asyncio.to_thread(fixture[0].get, fixture[2]))["access_token"]
-    verified = []
+    verified, rechecked = [], asyncio.Event()
     verify = auth.verify_production_token
 
     async def record_token(token, *args, **kwargs):
         verified.append(token)
+        if len(verified) == 2:
+            rechecked.set()
         return await verify(token, *args, **kwargs)
 
     monkeypatch.setattr(auth, "verify_production_token", record_token)
@@ -220,8 +237,9 @@ async def test_same_issuance_rotation_never_substitutes_the_original_verified_to
         assert (await stream.next())["event"] == "revision"
         fixture[0].update_tokens(fixture[2], access_token=rotated, refresh_token="synthetic-next-sse-refresh")
         verified.clear()
-        with pytest.raises(TimeoutError):
-            await stream.next(timeout=0.4)
+        rechecked.clear()
+        while not rechecked.is_set():
+            await stream.idle(1)
         assert len(verified) >= 2 and set(verified) == {original_token} and rotated != original_token
         paused = await _control(app, fixture, record, "pause", 1)
         assert paused.status_code == 200
@@ -235,18 +253,16 @@ async def test_last_event_id_and_after_revision_resume_without_duplicate_frames(
     paused = await _control(app, fixture, record, "pause", 1)
     current = paused.json()["operation"]["revision"]
     async with Stream(app, _path(record), {**read_headers(fixture), "last-event-id": str(current)}) as stream:
-        await asyncio.sleep(0.3)
+        await stream.idle(1)
         cancelled = await _control(app, fixture, record, "cancel", current)
         event = await stream.next()
         assert event["event"] == "revision" and event["id"] == cancelled.json()["operation"]["revision"]
         assert event["data"]["operation"]["disposition"] == "cancelled"
-        assert stream.ticks >= 1
         latest = event["id"]
     async with Stream(app, _path(record), read_headers(fixture),
                       query=("after_revision=%d" % latest).encode()) as stream:
-        with pytest.raises(TimeoutError):
-            await stream.next(timeout=0.3)
-        assert stream.status == 200 and stream.ticks >= 1
+        await stream.idle(2)
+        assert stream.status == 200
     async with Stream(app, _path(record), {**read_headers(fixture), "last-event-id": str(latest + 50)}) as stream:
         event = await stream.next()
         assert event["event"] == "revision" and event["data"]["resync_required"] is True
@@ -268,9 +284,7 @@ async def test_disconnect_stops_the_loop_with_no_lingering_task(mounted, fixture
     stream = Stream(app, _path(record), read_headers(fixture))
     async with stream:
         assert (await stream.next())["event"] == "revision"
-        with pytest.raises(TimeoutError):
-            await stream.next(timeout=0.3)
-        assert stream.ticks >= 1
+        await stream.idle(1)
         stream.disconnect.set()
         await asyncio.wait_for(stream.task, 5)
     settled = polls
@@ -280,14 +294,18 @@ async def test_disconnect_stops_the_loop_with_no_lingering_task(mounted, fixture
     assert lingering == set()
 
 
-async def test_time_bound_ends_with_a_resumable_end_event_and_is_capped(mounted, fixture):
+async def test_time_bound_ends_with_a_resumable_end_event_and_is_capped(mounted, fixture, monkeypatch):
     _, app, record = mounted
+    clock = FrozenClock()
+    monkeypatch.setattr(work_api, "time", clock)
+    opened = clock.now
     async with Stream(app, _path(record), read_headers(fixture), query=b"max_seconds=1") as stream:
-        started = time.monotonic()
         assert (await stream.next())["event"] == "revision"
+        clock.now = opened + 0.999
+        await stream.idle(2)
+        clock.now = opened + 1
         final = await stream.next()
         assert final == {"id": 1, "event": "end", "data": {"reason": "work_stream_bounded", "revision": 1}}
-        assert 0.8 <= time.monotonic() - started <= 2.5
         assert await stream.next() is None
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://app.invalid") as client:
         for value in ("0", "901", "1.5", "abc"):

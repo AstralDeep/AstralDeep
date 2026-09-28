@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,10 @@ def _bare_orch():
     return Orchestrator.__new__(Orchestrator)
 
 
+class _LoopStopped(BaseException):
+    pass
+
+
 async def test_jwks_warm_skips_under_mock_auth(monkeypatch):
     from shared import jwks_cache
     monkeypatch.setenv("USE_MOCK_AUTH", "true")
@@ -34,10 +37,10 @@ async def test_jwks_warm_skips_under_mock_auth(monkeypatch):
 
     async def _fake_get(url, **kw):
         calls.append(url)
-        return {"keys": []}
+        raise _LoopStopped
 
     monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    await asyncio.wait_for(_bare_orch()._jwks_warm_loop(), timeout=1)
+    await _bare_orch()._jwks_warm_loop()
     assert calls == []
 
 
@@ -49,10 +52,10 @@ async def test_jwks_warm_skips_without_authority(monkeypatch):
 
     async def _fake_get(url, **kw):
         calls.append(url)
-        return {"keys": []}
+        raise _LoopStopped
 
     monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    await asyncio.wait_for(_bare_orch()._jwks_warm_loop(), timeout=1)
+    await _bare_orch()._jwks_warm_loop()
     assert calls == []
 
 
@@ -69,36 +72,31 @@ async def test_jwks_warm_fetches_then_refreshes(monkeypatch):
 
     async def _fake_fetch(url):
         refresh_calls.append(url)
-        return {"keys": []}
+        raise _LoopStopped
 
     monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
     monkeypatch.setattr(jwks_cache, "_fetch", _fake_fetch)
-    task = asyncio.create_task(_bare_orch()._jwks_warm_loop())
-    for _ in range(200):
-        await asyncio.sleep(0.005)
-        if refresh_calls:
-            break
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    with pytest.raises(_LoopStopped):
+        await _bare_orch()._jwks_warm_loop()
     expected = "https://idp.example/realms/x/protocol/openid-connect/certs"
     assert warm_calls == [expected]
-    assert refresh_calls and refresh_calls[0] == expected
+    assert refresh_calls == [expected]
 
 
 async def test_jwks_warm_failure_backs_off_without_crashing(monkeypatch):
     from shared import jwks_cache
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
-    attempts = []
+    attempts, attempted = [], asyncio.Event()
 
     async def _fake_get(url, **kw):
         attempts.append(url)
+        attempted.set()
         raise ConnectionError("idp down")
 
     monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
     task = asyncio.create_task(_bare_orch()._jwks_warm_loop())
-    await asyncio.sleep(0.05)
+    await attempted.wait()
     assert not task.done(), "loop must keep retrying, not die"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -109,18 +107,27 @@ async def test_jwks_warm_failure_backs_off_without_crashing(monkeypatch):
 async def test_phi_warm_does_not_block_startup(monkeypatch):
     from personalization import phi_gate as phi_module
     monkeypatch.delenv("FF_PHI_WARM", raising=False)
-    loaded = threading.Event()
+    caller, release, loads = threading.current_thread(), threading.Event(), []
 
-    def _slow_gate():
-        time.sleep(0.3)
-        loaded.set()
+    def _blocked_gate():
+        loads.append(threading.current_thread())
+        # A synchronous regression reaches here on the caller and must fail, not deadlock
+        if loads[-1] is not caller:
+            release.wait()
         return object()
 
-    monkeypatch.setattr(phi_module, "get_phi_gate", _slow_gate)
-    started = time.monotonic()
-    _bare_orch()._start_phi_warm()
-    assert time.monotonic() - started < 0.2, "startup must not wait on the load"
-    assert loaded.wait(timeout=3), "warm thread must eventually build the gate"
+    monkeypatch.setattr(phi_module, "get_phi_gate", _blocked_gate)
+    before = set(threading.enumerate())
+    try:
+        _bare_orch()._start_phi_warm()
+        assert caller not in loads, "startup must not wait on the load"
+        workers = [thread for thread in threading.enumerate()
+                   if thread not in before and thread.name == "phi-warm"]
+    finally:
+        release.set()
+    assert len(workers) == 1 and workers[0].daemon
+    workers[0].join()
+    assert loads == workers, "warm thread must eventually build the gate"
 
 
 async def test_phi_warm_respects_kill_switch(monkeypatch):
@@ -128,6 +135,8 @@ async def test_phi_warm_respects_kill_switch(monkeypatch):
     monkeypatch.setenv("FF_PHI_WARM", "false")
     called = threading.Event()
     monkeypatch.setattr(phi_module, "get_phi_gate", lambda: called.set())
+    before = set(threading.enumerate())
     _bare_orch()._start_phi_warm()
-    time.sleep(0.2)
+    assert not [thread for thread in threading.enumerate()
+                if thread not in before and thread.name == "phi-warm"]
     assert not called.is_set()

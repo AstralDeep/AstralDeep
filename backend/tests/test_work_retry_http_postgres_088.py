@@ -5,8 +5,7 @@ ambiguous or HTTP 503 loss keeps its charge and never retries.
 
 import asyncio
 import json
-import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +66,17 @@ async def stored(op, identity):
     return await asyncio.to_thread(read)
 
 
+async def database_now(op):
+    def read():
+        with op.runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+    return await asyncio.to_thread(read)
+
+
+def timestamp(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 async def wait_for(op, identity, predicate, *, seconds=35):
     async with asyncio.timeout(seconds):
         while True:
@@ -84,7 +94,7 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     sends = []
 
     async def transport(method, url, **kwargs):
-        sends.append(time.monotonic())
+        sends.append(await database_now(op))
         op.model_calls.append((method, url, kwargs))
         response = reply(selection=["unavailable-passage"] if len(sends) == 1 else None)
         return SimpleNamespace(body=json.dumps(response).encode(), status_code=200)
@@ -94,11 +104,11 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     accepted = await client.post("/api/work/v1/operations", json=body)
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
-    scheduled, first_actions, now = await wait_for(
+    scheduled, first_actions, _ = await wait_for(
         op, identity, lambda row, _actions, _now: row["next_retry_at"] is not None
     )
-    due = datetime.fromisoformat(scheduled["next_retry_at"].replace("Z", "+00:00"))
-    assert 4 <= (due - now).total_seconds() <= 5
+    due, backoff = timestamp(scheduled["next_retry_at"]), timedelta(seconds=5)
+    assert sends[0] + backoff <= due <= timestamp(scheduled["updated_at"]) + backoff
     assert scheduled["consecutive_failures"] == 1
     assert len(first_actions) == 2 and len(sends) == 1
     assert scheduled["usage"]["spent"]["tokens"] == 120
@@ -108,7 +118,7 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
     )
     assert final["operation"]["terminal_outcome"] == "completed"
     assert final["consecutive_failures"] == 1
-    assert len(sends) == 2 and sends[1] - sends[0] >= 5
+    assert len(sends) == 2 and sends[1] >= due
     assert len(op.physical) == prior_reads + 2
     reads = [a for a in actions if a["intent"]["request"]["kind"] == "tool"]
     models = [a for a in actions if a["intent"]["request"]["kind"] == "model"]
@@ -133,7 +143,8 @@ async def test_known_usage_failure_retries_same_task_with_fresh_charged_sources(
         assert text not in serialized
     assert await asyncio.to_thread(op.audit._repo.verify_chain, op.owner) is None
     record_testsuite_property("first_retry_safe_error", scheduled["safe_error_code"])
-    record_testsuite_property("seconds_between_model_sends", sends[1] - sends[0])
+    record_testsuite_property(
+        "seconds_between_model_sends", (sends[1] - sends[0]).total_seconds())
 
 
 async def test_pre_send_provider_unreachable_retries_with_fresh_source(
@@ -144,7 +155,7 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     sends = []
 
     async def transport(method, url, **kwargs):
-        sends.append(time.monotonic())
+        sends.append(await database_now(op))
         op.model_calls.append((method, url, kwargs))
         if len(sends) == 1:
             raise IsolatedHttpError("egress_blocked")
@@ -155,11 +166,11 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     accepted = await client.post("/api/work/v1/operations", json=body)
     assert accepted.status_code == 201, accepted.text
     identity = accepted.json()["id"]
-    scheduled, first_actions, now = await wait_for(
+    scheduled, first_actions, _ = await wait_for(
         op, identity, lambda row, _actions, _now: row["next_retry_at"] is not None
     )
-    due = datetime.fromisoformat(scheduled["next_retry_at"].replace("Z", "+00:00"))
-    assert 4 <= (due - now).total_seconds() <= 5
+    due, backoff = timestamp(scheduled["next_retry_at"]), timedelta(seconds=5)
+    assert sends[0] + backoff <= due <= timestamp(scheduled["updated_at"]) + backoff
     assert scheduled["consecutive_failures"] == 1
     assert scheduled["lifecycle"] == "active" and scheduled["phase"] == "failed"
     assert scheduled["safe_error_code"] != "assignment_action_uncertain"
@@ -178,7 +189,7 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
     )
     assert final["operation"]["terminal_outcome"] == "completed"
     assert final["consecutive_failures"] == 1
-    assert len(sends) == 2 and sends[1] - sends[0] >= 5
+    assert len(sends) == 2 and sends[1] >= due
     assert len(op.physical) == prior_reads + 2
     reads = [a for a in actions if a["intent"]["request"]["kind"] == "tool"]
     models = [a for a in actions if a["intent"]["request"]["kind"] == "model"]
@@ -203,7 +214,8 @@ async def test_pre_send_provider_unreachable_retries_with_fresh_source(
         assert text not in serialized
     assert await asyncio.to_thread(op.audit._repo.verify_chain, op.owner) is None
     record_testsuite_property("pre_send_safe_error", scheduled["safe_error_code"])
-    record_testsuite_property("seconds_between_model_sends", sends[1] - sends[0])
+    record_testsuite_property(
+        "seconds_between_model_sends", (sends[1] - sends[0]).total_seconds())
 
 
 @pytest.mark.parametrize("code", ["unreachable", "deadline", "cleanup_uncertain", "child_failure"])

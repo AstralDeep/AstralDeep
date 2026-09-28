@@ -1,17 +1,18 @@
-"""Tests for persistent_agents/runner.py and personalization/explicit_notes.py: real
-database-time note expiry rolls back claim and admission, and the final local
-guidance check follows the last DB read rather than an earlier snapshot.
+"""Tests for persistent_agents/runner.py and personalization/explicit_notes.py: note
+expiry or the authority cutoff, crossed on the database clock the Plane repository reads
+after the write, rolls back claim and admission, and the final local guidance check
+follows the last DB read rather than an earlier snapshot.
 """
 
-import time
-from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
 import pytest
+from astralplane.repositories import assignments as plane_assignments
 from astralplane.repositories.guidance_models import ExplicitNoteRecord, GuidanceReference
 from personalization.explicit_notes import ExplicitNoteCipher, ExplicitNoteMetadata
 from persistent_agents.models import AssignmentError
@@ -73,16 +74,23 @@ async def guided(selected_note, lifecycle):
     return lifecycle
 
 
-def cross_expiry(note):
-    remaining = note.expires_at / 1000 - time.time()
-    assert 0 < remaining < 3
-    time.sleep(remaining + 0.03)
+@pytest.fixture
+def database_clock(monkeypatch):
+    read = plane_assignments._now
+    clock = SimpleNamespace(offset=timedelta(0))
+    monkeypatch.setattr(plane_assignments, "_now", lambda transaction: read(transaction) + clock.offset)
+    return clock
+
+
+def cross_expiry(note, clock):
+    # Every later read is at or after the note's creation, so it now lands at or past expiry
+    clock.offset = timedelta(milliseconds=note.expires_at - note.created_at)
 
 
 @pytest.mark.parametrize("kind", ["renew", "finish"])
 @pytest.mark.parametrize("wait_at", ["write", "final_session"])
 async def test_expiry_after_write_rolls_back_claim_and_admission(
-    guided, monkeypatch, kind, wait_at
+    guided, database_clock, monkeypatch, kind, wait_at
 ):
     op = guided
     before = await current(op)
@@ -96,7 +104,7 @@ async def test_expiry_after_write_rolls_back_claim_and_admission(
         def delayed_check(*args, **kwargs):
             result = check(*args, **kwargs)
             if wrote:
-                cross_expiry(op.note)
+                cross_expiry(op.note, database_clock)
             return result
 
         monkeypatch.setattr(sessions, "assert_current_execution", delayed_check)
@@ -104,7 +112,7 @@ async def test_expiry_after_write_rolls_back_claim_and_admission(
     def after_write(result):
         wrote.append(result)
         if wait_at == "write":
-            cross_expiry(op.note)
+            cross_expiry(op.note, database_clock)
         return result
 
     if kind == "renew":
@@ -162,22 +170,18 @@ async def test_current_note_allows_completion_after_old_execution_fence_retires(
         await op.store.call("assert_current_claim", fence=op.executor.claim.fence)
 
 
-async def cutoff_during_final_guidance_read(op, monkeypatch, kind):
+async def cutoff_during_final_guidance_read(op, clock, monkeypatch, kind):
     before = await current(op)
     admission_before = await admission(op)
     observed = await authority(op)
-    observed = replace(observed, observation=replace(
-        observed.observation, valid_until=datetime.now(UTC) + timedelta(milliseconds=400)
-    ))
     monkeypatch.setattr(op.runner, "_operation_authority", AsyncMock(return_value=observed))
     check = op.store.repository.assert_guidance_current
     final_reads = []
 
     def delayed_guidance(*args, **kwargs):
         final_reads.append(True)
-        remaining = (observed.observation.valid_until - datetime.now(UTC)).total_seconds()
-        assert 0 < remaining < 0.4
-        time.sleep(remaining + 0.03)
+        # The observation began on this clock, so the final read now lands at or past its cutoff
+        clock.offset = observed.observation.valid_until - observed.observation.started_at
         return check(*args, **kwargs)
 
     monkeypatch.setattr(op.store.repository, "assert_guidance_current", delayed_guidance)
@@ -206,15 +210,17 @@ async def cutoff_during_final_guidance_read(op, monkeypatch, kind):
 
 
 @pytest.mark.parametrize("kind", ["renew", "finish"])
-async def test_original_cutoff_crossed_by_final_selected_read(guided, monkeypatch, kind):
-    await cutoff_during_final_guidance_read(guided, monkeypatch, kind)
+async def test_original_cutoff_crossed_by_final_selected_read(
+    guided, database_clock, monkeypatch, kind
+):
+    await cutoff_during_final_guidance_read(guided, database_clock, monkeypatch, kind)
 
 
 @pytest.mark.parametrize("kind", ["renew", "finish"])
 async def test_original_cutoff_crossed_by_final_absent_selection_read(
-    lifecycle, monkeypatch, kind
+    lifecycle, database_clock, monkeypatch, kind
 ):
-    await cutoff_during_final_guidance_read(lifecycle, monkeypatch, kind)
+    await cutoff_during_final_guidance_read(lifecycle, database_clock, monkeypatch, kind)
 
 
 @pytest.mark.parametrize("retired", [False, True])

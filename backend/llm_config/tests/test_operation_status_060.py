@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -195,10 +196,14 @@ async def test_admission_refusal_uses_manifested_error_without_operation_id() ->
 
 @pytest.mark.asyncio
 async def test_provider_probe_has_a_hard_async_timeout(monkeypatch) -> None:
+    release = threading.Event()
+    finished = []
+
     class _Completions:
         @staticmethod
         def create(**_kwargs):
-            time.sleep(0.25)
+            release.wait()
+            finished.append(True)
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
             )
@@ -208,17 +213,18 @@ async def test_provider_probe_has_a_hard_async_timeout(monkeypatch) -> None:
             self.chat = SimpleNamespace(completions=_Completions())
 
     monkeypatch.setattr(probe_module, "OpenAI", _OpenAI)
-    started = time.monotonic()
+    try:
+        result = await probe_module.probe_chat_completion(
+            api_key=API_KEY,
+            base_url="https://provider.example/v1",
+            model="m",
+            timeout=0.02,
+        )
+        assert finished == []
+    finally:
+        release.set()
 
-    ok, error_class, _message = await probe_module.probe_chat_completion(
-        api_key=API_KEY,
-        base_url="https://provider.example/v1",
-        model="m",
-        timeout=0.02,
-    )
-
-    assert time.monotonic() - started < 0.15
-    assert (ok, error_class) == (False, "transport_error")
+    assert result == (False, "transport_error", "Provider probe timed out")
 
 
 def test_same_submission_is_user_owned_and_reconciles_one_operation() -> None:

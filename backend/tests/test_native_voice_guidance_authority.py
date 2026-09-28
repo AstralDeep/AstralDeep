@@ -4,9 +4,10 @@ The model boundary stops after verified catalog expansion; cookie and preaccepte
 
 import asyncio
 import logging
-import time
+import threading
 
 import pytest
+from astralplane.repositories import RepositoryConflictError
 
 from orchestrator import orchestrator as hub
 from orchestrator import turn_guidance_authority
@@ -33,17 +34,23 @@ async def test_native_voice_rechecks_authority_after_concurrent_voice_update(
     state.socket.scope["headers"] = [
         (key, value) for key, value in state.socket.scope["headers"] if key not in {b"cookie", b"origin"}]
     state, binding, _ = await accepted_voice(guidance_turn, runtime, fixture, "llm_factory", monkeypatch)
-    entered = asyncio.Event()
-    read = []
+    retrying, settled, proceed = asyncio.Event(), asyncio.Event(), threading.Event()
+    read, checks = [], []
     original = TurnGuidanceReader._current
     loop = asyncio.get_running_loop()
 
     def observed(self, tx):
-        loop.call_soon_threadsafe(entered.set)
-        return original(self, tx)
+        checks.append(None)
+        if len(checks) != 2:
+            return original(self, tx)
+        loop.call_soon_threadsafe(retrying.set)
+        proceed.wait()
+        try:
+            return original(self, tx)
+        finally:
+            loop.call_soon_threadsafe(settled.set)
 
     monkeypatch.setattr(TurnGuidanceReader, "_current", observed)
-    started = time.monotonic()
     async def execute():
         from dataclasses import replace
         current = replace(binding, task=asyncio.current_task())
@@ -60,27 +67,33 @@ async def test_native_voice_rechecks_authority_after_concurrent_voice_update(
             writer.fetch_one("SELECT session_id FROM voice_session WHERE session_id=%s FOR UPDATE",
                              (binding.voice.turn.session_id,))
             task = asyncio.create_task(execute())
-            await asyncio.wait_for(entered.wait(), 2)
-            await asyncio.sleep(.025)
-            assert not task.done()
+            waiter = asyncio.ensure_future(retrying.wait())
+            await asyncio.wait({waiter, task}, return_when=asyncio.FIRST_COMPLETED)
+            waiter.cancel()
+            assert retrying.is_set() and not task.done()
             if outcome == "revoke":
                 writer.execute("UPDATE voice_session SET generation=generation+1 WHERE session_id=%s",
                                (binding.voice.turn.session_id,))
             elif outcome == "persistent":
-                with pytest.raises(AssignmentError, match="guidance_read_unavailable"):
-                    await asyncio.wait_for(task, 2)
+                proceed.set()
+                with pytest.raises(AssignmentError, match="guidance_read_unavailable") as refused:
+                    await task
+                assert isinstance(refused.value.__context__, RepositoryConflictError)
             elif outcome == "cancel":
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await task
+                proceed.set()
+                await settled.wait()
+        proceed.set()
         if outcome == "release":
-            await asyncio.wait_for(task, 2)
+            await task
         elif outcome == "revoke":
             with pytest.raises(AssignmentError, match="guidance_read_unavailable"):
-                await asyncio.wait_for(task, 2)
+                await task
         assert read == (["catalog"] if outcome == "release" else [])
-        assert time.monotonic() - started < 2
     finally:
+        proceed.set()
         binding.origin.close()
 
 

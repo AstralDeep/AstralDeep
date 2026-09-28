@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -19,11 +17,12 @@ from cryptography.fernet import Fernet
 from astralplane.repositories import RepositoryConflictError
 from astralplane.repositories.assignment_models import AssignmentControlResult
 from orchestrator import offline_grant as og
-from orchestrator.session_consent import ConsentSession
 from persistent_agents.models import AssignmentError, CreateAssignmentRequest, ReviseAssignmentRequest
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
 from persistent_agents.tests.test_models import create_payload
+from tests.helpers.database_waits import database_wait_bound
+from tests.helpers.database_clock import advance_session_clock
 from tests.helpers.session_consent_088 import consent_from_store
 from tests.helpers.session_plane_runtime import isolated_plane_runtime, web_session_store
 
@@ -127,18 +126,17 @@ async def test_rejected_creation_rolls_back_grant_and_assignment(fixture, runtim
 
 @pytest.mark.asyncio
 async def test_final_consent_expiry_rolls_back_new_assignment_and_grant(fixture, runtime, monkeypatch):
-    fixture.selected = ConsentSession(replace(fixture.selected.observation,
-        valid_until=fixture.selected.observation.started_at + timedelta(seconds=1)))
     original = runtime.repositories.assignments.create_assignment
     inserted = []
 
-    def delayed(transaction, **kwargs):
+    def inserting(transaction, **kwargs):
         result = original(transaction, **kwargs)
         inserted.append(result.assignment_id)
-        time.sleep(1.05)
         return result
 
-    monkeypatch.setattr(runtime.repositories.assignments, "create_assignment", delayed)
+    monkeypatch.setattr(runtime.repositories.assignments, "create_assignment", inserting)
+    advance_session_clock(monkeypatch, runtime.repositories.history.sessions,
+                          to=fixture.selected.observation.valid_until, when=lambda: bool(inserted))
     with pytest.raises(AssignmentError, match="authorization_required"):
         await create(fixture)
     assert len(inserted) == 1
@@ -405,14 +403,12 @@ async def test_locked_receipt_read_refuses_before_blocker_is_released(fixture, r
     existing = retained(fixture)
     if phase == "transaction_receipt":
         monkeypatch.setattr(fixture.service, "_receipt", AsyncMock(return_value=None))
-    started = time.monotonic()
     with runtime.transaction() as blocker:
         blocker.execute("LOCK TABLE persistent_assignment IN ACCESS EXCLUSIVE MODE")
         with pytest.raises(AssignmentError) as refused:
-            request = revise(fixture, first, revision(first)) if first else create(fixture)
-            await asyncio.wait_for(request, timeout=3)
+            await (revise(fixture, first, revision(first)) if first else create(fixture))
         assert refused.value.status_code == 503
-        assert time.monotonic() - started < 2
+        assert database_wait_bound(refused.value) is not None
         assert blocker.fetch_one("SELECT 1 AS alive")["alive"] == 1
         assert len(fixture.prepared) == (phase in {"transaction_receipt", "revision_record"})
     assert retained(fixture) == existing
