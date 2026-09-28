@@ -23,6 +23,7 @@ from persistent_agents.runtime_values import thaw
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
 from persistent_agents.tests.test_engine_postgres import plane as plane
+from tests.helpers.database_clock import expire_principal
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_request_session_authority_088 import fixture as fixture
 from tests.test_request_session_authority_088 import request, signing_key as signing_key
@@ -255,16 +256,18 @@ async def test_accepted_old_version_is_never_upgraded_or_reauthorized(service, f
 async def test_original_principal_expires_during_accepted_receipt_read(service, fixture, runtime, monkeypatch):
     body = command()
     await service.submit(await context(fixture, runtime), body)
-    expiry = time.time() + 1.6
-    selected = await context(fixture, runtime, cookie=False, bearer=True, changes={"exp": expiry})
+    selected = await context(fixture, runtime, cookie=False, bearer=True, changes={"exp": time.time() + 60})
     original = service.store.transaction
-    async def delayed(callback, **kwargs):
+    read = []
+    async def receipt_read(callback, **kwargs):
         result = await original(callback, **kwargs)
-        await asyncio.sleep(max(0, expiry - time.time()) + .03)
+        read.append(result)
         return result
-    monkeypatch.setattr(service.store, "transaction", delayed)
+    monkeypatch.setattr(service.store, "transaction", receipt_read)
+    expire_principal(monkeypatch, at=selected.principal_expires_at, when=lambda: bool(read))
     with pytest.raises(AssignmentError, match="work_authority_unavailable"):
         await service.submit(selected, body)
+    assert len(read) == 1
     assert len(fixture[-1]) == 1 and totals(runtime, fixture[1]) == (1, 1, 1)
 
 
@@ -328,17 +331,16 @@ async def test_audit_lock_wait_past_principal_expiry_rolls_back_whole_acceptance
             assert release.wait(5)
     blocker = asyncio.create_task(asyncio.to_thread(block))
     assert await asyncio.to_thread(locked.wait, 3)
-    expiry = time.time() + 1.7
-    selected = await context(fixture, runtime, bearer=True, changes={"exp": expiry})
+    selected = await context(fixture, runtime, bearer=True, changes={"exp": time.time() + 60})
     original = service.audit.insert_in_transaction
     def insert(*args, **kwargs):
         attempted.set()
         return original(*args, **kwargs)
     monkeypatch.setattr(service.audit, "insert_in_transaction", insert)
+    expire_principal(monkeypatch, at=selected.principal_expires_at, when=release.is_set)
     pending = asyncio.create_task(service.submit(selected, command()))
     try:
         assert await asyncio.to_thread(attempted.wait, 3)
-        await asyncio.sleep(max(0, expiry - time.time()) + .04)
     finally:
         release.set()
         await blocker

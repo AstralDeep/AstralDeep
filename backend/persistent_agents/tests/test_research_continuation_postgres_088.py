@@ -4,7 +4,7 @@ project a resumed epoch, and a new epoch cannot escape an unknown liability.
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
@@ -22,6 +22,7 @@ from persistent_agents.tests.test_research_episode_postgres_088 import (
     operation as operation, plane as plane, research as research,
     signing_key as signing_key,
 )
+from tests.helpers.database_clock import wait_for_database_time
 
 runtime = plane
 pytestmark = [pytest.mark.asyncio,
@@ -77,8 +78,9 @@ async def test_source_model_boundary_after_transition(research, monkeypatch, tra
         await control(op, "resume")
         assert (await current(op)).control_epoch == initial.control_epoch + 2
     else:
-        expiry = datetime.now(UTC) - timedelta(seconds=1)
+        stale = await current(op)
         with op.runtime.transaction() as tx:
+            expiry = tx.fetch_one("SELECT clock_timestamp() AS now")["now"] - timedelta(seconds=1)
             tx.execute("UPDATE persistent_assignment SET lease_expires_at=%s, "
                 "data=jsonb_set(data,'{lease_expires_at}',to_jsonb(%s::text)) WHERE id=%s",
                 (expiry, expiry.isoformat(), initial.assignment_id))
@@ -87,9 +89,9 @@ async def test_source_model_boundary_after_transition(research, monkeypatch, tra
         assert (await admission(op)).state == OperationState.FAILED
         waiting = await current(op)
         assert waiting.control_epoch == initial.control_epoch
-        delay = (waiting.next_wake_at - datetime.now(UTC)).total_seconds()
-        assert 3 <= delay <= 5
-        await asyncio.sleep(max(0, delay) + .02)
+        backoff = timedelta(seconds=5)
+        assert stale.updated_at + backoff <= waiting.next_wake_at <= waiting.updated_at + backoff
+        await wait_for_database_time(op.runtime, waiting.next_wake_at)
 
     runner = attach_runner(op, run_research_episode)
     executor = await fresh_executor(op, runner)

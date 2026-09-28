@@ -6,7 +6,7 @@ sources are reacquired and charged on recovery, and no source text reaches a row
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,6 +31,7 @@ from persistent_agents.tests.test_research_episode_postgres_088 import (
     plane as plane, signing_key as signing_key,
 )
 from persistent_agents.tests.test_research_continuation_postgres_088 import fresh_executor
+from tests.helpers.database_clock import wait_for_database_time
 
 runtime = plane
 pytestmark = pytest.mark.asyncio
@@ -125,17 +126,18 @@ async def test_discarded_source_is_reacquired_and_charged_after_real_claim_recov
     assert first.state == "succeeded" and first.result["result_available"] is False
     assert first.result["result"] == {}
     if transition == "restart":
-        expiry = datetime.now(UTC) - timedelta(seconds=1)
+        stale = await current(op)
         with op.runtime.transaction() as tx:
+            expiry = tx.fetch_one("SELECT clock_timestamp() AS now")["now"] - timedelta(seconds=1)
             tx.execute("UPDATE persistent_assignment SET lease_expires_at=%s, "
                 "data=jsonb_set(data,'{lease_expires_at}',to_jsonb(%s::text)) WHERE id=%s",
                 (expiry, expiry.isoformat(), first.assignment_id))
         recovered = await runner._recover_operations()
         assert recovered.reclaimed_assignment_ids == (first.assignment_id,)
         waiting = await current(op)
-        delay = (waiting.next_wake_at - datetime.now(UTC)).total_seconds()
-        assert 3 <= delay <= 5
-        await asyncio.sleep(max(0, delay) + .02)
+        backoff = timedelta(seconds=5)
+        assert stale.updated_at + backoff <= waiting.next_wake_at <= waiting.updated_at + backoff
+        await wait_for_database_time(op.runtime, waiting.next_wake_at)
     else:
         await reader.control(op, "pause")
         await asyncio.to_thread(op.executor.orch.work_admission.terminalize,

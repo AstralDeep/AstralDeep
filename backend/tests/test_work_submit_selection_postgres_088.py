@@ -408,18 +408,20 @@ async def test_final_selected_query_wait_cannot_outlive_local_key_service_or_age
 async def test_config_wait_holds_owner_selection_fence_until_acceptance_commits(selected_state, monkeypatch):
     import asyncio
     import threading
-    import time
     from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
     from orchestrator.work_submit import FixedResearchPreflight
+    from tests.helpers.database_waits import unbounded_statement_waits
     state = selected_state
     runtime, service, owner = state.api.runtime, state.api.service, state.api.fixture[1]
     in_config, writer_started = threading.Event(), threading.Event()
     writer_pid = []
     original = FixedResearchPreflight.assert_current
-    def config(preflight, *args, **kwargs):
-        if preflight is service.research_preflight:
+    def config(preflight, transaction, **kwargs):
+        if preflight is not service.research_preflight:
+            return original(preflight, transaction, **kwargs)
+        with unbounded_statement_waits(transaction):
             in_config.set()
-        return original(preflight, *args, **kwargs)
+            return original(preflight, transaction, **kwargs)
     monkeypatch.setattr(FixedResearchPreflight, "assert_current", config)
     def change_skill():
         with runtime.transaction() as tx:
@@ -438,15 +440,13 @@ async def test_config_wait_holds_owner_selection_fence_until_acceptance_commits(
         assert await asyncio.to_thread(in_config.wait, 3)
         writer = asyncio.create_task(asyncio.to_thread(change_skill))
         assert await asyncio.to_thread(writer_started.wait, 2)
-        until = time.monotonic() + 0.5
         blocked = False
-        while time.monotonic() < until:
+        while not blocked and not writer.done():
             with runtime.transaction() as tx:
                 row = tx.fetch_one("SELECT wait_event_type FROM pg_stat_activity WHERE pid=%s", (writer_pid[0],))
-            if row["wait_event_type"] == "Lock":
-                blocked = True
-                break
-            await asyncio.sleep(0.01)
+            blocked = row["wait_event_type"] == "Lock"
+            if not blocked:
+                await asyncio.sleep(0.01)
         assert blocked and not writer.done() and not work.done()
     finally:
         blocker.__exit__(None, None, None)

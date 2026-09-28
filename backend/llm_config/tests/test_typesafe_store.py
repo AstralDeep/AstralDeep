@@ -6,7 +6,7 @@ and read-through cache invalidation.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from astralplane.repositories import RepositoryError
@@ -322,7 +322,8 @@ def test_the_store_exposes_no_system_scope() -> None:
 
 
 def test_recent_outcome_timestamps_are_timezone_aware(typesafe_store) -> None:
-    typesafe_store.save_sync(USER, KEY)
+    before = datetime.now(UTC)
+    saved = typesafe_store.save_sync(USER, KEY)
     status = typesafe_store.status_sync(USER)
     assert status.at is not None and status.at.tzinfo is not None
-    assert datetime.now(UTC) - status.at < timedelta(minutes=5)
+    assert status.at == saved.at and before <= status.at <= datetime.now(UTC)

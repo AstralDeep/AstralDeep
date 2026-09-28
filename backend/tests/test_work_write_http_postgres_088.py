@@ -5,6 +5,7 @@ audit waits, and lost-delivery retry without re-auditing.
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import time
 from uuid import uuid4
@@ -18,6 +19,7 @@ from orchestrator.work_api import work_router
 from orchestrator.work_control_audit import WorkControlAudit
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from persistent_agents.models import AssignmentError
+from tests.helpers.database_clock import expire_principal
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_operation_session_authority_088 import create_operation
 from tests.test_work_continuation_authority_088 import current
@@ -93,13 +95,16 @@ async def test_cookie_replacement_during_body_wait_cannot_be_adopted(mounted, fi
 async def test_principal_expiry_during_audit_rolls_back_operation_receipt_and_audit(
         mounted, fixture, runtime, monkeypatch, cookie):
     _, app, record = mounted
-    expiry = time.time() + 2
+    expiry = time.time() + 60
     original = WorkControlAudit.append
+    appended = []
     def append(*args, **kwargs):
         value = original(*args, **kwargs)
-        time.sleep(max(0, expiry - time.time()) + .03)
+        appended.append(value)
         return value
     monkeypatch.setattr(WorkControlAudit, "append", append)
+    expire_principal(monkeypatch, at=datetime.fromtimestamp(expiry, timezone.utc),
+                     when=lambda: bool(appended))
     body = payload(record.state_version)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://app.invalid") as client:
         response = await client.post(path(record, "pause"), json=body,

@@ -198,13 +198,17 @@ def test_generic_verifier_rejects_wrong_key_issuer_or_stale_token(tmp_path: Path
             authenticator.authenticate(SimpleNamespace(headers={"authorization": f"Bearer {bad}"}))
 
 
-def test_every_mint_is_unique_and_fresh() -> None:
+def test_every_mint_is_unique_and_fresh(monkeypatch) -> None:
+    from orchestrator import lets_client
+
+    now = 1_800_000_000.75
+    monkeypatch.setattr(lets_client, "time", SimpleNamespace(time=lambda: now))
     minter = _minter()
     first = _decode(minter.mint())[1]
     second = _decode(minter.mint())[1]
 
     assert first["jti"] != second["jti"]
-    assert abs(first["iat"] - (int(time.time()) - 1)) <= 2
+    assert first["iat"] == second["iat"] == int(now) - 1
 
 
 @pytest.mark.parametrize("seed", [b"", b"\x01" * 31, b"\x01" * 33, "not-bytes"])

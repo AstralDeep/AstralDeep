@@ -29,6 +29,7 @@ from persistent_agents.runner import AssignmentRunner
 from persistent_agents.runtime_values import digest, thaw
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
+from tests.helpers.database_clock import database_now, wait_for_database_time
 from tests.helpers.plane_template import engine_clone
 
 
@@ -308,14 +309,15 @@ def test_restart_reuses_completed_children_and_source_actions(engine):
             await task
         retained = await current(store, identity)
         assert all(child["state"] == "completed" for child in retained.tasks)
-        await asyncio.sleep(5.1)
+        await wait_for_database_time(store.plane_runtime, await asyncio.to_thread(
+            database_now, store.plane_runtime) + timedelta(seconds=5.1))
         await asyncio.to_thread(host.work_admission.expire_execution_leases)
         await store.call("recover_expired_for_administration", limit=10)
         recovered = await current(store, identity)
         assert recovered.phase == "failed"
-        delay = (recovered.next_wake_at - datetime.now(UTC)).total_seconds()
-        assert 0 < delay <= 60
-        await asyncio.sleep(delay + 0.1)
+        assert (recovered.updated_at < recovered.next_wake_at
+                <= recovered.updated_at + timedelta(seconds=60))
+        await wait_for_database_time(store.plane_runtime, recovered.next_wake_at)
         host.before_join = None
         replacement = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
         await claim_and_run(replacement, store)
@@ -566,14 +568,15 @@ def test_restart_after_source_receipt_before_source_batch_never_repeats_read(eng
         actions = await store.call("list_actions", owner_id="owner", assignment_id=identity)
         assert len(actions) == 1 and actions[0].state == "succeeded"
         assert not await store.call("list_events", owner_id="owner", assignment_id=identity, disposition="pending")
-        await asyncio.sleep(5.1)
+        await wait_for_database_time(store.plane_runtime, await asyncio.to_thread(
+            database_now, store.plane_runtime) + timedelta(seconds=5.1))
         await asyncio.to_thread(host.work_admission.expire_execution_leases)
         await store.call("recover_expired_for_administration", limit=10)
         recovered = await current(store, identity)
         assert recovered.phase == "failed"
-        delay = (recovered.next_wake_at - datetime.now(UTC)).total_seconds()
-        assert 0 < delay <= 60
-        await asyncio.sleep(delay + 0.1)
+        assert (recovered.updated_at < recovered.next_wake_at
+                <= recovered.updated_at + timedelta(seconds=60))
+        await wait_for_database_time(store.plane_runtime, recovered.next_wake_at)
         replacement = AssignmentRunner(host, runner.service, config=RunnerConfig(lease_seconds=5))
         await claim_and_run(replacement, store)
         finished = await current(store, identity)

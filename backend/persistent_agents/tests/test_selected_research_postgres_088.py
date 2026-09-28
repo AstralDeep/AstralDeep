@@ -7,7 +7,6 @@ evidence.
 import asyncio
 import json
 import threading
-import time
 from dataclasses import asdict
 from types import SimpleNamespace
 from uuid import uuid4
@@ -16,6 +15,8 @@ import pytest
 from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
 
 from persistent_agents.runtime_values import thaw
+from tests.helpers.database_clock import explicit_note_clock
+from tests.helpers.database_waits import observe_lock_wait, unbounded_statement_waits
 from tests.test_work_research_preflight_postgres_088 import research_command
 from tests.test_work_runtime_postgres_088 import (
     fixture as fixture,
@@ -466,31 +467,27 @@ async def test_selected_note_expiry_during_real_config_row_wait_denies_model(sel
     from tests.test_explicit_note_service_postgres_088 import apply as apply_note
 
     op, runner, client, state, _ = selected_notes
-    expiry = time.time_ns() // 1_000_000 + 3500
+    clock = explicit_note_clock(monkeypatch, op.runtime)
+    expiry = clock.expiry
     note = await apply_note(state, expires_at=expiry)
     repository = op.runtime.repositories.encrypted_llm_config
     original = repository.get_user_for_update
-    locked, requesting = threading.Event(), threading.Event()
+    locked, requesting, finished = threading.Event(), threading.Event(), threading.Event()
     shared, workers = {}, []
     armed = False
 
     def holder():
+        from astralplane.repositories import guidance
         with op.runtime.transaction() as tx:
             original(tx, owner_id=op.owner)
             blocker = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             locked.set()
             assert requesting.wait(8), "model never requested its USER row"
-            end = time.monotonic() + 0.09
-            while time.monotonic() < end:
-                row = tx.fetch_one("SELECT %s=ANY(pg_blocking_pids(%s)) AS waiting, "
-                    "floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now",
-                    (blocker, shared["pid"]))
-                shared["blocked"] = shared.get("blocked", False) or row["waiting"]
-                if row["now"] > expiry:
-                    shared["expired_at_release"] = row["now"]
-                    break
-                time.sleep(0.001)
-            assert shared.get("blocked") and shared.get("expired_at_release", 0) > expiry
+            shared["blocked"] = observe_lock_wait(tx, blocker=blocker, waiter=shared["pid"],
+                                                  finished=finished)
+            clock.cross_expiry()
+            shared["expired_at_release"] = guidance._clock(tx)
+            assert shared["blocked"] and shared["expired_at_release"] >= expiry
 
     captured = ResearchInput.capture
     async def capture(cls, *args, **kwargs):
@@ -505,17 +502,13 @@ async def test_selected_note_expiry_during_real_config_row_wait_denies_model(sel
 
     def config(tx, *, owner_id):
         nonlocal armed
-        if armed:
-            armed = False
-            while True:
-                now = tx.fetch_one("SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS now")["now"]
-                if expiry - now <= 35:
-                    assert now < expiry, "fixture failed to reach the config boundary before expiry"
-                    break
-                time.sleep(min(0.005, (expiry - now - 35) / 1000))
-            shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+        if not armed:
+            return original(tx, owner_id=owner_id)
+        armed = False
+        shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+        with unbounded_statement_waits(tx):
             requesting.set()
-        return original(tx, owner_id=owner_id)
+            return original(tx, owner_id=owner_id)
     monkeypatch.setattr(repository, "get_user_for_update", config)
     refused = asyncio.Event()
     selection = ActionExecutor.research_selection
@@ -533,9 +526,10 @@ async def test_selected_note_expiry_during_real_config_row_wait_denies_model(sel
         runner.notify(identity)
         await asyncio.wait_for(refused.wait(), 10)
     finally:
+        finished.set()
         for worker in workers:
             await worker
-    assert shared["blocked"] and shared["expired_at_release"] > expiry
+    assert shared["blocked"] and shared["expired_at_release"] >= expiry
     assert op.model_calls == []
     _, model = await selected_ledger(op, runner, identity)
     assert model is not None and not model.ever_started

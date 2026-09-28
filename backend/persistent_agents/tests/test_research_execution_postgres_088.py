@@ -34,6 +34,7 @@ from persistent_agents.tests.test_operation_reader_postgres_088 import (
     plane as plane,
     signing_key as signing_key,
 )
+from tests.helpers.database_waits import observe_lock_wait, unbounded_statement_waits
 from tests.helpers.session_plane_runtime import (
     get_session_record,
     replace_session_record,
@@ -130,13 +131,14 @@ async def test_revoke_committed_during_actual_config_lock_wait_prevents_send(
     op = research
     config = op.runtime.repositories.encrypted_llm_config
     original = config.get_user_for_update
-    locked, requesting = threading.Event(), threading.Event()
+    locked, requesting, finished = threading.Event(), threading.Event(), threading.Event()
     shared = {}
 
     def get_user(tx, *, owner_id):
         shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
-        requesting.set()
-        return original(tx, owner_id=owner_id)
+        with unbounded_statement_waits(tx):
+            requesting.set()
+            return original(tx, owner_id=owner_id)
 
     monkeypatch.setattr(config, "get_user_for_update", get_user)
 
@@ -146,17 +148,9 @@ async def test_revoke_committed_during_actual_config_lock_wait_prevents_send(
             blocker = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             locked.set()
             assert requesting.wait(5), "permit never reached its config read"
-            end = time.monotonic() + 0.08
-            while time.monotonic() < end:
-                waiting = tx.fetch_one(
-                    "SELECT %s = ANY(pg_blocking_pids(%s)) AS waiting",
-                    (blocker, shared["pid"]),
-                )["waiting"]
-                if waiting:
-                    shared["observed_wait"] = True
-                    break
-                time.sleep(0.001)
-            assert shared.get("observed_wait"), "actual row-lock wait was not observed"
+            shared["observed_wait"] = observe_lock_wait(
+                tx, blocker=blocker, waiter=shared["pid"], finished=finished)
+            assert shared["observed_wait"], "actual row-lock wait was not observed"
             op.runtime.repositories.tool_policy_state.set_scopes(
                 tx,
                 owner_id=op.owner,
@@ -171,6 +165,7 @@ async def test_revoke_committed_during_actual_config_lock_wait_prevents_send(
         with pytest.raises((DispatchDenied, AssignmentError)):
             await select(op)
     finally:
+        finished.set()
         await worker
     assert shared["observed_wait"]
     assert op.model_calls == []

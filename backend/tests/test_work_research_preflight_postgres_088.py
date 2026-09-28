@@ -18,6 +18,7 @@ from llm_config.user_store import UserLLMConfigStore
 from orchestrator.work_submit import FixedResearchPreflight, WorkSubmitService
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import thaw
+from tests.helpers.database_waits import observe_lock_wait, unbounded_statement_waits
 from tests.test_work_submit_postgres_088 import (
     command,
     context,
@@ -407,13 +408,14 @@ async def test_revoke_committed_during_config_wait_refuses_acceptance(
     service = research_service
     config = runtime.repositories.encrypted_llm_config
     original = config.get_user_for_update
-    locked, requesting = threading.Event(), threading.Event()
+    locked, requesting, finished = threading.Event(), threading.Event(), threading.Event()
     shared = {}
 
     def get_user(tx, *, owner_id):
         shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
-        requesting.set()
-        return original(tx, owner_id=owner_id)
+        with unbounded_statement_waits(tx):
+            requesting.set()
+            return original(tx, owner_id=owner_id)
 
     monkeypatch.setattr(config, "get_user_for_update", get_user)
 
@@ -423,18 +425,9 @@ async def test_revoke_committed_during_config_wait_refuses_acceptance(
             blocker = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             locked.set()
             assert requesting.wait(5), "acceptance did not reach current config lock"
-            end = time.monotonic() + 0.08
-            while time.monotonic() < end:
-                if tx.fetch_one(
-                    "SELECT %s = ANY(pg_blocking_pids(%s)) AS waiting",
-                    (blocker, shared["pid"]),
-                )["waiting"]:
-                    shared["observed_wait"] = True
-                    break
-                time.sleep(0.001)
-            assert shared.get("observed_wait"), (
-                "actual config row-lock wait not observed"
-            )
+            shared["observed_wait"] = observe_lock_wait(
+                tx, blocker=blocker, waiter=shared["pid"], finished=finished)
+            assert shared["observed_wait"], "actual config row-lock wait not observed"
             runtime.repositories.tool_policy_state.set_scopes(
                 tx,
                 owner_id=fixture[1],
@@ -451,6 +444,7 @@ async def test_revoke_committed_during_config_wait_refuses_acceptance(
                 await context(fixture, runtime), research_command(service)
             )
     finally:
+        finished.set()
         await worker
     assert shared["observed_wait"]
     no_acceptance(runtime, fixture[1])

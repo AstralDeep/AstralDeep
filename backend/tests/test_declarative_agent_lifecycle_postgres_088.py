@@ -22,6 +22,7 @@ from orchestrator.projection_surfaces import authoring
 from orchestrator.user_agents import UserAgentRegistry
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import thaw
+from tests.helpers.database_waits import observe_lock_wait, unbounded_statement_waits
 from tests.test_declarative_agent_definition_088 import definition
 from tests.test_request_session_authority_088 import request
 from tests.test_work_admission_api_postgres_088 import (
@@ -505,13 +506,14 @@ async def test_revoke_committed_during_config_wait_prevents_selection(declaratio
     runtime, owner = state.api.runtime, state.api.fixture[1]
     repo = runtime.repositories.encrypted_llm_config
     original = repo.get_user_for_update
-    locked, requesting = threading.Event(), threading.Event()
+    locked, requesting, finished = threading.Event(), threading.Event(), threading.Event()
     shared = {}
 
     def get_user(tx, *, owner_id):
         shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
-        requesting.set()
-        return original(tx, owner_id=owner_id)
+        with unbounded_statement_waits(tx):
+            requesting.set()
+            return original(tx, owner_id=owner_id)
 
     monkeypatch.setattr(repo, "get_user_for_update", get_user)
 
@@ -521,14 +523,8 @@ async def test_revoke_committed_during_config_wait_prevents_selection(declaratio
             pid = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             locked.set()
             assert requesting.wait(3)
-            until = time.monotonic() + .08
-            while time.monotonic() < until:
-                if tx.fetch_one("SELECT %s = ANY(pg_blocking_pids(%s)) AS waiting",
-                        (pid, shared["pid"]))["waiting"]:
-                    shared["waiting"] = True
-                    break
-                time.sleep(.001)
-            assert shared.get("waiting"), "actual config row-lock wait was not observed"
+            shared["waiting"] = observe_lock_wait(tx, blocker=pid, waiter=shared["pid"], finished=finished)
+            assert shared["waiting"], "actual config row-lock wait was not observed"
             runtime.repositories.tool_policy_state.set_scopes(tx, owner_id=owner,
                 agent_id="web-research-1", scopes={"tools:read": False}, updated_at=int(time.time()*1000))
 
@@ -538,6 +534,7 @@ async def test_revoke_committed_during_config_wait_prevents_selection(declaratio
         with pytest.raises(AssignmentError, match="declarative_permission_refused"):
             await apply(state, next_body(first, "activate", revision_id=first.revision.revision_id))
     finally:
+        finished.set()
         await worker
     assert shared["waiting"] and counts(state) == (1, 1, 1, 1)
 

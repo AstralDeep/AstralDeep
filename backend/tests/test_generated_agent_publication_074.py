@@ -3486,16 +3486,15 @@ async def test_blocked_plane_transition_never_holds_snapshot_lock_on_event_loop(
     assert await asyncio.to_thread(journal.mark_staged_entered.wait, 1)
     attempt = next(iter(service._attempts.values()))
 
-    safety_release = threading.Timer(1, journal.mark_staged_release.set)
-    safety_release.start()
-    started = asyncio.get_running_loop().time()
-    marker = service._cancellation_marker(attempt, None)
-    elapsed = asyncio.get_running_loop().time() - started
-    journal.mark_staged_release.set()
-    safety_release.cancel()
+    try:
+        assert attempt.snapshot_lock.acquire(blocking=False)
+        attempt.snapshot_lock.release()
+        marker = service._cancellation_marker(attempt, None)
+        assert not task.done()
+    finally:
+        journal.mark_staged_release.set()
 
     assert isinstance(marker, GeneratedAgentPublicationManagedCancellation)
-    assert elapsed < 0.1
     assert (await task).publication.state == "published"
     await service.close()
 

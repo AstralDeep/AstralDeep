@@ -20,6 +20,7 @@ from orchestrator.human_request_authority import HumanRequestBoundary, authentic
 from personalization.explicit_note_service import ExplicitNoteCommand, ExplicitNoteService
 from personalization import phi_gate
 from persistent_agents.models import AssignmentError
+from tests.helpers.database_clock import explicit_note_clock
 from tests.test_request_session_authority_088 import request
 from tests.test_work_admission_api_postgres_088 import (
     api as api, fixture as fixture, plane as plane, research_service as research_service,
@@ -80,6 +81,11 @@ async def notes(api, monkeypatch, tmp_path):
     finally:
         boundary.close()
         api.service.store.async_runtime.close()
+
+
+@pytest.fixture
+def note_clock(notes, monkeypatch):
+    return explicit_note_clock(monkeypatch, notes.api.runtime)
 
 
 async def caller(state, *, method="POST", cookie=True, owner=None):
@@ -291,10 +297,10 @@ async def test_search_cursor_advances_scanned_nonmatching_rows(notes):
     assert second.next_cursor is None
 
 
-async def test_expiry_is_unavailable_before_physical_erasure(notes):
-    intent = body(expires_at=time.time_ns()//1_000_000 + 400)
+async def test_expiry_is_unavailable_before_physical_erasure(notes, note_clock):
+    intent = body(expires_at=note_clock.expiry)
     await apply(notes, intent)
-    await asyncio.sleep(.45)
+    note_clock.cross_expiry()
     with pytest.raises(AssignmentError) as refusal:
         await notes.service.get(caller=await caller(notes, method="GET"), note_id=intent.note_id)
     assert refusal.value.status_code == 404
@@ -318,17 +324,17 @@ async def test_query_bounds_and_missing_human_are_closed(notes):
             await notes.service.command(caller=untrusted, body=body())
 
 
-async def test_expiry_during_required_audit_rolls_back_acceptance(notes, monkeypatch):
+async def test_expiry_during_required_audit_rolls_back_acceptance(notes, note_clock, monkeypatch):
     from audit.repository import AuditRepository
     original = AuditRepository.insert_in_transaction
 
     def delayed(self, event, **kwargs):
         result = original(self, event, **kwargs)
-        time.sleep(.4)
+        note_clock.cross_expiry()
         return result
 
     selected = await caller(notes)
-    intent = body(expires_at=time.time_ns()//1_000_000 + 300)
+    intent = body(expires_at=note_clock.expiry)
     monkeypatch.setattr(AuditRepository, "insert_in_transaction", delayed)
     with pytest.raises(AssignmentError):
         await notes.service.command(caller=selected, body=intent)
@@ -345,11 +351,10 @@ async def test_concurrent_bare_human_forget_replay_has_one_erasure_audit(notes):
     assert rows(notes)[0]["ciphertext"] is None
 
 
-async def test_expiry_batch_erases_current_rows_and_preserves_minimal_tombstones(notes):
-    expiry = time.time_ns()//1_000_000 + 700
+async def test_expiry_batch_erases_current_rows_and_preserves_minimal_tombstones(notes, note_clock):
     for _ in range(3):
-        await apply(notes, expires_at=expiry)
-    await asyncio.sleep(max(0, (expiry-time.time_ns()//1_000_000)/1000) + .05)
+        await apply(notes, expires_at=note_clock.expiry)
+    note_clock.cross_expiry()
     first = await notes.service.expire_batch(limit=2)
     assert (first.scanned, first.erased, first.skipped, first.cycle_complete) == (2, 2, 0, False)
     second = await notes.service.expire_batch(limit=2)
@@ -363,11 +368,10 @@ async def test_expiry_batch_erases_current_rows_and_preserves_minimal_tombstones
     assert notes.api.service.audit.verify_chain(notes.api.fixture[1]) is None
 
 
-async def test_expiry_audit_failure_preserves_ciphertext_and_retry_can_erase(notes, monkeypatch):
+async def test_expiry_audit_failure_preserves_ciphertext_and_retry_can_erase(notes, note_clock, monkeypatch):
     from audit.repository import AuditRepository
-    expiry = time.time_ns()//1_000_000 + 250
-    await apply(notes, expires_at=expiry)
-    await asyncio.sleep(.3)
+    await apply(notes, expires_at=note_clock.expiry)
+    note_clock.cross_expiry()
     original = AuditRepository.insert_in_transaction
 
     def refused(self, event, **kwargs):
@@ -386,12 +390,12 @@ async def test_expiry_audit_failure_preserves_ciphertext_and_retry_can_erase(not
         await notes.service.expire_batch(limit=True)
 
 
-async def test_application_owned_expiry_loop_erases_then_shutdown_joins_before_plane(notes, monkeypatch):
+async def test_application_owned_expiry_loop_erases_then_shutdown_joins_before_plane(
+        notes, note_clock, monkeypatch):
     from orchestrator.orchestrator import Orchestrator
     from tests.test_runtime_composition_074 import _StartAsyncTasks
-    expiry = time.time_ns()//1_000_000 + 350
-    await apply(notes, expires_at=expiry)
-    await asyncio.sleep(.4)
+    await apply(notes, expires_at=note_clock.expiry)
+    note_clock.cross_expiry()
     observed = asyncio.Event()
     original = ExplicitNoteService.expire_batch
     async def batch(self, *, limit):
@@ -451,12 +455,11 @@ async def test_foreign_ciphertext_metadata_tamper_refuses_without_leaking_value(
     assert "structured tables" not in str(error.value) and len(events(notes)) == 2
 
 
-async def test_busy_expiry_owner_does_not_block_later_owner_and_next_cycle_retries(notes):
-    expiry = time.time_ns()//1_000_000 + 700
-    first = await apply(notes, expires_at=expiry)
+async def test_busy_expiry_owner_does_not_block_later_owner_and_next_cycle_retries(notes, note_clock):
+    first = await apply(notes, expires_at=note_clock.expiry)
     second = await notes.service.command(caller=await caller(notes, cookie=False, owner="zzzz-later-owner"),
-                                        body=body(expires_at=expiry))
-    await asyncio.sleep(max(0, (expiry-time.time_ns()//1_000_000)/1000) + .05)
+                                        body=body(expires_at=note_clock.expiry))
+    note_clock.cross_expiry()
     with notes.api.runtime.transaction() as tx:
         tx.fetch_one("SELECT pg_advisory_xact_lock(hashtextextended(%s,79))",
                      (notes.api.fixture[1],))
@@ -469,16 +472,16 @@ async def test_busy_expiry_owner_does_not_block_later_owner_and_next_cycle_retri
     assert next_cycle.erased == 1 and rows(notes)[0]["ciphertext"] is None
 
 
-async def test_database_expiry_during_decryption_refuses_even_when_host_clock_lags(notes, monkeypatch):
+async def test_database_expiry_during_decryption_refuses_even_when_host_clock_lags(
+        notes, note_clock, monkeypatch):
     from personalization import explicit_note_service as module
-    expiry = time.time_ns()//1_000_000 + 450
-    saved = await apply(notes, expires_at=expiry)
+    saved = await apply(notes, expires_at=note_clock.expiry)
     monkeypatch.setattr(module, "_now", lambda: saved.updated_at)
     original = ExplicitNoteService._open
 
     def delayed(self, record, owner_id):
         result = original(self, record, owner_id)
-        time.sleep(max(0, (expiry-time.time_ns()//1_000_000)/1000) + .08)
+        note_clock.cross_expiry()
         return result
 
     monkeypatch.setattr(ExplicitNoteService, "_open", delayed)
@@ -490,7 +493,7 @@ async def test_database_expiry_during_decryption_refuses_even_when_host_clock_la
 async def test_cancelled_privacy_requests_keep_worker_capacity_until_actual_completion(notes, monkeypatch):
     release = threading.Event()
     both_started = threading.Event()
-    guard = threading.Lock()
+    guard = threading.Condition()
     started = finished = 0
 
     def scan(_):
@@ -500,11 +503,16 @@ async def test_cancelled_privacy_requests_keep_worker_capacity_until_actual_comp
             if started >= 2:
                 both_started.set()
         try:
-            assert release.wait(3)
+            release.wait()
             return False
         finally:
             with guard:
                 finished += 1
+                guard.notify_all()
+
+    def settled():
+        with guard:
+            guard.wait_for(lambda: finished == started)
 
     monkeypatch.setattr(phi_gate, "_GATE", SimpleNamespace(contains_phi=scan))
     callers = [await caller(notes) for _ in range(3)]
@@ -517,18 +525,15 @@ async def test_cancelled_privacy_requests_keep_worker_capacity_until_actual_comp
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await asyncio.sleep(.04)
+        with pytest.raises(AssignmentError) as timeout:
+            await third
+        assert timeout.value.status_code == 408
         with guard:
             assert started == 2, "cancelled requests must not free still-running privacy capacity"
-        with pytest.raises(AssignmentError) as timeout:
-            await asyncio.wait_for(asyncio.shield(third), .5)
-        assert timeout.value.status_code == 408
     finally:
         release.set()
         if third is not None:
             await asyncio.gather(third, return_exceptions=True)
-        until = time.monotonic()+2
-        while finished != started and time.monotonic() < until:
-            await asyncio.sleep(.01)
+        await asyncio.to_thread(settled)
         assert finished == started
     assert not rows(notes) and not events(notes)

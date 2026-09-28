@@ -5,7 +5,6 @@ renewal.
 """
 
 import asyncio
-import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -39,6 +38,7 @@ from tests.test_operation_session_authority_088 import create_operation
 from tests.test_work_admission_repository import _classes
 from tests.test_request_session_authority_088 import fixture as fixture
 from tests.test_request_session_authority_088 import signing_key as signing_key
+from tests.helpers.database_clock import advance_session_clock, database_now
 from tests.helpers.session_plane_runtime import (
     get_session_record,
     replace_session_record,
@@ -150,6 +150,10 @@ def completion(record, **changes):
     return AssignmentEpisodeCompletion(**values)
 
 
+def assert_retry_due(before, after, backoff=timedelta(seconds=5)):
+    assert before.updated_at + backoff <= after.next_wake_at <= after.updated_at + backoff
+
+
 async def admission(op):
     return await asyncio.to_thread(
         op.coordinator.query_operation,
@@ -186,8 +190,9 @@ async def test_explicit_completion_has_no_cadence_and_retires_both_leases(
             "event_wait": {"event_key": "public_update", "source_revision": 1},
         },
     }[kind]
+    done = completion(before, **changes)
     result = await op.runner._finish_operation(
-        op.executor, OneShotEpisodeResult(before, completion(before, **changes))
+        op.executor, OneShotEpisodeResult(before, done)
     )
     assert _episode_lease(op.executor).terminal
     assert (await admission(op)).state == OperationState.COMPLETED
@@ -195,11 +200,13 @@ async def test_explicit_completion_has_no_cadence_and_retires_both_leases(
     if kind.startswith("terminal"):
         assert result.lifecycle == "completed" and result.next_wake_at is None
     elif kind == "failure":
-        assert 3 <= (result.next_wake_at - datetime.now(UTC)).total_seconds() <= 5
+        assert_retry_due(before, result)
     elif kind == "event":
         assert result.phase == "awaiting_event" and result.next_wake_at is None
     else:
-        assert result.lifecycle == "active" and result.next_wake_at > datetime.now(UTC)
+        assert result.lifecycle == "active"
+        assert (max(before.updated_at, done.next_wake_at) <= result.next_wake_at
+                <= max(result.updated_at, done.next_wake_at))
     with pytest.raises(AssignmentError):
         await op.store.call("assert_current_claim", fence=op.executor.claim.fence)
 
@@ -277,24 +284,20 @@ async def test_expiry_during_terminal_write_rolls_back_assignment_and_admission(
 ):
     op = lifecycle
     observed = await authority(op)
-    observed = replace(
-        observed,
-        observation=replace(
-            observed.observation,
-            valid_until=datetime.now(UTC) + timedelta(milliseconds=90),
-        ),
-    )
     monkeypatch.setattr(
         op.runner, "_operation_authority", AsyncMock(return_value=observed)
     )
     original = op.coordinator.terminalize
+    wrote = []
 
-    def slow(*args, **kwargs):
+    def terminal_write(*args, **kwargs):
         result = original(*args, **kwargs)
-        time.sleep(0.12)
+        wrote.append(result)
         return result
 
-    monkeypatch.setattr(op.coordinator, "terminalize", slow)
+    monkeypatch.setattr(op.coordinator, "terminalize", terminal_write)
+    advance_session_clock(monkeypatch, op.runtime.repositories.history.sessions,
+                          to=observed.observation.valid_until, when=lambda: bool(wrote))
     before = await current(op)
     with pytest.raises(AssignmentError):
         await op.runner._finish_operation(
@@ -303,6 +306,7 @@ async def test_expiry_during_terminal_write_rolls_back_assignment_and_admission(
                 before, completion(before, completed=True, next_wake_at=None)
             ),
         )
+    assert len(wrote) == 1
     assert await current(op) == before
     assert (await admission(op)).state == OperationState.RUNNING
     assert not _episode_lease(op.executor).terminal
@@ -325,6 +329,7 @@ async def test_renewal_transaction_uses_configured_admission_duration_and_rolls_
         )
         raise RuntimeError("synthetic rollback")
 
+    opened = await asyncio.to_thread(database_now, op.runtime)
     with pytest.raises(AssignmentError):
         await op.store.operation_lifecycle_transaction(
             authority=observed,
@@ -332,9 +337,9 @@ async def test_renewal_transaction_uses_configured_admission_duration_and_rolls_
             binding=op.executor.binding,
             callback=renew,
         )
-    assert (
-        19 <= (renewals[0].lease_expires_at - datetime.now(UTC)).total_seconds() <= 21
-    )
+    closed = await asyncio.to_thread(database_now, op.runtime)
+    lease = timedelta(seconds=21)
+    assert opened + lease <= renewals[0].lease_expires_at <= closed + lease
     assert await current(op) == before
     result = await op.store.operation_lifecycle_transaction(
         authority=observed,
@@ -465,7 +470,7 @@ async def test_original_current_hold_is_factual_failure_with_plane_retry(lifecyc
     result = await op.runner._hold_operation(op.executor, observed)
     assert result.checkpoint == before.checkpoint and result.phase == "failed"
     assert result.safe_error_code == "assignment_failed"
-    assert 3 <= (result.next_wake_at - datetime.now(UTC)).total_seconds() <= 5
+    assert_retry_due(before, result)
     assert (await admission(op)).state == OperationState.COMPLETED
     assert await op.runner._hold_operation(op.executor, observed) is None
 
@@ -488,11 +493,19 @@ async def test_feature_disabled_after_refresh_refuses_guarded_completion(
 
 
 async def test_cancellation_while_session_row_locked_releases_worker_before_blocker(
-    lifecycle,
+    lifecycle, monkeypatch,
 ):
     op = lifecycle
     observed = await authority(op)
-    started = asyncio.Event()
+    started, in_worker = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    run = op.store.async_runtime._run_sync
+
+    def running(callback, isolation):
+        loop.call_soon_threadsafe(in_worker.set)
+        return run(callback, isolation)
+
+    monkeypatch.setattr(op.store.async_runtime, "_run_sync", running)
     with op.runtime.transaction() as blocker:
         blocker.fetch_one(
             "SELECT sid FROM web_session WHERE sid=%s FOR UPDATE", (op.fixture[2],)
@@ -509,16 +522,14 @@ async def test_cancellation_while_session_row_locked_releases_worker_before_bloc
 
         task = asyncio.create_task(attempt())
         await started.wait()
-        await asyncio.sleep(0.02)
+        await in_worker.wait()
+        workers = {item for item in asyncio.all_tasks()
+                   if item.get_name() == "astralplane-transaction"}
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        deadline = asyncio.get_running_loop().time() + 2
-        while (
-            op.store.async_runtime._active
-            and asyncio.get_running_loop().time() < deadline
-        ):
-            await asyncio.sleep(0.01)
+        assert workers
+        await asyncio.wait(workers)
         assert op.store.async_runtime._active == 0
         await op.store.transaction(
             lambda tx, repo: tx.fetch_one("SELECT 1 AS alive"), bound_session_waits=True
@@ -530,7 +541,7 @@ async def test_recovery_retires_only_expired_exact_operation_binding(lifecycle):
     op = lifecycle
     before = await current(op)
     with op.runtime.transaction() as tx:
-        expiry = datetime.now(UTC) - timedelta(seconds=1)
+        expiry = tx.fetch_one("SELECT clock_timestamp() AS now")["now"] - timedelta(seconds=1)
         tx.execute(
             "UPDATE persistent_assignment SET lease_expires_at=%s, "
             "data=jsonb_set(data,'{lease_expires_at}',to_jsonb(%s::text)) WHERE id=%s",
@@ -540,7 +551,7 @@ async def test_recovery_retires_only_expired_exact_operation_binding(lifecycle):
     assert recovered.reclaimed_assignment_ids == (op.record.assignment_id,)
     after = await current(op)
     assert after.checkpoint == before.checkpoint and after.phase == "failed"
-    assert 3 <= (after.next_wake_at - datetime.now(UTC)).total_seconds() <= 5
+    assert_retry_due(before, after)
     assert (await admission(op)).state == OperationState.FAILED
     assert (await op.runner._recover_operations()).reclaimed_assignment_ids == ()
 
@@ -636,7 +647,8 @@ async def test_claim_does_not_adopt_state_changed_after_resolver(
             return repo.finish_episode(
                 tx,
                 fence=claim.fence,
-                completion=completion(claim.assignment, next_wake_at=datetime.now(UTC)),
+                completion=completion(claim.assignment, next_wake_at=tx.fetch_one(
+                    "SELECT clock_timestamp() AS now")["now"]),
             )
 
     newer = await asyncio.to_thread(competing_episode)
@@ -692,7 +704,7 @@ async def test_recovery_never_retires_newer_admission_generation(lifecycle):
         != op.executor.operation_fence.execution_lease_token
     )
     with op.runtime.transaction() as tx:
-        expiry = datetime.now(UTC) - timedelta(seconds=1)
+        expiry = tx.fetch_one("SELECT clock_timestamp() AS now")["now"] - timedelta(seconds=1)
         tx.execute(
             "UPDATE persistent_assignment SET lease_expires_at=%s, "
             "data=jsonb_set(data,'{lease_expires_at}',to_jsonb(%s::text)) WHERE id=%s",
@@ -780,11 +792,10 @@ async def reader_runner(op, handler):
             assignment_id=executor.record.assignment_id,
         )
     ).assignment
+    due = await asyncio.to_thread(database_now, executor.store.plane_runtime)
     await runner._finish_operation(
         executor,
-        OneShotEpisodeResult(
-            snapshot, completion(snapshot, next_wake_at=datetime.now(UTC))
-        ),
+        OneShotEpisodeResult(snapshot, completion(snapshot, next_wake_at=due)),
     )
     return runner
 
@@ -832,7 +843,7 @@ async def test_tick_runs_actual_governed_reader_then_yields_without_claiming_res
         assert len(handled) == 1 and len(op.physical) == 1 and len(op.delegations) == 1
         assert snapshot.lifecycle == "active" and snapshot.phase == "waiting"
         assert snapshot.checkpoint == {"schema_version": 1}
-        assert snapshot.next_wake_at > datetime.now(UTC)
+        assert snapshot.next_wake_at > snapshot.updated_at
         assert snapshot.usage["spent"]["tool_calls"] == 1
         assert snapshot.usage["spent"]["model_calls"] == 0
         assert _episode_lease(handled[0]).terminal and not runner._active
@@ -899,6 +910,13 @@ async def test_handler_failure_or_malformed_result_is_closed_factual_retry(
 
     runner = await reader_runner(op, handler)
     try:
+        before = (
+            await op.executor.store.call(
+                "get_operation",
+                owner_id=op.owner,
+                assignment_id=op.executor.record.assignment_id,
+            )
+        ).assignment
         await runner.tick()
         await asyncio.wait_for(asyncio.gather(*runner._active.values()), 15)
         snapshot = (
@@ -915,7 +933,7 @@ async def test_handler_failure_or_malformed_result_is_closed_factual_retry(
         assert snapshot.lifecycle == "active" and snapshot.checkpoint == {
             "schema_version": 1
         }
-        assert 3 <= (snapshot.next_wake_at - datetime.now(UTC)).total_seconds() <= 5
+        assert_retry_due(before, snapshot)
         assert op.physical == []
     finally:
         await runner.stop()

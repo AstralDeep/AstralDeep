@@ -4,7 +4,6 @@ session_store.py and personalization/explicit_note_service.py.
 """
 
 import asyncio
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,6 +15,7 @@ from tests.test_explicit_note_service_postgres_088 import (
     notes as notes, api as api, fixture as fixture, plane as plane,
     research_service as research_service, service as service,
     signing_key as signing_key, source_service as source_service, apply, rows,
+    note_clock as note_clock,
 )
 from tests.test_runtime_composition_074 import _StartAsyncTasks
 
@@ -23,12 +23,13 @@ runtime = plane
 
 
 @pytest.mark.asyncio
-async def test_actual_startup_owns_expiry_after_recovery_and_before_plane_shutdown(notes, monkeypatch):
+async def test_actual_startup_owns_expiry_after_recovery_and_before_plane_shutdown(
+        notes, note_clock, monkeypatch):
     from orchestrator import session_store
     from shared.feature_flags import flags
 
-    await apply(notes, expires_at=time.time_ns() // 1_000_000 + 350)
-    await asyncio.sleep(.4)
+    await apply(notes, expires_at=note_clock.expiry)
+    note_clock.cross_expiry()
     observed, history = asyncio.Event(), []
     original = ExplicitNoteService.expire_batch
 

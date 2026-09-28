@@ -25,6 +25,9 @@ from astralplane.repositories.work_admission import (
 from orchestrator.work_submit import FixedResearchPreflight
 from persistent_agents.models import AssignmentError
 from persistent_agents.runtime_values import digest, thaw
+from tests.helpers.database_waits import (
+    observe_lock_wait, plane_transaction_workers, unbounded_statement_waits,
+)
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_work_admission_api_postgres_088 import (
     api as api, fixture as fixture, plane as plane, research_service as research_service,
@@ -342,16 +345,16 @@ async def test_repeated_cancellation_during_commit_preserves_one_replayable_wake
         caller=await caller(api, api.fixture[2])))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
+        workers = plane_transaction_workers()
         task.cancel()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
         release.set()
-        end = time.monotonic() + 5
-        while api.service.store.async_runtime.snapshot().active and time.monotonic() < end:
-            await asyncio.sleep(0.01)
-        assert api.service.store.async_runtime.snapshot().active == 0
+    assert workers
+    await asyncio.wait(workers)
+    assert api.service.store.async_runtime.snapshot().active == 0
     assert appended == [True] and current(api.runtime, record).phase == "waiting"
     replay = await service_for(api).wake(record.assignment_id, body, caller=await caller(api, None))
     assert replay["applied"] is False and appended == [True] and len(wake_audits(api)) == 1
@@ -361,12 +364,13 @@ async def test_policy_revocation_committed_during_actual_config_wait_denies_wake
     record, body = await waiting(api)
     config = api.runtime.repositories.encrypted_llm_config
     original = config.get_user_for_update
-    locked, requesting = threading.Event(), threading.Event()
+    locked, requesting, finished = threading.Event(), threading.Event(), threading.Event()
     shared = {}
     def get_user(tx, *, owner_id):
         shared["pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
-        requesting.set()
-        return original(tx, owner_id=owner_id)
+        with unbounded_statement_waits(tx):
+            requesting.set()
+            return original(tx, owner_id=owner_id)
     monkeypatch.setattr(config, "get_user_for_update", get_user)
     def writer():
         with api.runtime.transaction() as tx:
@@ -374,14 +378,9 @@ async def test_policy_revocation_committed_during_actual_config_wait_denies_wake
             blocker = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
             locked.set()
             assert requesting.wait(5)
-            end = time.monotonic() + 0.08
-            while time.monotonic() < end:
-                if tx.fetch_one("SELECT %s = ANY(pg_blocking_pids(%s)) AS waiting",
-                                (blocker, shared["pid"]))["waiting"]:
-                    shared["observed_wait"] = True
-                    break
-                time.sleep(0.001)
-            assert shared.get("observed_wait"), "actual config lock wait not observed"
+            shared["observed_wait"] = observe_lock_wait(
+                tx, blocker=blocker, waiter=shared["pid"], finished=finished)
+            assert shared["observed_wait"], "actual config lock wait not observed"
             api.runtime.repositories.tool_policy_state.set_scopes(tx, owner_id=record.owner_id,
                 agent_id="web-research-1", scopes={"tools:read": False}, updated_at=int(time.time() * 1000))
     worker = asyncio.create_task(asyncio.to_thread(writer))
@@ -390,6 +389,7 @@ async def test_policy_revocation_committed_during_actual_config_wait_denies_wake
         with pytest.raises(AssignmentError, match="assignment_scope_revoked"):
             await service_for(api).wake(record.assignment_id, body, caller=await caller(api, api.fixture[2]))
     finally:
+        finished.set()
         await worker
     assert shared["observed_wait"]
     unchanged(api, record)
