@@ -10,7 +10,7 @@ sandbox deployment looks like. The contract itself lives in
 
 | Piece | Process | Source |
 |---|---|---|
-| LETS warden | its own container (`astral-lets-warden` on the sandbox), `generic-production` runtime provider, mTLS, signed single-warden cluster manifest | `components/LETS` (pinned, signed tag `v1.0.11`) plus one operator file: a software Ed25519 signer helper |
+| LETS warden | its own container (`astral-lets-warden` on the sandbox), `generic-production` runtime provider, mTLS, signed single-warden cluster manifest | `components/LETS` (pinned, signed tag `v1.0.12`; the sandbox warden image is still the wire-compatible `v1.0.11` build) plus one operator file: a software Ed25519 signer helper |
 | Orchestrator client | inside `astraldeep` | `backend/orchestrator/lets_*.py` (config, client, lifecycle, gateway, reconciler, probe, health) |
 | Generated / draft agent runtimes (`server_dynamic`) | child processes of the orchestrator | receive their authority descriptor, per-runtime executor audience and private replay-store/anchor roots in the child environment (`backend/orchestrator/dynamic_runtime_authority.py`) |
 | BYO agents (`byo_user`) | the owner's desktop host | the Windows host injects the same descriptor (`win_agent/byo_host.py`) |

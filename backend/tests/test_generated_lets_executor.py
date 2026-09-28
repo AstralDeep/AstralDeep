@@ -60,7 +60,7 @@ def test_generator_emits_one_reviewed_public_v1011_adapter_for_v3() -> None:
         "protected_executor.py",
         "mcp_tools.py",
     )
-    assert executor.LETS_RELEASE == "v1.0.11"
+    assert executor.LETS_RELEASE == "v1.0.12"
     assert byo["protected_executor.py"] == backend["protected_executor.py"]
     assert "from lets.executor import" in byo["protected_executor.py"]
     assert "from lets.executor_authority import" in byo["protected_executor.py"]

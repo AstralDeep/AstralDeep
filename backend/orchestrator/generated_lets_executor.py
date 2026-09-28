@@ -44,7 +44,7 @@ from lets.models import Receipt
 
 LETS_CALLER_CAPABILITY: Final = "astraldeep.lets/v1"
 PERMIT_TYPE: Final = "astraldeep.protected-permit/v1"
-LETS_RELEASE: Final = "v1.0.11"
+LETS_RELEASE: Final = "v1.0.12"
 RECEIPT_WIRE_TYPE: Final = "lets.receipt/v1"
 EVIDENCE_TYPE: Final = "astral.tool-effect/v1"
 CONTEXT_TYPE: Final = "astral.protected-effect-context/v1"

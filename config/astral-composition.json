@@ -23,9 +23,9 @@
     "lets": {
       "repository": "https://github.com/AstralDeep/LETS.git",
       "path": "components/LETS",
-      "commit": "bf72d6f06765ccf3150ac60a97c3f4b8b1191b93",
-      "ref": "v1.0.11",
-      "contract_version": "1.0.11"
+      "commit": "292d557c6fb4184eb9ee38dd013500260ba5637d",
+      "ref": "v1.0.12",
+      "contract_version": "1.0.12"
     }
   },
   "availability": {
@@ -51,9 +51,9 @@
       "contract_sha256": "4ad92393e2aec3686ffb0e9d80d35b29ab6fd9fa32476e6aef564f7a35dc2a0f"
     },
     "lets": {
-      "release": "v1.0.11",
+      "release": "v1.0.12",
       "api_version": "v1",
-      "openapi_sha256": "a5d99771f32f58ce5fd6d18c380bea1f310248a900bb6ddc672638ed6a0ce5fd",
+      "openapi_sha256": "47cfd8fd5b67d822eb9ae2245cfed572a2a2cdb6a44e90911ff412e2e857446e",
       "receipt_wire_type": "lets.receipt/v1",
       "scope_profile_version": "astral.tools/v1"
     }

@@ -93,9 +93,10 @@ regexes = [
   # subject to the default rule set.
   '''^astralprims/ROTE$''',
   '''^producer_key=slot$''',
-  # Public immutable LETS v1.0.11 OpenAPI contract digest. It is repeated in
-  # the composition, release anchor, and exact-value contract test.
+  # Public immutable LETS OpenAPI contract digests (v1.0.11 and v1.0.12),
+  # repeated in the composition, release anchor, and exact-value tests.
   '''^a5d99771f32f58ce5fd6d18c380bea1f310248a900bb6ddc672638ed6a0ce5fd$''',
+  '''^47cfd8fd5b67d822eb9ae2245cfed572a2a2cdb6a44e90911ff412e2e857446e$''',
   # The repo's hardcoded UNSIGNED mock JWT (alg HS256 header + a payload that
   # starts with {"realm_access":..., empty signature segment). Lives in
   # backend tests today and in deleted frontend/ files in git history.

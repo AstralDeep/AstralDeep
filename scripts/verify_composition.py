@@ -1109,8 +1109,8 @@ def _verify_lets(
             _diagnostic(
                 diagnostics,
                 "E_LETS_PUBLIC_EXPORT",
-                f"LETS v1.0.11 public export {export!r} is unavailable",
-                "Use the signed LETS v1.0.11 public client/executor surface.",
+                f"LETS public export {export!r} is unavailable",
+                "Use the pinned signed LETS release's public client/executor surface.",
                 component="lets",
             )
 

@@ -54,7 +54,7 @@ SYNTHETIC_TOKEN = "synthetic-test-value"
 
 
 def test_public_client_boundary_is_bound_to_lets_v1_0_11() -> None:
-    assert LETS_RELEASE == "v1.0.11"
+    assert LETS_RELEASE == "v1.0.12"
 
 
 def _reference(name: str, *, size: int = 1) -> SecretFileReference:

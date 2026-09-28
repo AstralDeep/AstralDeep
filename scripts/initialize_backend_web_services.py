@@ -24,7 +24,7 @@ PROXY_IMAGE = (
     "nginx@sha256:ef8676b33d681f272ba429b27658bdd7e640963279714c96bddf1dc76307f7b6"
 )
 LIVEKIT_IMAGE = "livekit/livekit-server:v1.13.5@sha256:3497163e15c48fef6e7830c78716f9e9d5edc28abf7aa90b61c86e93bbc306b1"
-LETS_COMMIT = "6245189920c686353c4ced7a208d56ec266f745c"
+LETS_COMMIT = "292d557c6fb4184eb9ee38dd013500260ba5637d"
 LABEL = "com.astraldeep.backend-web-services"
 VOLUMES = (
     "iam-pg",

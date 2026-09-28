@@ -150,7 +150,7 @@
           ],
           "properties": {
             "release": {
-              "const": "v1.0.11"
+              "const": "v1.0.12"
             },
             "api_version": {
               "const": "v1"
@@ -313,10 +313,10 @@
               "const": "components/LETS"
             },
             "ref": {
-              "const": "v1.0.11"
+              "const": "v1.0.12"
             },
             "contract_version": {
-              "const": "1.0.11"
+              "const": "1.0.12"
             }
           }
         }
