@@ -125,6 +125,40 @@ SEMVER_RE = re.compile(
 
 SUPERVISION_CYCLE_COUNT = 2
 SUPERVISION_FOOTPRINT = ("open_pipe_descriptors", "live_threads")
+SUPERVISION_BEHAVIORS = (
+    (
+        "high_output",
+        "import sys\n"
+        "for _ in range(1200):\n"
+        "    sys.stdout.write('x' * 220 + '\\n')\n"
+        "print('ready', flush=True)\n"
+        "import time; time.sleep(30)\n",
+    ),
+    (
+        "descendant",
+        "import signal, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen("
+        "[sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "def shutdown(*_):\n"
+        "    try:\n"
+        "        grandchild.wait(timeout=1.0)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, shutdown)\n"
+        "signal.signal(signal.SIGINT, shutdown)\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(30)\n",
+    ),
+    (
+        "plain",
+        "print('ready', flush=True)\nimport time; time.sleep(30)\n",
+    ),
+    (
+        "failing_child",
+        "print('ready', flush=True)\nraise SystemExit(3)\n",
+    ),
+)
 SUITE_TIMEOUT_SECONDS = 1800
 PROBE_TIMEOUT_SECONDS = 30
 
@@ -601,60 +635,23 @@ def _supervision_violations(result: Mapping[str, Any]) -> list[str]:
     return violations
 
 
-def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
+def _process_supervision() -> Any:
     backend_root = os.fspath(BACKEND_ROOT)
     if backend_root not in sys.path:
         sys.path.insert(0, backend_root)
     # Deferred: keeps collection stdlib-only when the gate is unset
-    from shared.process_supervision import (
-        OutputStream,
-        ProcessOwner,
-        ProcessSupervisor,
-        TerminationReason,
-    )
+    return importlib.import_module("shared.process_supervision")
 
-    behaviors = (
-        (
-            "high_output",
-            "import sys\n"
-            "print('ready', flush=True)\n"
-            "for _ in range(1200):\n"
-            "    sys.stdout.write('x' * 220 + '\\n')\n"
-            "sys.stdout.flush()\n"
-            "import time; time.sleep(30)\n",
-        ),
-        (
-            "descendant",
-            "import signal, subprocess, sys, time\n"
-            "grandchild = subprocess.Popen("
-            "[sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-            "def shutdown(*_):\n"
-            "    try:\n"
-            "        grandchild.wait(timeout=1.0)\n"
-            "    except Exception:\n"
-            "        pass\n"
-            "    raise SystemExit(0)\n"
-            "signal.signal(signal.SIGTERM, shutdown)\n"
-            "signal.signal(signal.SIGINT, shutdown)\n"
-            "print('ready', flush=True)\n"
-            "time.sleep(30)\n",
-        ),
-        (
-            "plain",
-            "print('ready', flush=True)\nimport time; time.sleep(30)\n",
-        ),
-        (
-            "failing_child",
-            "print('ready', flush=True)\nraise SystemExit(3)\n",
-        ),
-    )
+
+def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
+    supervision = _process_supervision()
     reasons = (
-        TerminationReason.CANCEL,
-        TerminationReason.QUIT,
-        TerminationReason.STOP,
-        TerminationReason.FAILURE,
+        supervision.TerminationReason.CANCEL,
+        supervision.TerminationReason.QUIT,
+        supervision.TerminationReason.STOP,
+        supervision.TerminationReason.FAILURE,
     )
-    supervisor = ProcessSupervisor()
+    supervisor = supervision.ProcessSupervisor()
     baseline = _supervision_footprint()
     cycles: list[dict[str, Any]] = []
     started = time.monotonic()
@@ -663,10 +660,10 @@ def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
             children: list[Any] = []
             processes: list[dict[str, Any]] = []
             for reason in reasons:
-                for behavior, script in behaviors:
+                for behavior, script in SUPERVISION_BEHAVIORS:
                     child = supervisor.spawn(
                         process_id=uuid.uuid4(),
-                        owner=ProcessOwner(
+                        owner=supervision.ProcessOwner(
                             owner_kind="release_evidence_producer",
                             owner_id=f"cycle-{cycle}-{behavior}-{reason.value}",
                         ),
@@ -674,7 +671,7 @@ def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
                     )
                     children.append(child)
                     child.wait_for_line(
-                        OutputStream.STDOUT, prefix=b"ready", timeout=30
+                        supervision.OutputStream.STDOUT, prefix=b"ready", timeout=30
                     )
                     snapshot = child.terminate(reason=reason)
                     processes.append(
@@ -718,7 +715,7 @@ def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
                 }
             )
     finally:
-        supervisor.terminate_all(reason=TerminationReason.QUIT)
+        supervisor.terminate_all(reason=supervision.TerminationReason.QUIT)
     return {
         "cycle_count": cycle_count,
         "supervised_processes": sum(len(cycle["processes"]) for cycle in cycles),
@@ -834,6 +831,26 @@ def test_supervision_proof_runs_two_full_cycles_without_residue_or_growth() -> N
     assert result["supervised_processes"] == 2 * len(full_matrix)
     assert result["residual_processes"] == 0
     assert _supervision_violations(result) == []
+
+
+def test_high_output_child_reports_ready_only_after_overflowing_the_ring() -> None:
+    supervision = _process_supervision()
+    supervisor = supervision.ProcessSupervisor()
+    child = supervisor.spawn(
+        process_id=uuid.uuid4(),
+        owner=supervision.ProcessOwner(
+            owner_kind="release_evidence_producer", owner_id="high-output-ready"
+        ),
+        argv=(sys.executable, "-u", "-c", dict(SUPERVISION_BEHAVIORS)["high_output"]),
+    )
+    try:
+        child.wait_for_line(supervision.OutputStream.STDOUT, prefix=b"ready", timeout=30)
+        stdout = child.snapshot().stdout
+    finally:
+        supervisor.terminate_all(reason=supervision.TerminationReason.QUIT)
+    assert stdout.dropped_lines > 0
+    assert stdout.lines[-1] == b"ready"
+    assert stdout.retained_bytes <= supervisor.limits.ring_capacity_bytes_per_stream
 
 
 def test_settled_footprint_tracks_pipes_and_reports_a_leak_past_the_deadline() -> None:
