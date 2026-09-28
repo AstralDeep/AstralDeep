@@ -1202,7 +1202,7 @@ jobs:
             -only-testing:AstralAppUITests/VoiceConversationUITests \
             -only-testing:AstralAppUITests/WorkspacePresentationUITests \
             -only-testing:AstralAppUITests/WorkspaceActionsUITests \
-            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes \
+            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation \
             test-without-building
           python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
             --platform ios --derived-data "$PWD/build/060/dd" \

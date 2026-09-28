@@ -54,6 +54,16 @@ PROJECTION_WORKFLOWS = (
     REPO_ROOT / "components" / "AstralProjection" / ".github" / "workflows"
 )
 APPLE_CI = PROJECTION_WORKFLOWS / "apple-ci.yml"
+CONTINUITY_UI_TESTS = (
+    REPO_ROOT
+    / "components"
+    / "AstralProjection"
+    / "apple-clients"
+    / "AstralApp"
+    / "AstralAppUITests"
+    / "ConversationContinuityUITests.swift"
+)
+RELAUNCH_PROOF = "testDeterministicProcessRelaunchRestoresSemanticConversation"
 READINESS = WORKFLOWS / "release-readiness.yml"
 APPLE_NORMALIZER = WORKFLOWS / "release-apple-evidence-normalizer.yml"
 WINDOWS_CANDIDATE = WORKFLOWS / "build-windows-candidate.yml"
@@ -2162,18 +2172,39 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
     assert "for lane in core unit; do" in ios
     assert "-only-testing:AstralCoreTests test-without-building" in ios
     assert "-only-testing:AstralAppTests test-without-building" in ios
-    for selector in (
+    assert set(re.findall(r"-only-testing:AstralAppUITests/(\S+)", ios)) == {
         "Accessibility060UITests",
         "LLMFirstLoginUITests",
         "VoiceConversationUITests",
         "WorkspacePresentationUITests",
         "WorkspaceActionsUITests",
-        "ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes",
-    ):
-        assert "-only-testing:AstralAppUITests/" + selector in ios
+        f"ConversationContinuityUITests/{RELAUNCH_PROOF}",
+    }
     assert (
         "apple-ios-ui.xcresult" in ios
         and "apple-${PRODUCER_PLATFORM}-staging.xcresult" in ios
+    )
+
+
+def _continuity_selectors(job: str) -> list[str]:
+    return re.findall(
+        r"-only-testing:AstralAppUITests/ConversationContinuityUITests/(\S+)", job
+    )
+
+
+def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> None:
+    readiness = _workflow_job(_workflow_text(READINESS), "ios-raw-producer")
+    projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
+    assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
+    assert _continuity_selectors(projection) == [RELAUNCH_PROOF]
+    suite = CONTINUITY_UI_TESTS.read_text(encoding="utf-8")
+    assert re.findall(r"(?m)^    func (test\w+)\(\)", suite).count(RELAUNCH_PROOF) == 1
+    artifacts = _load_module(
+        "release_workflows_apple_artifacts_060",
+        REPO_ROOT / "scripts" / "apple_coverage_artifacts.py",
+    )
+    assert artifacts.CONTINUITY_CASE == (
+        f"ConversationContinuityUITests/{RELAUNCH_PROOF}()"
     )
 
 
