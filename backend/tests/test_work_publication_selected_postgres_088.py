@@ -17,6 +17,7 @@ from persistent_agents.tests.test_selected_research_postgres_088 import (
     add_agent, add_skill, selected_body, selected_notes as selected_notes,
 )
 from tests.test_work_runtime_postgres_088 import (
+    fast_runner_cycles as fast_runner_cycles,
     finished,
     fixture as fixture,
     gate_orchestrator as gate_orchestrator,

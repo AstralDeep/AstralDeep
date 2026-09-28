@@ -16,6 +16,7 @@ from persistent_agents.runtime_values import thaw
 from shared.isolated_http import IsolatedHttpError
 from tests.test_work_research_preflight_postgres_088 import research_command
 from tests.test_work_runtime_postgres_088 import (
+    fast_runner_cycles as fast_runner_cycles,
     fixture as fixture,
     gate_orchestrator as gate_orchestrator,
     integrated as integrated,

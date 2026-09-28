@@ -11,6 +11,7 @@ import pytest
 
 from persistent_agents.runtime_values import thaw
 from tests.test_work_runtime_postgres_088 import (
+    fast_runner_cycles as fast_runner_cycles,
     fixture as fixture, finished, gate_orchestrator as gate_orchestrator,
     integrated as integrated, operation as operation, plane as plane,
     research as research, signing_key as signing_key,

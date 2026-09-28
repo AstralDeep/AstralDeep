@@ -29,6 +29,14 @@ from tests.test_work_research_preflight_postgres_088 import research_command
 runtime = plane
 pytestmark = [pytest.mark.asyncio,
     pytest.mark.parametrize("operation", [{"tokens": 300_000}], indirect=True)]
+FAST_RUNNER_CYCLES = RunnerConfig(tick_seconds=1, lease_seconds=5)
+
+
+@pytest.fixture(autouse=True)
+def fast_runner_cycles(monkeypatch):
+    # A 15 s default tick and 15 s environment lease floor would make each wait a timeout
+    monkeypatch.setattr(RunnerConfig, "from_environment",
+                        classmethod(lambda cls: FAST_RUNNER_CYCLES))
 
 
 @pytest.fixture
@@ -43,9 +51,6 @@ async def integrated(research, fixture, monkeypatch):
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
     monkeypatch.setitem(flags._flags, "persistent_agents", True)
     monkeypatch.setattr("personalization.phi_gate.get_phi_gate", lambda: op.executor.service.phi_gate)
-    # A 15 s default tick and 15 s environment lease floor would make each wait a timeout
-    monkeypatch.setattr(RunnerConfig, "from_environment",
-                        classmethod(lambda cls: cls(tick_seconds=1, lease_seconds=5)))
     runner = start_assignment_runtime(orch)
     app = FastAPI()
     app.state.orchestrator = orch
