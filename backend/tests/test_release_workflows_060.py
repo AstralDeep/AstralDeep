@@ -2142,7 +2142,7 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         )
         assert "Retain raw Apple coverage attempts\n        if: always()" in after
         assert "coverage/raw/" in after
-        assert 'test ! -e "$result" && test ! -L "$result"' in after
+        assert 'if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::' in after
         assert 'rm -rf "$result"' not in after
         label = "iOS" if platform == "ios" else "macOS"
         staging = job.partition(
@@ -2251,7 +2251,7 @@ def test_apple_normalizer_executes_only_pinned_policy_and_requires_four_raw_ios_
     )
     assert 'elif [[ "$PRODUCER_PLATFORM" == macos ]]; then' in text
     assert 'report="$final/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"' in text
-    assert 'test ! -e "$report" && test ! -L "$report"' in text
+    assert 'if [ -e "$report" ] || [ -L "$report" ]; then echo "::error::' in text
 
 
 def _assert_ios_native_domains_are_protected_and_reconstructed(text):
@@ -2267,7 +2267,7 @@ def _assert_ios_native_domains_are_protected_and_reconstructed(text):
     verify = "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains"
     assert text.count(collect) == text.count(verify) == 1
     assert text.index("validate-observations") < text.index(collect)
-    assert text.index('test ! -e "$final"') < text.index(collect)
+    assert text.index('if [ -e "$final" ] || [ -L "$final" ]') < text.index(collect)
     assert (
         text.index(collect)
         < text.index("python3 -I protected-policy/scripts/merge_xccov_line_coverage.py")
@@ -2307,3 +2307,90 @@ def test_native_domain_workflow_guard_refuses_candidate_claim_or_omitted_recheck
         _assert_ios_native_domains_are_protected_and_reconstructed(
             text.replace(remove, "", 1)
         )
+
+
+CHAINED_EXISTENCE_REFUSAL = re.compile(r"\btest ! -e (\S+) && test ! -L \1(?=\s|$)")
+EXPLICIT_EXISTENCE_REFUSAL = re.compile(
+    r"(?m)^[ \t]*(?P<guard>if \[ -e (?P<path>\S+) \] \|\| \[ -L (?P=path) \]; "
+    r'then echo "::error::[^"\n]+ already exists"; exit 1; fi)$'
+)
+RESULT_BUNDLE_REFUSALS = {
+    READINESS: {
+        "macos-raw-producer": ['"$result"'],
+        "ios-raw-producer": ['"$result"', '"$result"', '"$result"'],
+    },
+    APPLE_NORMALIZER: {
+        "normalize": [
+            "protected-policy",
+            "build",
+            "build/060/raw-evidence",
+            '"$final"',
+            '"$report"',
+        ],
+    },
+}
+
+
+def test_no_workflow_chains_an_existence_refusal_that_errexit_ignores() -> None:
+    offenders = [
+        f"{path.name}:{number}"
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if CHAINED_EXISTENCE_REFUSAL.search(line)
+    ]
+    assert offenders == []
+
+
+def test_release_result_bundle_guards_refuse_existing_paths_explicitly() -> None:
+    for workflow, jobs in RESULT_BUNDLE_REFUSALS.items():
+        text = _workflow_text(workflow)
+        for job, paths in jobs.items():
+            assert [
+                match.group("path")
+                for match in EXPLICIT_EXISTENCE_REFUSAL.finditer(_workflow_job(text, job))
+            ] == paths
+
+
+@pytest.mark.parametrize("state", ["directory", "file", "dangling_symlink", "absent"])
+def test_result_bundle_refusals_stop_an_errexit_step_only_when_the_path_is_taken(
+    tmp_path: Path, state: str
+) -> None:
+    guards = [
+        (match.group("guard"), match.group("path"))
+        for workflow in RESULT_BUNDLE_REFUSALS
+        for match in EXPLICIT_EXISTENCE_REFUSAL.finditer(_workflow_text(workflow))
+    ]
+    assert len(guards) == sum(
+        len(paths) for jobs in RESULT_BUNDLE_REFUSALS.values() for paths in jobs.values()
+    )
+    for index, (guard, path) in enumerate(guards):
+        workspace = tmp_path / str(index)
+        workspace.mkdir()
+        environment = {"PATH": os.environ["PATH"], "lane": "unit"}
+        relative = path
+        if path.startswith('"$'):
+            relative = "guarded"
+            environment[path[2:-1]] = relative
+        target = workspace / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if state == "directory":
+            target.mkdir()
+        elif state == "file":
+            target.write_text("taken", encoding="utf-8")
+        elif state == "dangling_symlink":
+            target.symlink_to(workspace / "missing")
+        completed = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", f"{guard}\necho proceeded"],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if state == "absent":
+            assert (completed.returncode, completed.stdout) == (0, "proceeded\n"), guard
+        else:
+            assert completed.returncode == 1, guard
+            assert completed.stdout.startswith("::error::"), guard
+            assert completed.stdout.rstrip("\n").endswith(" already exists"), guard
+            assert "proceeded" not in completed.stdout, guard

@@ -75,8 +75,8 @@ jobs:
             *) echo "Apple platform/app archive binding is invalid" >&2; exit 1 ;;
           esac
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test ! -e protected-policy && test ! -L protected-policy
-          test ! -e build && test ! -L build
+          if [ -e protected-policy ] || [ -L protected-policy ]; then echo "::error::candidate-controlled path protected-policy already exists"; exit 1; fi
+          if [ -e build ] || [ -L build ]; then echo "::error::candidate-controlled path build already exists"; exit 1; fi
       - name: Check out the owner-reviewed Apple normalization policy
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -168,7 +168,7 @@ jobs:
           if not 0 < archive.stat().st_size <= 512 * 1024 * 1024:
               raise SystemExit("downloaded raw Apple artifact is empty or oversized")
           PY
-          test ! -e build/060/raw-evidence && test ! -L build/060/raw-evidence
+          if [ -e build/060/raw-evidence ] || [ -L build/060/raw-evidence ]; then echo "::error::raw evidence directory build/060/raw-evidence already exists"; exit 1; fi
           python3 -I protected-policy/scripts/extract_release_artifact.py --archive build/060/api/raw-apple-evidence.zip --target build/060/raw-evidence
       - name: Normalize raw Apple evidence under protected policy
         shell: bash
@@ -204,7 +204,7 @@ jobs:
             python3 -I protected-policy/scripts/apple_coverage_artifacts.py validate \
               --repo "$PWD" --platform "$PRODUCER_PLATFORM" --output "$raw"
           fi
-          test ! -e "$final" && test ! -L "$final"
+          if [ -e "$final" ] || [ -L "$final" ]; then echo "::error::final evidence directory $final already exists"; exit 1; fi
           mkdir -p "$final/${PRODUCER_PLATFORM}" "$final/${PRODUCER_PLATFORM}-raw" "$final/coverage"
           /bin/cp "$raw/${PRODUCER_PLATFORM}/${APP_ARCHIVE}" "$final/${PRODUCER_PLATFORM}/${APP_ARCHIVE}"
           /bin/cp -R "$raw/${PRODUCER_PLATFORM}-raw/." "$final/${PRODUCER_PLATFORM}-raw/"
@@ -239,7 +239,7 @@ jobs:
           with destination.open("xb") as stream:
               stream.write(source.read_bytes())
           PY
-          test ! -e "$report" && test ! -L "$report"
+          if [ -e "$report" ] || [ -L "$report" ]; then echo "::error::final coverage report $report already exists"; exit 1; fi
           git diff --exit-code -- . ':(exclude)build'
           if [[ "$PRODUCER_PLATFORM" == ios ]]; then
             # Four raw observations are independently normalized here. Candidate
