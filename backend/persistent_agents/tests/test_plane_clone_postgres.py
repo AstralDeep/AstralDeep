@@ -127,7 +127,7 @@ def test_concurrent_clone_runtimes_boot_ready_and_stay_isolated(plane_template):
         except BaseException as exc:
             errors.append(exc)
 
-    threads = [threading.Thread(target=run, args=(index,)) for index in range(workers_count)]
+    threads = [threading.Thread(target=run, args=(index,), daemon=True) for index in range(workers_count)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -170,7 +170,7 @@ def test_concurrent_clones_of_the_sealed_template_succeed(plane_template):
         except BaseException as exc:
             errors.append(exc)
 
-    workers = [threading.Thread(target=clone) for _ in range(2)]
+    workers = [threading.Thread(target=clone, daemon=True) for _ in range(2)]
     for worker in workers:
         worker.start()
     for worker in workers:
