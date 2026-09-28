@@ -1,6 +1,97 @@
 <!--
   Sync Impact Report
   ==================
+  Version change: 4.0.0 → 5.0.0 (MAJOR — Principle XI redefined: 30-minute
+    time budget, no soak tests, fair not-applicable outcome, deterministic
+    gates; Principle III clarified)
+
+  Amendment (2026-09-27, v5.0.0) — fair, bounded CI:
+    XI. Continuous Integration (REDEFINED) — after the named gate list,
+        added a 30-minute time budget (every CI job and test suite
+        finishes within 30 minutes on GitHub-hosted runners, every job
+        declares `timeout-minutes` <= 30, an over-budget suite is brought
+        within it by cheaper fixtures or deleted slowest tests — never
+        sharded, raised, or waived — and a job that is over-budget only
+        because it bundles several suites is split into jobs that each run
+        whole suites; release build/signing jobs are not test gates); a
+        ban on soak tests (proving any needed property with the fewest
+        cycles that exercise it — one lifecycle, or two when comparing
+        growth between cycles; deterministic enumeration, bounded load
+        needed to reach a limit, and sampled latency percentiles remain
+        measurements, not soak tests); a fair-gate rule (a gate fails only
+        for a defect the change introduced or can fix; an immutable
+        changed-line comparison with no measurable executable lines is
+        recorded as an explicit not-applicable outcome with the paths it
+        considered, not a failure; release tooling that requires a passing
+        decision still fails closed); and a determinism rule (required
+        gates must not depend on live third-party network services, exact
+        equality or bounds on clock-derived values, or wall-clock
+        performance bounds on shared hosted runners; per-test retries are
+        permitted, automatic whole-suite reruns are not). Gate 2 (Tests)
+        now allows the complete suite to run as separate parallel jobs of
+        whole suites; the required suite set is still complete.
+    III. Testing Standards (CLARIFIED) — a change with no measurable
+        executable lines makes changed-code coverage not applicable; CI
+        records that outcome explicitly (Principle XI) instead of
+        measuring an unsatisfiable 90% bar against zero changed lines,
+        and the 90% merge rule is scoped to where the coverage gate
+        applies.
+    Rationale: owner/lead-developer decision (2026-09-27) adopting the
+        fair-CI design so required gates measure only what a change can
+        actually be judged on, finish in bounded time, and stop depending
+        on sustained-load rare-failure hunting; the amendment ships in the
+        fair-CI pull request.
+    Principles added: None
+    Principles removed: None
+    Sections added: None
+    Sections removed: None
+    Templates and guidance requiring updates:
+      ✅ .specify/templates/plan-template.md — Constitution Check wording
+         is generic; no fixed gate count, coverage percentage, timeout, or
+         soak-test text to update
+      ✅ .specify/templates/spec-template.md — generic, compatible
+      ✅ .specify/templates/tasks-template.md — generic polish/verification
+         examples; no fixed gate list, timeout, or soak wording
+      ✅ .specify/templates/checklist-template.md — generic, compatible
+      ✅ .specify/templates/constitution-template.md — generic scaffold,
+         compatible
+      ✅ .specify/templates/agent-file-template.md — generic, compatible
+      ✅ AGENTS.md — "Non-negotiable engineering rules" gained the
+         time-budget/no-soak/deterministic-gates bullet; "Build and
+         verification" now names the three whole-suite CI groups
+      ✅ `backend/qual_audit/` — already removed on this branch; obsolete
+         soak-style suite, no longer part of CI or release qualification
+      ✅ AstralDeep's release-evidence producer
+         (`backend/tests/perf/release_backend_060.py` and its validators)
+         — already replaced the specs/060 50-trial migration loop and
+         100-trial supervision loop with the single two-starter migration
+         race and the two-cycle supervision proof this branch carries
+      ⚠ `specs/060-runtime-reliability-hardening/` (contracts/personal-
+         agent-runtime.md; verification/us2-byo-runtime.md,
+         verification/us6-data-concurrency.md) — still records the
+         superseded 50-trial/100-trial requirement as historical fact;
+         left as written history, not rewritten by this amendment
+      ✅ `components/LETS` — repinned to bf72d6f0, which removes
+         `deploy/production/run_soak.py`,
+         `deploy/production/acceptance/soak.py`,
+         `tests/unit/test_production_soak.py`, and the release workflow's
+         `production-soak` job; the package version (1.0.11) and every
+         compatibility contract are unchanged
+      ✅ `components/AstralProjection` — repinned to 781243cb, where the
+         Apple `ConversationContinuityUITests` twenty-relaunch loop is
+         replaced by a single-relaunch proof and the iOS first-login
+         whole-suite rerun is gone; AstralDeep's iOS release lane and
+         Apple coverage validator follow the renamed single-relaunch test
+      ⚠ Client release evidence `reconnect_resume` — the Apple app and
+         watch, Android, and Windows release-evidence producers still run
+         twenty resume trials, and `scripts/validate_release_evidence.py`
+         still requires `trial_count` >= 20
+    Follow-up TODOs:
+      ⚠ Replace the twenty-trial `reconnect_resume` loop with a
+        single-resume proof in every client release-evidence producer and
+        lower the validator floor in the same change.
+
+  Previous amendment:
   Version change: 3.0.0 → 4.0.0 (MAJOR — Principle VI redefined: the
     docstring and JSDoc mandates are replaced by self-documenting code)
 
@@ -609,10 +700,13 @@ a minimum of 90% code coverage on the code it changes.
   **changed-code coverage**: the lines added or modified by a
   pull request MUST be ≥ 90% covered by the test suite. This is
   the mechanical merge gate (see Principle XI).
+- When a change contains no measurable executable lines,
+  changed-code coverage is not applicable and is recorded as
+  such (Principle XI).
 - Module-wide and repository-wide coverage improvements remain
   encouraged but are not the merge gate.
 - No feature branch may merge without meeting the 90%
-  threshold on changed code.
+  threshold on changed code where the coverage gate applies.
 
 ### IV. Code Quality
 
@@ -1020,7 +1114,8 @@ constitution requires it.
   2. **Tests** — the complete backend test suite (default suite
      plus all module suites) against a real database service,
      excluding only tests that require a live deployed
-     orchestrator.
+     orchestrator. The suite MAY run as separate parallel jobs
+     of whole suites; the required suite set is still complete.
   3. **Coverage** — the changed-code coverage gate at ≥ 90%
      (Principle III).
   4. **Image build** — the production container image MUST
@@ -1032,6 +1127,37 @@ constitution requires it.
      code, proving the fail-closed gate end-to-end.
   6. **Secret scan** — committed credential material MUST fail
      the pipeline (Principle VII).
+- **Time budget** — Every CI job and every test suite MUST finish
+  within 30 minutes on the project's GitHub-hosted runners, and
+  every CI job MUST declare `timeout-minutes` of at most 30. A
+  suite that exceeds the budget MUST be brought within it by
+  making its fixtures cheaper or by deleting its slowest tests —
+  never by splitting one suite across runners, raising the
+  limit, or waiving the gate. A job that exceeds the budget only
+  because it bundles several suites MUST be split into jobs that
+  each run whole suites. Release build and signing jobs are not
+  test gates.
+- **No soak tests** — Tests whose value comes from repeating one
+  scenario many times or sustaining load to surface rare failures
+  are not part of CI or release qualification. A property that
+  needs proof is proved with the fewest cycles that exercise it:
+  one lifecycle, or two when the assertion compares growth
+  between cycles. Deterministic enumeration, bounded load needed
+  to reach a limit, and latency percentiles over a sample are
+  measurements, not soak tests.
+- **Fair gates** — A gate MUST fail only for a defect the change
+  introduced or can fix. An immutable changed-line comparison
+  that contains no measurable executable lines (for example a
+  component-pointer bump, or a component change confined to
+  paths the gate does not measure) is recorded as an explicit
+  not-applicable outcome together with the paths it considered,
+  not as a failure. Release tooling that requires a passing
+  decision still fails closed.
+- **Deterministic gates** — Required gates MUST NOT depend on
+  live third-party network services, exact equality or exact
+  bounds on clock-derived values, or wall-clock performance
+  bounds on shared hosted runners. Per-test retries are
+  permitted; automatic whole-suite reruns are not.
 - On main-branch pushes that pass all gates, the pipeline MUST
   publish the container image to the project's container
   registry with an immutable commit-derived tag and a moving
@@ -1282,4 +1408,4 @@ guidance when conflicts arise.
   adherence to these principles. Violations MUST be resolved
   before merge.
 
-**Version**: 4.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-23
+**Version**: 5.0.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-27

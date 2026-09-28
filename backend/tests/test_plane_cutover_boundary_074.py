@@ -197,7 +197,7 @@ def _legacy_database_callers() -> list[str]:
     paths: list[str] = []
     for path in _production_python():
         relative = path.relative_to(ROOT)
-        if "scripts" in relative.parts or "qual_audit" in relative.parts:
+        if "scripts" in relative.parts:
             continue
         found = False
         for node in ast.walk(_module_tree(path)):

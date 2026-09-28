@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Linux-CI boot-smoke gate for the backend/web Docker images: brings up disposable dev and test
 # containers and checks structural startup only; real login, LETS-enforce, and media remain gated
-# behind staging.
+# behind staging. Its tests phase runs run_backend_web_tests.py for the ASTRAL_GATE_GROUP suite
+# group, which defaults to every suite.
 set -euo pipefail
 image="${1:?immutable local image ID required}"
 phase="${2:-tests}"
+group="${ASTRAL_GATE_GROUP:-all}"
 [[ "$phase" == tests || "$phase" == boot ]]
 [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
+case "$group" in
+  all | tests | persistent_agents | modules) ;;
+  *) echo "unknown backend suite group: $group" >&2; exit 2 ;;
+esac
 root="$(pwd)"
 policy_root="$(cd "${ASTRAL_GATE_POLICY_ROOT:-$root}" && pwd -P)"
 test -f "$policy_root/scripts/run_backend_web_tests.py"
@@ -146,7 +152,7 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
   --env ASTRALPLANE_TEST_POSTGRES_DSN="$url" --env ASTRAL_TEST_ISOLATED=1 \
   --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/test-blobs --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/test-agents \
-  --env ASTRALDEEP_SOURCE_REPO=/workspace \
+  --env ASTRALDEEP_SOURCE_REPO=/workspace --env ASTRAL_GATE_GROUP="$group" \
   --env PATH=/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
   --volume "$(dirname "$(command -v node)"):/opt/ci-node:ro" \
   --volume "$policy_root:/qualification-policy:ro" \
@@ -154,5 +160,5 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
   --entrypoint /bin/bash "$image" -euc '
     python -m venv --system-site-packages /tmp/ci
     /tmp/ci/bin/python -m pip install --require-hashes -r /qualification-policy/tooling/backend-ci/requirements.lock.txt
-    /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web
+    /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web --group "$ASTRAL_GATE_GROUP"
   '

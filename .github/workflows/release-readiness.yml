@@ -1051,7 +1051,7 @@ jobs:
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
           result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}.xcresult"
-          test ! -e "$result" && test ! -L "$result"
+          if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::release-evidence result bundle $result already exists"; exit 1; fi
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
@@ -1169,7 +1169,7 @@ jobs:
           root="$PWD"
           for lane in core unit; do
             result="$root/build/060/release-evidence/coverage/raw/apple-ios-${lane}.xcresult"
-            test ! -e "$result" && test ! -L "$result"
+            if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS ${lane} result bundle $result already exists"; exit 1; fi
             if [[ "$lane" == core ]]; then
               (cd components/AstralProjection/apple-clients/AstralCore && xcodebuild \
                 -scheme AstralCore -destination "${DESTINATION}" -configuration Debug \
@@ -1192,7 +1192,7 @@ jobs:
         run: |
           set -euo pipefail
           result="$PWD/build/060/release-evidence/coverage/raw/apple-ios-ui.xcresult"
-          test ! -e "$result" && test ! -L "$result"
+          if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS UI result bundle $result already exists"; exit 1; fi
           xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
@@ -1202,7 +1202,7 @@ jobs:
             -only-testing:AstralAppUITests/VoiceConversationUITests \
             -only-testing:AstralAppUITests/WorkspacePresentationUITests \
             -only-testing:AstralAppUITests/WorkspaceActionsUITests \
-            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes \
+            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation \
             test-without-building
           python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
             --platform ios --derived-data "$PWD/build/060/dd" \
@@ -1231,7 +1231,7 @@ jobs:
           export TEST_RUNNER_GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" TEST_RUNNER_GITHUB_WORKFLOW="$GITHUB_WORKFLOW"
           export TEST_RUNNER_RUNNER_OS="$RUNNER_OS" TEST_RUNNER_RUNNER_ARCH="$RUNNER_ARCH" TEST_RUNNER_RUNNER_NAME="$RUNNER_NAME"
           result="build/060/release-evidence/coverage/raw/apple-${PRODUCER_PLATFORM}-staging.xcresult"
-          test ! -e "$result" && test ! -L "$result"
+          if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::release-evidence result bundle $result already exists"; exit 1; fi
           xcodebuild -project "${APP_PROJECT}" -scheme "${PRODUCER_SCHEME}" \
             -destination "${DESTINATION}" -configuration Debug \
             CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \

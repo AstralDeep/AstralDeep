@@ -54,6 +54,16 @@ PROJECTION_WORKFLOWS = (
     REPO_ROOT / "components" / "AstralProjection" / ".github" / "workflows"
 )
 APPLE_CI = PROJECTION_WORKFLOWS / "apple-ci.yml"
+CONTINUITY_UI_TESTS = (
+    REPO_ROOT
+    / "components"
+    / "AstralProjection"
+    / "apple-clients"
+    / "AstralApp"
+    / "AstralAppUITests"
+    / "ConversationContinuityUITests.swift"
+)
+RELAUNCH_PROOF = "testDeterministicProcessRelaunchRestoresSemanticConversation"
 READINESS = WORKFLOWS / "release-readiness.yml"
 APPLE_NORMALIZER = WORKFLOWS / "release-apple-evidence-normalizer.yml"
 WINDOWS_CANDIDATE = WORKFLOWS / "build-windows-candidate.yml"
@@ -1549,6 +1559,7 @@ def test_ci_release_tooling_lane_covers_the_new_release_test_files() -> None:
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
         "scripts/tests/test_backend_web_gate.py",
+        "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
@@ -1670,6 +1681,76 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
     assert "docker save" in _workflow_job(workflow, "backend-image")
     assert "docker push" not in workflow
     assert "name: voice-worker-image" not in workflow
+
+
+def test_only_ordinary_ci_records_unmeasurable_changed_lines_as_not_applicable() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    for job_id in ("backend-changed-coverage", "projection-backend-web"):
+        command = _workflow_job(workflow, job_id).partition(
+            "python scripts/check_changed_coverage.py"
+        )[2]
+        assert command, f"{job_id} does not run the changed-coverage gate"
+        assert "--coverage-mode strict" in command
+        assert "--empty-diff not-applicable" in command
+        assert "--fail-under 90" in command
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        if path != CI_WORKFLOW:
+            assert "--empty-diff" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_backend_suites_run_as_three_whole_suite_groups_with_merged_coverage() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    groups = ("tests", "persistent_agents", "modules")
+    web = _workflow_job(workflow, "backend-web")
+    assert (
+        "    strategy:\n      fail-fast: false\n      matrix:\n        group:\n"
+        + "".join(f"          - {group}\n" for group in groups)
+    ) in web
+    assert "ASTRAL_GATE_GROUP: ${{ matrix.group }}" in web
+    assert 'bash scripts/backend_web_image_gate.sh "$(cat build/backend-web/image-id.txt)" tests' in web
+    assert "name: backend-web-test-evidence-${{ matrix.group }}" in web
+    assert "include-hidden-files: true" in web
+    assert "name: backend-web-test-evidence\n" not in workflow
+
+    coverage = _workflow_job(workflow, "backend-changed-coverage")
+    assert "needs: [backend-web, voice-worker-test]" in coverage
+    downloads = [
+        f"name: backend-web-test-evidence-{group}\n          path: build/backend-web-groups/{group}\n"
+        for group in groups
+    ]
+    merge = coverage.index("python scripts/merge_backend_web_coverage.py --root . --output build/backend-web")
+    check = coverage.index("python scripts/check_changed_coverage.py")
+    assert all(coverage.index(download) < merge for download in downloads)
+    assert merge < check
+    assert coverage.count("--evidence build/backend-web-groups/") == len(groups)
+    for group in groups:
+        assert f"--evidence build/backend-web-groups/{group}" in coverage
+    for report in (
+        "--backend-python build/backend-web/backend-python.xml",
+        "--tooling-python build/backend-web/tooling-python.xml",
+        "--voice-worker-python build/065/coverage/voice-worker.xml",
+    ):
+        assert report in coverage[check:]
+
+
+def test_every_ci_job_is_bounded_by_thirty_minutes() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    limits = {}
+    for job_id in _job_ids(workflow):
+        match = re.search(r"(?m)^    timeout-minutes: (\d+)$", _workflow_job(workflow, job_id))
+        assert match, f"{job_id} has no job timeout"
+        limits[job_id] = int(match.group(1))
+    assert max(limits.values()) <= 30
+    assert {
+        job_id: limits[job_id]
+        for job_id in (
+            "backend-image", "backend-web", "plane-postgres", "projection-backend-web",
+            "voice-worker-test", "gates",
+        )
+    } == {
+        "backend-image": 30, "backend-web": 30, "plane-postgres": 30,
+        "projection-backend-web": 30, "voice-worker-test": 30, "gates": 5,
+    }
 
 
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
@@ -2071,7 +2152,7 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         )
         assert "Retain raw Apple coverage attempts\n        if: always()" in after
         assert "coverage/raw/" in after
-        assert 'test ! -e "$result" && test ! -L "$result"' in after
+        assert 'if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::' in after
         assert 'rm -rf "$result"' not in after
         label = "iOS" if platform == "ios" else "macOS"
         staging = job.partition(
@@ -2091,18 +2172,39 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
     assert "for lane in core unit; do" in ios
     assert "-only-testing:AstralCoreTests test-without-building" in ios
     assert "-only-testing:AstralAppTests test-without-building" in ios
-    for selector in (
+    assert set(re.findall(r"-only-testing:AstralAppUITests/(\S+)", ios)) == {
         "Accessibility060UITests",
         "LLMFirstLoginUITests",
         "VoiceConversationUITests",
         "WorkspacePresentationUITests",
         "WorkspaceActionsUITests",
-        "ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes",
-    ):
-        assert "-only-testing:AstralAppUITests/" + selector in ios
+        f"ConversationContinuityUITests/{RELAUNCH_PROOF}",
+    }
     assert (
         "apple-ios-ui.xcresult" in ios
         and "apple-${PRODUCER_PLATFORM}-staging.xcresult" in ios
+    )
+
+
+def _continuity_selectors(job: str) -> list[str]:
+    return re.findall(
+        r"-only-testing:AstralAppUITests/ConversationContinuityUITests/(\S+)", job
+    )
+
+
+def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> None:
+    readiness = _workflow_job(_workflow_text(READINESS), "ios-raw-producer")
+    projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
+    assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
+    assert _continuity_selectors(projection) == [RELAUNCH_PROOF]
+    suite = CONTINUITY_UI_TESTS.read_text(encoding="utf-8")
+    assert re.findall(r"(?m)^    func (test\w+)\(\)", suite).count(RELAUNCH_PROOF) == 1
+    artifacts = _load_module(
+        "release_workflows_apple_artifacts_060",
+        REPO_ROOT / "scripts" / "apple_coverage_artifacts.py",
+    )
+    assert artifacts.CONTINUITY_CASE == (
+        f"ConversationContinuityUITests/{RELAUNCH_PROOF}()"
     )
 
 
@@ -2180,7 +2282,7 @@ def test_apple_normalizer_executes_only_pinned_policy_and_requires_four_raw_ios_
     )
     assert 'elif [[ "$PRODUCER_PLATFORM" == macos ]]; then' in text
     assert 'report="$final/coverage/apple-${PRODUCER_PLATFORM}-xccov.json"' in text
-    assert 'test ! -e "$report" && test ! -L "$report"' in text
+    assert 'if [ -e "$report" ] || [ -L "$report" ]; then echo "::error::' in text
 
 
 def _assert_ios_native_domains_are_protected_and_reconstructed(text):
@@ -2196,7 +2298,7 @@ def _assert_ios_native_domains_are_protected_and_reconstructed(text):
     verify = "python3 -I protected-policy/scripts/apple_coverage_artifacts.py verify-native-domains"
     assert text.count(collect) == text.count(verify) == 1
     assert text.index("validate-observations") < text.index(collect)
-    assert text.index('test ! -e "$final"') < text.index(collect)
+    assert text.index('if [ -e "$final" ] || [ -L "$final" ]') < text.index(collect)
     assert (
         text.index(collect)
         < text.index("python3 -I protected-policy/scripts/merge_xccov_line_coverage.py")
@@ -2236,3 +2338,90 @@ def test_native_domain_workflow_guard_refuses_candidate_claim_or_omitted_recheck
         _assert_ios_native_domains_are_protected_and_reconstructed(
             text.replace(remove, "", 1)
         )
+
+
+CHAINED_EXISTENCE_REFUSAL = re.compile(r"\btest ! -e (\S+) && test ! -L \1(?=\s|$)")
+EXPLICIT_EXISTENCE_REFUSAL = re.compile(
+    r"(?m)^[ \t]*(?P<guard>if \[ -e (?P<path>\S+) \] \|\| \[ -L (?P=path) \]; "
+    r'then echo "::error::[^"\n]+ already exists"; exit 1; fi)$'
+)
+RESULT_BUNDLE_REFUSALS = {
+    READINESS: {
+        "macos-raw-producer": ['"$result"'],
+        "ios-raw-producer": ['"$result"', '"$result"', '"$result"'],
+    },
+    APPLE_NORMALIZER: {
+        "normalize": [
+            "protected-policy",
+            "build",
+            "build/060/raw-evidence",
+            '"$final"',
+            '"$report"',
+        ],
+    },
+}
+
+
+def test_no_workflow_chains_an_existence_refusal_that_errexit_ignores() -> None:
+    offenders = [
+        f"{path.name}:{number}"
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if CHAINED_EXISTENCE_REFUSAL.search(line)
+    ]
+    assert offenders == []
+
+
+def test_release_result_bundle_guards_refuse_existing_paths_explicitly() -> None:
+    for workflow, jobs in RESULT_BUNDLE_REFUSALS.items():
+        text = _workflow_text(workflow)
+        for job, paths in jobs.items():
+            assert [
+                match.group("path")
+                for match in EXPLICIT_EXISTENCE_REFUSAL.finditer(_workflow_job(text, job))
+            ] == paths
+
+
+@pytest.mark.parametrize("state", ["directory", "file", "dangling_symlink", "absent"])
+def test_result_bundle_refusals_stop_an_errexit_step_only_when_the_path_is_taken(
+    tmp_path: Path, state: str
+) -> None:
+    guards = [
+        (match.group("guard"), match.group("path"))
+        for workflow in RESULT_BUNDLE_REFUSALS
+        for match in EXPLICIT_EXISTENCE_REFUSAL.finditer(_workflow_text(workflow))
+    ]
+    assert len(guards) == sum(
+        len(paths) for jobs in RESULT_BUNDLE_REFUSALS.values() for paths in jobs.values()
+    )
+    for index, (guard, path) in enumerate(guards):
+        workspace = tmp_path / str(index)
+        workspace.mkdir()
+        environment = {"PATH": os.environ["PATH"], "lane": "unit"}
+        relative = path
+        if path.startswith('"$'):
+            relative = "guarded"
+            environment[path[2:-1]] = relative
+        target = workspace / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if state == "directory":
+            target.mkdir()
+        elif state == "file":
+            target.write_text("taken", encoding="utf-8")
+        elif state == "dangling_symlink":
+            target.symlink_to(workspace / "missing")
+        completed = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", f"{guard}\necho proceeded"],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if state == "absent":
+            assert (completed.returncode, completed.stdout) == (0, "proceeded\n"), guard
+        else:
+            assert completed.returncode == 1, guard
+            assert completed.stdout.startswith("::error::"), guard
+            assert completed.stdout.rstrip("\n").endswith(" already exists"), guard
+            assert "proceeded" not in completed.stdout, guard

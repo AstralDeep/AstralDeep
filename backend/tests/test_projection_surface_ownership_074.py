@@ -120,7 +120,6 @@ PLANE_SEMANTIC_ADAPTERS = frozenset(
         "backend/orchestrator/attachments/purge.py",
         "backend/orchestrator/plane_repository_context.py",
         "backend/personalization/repository.py",
-        "backend/qual_audit/database.py",
         "backend/scheduler/store.py",
     }
 )

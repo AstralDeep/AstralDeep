@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import hashlib
 import importlib.util
 import io
@@ -30,6 +31,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = 1
+EMPTY_DIFF_POLICIES = ("error", "not-applicable")
 JAVASCRIPT_REPORT_KEYS = {
     "schema_version",
     "producer",
@@ -2092,6 +2094,44 @@ def _python_candidate_executable_lines(content: bytes, path: str) -> frozenset[i
     )
 
 
+def _selection_record(selection: RevisionSelection) -> dict[str, str]:
+    return {
+        "event_name": selection.event_name,
+        "base_source": selection.base_source,
+        "candidate_source": selection.candidate_source,
+    }
+
+
+def _not_applicable_decision(
+    selection: RevisionSelection,
+    threshold: Decimal,
+    *,
+    repository_profile: str,
+    changed: Mapping[str, set[int]],
+    maintained: Mapping[str, CoverageTarget],
+    deferred_paths: Sequence[str],
+    producer_slots: Mapping[str, Mapping[str, Any]],
+    producer_contributions: Mapping[str, int],
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "not-applicable",
+        "reason": "no_measurable_changed_lines",
+        "repository_profile": repository_profile,
+        "base_sha": selection.base_sha,
+        "candidate_sha": selection.candidate_sha,
+        "fail_under": float(threshold),
+        "selection": _selection_record(selection),
+        "diff": {
+            "changed_paths": sorted(changed),
+            "maintained_paths": sorted(maintained),
+            "deferred_maintained_paths": sorted(deferred_paths),
+        },
+        "producer_slots": dict(producer_slots),
+        "producer_contributions": dict(producer_contributions),
+    }
+
+
 def _candidate_source_witnesses(
     repo: Path,
     blobs: Mapping[str, CandidateBlob],
@@ -2488,7 +2528,17 @@ def evaluate_changed_coverage(
     repository_profile: str = "monorepo",
     required_producer_keys: Sequence[str] | None = None,
     source_prefix: str = "",
+    empty_diff: str = "error",
 ) -> dict[str, Any]:
+    if empty_diff not in EMPTY_DIFF_POLICIES:
+        raise CoveragePolicyError(
+            "invalid_empty_diff_policy", f"unknown empty-diff policy {empty_diff!r}"
+        )
+    if empty_diff == "not-applicable" and not strict_producers:
+        raise CoveragePolicyError(
+            "invalid_empty_diff_policy",
+            "the not-applicable empty-diff policy requires strict coverage mode",
+        )
     threshold = _threshold(fail_under)
     report_inputs = _unique_report_inputs(reports, producer_slots)
     slot_by_path: dict[Path, str] = {}
@@ -2563,7 +2613,7 @@ def evaluate_changed_coverage(
                 deferred_paths.append(path)
             else:
                 maintained[path] = target
-    if not maintained:
+    if not maintained and empty_diff == "error":
         raise CoveragePolicyError(
             "unexpected_empty_executable_diff",
             "immutable comparison contains no maintained executable source paths",
@@ -2582,6 +2632,19 @@ def evaluate_changed_coverage(
         if strict_producers
         else {}
     )
+    not_applicable = functools.partial(
+        _not_applicable_decision,
+        selection,
+        threshold,
+        repository_profile=repository_profile,
+        changed=changed,
+        maintained=maintained,
+        deferred_paths=deferred_paths,
+        producer_slots=producer_summary,
+        producer_contributions=producer_contributions,
+    )
+    if not maintained:
+        return not_applicable()
 
     target_data: dict[str, CoverageData] = {}
     report_summary: dict[str, Any] = {}
@@ -2664,6 +2727,8 @@ def evaluate_changed_coverage(
                 }
             )
     if not line_records:
+        if empty_diff == "not-applicable":
+            return not_applicable()
         raise CoveragePolicyError(
             "unexpected_empty_executable_diff",
             "coverage reports map no executable added or modified lines",
@@ -2712,11 +2777,7 @@ def evaluate_changed_coverage(
         "base_sha": selection.base_sha,
         "candidate_sha": selection.candidate_sha,
         "revisions_validated": True,
-        "selection": {
-            "event_name": selection.event_name,
-            "base_source": selection.base_source,
-            "candidate_source": selection.candidate_source,
-        },
+        "selection": _selection_record(selection),
         "fail_under": float(threshold),
         "diff": {
             "changed_paths": sorted(changed),
@@ -2802,6 +2863,16 @@ def _parser() -> argparse.ArgumentParser:
         help="strict requires useful reports in every profile-owned producer slot",
     )
     parser.add_argument(
+        "--empty-diff",
+        choices=EMPTY_DIFF_POLICIES,
+        default="error",
+        help=(
+            "error fails an immutable diff with no measurable changed lines; "
+            "not-applicable, allowed only with strict coverage mode, records it "
+            "as an explicit not-applicable decision after the same report validation"
+        ),
+    )
+    parser.add_argument(
         "--repository-profile",
         choices=tuple(REPOSITORY_PROFILES),
         default="monorepo",
@@ -2854,6 +2925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository_profile=args.repository_profile,
             required_producer_keys=profile.producer_keys,
             source_prefix=profile.source_prefix,
+            empty_diff=args.empty_diff,
         )
     except CoveragePolicyError as exc:
         decision = {
@@ -2869,15 +2941,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "base_sha": selected.base_sha,
                     "candidate_sha": selected.candidate_sha,
                     "revisions_validated": revisions_validated,
-                    "selection": {
-                        "event_name": selected.event_name,
-                        "base_source": selected.base_source,
-                        "candidate_source": selected.candidate_source,
-                    },
+                    "selection": _selection_record(selected),
                 }
             )
     _write_document(decision, args.output)
-    return 0 if decision["status"] == "pass" else 1
+    return 0 if decision["status"] in {"pass", "not-applicable"} else 1
 
 
 if __name__ == "__main__":

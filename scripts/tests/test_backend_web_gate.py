@@ -1,12 +1,16 @@
-"""Tests for scripts/run_backend_web_tests.py and backend_web_test_reporter.py: suite
-inventory, database preflight, JUnit reporting, and source-identity requirements.
+"""Tests for scripts/run_backend_web_tests.py, backend_web_test_reporter.py and
+backend_web_image_gate.sh: suite inventory and groups, per-suite time bounds, database
+preflight, JUnit reporting, and source-identity requirements.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,7 +20,7 @@ from scripts import backend_web_test_reporter
 
 
 def _tree(tmp_path):
-    for name in ("tests", "persistent_agents/tests", "audit/tests", "qual_audit/suites",
+    for name in ("tests", "persistent_agents/tests", "audit/tests", "evaluation/suites",
                  "voice_agent/tests", "agents/journal_review/tests"):
         path = tmp_path / "backend" / name / "test_example.py"
         path.parent.mkdir(parents=True)
@@ -24,10 +28,10 @@ def _tree(tmp_path):
     return tmp_path
 
 
-def test_inventory_includes_module_and_academic_suites_and_separates_worker(tmp_path):
+def test_inventory_includes_module_and_suites_directories_and_separates_worker(tmp_path):
     paths = {path.as_posix() for path in gate.suite_paths(_tree(tmp_path))}
     assert paths == {"tests", "persistent_agents/tests", "audit/tests",
-                     "qual_audit/suites", "agents/journal_review/tests"}
+                     "evaluation/suites", "agents/journal_review/tests"}
 
 
 def test_inventory_rejects_missing_core_suite(tmp_path):
@@ -152,7 +156,6 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
             if scenario == "timeout":
                 raise subprocess.TimeoutExpired(command, 1)
             if scenario != "missing":
-                from pathlib import Path
                 case = '<testcase name="one"/>'
                 if scenario == "empty":
                     case = ""
@@ -234,10 +237,165 @@ def test_source_identity_requires_exact_clean_git_commit(tmp_path, monkeypatch, 
 
 
 def test_main_resolves_paths_and_propagates_gate_result(tmp_path, monkeypatch):
-    monkeypatch.setattr(gate.sys, "argv", ["gate", "--root", str(tmp_path),
-                                          "--output", str(tmp_path / "out")])
-    monkeypatch.setattr(gate, "run", lambda root, output: 23)
+    calls = []
+    monkeypatch.setattr(gate, "run", lambda root, output, *, group: calls.append(
+        (root, output, group)) or 23)
+    arguments = ["gate", "--root", str(tmp_path), "--output", str(tmp_path / "out")]
+    monkeypatch.setattr(gate.sys, "argv", arguments)
     assert gate.main() == 23
+    monkeypatch.setattr(gate.sys, "argv", [*arguments, "--group", "modules"])
+    assert gate.main() == 23
+    expected = (tmp_path.resolve(), (tmp_path / "out").resolve())
+    assert calls == [(*expected, "all"), (*expected, "modules")]
+
+
+ALL_SUITES = [
+    "backend-agents-journal_review-tests", "backend-audit-tests", "backend-evaluation-suites",
+    "backend-persistent_agents-tests", "backend-tests",
+    "perf-concurrent_surfaces.py", "perf-voice_concurrent_turns.py", "tooling",
+]
+
+
+def _passing_suites(monkeypatch, *, timeout_suite=None):
+    monkeypatch.setattr(gate.sys, "version_info", (3, 11))
+    monkeypatch.setattr(gate, "require_isolated_postgres", lambda env: None)
+    monkeypatch.setattr(gate, "source_identity", lambda root: "a" * 40)
+    monkeypatch.setattr(gate, "isolated_suite_database", lambda env: nullcontext(env))
+    timeouts = {}
+
+    def execute(command, **kwargs):
+        report = next((arg.split("=", 1)[1] for arg in command if arg.startswith("--junitxml=")), None)
+        if report:
+            environment = kwargs["env"]
+            timeouts[environment["BQ_SUITE_NAME"]] = kwargs["timeout"]
+            if environment["BQ_SUITE_NAME"] == timeout_suite:
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            Path(report).write_text('<testsuites><testsuite><testcase name="one"/></testsuite></testsuites>',
+                                    encoding="utf-8")
+            Path(environment["BQ_SUITE_INVENTORY_PATH"]).write_text(json.dumps({
+                "schema_version": 1, "source_commit": environment["BQ_SOURCE_COMMIT"],
+                "suite": environment["BQ_SUITE_NAME"], "tests": ["::one"],
+            }), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(gate.subprocess, "run", execute)
+    return timeouts
+
+
+GROUP_SUITES = {
+    "tests": ["backend-tests"],
+    "persistent_agents": ["backend-persistent_agents-tests"],
+    "modules": [name for name in ALL_SUITES
+                if name not in {"backend-tests", "backend-persistent_agents-tests"}],
+}
+
+
+@pytest.mark.parametrize("group,expected", [
+    (None, ALL_SUITES), ("all", ALL_SUITES), *GROUP_SUITES.items(),
+])
+def test_suite_groups_plan_whole_suites_and_record_the_group(tmp_path, monkeypatch, group, expected):
+    root = _tree(tmp_path)
+    output = root / "evidence"
+    _passing_suites(monkeypatch)
+    assert (gate.run(root, output) if group is None else gate.run(root, output, group=group)) == 0
+    plan = json.loads((output / "suite-plan.json").read_text(encoding="utf-8"))
+    evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
+    assert plan["group"] == evidence["group"] == (group or "all")
+    assert [item["suite"] for item in plan["suites"]] == expected
+    assert [item["suite"] for item in evidence["suites"]] == expected
+    assert evidence["status"] == "pass"
+
+
+def test_whole_suite_groups_partition_the_complete_plan(tmp_path):
+    commands = gate.suite_commands(_tree(tmp_path))
+    groups = {group: gate.group_commands(commands, group) for group in GROUP_SUITES}
+    assert gate.GROUPS == ("all", "tests", "persistent_agents", "modules")
+    assert gate.group_commands(commands, "all") == commands
+    assert {group: [name for _cwd, _path, name in selected] for group, selected in groups.items()} == GROUP_SUITES
+    assert sorted(command for selected in groups.values() for command in selected) == sorted(commands)
+    with pytest.raises(ValueError, match="unknown suite group"):
+        gate.group_commands(commands, "everything")
+
+
+def test_unknown_group_is_rejected_before_database_or_source_access(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate.sys, "version_info", (3, 11))
+    touched = []
+    monkeypatch.setattr(gate, "require_isolated_postgres", lambda env: touched.append("database"))
+    monkeypatch.setattr(gate, "source_identity", lambda root: touched.append("source"))
+    with pytest.raises(ValueError, match="unknown suite group"):
+        gate.run(_tree(tmp_path), tmp_path / "evidence", group="everything")
+    assert touched == []
+    assert not (tmp_path / "evidence").exists()
+    monkeypatch.setattr(gate.sys, "argv", ["gate", "--output", str(tmp_path / "out"),
+                                          "--group", "everything"])
+    with pytest.raises(SystemExit) as failure:
+        gate.main()
+    assert failure.value.code == 2
+
+
+def test_each_suite_is_bounded_by_thirty_minutes_and_a_timeout_fails(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    output = root / "evidence"
+    timeouts = _passing_suites(monkeypatch, timeout_suite="backend-persistent_agents-tests")
+    assert gate.run(root, output) == 1
+    assert gate.SUITE_TIMEOUT_SECONDS == 1800
+    assert timeouts == dict.fromkeys(ALL_SUITES, 1800)
+    evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
+    results = {item["suite"]: item for item in evidence["suites"]}
+    assert results["backend-persistent_agents-tests"]["exit_code"] == 124
+    assert results["backend-persistent_agents-tests"]["status"] == "fail"
+    assert evidence["status"] == "fail"
+    assert all(item["status"] == "pass" for name, item in results.items()
+               if name != "backend-persistent_agents-tests")
+
+
+def _fake_docker(tmp_path):
+    directory = tmp_path / "fake-bin"
+    directory.mkdir()
+    docker = directory / "docker"
+    docker.write_text(f"""#!{sys.executable}
+import json, os, sys
+arguments = sys.argv[1:]
+with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(arguments) + "\\n")
+if arguments[:1] == ["exec"]:
+    print("{{}}")
+if arguments[:1] == ["run"] and any(argument.endswith("-negative") for argument in arguments):
+    sys.exit(78)
+""", encoding="utf-8")
+    docker.chmod(0o755)
+    (directory / "python").symlink_to(sys.executable)
+    return directory
+
+
+@pytest.mark.parametrize("group,expected", [
+    (None, "all"), ("all", "all"), ("tests", "tests"), ("persistent_agents", "persistent_agents"),
+    ("modules", "modules"), ("everything", None),
+])
+def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, group, expected):
+    log = tmp_path / "docker.jsonl"
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("ASTRAL_GATE_")}
+    environment.update({
+        "PATH": str(_fake_docker(tmp_path)) + os.pathsep + environment["PATH"],
+        "FAKE_DOCKER_LOG": str(log), "ASTRAL_GATE_POLICY_ROOT": str(gate.POLICY_ROOT),
+    })
+    if group is not None:
+        environment["ASTRAL_GATE_GROUP"] = group
+    completed = subprocess.run(
+        ["bash", str(gate.POLICY_ROOT / "scripts/backend_web_image_gate.sh"), "sha256:" + "c" * 64, "tests"],
+        cwd=tmp_path, env=environment, capture_output=True, text=True, check=False,
+    )
+    if expected is None:
+        assert completed.returncode != 0
+        assert not log.exists()
+        return
+    assert completed.returncode == 0, completed.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    runner = next(call for call in calls if call[:1] == ["run"]
+                  and any(argument.endswith("-test") for argument in call))
+    assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"
+    assert '--group "$ASTRAL_GATE_GROUP"' in runner[-1]
+    assert "/qualification-policy/scripts/run_backend_web_tests.py" in runner[-1]
 
 
 @pytest.mark.parametrize("raise_inside", [False, True])

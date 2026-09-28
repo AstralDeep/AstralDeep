@@ -33,6 +33,8 @@ MAX_SOURCE_LINES = 1_000_000
 MAX_TOTAL_OBSERVATIONS = 1_000_000
 MAX_SUBRANGES_PER_LINE = 10_000
 MAX_EXECUTION_COUNT = (1 << 63) - 1
+# xccov prints discarded subrange counters as unsigned 64-bit values that can wrap.
+MAX_SUBRANGE_INTEGER = (1 << 64) - 1
 COMMAND_TIMEOUT_SECONDS = 120
 COMMAND_STOP_TIMEOUT_SECONDS = 2
 EXPORT_TIMEOUT_SECONDS = 15 * 60
@@ -635,20 +637,24 @@ def _integer(value: Any, *, label: str) -> int:
     return value
 
 
-def _validate_subranges(value: Any) -> None:
+def _validate_subranges(value: Any, *, location: str) -> None:
     if not isinstance(value, list) or len(value) > MAX_SUBRANGES_PER_LINE:
-        raise ExportError("invalid_observation", "xccov subranges are invalid")
+        raise ExportError("invalid_observation", f"xccov subranges at {location} are invalid")
     for item in value:
         if not isinstance(item, Mapping) or set(item) != {
             "column",
             "executionCount",
             "length",
         }:
-            raise ExportError("invalid_observation", "xccov subrange has an invalid shape")
+            raise ExportError(
+                "invalid_observation", f"xccov subrange at {location} has an invalid shape"
+            )
         for key in ("column", "executionCount", "length"):
-            number = _integer(item.get(key), label=f"subrange {key}")
-            if number > MAX_EXECUTION_COUNT:
-                raise ExportError("invalid_observation", "xccov subrange exceeds its bound")
+            label = f"subrange {key} at {location}"
+            if _integer(item[key], label=label) > MAX_SUBRANGE_INTEGER:
+                raise ExportError(
+                    "invalid_observation", f"{label} exceeds the unsigned 64-bit bound"
+                )
 
 
 def _normalize_observations(
@@ -685,15 +691,20 @@ def _normalize_observations(
             raise ExportError("invalid_observation", "xccov lines must be positive and unique")
         seen_lines.add(line)
         observation: dict[str, Any] = {"line": line, "isExecutable": executable}
+        location = f"{queried_path} line {line}"
         if "subranges" in item:
-            _validate_subranges(item["subranges"])
+            _validate_subranges(item["subranges"], location=location)
         if executable:
-            count = _integer(item.get("executionCount"), label="executionCount")
+            label = f"executionCount at {location}"
+            count = _integer(item.get("executionCount"), label=label)
             if count > MAX_EXECUTION_COUNT:
-                raise ExportError("invalid_observation", "execution count exceeds its bound")
+                raise ExportError("invalid_observation", f"{label} exceeds its bound")
             observation["executionCount"] = count
         elif "executionCount" in item:
-            raise ExportError("invalid_observation", "non-executable line has an execution count")
+            raise ExportError(
+                "invalid_observation",
+                f"non-executable line has an execution count at {location}",
+            )
         normalized.append(observation)
     normalized.sort(key=lambda item: item["line"])
     maximum_observed = normalized[-1]["line"]

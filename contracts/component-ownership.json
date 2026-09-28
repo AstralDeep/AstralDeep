@@ -271,12 +271,6 @@
     },
     {
       "repository": "astraldeep",
-      "path": "backend/qual_audit/database.py",
-      "upstreamOwner": "astralplane",
-      "rule": "Deep-owned qualification workflow facade over typed AstralPlane quality-audit records and chain verification; no SQL, driver access, schema DDL, or durable repository implementation."
-    },
-    {
-      "repository": "astraldeep",
       "path": "backend/scheduler/store.py",
       "upstreamOwner": "astralplane",
       "rule": "Deep-owned scheduling, admission, and effect policy adapter over typed AstralPlane scheduler repositories; no SQL, driver access, schema DDL, or durable repository implementation."

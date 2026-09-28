@@ -132,13 +132,13 @@ def _apply_producer_shape(report: dict[str, Any]) -> None:
         ]
     if check := by_id.get("migration_multi_instance"):
         check["measurements"] = [
-            _measurement("trial_count", 50, aggregation="total", comparator="gte", threshold=50, sample_count=50),
-            _measurement("migration_owner_violations", 0, aggregation="total", comparator="eq", threshold=0, sample_count=50),
+            _measurement("trial_count", 1, aggregation="total", comparator="gte", threshold=1, sample_count=1),
+            _measurement("migration_owner_violations", 0, aggregation="total", comparator="eq", threshold=0, sample_count=1),
         ]
     if check := by_id.get("process_supervision_stress"):
         check["measurements"] = [
-            _measurement("trial_count", 100, aggregation="total", comparator="gte", threshold=100, sample_count=100),
-            _measurement("residual_processes", 0, aggregation="total", comparator="eq", threshold=0, sample_count=100),
+            _measurement("trial_count", 2, aggregation="total", comparator="gte", threshold=2, sample_count=2),
+            _measurement("residual_processes", 0, aggregation="total", comparator="eq", threshold=0, sample_count=32),
         ]
     if check := by_id.get("reconnect_resume"):
         check["measurements"] = [

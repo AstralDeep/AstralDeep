@@ -111,16 +111,19 @@ def test_projection_ci_owns_active_voice_contract_windows_and_web_checks() -> No
     workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
 
     assert "if: ${{ false }}" not in workflow
-    assert "python:" in workflow
-    assert "web:" in workflow
-    assert "windows:" in workflow
+    owner_jobs = ("python", "web", "windows-tests", "windows-package")
+    for owner_job in owner_jobs:
+        assert f"\n  {owner_job}:\n" in workflow
     assert "required:" in workflow
     assert "--require-hashes" in workflow
-    assert r"python -m pytest windows-client\tests -q" in workflow
+    windows_tests = workflow.split("\n  windows-tests:\n", 1)[1].split(
+        "\n  windows-package:\n", 1
+    )[0]
+    assert r"python -m pytest windows-client\tests -q" in windows_tests
     assert "tests/voice-conversation-065.spec.js" in workflow
     required = workflow.split("\n  required:", 1)[1]
-    for owner_job in ("python", "web", "windows"):
-        assert owner_job in required
+    assert f"needs: [{', '.join(owner_jobs)}]" in required
+    for owner_job in owner_jobs:
         assert f"needs.{owner_job}.result }}}}' == 'success'" in required
 
 

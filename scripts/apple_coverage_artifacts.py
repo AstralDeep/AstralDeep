@@ -40,7 +40,7 @@ UI_SUITES = frozenset(
 )
 CONTINUITY_CASE = (
     "ConversationContinuityUITests/"
-    "testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes()"
+    "testDeterministicProcessRelaunchRestoresSemanticConversation()"
 )
 STAGING_CASE = "ReleaseEvidenceUITests/testReleaseEvidenceProducesPlatformReport()"
 

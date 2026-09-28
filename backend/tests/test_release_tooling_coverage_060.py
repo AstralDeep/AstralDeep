@@ -70,6 +70,7 @@ def test_changed_coverage_cli_exposes_every_platform_report_partition() -> None:
         "--macos",
         "--watchos",
         "--coverage-mode",
+        "--empty-diff",
         "--base-sha",
         "--candidate-sha",
         "--event-name",

@@ -1603,6 +1603,356 @@ def test_unexpected_empty_executable_selection_fails(
     assert failure.value.code == "unexpected_empty_executable_diff"
 
 
+def _deep_owner_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "deep"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "coverage@example.invalid")
+    _git(repo, "config", "user.name", "Coverage Fixture")
+    for relative in (
+        "backend/service.py",
+        "backend/other.py",
+        "backend/voice_agent/worker.py",
+        "scripts/tool.py",
+    ):
+        source = repo / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("first = 1\nsecond = 2\nthird = 3\n", encoding="utf-8")
+    composition = repo / "config" / "astral-composition.json"
+    composition.parent.mkdir()
+    composition.write_text('{"components": {}}\n', encoding="utf-8")
+    return repo, _commit(repo, "base")
+
+
+def _repin_composition(repo: Path, base: str) -> str:
+    (repo / "config" / "astral-composition.json").write_text(
+        '{"components": {"astral-primitives": {}}}\n', encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{base},components/AstralPrimitives",
+    )
+    _git(repo, "commit", "-m", "repin")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _deep_owner_reports(
+    tmp_path: Path,
+    backend: dict[str, dict[int, int]],
+    *,
+    tooling: str = "scripts/tool.py",
+) -> dict[str, Path]:
+    return {
+        "--backend-python": _cobertura_many(tmp_path / "backend.xml", backend),
+        "--voice-worker-python": _cobertura(
+            tmp_path / "voice.xml", "backend/voice_agent/worker.py", {1: 1, 2: 1, 3: 1}
+        ),
+        "--tooling-python": _cobertura(tmp_path / "tooling.xml", tooling, {1: 1, 2: 1, 3: 1}),
+    }
+
+
+def _deep_owner_decision(
+    repo: Path,
+    base: str,
+    candidate: str,
+    reports: dict[str, Path],
+    output: Path,
+    *policy: str,
+    mode: str = "strict",
+) -> tuple[int, dict[str, object]]:
+    arguments = [
+        "--repo",
+        str(repo),
+        "--event-name",
+        "manual",
+        "--base-sha",
+        base,
+        "--candidate-sha",
+        candidate,
+        "--repository-profile",
+        "deep",
+        "--coverage-mode",
+        mode,
+        "--fail-under",
+        "90",
+        "--output",
+        str(output),
+        *policy,
+    ]
+    for flag, report in reports.items():
+        arguments.extend((flag, str(report)))
+    exit_code = collector.main(arguments)
+    return exit_code, json.loads(output.read_text(encoding="utf-8"))
+
+
+REPORT_SLOTS = {
+    "--backend-python": ("backend", "backend_python"),
+    "--voice-worker-python": ("voice_worker", "backend_python"),
+    "--tooling-python": ("tooling", "tooling_python"),
+    "--projection-python": ("projection_python", "projection_python"),
+    "--javascript": ("javascript", "javascript"),
+}
+
+
+def _slot_identities(reports: dict[str, Path]) -> dict[str, object]:
+    identities: dict[str, object] = {}
+    for flag, report in reports.items():
+        slot, target = REPORT_SLOTS[flag]
+        identities[slot] = {
+            "path": report.as_posix(),
+            **collector.coverage_report_identity(
+                report.read_bytes(), target, producer_key=slot
+            ),
+            "producer_slot": slot,
+        }
+    return identities
+
+
+def _not_applicable(
+    base: str,
+    candidate: str,
+    *,
+    profile: str,
+    changed: list[str],
+    reports: dict[str, Path],
+    contributions: dict[str, int],
+    maintained: tuple[str, ...] = (),
+    deferred: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "not-applicable",
+        "reason": "no_measurable_changed_lines",
+        "repository_profile": profile,
+        "base_sha": base,
+        "candidate_sha": candidate,
+        "fail_under": 90.0,
+        "selection": {
+            "event_name": "manual",
+            "base_source": "manual.base_sha",
+            "candidate_source": "manual.candidate_sha",
+        },
+        "diff": {
+            "changed_paths": changed,
+            "maintained_paths": list(maintained),
+            "deferred_maintained_paths": list(deferred),
+        },
+        "producer_slots": _slot_identities(reports),
+        "producer_contributions": contributions,
+    }
+
+
+@pytest.mark.parametrize("change", ["gitlink-and-composition", "non-executable-lines"])
+def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
+    tmp_path: Path, change: str
+) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    backend = {
+        "backend/service.py": {1: 1, 2: 1, 3: 1},
+        "backend/other.py": {1: 1, 2: 1, 3: 1},
+    }
+    if change == "gitlink-and-composition":
+        candidate = _repin_composition(repo, base)
+        changed = ["components/AstralPrimitives", "config/astral-composition.json"]
+        maintained: tuple[str, ...] = ()
+    else:
+        (repo / "backend" / "service.py").write_text(
+            "# rationale\nfirst = 1\nsecond = 2\nthird = 3\n", encoding="utf-8"
+        )
+        candidate = _commit(repo, "comment")
+        backend["backend/service.py"] = {2: 1, 3: 1, 4: 1}
+        changed = ["backend/service.py"]
+        maintained = ("backend/service.py",)
+    reports = _deep_owner_reports(tmp_path, backend)
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, reports, tmp_path / "decision.json",
+        "--empty-diff", "not-applicable",
+    )
+    assert exit_code == 0
+    assert document == _not_applicable(
+        base,
+        candidate,
+        profile="deep",
+        changed=changed,
+        maintained=maintained,
+        reports=reports,
+        contributions={"backend": 6, "voice_worker": 3, "tooling": 3},
+    )
+
+    for policy in ((), ("--empty-diff", "error")):
+        exit_code, document = _deep_owner_decision(
+            repo, base, candidate, reports, tmp_path / "default.json", *policy
+        )
+        assert exit_code == 1
+        assert document["status"] == "error"
+        assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+
+@pytest.mark.parametrize(
+    "relative,deferred",
+    [("apple-clients/Scripts/x.py", False), ("windows-client/runtime.py", True)],
+)
+def test_opt_in_policy_records_unmeasured_projection_web_paths_as_not_applicable(
+    tmp_path: Path, relative: str, deferred: bool
+) -> None:
+    repo, original, _reports, slots = _projection_strict_case(tmp_path)
+    changed = repo / relative
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text("value = 1\n", encoding="utf-8")
+    candidate = _commit(repo, "unmeasured or deferred path")
+    output = tmp_path / "decision.json"
+    reports = {
+        "--projection-python": slots["projection_python"],
+        "--javascript": slots["javascript"],
+    }
+    arguments = [
+        "--repo",
+        str(repo),
+        "--event-name",
+        "manual",
+        "--base-sha",
+        original.candidate_sha,
+        "--candidate-sha",
+        candidate,
+        "--repository-profile",
+        "projection-web",
+        "--coverage-mode",
+        "strict",
+        "--fail-under",
+        "90",
+        "--output",
+        str(output),
+    ]
+    for flag, report in reports.items():
+        arguments.extend((flag, str(report)))
+    composed = f"components/AstralProjection/{relative}"
+
+    assert collector.main([*arguments, "--empty-diff", "not-applicable"]) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == _not_applicable(
+        original.candidate_sha,
+        candidate,
+        profile="projection-web",
+        changed=[composed],
+        deferred=(composed,) if deferred else (),
+        reports=reports,
+        contributions={"projection_python": 5, "javascript": 1},
+    )
+
+    assert collector.main(arguments) == 1
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+
+def test_not_applicable_policy_requires_strict_coverage_mode(tmp_path: Path) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    candidate = _repin_composition(repo, base)
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, {}, tmp_path / "partial.json",
+        "--empty-diff", "not-applicable", mode="partial",
+    )
+    assert exit_code == 1
+    assert document["status"] == "error"
+    assert document["error"] == {
+        "code": "invalid_empty_diff_policy",
+        "message": "the not-applicable empty-diff policy requires strict coverage mode",
+    }
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, {}, tmp_path / "default.json", mode="partial"
+    )
+    assert exit_code == 1
+    assert document["error"]["code"] == "unexpected_empty_executable_diff"
+
+    with pytest.raises(collector.CoveragePolicyError) as rejected:
+        collector.evaluate_changed_coverage(
+            tmp_path / "absent",
+            _selection(repo, base, candidate),
+            {},
+            empty_diff="not-applicable",
+        )
+    assert rejected.value.code == "invalid_empty_diff_policy"
+
+
+@pytest.mark.parametrize(
+    "condition,code",
+    [
+        ("uncovered", None),
+        ("unmapped-report", "producer_unmapped_changed_file"),
+        ("missing-report", "missing_report"),
+        ("missing-slot", "incomplete_report_matrix"),
+        ("unproductive-report", "unproductive_report"),
+    ],
+)
+def test_opt_in_policy_never_relaxes_measurable_or_incomplete_evidence(
+    tmp_path: Path, condition: str, code: str | None
+) -> None:
+    repo, base = _deep_owner_repo(tmp_path)
+    backend = {
+        "backend/service.py": {1: 1, 2: 0, 3: 1},
+        "backend/other.py": {1: 1, 2: 1, 3: 1},
+    }
+    if condition in {"uncovered", "unmapped-report"}:
+        (repo / "backend" / "service.py").write_text(
+            "first = 1\nsecond = 20\nthird = 3\n", encoding="utf-8"
+        )
+        candidate = _commit(repo, "measurable change")
+    else:
+        candidate = _repin_composition(repo, base)
+    if condition == "unmapped-report":
+        backend.pop("backend/service.py")
+    reports = _deep_owner_reports(
+        tmp_path,
+        backend,
+        tooling="scripts/absent.py" if condition == "unproductive-report" else "scripts/tool.py",
+    )
+    if condition == "missing-report":
+        reports["--backend-python"] = tmp_path / "absent.xml"
+    if condition == "missing-slot":
+        reports.pop("--voice-worker-python")
+
+    exit_code, document = _deep_owner_decision(
+        repo, base, candidate, reports, tmp_path / "decision.json",
+        "--empty-diff", "not-applicable",
+    )
+
+    assert exit_code == 1
+    if code is None:
+        assert document["status"] == "fail"
+        assert document["languages"]["python"]["percent"] == 0
+        assert {failure["code"] for failure in document["failures"]} == {
+            "coverage_below_threshold"
+        }
+    else:
+        assert document["status"] == "error"
+        assert document["error"]["code"] == code
+
+
+def test_empty_diff_policy_rejects_unknown_values(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as failure:
+        collector._parser().parse_args(
+            ["--empty-diff", "pass", "--output", str(tmp_path / "decision.json")]
+        )
+    assert failure.value.code == 2
+    assert collector._parser().parse_args(
+        ["--output", str(tmp_path / "decision.json")]
+    ).empty_diff == "error"
+
+    selection = collector.RevisionSelection(
+        "manual", "a" * 40, "b" * 40, "manual.base_sha", "manual.candidate_sha"
+    )
+    with pytest.raises(collector.CoveragePolicyError) as rejected:
+        collector.evaluate_changed_coverage(
+            tmp_path, selection, {}, empty_diff="pass"
+        )
+    assert rejected.value.code == "invalid_empty_diff_policy"
+
+
 def test_per_language_gate_cannot_be_hidden_by_combined_coverage(
     tmp_path: Path,
 ) -> None:
@@ -2159,6 +2509,137 @@ def test_xccov_exporter_rejects_malformed_or_partial_per_file_json(
     assert failure.value.code == expected
 
 
+XCCOV_ARCHIVE_SOURCE = (
+    "/checkout/components/AstralProjection/apple-clients/AstralApp/AstralApp/Example.swift"
+)
+
+
+def _xccov_line_document(*, subranges: object = None, count: int = 7) -> bytes:
+    row: dict[str, object] = {"line": 2, "isExecutable": True, "executionCount": count}
+    if subranges is not None:
+        row["subranges"] = subranges
+    return json.dumps(
+        {XCCOV_ARCHIVE_SOURCE: [{"line": 1, "isExecutable": False}, row]}
+    ).encode()
+
+
+@pytest.mark.parametrize("field", ["column", "executionCount", "length"])
+def test_xccov_unsigned_64_bit_subranges_leave_exported_lines_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = _local_archive_source(repo, sources["app"])
+    rows: list[dict[str, object]] = [
+        {"line": 1, "isExecutable": False},
+        {"line": 2, "isExecutable": True, "executionCount": 7},
+    ]
+    _install_fake_xcrun(tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: rows}})
+    plain = repo / "build" / "plain.json"
+    xccov_exporter.export_xccov(repo=repo, xcresult=bundle, output=plain, platform="ios")
+
+    rows[-1]["subranges"] = [
+        {"column": 18, "executionCount": 0, "length": 0, field: 2**64 - 1}
+    ]
+    _install_fake_xcrun(tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: rows}})
+    wrapped = repo / "build" / "wrapped.json"
+    xccov_exporter.export_xccov(repo=repo, xcresult=bundle, output=wrapped, platform="ios")
+
+    assert wrapped.read_bytes() == plain.read_bytes()
+    assert json.loads(wrapped.read_text(encoding="utf-8")) == {
+        sources["app"]: [
+            {"line": 1, "isExecutable": False},
+            {"line": 2, "isExecutable": True, "executionCount": 7},
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("executionCount", 2**64),
+        ("column", 2**64),
+        ("length", 2**64),
+        ("executionCount", -1),
+        ("column", 1.5),
+        ("length", "7"),
+        ("executionCount", True),
+        ("column", None),
+    ],
+)
+def test_xccov_subrange_integers_outside_unsigned_64_bits_are_refused_where_they_occur(
+    field: str, value: object
+) -> None:
+    subrange = {"column": 18, "executionCount": 0, "length": 0, field: value}
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(subranges=[subrange]),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert f"subrange {field} at {XCCOV_ARCHIVE_SOURCE} line 2" in refused.value.message
+
+
+def test_xccov_line_execution_counts_keep_their_signed_64_bit_bound() -> None:
+    accepted = xccov_exporter._normalize_observations(
+        _xccov_line_document(count=2**63 - 1),
+        queried_path=XCCOV_ARCHIVE_SOURCE,
+        maximum_lines=3,
+    )
+    assert accepted[-1]["executionCount"] == 2**63 - 1
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(count=2**63),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert refused.value.message == (
+        f"executionCount at {XCCOV_ARCHIVE_SOURCE} line 2 exceeds its bound"
+    )
+
+
+@pytest.mark.parametrize(
+    "subranges",
+    [
+        {"column": 18, "executionCount": 0, "length": 0},
+        [{"column": 18, "executionCount": 0, "length": 0}]
+        * (xccov_exporter.MAX_SUBRANGES_PER_LINE + 1),
+        [[18, 0, 0]],
+        [{"column": 18, "executionCount": 0}],
+        [{"column": 18, "executionCount": 0, "length": 0, "count": 0}],
+    ],
+)
+def test_xccov_malformed_subranges_are_refused_where_they_occur(subranges: object) -> None:
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(subranges=subranges),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert f"{XCCOV_ARCHIVE_SOURCE} line 2" in refused.value.message
+
+
+def test_xccov_non_executable_line_with_a_count_is_refused_where_it_occurs() -> None:
+    document = json.dumps(
+        {
+            XCCOV_ARCHIVE_SOURCE: [
+                {"line": 1, "isExecutable": False},
+                {"line": 2, "isExecutable": False, "executionCount": 3},
+            ]
+        }
+    ).encode()
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            document, queried_path=XCCOV_ARCHIVE_SOURCE, maximum_lines=3
+        )
+    assert refused.value.code == "invalid_observation"
+    assert refused.value.message == (
+        f"non-executable line has an execution count at {XCCOV_ARCHIVE_SOURCE} line 2"
+    )
+
+
 @pytest.mark.parametrize(
     "file_list",
     [
@@ -2421,16 +2902,21 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
             xccov_exporter._integer(value, label="fixture")
     for value in ("not-a-list", [{}] * (xccov_exporter.MAX_SUBRANGES_PER_LINE + 1)):
         with pytest.raises(xccov_exporter.ExportError):
-            xccov_exporter._validate_subranges(value)
+            xccov_exporter._validate_subranges(value, location="source line 1")
+    xccov_exporter._validate_subranges(
+        [
+            {
+                "column": 1,
+                "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
+                "length": 1,
+            }
+        ],
+        location="source line 1",
+    )
     with pytest.raises(xccov_exporter.ExportError):
         xccov_exporter._validate_subranges(
-            [
-                {
-                    "column": 1,
-                    "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
-                    "length": 1,
-                }
-            ]
+            [{"column": 1, "executionCount": 2**64, "length": 1}],
+            location="source line 1",
         )
     with pytest.raises(xccov_exporter.ExportError):
         xccov_exporter._normalize_observations(

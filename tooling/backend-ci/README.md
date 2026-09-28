@@ -7,9 +7,9 @@ client protocol dispositions, data isolation and LETS tests remain in scope.
 
 The required Deep CI aggregate now includes:
 
-- Python 3.11 tests from every backend `tests/` and `qual_audit/suites/`
-  directory, the explicitly named concurrency probes, and release-tooling
-  tests. Suites run in separate processes to avoid module/conftest collisions.
+- Python 3.11 tests from every backend `tests/` or `suites/` directory, the
+  explicitly named concurrency probes, and release-tooling tests. Suites run
+  in separate processes to avoid module/conftest collisions.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
   complete PostgreSQL suite. The test producer refuses absent/mismatched
   database URLs and requires an `ad_gate_` database plus an explicit isolation
@@ -21,7 +21,10 @@ The required Deep CI aggregate now includes:
   no-secrets production boot with exit 78.
 - Locked voice-worker image tests, with no conditional green no-op.
 - At least 90% changed Python coverage, against immutable event identities.
-  Empty/self comparisons fail closed. Manual qualification requires the
+  Self comparisons fail closed. CI passes `--empty-diff not-applicable`, so an
+  immutable diff with no measurable changed lines is recorded as an explicit
+  `not-applicable` decision after the same report validation; release tooling
+  omits the flag and still fails closed on it. Manual qualification requires the
   immutable reviewed PR base via `base_sha`; this maintenance branch started
   at `b3ae2dc549928aeaee518ad60c9428790f67fc05`. Component comparisons use that
   base's exact gitlinks. The deployed baseline
@@ -34,13 +37,21 @@ The required Deep CI aggregate now includes:
   records paused native paths; it does not change the complete Projection
   release profile. Responsive interactions run in Chromium, Firefox and WebKit.
 
-The complete-root diagnostic reached 32% after 35 minutes on this machine.
-An isolated `EXPLAIN ANALYZE` attributed about 366 of 480 milliseconds per
-schema verification to repeated dependency-catalog scans. The CI test job has
-a four-hour budget and each suite a three-hour timeout; the Plane job has a
-three-hour budget. These bounds are based on partial diagnostics; a complete
-run's duration has not yet been established. A timeout fails the gate and retains
-the partial log; it never turns an unfinished suite into a pass.
+Every CI job has at most a 30-minute budget, and the suite runner gives each
+suite a 30-minute (1800 s) timeout. Protected qualification runs every suite
+under the same 1800 s per-suite cap, so the suite pruning and fixture work
+that brings each suite within it must land with this change. The backend
+suites run as a three-job matrix of whole-suite groups: `tests` is the
+`backend/tests` suite, `persistent_agents` is the
+`backend/persistent_agents/tests` suite, and `modules` is every other backend
+suite, both concurrency probes and the tooling suite. The changed-coverage job
+merges the three groups' raw coverage data with
+`scripts/merge_backend_web_coverage.py` into the same `backend-python.xml` and
+`tooling-python.xml` one complete run writes. The merge refuses group evidence
+that failed, comes from another checkout, runner or reporter, or does not give
+each group exactly its assigned suites of the complete suite plan. A timeout
+fails the gate and retains the partial log; it never turns an unfinished suite
+into a pass.
 
 `requirements.lock.txt` is CI-only. Its validator versions match the existing
 voice-contract validator's reviewed versions. Neither this lock nor the test
@@ -61,6 +72,10 @@ The shell gate creates its own Docker namespace, PostgreSQL server, test and
 smoke databases and synthetic keys, and removes its containers on exit. It
 does not read `.env`, publish ports, or mount live database/blob directories.
 Use a clean checkout: tests may create fixture files under their source tree.
+Set `ASTRAL_GATE_GROUP` to `tests`, `persistent_agents` or `modules` to run one
+whole-suite group; the default, `all`, runs every suite. Protected
+qualification clears any inherited gate settings, so it always runs every suite
+in one pass.
 
 For a separately verified policy checkout, set `ASTRAL_GATE_POLICY_ROOT` to
 that checkout and keep the working directory at the candidate checkout. The

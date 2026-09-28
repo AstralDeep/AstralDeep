@@ -158,6 +158,12 @@ def test_ci_uses_approved_hash_locks_for_every_python_test_tool_install() -> Non
         "-r tooling/backend-ci/requirements.lock.txt" in release
     )
     assert "cache-dependency-path: tooling/backend-ci/requirements.lock.txt" in release
+    merged = _workflow_job(workflow, "backend-changed-coverage")
+    assert (
+        "python -m pip install --require-hashes "
+        "-r tooling/backend-ci/requirements.lock.txt" in merged
+    )
+    assert "cache-dependency-path: tooling/backend-ci/requirements.lock.txt" in merged
     assert '"$(cat build/backend-web/image-id.txt)" -euc' in release
     assert 'org.opencontainers.image.revision' in release
     assert '= "$(git rev-parse HEAD)"' in release
@@ -242,6 +248,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "extract_release_artifact.py",
         "initialize_backend_web_services.py",
         "install_local_components.py",
+        "merge_backend_web_coverage.py",
         "prepare_release_evidence.py",
         "probe_backend_web_auth.py",
         "probe_backend_web_functional.py",
@@ -290,6 +297,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_backend_web_qualification.py",
         "scripts/tests/test_backend_web_services.py",
         "scripts/tests/test_backend_web_state.py",
+        "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
         "scripts/tests/test_retire_restored_sessions.py",
         "scripts/tests/test_verify_component_ownership.py",

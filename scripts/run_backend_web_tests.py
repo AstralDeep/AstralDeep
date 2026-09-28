@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Runs every backend/module test suite in isolated processes against a
-caller-provisioned disposable PostgreSQL server and writes JUnit results; a CI test
-producer only, not a production-readiness decision.
+"""Runs every backend/module test suite, or one whole-suite group of them, in isolated
+processes against a caller-provisioned disposable PostgreSQL server and writes JUnit results
+and coverage reports; a CI test producer only, not a production-readiness decision.
+merge_backend_web_coverage.py reuses its plan and report writer for the groups.
 """
 
 from __future__ import annotations
@@ -19,6 +20,9 @@ from uuid import uuid4
 
 
 POLICY_ROOT = Path(__file__).resolve().parents[1]
+DEDICATED_GROUP_SUITES = {"tests": "backend-tests", "persistent_agents": "backend-persistent_agents-tests"}
+GROUPS = ("all", *DEDICATED_GROUP_SUITES, "modules")
+SUITE_TIMEOUT_SECONDS = 1800
 
 
 def source_identity(root: Path) -> str:
@@ -45,6 +49,17 @@ def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
         commands.append((root / "backend", f"tests/perf/{filename}", f"perf-{filename}"))
     commands.append((root, "scripts/tests", "tooling"))
     return commands
+
+
+def group_commands(commands: list[tuple[Path, str, str]], group: str) -> list[tuple[Path, str, str]]:
+    if group == "all":
+        return commands
+    if group in DEDICATED_GROUP_SUITES:
+        return [command for command in commands if command[2] == DEDICATED_GROUP_SUITES[group]]
+    if group == "modules":
+        dedicated = set(DEDICATED_GROUP_SUITES.values())
+        return [command for command in commands if command[2] not in dedicated]
+    raise ValueError(f"unknown suite group {group!r}")
 
 
 def suite_paths(root: Path) -> list[Path]:
@@ -156,13 +171,25 @@ def isolated_suite_database(environ: dict[str, str]):
             connection.close()
 
 
-def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
+def write_coverage_reports(root: Path, output: Path, environ: dict[str, str]) -> bool:
+    written = True
+    for domain, source in (("backend", "backend"), ("tooling", "scripts")):
+        coverage = subprocess.run(
+            [sys.executable, "-m", "coverage", "xml", f"--include={root / source}/*",
+             "-o", str(output / f"{domain}-python.xml")],
+            cwd=root, env=environ, check=False,
+        )
+        written &= coverage.returncode == 0
+    return written
+
+
+def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group: str = "all") -> int:
     if sys.version_info[:2] != (3, 11):
         raise ValueError("backend release tests require Python 3.11")
+    commands = group_commands(suite_commands(root), group)
     environ = dict(os.environ)
     require_isolated_postgres(environ)
     source_commit = source_identity(root)
-    commands = suite_commands(root)
     output.mkdir(parents=True, exist_ok=True)
     environ.update({
         "PYTHON_DOTENV_DISABLED": "1",
@@ -176,7 +203,7 @@ def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
     })
     subprocess.run([sys.executable, "-m", "coverage", "erase"], env=environ, check=True)
     results = []
-    plan = {"schema_version": 1, "source_commit": source_commit,
+    plan = {"schema_version": 1, "group": group, "source_commit": source_commit,
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "reporter_sha256": hashlib.sha256((POLICY_ROOT / "scripts/backend_web_test_reporter.py").read_bytes()).hexdigest(),
             "suites": [{"suite": name, "cwd": cwd.relative_to(root).as_posix(), "path": suite}
@@ -224,18 +251,11 @@ def run(root: Path, output: Path, *, timeout: int = 10800) -> int:
         results.append(result)
         print(f"{name}: {result['status']}; {result.get('tests', 0)} collected; "
               f"{len(result.get('skipped', []))} skipped", flush=True)
-    coverage_failed = False
-    for domain, source in (("backend", "backend"), ("tooling", "scripts")):
-        coverage = subprocess.run(
-            [sys.executable, "-m", "coverage", "xml", f"--include={root / source}/*",
-             "-o", str(output / f"{domain}-python.xml")],
-            cwd=root, env=environ, check=False,
-        )
-        coverage_failed |= coverage.returncode != 0
-    failed = coverage_failed or any(item["status"] != "pass" for item in results)
+    coverage_written = write_coverage_reports(root, output, environ)
+    failed = not coverage_written or any(item["status"] != "pass" for item in results)
     document = {
         "scope": "backend-web-ci", "status": "fail" if failed else "pass",
-        "source_commit": source_commit,
+        "group": group, "source_commit": source_commit,
         "production_qualified": False,
         "separate_required_gates": ["projection-python-web", "worker-image",
                                     "protected-real-auth-lets-staging"],
@@ -250,8 +270,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--group", choices=GROUPS, default="all")
     args = parser.parse_args()
-    return run(args.root.resolve(), args.output.resolve())
+    return run(args.root.resolve(), args.output.resolve(), group=args.group)
 
 
 if __name__ == "__main__":

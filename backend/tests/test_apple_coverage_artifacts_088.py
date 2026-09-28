@@ -747,6 +747,26 @@ def test_test_tree_refuses_missing_wrong_or_ambiguous_observations(change):
         helper.observation_cases(summary, tests, "ui")
 
 
+def test_ui_observation_requires_the_single_relaunch_continuity_proof():
+    assert helper.CONTINUITY_CASE == (
+        "ConversationContinuityUITests/"
+        "testDeterministicProcessRelaunchRestoresSemanticConversation()"
+    )
+    summary, tests = observation("ui")
+    assert helper.CONTINUITY_CASE in helper.observation_cases(summary, tests, "ui")
+    suites = tests["testNodes"][0]["children"][0]["children"]
+    continuity = next(
+        suite for suite in suites if suite["name"] == "ConversationContinuityUITests"
+    )
+    retired = "testDeterministicProcessRelaunchRestoresSemanticConversationTwentyTimes()"
+    case = continuity["children"][0]
+    case["name"] = retired
+    case["nodeIdentifier"] = f"ConversationContinuityUITests/{retired}"
+    case["nodeIdentifierURL"] = f"{continuity['nodeIdentifierURL']}/{retired[:-2]}"
+    with pytest.raises(helper.ArtifactError):
+        helper.observation_cases(summary, tests, "ui")
+
+
 @pytest.mark.parametrize("level", ["plan", "bundle", "suite", "case"])
 @pytest.mark.parametrize(
     "status", [None, "Failed", "Skipped", "Expected Failure", "unknown"]
