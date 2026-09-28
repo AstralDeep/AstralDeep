@@ -82,17 +82,18 @@ def test_locator_is_bound_before_registration_and_survives_disconnect(
 def test_only_four_definitive_locator_clear_reasons_are_accepted(
     client_source: str,
 ) -> None:
-    clear = _normalized(_function(client_source, "clearActiveChatLocator"))
-    assert all(
-        reason in clear
-        for reason in (
-            "explicit_new_chat",
-            "definitive_sign_out",
-            "account_switch",
-            "confirmed_deletion",
-        )
+    definition = re.search(
+        r"var ALLOWED_LOCATOR_CLEAR_REASONS = Object\.freeze\(\{([^}]*)\}\);", client_source
     )
-    assert "ALLOWED_LOCATOR_CLEAR_REASONS" in clear
+    assert definition is not None
+    assert set(re.findall(r"([a-z_]+): true", definition.group(1))) == {
+        "explicit_new_chat",
+        "definitive_sign_out",
+        "account_switch",
+        "confirmed_deletion",
+    }
+    clear = _normalized(_function(client_source, "clearActiveChatLocator"))
+    assert "if (!ALLOWED_LOCATOR_CLEAR_REASONS[reason]) return false;" in clear
     assert "localStorage.removeItem" in clear
 
 
@@ -105,11 +106,9 @@ def test_shared_tab_account_switch_cannot_reuse_prior_principal_token(
     assert expression.index("window.__ASTRAL_TOKEN__") < expression.index(
         "sessionStorage.getItem(TOKEN_KEY)"
     )
-    logout_start = client_source.index(
-        "The local endpoint invalidates the server session"
-    )
-    logout_end = client_source.index("// ---- stacked-shell chrome", logout_start)
-    logout = client_source[logout_start:logout_end]
+    clear = 'clearActiveChatLocator("definitive_sign_out", activeChatId)'
+    logout_end = client_source.index(clear) + len(clear)
+    logout = client_source[client_source.rindex("accountSignedOut = true;", 0, logout_end) : logout_end]
     assert "sessionStorage.removeItem(TOKEN_KEY)" in logout
     assert "sessionStorage.removeItem(ACCOUNT_SESSION_KEY)" in logout
 

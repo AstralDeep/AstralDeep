@@ -89,7 +89,9 @@ def test_auth_required_case_refreshes_then_falls_back_to_login(client_js):
     assert "authRetried" in block
     assert "else { gotoLogin(); }" in block
     assert block.index("refreshToken(") < block.index("gotoLogin()")
-    assert 'type: "register_ui"' in block and "token: token" in block
+    assert "sendRegistration(true)" in block
+    registration = _norm(_js_function(client_js, "sendRegistration"))
+    assert 'type: "register_ui"' in registration and "token: token" in registration
 
 
 def test_gotologin_builds_next_from_current_location(client_js):
@@ -156,12 +158,11 @@ def test_register_ui_resumed_semantics(client_js):
         "serverResumed must derive from the shell-injected window.__ASTRAL_RESUMED__"
     )
     fn = _norm(_js_function(client_js, "connect"))
-    assert "resumed: firstConnect ? serverResumed : true" in fn, (
+    registration = "sendRegistration(firstConnect ? serverResumed : true);"
+    assert registration in fn, (
         "only the first register_ui of a page load may report resumed=false"
     )
-    assert fn.index("resumed: firstConnect ? serverResumed : true") < fn.index(
-        "firstConnect = false;"
-    )
+    assert fn.index(registration) < fn.index("firstConnect = false;")
 
 
 def test_chat_deleted_clears_canvas_when_active(client_js):
@@ -197,9 +198,9 @@ def test_full_shell_load_prefers_current_server_session_over_prior_tab_token(cli
 
 
 def test_definitive_sign_out_clears_cached_token_and_account_marker(client_js):
-    start = client_js.index("The local endpoint invalidates the server session")
-    end = client_js.index("// ---- stacked-shell chrome", start)
-    handler = client_js[start:end]
+    clear = 'clearActiveChatLocator("definitive_sign_out", activeChatId)'
+    end = client_js.index(clear) + len(clear)
+    handler = client_js[client_js.rindex("accountSignedOut = true;", 0, end) : end]
     assert "token = \"\"" in handler
     assert "sessionStorage.removeItem(TOKEN_KEY)" in handler
     assert "sessionStorage.removeItem(ACCOUNT_SESSION_KEY)" in handler
@@ -366,7 +367,7 @@ def test_author_only_browser_explicitly_ignores_host_control_frames(client_js):
         r'case "agent_host_inventory_reconciled":\s*'
         r'case "agent_host_registration_refused":\s*'
         r'case "agent_host_registered":\s*'
-        r'// host-only; the browser is author-only\s*'
-        r'case "system_config":'
+        r'(?:case "[a-z_]+":\s*)*'
+        r'break;'
     )
     assert no_op_cases.search(client_js)
