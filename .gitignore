@@ -43,6 +43,7 @@ docker_logs_fixes_known_remaining.md
 .codex/
 .kilocode/
 .specify/integrations/.cache/
+.specify/extensions/.cache/
 
 # General
 .DS_Store

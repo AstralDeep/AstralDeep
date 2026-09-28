@@ -15,12 +15,12 @@ Use `$ARGUMENTS` as the feature description. If the caller explicitly supplies `
 
 1. Inspect `git status --short --branch` and active work before mutation.
 2. Refresh `origin`, then inventory existing feature/spec numbers in the working tree and in every remote ref tree. A directory such as `specs/059-name` on `origin/058-other-work` reserves 059 even when no branch begins with 059. If remotes cannot be checked, require an explicit collision-checked `GIT_BRANCH_NAME` rather than guessing.
-3. Read `branch_numbering` from `.specify/extensions/git/git-config.yml`, then `.specify/init-options.json`; default to `sequential`.
+3. Resolve numbering from `branch_numbering` in `.specify/extensions/git/git-config.yml`, then `feature_numbering` in `.specify/init-options.json`, then its deprecated `branch_numbering`; default to `sequential`. An empty `branch_template` and `branch_prefix` in `git-config.yml` keep the `{number}-{slug}` branch shape.
 4. Generate a concise 2-4 word action-noun short name. When invoked by `$speckit-specify`, use the exact `GIT_BRANCH_NAME` and `SPECIFY_FEATURE_DIRECTORY` that its mandatory remote-tree preflight already reserved; do not allocate independently.
 5. Run exactly one platform-appropriate command:
-   - Bash sequential: `.specify/extensions/git/scripts/bash/create-new-feature.sh --json --short-name "<short-name>" "<description>"`
+   - Bash sequential: `.specify/extensions/git/scripts/bash/create-new-feature-branch.sh --json --short-name "<short-name>" "<description>"`
    - Bash timestamp: add `--timestamp`.
-   - PowerShell sequential: `.specify/extensions/git/scripts/powershell/create-new-feature.ps1 -Json -ShortName "<short-name>" "<description>"`
+   - PowerShell sequential: `.specify/extensions/git/scripts/powershell/create-new-feature-branch.ps1 -Json -ShortName "<short-name>" "<description>"`
    - PowerShell timestamp: add `-Timestamp`.
 6. Parse and report `BRANCH_NAME` and `FEATURE_NUM`. Never rerun the script for the same feature.
 
