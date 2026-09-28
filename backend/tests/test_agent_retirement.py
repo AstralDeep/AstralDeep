@@ -5,6 +5,7 @@ imports, and that orchestrator.py's retirement set covers every retired identity
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -28,14 +29,20 @@ def test_retired_agent_directories_are_gone():
 
 def test_no_backend_module_imports_removed_packages():
     removed_modules = {f"agents.{name}" for name in REMOVED_PACKAGES}
+    mention = re.compile(r"agents[\s\\]*\.[\s\\]*(?:"
+                         + "|".join(map(re.escape, REMOVED_PACKAGES)) + r")\b")
     offenders = []
     for py in BACKEND_DIR.rglob("*.py"):
         if any(part in SKIP_DIRS for part in py.parts):
             continue
         if py == Path(__file__).resolve():
             continue
+        source = py.read_text(encoding="utf-8", errors="replace")
+        # Parsing dominates the cost, and a file that never names a removed package cannot import it
+        if not mention.search(source):
+            continue
         try:
-            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
+            tree = ast.parse(source)
         except SyntaxError:
             continue
         for node in ast.walk(tree):

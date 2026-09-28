@@ -5,6 +5,7 @@ comments or docstrings.
 
 import ast
 import os
+import re
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,6 +24,9 @@ def _iter_py_files():
                 yield os.path.join(root, fn)
 
 
+MENTION = re.compile(r"shared[\s\\]*\.[\s\\]*primitives\b")
+
+
 def test_no_legacy_primitives_imports():
     offenders = []
     for path in _iter_py_files():
@@ -30,6 +34,9 @@ def test_no_legacy_primitives_imports():
             continue
         try:
             src = open(path, encoding="utf-8").read()
+            # Parsing dominates the cost, and a file that never names the module cannot import it
+            if not MENTION.search(src):
+                continue
             tree = ast.parse(src)
         except Exception:
             continue

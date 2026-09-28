@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from astralplane.async_runtime import AsyncPlaneRuntime
 
+from tests.helpers.database_waits import unbounded_request_execution_waits
 from tests.helpers.work_control_caller import current_control_caller
 from tests.test_request_session_authority_088 import signing_key as signing_key
 
@@ -200,7 +201,9 @@ async def test_accepted_replay_needs_no_new_audit_and_lost_ack_can_only_acknowle
 
 
 @pytest.mark.asyncio
-async def test_concurrent_duplicate_commits_only_one_control_and_audit(audited):
+async def test_concurrent_duplicate_commits_only_one_control_and_audit(audited, monkeypatch):
+    # The loser must wait for the winner's commit, not trip the 100 ms request-path lock bound
+    unbounded_request_execution_waits(monkeypatch)
     value = audited
     body = request(1)
     replies = await asyncio.gather(*(value.service.control("owner", value.caller.context.claims,

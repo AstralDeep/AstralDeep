@@ -24,6 +24,7 @@ from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
 from persistent_agents.tests.test_engine_postgres import plane as plane
 from tests.helpers.database_clock import expire_principal
+from tests.helpers.database_waits import unbounded_request_execution_waits
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_request_session_authority_088 import fixture as fixture
 from tests.test_request_session_authority_088 import request, signing_key as signing_key
@@ -295,6 +296,8 @@ async def test_loss_after_refresh_never_commits_new_admission(service, fixture, 
 
 @pytest.mark.asyncio
 async def test_two_current_sessions_race_one_original_key_atomically(service, fixture, runtime, monkeypatch):
+    # The loser must wait for the winner's commit, not trip the 100 ms request-path lock bound
+    unbounded_request_execution_waits(monkeypatch)
     second_sid = uuid4().hex
     fixture[0].create(second_sid, user_id=fixture[1], access_token=fixture[3](),
                       refresh_token="synthetic-second-refresh", hard_max_seconds=3600)

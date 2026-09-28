@@ -1,6 +1,7 @@
 """PostgreSQL wait helpers for tests that hold a real lock while the code under test waits
 or refuses around it: evidence that the database's own timeout ended a wait, an
-unbounded wait for one statement, and observation of a real lock wait or worker exit.
+unbounded wait for one statement or for every request-path transaction in a race test,
+and observation of a real lock wait or worker exit.
 """
 
 from __future__ import annotations
@@ -37,6 +38,13 @@ def unbounded_statement_waits(transaction):
     transaction.fetch_one("SELECT set_config('lock_timeout', %s, true), "
                           "set_config('statement_timeout', %s, true)",
                           (before["lock_timeout"], before["statement_timeout"]))
+
+
+def unbounded_request_execution_waits(monkeypatch):
+    from astralplane.repositories.history import SessionRepository
+
+    monkeypatch.setattr(SessionRepository, "bound_request_execution_waits",
+                        staticmethod(lambda transaction: None))
 
 
 def observe_lock_wait(transaction, *, blocker, waiter, finished):
