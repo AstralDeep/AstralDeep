@@ -185,9 +185,10 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
     context = state.orch._connection_contexts[id(state.socket)]
     predecessor = asyncio.get_running_loop().create_future()
     context.mutation_tail = predecessor
-    captured = asyncio.Event()
-    captures = []
+    captured, waiting = asyncio.Event(), asyncio.Event()
+    captures, running = [], []
     original = human._HumanSocketRequest.capture_session
+    phase = state.orch._emit_long_running_operation_phase
 
     async def capture(self):
         await original(self)
@@ -195,25 +196,29 @@ async def test_waiting_lane_retirement_closes_capture_without_cancelling_predece
         captures.append(self)
         captured.set()
 
+    async def lane_wait(host_context, work):
+        # Created just before the operation parks on its predecessor, so it runs once parked
+        running.append(work.task)
+        waiting.set()
+        return await phase(host_context, work)
+
     monkeypatch.setattr(human._HumanSocketRequest, "capture_session", capture)
+    monkeypatch.setattr(state.orch, "_emit_long_running_operation_phase", lane_wait)
     send(state, "chrome_user_skill_edit", attempt_write=False)
     try:
         await asyncio.wait_for(captured.wait(), 5)
-        async with asyncio.timeout(5):
-            while not context.operations:
-                await asyncio.sleep(0.01)
+        await waiting.wait()
+        assert len(running) == 1 and not running[0].done()
         if finish == "disconnect":
             state.socket.closed = True
             state.socket.disconnect()
         elif finish == "cancel":
-            for work in tuple(context.operations.values()):
-                work.task.cancel()
+            running[0].cancel()
         if finish != "disconnect":
             result = await terminal(state)
             assert result["state"] in {"retryable", "cancelled"}
-        async with asyncio.timeout(5):
-            while not captures[0].closed:
-                await asyncio.sleep(0.01)
+        await asyncio.wait(running)
+        assert captures[0].closed
         assert not predecessor.cancelled() and not calls
         assert human.current_human_caller() is None
     finally:
