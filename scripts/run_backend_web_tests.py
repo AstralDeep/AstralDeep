@@ -45,8 +45,7 @@ def source_identity(root: Path) -> str:
 def suite_commands(root: Path) -> list[tuple[Path, str, str]]:
     commands = [(root / "backend", str(suite), f"backend-{suite.as_posix().replace('/', '-')}")
                 for suite in suite_paths(root)]
-    for filename in ("concurrent_surfaces.py", "voice_concurrent_turns.py"):
-        commands.append((root / "backend", f"tests/perf/{filename}", f"perf-{filename}"))
+    commands.append((root / "backend", "tests/perf/voice_concurrent_turns.py", "perf-voice_concurrent_turns.py"))
     commands.append((root, "scripts/tests", "tooling"))
     return commands
 

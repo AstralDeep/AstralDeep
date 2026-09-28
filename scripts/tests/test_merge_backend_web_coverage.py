@@ -36,7 +36,6 @@ WORKSPACE = {
         "from service.decide import decide\n\n\ndef test_positive():\n"
         "    assert decide(1) == 'positive'\n"
     ),
-    "backend/tests/perf/concurrent_surfaces.py": "def test_surfaces():\n    assert True\n",
     "backend/tests/perf/voice_concurrent_turns.py": "def test_turns():\n    assert True\n",
     "backend/persistent_agents/tests/test_agents.py": (
         "from service.decide import decide\n\n\ndef test_other():\n"
