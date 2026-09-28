@@ -4,7 +4,8 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Authority and freshness
 
-- `.specify/memory/constitution.md` is the highest-authority engineering policy. Read it before planning architecture, security, schema, dependency, UI, protocol, or client changes.
+- `.specify/memory/constitution.md` is the highest-authority engineering policy for this repository and for how AstralDeep consumes, pins, and releases its components. Read it before planning architecture, security, schema, dependency, UI, protocol, or client changes.
+- AstralPrimitives, AstralProjection, AstralPlane, and LETS each carry their own constitution at `.specify/memory/constitution.md` in their repository (ratified 2026-09-28); it governs work inside that component. Submodule pins older than that ratification predate the file, so read it from the component repository's `main` until the pin moves.
 - For feature intent, use the active feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records. A spec describes intent; verify implementation claims against the live tree and tests.
 - The live branch, working tree, and current code are the source of truth for present state. Older generated feature digests remain in Git history; their technology notes may be superseded and are not current instructions.
 - Before feature work, check `git status --short --branch`, recent commits, `.specify/feature.json`, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec or `feature.json` on `main` is the work currently in progress.
