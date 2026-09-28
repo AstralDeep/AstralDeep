@@ -71,21 +71,25 @@
          verification/us6-data-concurrency.md) — still records the
          superseded 50-trial/100-trial requirement as historical fact;
          left as written history, not rewritten by this amendment
-      ⚠ `components/LETS` — `deploy/production/run_soak.py`,
+      ✅ `components/LETS` — repinned to bf72d6f0, which removes
+         `deploy/production/run_soak.py`,
          `deploy/production/acceptance/soak.py`,
          `tests/unit/test_production_soak.py`, and the release workflow's
-         `production-soak` job still exist at the pinned commit (0333cd6);
-         LETS main (bf72d6f0) removed them, but AstralDeep deliberately
-         keeps its v1.0.11 release pin until a new LETS release is
-         qualified
+         `production-soak` job; the package version (1.0.11) and every
+         compatibility contract are unchanged
       ✅ `components/AstralProjection` — repinned to 781243cb, where the
          Apple `ConversationContinuityUITests` twenty-relaunch loop is
          replaced by a single-relaunch proof and the iOS first-login
          whole-suite rerun is gone; AstralDeep's iOS release lane and
          Apple coverage validator follow the renamed single-relaunch test
+      ⚠ Client release evidence `reconnect_resume` — the Apple app and
+         watch, Android, and Windows release-evidence producers still run
+         twenty resume trials, and `scripts/validate_release_evidence.py`
+         still requires `trial_count` >= 20
     Follow-up TODOs:
-      ⚠ Repin `components/LETS` once a qualified LETS release includes
-        the soak removal from LETS main (bf72d6f0).
+      ⚠ Replace the twenty-trial `reconnect_resume` loop with a
+        single-resume proof in every client release-evidence producer and
+        lower the validator floor in the same change.
 
   Previous amendment:
   Version change: 3.0.0 → 4.0.0 (MAJOR — Principle VI redefined: the
