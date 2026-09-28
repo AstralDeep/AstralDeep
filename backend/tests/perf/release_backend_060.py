@@ -653,6 +653,7 @@ def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
     )
     supervisor = supervision.ProcessSupervisor()
     baseline = _supervision_footprint()
+    previous = baseline
     cycles: list[dict[str, Any]] = []
     started = time.monotonic()
     try:
@@ -696,9 +697,10 @@ def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
                         }
                     )
             footprint = _settled_footprint(
-                baseline,
+                previous,
                 deadline_seconds=supervisor.limits.termination_deadline_seconds,
             )
+            previous = footprint
             for child, process in zip(children, processes, strict=True):
                 process["tree_alive_after_cycle"] = child.process_tree_alive()
             cycles.append(
@@ -864,6 +866,41 @@ def test_settled_footprint_tracks_pipes_and_reports_a_leak_past_the_deadline() -
     assert leaked["open_pipe_descriptors"] == baseline["open_pipe_descriptors"] + 2
     released = _settled_footprint(baseline, deadline_seconds=0.05)
     assert released["open_pipe_descriptors"] == baseline["open_pipe_descriptors"]
+
+
+def test_each_cycle_settles_against_the_previous_cycle_after_a_baseline_thread_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measure = _supervision_footprint
+    seeded_exit, lingering_exit = threading.Event(), threading.Event()
+    seeded = threading.Thread(target=seeded_exit.wait, daemon=True)
+    lingering = threading.Thread(target=lingering_exit.wait, daemon=True)
+    polls: list[dict[str, int]] = []
+
+    def observed() -> dict[str, int]:
+        for thread in threading.enumerate():
+            if thread.name.startswith("process-"):
+                thread.join(timeout=5)
+        if len(polls) == 2:
+            lingering.start()
+        footprint = measure()
+        polls.append(footprint)
+        if seeded.is_alive():
+            seeded_exit.set()
+            seeded.join()
+        if lingering.is_alive():
+            lingering_exit.set()
+            lingering.join()
+        return footprint
+
+    seeded.start()
+    monkeypatch.setattr(sys.modules[__name__], "_supervision_footprint", observed)
+    result = _run_supervision_cycles(SUPERVISION_CYCLE_COUNT)
+    first, second = result["cycles"]
+    assert result["baseline"]["live_threads"] == first["live_threads"] + 1
+    assert polls[2]["live_threads"] == first["live_threads"] + 1
+    assert _supervision_violations(result) == []
+    assert second["live_threads"] == first["live_threads"]
 
 
 def _clean_supervision_result() -> dict[str, Any]:
