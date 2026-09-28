@@ -1,7 +1,8 @@
 """Proves test_engine_postgres.py's `plane` fixture keeps per-test isolation and fidelity
-while cloning tests/helpers/plane_template.py's session template: clones hold independent
-data, start ready at SCHEMA_REVISION without replaying migrations, and the sealed template
-keeps no client connections.
+while cloning tests/helpers/plane_template.py's session template under the template's
+verified boot identity: clones are ready at SCHEMA_REVISION on their own databases, hold
+independent data, survive other clones closing or booting concurrently, and still verify
+correctly when re-checked from scratch.
 """
 
 import threading
@@ -11,7 +12,9 @@ from uuid import uuid4
 
 import psycopg2
 import pytest
+from astralplane.database.migrations import MIGRATION_REGISTRY
 from astralplane.database.revision import SCHEMA_REVISION
+from astralplane.errors import InitializationError
 
 from persistent_agents.tests.test_engine_postgres import plane as plane
 from tests.helpers.plane_template import (
@@ -21,6 +24,7 @@ from tests.helpers.plane_template import (
     client_connections,
     cloned_database,
     database_dsn,
+    engine_clone_runtime,
     engine_runtime,
 )
 
@@ -47,20 +51,32 @@ def _has_grant(runtime, grant_id):
             tx, owner_id="owner", grant_id=grant_id) is not None
 
 
-def test_clone_is_ready_at_schema_revision_without_replaying_migrations(plane):
+def _state(runtime):
+    with runtime.transaction() as tx:
+        meta = {row["key"]: row["value"] for row in tx.fetch_all("SELECT key, value FROM schema_meta")}
+        where = tx.fetch_one("SELECT current_database() AS database, current_schema() AS schema")
+        marker = tx.fetch_one("SELECT state FROM astralplane_reconciliation_marker "
+                              "WHERE schema_revision = %s AND hook_name = 'assignment-engine-test'",
+                              (SCHEMA_REVISION,))
+    return meta, where, marker
+
+
+def test_clone_is_ready_on_its_own_database_with_the_templates_verified_boot(plane, plane_template):
     report = plane.initialize(expected_revision=SCHEMA_REVISION)
     assert plane.health().ready
-    assert report.migration.target_revision == SCHEMA_REVISION
-    assert report.migration.already_current and report.migration.applied_steps == ()
-    assert [hook.already_complete for hook in report.reconciliation.hooks] == [True]
-    with plane.transaction() as tx:
-        assert tx.fetch_one("SELECT value FROM schema_meta WHERE key = 'revision'")["value"] == SCHEMA_REVISION
-        assert tx.fetch_one("SELECT current_schema() AS name")["name"] == ENGINE_SCHEMA
+    assert report.identity == plane_template.name and report.expected_revision == SCHEMA_REVISION
+    assert report.migration.source_revision is None and report.migration.target_revision == SCHEMA_REVISION
+    meta, where, marker = _state(plane)
+    assert meta["revision"] == SCHEMA_REVISION
+    assert meta["astralplane_migration_digest"] == MIGRATION_REGISTRY.digest
+    assert where["schema"] == ENGINE_SCHEMA
+    assert where["database"].startswith("ad_test_plane_clone_engine_") and where["database"] != plane_template.name
+    assert marker["state"] == "completed"
 
 
-def test_two_clones_hold_independent_data(plane, plane_template):
+def test_writes_through_one_clone_are_invisible_through_another(plane, plane_template):
     with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
-        other = engine_runtime(plane_template.server_dsn, name)
+        other = engine_clone_runtime(plane_template, name)
         try:
             other.initialize(expected_revision=SCHEMA_REVISION)
             assert other.health().ready
@@ -69,6 +85,71 @@ def test_two_clones_hold_independent_data(plane, plane_template):
             assert _has_grant(other, theirs) and not _has_grant(other, mine)
         finally:
             other.close()
+
+
+def test_closing_a_clone_runtime_does_not_break_a_later_clone(plane_template):
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as first_name:
+        first = engine_clone_runtime(plane_template, first_name)
+        first.initialize(expected_revision=SCHEMA_REVISION)
+        earlier = _grant(first)
+        first.close()
+    assert not first.health().ready
+    with pytest.raises(InitializationError), first.transaction():
+        pytest.fail("a closed clone runtime must not open a transaction")
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as second_name:
+        second = engine_clone_runtime(plane_template, second_name)
+        try:
+            second.initialize(expected_revision=SCHEMA_REVISION)
+            assert second.health().ready
+            assert not _has_grant(second, earlier)
+            assert _has_grant(second, _grant(second))
+            assert _state(second)[1]["database"] == second_name
+        finally:
+            second.close()
+
+
+def test_concurrent_clone_runtimes_boot_ready_and_stay_isolated(plane_template):
+    workers_count = 4
+    written = threading.Barrier(workers_count)
+    grants, errors, observations = {}, [], []
+
+    def run(index):
+        try:
+            with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
+                runtime = engine_clone_runtime(plane_template, name)
+                try:
+                    runtime.initialize(expected_revision=SCHEMA_REVISION)
+                    grants[index] = _grant(runtime)
+                    written.wait(timeout=30)
+                    observations.append((index, runtime.health().ready, _state(runtime)[1]["database"] == name,
+                                         {other: _has_grant(runtime, grant) for other, grant in grants.items()}))
+                finally:
+                    runtime.close()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run, args=(index,)) for index in range(workers_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert errors == [] and len(observations) == workers_count
+    for index, ready, own_database, seen in observations:
+        assert ready and own_database
+        assert seen == {other: other == index for other in range(workers_count)}
+
+
+def test_a_clone_rechecked_under_its_own_identity_is_still_correct(plane_template):
+    with cloned_database(plane_template, prefix="ad_test_plane_clone_engine") as name:
+        runtime = engine_runtime(plane_template.server_dsn, name, identity=name)
+        try:
+            assert not runtime.health().ready
+            report = runtime.initialize(expected_revision=SCHEMA_REVISION)
+            assert runtime.health().ready and report.identity == name
+            assert report.migration.already_current and report.migration.applied_steps == ()
+            assert [hook.already_complete for hook in report.reconciliation.hooks] == [True]
+        finally:
+            runtime.close()
 
 
 def test_template_is_sealed_without_client_connections(plane_template):

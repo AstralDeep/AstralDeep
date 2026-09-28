@@ -1,8 +1,8 @@
 """Migrates a throwaway AstralPlane PostgreSQL database once, seals it against connections,
 and hands each test its own CREATE DATABASE … TEMPLATE clone instead of a full migration
-replay. The session `plane_template` fixture backs the engine `plane` fixture in
-persistent_agents/tests/test_engine_postgres.py, and voice_plane_runtime.py keeps a
-process-wide public-schema template for its isolated runtimes.
+replay; engine clone runtimes share the template's verified boot identity, so their
+initialize() does not re-verify the byte-identical schema. The session `plane_template`
+fixture backs test_engine_postgres.py's `plane`, and voice_plane_runtime.py seals its own.
 """
 
 from __future__ import annotations
@@ -49,16 +49,21 @@ def database_dsn(server_dsn: str, database: str) -> str:
     return make_dsn(server_dsn, dbname=database)
 
 
-def engine_runtime(server_dsn: str, database: str) -> PlaneRuntime:
+def engine_runtime(server_dsn: str, database: str, *, identity: str) -> PlaneRuntime:
     from psycopg2.extensions import make_dsn
 
     return create_postgres_runtime(
         make_dsn(server_dsn, dbname=database,
                  options=f"-csearch_path={ENGINE_SCHEMA},pg_catalog"),
-        identity=database,
+        identity=identity,
         reconcilers=(EngineReconciler(),),
         maximum_connections=8,
     )
+
+
+def engine_clone_runtime(template: TemplateDatabase, database: str) -> PlaneRuntime:
+    # Plane keeps boot state per identity; every clone is a byte copy of the sealed, verified template
+    return engine_runtime(template.server_dsn, database, identity=template.name)
 
 
 @contextmanager
@@ -153,7 +158,7 @@ def _migrate_engine(template: TemplateDatabase) -> None:
 
     with _autocommit_cursor(database_dsn(template.server_dsn, template.name)) as cursor:
         cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(ENGINE_SCHEMA)))
-    runtime = engine_runtime(template.server_dsn, template.name)
+    runtime = engine_runtime(template.server_dsn, template.name, identity=template.name)
     try:
         runtime.initialize(expected_revision=SCHEMA_REVISION)
         if not runtime.health().ready:
@@ -184,6 +189,7 @@ __all__ = (
     "create_template",
     "database_dsn",
     "drop_database",
+    "engine_clone_runtime",
     "engine_runtime",
     "plane_template",
 )
