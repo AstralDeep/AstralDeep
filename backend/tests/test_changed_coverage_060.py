@@ -2509,6 +2509,137 @@ def test_xccov_exporter_rejects_malformed_or_partial_per_file_json(
     assert failure.value.code == expected
 
 
+XCCOV_ARCHIVE_SOURCE = (
+    "/checkout/components/AstralProjection/apple-clients/AstralApp/AstralApp/Example.swift"
+)
+
+
+def _xccov_line_document(*, subranges: object = None, count: int = 7) -> bytes:
+    row: dict[str, object] = {"line": 2, "isExecutable": True, "executionCount": count}
+    if subranges is not None:
+        row["subranges"] = subranges
+    return json.dumps(
+        {XCCOV_ARCHIVE_SOURCE: [{"line": 1, "isExecutable": False}, row]}
+    ).encode()
+
+
+@pytest.mark.parametrize("field", ["column", "executionCount", "length"])
+def test_xccov_unsigned_64_bit_subranges_leave_exported_lines_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    repo, bundle, sources = _apple_export_repo(tmp_path)
+    raw = _local_archive_source(repo, sources["app"])
+    rows: list[dict[str, object]] = [
+        {"line": 1, "isExecutable": False},
+        {"line": 2, "isExecutable": True, "executionCount": 7},
+    ]
+    _install_fake_xcrun(tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: rows}})
+    plain = repo / "build" / "plain.json"
+    xccov_exporter.export_xccov(repo=repo, xcresult=bundle, output=plain, platform="ios")
+
+    rows[-1]["subranges"] = [
+        {"column": 18, "executionCount": 0, "length": 0, field: 2**64 - 1}
+    ]
+    _install_fake_xcrun(tmp_path, monkeypatch, file_list=[raw], files={raw: {raw: rows}})
+    wrapped = repo / "build" / "wrapped.json"
+    xccov_exporter.export_xccov(repo=repo, xcresult=bundle, output=wrapped, platform="ios")
+
+    assert wrapped.read_bytes() == plain.read_bytes()
+    assert json.loads(wrapped.read_text(encoding="utf-8")) == {
+        sources["app"]: [
+            {"line": 1, "isExecutable": False},
+            {"line": 2, "isExecutable": True, "executionCount": 7},
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("executionCount", 2**64),
+        ("column", 2**64),
+        ("length", 2**64),
+        ("executionCount", -1),
+        ("column", 1.5),
+        ("length", "7"),
+        ("executionCount", True),
+        ("column", None),
+    ],
+)
+def test_xccov_subrange_integers_outside_unsigned_64_bits_are_refused_where_they_occur(
+    field: str, value: object
+) -> None:
+    subrange = {"column": 18, "executionCount": 0, "length": 0, field: value}
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(subranges=[subrange]),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert f"subrange {field} at {XCCOV_ARCHIVE_SOURCE} line 2" in refused.value.message
+
+
+def test_xccov_line_execution_counts_keep_their_signed_64_bit_bound() -> None:
+    accepted = xccov_exporter._normalize_observations(
+        _xccov_line_document(count=2**63 - 1),
+        queried_path=XCCOV_ARCHIVE_SOURCE,
+        maximum_lines=3,
+    )
+    assert accepted[-1]["executionCount"] == 2**63 - 1
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(count=2**63),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert refused.value.message == (
+        f"executionCount at {XCCOV_ARCHIVE_SOURCE} line 2 exceeds its bound"
+    )
+
+
+@pytest.mark.parametrize(
+    "subranges",
+    [
+        {"column": 18, "executionCount": 0, "length": 0},
+        [{"column": 18, "executionCount": 0, "length": 0}]
+        * (xccov_exporter.MAX_SUBRANGES_PER_LINE + 1),
+        [[18, 0, 0]],
+        [{"column": 18, "executionCount": 0}],
+        [{"column": 18, "executionCount": 0, "length": 0, "count": 0}],
+    ],
+)
+def test_xccov_malformed_subranges_are_refused_where_they_occur(subranges: object) -> None:
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            _xccov_line_document(subranges=subranges),
+            queried_path=XCCOV_ARCHIVE_SOURCE,
+            maximum_lines=3,
+        )
+    assert refused.value.code == "invalid_observation"
+    assert f"{XCCOV_ARCHIVE_SOURCE} line 2" in refused.value.message
+
+
+def test_xccov_non_executable_line_with_a_count_is_refused_where_it_occurs() -> None:
+    document = json.dumps(
+        {
+            XCCOV_ARCHIVE_SOURCE: [
+                {"line": 1, "isExecutable": False},
+                {"line": 2, "isExecutable": False, "executionCount": 3},
+            ]
+        }
+    ).encode()
+    with pytest.raises(xccov_exporter.ExportError) as refused:
+        xccov_exporter._normalize_observations(
+            document, queried_path=XCCOV_ARCHIVE_SOURCE, maximum_lines=3
+        )
+    assert refused.value.code == "invalid_observation"
+    assert refused.value.message == (
+        f"non-executable line has an execution count at {XCCOV_ARCHIVE_SOURCE} line 2"
+    )
+
+
 @pytest.mark.parametrize(
     "file_list",
     [
@@ -2771,16 +2902,21 @@ def test_xccov_exporter_inventory_path_and_observation_edge_contracts(
             xccov_exporter._integer(value, label="fixture")
     for value in ("not-a-list", [{}] * (xccov_exporter.MAX_SUBRANGES_PER_LINE + 1)):
         with pytest.raises(xccov_exporter.ExportError):
-            xccov_exporter._validate_subranges(value)
+            xccov_exporter._validate_subranges(value, location="source line 1")
+    xccov_exporter._validate_subranges(
+        [
+            {
+                "column": 1,
+                "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
+                "length": 1,
+            }
+        ],
+        location="source line 1",
+    )
     with pytest.raises(xccov_exporter.ExportError):
         xccov_exporter._validate_subranges(
-            [
-                {
-                    "column": 1,
-                    "executionCount": xccov_exporter.MAX_EXECUTION_COUNT + 1,
-                    "length": 1,
-                }
-            ]
+            [{"column": 1, "executionCount": 2**64, "length": 1}],
+            location="source line 1",
         )
     with pytest.raises(xccov_exporter.ExportError):
         xccov_exporter._normalize_observations(
