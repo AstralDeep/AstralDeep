@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merges bounded, normalized xccov reports from export_xccov_line_coverage.py into one
-platform coverage mapping, consumed by test_apple_coverage_artifacts_088.py and
-test_merge_xccov_coverage_088.py.
+platform coverage mapping for apple-ci.yml's apple-required job; its merge and refusal
+rules are pinned by tests/test_merge_xccov_line_coverage.py.
 """
 
 from __future__ import annotations

@@ -160,7 +160,7 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 
 Important: `backend/pytest.ini` discovers `tests` and `persistent_agents/tests`. The command above is not every nested module suite. For merge-level confidence, mirror the explicit invocations in `.github/workflows/ci.yml`, including the module suites and relevant feature-flag posture, and run any touched package's local tests explicitly.
 
-CI runs the backend suites as three whole-suite groups — `tests`, `persistent_agents`, and `modules` — each within the Constitution XI 30-minute budget. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass, for local use and on the protected qualification path, where `scripts/produce_backend_web_qualification.py` runs the image gate at its default group.
+CI runs the backend suites as three whole-suite groups — `tests`, `persistent_agents`, and `modules` — each within the Constitution XI 30-minute budget. `scripts/run_backend_web_tests.py --group all` (the default) still runs every suite in one pass for local use. Protected qualification runs `scripts/produce_backend_web_qualification.py --phase gate --group <group>` as one 30-minute job per group, then `--phase services` and `--phase assemble`; `--phase all` keeps the one-pass local run.
 
 Client gates:
 
