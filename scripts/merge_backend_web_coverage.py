@@ -29,7 +29,8 @@ SUITE_KEYS = {"suite", "cwd", "path"}
 def _load_runner() -> Any:
     path = Path(__file__).resolve().with_name("run_backend_web_tests.py")
     spec = importlib.util.spec_from_file_location("backend_web_group_runner", path)
-    assert spec and spec.loader
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the backend-web suite runner from {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

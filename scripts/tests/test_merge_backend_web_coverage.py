@@ -1,6 +1,6 @@
 """Tests for scripts/merge_backend_web_coverage.py: the merged coverage of every whole-suite
 group equals one complete run_backend_web_tests.py pass, and incomplete, misassigned,
-inconsistent or unusable group evidence is refused.
+inconsistent or unusable group evidence, or a suite runner it cannot load, is refused.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from contextlib import nullcontext
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,19 @@ collector = _load_collector()
 
 def _semantic_identity(path: Path, target: str) -> str:
     return collector.coverage_report_identity(path.read_bytes(), target)["semantic_sha256"]
+
+
+def test_merge_loads_the_suite_runner_beside_it():
+    assert merge.runner.__name__ == "backend_web_group_runner"
+    assert Path(merge.runner.__file__).resolve() == Path(gate.__file__).resolve()
+    assert merge.runner.GROUPS == gate.GROUPS
+
+
+@pytest.mark.parametrize("spec", [None, ModuleSpec("backend_web_group_runner", None)])
+def test_merge_refuses_a_suite_runner_it_cannot_load(monkeypatch, spec):
+    monkeypatch.setattr(merge.importlib.util, "spec_from_file_location", lambda *arguments: spec)
+    with pytest.raises(ImportError, match="cannot load the backend-web suite runner from .*run_backend_web_tests.py"):
+        merge._load_runner()
 
 
 def test_merged_group_reports_equal_one_complete_run(tmp_path, monkeypatch):
