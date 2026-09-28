@@ -1,7 +1,7 @@
 """Migrates a throwaway AstralPlane PostgreSQL database once, seals it against connections,
 and hands each test its own CREATE DATABASE … TEMPLATE clone instead of a full migration
-replay; engine clone runtimes share the template's verified boot identity, so their
-initialize() does not re-verify the byte-identical schema. The session `plane_template`
+replay; engine_clone boots each fresh clone under the template's verified boot identity, so
+its initialize() does not re-verify the byte-identical schema. The session `plane_template`
 fixture backs test_engine_postgres.py's `plane`, and voice_plane_runtime.py seals its own.
 """
 
@@ -21,6 +21,7 @@ from astralplane.api import PlaneRuntime, create_postgres_runtime
 from astralplane.database.revision import SCHEMA_REVISION
 
 ENGINE_SCHEMA = "assignment_engine"
+ENGINE_CLONE_PREFIX = "ad_test_plane_clone_engine"
 _DATABASE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _DRAIN_SECONDS = 10.0
 
@@ -49,7 +50,7 @@ def database_dsn(server_dsn: str, database: str) -> str:
     return make_dsn(server_dsn, dbname=database)
 
 
-def engine_runtime(server_dsn: str, database: str, *, identity: str) -> PlaneRuntime:
+def _engine_runtime(server_dsn: str, database: str, *, identity: str) -> PlaneRuntime:
     from psycopg2.extensions import make_dsn
 
     return create_postgres_runtime(
@@ -61,9 +62,8 @@ def engine_runtime(server_dsn: str, database: str, *, identity: str) -> PlaneRun
     )
 
 
-def engine_clone_runtime(template: TemplateDatabase, database: str) -> PlaneRuntime:
-    # Plane keeps boot state per identity; every clone is a byte copy of the sealed, verified template
-    return engine_runtime(template.server_dsn, database, identity=template.name)
+def engine_runtime(server_dsn: str, database: str) -> PlaneRuntime:
+    return _engine_runtime(server_dsn, database, identity=database)
 
 
 @contextmanager
@@ -153,12 +153,24 @@ def cloned_database(template: TemplateDatabase, *, prefix: str) -> Iterator[str]
         drop_database(template.server_dsn, clone)
 
 
+@contextmanager
+def engine_clone(template: TemplateDatabase) -> Iterator[tuple[PlaneRuntime, str]]:
+    with cloned_database(template, prefix=ENGINE_CLONE_PREFIX) as database:
+        # Plane keeps boot state per identity; this fresh clone is a byte copy of the sealed, verified template
+        runtime = _engine_runtime(template.server_dsn, database, identity=template.name)
+        try:
+            runtime.initialize(expected_revision=SCHEMA_REVISION)
+            yield runtime, database
+        finally:
+            runtime.close()
+
+
 def _migrate_engine(template: TemplateDatabase) -> None:
     from psycopg2 import sql
 
     with _autocommit_cursor(database_dsn(template.server_dsn, template.name)) as cursor:
         cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(ENGINE_SCHEMA)))
-    runtime = engine_runtime(template.server_dsn, template.name, identity=template.name)
+    runtime = engine_runtime(template.server_dsn, template.name)
     try:
         runtime.initialize(expected_revision=SCHEMA_REVISION)
         if not runtime.health().ready:
@@ -180,6 +192,7 @@ def plane_template() -> Iterator[TemplateDatabase]:
 
 
 __all__ = (
+    "ENGINE_CLONE_PREFIX",
     "ENGINE_SCHEMA",
     "DatabaseCreationError",
     "EngineReconciler",
@@ -189,7 +202,7 @@ __all__ = (
     "create_template",
     "database_dsn",
     "drop_database",
-    "engine_clone_runtime",
+    "engine_clone",
     "engine_runtime",
     "plane_template",
 )

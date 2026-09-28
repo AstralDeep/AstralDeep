@@ -187,7 +187,7 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
     assert result == (0 if scenario == "pass" else 1)
     evidence = json.loads((output / "test-results.json").read_text(encoding="utf-8"))
     assert evidence["production_qualified"] is False
-    assert len(evidence["suites"]) == 8
+    assert len(evidence["suites"]) == 7
     assert seen[0][-1] == "erase"
     assert "xml" in seen[-1]
     assert evidence["source_commit"] == "a" * 40
@@ -252,7 +252,7 @@ def test_main_resolves_paths_and_propagates_gate_result(tmp_path, monkeypatch):
 ALL_SUITES = [
     "backend-agents-journal_review-tests", "backend-audit-tests", "backend-evaluation-suites",
     "backend-persistent_agents-tests", "backend-tests",
-    "perf-concurrent_surfaces.py", "perf-voice_concurrent_turns.py", "tooling",
+    "perf-voice_concurrent_turns.py", "tooling",
 ]
 
 

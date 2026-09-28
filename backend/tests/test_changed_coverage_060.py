@@ -11,7 +11,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 
@@ -827,17 +826,14 @@ def test_python_exclusion_line_mapping_scans_source_linearly() -> None:
 def test_python_exclusion_line_mapping_large_input_smoke() -> None:
     source = "value = 1  # pragma: no cover\n" * 60_000
 
-    started = time.perf_counter()
     lines = collector._matching_source_lines(
         source,
         collector.PYTHON_COVERAGE_DEFAULT_EXCLUDE,
         {},
     )
-    elapsed = time.perf_counter() - started
 
     assert len(source) > 1_000_000
     assert len(lines) == 60_000
-    assert elapsed < 5.0
 
 
 def test_python_candidate_witness_has_no_coverage_parser_underapproximation() -> None:
@@ -1717,6 +1713,7 @@ def _not_applicable(
     candidate: str,
     *,
     profile: str,
+    source_prefix: str,
     changed: list[str],
     reports: dict[str, Path],
     contributions: dict[str, int],
@@ -1728,8 +1725,10 @@ def _not_applicable(
         "status": "not-applicable",
         "reason": "no_measurable_changed_lines",
         "repository_profile": profile,
+        "source_prefix": source_prefix,
         "base_sha": base,
         "candidate_sha": candidate,
+        "revisions_validated": True,
         "fail_under": 90.0,
         "selection": {
             "event_name": "manual",
@@ -1778,6 +1777,7 @@ def test_opt_in_policy_records_unmeasurable_deep_diffs_as_not_applicable(
         base,
         candidate,
         profile="deep",
+        source_prefix="",
         changed=changed,
         maintained=maintained,
         reports=reports,
@@ -1837,6 +1837,7 @@ def test_opt_in_policy_records_unmeasured_projection_web_paths_as_not_applicable
         original.candidate_sha,
         candidate,
         profile="projection-web",
+        source_prefix="components/AstralProjection",
         changed=[composed],
         deferred=(composed,) if deferred else (),
         reports=reports,

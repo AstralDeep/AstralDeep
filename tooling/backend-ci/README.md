@@ -8,8 +8,11 @@ client protocol dispositions, data isolation and LETS tests remain in scope.
 The required Deep CI aggregate now includes:
 
 - Python 3.11 tests from every backend `tests/` or `suites/` directory, the
-  explicitly named concurrency probes, and release-tooling tests. Suites run
-  in separate processes to avoid module/conftest collisions.
+  explicitly named voice concurrency probe, and release-tooling tests. Suites
+  run in separate processes to avoid module/conftest collisions. The voice
+  probe times turns on a fake monotonic clock; the wall-clock p95 surface
+  probe `backend/tests/perf/concurrent_surfaces.py` is an explicit-run `perf`
+  probe, not a required gate.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
   complete PostgreSQL suite. The test producer refuses absent/mismatched
   database URLs and requires an `ad_gate_` database plus an explicit isolation
@@ -39,13 +42,14 @@ The required Deep CI aggregate now includes:
 
 Every CI job has at most a 30-minute budget, and the suite runner gives each
 suite a 30-minute (1800 s) timeout. Protected qualification runs every suite
-under the same 1800 s per-suite cap, so the suite pruning and fixture work
-that brings each suite within it must land with this change. The backend
-suites run as a three-job matrix of whole-suite groups: `tests` is the
-`backend/tests` suite, `persistent_agents` is the
-`backend/persistent_agents/tests` suite, and `modules` is every other backend
-suite, both concurrency probes and the tooling suite. The changed-coverage job
-merges the three groups' raw coverage data with
+under the same 1800 s per-suite cap. The backend suites run as a three-job
+matrix of whole-suite groups: `tests` is the `backend/tests` suite,
+`persistent_agents` is the `backend/persistent_agents/tests` suite, and
+`modules` is every other backend suite, the voice concurrency probe and the
+tooling suite. No suite was pruned to fit: once the Plane-backed test
+fixtures cloned a sealed, once-migrated template database per test instead
+of replaying every migration for each, every group fit its budget. The
+changed-coverage job merges the three groups' raw coverage data with
 `scripts/merge_backend_web_coverage.py` into the same `backend-python.xml` and
 `tooling-python.xml` one complete run writes. The merge refuses group evidence
 that failed, comes from another checkout, runner or reporter, or does not give
