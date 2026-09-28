@@ -33,7 +33,9 @@
     III. Testing Standards (CLARIFIED) — a change with no measurable
         executable lines makes changed-code coverage not applicable; CI
         records that outcome explicitly (Principle XI) instead of
-        measuring an unsatisfiable 90% bar against zero changed lines.
+        measuring an unsatisfiable 90% bar against zero changed lines,
+        and the 90% merge rule is scoped to where the coverage gate
+        applies.
     Rationale: owner/lead-developer decision (2026-09-27) adopting the
         fair-CI design so required gates measure only what a change can
         actually be judged on, finish in bounded time, and stop depending
@@ -72,16 +74,18 @@
       ⚠ `components/LETS` — `deploy/production/run_soak.py`,
          `deploy/production/acceptance/soak.py`,
          `tests/unit/test_production_soak.py`, and the release workflow's
-         `production-soak` job still exist at the pinned commit; removal
-         is tracked in LETS's own repository
-      ⚠ `components/AstralProjection` — the Apple
-         `ConversationContinuityUITests` twenty-relaunch loop and the iOS
-         first-login whole-suite rerun still exist at the pinned commit;
-         removal is tracked in AstralProjection's own repository
+         `production-soak` job still exist at the pinned commit (0333cd6);
+         LETS main (bf72d6f0) removed them, but AstralDeep deliberately
+         keeps its v1.0.11 release pin until a new LETS release is
+         qualified
+      ✅ `components/AstralProjection` — repinned to 781243cb, where the
+         Apple `ConversationContinuityUITests` twenty-relaunch loop is
+         replaced by a single-relaunch proof and the iOS first-login
+         whole-suite rerun is gone; AstralDeep's iOS release lane and
+         Apple coverage validator follow the renamed single-relaunch test
     Follow-up TODOs:
-      ⚠ Repin `components/LETS` and `components/AstralProjection` once
-        their own repositories remove the soak-test/relaunch-loop suites
-        named above.
+      ⚠ Repin `components/LETS` once a qualified LETS release includes
+        the soak removal from LETS main (bf72d6f0).
 
   Previous amendment:
   Version change: 3.0.0 → 4.0.0 (MAJOR — Principle VI redefined: the
@@ -698,7 +702,7 @@ a minimum of 90% code coverage on the code it changes.
 - Module-wide and repository-wide coverage improvements remain
   encouraged but are not the merge gate.
 - No feature branch may merge without meeting the 90%
-  threshold on changed code.
+  threshold on changed code where the coverage gate applies.
 
 ### IV. Code Quality
 
