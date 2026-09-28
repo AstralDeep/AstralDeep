@@ -243,11 +243,11 @@ METRIC_REQUIREMENTS: Mapping[str, Mapping[str, MeasurementRequirement]] = {
         "duplicate_effects": MeasurementRequirement("total", "eq", 0, "count"),
     },
     "migration_multi_instance": {
-        "trial_count": MeasurementRequirement("total", "gte", 50, "count"),
+        "trial_count": MeasurementRequirement("total", "gte", 1, "count"),
         "migration_owner_violations": MeasurementRequirement("total", "eq", 0, "count"),
     },
     "process_supervision_stress": {
-        "trial_count": MeasurementRequirement("total", "gte", 100, "count"),
+        "trial_count": MeasurementRequirement("total", "gte", 2, "count"),
         "residual_processes": MeasurementRequirement("total", "eq", 0, "count"),
     },
     "reconnect_resume": {

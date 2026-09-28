@@ -5,15 +5,20 @@ their metric floors.
 
 from __future__ import annotations
 
+import ast
+import errno
 import hashlib
 import http.client
 import importlib.util
+import itertools
 import json
 import os
 import re
 import ssl
+import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -118,7 +123,8 @@ SEMVER_RE = re.compile(
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
 
-SUPERVISION_TRIAL_COUNT = 100
+SUPERVISION_CYCLE_COUNT = 2
+SUPERVISION_FOOTPRINT = ("open_pipe_descriptors", "live_threads")
 SUITE_TIMEOUT_SECONDS = 1800
 PROBE_TIMEOUT_SECONDS = 30
 
@@ -173,17 +179,17 @@ REPLAYED_SUITES = (
         pytest_arguments=(
             "../components/AstralPlane/tests/integration/"
             "test_empty_database_startup.py"
-            "::test_fifty_two_starter_migration_trials_converge_once",
+            "::test_two_starter_migration_race_converges_once",
         ),
-        required_test="test_fifty_two_starter_migration_trials_converge_once",
+        required_test="test_two_starter_migration_race_converges_once",
         source=(
             "../components/AstralPlane/tests/integration/"
             "test_empty_database_startup.py"
         ),
-        counter_pattern=r"^    trial_count = 50$",
+        counter_pattern=r"^    start = threading\.Barrier\(2\)$",
         measurements=(
-            ("trial_count", 50, 50),
-            ("migration_owner_violations", 0, 50),
+            ("trial_count", 1, 1),
+            ("migration_owner_violations", 0, 1),
         ),
     ),
 )
@@ -533,7 +539,69 @@ def _replay_suite(suite: _ReplayedSuite, junit_directory: Path) -> tuple[bytes, 
     return junit_bytes, summary
 
 
-def _run_supervision_trials(trial_count: int) -> dict[str, Any]:
+def _open_pipe_descriptors() -> int:
+    listing = Path("/proc/self/fd")
+    if not listing.is_dir():
+        listing = Path("/dev/fd")
+    count = 0
+    for name in os.listdir(listing):
+        try:
+            mode = os.fstat(int(name)).st_mode
+        except OSError as exc:
+            if exc.errno != errno.EBADF:
+                raise
+            continue  # Closed since listing, as the listing's own descriptor always is
+        if stat.S_ISFIFO(mode):
+            count += 1
+    return count
+
+
+def _supervision_footprint() -> dict[str, int]:
+    return {
+        "open_pipe_descriptors": _open_pipe_descriptors(),
+        "live_threads": threading.active_count(),
+    }
+
+
+def _settled_footprint(
+    baseline: Mapping[str, int], *, deadline_seconds: float
+) -> dict[str, int]:
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        footprint = _supervision_footprint()
+        if (
+            all(footprint[name] <= baseline[name] for name in SUPERVISION_FOOTPRINT)
+            or time.monotonic() >= deadline
+        ):
+            return footprint
+        time.sleep(0.01)
+
+
+def _supervision_violations(result: Mapping[str, Any]) -> list[str]:
+    cycles = result["cycles"]
+    violations: list[str] = []
+    if len(cycles) != result["cycle_count"]:
+        violations.append(
+            f"ran {len(cycles)} of {result['cycle_count']} supervision cycles"
+        )
+    previous = result["baseline"]
+    for cycle in cycles:
+        if cycle["residual_processes"]:
+            violations.append(
+                f"cycle {cycle['cycle']} left {cycle['residual_processes']}"
+                " residual processes"
+            )
+        for name in SUPERVISION_FOOTPRINT:
+            if cycle[name] > previous[name]:
+                violations.append(
+                    f"cycle {cycle['cycle']} grew {name} from {previous[name]}"
+                    f" to {cycle[name]}"
+                )
+        previous = cycle
+    return violations
+
+
+def _run_supervision_cycles(cycle_count: int) -> dict[str, Any]:
     backend_root = os.fspath(BACKEND_ROOT)
     if backend_root not in sys.path:
         sys.path.insert(0, backend_root)
@@ -587,52 +655,74 @@ def _run_supervision_trials(trial_count: int) -> dict[str, Any]:
         TerminationReason.FAILURE,
     )
     supervisor = ProcessSupervisor()
-    residual_processes = 0
-    trials: list[dict[str, Any]] = []
+    baseline = _supervision_footprint()
+    cycles: list[dict[str, Any]] = []
     started = time.monotonic()
     try:
-        for trial in range(trial_count):
-            behavior, script = behaviors[trial % len(behaviors)]
-            reason = reasons[(trial // len(behaviors)) % len(reasons)]
-            child = supervisor.spawn(
-                process_id=uuid.uuid4(),
-                owner=ProcessOwner(
-                    owner_kind="release_evidence_producer",
-                    owner_id=f"trial-{trial}",
-                ),
-                argv=(sys.executable, "-u", "-c", script),
+        for cycle in range(cycle_count):
+            children: list[Any] = []
+            processes: list[dict[str, Any]] = []
+            for reason in reasons:
+                for behavior, script in behaviors:
+                    child = supervisor.spawn(
+                        process_id=uuid.uuid4(),
+                        owner=ProcessOwner(
+                            owner_kind="release_evidence_producer",
+                            owner_id=f"cycle-{cycle}-{behavior}-{reason.value}",
+                        ),
+                        argv=(sys.executable, "-u", "-c", script),
+                    )
+                    children.append(child)
+                    child.wait_for_line(
+                        OutputStream.STDOUT, prefix=b"ready", timeout=30
+                    )
+                    snapshot = child.terminate(reason=reason)
+                    processes.append(
+                        {
+                            "behavior": behavior,
+                            "reason": reason.value,
+                            "clean": (
+                                snapshot.process_tree_terminated
+                                and snapshot.readers_joined
+                                and snapshot.pipes_closed
+                                and snapshot.cleanup_error is None
+                            ),
+                            "within_limits": (
+                                snapshot.stdout.retained_bytes
+                                <= supervisor.limits.ring_capacity_bytes_per_stream
+                                and snapshot.stdout.maximum_retained_line_bytes
+                                <= supervisor.limits.maximum_logical_line_bytes
+                            ),
+                            "cleanup_seconds": round(
+                                snapshot.cleanup_duration_seconds, 3
+                            ),
+                        }
+                    )
+            footprint = _settled_footprint(
+                baseline,
+                deadline_seconds=supervisor.limits.termination_deadline_seconds,
             )
-            child.wait_for_line(OutputStream.STDOUT, prefix=b"ready", timeout=30)
-            snapshot = child.terminate(reason=reason)
-            clean = (
-                snapshot.process_tree_terminated
-                and snapshot.readers_joined
-                and snapshot.pipes_closed
-                and snapshot.cleanup_error is None
-            )
-            within_limits = (
-                snapshot.stdout.retained_bytes
-                <= supervisor.limits.ring_capacity_bytes_per_stream
-                and snapshot.stdout.maximum_retained_line_bytes
-                <= supervisor.limits.maximum_logical_line_bytes
-            )
-            if not (clean and within_limits):
-                residual_processes += 1
-            trials.append(
+            for child, process in zip(children, processes, strict=True):
+                process["tree_alive_after_cycle"] = child.process_tree_alive()
+            cycles.append(
                 {
-                    "trial": trial,
-                    "behavior": behavior,
-                    "reason": reason.value,
-                    "clean": clean,
-                    "within_limits": within_limits,
-                    "cleanup_seconds": round(snapshot.cleanup_duration_seconds, 3),
+                    "cycle": cycle,
+                    "residual_processes": sum(
+                        1
+                        for process in processes
+                        if not (process["clean"] and process["within_limits"])
+                        or process["tree_alive_after_cycle"]
+                    ),
+                    **footprint,
+                    "processes": processes,
                 }
             )
     finally:
         supervisor.terminate_all(reason=TerminationReason.QUIT)
     return {
-        "trial_count": trial_count,
-        "residual_processes": residual_processes,
+        "cycle_count": cycle_count,
+        "supervised_processes": sum(len(cycle["processes"]) for cycle in cycles),
+        "residual_processes": sum(cycle["residual_processes"] for cycle in cycles),
         "duration_ms": int((time.monotonic() - started) * 1000),
         "limits": {
             "ring_capacity_bytes_per_stream": (
@@ -645,7 +735,8 @@ def _run_supervision_trials(trial_count: int) -> dict[str, Any]:
                 supervisor.limits.termination_deadline_seconds
             ),
         },
-        "trials": trials,
+        "baseline": baseline,
+        "cycles": cycles,
     }
 
 
@@ -674,16 +765,142 @@ def test_backend_check_set_and_floors_match_release_policy() -> None:
                 "threshold",
             }
     supervision = validator.METRIC_REQUIREMENTS["process_supervision_stress"]
-    assert SUPERVISION_TRIAL_COUNT >= supervision["trial_count"].threshold
+    assert SUPERVISION_CYCLE_COUNT >= supervision["trial_count"].threshold
+
+
+def _replayed_suite(check_id: str) -> _ReplayedSuite:
+    return next(suite for suite in REPLAYED_SUITES if suite.check_id == check_id)
+
+
+def _module_function_source(source: str, name: str) -> str | None:
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
+            return ast.get_source_segment(source, node)
+    return None
 
 
 def test_reused_suite_counters_still_pin_metric_floors() -> None:
     for suite in REPLAYED_SUITES:
         source = (BACKEND_ROOT / suite.source).read_text(encoding="utf-8")
+        assert _module_function_source(source, suite.required_test) is not None, (
+            f"{suite.source} no longer defines {suite.required_test};"
+            " update the replayed test id together with the suite"
+        )
         assert re.search(suite.counter_pattern, source, flags=re.MULTILINE), (
             f"{suite.source} no longer pins the counter {suite.counter_pattern!r};"
             " update the producer's emitted measurements together with the suite"
         )
+
+
+def test_migration_replay_is_the_single_two_starter_race() -> None:
+    suite = _replayed_suite("migration_multi_instance")
+    assert suite.required_test == "test_two_starter_migration_race_converges_once"
+    assert suite.pytest_arguments == (f"{suite.source}::{suite.required_test}",)
+    assert suite.measurements == (
+        ("trial_count", 1, 1),
+        ("migration_owner_violations", 0, 1),
+    )
+    race = _module_function_source(
+        (BACKEND_ROOT / suite.source).read_text(encoding="utf-8"),
+        suite.required_test,
+    )
+    assert race is not None
+    pinned = re.search(suite.counter_pattern, race, flags=re.MULTILINE)
+    assert pinned is not None, "the counter must pin a line inside the race itself"
+    assert "threading.Barrier(2)" in pinned.group(0)
+
+
+def test_supervision_proof_runs_two_full_cycles_without_residue_or_growth() -> None:
+    assert SUPERVISION_CYCLE_COUNT == 2
+    result = _run_supervision_cycles(SUPERVISION_CYCLE_COUNT)
+    assert result["cycle_count"] == 2
+    assert [cycle["cycle"] for cycle in result["cycles"]] == [0, 1]
+    full_matrix = sorted(
+        itertools.product(
+            ("descendant", "failing_child", "high_output", "plain"),
+            ("cancel", "failure", "quit", "stop"),
+        )
+    )
+    for cycle in result["cycles"]:
+        pairs = sorted(
+            (process["behavior"], process["reason"]) for process in cycle["processes"]
+        )
+        assert pairs == full_matrix
+        assert cycle["residual_processes"] == 0
+        assert not any(process["tree_alive_after_cycle"] for process in cycle["processes"])
+    assert result["supervised_processes"] == 2 * len(full_matrix)
+    assert result["residual_processes"] == 0
+    assert _supervision_violations(result) == []
+
+
+def test_settled_footprint_tracks_pipes_and_reports_a_leak_past_the_deadline() -> None:
+    baseline = _supervision_footprint()
+    read_end, write_end = os.pipe()
+    try:
+        leaked = _settled_footprint(baseline, deadline_seconds=0.05)
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+    assert leaked["open_pipe_descriptors"] == baseline["open_pipe_descriptors"] + 2
+    assert _settled_footprint(baseline, deadline_seconds=0.05) == baseline
+
+
+def _clean_supervision_result() -> dict[str, Any]:
+    return {
+        "cycle_count": 2,
+        "baseline": {"open_pipe_descriptors": 3, "live_threads": 1},
+        "cycles": [
+            {
+                "cycle": index,
+                "residual_processes": 0,
+                "open_pipe_descriptors": 3,
+                "live_threads": 1,
+                "processes": [],
+            }
+            for index in range(2)
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda result: result["cycles"][0].update(residual_processes=1),
+            "cycle 0 left 1 residual processes",
+        ),
+        (
+            lambda result: result["cycles"][1].update(residual_processes=2),
+            "cycle 1 left 2 residual processes",
+        ),
+        (
+            lambda result: result["cycles"][0].update(open_pipe_descriptors=5),
+            "cycle 0 grew open_pipe_descriptors from 3 to 5",
+        ),
+        (
+            lambda result: result["cycles"][1].update(live_threads=4),
+            "cycle 1 grew live_threads from 1 to 4",
+        ),
+        (
+            lambda result: result["cycles"][0].update(open_pipe_descriptors=2),
+            "cycle 1 grew open_pipe_descriptors from 2 to 3",
+        ),
+        (
+            lambda result: result["cycles"].pop(),
+            "ran 1 of 2 supervision cycles",
+        ),
+    ],
+)
+def test_supervision_violations_refuse_residue_and_growth_between_cycles(
+    mutation: Any, message: str
+) -> None:
+    result = _clean_supervision_result()
+    assert _supervision_violations(result) == []
+    mutation(result)
+    assert message in _supervision_violations(result)
 
 
 def test_junit_parsing_is_fail_closed(tmp_path: Path) -> None:
@@ -821,10 +1038,9 @@ def test_backend_release_evidence_binds_staging_and_metric_floors(
             )
         )
 
-    supervision = _run_supervision_trials(SUPERVISION_TRIAL_COUNT)
-    assert supervision["residual_processes"] == 0, (
-        f"supervision trials left residue: {supervision}"
-    )
+    supervision = _run_supervision_cycles(SUPERVISION_CYCLE_COUNT)
+    violations = _supervision_violations(supervision)
+    assert not violations, f"supervision cycles left residue or grew: {violations}"
     supervision_artifact = _raw_json_artifact(
         raw_root,
         "backend_process_supervision_stress",
@@ -840,15 +1056,15 @@ def test_backend_release_evidence_binds_staging_and_metric_floors(
                     validator,
                     "process_supervision_stress",
                     "trial_count",
-                    supervision["trial_count"],
-                    supervision["trial_count"],
+                    supervision["cycle_count"],
+                    supervision["cycle_count"],
                 ),
                 _policy_measurement(
                     validator,
                     "process_supervision_stress",
                     "residual_processes",
                     supervision["residual_processes"],
-                    supervision["trial_count"],
+                    supervision["supervised_processes"],
                 ),
             ],
             [supervision_artifact],

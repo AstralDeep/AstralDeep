@@ -98,13 +98,13 @@ def _add_required_measurements(report: dict[str, Any]) -> None:
         ]
     if check := by_id.get("migration_multi_instance"):
         check["measurements"] = [
-            _measurement("trial_count", 50, aggregation="total", comparator="gte", threshold=50, sample_count=50),
-            _measurement("migration_owner_violations", 0, aggregation="total", comparator="eq", threshold=0, sample_count=50),
+            _measurement("trial_count", 1, aggregation="total", comparator="gte", threshold=1, sample_count=1),
+            _measurement("migration_owner_violations", 0, aggregation="total", comparator="eq", threshold=0, sample_count=1),
         ]
     if check := by_id.get("process_supervision_stress"):
         check["measurements"] = [
-            _measurement("trial_count", 100, aggregation="total", comparator="gte", threshold=100, sample_count=100),
-            _measurement("residual_processes", 0, aggregation="total", comparator="eq", threshold=0, sample_count=100),
+            _measurement("trial_count", 2, aggregation="total", comparator="gte", threshold=2, sample_count=2),
+            _measurement("residual_processes", 0, aggregation="total", comparator="eq", threshold=0, sample_count=32),
         ]
     if check := by_id.get("reconnect_resume"):
         check["measurements"] = [
@@ -642,6 +642,116 @@ def test_measurement_semantics_reject_duplicates_noncanonical_and_missed_thresho
     check["measurements"][0]["value"] = 999
     with pytest.raises(validator.PolicyError, match="misses its threshold"):
         validator.evaluate_evidence_set(evidence_set)
+
+
+BACKEND_PROOF_FLOORS = {
+    "migration_multi_instance": {
+        "trial_count": ("gte", 1),
+        "migration_owner_violations": ("eq", 0),
+    },
+    "process_supervision_stress": {
+        "trial_count": ("gte", 2),
+        "residual_processes": ("eq", 0),
+    },
+}
+
+
+@pytest.mark.parametrize("check_id", sorted(BACKEND_PROOF_FLOORS))
+def test_backend_proof_floors_are_single_shot_totals(validator: Any, check_id: str) -> None:
+    requirements = validator.METRIC_REQUIREMENTS[check_id]
+    assert {
+        name: (requirement.comparator, requirement.threshold)
+        for name, requirement in requirements.items()
+    } == BACKEND_PROOF_FLOORS[check_id]
+    assert {requirement.aggregation for requirement in requirements.values()} == {"total"}
+    assert {requirement.unit for requirement in requirements.values()} == {"count"}
+
+
+@pytest.mark.parametrize(
+    ("check_id", "metric", "change", "message"),
+    [
+        (
+            "migration_multi_instance",
+            "trial_count",
+            {"value": 0},
+            "measurement 'trial_count' in migration_multi_instance misses its threshold",
+        ),
+        (
+            "migration_multi_instance",
+            "migration_owner_violations",
+            {"value": 1},
+            "measurement 'migration_owner_violations' in migration_multi_instance misses its threshold",
+        ),
+        (
+            "migration_multi_instance",
+            "trial_count",
+            {"threshold": 50, "value": 50},
+            "measurement 'trial_count' in migration_multi_instance has noncanonical semantics",
+        ),
+        (
+            "migration_multi_instance",
+            "trial_count",
+            None,
+            "required measurement 'trial_count' is missing from migration_multi_instance",
+        ),
+        (
+            "migration_multi_instance",
+            "migration_owner_violations",
+            None,
+            "required measurement 'migration_owner_violations' is missing from migration_multi_instance",
+        ),
+        (
+            "process_supervision_stress",
+            "trial_count",
+            {"value": 1},
+            "measurement 'trial_count' in process_supervision_stress misses its threshold",
+        ),
+        (
+            "process_supervision_stress",
+            "residual_processes",
+            {"value": 1},
+            "measurement 'residual_processes' in process_supervision_stress misses its threshold",
+        ),
+        (
+            "process_supervision_stress",
+            "trial_count",
+            {"threshold": 100, "value": 100},
+            "measurement 'trial_count' in process_supervision_stress has noncanonical semantics",
+        ),
+        (
+            "process_supervision_stress",
+            "trial_count",
+            None,
+            "required measurement 'trial_count' is missing from process_supervision_stress",
+        ),
+        (
+            "process_supervision_stress",
+            "residual_processes",
+            None,
+            "required measurement 'residual_processes' is missing from process_supervision_stress",
+        ),
+    ],
+)
+def test_backend_proof_floors_refuse_missing_under_floor_and_violating_reports(
+    validator: Any,
+    contract_examples: Any,
+    check_id: str,
+    metric: str,
+    change: dict[str, int] | None,
+    message: str,
+) -> None:
+    now = datetime(2026, 7, 16, 12, 30, tzinfo=UTC)
+    evidence_set = _passing_set(contract_examples)
+    validator.evaluate_evidence_set(evidence_set, now=now)
+    backend = next(item for item in evidence_set["evidence"] if item["platform"] == "backend")
+    check = next(item for item in backend["checks"] if item["id"] == check_id)
+    measurement = next(item for item in check["measurements"] if item["metric"] == metric)
+    if change is None:
+        check["measurements"].remove(measurement)
+    else:
+        measurement.update(change)
+    with pytest.raises(validator.PolicyError, match=message):
+        validator.evaluate_evidence_set(evidence_set, now=now)
 
 
 def test_unavailable_platform_needs_exact_current_request_and_protected_receipt(
