@@ -1,0 +1,7 @@
+# Machine-local Spec Kit state — not meant to be shared.
+# Managed by the Specify CLI; safe to edit (your changes are preserved on refresh).
+
+# AstralDeep tracks feature.json deliberately; AGENTS.md treats it as an unverified pointer.
+
+# Per-machine extension config overrides.
+extensions/*/local-config.yml

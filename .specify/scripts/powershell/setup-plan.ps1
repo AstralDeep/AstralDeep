@@ -4,7 +4,10 @@
 [CmdletBinding()]
 param(
     [switch]$Json,
-    [switch]$Help
+    [switch]$Help,
+    # Capture extra positional arguments to match Bash/Python behavior.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$RemainingArgs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,47 +20,69 @@ if ($Help) {
     exit 0
 }
 
+if ($RemainingArgs.Count -gt 0) {
+    [Console]::Error.WriteLine("ERROR: Unknown option '$($RemainingArgs[0])'")
+    exit 1
+}
+
 # Load common functions
 . "$PSScriptRoot/common.ps1"
 
 # Get all paths and variables from common functions
-$paths = Get-FeaturePathsEnv
-
-# If feature.json pins an existing feature directory, branch naming is not required.
-if (-not (Test-FeatureJsonMatchesFeatureDir -RepoRoot $paths.REPO_ROOT -ActiveFeatureDir $paths.FEATURE_DIR)) {
-    if (-not (Test-FeatureBranch -Branch $paths.CURRENT_BRANCH -HasGit $paths.HAS_GIT)) {
-        exit 1
-    }
+$paths = Get-FeaturePathsEnv -ReturnNullOnError
+if (-not $paths) {
+    [Console]::Error.WriteLine("ERROR: Failed to resolve feature paths")
+    exit 1
 }
 
 # Ensure the feature directory exists
 New-Item -ItemType Directory -Path $paths.FEATURE_DIR -Force | Out-Null
 
-# Copy plan template if it exists, otherwise note it or create empty file
-$template = Resolve-Template -TemplateName 'plan-template' -RepoRoot $paths.REPO_ROOT
-if ($template -and (Test-Path $template)) { 
-    Copy-Item $template $paths.IMPL_PLAN -Force
-    Write-Output "Copied plan template to $($paths.IMPL_PLAN)"
+# Copy plan template if plan doesn't already exist
+if (Test-Path $paths.IMPL_PLAN -PathType Leaf) {
+    if ($Json) {
+        [Console]::Error.WriteLine("Plan already exists at $($paths.IMPL_PLAN), skipping template copy")
+    } else {
+        Write-Output "Plan already exists at $($paths.IMPL_PLAN), skipping template copy"
+    }
 } else {
-    Write-Warning "Plan template not found"
-    # Create a basic plan file if template doesn't exist
-    New-Item -ItemType File -Path $paths.IMPL_PLAN -Force | Out-Null
+    $content = Resolve-TemplateContent -TemplateName 'plan-template' -RepoRoot $paths.REPO_ROOT
+    if ($null -ne $content) {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($paths.IMPL_PLAN, $content, $utf8NoBom)
+        # Emit the copy status like the bash twin (setup-plan.sh); route to stderr
+        # in -Json mode so stdout stays pure JSON, matching the sibling messages.
+        if ($Json) {
+            [Console]::Error.WriteLine("Copied plan template to $($paths.IMPL_PLAN)")
+        } else {
+            Write-Output "Copied plan template to $($paths.IMPL_PLAN)"
+        }
+    } else {
+        # Match the bash twin's wording and stream routing (stderr in -Json so
+        # stdout stays pure JSON, stdout otherwise), consistent with the sibling
+        # "Copied plan template" message above.
+        if ($Json) {
+            [Console]::Error.WriteLine("Warning: Plan template not found")
+        } else {
+            Write-Output "Warning: Plan template not found"
+        }
+        # Create a basic plan file if template doesn't exist
+        New-Item -ItemType File -Path $paths.IMPL_PLAN -Force | Out-Null
+    }
 }
 
 # Output results
 if ($Json) {
-    $result = [PSCustomObject]@{ 
+    $result = [PSCustomObject]@{
         FEATURE_SPEC = $paths.FEATURE_SPEC
         IMPL_PLAN = $paths.IMPL_PLAN
-        SPECS_DIR = $paths.FEATURE_DIR
+        FEATURE_DIR = $paths.FEATURE_DIR
         BRANCH = $paths.CURRENT_BRANCH
-        HAS_GIT = $paths.HAS_GIT
     }
     $result | ConvertTo-Json -Compress
 } else {
     Write-Output "FEATURE_SPEC: $($paths.FEATURE_SPEC)"
     Write-Output "IMPL_PLAN: $($paths.IMPL_PLAN)"
-    Write-Output "SPECS_DIR: $($paths.FEATURE_DIR)"
+    Write-Output "FEATURE_DIR: $($paths.FEATURE_DIR)"
     Write-Output "BRANCH: $($paths.CURRENT_BRANCH)"
-    Write-Output "HAS_GIT: $($paths.HAS_GIT)"
 }

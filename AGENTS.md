@@ -96,11 +96,13 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Spec Kit with Codex
 
-All agent integrations share this `AGENTS.md`. The repository's context updater routes both Claude and Codex here. If an older installed skill or template names a different instruction file, update this file instead, including its Spec Kit markers; do not recreate the retired file. Preserve the installed integration manifests so upgrades can identify local customizations.
+All agent integrations share this `AGENTS.md`. Spec Kit 1.0.12 skills no longer run an agent-context updater; the project-owned `.specify/scripts/powershell/update-agent-context.ps1` runs only when invoked explicitly and routes both Claude and Codex here, so the Spec Kit marker block below is otherwise maintained by hand. If an older installed skill or template names a different instruction file, update this file instead, including its Spec Kit markers; do not recreate the retired file. Preserve the installed integration manifests so upgrades can identify local customizations.
+
+AstralDeep's plan and tasks template customizations live in `.specify/templates/overrides/`, which Spec Kit's template resolver prefers over the core `.specify/templates/` copies. Edit the overrides; integration upgrades refresh the core copies.
 
 Codex discovers the repository-local skills in `.agents/skills/`. Invoke them with `$skill-name` (not Claude's slash-command spelling). Start a new Codex task/session after skill installation or updates so discovery refreshes.
 
-The ten core skills are installed and hash-tracked by `.specify/integrations/codex.manifest.json`. The five `speckit-git-*` skills are deliberately project-owned Codex adapters for `.specify/extensions/git/commands/` and its Bash/PowerShell scripts; Spec Kit integration upgrade/uninstall does not manage them. Preserve their remote-collision and working-tree safety additions when syncing extension changes.
+The ten core skills are installed and hash-tracked by `.specify/integrations/codex.manifest.json`. The five `speckit-git-*` skills are deliberately project-owned Codex adapters for `.specify/extensions/git/commands/` and its Bash/PowerShell scripts; Spec Kit integration upgrade/uninstall does not manage them. Preserve their remote-collision and working-tree safety additions when syncing extension changes. The installed git extension is the 2026-05-06 build these adapters target; the git extension bundled with Spec Kit 1.0.12 (1.0.1) renames `create-new-feature.sh` to `create-new-feature-branch.sh` and adds Python helpers, so update it only together with the adapters.
 
 ### Mandatory feature-ownership preflight
 
@@ -133,7 +135,7 @@ After implementation, `$speckit-converge` is optional: use it only when the user
 - `speckit-specify` has a mandatory branch-creation hook. Later hooks may create task-scoped local commits under the standing permission above. Report these mutations before executing them and preserve unrelated working-tree changes; do not ask for separate commit authorization.
 - `speckit-taskstoissues` mutates GitHub; run it only when the user explicitly requests issue creation/synchronization.
 - Never point a workflow at a feature merely because it is the newest directory. Resolve the intended feature from the branch, `feature.json`, artifacts, remotes, and user context first.
-- This Codex integration is pinned in project metadata at Spec Kit 0.12.16. The executable on `PATH` may be older on some machines; for integration management, use a version-matched one-shot CLI or deliberately upgrade the user tool. Do not run the older executable against managed integration state, blindly reinitialize Claude, or overwrite modified Claude-managed files.
+- This Codex integration is pinned in project metadata at Spec Kit 1.0.12. The executable on `PATH` may be older on some machines; for integration management, use a version-matched one-shot CLI or deliberately upgrade the user tool. Do not run the older executable against managed integration state, blindly reinitialize Claude, or overwrite modified Claude-managed files.
 - The core skills were rendered with PowerShell paths. Script-family selection happens before the skill body: use PowerShell scripts on Windows and substitute the same-purpose Bash script plus its native flags on POSIX. A literal PowerShell path in generated content is not a requirement to install PowerShell on macOS/Linux.
 
 ## Build and verification

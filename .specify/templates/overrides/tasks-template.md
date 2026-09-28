@@ -51,7 +51,7 @@ description: "Task list template for feature implementation"
 
 - [ ] T001 Create project structure per implementation plan
 - [ ] T002 Initialize [language] project with [framework] dependencies
-- [ ] T003 [P] Configure linting and formatting tools
+- [ ] T003 [P] Configure tracked linting and formatting tools for every maintained language changed
 
 ---
 
@@ -156,6 +156,13 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX Performance optimization across all stories
 - [ ] TXXX [P] Additional unit tests (if requested) in tests/unit/
 - [ ] TXXX Security hardening
+- [ ] TXXX Run every maintained-language lint gate, including TypeScript/JavaScript when changed
+- [ ] TXXX Validate runtime-infrastructure changes in a qualifying persistent or ephemeral staging deployment using the same candidate artifact, real dependencies and affected clients, representative migrated data, and candidate-bound evidence
+- [ ] TXXX Test bounded platform-unavailability requests, machine-verifiable native protected-CI release-owner approval, non-waivable staging/trust checks, create-only protected debt/resolution history outside the candidate tree, seven-day expiry, exact ledger snapshots, and next-release passing-evidence resolution receipts; prove local/candidate jobs cannot authorize or mutate them
+- [ ] TXXX Configure and test a candidate-independent protected verifier that reconstructs trusted inputs, runs pinned policy, attests a bounded-lifetime final decision, and owns a required gate bound to its installed protected workflow identity rather than a name-only check
+- [ ] TXXX Run deterministic release-evidence collection, normalization, and parsing locally before push; retain canonical inputs/digests and prove the local result cannot authorize merge or release
+- [ ] TXXX If provider-bound inputs structurally cannot exist before an exact SHA is remote, obtain provider-native lead approval bound to the initial SHA, path scope, and RFC 3339 expiry within 168 hours; keep the PR draft/non-mergeable, pass all locally executable gates, retain an external candidate-bound fail-closed missing-input inventory, run the verifier and lead allowlist from the current default branch before every push, record every SHA outside the candidate tree, keep candidate jobs unprivileged, block candidate refs from privileged manual dispatch, forbid gate/product weakening, preserve staging/coverage/trust/integrity/security/privacy checks, and close the full exact-candidate local/protected gates before promotion
+- [ ] TXXX Keep candidate workflows unprivileged and exercise signing/publication only through a separately pinned protected CI publisher with create-only collision checks, protected approval, and a native short-lived job-scoped token—never a repository-scoped GitHub App or custom token broker
 - [ ] TXXX Run quickstart.md validation
 
 ---

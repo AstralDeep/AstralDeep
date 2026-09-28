@@ -7,13 +7,14 @@ param(
     [switch]$DryRun,
     [string]$ShortName,
     [Parameter()]
-    [long]$Number = 0,
+    [string]$Number = '',
     [switch]$Timestamp,
     [switch]$Help,
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$FeatureDescription
 )
 $ErrorActionPreference = 'Stop'
+$maxBranchLength = 244
 
 # Show help if requested
 if ($Help) {
@@ -21,10 +22,10 @@ if ($Help) {
     Write-Host ""
     Write-Host "Options:"
     Write-Host "  -Json               Output in JSON format"
-    Write-Host "  -DryRun             Compute branch name and paths without creating branches, directories, or files"
-    Write-Host "  -AllowExistingBranch  Switch to branch if it already exists instead of failing"
-    Write-Host "  -ShortName <name>   Provide a custom short name (2-4 words) for the branch"
-    Write-Host "  -Number N           Specify branch number manually (overrides auto-detection)"
+    Write-Host "  -DryRun             Compute feature name and paths without creating directories or files"
+    Write-Host "  -AllowExistingBranch  Reuse an existing feature directory if it already exists"
+    Write-Host "  -ShortName <name>   Provide a custom short name (2-4 words) for the feature"
+    Write-Host "  -Number N           Prefer a feature number (auto-corrected if its specs prefix exists)"
     Write-Host "  -Timestamp          Use timestamp prefix (YYYYMMDD-HHMMSS) instead of sequential numbering"
     Write-Host "  -Help               Show this help message"
     Write-Host ""
@@ -67,95 +68,19 @@ function Get-HighestNumberFromSpecs {
     return $highest
 }
 
-# Extract the highest sequential feature number from a list of branch/ref names.
-# Shared by Get-HighestNumberFromBranches and Get-HighestNumberFromRemoteRefs.
-function Get-HighestNumberFromNames {
-    param([string[]]$Names)
-
-    [long]$highest = 0
-    foreach ($name in $Names) {
-        if ($name -match '^(\d{3,})-' -and $name -notmatch '^\d{8}-\d{6}-') {
-            [long]$num = 0
-            if ([long]::TryParse($matches[1], [ref]$num) -and $num -gt $highest) {
-                $highest = $num
-            }
-        }
-    }
-    return $highest
-}
-
-function Get-HighestNumberFromBranches {
-    param()
-
-    try {
-        $branches = git branch -a 2>$null
-        if ($LASTEXITCODE -eq 0 -and $branches) {
-            $cleanNames = $branches | ForEach-Object {
-                $_.Trim() -replace '^\*?\s+', '' -replace '^remotes/[^/]+/', ''
-            }
-            return Get-HighestNumberFromNames -Names $cleanNames
-        }
-    } catch {
-        Write-Verbose "Could not check Git branches: $_"
-    }
-    return 0
-}
-
-function Get-HighestNumberFromRemoteRefs {
-    [long]$highest = 0
-    try {
-        $remotes = git remote 2>$null
-        if ($remotes) {
-            foreach ($remote in $remotes) {
-                $env:GIT_TERMINAL_PROMPT = '0'
-                $refs = git ls-remote --heads $remote 2>$null
-                $env:GIT_TERMINAL_PROMPT = $null
-                if ($LASTEXITCODE -eq 0 -and $refs) {
-                    $refNames = $refs | ForEach-Object {
-                        if ($_ -match 'refs/heads/(.+)$') { $matches[1] }
-                    } | Where-Object { $_ }
-                    $remoteHighest = Get-HighestNumberFromNames -Names $refNames
-                    if ($remoteHighest -gt $highest) { $highest = $remoteHighest }
-                }
-            }
-        }
-    } catch {
-        Write-Verbose "Could not query remote refs: $_"
-    }
-    return $highest
-}
-
-# Return next available branch number. When SkipFetch is true, queries remotes
-# via ls-remote (read-only) instead of fetching.
-function Get-NextBranchNumber {
+function Test-SpecPrefixInUse {
     param(
         [string]$SpecsDir,
-        [switch]$SkipFetch
+        [string]$FeatureNum
     )
 
-    if ($SkipFetch) {
-        # Side-effect-free: query remotes via ls-remote
-        $highestBranch = Get-HighestNumberFromBranches
-        $highestRemote = Get-HighestNumberFromRemoteRefs
-        $highestBranch = [Math]::Max($highestBranch, $highestRemote)
-    } else {
-        # Fetch all remotes to get latest branch info (suppress errors if no remotes)
-        try {
-            git fetch --all --prune 2>$null | Out-Null
-        } catch {
-            # Ignore fetch errors
-        }
-        $highestBranch = Get-HighestNumberFromBranches
+    if (-not (Test-Path -LiteralPath $SpecsDir -PathType Container)) {
+        return $false
     }
 
-    # Get highest number from ALL specs (not just matching short name)
-    $highestSpec = Get-HighestNumberFromSpecs -SpecsDir $SpecsDir
-
-    # Take the maximum of both
-    $maxNum = [Math]::Max($highestBranch, $highestSpec)
-
-    # Return next number
-    return $maxNum + 1
+    return $null -ne (Get-ChildItem -LiteralPath $SpecsDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "$FeatureNum-*" } |
+        Select-Object -First 1)
 }
 
 function ConvertTo-CleanBranchName {
@@ -163,14 +88,29 @@ function ConvertTo-CleanBranchName {
 
     return $Name.ToLower() -replace '[^a-z0-9]', '-' -replace '-{2,}', '-' -replace '^-', '' -replace '-$', ''
 }
-# Load common functions (includes Get-RepoRoot, Test-HasGit, Resolve-Template)
+
+function Get-FittedBranchName {
+    param(
+        [string]$FeatureNum,
+        [string]$BranchSuffix
+    )
+
+    $fittedName = "$FeatureNum-$BranchSuffix"
+    if ($fittedName.Length -gt $maxBranchLength) {
+        $prefixLength = $FeatureNum.Length + 1
+        $maxSuffixLength = $maxBranchLength - $prefixLength
+        $truncatedSuffix = $BranchSuffix.Substring(0, [Math]::Min($BranchSuffix.Length, $maxSuffixLength))
+        $truncatedSuffix = $truncatedSuffix -replace '-$', ''
+        $fittedName = "$FeatureNum-$truncatedSuffix"
+    }
+
+    return $fittedName
+}
+# Load common functions (includes Get-RepoRoot and Resolve-Template)
 . "$PSScriptRoot/common.ps1"
 
-# Use common.ps1 functions which prioritize .specify over git
+# Use common.ps1 functions which prioritize .specify
 $repoRoot = Get-RepoRoot
-
-# Check if git is available at this repo root (not a parent)
-$hasGit = Test-HasGit
 
 Set-Location $repoRoot
 
@@ -205,8 +145,13 @@ function Get-BranchName {
         # Keep words that are length >= 3 OR appear as uppercase in original (likely acronyms)
         if ($word.Length -ge 3) {
             $meaningfulWords += $word
-        } elseif ($Description -match "\b$($word.ToUpper())\b") {
-            # Keep short words if they appear as uppercase in original (likely acronyms)
+        } elseif ($Description -cmatch "(?<![0-9A-Za-z_])$($word.ToUpper())(?![0-9A-Za-z_])") {
+            # Keep short words only if they appear as uppercase in original (likely
+            # acronyms). Use -cmatch so the comparison is case-sensitive, matching the
+            # bash script's case-sensitive grep; -match would be case-insensitive and
+            # would keep every short word. The boundaries are spelled out as ASCII
+            # because .NET's \b is Unicode-aware, so an accented letter next to the
+            # acronym would suppress the match that bash's LC_ALL=C grep still makes.
             $meaningfulWords += $word
         }
     }
@@ -219,7 +164,14 @@ function Get-BranchName {
     } else {
         # Fallback to original logic if no meaningful words found
         $result = ConvertTo-CleanBranchName -Name $Description
-        $fallbackWords = ($result -split '-') | Where-Object { $_ } | Select-Object -First 3
+        # @() keeps this an array. ConvertTo-CleanBranchName blanks every
+        # non-[a-z0-9] character, so a description written in a non-Latin script
+        # (or made only of punctuation) leaves nothing for the pipeline to
+        # emit -- it yields $null, and [string]::Join on $null throws
+        # ArgumentNullException. With $ErrorActionPreference = 'Stop' that is
+        # terminating, so the script died with a .NET stack trace and exit 1
+        # where the bash and Python twins both return an empty suffix.
+        $fallbackWords = @(($result -split '-') | Where-Object { $_ } | Select-Object -First 3)
         return [string]::Join('-', $fallbackWords)
     }
 }
@@ -233,10 +185,17 @@ if ($ShortName) {
     $branchSuffix = Get-BranchName -Description $featureDesc
 }
 
-# Warn if -Number and -Timestamp are both specified
-if ($Timestamp -and $Number -ne 0) {
-    Write-Warning "[specify] Warning: -Number is ignored when -Timestamp is used"
-    $Number = 0
+if (-not $branchSuffix) {
+    [Console]::Error.WriteLine("[specify] Warning: Feature name is empty after removing unsupported characters. Use -ShortName with ASCII letters or digits (for example, user-auth).")
+}
+
+# Treat an explicit empty string as omitted, matching the bash and Python twins.
+$hasNumber = $PSBoundParameters.ContainsKey('Number') -and $Number -ne ''
+
+# Warn if -Number and -Timestamp are both specified.
+if ($Timestamp -and $hasNumber) {
+    [Console]::Error.WriteLine("[specify] Warning: -Number is ignored when -Timestamp is used")
+    $Number = ''
 }
 
 # Determine branch prefix
@@ -244,120 +203,115 @@ if ($Timestamp) {
     $featureNum = Get-Date -Format 'yyyyMMdd-HHmmss'
     $branchName = "$featureNum-$branchSuffix"
 } else {
-    # Determine branch number
-    if ($Number -eq 0) {
-        if ($DryRun -and $hasGit) {
-            # Dry-run: query remotes via ls-remote (side-effect-free, no fetch)
-            $Number = Get-NextBranchNumber -SpecsDir $specsDir -SkipFetch
-        } elseif ($DryRun) {
-            # Dry-run without git: local spec dirs only
-            $Number = (Get-HighestNumberFromSpecs -SpecsDir $specsDir) + 1
-        } elseif ($hasGit) {
-            # Check existing branches on remotes
-            $Number = Get-NextBranchNumber -SpecsDir $specsDir
-        } else {
-            # Fall back to local directory check
-            $Number = (Get-HighestNumberFromSpecs -SpecsDir $specsDir) + 1
+    # Determine branch number from existing feature directories. Auto-detect only
+    # when -Number was not supplied; an explicit value (including 0) is honored,
+    # matching the bash twin's `[ -z "$BRANCH_NUMBER" ]` check.
+    [long]$resolvedNumber = 0
+    if (-not $hasNumber) {
+        $highestNumber = Get-HighestNumberFromSpecs -SpecsDir $specsDir
+        if ($highestNumber -eq [long]::MaxValue) {
+            Write-Error "Error: feature number must be between 0 and $([long]::MaxValue), got '9223372036854775808'"
+            exit 1
+        }
+        $resolvedNumber = $highestNumber + 1
+    } elseif ($Number -notmatch '^[0-9]+$') {
+        Write-Error "Error: -Number must be an unsigned integer, got '$Number'"
+        exit 1
+    } elseif (-not [long]::TryParse($Number, [ref]$resolvedNumber)) {
+        Write-Error "Error: -Number must be between 0 and $([long]::MaxValue), got '$Number'"
+        exit 1
+    }
+
+    $featureNum = ('{0:000}' -f $resolvedNumber)
+
+    # Treat an explicit number as a preference when its prefix is already used
+    # by a feature directory. Auto-detected numbers are already conflict-free.
+    $specConflict = $false
+    if ($hasNumber -and (Test-Path -LiteralPath $specsDir -PathType Container)) {
+        $requestedBranchName = Get-FittedBranchName -FeatureNum $featureNum -BranchSuffix $branchSuffix
+        $requestedDir = Join-Path $specsDir $requestedBranchName
+        if (-not $AllowExistingBranch -or -not (Test-Path -LiteralPath $requestedDir -PathType Container)) {
+            $specConflict = Test-SpecPrefixInUse -SpecsDir $specsDir -FeatureNum $featureNum
         }
     }
 
-    $featureNum = ('{0:000}' -f $Number)
-    $branchName = "$featureNum-$branchSuffix"
+    if ($specConflict) {
+        $requestedNum = $featureNum
+        $highestNumber = Get-HighestNumberFromSpecs -SpecsDir $specsDir
+        $resolvedNumber = $highestNumber
+        do {
+            if ($resolvedNumber -eq [long]::MaxValue) {
+                Write-Error "Error: feature number must be between 0 and $([long]::MaxValue), got '9223372036854775808'"
+                exit 1
+            }
+            $resolvedNumber++
+            $featureNum = ('{0:000}' -f $resolvedNumber)
+        } while (Test-SpecPrefixInUse -SpecsDir $specsDir -FeatureNum $featureNum)
+        [Console]::Error.WriteLine("[specify] Warning: -Number $requestedNum conflicts with an existing spec directory; using $featureNum instead")
+    }
+
 }
 
 # GitHub enforces a 244-byte limit on branch names
 # Validate and truncate if necessary
-$maxBranchLength = 244
-if ($branchName.Length -gt $maxBranchLength) {
-    # Calculate how much we need to trim from suffix
-    # Account for prefix length: timestamp (15) + hyphen (1) = 16, or sequential (3) + hyphen (1) = 4
-    $prefixLength = $featureNum.Length + 1
-    $maxSuffixLength = $maxBranchLength - $prefixLength
-
-    # Truncate suffix
-    $truncatedSuffix = $branchSuffix.Substring(0, [Math]::Min($branchSuffix.Length, $maxSuffixLength))
-    # Remove trailing hyphen if truncation created one
-    $truncatedSuffix = $truncatedSuffix -replace '-$', ''
-
-    $originalBranchName = $branchName
-    $branchName = "$featureNum-$truncatedSuffix"
-
-    Write-Warning "[specify] Branch name exceeded GitHub's 244-byte limit"
-    Write-Warning "[specify] Original: $originalBranchName ($($originalBranchName.Length) bytes)"
-    Write-Warning "[specify] Truncated to: $branchName ($($branchName.Length) bytes)"
+$originalBranchName = "$featureNum-$branchSuffix"
+$branchName = Get-FittedBranchName -FeatureNum $featureNum -BranchSuffix $branchSuffix
+if ($branchName -ne $originalBranchName) {
+    [Console]::Error.WriteLine("[specify] Warning: Branch name exceeded GitHub's 244-byte limit")
+    [Console]::Error.WriteLine("[specify] Original: $originalBranchName ($($originalBranchName.Length) bytes)")
+    [Console]::Error.WriteLine("[specify] Truncated to: $branchName ($($branchName.Length) bytes)")
 }
 
 $featureDir = Join-Path $specsDir $branchName
 $specFile = Join-Path $featureDir 'spec.md'
 
 if (-not $DryRun) {
-    if ($hasGit) {
-        $branchCreated = $false
-        $branchCreateError = ''
-        try {
-            $branchCreateError = git checkout -q -b $branchName 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0) {
-                $branchCreated = $true
-            }
-        } catch {
-            $branchCreateError = $_.Exception.Message
+    if ((Test-Path -LiteralPath $featureDir -PathType Container) -and -not $AllowExistingBranch) {
+        if ($Timestamp) {
+            Write-Error "Error: Feature directory '$featureDir' already exists. Rerun to get a new timestamp or use a different -ShortName."
+        } else {
+            Write-Error "Error: Feature directory '$featureDir' already exists. Please use a different feature name or specify a different number with -Number."
         }
+        exit 1
+    }
 
-        if (-not $branchCreated) {
-            $currentBranch = ''
-            try { $currentBranch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim() } catch {}
-            # Check if branch already exists
-            $existingBranch = git branch --list $branchName 2>$null
-            if ($existingBranch) {
-                if ($AllowExistingBranch) {
-                    # If we're already on the branch, continue without another checkout.
-                    if ($currentBranch -eq $branchName) {
-                        # Already on the target branch — nothing to do
-                    } else {
-                        # Otherwise switch to the existing branch instead of failing.
-                        $switchBranchError = git checkout -q $branchName 2>&1 | Out-String
-                        if ($LASTEXITCODE -ne 0) {
-                            if ($switchBranchError) {
-                                Write-Error "Error: Branch '$branchName' exists but could not be checked out.`n$($switchBranchError.Trim())"
-                            } else {
-                                Write-Error "Error: Branch '$branchName' exists but could not be checked out. Resolve any uncommitted changes or conflicts and try again."
-                            }
-                            exit 1
-                        }
-                    }
-                } elseif ($Timestamp) {
-                    Write-Error "Error: Branch '$branchName' already exists. Rerun to get a new timestamp or use a different -ShortName."
-                    exit 1
-                } else {
-                    Write-Error "Error: Branch '$branchName' already exists. Please use a different feature name or specify a different number with -Number."
-                    exit 1
-                }
-            } else {
-                if ($branchCreateError) {
-                    Write-Error "Error: Failed to create git branch '$branchName'.`n$($branchCreateError.Trim())"
-                } else {
-                    Write-Error "Error: Failed to create git branch '$branchName'. Please check your git configuration and try again."
-                }
-                exit 1
-            }
-        }
-    } else {
-        Write-Warning "[specify] Warning: Git repository not detected; skipped branch creation for $branchName"
+    $needsSpec = -not (Test-Path -PathType Leaf $specFile)
+    $content = $null
+    if ($needsSpec) {
+        $content = Resolve-TemplateContent -TemplateName 'spec-template' -RepoRoot $repoRoot
     }
 
     New-Item -ItemType Directory -Path $featureDir -Force | Out-Null
 
-    if (-not (Test-Path -PathType Leaf $specFile)) {
-        $template = Resolve-Template -TemplateName 'spec-template' -RepoRoot $repoRoot
-        if ($template -and (Test-Path $template)) {
-            Copy-Item $template $specFile -Force
+    if ($needsSpec) {
+        if ($null -ne $content) {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($specFile, $content, $utf8NoBom)
         } else {
+            # Match the bash twin (create-new-feature.sh): warn on stderr that no
+            # spec template was found before creating an empty spec file, so the
+            # missing-template signal is not silently swallowed on Windows.
+            [Console]::Error.WriteLine("Warning: Spec template not found; created empty spec file")
             New-Item -ItemType File -Path $specFile -Force | Out-Null
         }
     }
 
-    # Set the SPECIFY_FEATURE environment variable for the current session
+    # Persist to .specify/feature.json so downstream commands can find the
+    # feature, unless the orchestrator opted out via SPECIFY_FEATURE_NO_PERSIST (#4129).
+    if ($env:SPECIFY_FEATURE_NO_PERSIST -ne '1' -and $env:SPECIFY_FEATURE_NO_PERSIST -ne 'true') {
+        Save-FeatureJson -RepoRoot $repoRoot -FeatureDirectory $featureDir
+    }
+
+    # Set environment variables for the current session
     $env:SPECIFY_FEATURE = $branchName
+    $env:SPECIFY_FEATURE_DIRECTORY = $featureDir
+
+    $quotedBranchName = "'" + $branchName.Replace("'", "''") + "'"
+    $quotedFeatureDir = "'" + $featureDir.Replace("'", "''") + "'"
+    $featureAssignment = '$env:SPECIFY_FEATURE = ' + $quotedBranchName
+    $directoryAssignment = '$env:SPECIFY_FEATURE_DIRECTORY = ' + $quotedFeatureDir
+    [Console]::Error.WriteLine("# To persist: $featureAssignment")
+    [Console]::Error.WriteLine("#              $directoryAssignment")
 }
 
 if ($Json) {
@@ -365,7 +319,6 @@ if ($Json) {
         BRANCH_NAME = $branchName
         SPEC_FILE = $specFile
         FEATURE_NUM = $featureNum
-        HAS_GIT = $hasGit
     }
     if ($DryRun) {
         $obj | Add-Member -NotePropertyName 'DRY_RUN' -NotePropertyValue $true
@@ -375,8 +328,8 @@ if ($Json) {
     Write-Output "BRANCH_NAME: $branchName"
     Write-Output "SPEC_FILE: $specFile"
     Write-Output "FEATURE_NUM: $featureNum"
-    Write-Output "HAS_GIT: $hasGit"
     if (-not $DryRun) {
-        Write-Output "SPECIFY_FEATURE environment variable set to: $branchName"
+        Write-Output "# To persist in your shell: $featureAssignment"
+        Write-Output "#                           $directoryAssignment"
     }
 }
