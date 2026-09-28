@@ -44,6 +44,7 @@ jobs:
     name: Decide whether to release
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       release: ${{ steps.decide.outputs.release }}
     steps:

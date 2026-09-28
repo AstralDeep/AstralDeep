@@ -93,10 +93,12 @@ def test_voice_identity_is_taken_from_the_staged_projection(
 
 
 def test_windows_coverage_producer_uses_one_unambiguous_source_root() -> None:
-    workflow = (DEEP_WORKFLOWS / "build-windows-candidate.yml").read_text(
-        encoding="utf-8"
-    )
-    step = workflow.split("- name: Run full Windows source suite with coverage", 1)[1]
+    assert "Run full Windows source suite with coverage" not in (
+        DEEP_WORKFLOWS / "build-windows-candidate.yml"
+    ).read_text(encoding="utf-8")
+    workflow = (DEEP_WORKFLOWS / "release-readiness.yml").read_text(encoding="utf-8")
+    job = workflow.split("\n  windows-source-suite:\n", 1)[1].split("\n  windows-producer:\n", 1)[0]
+    step = job.split("- name: Run full Windows source suite with coverage", 1)[1]
     step = step.split("- name:", 1)[0]
 
     assert "working-directory: windows-client" not in step

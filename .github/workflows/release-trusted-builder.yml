@@ -405,6 +405,24 @@ jobs:
                   "source_artifact_id": str(artifact_id),
               }
 
+          supporting_jobs = (
+              "backend-replay-runtime_admission_stress",
+              "backend-replay-scheduler_exactly_once",
+              "backend-replay-migration_multi_instance",
+              "web-tooling",
+              "windows-packaged-smoke",
+              "windows-source-suite",
+              "android-core-coverage",
+              "ios-build",
+              "ios-lane-core",
+              "ios-lane-unit",
+              "ios-lane-ui",
+          )
+          index["supporting_jobs"] = {
+              supporting_job: job_for(supporting_job).get("id")
+              for supporting_job in supporting_jobs
+          }
+
           # Stage outputs are uploaded first. The protected staging driver then
           # writes a manifest containing the actual immutable artifact id, and
           # that manifest is uploaded as a separate immutable artifact.

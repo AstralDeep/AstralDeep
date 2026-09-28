@@ -345,17 +345,22 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     assert completed.returncode == 0, completed.stdout
 
 
-def test_windows_candidate_installs_test_lock_only_after_candidate_build() -> None:
+def test_windows_candidate_build_never_installs_the_test_lock() -> None:
     workflow = WINDOWS_CANDIDATE.read_text(encoding="utf-8")
-    build = workflow.index("- name: Build the unsigned executable exactly once")
-    test_install = workflow.index(
-        "python -m pip install --require-hashes -r "
-        "tooling\\python-ci\\requirements.lock.txt"
+    assert "- name: Build the unsigned executable exactly once" in workflow
+    assert "tooling/python-ci" not in workflow
+    assert "tooling\\python-ci" not in workflow
+    assert "pytest" not in workflow
+    readiness = (REPO_ROOT / ".github" / "workflows" / "release-readiness.yml").read_text(
+        encoding="utf-8"
     )
-    assert build < test_install
-    assert "pytest==" not in workflow
-    assert "pytest-cov==" not in workflow
-    assert "tooling/python-ci/requirements.lock.txt" in workflow
+    for job_name in ("windows-packaged-smoke", "windows-source-suite", "windows-producer"):
+        job = _workflow_job(readiness, job_name)
+        runtime = job.index(
+            "python -m pip install --require-hashes -r "
+            "components/AstralProjection/windows-client/requirements-release.lock.txt"
+        )
+        assert runtime < job.index(LOCK_INSTALL) < job.index("python -m pytest")
 
 
 @bridge_parked

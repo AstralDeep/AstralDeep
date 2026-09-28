@@ -166,7 +166,7 @@ jobs:
     needs: publish-candidate
     runs-on: [self-hosted, astral-staging]
     environment: release-readiness-staging
-    timeout-minutes: 45
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -512,14 +512,85 @@ jobs:
     uses: ./.github/workflows/build-windows-candidate.yml
     with:
       candidate_sha: ${{ inputs.candidate_sha }}
-    secrets:
-      staging_access_token: ${{ secrets.ASTRAL_WINDOWS_SMOKE_TOKEN }}
+
+  backend-replay:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    name: backend-replay-${{ matrix.check }}
+    needs: [stage-deploy, publish-candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        check:
+          - runtime_admission_stress
+          - scheduler_exactly_once
+          - migration_multi_instance
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: astral
+          POSTGRES_PASSWORD: astral_ci
+          POSTGRES_DB: astraldeep
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U astral -d astraldeep"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
+      - name: Pull the exact staged candidate image by digest
+        run: docker pull "${{ needs.publish-candidate.outputs.candidate_image }}"
+      - name: Replay one whole backend reliability suite inside the candidate container
+        env:
+          REPLAY_CHECK: ${{ matrix.check }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/060/backend-replays
+          docker run --rm --network host \
+            -v "$PWD/backend:/app/backend" \
+            -v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro" \
+            -v "$PWD/scripts:/app/scripts:ro" \
+            -v "$PWD/specs:/app/specs:ro" \
+            -v "$PWD/tooling/python-ci:/ci/python:ro" \
+            -v "$PWD/build:/app/build" \
+            -e ASTRAL_ENV=development \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=astraldeep \
+            -e DB_USER=astral \
+            -e DB_PASSWORD=astral_ci \
+            -e AGENT_API_KEY=ci-release-agent-key \
+            -e AUDIT_HMAC_SECRET=ci-release-hmac-secret \
+            -e LOOP_GUARD_ENFORCE=1 \
+            -e ASTRAL_RELEASE_REPLAY_CHECK="$REPLAY_CHECK" \
+            -e ASTRAL_RELEASE_REPLAY_DIRECTORY=/app/build/060/backend-replays \
+            -w /app/backend --entrypoint bash \
+            "${{ needs.publish-candidate.outputs.candidate_image }}" \
+            -c "python -m pip install --require-hashes -r /ci/python/requirements.lock.txt && python -m pytest tests/perf/release_backend_060.py::test_backend_release_replay_retains_one_whole_suite_junit -q -m perf"
+          test -f "build/060/backend-replays/$REPLAY_CHECK.xml"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-replay-${{ matrix.check }}-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/backend-replays/${{ matrix.check }}.xml
+          if-no-files-found: error
+          retention-days: 14
 
   backend-producer:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
-    needs: [stage-deploy, publish-candidate]
+    needs: [stage-deploy, publish-candidate, backend-replay]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17-alpine
@@ -549,14 +620,29 @@ jobs:
         with:
           name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
+      - name: Download the replayed admission suite report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-replay-runtime_admission_stress-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/backend-replays
+      - name: Download the replayed scheduler suite report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-replay-scheduler_exactly_once-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/backend-replays
+      - name: Download the replayed migration suite report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-replay-migration_multi_instance-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/backend-replays
       - name: Pull the exact staged candidate image by digest
         run: docker pull "${{ needs.publish-candidate.outputs.candidate_image }}"
-      # The producer module re-executes the admission/scheduler/migration
-      # suites, so it runs INSIDE the candidate container against a real
-      # Postgres — the same recipe as the ci.yml test job.
       - name: Produce backend release evidence inside the candidate container
         run: |
           set -euo pipefail
+          for check in runtime_admission_stress scheduler_exactly_once migration_multi_instance; do
+            test -f "build/060/backend-replays/$check.xml"
+          done
           mkdir -p build/060/release-evidence
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
@@ -580,6 +666,9 @@ jobs:
             -e ASTRAL_RELEASE_CANDIDATE_SHA="${{ inputs.candidate_sha }}" \
             -e ASTRAL_RELEASE_ID="release-060-${{ inputs.candidate_sha }}" \
             -e ASTRAL_RELEASE_VERSION="${{ vars.RELEASE_CANDIDATE_VERSION || '0.4.0' }}" \
+            -e ASTRAL_RELEASE_ADMISSION_JUNIT=/app/build/060/backend-replays/runtime_admission_stress.xml \
+            -e ASTRAL_RELEASE_SCHEDULER_JUNIT=/app/build/060/backend-replays/scheduler_exactly_once.xml \
+            -e ASTRAL_RELEASE_MIGRATION_JUNIT=/app/build/060/backend-replays/migration_multi_instance.xml \
             -e ASTRAL_STAGING_PROBE_TOKEN \
             -e ASTRAL_RUNNER_ENVIRONMENT=github_hosted \
             -e ASTRAL_RUNNER_IMAGE="${ImageOS:-ubuntu}-${ImageVersion:-hosted}" \
@@ -595,11 +684,61 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  web-producer:
+  web-tooling:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
+      - name: Run the web tooling and offline worker suites in the digest-pinned image
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_IMAGE="$(tr -d '\n' < components/AstralProjection/tooling/web-ci/playwright-image.txt)"
+          test "${PLAYWRIGHT_IMAGE#*@sha256:}" != "$PLAYWRIGHT_IMAGE"
+          docker pull "$PLAYWRIGHT_IMAGE"
+          mkdir -p build/060
+          docker run --rm -v "$PWD:/work" -w /work/components/AstralProjection/tooling/web-ci \
+            -e ASTRAL_PLAYWRIGHT_IMAGE="$PLAYWRIGHT_IMAGE" \
+            "$PLAYWRIGHT_IMAGE" sh -lc \
+            'set -eu
+            TOOLING=/work/build/060/web-tooling
+            NODE_V8_DIRECTORY="$TOOLING/node-v8"
+            OFFLINE_V8_DIRECTORY="$TOOLING/offline-node-v8"
+            OFFLINE_COVERAGE="$TOOLING/offline-node.json"
+            test ! -e "$TOOLING"
+            mkdir "$TOOLING" "$NODE_V8_DIRECTORY" "$OFFLINE_V8_DIRECTORY"
+            test "$(corepack npm --version)" = "11.16.0"
+            corepack npm ci --ignore-scripts
+            corepack npm run check:package-manager
+            export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"
+            corepack npm run check:product-isolation
+            corepack npm run lint
+            corepack npm run test:coverage-conversion
+            corepack npm run test:coverage-conversion:node
+            corepack npm run test:coverage-union
+            corepack npm run test:coverage-conversion:browser
+            NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs
+            corepack npm run coverage:node -- --node-v8-directory "$OFFLINE_V8_DIRECTORY" --repo-root ../.. --output "$OFFLINE_COVERAGE"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-tooling-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/web-tooling/
+          if-no-files-found: error
+          retention-days: 14
+
+  web-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [stage-deploy, web-tooling]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       ASTRAL_RELEASE_USERNAME: ${{ secrets.ASTRAL_RELEASE_USERNAME }}
       ASTRAL_RELEASE_PASSWORD: ${{ secrets.ASTRAL_RELEASE_PASSWORD }}
@@ -620,6 +759,11 @@ jobs:
         with:
           name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
+      - name: Download the web tooling and offline worker observations from this run attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: web-tooling-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/web-tooling
       - name: Run the browser release lane in the digest-pinned image
         run: |
           set -euo pipefail
@@ -638,6 +782,7 @@ jobs:
             -e RUNNER_ARCH -e RUNNER_NAME -e RUNNER_OS \
             "$PLAYWRIGHT_IMAGE" sh -lc \
             'set -eu
+            TOOLING=/work/build/060/web-tooling
             NODE_V8_DIRECTORY=/tmp/astral-node-v8
             NODE_INTERIM=/tmp/astral-node-interim.json
             NODE_COVERAGE=/tmp/astral-node.json
@@ -647,19 +792,17 @@ jobs:
             EXPORT_COVERAGE=/work/build/060/release-evidence/coverage/export-browser.json
             test ! -e "$NODE_V8_DIRECTORY"
             test ! -e "$OFFLINE_V8_DIRECTORY"
-            mkdir "$NODE_V8_DIRECTORY" "$OFFLINE_V8_DIRECTORY"
+            test ! -e "$OFFLINE_COVERAGE"
+            test -d "$TOOLING/node-v8"
+            test -d "$TOOLING/offline-node-v8"
+            test -f "$TOOLING/offline-node.json"
+            cp -R "$TOOLING/node-v8" "$NODE_V8_DIRECTORY"
+            cp -R "$TOOLING/offline-node-v8" "$OFFLINE_V8_DIRECTORY"
+            cp "$TOOLING/offline-node.json" "$OFFLINE_COVERAGE"
             test "$(corepack npm --version)" = "11.16.0"
             corepack npm ci --ignore-scripts
             corepack npm run check:package-manager
             export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"
-            corepack npm run check:product-isolation
-            corepack npm run lint
-            corepack npm run test:coverage-conversion
-            corepack npm run test:coverage-conversion:node
-            corepack npm run test:coverage-union
-            corepack npm run test:coverage-conversion:browser
-            NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs
-            corepack npm run coverage:node -- --node-v8-directory "$OFFLINE_V8_DIRECTORY" --repo-root ../.. --output "$OFFLINE_COVERAGE"
             corepack npm run browser:release -- --base-url "${{ needs.stage-deploy.outputs.endpoint }}" --candidate-sha "${{ inputs.candidate_sha }}" --output /work/build/060/release-evidence/web.json --coverage-output /work/build/060/release-evidence/coverage/web-v8.json --coverage-istanbul-output "$BROWSER_COVERAGE" --export-coverage-output "$EXPORT_COVERAGE"
             corepack npm run coverage:node -- --node-v8-directory "$NODE_V8_DIRECTORY" --repo-root ../.. --output "$NODE_INTERIM"
             unset NODE_V8_COVERAGE
@@ -672,11 +815,159 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  windows-producer:
+  windows-packaged-smoke:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: [stage-deploy, windows-candidate]
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    env:
+      ASTRAL_WINDOWS_EXE_SHA256: ${{ needs.windows-candidate.outputs.executable_sha256 }}
+      ASTRAL_WINDOWS_SMOKE_TOKEN: ${{ secrets.ASTRAL_WINDOWS_SMOKE_TOKEN }}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        shell: pwsh
+        run: python -I scripts/verify_composition.py --root .
+      - name: Require staging access for the connected packaged smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:ASTRAL_WINDOWS_SMOKE_TOKEN)) {
+            throw "staging access is required: the connected packaged smoke needs a staging access token"
+          }
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            components/AstralProjection/windows-client/requirements-release.lock.txt
+            tooling/python-ci/requirements.lock.txt
+      - name: Install hash-locked client runtime requirements
+        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
+      - name: Install hash-locked CI-only Python tooling
+        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - name: Download the build-once candidate by exact artifact id
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows-candidate.outputs.artifact_id }}
+          path: build/windows-candidate-download
+      - name: Re-hash the exact archived executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem -Recurse build\windows-candidate-download -Filter AstralDeep.exe | Select-Object -First 1
+          if (-not $exe) { throw "downloaded candidate artifact lacks AstralDeep.exe" }
+          $digest = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($digest -ne $env:ASTRAL_WINDOWS_EXE_SHA256) {
+            throw "downloaded executable digest $digest differs from the recorded executable_sha256"
+          }
+          "ASTRAL_WINDOWS_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+      - name: Run frozen worker, no-dialog, rendered-chat, offline, and termination smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force build\windows-packaged-smoke | Out-Null
+          python -m pytest components\AstralProjection\windows-client\tests\test_packaged_release.py -q `
+            --junitxml=build\windows-packaged-smoke\packaged-release.junit.xml
+      # The frozen exe reports connected GUI smokes only through its redacted JSON files
+      - name: Explain a smoke failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $roots = @(
+            (Join-Path $env:TEMP 'pytest-of-runneradmin'),
+            (Join-Path $PWD 'build\windows-packaged-smoke')
+          )
+          $found = $false
+          foreach ($root in $roots) {
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Recurse -Filter '*.json' -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'smoke|deployment-validation' } |
+              ForEach-Object {
+                $found = $true
+                Write-Host "===== $($_.FullName) ====="
+                Get-Content $_.FullName -Raw
+                Write-Host ""
+              }
+          }
+          if (-not $found) {
+            Write-Host "no smoke report was written — the exe exited before it could report"
+          }
+          $junit = 'build\windows-packaged-smoke\packaged-release.junit.xml'
+          if (Test-Path $junit) {
+            Write-Host "===== failing testcases ====="
+            Select-Xml -Path $junit -XPath '//testcase[failure or error]' |
+              ForEach-Object { Write-Host $_.Node.name }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-packaged-smoke-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/windows-packaged-smoke/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-source-suite:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: stage-deploy
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        shell: pwsh
+        run: python -I scripts/verify_composition.py --root .
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            components/AstralProjection/windows-client/requirements-release.lock.txt
+            tooling/python-ci/requirements.lock.txt
+      - name: Install hash-locked client runtime requirements
+        run: python -m pip install --require-hashes -r components/AstralProjection/windows-client/requirements-release.lock.txt
+      - name: Install hash-locked CI-only Python tooling
+        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - name: Run full Windows source suite with coverage
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force build\windows-source-suite | Out-Null
+          python -m pytest components\AstralProjection\windows-client\tests -q `
+            --cov=components/AstralProjection/windows-client `
+            --cov-report=xml:build\windows-source-suite\windows-coverage.xml `
+            --junitxml=build\windows-source-suite\windows-source.junit.xml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-source-suite-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/windows-source-suite/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [stage-deploy, windows-candidate, windows-packaged-smoke, windows-source-suite]
+    runs-on: windows-latest
+    timeout-minutes: 30
     env:
       ASTRAL_WINDOWS_EXE_SHA256: ${{ needs.windows-candidate.outputs.executable_sha256 }}
       ASTRAL_WINDOWS_ARTIFACT_ID: ${{ needs.windows-candidate.outputs.artifact_id }}
@@ -741,6 +1032,16 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force build\060\release-evidence | Out-Null
           python -m pytest components/AstralProjection/windows-client/tests/release_evidence_060.py -q
+      - name: Bind the packaged smoke report of the same candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-packaged-smoke-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/windows-candidate-tests/packaged-smoke
+      - name: Bind the source suite report of the same candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-source-suite-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/windows-candidate-tests/source-suite
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: evidence-windows-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
@@ -748,11 +1049,53 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  android-producer:
+  android-core-coverage:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Resolve Gradle version from the committed wrapper
+        id: wrapper
+        working-directory: components/AstralProjection/android-client
+        run: |
+          v=$(sed -n 's/^distributionUrl=.*gradle-\([0-9][0-9.]*\)-\(bin\|all\)\.zip$/\1/p' gradle/wrapper/gradle-wrapper.properties)
+          test -n "$v" || { echo "could not parse Gradle version from wrapper properties" >&2; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+        with:
+          gradle-version: ${{ steps.wrapper.outputs.version }}
+      - name: Measure the independent Android core JVM suite
+        working-directory: components/AstralProjection/android-client
+        run: |
+          set -euo pipefail
+          ./gradlew -PastralCoverage=true :core:koverXmlReport --no-daemon --stacktrace
+          mkdir -p "$GITHUB_WORKSPACE/build/060/android-core"
+          cp core/build/reports/kover/report.xml "$GITHUB_WORKSPACE/build/060/android-core/android-core.xml"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-core-coverage-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/android-core/android-core.xml
+          if-no-files-found: error
+          retention-days: 14
+
+  android-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [stage-deploy, android-core-coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       ASTRAL_STAGING_URL: ${{ needs.stage-deploy.outputs.endpoint }}
       ASTRAL_STAGING_ACCESS_TOKEN: ${{ secrets.ASTRAL_STAGING_ACCESS_TOKEN }}
@@ -788,6 +1131,11 @@ jobs:
         with:
           name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
           path: build/060/stage
+      - name: Download the independent core JVM coverage from this run attempt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: android-core-coverage-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/android-core
       # The toolchain canary is a reached fail-closed diagnostic; its JSON is
       # handed to the instrumented producer as a base64 argument.
       - name: Run the Android next-major readiness canary diagnostic
@@ -801,11 +1149,12 @@ jobs:
         working-directory: components/AstralProjection/android-client
         run: |
           set -euo pipefail
-          ./gradlew -PastralCoverage=true :app:prepareCoverageInputs :core:koverXmlReport --no-daemon --stacktrace
+          test -f "$GITHUB_WORKSPACE/build/060/android-core/android-core.xml"
+          ./gradlew -PastralCoverage=true :app:prepareCoverageInputs --no-daemon --stacktrace
           python3 ../scripts/android_coverage.py prepare \
             --root "$GITHUB_WORKSPACE/components/AstralProjection" \
             --output "$GITHUB_WORKSPACE/build/060/android-coverage"
-          cp core/build/reports/kover/report.xml "$GITHUB_WORKSPACE/build/060/android-coverage/android-core.xml"
+          cp "$GITHUB_WORKSPACE/build/060/android-core/android-core.xml" "$GITHUB_WORKSPACE/build/060/android-coverage/android-core.xml"
       - name: Write private Android staging arguments
         run: |
           python3 - <<'PY'
@@ -959,7 +1308,7 @@ jobs:
       raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
       archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
@@ -1086,14 +1435,14 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-  ios-raw-producer:
+  ios-build:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs: stage-deploy
     outputs:
-      raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
       archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
+      artifact_sha256: ${{ steps.build.outputs.artifact_sha256 }}
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
@@ -1101,7 +1450,6 @@ jobs:
       APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
       DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5
       PRODUCER_PLATFORM: ios
-      PRODUCER_ONLY_TESTING: AstralAppUITests/ReleaseEvidenceUITests
       PRODUCER_SCHEME: AstralApp
     steps:
       - name: Check out the exact candidate
@@ -1140,11 +1488,8 @@ jobs:
           set -euo pipefail
           xcrun simctl list runtimes available | grep -F "iOS ${IOS_RUNTIME}"
           xcrun simctl list devicetypes | grep -F "iPhone 17 Pro"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
-          path: build/060/stage
       - name: Build for testing and digest the exact tested app
+        id: build
         shell: bash
         run: |
           set -euo pipefail
@@ -1162,48 +1507,261 @@ jobs:
             --output "$PWD/build/060/release-evidence"
           DIGEST=$(shasum -a 256 "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip" | cut -d ' ' -f 1)
           echo "ARTIFACT_SHA256=$DIGEST" >> "$GITHUB_ENV"
-      - name: Run actual iOS Core and app unit observations from prepared binaries
+          echo "artifact_sha256=$DIGEST" >> "$GITHUB_OUTPUT"
+      # Artifacts drop the file modes and symlinks the prepared bundles need
+      - name: Archive the exact prepared build state
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/ios-build-state/ios-build-state.tar"
+          if [ -e "$state" ] || [ -L "$state" ]; then echo "::error::iOS build state $state already exists"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/ios-build-state"
+          tar --no-mac-metadata --exclude 'build/060/dd/Index.noindex' --exclude 'build/060/core-dd/Index.noindex' \
+            -cf "$state" build/060/dd build/060/core-dd build/060/release-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-build-state-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-build-state/ios-build-state.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  ios-lane:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    name: ios-lane-${{ matrix.lane }}
+    needs: ios-build
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - core
+          - unit
+          - ui
+    env:
+      XCODE_VERSION: "26.6"
+      XCODE_BUILD: "17F113"
+      IOS_RUNTIME: "26.5"
+      APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
+      DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5
+      LANE: ${{ matrix.lane }}
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
+      - name: Bind this runner to the recorded build checkout root
+        shell: bash
+        env:
+          BUILD_ROOT: ${{ needs.ios-build.outputs.archive_repo_root }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_ROOT" == /* && "$BUILD_ROOT" != */ ]]
+          test "$GITHUB_WORKSPACE" = "$BUILD_ROOT"
+      - name: Select exact Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
+               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+      - name: Require the supported iOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes available | grep -F "iOS ${IOS_RUNTIME}"
+          xcrun simctl list devicetypes | grep -F "iPhone 17 Pro"
+      - name: Download the exact prepared build state
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-build-state-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-build-state
+      - name: Restore and verify the exact prepared build state
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e build ] || [ -L build ]; then echo "::error::candidate checkout build directory already exists"; exit 1; fi
+          tar -xpf "$RUNNER_TEMP/ios-build-state/ios-build-state.tar"
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform ios --derived-data "$PWD/build/060/dd" \
+            --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
+      - name: Run one whole iOS lane from the prepared binaries
         shell: bash
         run: |
           set -euo pipefail
           root="$PWD"
-          for lane in core unit; do
-            result="$root/build/060/release-evidence/coverage/raw/apple-ios-${lane}.xcresult"
-            if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS ${lane} result bundle $result already exists"; exit 1; fi
-            if [[ "$lane" == core ]]; then
+          result="$root/build/060/release-evidence/coverage/raw/apple-ios-${LANE}.xcresult"
+          if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS lane result bundle $result already exists"; exit 1; fi
+          case "$LANE" in
+            core)
               (cd components/AstralProjection/apple-clients/AstralCore && xcodebuild \
                 -scheme AstralCore -destination "${DESTINATION}" -configuration Debug \
                 CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
                 -derivedDataPath "$root/build/060/core-dd" -resultBundlePath "$result" \
                 -only-testing:AstralCoreTests test-without-building)
-            else
+              ;;
+            unit)
               xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
                 -destination "${DESTINATION}" -configuration Debug \
                 CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
                 -derivedDataPath build/060/dd -resultBundlePath "$result" \
                 -only-testing:AstralAppTests test-without-building
-            fi
-            python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
-              --platform ios --derived-data "$PWD/build/060/dd" \
-              --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
-          done
-      - name: Run complete synthetic iOS UI observations from the same prepared app
+              ;;
+            ui)
+              xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
+                -destination "${DESTINATION}" -configuration Debug \
+                CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
+                -derivedDataPath build/060/dd -resultBundlePath "$result" \
+                -only-testing:AstralAppUITests/Accessibility060UITests \
+                -only-testing:AstralAppUITests/LLMFirstLoginUITests \
+                -only-testing:AstralAppUITests/VoiceConversationUITests \
+                -only-testing:AstralAppUITests/WorkspacePresentationUITests \
+                -only-testing:AstralAppUITests/WorkspaceActionsUITests \
+                -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation \
+                test-without-building
+              ;;
+            *)
+              echo "::error::unknown iOS lane ${LANE}" >&2
+              exit 1
+              ;;
+          esac
+          test -d "$result"
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform ios --derived-data "$PWD/build/060/dd" \
+            --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
+      - name: Retain the exact iOS lane observation
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-lane-${{ matrix.lane }}-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/apple-ios-${{ matrix.lane }}.xcresult/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+
+  ios-raw-producer:
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+    needs: [stage-deploy, ios-build, ios-lane]
+    outputs:
+      raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
+      archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      XCODE_VERSION: "26.6"
+      XCODE_BUILD: "17F113"
+      IOS_RUNTIME: "26.5"
+      APP_PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
+      DESTINATION: platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5
+      PRODUCER_PLATFORM: ios
+      PRODUCER_ONLY_TESTING: AstralAppUITests/ReleaseEvidenceUITests
+      PRODUCER_SCHEME: AstralApp
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify the exact initialized component composition
+        run: python3 -I scripts/verify_composition.py --root .
+      - name: Record the raw archive checkout root before candidate execution
+        id: raw-archive-root
+        shell: bash
+        env:
+          BUILD_ROOT: ${{ needs.ios-build.outputs.archive_repo_root }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_WORKSPACE" == /* && "$GITHUB_WORKSPACE" != */ ]]
+          test "$GITHUB_WORKSPACE" = "$BUILD_ROOT"
+          printf 'archive_repo_root=%s\n' "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+      - name: Select exact Xcode
         shell: bash
         run: |
           set -euo pipefail
-          result="$PWD/build/060/release-evidence/coverage/raw/apple-ios-ui.xcresult"
-          if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS UI result bundle $result already exists"; exit 1; fi
-          xcodebuild -project "${APP_PROJECT}" -scheme AstralApp \
-            -destination "${DESTINATION}" -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO -enableCodeCoverage YES \
-            -derivedDataPath build/060/dd -resultBundlePath "$result" \
-            -only-testing:AstralAppUITests/Accessibility060UITests \
-            -only-testing:AstralAppUITests/LLMFirstLoginUITests \
-            -only-testing:AstralAppUITests/VoiceConversationUITests \
-            -only-testing:AstralAppUITests/WorkspacePresentationUITests \
-            -only-testing:AstralAppUITests/WorkspaceActionsUITests \
-            -only-testing:AstralAppUITests/ConversationContinuityUITests/testDeterministicProcessRelaunchRestoresSemanticConversation \
-            test-without-building
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
+               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+      - name: Require the supported iOS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun simctl list runtimes available | grep -F "iOS ${IOS_RUNTIME}"
+          xcrun simctl list devicetypes | grep -F "iPhone 17 Pro"
+      - name: Download the exact prepared build state
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-build-state-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-build-state
+      - name: Restore and verify the exact prepared build state
+        shell: bash
+        env:
+          BUILD_ARTIFACT_SHA256: ${{ needs.ios-build.outputs.artifact_sha256 }}
+        run: |
+          set -euo pipefail
+          if [ -e build ] || [ -L build ]; then echo "::error::candidate checkout build directory already exists"; exit 1; fi
+          tar -xpf "$RUNNER_TEMP/ios-build-state/ios-build-state.tar"
+          python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
+            --platform ios --derived-data "$PWD/build/060/dd" \
+            --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
+          DIGEST=$(shasum -a 256 "build/060/release-evidence/${PRODUCER_PLATFORM}/AstralApp.app.zip" | cut -d ' ' -f 1)
+          test "$DIGEST" = "$BUILD_ARTIFACT_SHA256"
+          echo "ARTIFACT_SHA256=$DIGEST" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-outputs-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/stage
+      - name: Refuse pre-existing iOS lane observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for lane in core unit ui; do
+            result="build/060/release-evidence/coverage/raw/apple-ios-${lane}.xcresult"
+            if [ -e "$result" ] || [ -L "$result" ]; then echo "::error::iOS ${lane} result bundle $result already exists"; exit 1; fi
+          done
+      - name: Download the iOS core lane observation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-lane-core-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/apple-ios-core.xcresult
+      - name: Download the iOS unit lane observation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-lane-unit-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/apple-ios-unit.xcresult
+      - name: Download the iOS UI lane observation
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-lane-ui-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}
+          path: build/060/release-evidence/coverage/raw/apple-ios-ui.xcresult
+      - name: Verify the joined lane observations kept the prepared binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for lane in core unit ui; do
+            test -d "build/060/release-evidence/coverage/raw/apple-ios-${lane}.xcresult"
+          done
           python3 -I scripts/apple_coverage_artifacts.py verify --repo "$PWD" \
             --platform ios --derived-data "$PWD/build/060/dd" \
             --core-derived-data "$PWD/build/060/core-dd" --output "$PWD/build/060/release-evidence"
@@ -1273,7 +1831,7 @@ jobs:
       raw_artifact_id: ${{ steps.raw-evidence-upload.outputs.artifact-id }}
       archive_repo_root: ${{ steps.raw-archive-root.outputs.archive_repo_root }}
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 30
     env:
       XCODE_VERSION: "26.6"
       XCODE_BUILD: "17F113"
@@ -1569,11 +2127,18 @@ jobs:
   trusted-builder:
     needs:
       - stage-deploy
+      - backend-replay
       - backend-producer
+      - web-tooling
       - web-producer
+      - windows-packaged-smoke
+      - windows-source-suite
       - windows-producer
+      - android-core-coverage
       - android-producer
       - macos-raw-producer
+      - ios-build
+      - ios-lane
       - ios-raw-producer
       - watchos-raw-producer
       - macos-producer
@@ -1597,11 +2162,18 @@ jobs:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
     needs:
       - trusted-builder
+      - backend-replay
       - backend-producer
+      - web-tooling
       - web-producer
+      - windows-packaged-smoke
+      - windows-source-suite
       - windows-producer
+      - android-core-coverage
       - android-producer
       - macos-raw-producer
+      - ios-build
+      - ios-lane
       - ios-raw-producer
       - watchos-raw-producer
       - macos-producer
@@ -1609,7 +2181,7 @@ jobs:
       - watchos-producer
       - docs-producer
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -2139,11 +2711,18 @@ jobs:
     needs:
       - stage-deploy
       - windows-candidate
+      - backend-replay
       - backend-producer
+      - web-tooling
       - web-producer
+      - windows-packaged-smoke
+      - windows-source-suite
       - windows-producer
+      - android-core-coverage
       - android-producer
       - macos-raw-producer
+      - ios-build
+      - ios-lane
       - ios-raw-producer
       - watchos-raw-producer
       - macos-producer

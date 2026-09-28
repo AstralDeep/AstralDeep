@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +66,8 @@ CONTINUITY_UI_TESTS = (
 )
 RELAUNCH_PROOF = "testDeterministicProcessRelaunchRestoresSemanticConversation"
 READINESS = WORKFLOWS / "release-readiness.yml"
+PROTECTED_QUALIFICATION = WORKFLOWS / "backend-web-qualification-protected.yml"
+BACKEND_WEB_READINESS = WORKFLOWS / "backend-web-readiness.yml"
 APPLE_NORMALIZER = WORKFLOWS / "release-apple-evidence-normalizer.yml"
 WINDOWS_CANDIDATE = WORKFLOWS / "build-windows-candidate.yml"
 PROTECTED_TRIGGER = WORKFLOWS / "release-readiness-protected.yml"
@@ -81,6 +84,9 @@ RELEASE_WORKFLOW_FILES = (
     BRIDGE,
     CONTROLLER,
     PUBLISHER,
+    PROTECTED_QUALIFICATION,
+    BACKEND_WEB_READINESS,
+    WINDOWS_CANDIDATE,
 )
 
 EVIDENCE_PRODUCER_JOBS = (
@@ -98,18 +104,38 @@ RAW_APPLE_PRODUCER_JOBS = (
     "ios-raw-producer",
     "watchos-raw-producer",
 )
+SUPPORTING_JOBS = (
+    "backend-replay",
+    "web-tooling",
+    "windows-packaged-smoke",
+    "windows-source-suite",
+    "android-core-coverage",
+    "ios-build",
+    "ios-lane",
+)
 COMPONENT_CONSUMER_JOBS = (
     "backend-producer",
     "web-producer",
     "windows-producer",
     "android-producer",
     *RAW_APPLE_PRODUCER_JOBS,
+    *SUPPORTING_JOBS,
 )
 PRODUCER_JOBS = (
     *EVIDENCE_PRODUCER_JOBS,
     *RAW_APPLE_PRODUCER_JOBS,
+    *SUPPORTING_JOBS,
     "windows-candidate",
 )
+IOS_LANES = ("core", "unit", "ui")
+BUILD_SIGN_PUBLISH_JOBS = {
+    ("android-release.yml", "release-bundle"),
+    ("apple-release.yml", "release"),
+    ("build-windows-candidate.yml", "windows-candidate"),
+    ("publish-image.yml", "publish"),
+    ("release-windows.yml", "build-sign-release"),
+    ("release-windows-publisher.yml", "publish"),
+}
 
 ATTEST_ACTION = (
     "actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1"
@@ -171,6 +197,32 @@ def _job_ids(workflow: str) -> list[str]:
     jobs = workflow.partition("\njobs:\n")[2]
     assert jobs, "workflow does not define jobs"
     return re.findall(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", jobs)
+
+
+def _workflow_jobs(path: Path) -> dict[str, dict[str, Any]]:
+    document = yaml.safe_load(_workflow_text(path))
+    assert isinstance(document, dict) and isinstance(document.get("jobs"), dict)
+    return document["jobs"]
+
+
+def _provider_job_names(path: Path) -> list[str]:
+    names = []
+    for job_id, job in _workflow_jobs(path).items():
+        matrix = job.get("strategy", {}).get("matrix", {})
+        name = job.get("name", job_id)
+        if not matrix:
+            names.append(name)
+            continue
+        [(key, values)] = matrix.items()
+        names.extend(name.replace("${{ matrix." + key + " }}", value) for value in values)
+    return names
+
+
+def _replayed_backend_suites() -> Any:
+    return _load_module(
+        "release_workflows_backend_producer_060",
+        REPO_ROOT / "backend" / "tests" / "perf" / "release_backend_060.py",
+    ).REPLAYED_SUITES
 
 
 def _assert_immediate_exact_component_checkout(
@@ -325,7 +377,9 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
         *RAW_APPLE_PRODUCER_JOBS,
         "docs-producer",
         "windows-candidate",
+        *(job for job in SUPPORTING_JOBS if job != "ios-lane"),
     )
+    assert "needs: ios-build" in _workflow_job(workflow, "ios-lane")
     for producer in stage_direct_producers:
         body = _workflow_job(workflow, producer)
         assert "needs:" in body, f"{producer} must depend on stage-deploy"
@@ -344,39 +398,69 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
 
     candidate = _workflow_job(workflow, "windows-candidate")
     assert "uses: ./.github/workflows/build-windows-candidate.yml" in candidate
-    assert "staging_access_token" in candidate
-    assert "ASTRAL_WINDOWS_SMOKE_TOKEN" in candidate
+    assert "secrets:" not in candidate
+    assert "staging_access_token" not in candidate
+    assert "ASTRAL_WINDOWS_SMOKE_TOKEN" not in candidate
 
     backend = _workflow_job(workflow, "backend-producer")
     assert "release_backend_060.py" in backend
+    tooling = _workflow_job(workflow, "web-tooling")
     web = _workflow_job(workflow, "web-producer")
-    assert "playwright-image.txt" in web
-    assert "browser:release" in web
-    assert "NODE_V8_COVERAGE" in web
-    assert "test:coverage-conversion:node" in web
-    assert "test:coverage-union" in web
-    assert web.count("corepack npm run coverage:node") == 3
+    for job in (tooling, web):
+        assert "playwright-image.txt" in job
+        assert "NODE_V8_COVERAGE" in job
+        assert "--repo-root ../.." in job
+    assert "browser:release" in web and "browser:release" not in tooling
+    for suite in (
+        "check:product-isolation",
+        "lint",
+        "test:coverage-conversion",
+        "test:coverage-conversion:node",
+        "test:coverage-union",
+        "test:coverage-conversion:browser",
+    ):
+        assert f"corepack npm run {suite}\n" in tooling
+        assert f"corepack npm run {suite}\n" not in web
+    assert "secrets." not in tooling
+    assert tooling.count("corepack npm run coverage:node") == 1
+    assert web.count("corepack npm run coverage:node") == 2
     assert "corepack npm run coverage:union" in web
     assert "--coverage-istanbul-output \"$BROWSER_COVERAGE\"" in web
     assert "--node \"$NODE_COVERAGE\"" in web
     assert "--browser \"$BROWSER_COVERAGE\"" in web
-    assert "--repo-root ../.." in web
     assert "web-istanbul.json" in web
-    assert 'NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs' in web
-    assert '--node-v8-directory "$OFFLINE_V8_DIRECTORY"' in web
+    assert 'NODE_V8_COVERAGE="$OFFLINE_V8_DIRECTORY" node --test tests/offline-worker-088.test.mjs' in tooling
+    assert '--node-v8-directory "$OFFLINE_V8_DIRECTORY"' in tooling
     assert '--export-coverage-output "$EXPORT_COVERAGE"' in web
     assert '--offline-node "$OFFLINE_COVERAGE"' in web
     assert '--export-browser "$EXPORT_COVERAGE"' in web
+    assert 'test ! -e "$TOOLING"' in tooling
     assert 'test ! -e "$OFFLINE_V8_DIRECTORY"' in web
-    assert web.index('tests/offline-worker-088.test.mjs') < web.index('corepack npm run coverage:union')
+    assert "needs: [stage-deploy, web-tooling]" in web
+    tooling_artifact = "web-tooling-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}"
+    assert f"name: {tooling_artifact}\n          path: build/060/web-tooling/" in tooling
+    assert f"name: {tooling_artifact}\n          path: build/060/web-tooling\n" in web
+    restore = web.index('cp -R "$TOOLING/node-v8" "$NODE_V8_DIRECTORY"')
+    assert web.index('test ! -e "$NODE_V8_DIRECTORY"') < restore
+    assert restore < web.index('export NODE_V8_COVERAGE="$NODE_V8_DIRECTORY"')
+    assert web.index('cp -R "$TOOLING/offline-node-v8" "$OFFLINE_V8_DIRECTORY"') < web.index(
+        "corepack npm run coverage:union"
+    )
     windows = _workflow_job(workflow, "windows-producer")
     assert "windows-candidate" in windows
     assert "release_evidence_060.py" in windows
     assert "executable_sha256" in windows
+    assert "needs: [stage-deploy, windows-candidate, windows-packaged-smoke, windows-source-suite]" in windows
+    for suite, member in (("windows-packaged-smoke", "packaged-smoke"), ("windows-source-suite", "source-suite")):
+        assert (
+            f"name: {suite}-${{{{ inputs.request_id || github.run_id }}}}-${{{{ github.run_attempt }}}}\n"
+            f"          path: build/060/release-evidence/windows-candidate-tests/{member}\n"
+        ) in windows
     android = _workflow_job(workflow, "android-producer")
     assert ":app:prepareCoverageInputs" in android
     assert "--lane staging" in android
     assert "--lanes fixtures,staging" in android
+    assert "needs: [stage-deploy, android-core-coverage]" in android
     for slug in ("macos", "ios"):
         assert "ReleaseEvidenceUITests" in _workflow_job(workflow, f"{slug}-raw-producer")
     watch = _workflow_job(workflow, "watchos-raw-producer")
@@ -387,12 +471,22 @@ def test_release_readiness_jobs_form_the_stage_producer_decision_pipeline() -> N
     builder = _workflow_job(workflow, "trusted-builder")
     assert "uses: ./.github/workflows/release-trusted-builder.yml" in builder
     assert "always()" in builder
+    builder_needs = set(re.findall(r"(?m)^      - ([a-z-]+)$", builder))
+    decision_needs = set(
+        re.findall(r"(?m)^      - ([a-z-]+)$", _workflow_job(workflow, "protected-decision"))
+    )
+    cleanup_needs = set(
+        re.findall(r"(?m)^      - ([a-z-]+)$", _workflow_job(workflow, "stage-cleanup"))
+    )
     for producer in (
-        "stage-deploy",
         *EVIDENCE_PRODUCER_JOBS,
         *RAW_APPLE_PRODUCER_JOBS,
+        *SUPPORTING_JOBS,
     ):
-        assert producer in builder, f"trusted-builder must wait on {producer}"
+        assert producer in builder_needs, f"trusted-builder must wait on {producer}"
+        assert producer in decision_needs, f"protected-decision must wait on {producer}"
+        assert producer in cleanup_needs, f"stage-cleanup must wait on {producer}"
+    assert "stage-deploy" in builder_needs
 
     cleanup = _workflow_job(workflow, "stage-cleanup")
     assert "github.event_name != 'workflow_dispatch'" in cleanup
@@ -426,13 +520,30 @@ def _android_producer_python(name: str) -> str:
 
 
 def test_android_coverage_producer_requires_build_once_and_both_device_lanes() -> None:
-    body = _workflow_job(READINESS.read_text(encoding="utf-8"), "android-producer")
+    workflow = READINESS.read_text(encoding="utf-8")
+    body = _workflow_job(workflow, "android-producer")
+    core = _workflow_job(workflow, "android-core-coverage")
     assert body.count(":app:prepareCoverageInputs") == 1
-    assert body.count(":core:koverXmlReport") == 1
+    assert ":core:koverXmlReport" not in body
+    assert core.count(":core:koverXmlReport") == 1
+    assert ":app:prepareCoverageInputs" not in core
+    assert "./gradlew -PastralCoverage=true :core:koverXmlReport --no-daemon --stacktrace" in core
+    assert "secrets." not in core and "emulator" not in core
+    core_artifact = (
+        "android-core-coverage-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert f"name: {core_artifact}\n          path: build/060/android-core/android-core.xml" in core
+    assert f"name: {core_artifact}\n          path: build/060/android-core\n" in body
     built, devices = body.split("Collect fixture and real staging observations", 1)
-    assert "./gradlew -PastralCoverage=true" in built
-    assert ":app:prepareCoverageInputs :core:koverXmlReport" in built
+    assert "./gradlew -PastralCoverage=true :app:prepareCoverageInputs --no-daemon --stacktrace" in built
     assert "android_coverage.py prepare" in built
+    assert built.index('test -f "$GITHUB_WORKSPACE/build/060/android-core/android-core.xml"') < built.index(
+        "./gradlew -PastralCoverage=true"
+    )
+    assert built.index("android_coverage.py prepare") < built.index(
+        'cp "$GITHUB_WORKSPACE/build/060/android-core/android-core.xml" '
+        '"$GITHUB_WORKSPACE/build/060/android-coverage/android-core.xml"'
+    )
     assert "gradle" not in devices
     assert "connectedDebugAndroidTest" not in body
     assert "emulator-port: 5584" in devices
@@ -1065,6 +1176,23 @@ def test_release_trusted_builder_is_a_single_attest_job_with_exact_grants() -> N
     assert "512 * 1024 * 1024" in body
     assert "unzip" not in body
     assert "trusted_workflow_provenance" in workflow
+    supporting = re.search(r"(?s)supporting_jobs = \((?P<names>.*?)\n          \)", body)
+    assert supporting, "trusted builder must reconstruct every supporting job"
+    expected_supporting = set()
+    for job_id, job in _workflow_jobs(READINESS).items():
+        if job_id not in SUPPORTING_JOBS:
+            continue
+        matrix = job.get("strategy", {}).get("matrix", {})
+        if not matrix:
+            expected_supporting.add(job.get("name", job_id))
+            continue
+        [(key, values)] = matrix.items()
+        expected_supporting.update(
+            job["name"].replace("${{ matrix." + key + " }}", value) for value in values
+        )
+    assert set(re.findall(r'"([a-z0-9_-]+)"', supporting.group("names"))) == expected_supporting
+    assert "job_for(supporting_job)" in body
+    assert body.index('index["supporting_jobs"]') < body.index("receipt-index.json")
     guard = body.partition("- name: Refuse authority outside the installed protected workflow commit")[2]
     assert guard
     assert 'actual != expected' in guard
@@ -1753,6 +1881,161 @@ def test_every_ci_job_is_bounded_by_thirty_minutes() -> None:
     }
 
 
+def _budget_exemptions(path: Path) -> set[tuple[str, str]]:
+    exempt = set()
+    for job_id, job in _workflow_jobs(path).items():
+        if "uses" in job:
+            assert "timeout-minutes" not in job, f"{path.name}:{job_id}"
+            assert job["uses"].startswith("./.github/workflows/"), f"{path.name}:{job_id}"
+            assert (REPO_ROOT / job["uses"]).is_file(), f"{path.name}:{job_id}"
+            continue
+        limit = job.get("timeout-minutes")
+        assert type(limit) is int and limit > 0, f"{path.name}:{job_id} has no job timeout"
+        if (path.name, job_id) in BUILD_SIGN_PUBLISH_JOBS:
+            exempt.add((path.name, job_id))
+            continue
+        assert limit <= 30, f"{path.name}:{job_id} exceeds the 30-minute budget"
+    return exempt
+
+
+def test_every_workflow_job_is_bounded_by_thirty_minutes_unless_it_builds_signs_or_publishes() -> None:
+    exempt = set().union(*(_budget_exemptions(path) for path in sorted(WORKFLOWS.glob("*.yml"))))
+    assert exempt == BUILD_SIGN_PUBLISH_JOBS
+    assert not {name for name, _job in BUILD_SIGN_PUBLISH_JOBS} & {
+        READINESS.name, PROTECTED_QUALIFICATION.name, TRUSTED_BUILDER.name, APPLE_NORMALIZER.name,
+    }
+
+
+@pytest.mark.parametrize("name,job,exempt", [
+    ("candidate.yml", {"timeout-minutes": 30}, set()),
+    ("candidate.yml", {"timeout-minutes": 31}, None),
+    ("candidate.yml", {}, None),
+    ("candidate.yml", {"timeout-minutes": "30"}, None),
+    ("candidate.yml", {"timeout-minutes": 0}, None),
+    ("candidate.yml", {"timeout-minutes": 90}, None),
+    ("publish-image.yml", {"timeout-minutes": 90}, None),
+    ("publish-image.yml", {"job": "publish", "timeout-minutes": 60}, {("publish-image.yml", "publish")}),
+    ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml"}, set()),
+    ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml", "timeout-minutes": 30}, None),
+    ("candidate.yml", {"uses": "./.github/workflows/absent.yml"}, None),
+    ("candidate.yml", {"uses": "other/repository/.github/workflows/tests.yml@" + "a" * 40}, None),
+])
+def test_workflow_budget_guard_refuses_unbounded_or_unlisted_jobs(
+    tmp_path: Path, name: str, job: dict[str, Any], exempt: set[tuple[str, str]] | None,
+) -> None:
+    job = dict(job)
+    job_id = job.pop("job", "tests")
+    if "uses" not in job:
+        job.update({"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]})
+    workflow = tmp_path / name
+    workflow.write_text(yaml.safe_dump({"name": "candidate", "on": "push", "jobs": {job_id: job}}))
+    if exempt is None:
+        with pytest.raises(AssertionError):
+            _budget_exemptions(workflow)
+    else:
+        assert _budget_exemptions(workflow) == exempt
+
+
+def test_protected_backend_web_qualification_runs_whole_groups_and_phases_as_bounded_jobs() -> None:
+    producer = _load_module(
+        "release_workflows_bwq_producer", REPO_ROOT / "scripts" / "produce_backend_web_qualification.py"
+    )
+    runner = _load_module("release_workflows_bwq_runner", REPO_ROOT / "scripts" / "run_backend_web_tests.py")
+    consumer = _load_module(
+        "release_workflows_bwq_consumer", REPO_ROOT / "scripts" / "validate_backend_web_evidence.py"
+    )
+    workflow = _workflow_text(PROTECTED_QUALIFICATION)
+    jobs = _workflow_jobs(PROTECTED_QUALIFICATION)
+    phases = {
+        "qualify-backend-web-gates": "gate",
+        "qualify-backend-web-services": "services",
+        "qualify-backend-web": "assemble",
+    }
+    assert list(jobs) == list(phases)
+    assert "secrets." not in workflow and "id-token" not in workflow
+    assert not _write_grants(workflow)
+    gates = jobs["qualify-backend-web-gates"]
+    assert gates["strategy"] == {"fail-fast": False, "matrix": {"group": list(producer.GATE_GROUPS)}}
+    assert set(producer.GATE_GROUPS) == set(runner.GROUPS) - {"all"}
+    assert _provider_job_names(PROTECTED_QUALIFICATION) == list(consumer.PRODUCER_PHASE_JOBS)
+    assert consumer.PRODUCER_JOB == "qualify-backend-web" == producer.PRODUCER_JOB
+    assert producer.GATE_TIMEOUT_SECONDS < 30 * 60
+    for job_id, phase in phases.items():
+        job = jobs[job_id]
+        body = _workflow_job(workflow, job_id)
+        assert producer.phase_job(phase) == job_id
+        assert job["timeout-minutes"] <= 30
+        assert job["runs-on"] == ["self-hosted", "astral-backend-web-qualification"]
+        assert job["environment"] == "release-backend-web"
+        assert job["permissions"] == {"contents": "read", "actions": "read"}
+        assert "github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'" in job["if"]
+        assert job["steps"][0]["name"] == "Verify installed policy, runner and exact successful candidate CI"
+        assert body.index("path: policy") < body.index("python3 -I policy/scripts/produce_backend_web_qualification.py")
+        assert f"--protected \\\n            --phase {phase}" in body
+    assert "needs" not in gates
+    assert jobs["qualify-backend-web-services"]["needs"] == "qualify-backend-web-gates"
+    assert jobs["qualify-backend-web"]["needs"] == ["qualify-backend-web-gates", "qualify-backend-web-services"]
+    for job_id in ("qualify-backend-web-services", "qualify-backend-web"):
+        assert jobs[job_id]["if"] == (
+            "${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+            " && (!cancelled()) }}"
+        )
+    bootstrap = _load_module(
+        "release_workflows_bootstrap_guard", REPO_ROOT / "scripts" / "verify_release_evidence_bootstrap.py"
+    )
+    _prefix, blocks = bootstrap._job_blocks(workflow)
+    assert set(blocks) == set(phases)
+    for job_id, block in blocks.items():
+        assert bootstrap._job_excludes_feature_dispatch(block, "main"), job_id
+    gate_body = _workflow_job(workflow, "qualify-backend-web-gates")
+    assert '--phase gate --group "$GATE_GROUP"' in gate_body
+    assert gates["env"]["GATE_GROUP"] == "${{ matrix.group }}"
+    assert "path: candidate" in gate_body and "path: candidate" in _workflow_job(workflow, "qualify-backend-web-services")
+    assessment = _workflow_job(workflow, "qualify-backend-web")
+    assert "path: candidate" not in assessment and "backend-image" not in assessment
+    suffix = "${{ github.run_id }}-${{ github.run_attempt }}"
+    assert f"name: backend-web-phase-gate-${{{{ matrix.group }}}}-{suffix}" in gate_body
+    assert f"name: backend-web-phase-services-{suffix}" in _workflow_job(workflow, "qualify-backend-web-services")
+    assert f"pattern: backend-web-phase-*-{suffix}\n          merge-multiple: true" in assessment
+    assert f"name: backend-web-qualification-{suffix}" in assessment
+    assert assessment.index("--phase assemble") < assessment.index(f"name: backend-web-qualification-{suffix}")
+    assert '--receipts "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-receipts"' in assessment
+
+
+def test_backend_replays_run_each_whole_suite_in_its_own_bounded_job() -> None:
+    workflow = _workflow_text(READINESS)
+    suites = _replayed_backend_suites()
+    replay_job = _workflow_jobs(READINESS)["backend-replay"]
+    assert replay_job["strategy"] == {
+        "fail-fast": False, "matrix": {"check": [suite.check_id for suite in suites]},
+    }
+    assert replay_job["timeout-minutes"] <= 30
+    replay = _workflow_job(workflow, "backend-replay")
+    producer = _workflow_job(workflow, "backend-producer")
+    assert "needs: [stage-deploy, publish-candidate, backend-replay]" in producer
+    assert "secrets." not in replay
+    assert "REPLAY_CHECK: ${{ matrix.check }}" in replay
+    assert '-e ASTRAL_RELEASE_REPLAY_CHECK="$REPLAY_CHECK"' in replay
+    assert "-e ASTRAL_RELEASE_REPLAY_DIRECTORY=/app/build/060/backend-replays" in replay
+    assert (
+        "tests/perf/release_backend_060.py::test_backend_release_replay_retains_one_whole_suite_junit -q -m perf"
+        in replay
+    )
+    assert (
+        "name: backend-replay-${{ matrix.check }}-${{ inputs.request_id || github.run_id }}-"
+        "${{ github.run_attempt }}\n          path: build/060/backend-replays/${{ matrix.check }}.xml"
+    ) in replay
+    for suite in suites:
+        assert (
+            f"name: backend-replay-{suite.check_id}-${{{{ inputs.request_id || github.run_id }}}}-"
+            "${{ github.run_attempt }}\n          path: build/060/backend-replays\n"
+        ) in producer
+        assert f"-e {suite.junit_environment}=/app/build/060/backend-replays/{suite.check_id}.xml" in producer
+    run = producer.partition("- name: Produce backend release evidence inside the candidate container")[2]
+    assert run.index('test -f "build/060/backend-replays/$check.xml"') < run.index("docker run")
+    assert "tests/perf/release_backend_060.py -q -m perf" in run
+
+
 def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     guard = (
         "github.event_name != 'workflow_dispatch' || "
@@ -1764,6 +2047,8 @@ def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
         EXCEPTION,
         CONTROLLER,
         BRIDGE,
+        PROTECTED_QUALIFICATION,
+        BACKEND_WEB_READINESS,
     )
     for path in workflows:
         workflow = _workflow_text(path)
@@ -2130,7 +2415,8 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
     readiness = _workflow_text(READINESS)
     for platform in ("macos", "ios"):
         job = _workflow_job(readiness, f"{platform}-raw-producer")
-        build = job.partition(
+        builder = _workflow_job(readiness, "ios-build") if platform == "ios" else job
+        build = builder.partition(
             "- name: Build for testing and digest the exact tested app"
         )[2].partition("      - name:")[0]
         assert "-enableCodeCoverage YES" in build
@@ -2144,7 +2430,11 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         assert (
             "find " not in build and "head -n 1" not in build and "ditto" not in build
         )
-        after = job.partition("scripts/apple_coverage_artifacts.py prepare")[2]
+        after = (
+            job.partition("scripts/apple_coverage_artifacts.py prepare")[2]
+            if platform == "macos"
+            else job
+        )
         assert "build-for-testing" not in after
         assert (
             "test-without-building" in after
@@ -2168,11 +2458,38 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         assert (
             'test -f "build/060/release-evidence/${PRODUCER_PLATFORM}.json"' in staging
         )
+    build_job = _workflow_job(readiness, "ios-build")
+    lane_job = _workflow_job(readiness, "ios-lane")
     ios = _workflow_job(readiness, "ios-raw-producer")
-    assert "for lane in core unit; do" in ios
-    assert "-only-testing:AstralCoreTests test-without-building" in ios
-    assert "-only-testing:AstralAppTests test-without-building" in ios
-    assert set(re.findall(r"-only-testing:AstralAppUITests/(\S+)", ios)) == {
+    assert "test-without-building" not in build_job
+    prepare = build_job.index("scripts/apple_coverage_artifacts.py prepare")
+    assert "build-for-testing" not in build_job[prepare:]
+    archive = build_job.partition("- name: Archive the exact prepared build state")[2]
+    archive = archive.partition("      - uses:")[0]
+    assert prepare < build_job.index("- name: Archive the exact prepared build state")
+    assert "tar --no-mac-metadata" in archive
+    assert "-cf \"$state\" build/060/dd build/060/core-dd build/060/release-evidence" in archive
+    state_artifact = (
+        "ios-build-state-${{ inputs.request_id || github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert (
+        f"name: {state_artifact}\n"
+        "          path: ${{ runner.temp }}/ios-build-state/ios-build-state.tar"
+    ) in build_job
+    for consumer in (lane_job, ios):
+        assert "build-for-testing" not in consumer
+        assert f"name: {state_artifact}\n          path: ${{{{ runner.temp }}}}/ios-build-state\n" in consumer
+        restore = consumer.index('tar -xpf "$RUNNER_TEMP/ios-build-state/ios-build-state.tar"')
+        verify = consumer.index("scripts/apple_coverage_artifacts.py verify", restore)
+        assert restore < verify < consumer.index("test-without-building")
+        assert "BUILD_ROOT: ${{ needs.ios-build.outputs.archive_repo_root }}" in consumer
+        assert 'test "$GITHUB_WORKSPACE" = "$BUILD_ROOT"' in consumer
+    assert "secrets." not in build_job and "secrets." not in lane_job
+    assert _workflow_jobs(READINESS)["ios-lane"]["strategy"]["matrix"] == {"lane": list(IOS_LANES)}
+    assert 'case "$LANE" in' in lane_job
+    assert "-only-testing:AstralCoreTests test-without-building" in lane_job
+    assert "-only-testing:AstralAppTests test-without-building" in lane_job
+    assert set(re.findall(r"-only-testing:AstralAppUITests/(\S+)", lane_job)) == {
         "Accessibility060UITests",
         "LLMFirstLoginUITests",
         "VoiceConversationUITests",
@@ -2180,6 +2497,25 @@ def test_apple_raw_jobs_instrument_before_archiving_and_never_rebuild_afterward(
         "WorkspaceActionsUITests",
         f"ConversationContinuityUITests/{RELAUNCH_PROOF}",
     }
+    assert re.findall(r"-only-testing:AstralAppUITests/(\S+)", ios) == []
+    assert "needs: [stage-deploy, ios-build, ios-lane]" in ios
+    assert 'test "$DIGEST" = "$BUILD_ARTIFACT_SHA256"' in ios
+    assert "BUILD_ARTIFACT_SHA256: ${{ needs.ios-build.outputs.artifact_sha256 }}" in ios
+    refuse = ios.index("- name: Refuse pre-existing iOS lane observations")
+    for lane in IOS_LANES:
+        download = ios.index(f"- name: Download the iOS {'UI' if lane == 'ui' else lane} lane observation")
+        assert refuse < download
+        assert (
+            f"name: ios-lane-{lane}-${{{{ inputs.request_id || github.run_id }}}}-${{{{ github.run_attempt }}}}\n"
+            f"          path: build/060/release-evidence/coverage/raw/apple-ios-{lane}.xcresult\n"
+        ) in ios
+    assert (
+        "path: build/060/release-evidence/coverage/raw/apple-ios-${{ matrix.lane }}.xcresult/"
+        in lane_job
+    )
+    assert ios.index(
+        "- name: Verify the joined lane observations kept the prepared binaries"
+    ) < ios.index("- name: Produce iOS release evidence against staging")
     assert (
         "apple-ios-ui.xcresult" in ios
         and "apple-${PRODUCER_PLATFORM}-staging.xcresult" in ios
@@ -2193,7 +2529,7 @@ def _continuity_selectors(job: str) -> list[str]:
 
 
 def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> None:
-    readiness = _workflow_job(_workflow_text(READINESS), "ios-raw-producer")
+    readiness = _workflow_job(_workflow_text(READINESS), "ios-lane")
     projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
     assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
     assert _continuity_selectors(projection) == [RELAUNCH_PROOF]
@@ -2348,7 +2684,12 @@ EXPLICIT_EXISTENCE_REFUSAL = re.compile(
 RESULT_BUNDLE_REFUSALS = {
     READINESS: {
         "macos-raw-producer": ['"$result"'],
-        "ios-raw-producer": ['"$result"', '"$result"', '"$result"'],
+        "ios-build": ['"$state"'],
+        "ios-lane": ["build", '"$result"'],
+        "ios-raw-producer": ["build", '"$result"', '"$result"'],
+    },
+    PROTECTED_QUALIFICATION: {
+        "qualify-backend-web": ['"$receipts"'],
     },
     APPLE_NORMALIZER: {
         "normalize": [

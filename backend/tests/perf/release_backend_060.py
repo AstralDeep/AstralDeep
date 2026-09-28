@@ -52,6 +52,7 @@ EVIDENCE_SCHEMA_PATH = (
 )
 
 GATE_ENVIRONMENT = ("ASTRAL_STAGING_URL", "ASTRAL_RELEASE_EVIDENCE_OUTPUT")
+REPLAY_ENVIRONMENT = ("ASTRAL_RELEASE_REPLAY_CHECK", "ASTRAL_RELEASE_REPLAY_DIRECTORY")
 
 IDENTITY_ENVIRONMENT = (
     "ASTRAL_RELEASE_CANDIDATE_SHA",
@@ -159,7 +160,7 @@ SUPERVISION_BEHAVIORS = (
         "print('ready', flush=True)\nraise SystemExit(3)\n",
     ),
 )
-SUITE_TIMEOUT_SECONDS = 1800
+SUITE_TIMEOUT_SECONDS = 25 * 60
 PROBE_TIMEOUT_SECONDS = 30
 
 
@@ -982,6 +983,91 @@ def test_junit_parsing_is_fail_closed(tmp_path: Path) -> None:
     assert not _case_passed(failed, "test_broken")
     with pytest.raises(AssertionError):
         _parse_junit(b"<testsuites></testsuites>")
+
+
+def _replay_request() -> tuple[_ReplayedSuite, Path]:
+    check_id, directory = (
+        os.environ.get(name, "").strip() for name in REPLAY_ENVIRONMENT
+    )
+    if not (check_id and directory):
+        pytest.skip(
+            "a backend replay job runs only with " + " and ".join(REPLAY_ENVIRONMENT)
+        )
+    suites = {suite.check_id: suite for suite in REPLAYED_SUITES}
+    assert check_id in suites, f"unknown replayed backend suite: {check_id}"
+    suite = suites[check_id]
+    assert not os.environ.get(suite.junit_environment), (
+        f"{suite.junit_environment} must not pre-seed the suite this job replays"
+    )
+    junit_directory = Path(directory)
+    assert junit_directory.is_absolute(), "ASTRAL_RELEASE_REPLAY_DIRECTORY must be absolute"
+    return suite, junit_directory
+
+
+def test_backend_release_replay_retains_one_whole_suite_junit() -> None:
+    suite, junit_directory = _replay_request()
+    junit_path = junit_directory / f"{suite.check_id}.xml"
+    assert not junit_path.exists(), "a replay must never reuse an earlier junit report"
+    junit_directory.mkdir(parents=True, exist_ok=True)
+    _, summary = _replay_suite(suite, junit_directory)
+    assert summary["replay_mode"] == "executed_here"
+    assert junit_path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({}, None),
+        ({"ASTRAL_RELEASE_REPLAY_CHECK": "runtime_admission_stress"}, None),
+        (
+            {
+                "ASTRAL_RELEASE_REPLAY_CHECK": "unknown_suite",
+                "ASTRAL_RELEASE_REPLAY_DIRECTORY": "/replays",
+            },
+            "unknown replayed backend suite",
+        ),
+        (
+            {
+                "ASTRAL_RELEASE_REPLAY_CHECK": "scheduler_exactly_once",
+                "ASTRAL_RELEASE_REPLAY_DIRECTORY": "relative/replays",
+            },
+            "must be absolute",
+        ),
+        (
+            {
+                "ASTRAL_RELEASE_REPLAY_CHECK": "migration_multi_instance",
+                "ASTRAL_RELEASE_REPLAY_DIRECTORY": "/replays",
+                "ASTRAL_RELEASE_MIGRATION_JUNIT": "/replays/old.xml",
+            },
+            "must not pre-seed",
+        ),
+    ],
+)
+def test_replay_request_is_exact_and_never_reuses_a_seeded_report(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], message: str | None
+) -> None:
+    for name in (*REPLAY_ENVIRONMENT, *(suite.junit_environment for suite in REPLAYED_SUITES)):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    if message is None:
+        with pytest.raises(pytest.skip.Exception):
+            _replay_request()
+        return
+    with pytest.raises(AssertionError, match=message):
+        _replay_request()
+
+
+def test_replay_request_names_one_whole_suite_and_an_absolute_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for suite in REPLAYED_SUITES:
+        monkeypatch.delenv(suite.junit_environment, raising=False)
+    monkeypatch.setenv("ASTRAL_RELEASE_REPLAY_CHECK", "runtime_admission_stress")
+    monkeypatch.setenv("ASTRAL_RELEASE_REPLAY_DIRECTORY", str(tmp_path))
+    suite, directory = _replay_request()
+    assert suite is _replayed_suite("runtime_admission_stress")
+    assert directory == tmp_path
 
 
 def test_backend_release_evidence_binds_staging_and_metric_floors(
