@@ -235,8 +235,9 @@ def provider():
     run = {"id": 12, "run_attempt": 1, "head_sha": "d" * 40, "path": validator.PRODUCER,
            "head_branch": "main", "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
            "head_repository": {"full_name": "AstralDeep/AstralDeep"}}
-    jobs = [{"id": 45, "name": "qualify-backend-web", "status": "completed", "conclusion": "success",
-             "run_id": 12, "run_attempt": 1, "runner_name": "isolated-s1"}]
+    jobs = [{"id": 41 + index, "name": name, "status": "completed", "conclusion": "success",
+             "run_id": 12, "run_attempt": 1, "runner_name": "isolated-s1"}
+            for index, name in enumerate(validator.PRODUCER_PHASE_JOBS)]
     artifact = {"id": 34, "name": "backend-web-qualification-12-1", "expired": False,
                 "workflow_run": {"id": 12, "head_sha": "d" * 40}, "digest": "sha256:" + "e" * 64, "size_in_bytes": 1}
     return run, jobs, artifact
@@ -248,7 +249,43 @@ def reconstruct(provider):
 
 
 def test_provider_identity_reconstructs_without_uploaded_claims(provider):
-    assert reconstruct(provider)["job_id"] == 45
+    source = reconstruct(provider)
+    assert source["job_id"] == 45
+    assert validator.PRODUCER_PHASE_JOBS[-1] == validator.PRODUCER_JOB == "qualify-backend-web"
+    assert source["phase_job_ids"] == {
+        "qualify-backend-web-gates-tests": 41, "qualify-backend-web-gates-persistent_agents": 42,
+        "qualify-backend-web-gates-modules": 43, "qualify-backend-web-services": 44, "qualify-backend-web": 45,
+    }
+
+
+@pytest.mark.parametrize("phase_job", range(5))
+@pytest.mark.parametrize("mutation", ["missing", "failed", "skipped", "attempt", "runner", "duplicate", "untyped-id"])
+def test_every_producer_phase_job_must_be_one_exact_successful_protected_job(provider, phase_job, mutation):
+    run, jobs, artifact = provider
+    job = jobs[phase_job]
+    if mutation == "missing":
+        jobs.remove(job)
+    elif mutation == "failed":
+        job["conclusion"] = "failure"
+    elif mutation == "skipped":
+        job["conclusion"] = "skipped"
+    elif mutation == "attempt":
+        job["run_attempt"] = 2
+    elif mutation == "runner":
+        job["runner_name"] = "other"
+    elif mutation == "duplicate":
+        jobs.append(dict(job, id=99))
+    else:
+        job["id"] = str(job["id"])
+    with pytest.raises(validator.EvidenceError):
+        reconstruct(provider)
+
+
+def test_producer_phase_jobs_cannot_share_one_provider_identity(provider):
+    run, jobs, artifact = provider
+    jobs[0]["id"] = jobs[1]["id"]
+    with pytest.raises(validator.EvidenceError, match="distinct"):
+        reconstruct(provider)
 
 
 @pytest.mark.parametrize("mutation", ["sha", "fork", "candidate-workflow", "failed", "attempt", "runner", "job", "artifact", "digest", "expired", "wrong-run"])
@@ -261,13 +298,13 @@ def test_provider_rejects_replays_forks_untrusted_jobs_and_missing_digest(provid
     elif mutation == "candidate-workflow":
         run["head_branch"] = "candidate"
     elif mutation == "failed":
-        jobs[0]["conclusion"] = "failure"
+        jobs[-1]["conclusion"] = "failure"
     elif mutation == "attempt":
-        jobs[0]["run_attempt"] = 2
+        jobs[-1]["run_attempt"] = 2
     elif mutation == "runner":
-        jobs[0]["runner_name"] = "other"
+        jobs[-1]["runner_name"] = "other"
     elif mutation == "job":
-        jobs.append(deepcopy(jobs[0]))
+        jobs.append(deepcopy(jobs[-1]))
     elif mutation == "artifact":
         artifact["name"] = "backend-web-qualification-12-2"
     elif mutation == "digest":

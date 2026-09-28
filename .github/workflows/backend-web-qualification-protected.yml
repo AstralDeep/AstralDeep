@@ -1,6 +1,7 @@
-# Executable protected phase producer. Missing acceptance collectors stay
-# explicit and fail this job; diagnostic phase receipts are never attested as
-# a complete qualifying evidence set. Native release artifacts are not inputs.
+# Executable protected phase producer: each whole backend suite group and the service,
+# migration-recovery and real-authentication phase run as separate bounded jobs whose
+# honest receipts the final job joins. Missing acceptance collectors stay explicit and
+# fail that job; native release artifacts are not inputs.
 name: backend-web-qualification-protected
 
 on:
@@ -23,12 +24,105 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  qualify-backend-web:
+  qualify-backend-web-gates:
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
-    name: qualify-backend-web
+    name: qualify-backend-web-gates-${{ matrix.group }}
     runs-on: [self-hosted, astral-backend-web-qualification]
     environment: release-backend-web
-    timeout-minutes: 720
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - tests
+          - persistent_agents
+          - modules
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      SOURCE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+      BACKEND_WEB_PRODUCER_SHA: ${{ vars.BACKEND_WEB_PRODUCER_SHA }}
+      BACKEND_WEB_PRODUCER_RUNNER: ${{ vars.BACKEND_WEB_PRODUCER_RUNNER }}
+      GATE_GROUP: ${{ matrix.group }}
+    steps:
+      - name: Verify installed policy, runner and exact successful candidate CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          def require(value):
+              if not value:
+                  raise SystemExit("protected producer policy, runner or CI identity is invalid")
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["BACKEND_WEB_PRODUCER_SHA"]))
+          require(os.environ["GITHUB_WORKFLOW_SHA"] == os.environ["BACKEND_WEB_PRODUCER_SHA"])
+          require(os.environ["RUNNER_NAME"] == os.environ["BACKEND_WEB_PRODUCER_RUNNER"])
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["CANDIDATE_SHA"]))
+          require(re.fullmatch(r"[1-9][0-9]*", os.environ["SOURCE_CI_RUN_ID"]))
+          run = json.loads(subprocess.check_output(["gh", "api", "repos/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["SOURCE_CI_RUN_ID"]]))
+          require(run.get("path") == ".github/workflows/ci.yml" and run.get("name") == "CI")
+          require(run.get("status") == "completed" and run.get("conclusion") == "success")
+          require(run.get("head_sha") == os.environ["CANDIDATE_SHA"])
+          require(run.get("head_repository", {}).get("full_name") == os.environ["GITHUB_REPOSITORY"])
+          require(run.get("event") in {"pull_request", "push"})
+          PY
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.BACKEND_WEB_PRODUCER_SHA }}
+          path: policy
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: candidate-image
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Load the exact candidate artifact without rebuilding
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$(cat candidate-image/image-id.txt)"
+          [[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker load --input candidate-image/image.tar.gz
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$CANDIDATE_SHA"
+          printf 'CANDIDATE_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
+      - name: Execute one whole isolated backend suite group
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I policy/scripts/produce_backend_web_qualification.py --protected \
+            --phase gate --group "$GATE_GROUP" \
+            --policy-commit "$BACKEND_WEB_PRODUCER_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            --candidate-image "$CANDIDATE_IMAGE" --source "$GITHUB_WORKSPACE/candidate" \
+            --output "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-gate-$GATE_GROUP"
+      - name: Retain the honest suite group receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-web-phase-gate-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwq-${{ github.run_id }}-${{ github.run_attempt }}-gate-${{ matrix.group }}/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  qualify-backend-web-services:
+    needs: qualify-backend-web-gates
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (!cancelled()) }}
+    name: qualify-backend-web-services
+    runs-on: [self-hosted, astral-backend-web-qualification]
+    environment: release-backend-web
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -101,7 +195,7 @@ jobs:
           docker load --input candidate-image/image.tar.gz
           test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$CANDIDATE_SHA"
           printf 'CANDIDATE_IMAGE=%s\n' "$image" >> "$GITHUB_ENV"
-      - name: Execute fixed isolated gates, service provisioning, migration recovery and real authentication
+      - name: Execute service provisioning, migration recovery and real authentication
         shell: bash
         run: |
           set -euo pipefail
@@ -111,13 +205,90 @@ jobs:
             voice_arguments=(--voice-image "$VOICE_IMAGE" --voice-closure-sha256 "$VOICE_CLOSURE_SHA256" --speech-runtime-env "$SPEECH_RUNTIME_ENV")
           fi
           python3 -I policy/scripts/produce_backend_web_qualification.py --protected \
+            --phase services \
             --policy-commit "$BACKEND_WEB_PRODUCER_SHA" --candidate-sha "$CANDIDATE_SHA" \
             --candidate-image "$CANDIDATE_IMAGE" --source "$GITHUB_WORKSPACE/candidate" \
             --baseline-plane-source "$GITHUB_WORKSPACE/baseline-plane" \
             --private-root "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-private" \
-            --output "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-evidence" \
+            --output "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-services" \
             --materializer-image "$MATERIALIZER_IMAGE" --lets-image "$LETS_IMAGE" \
             --port "$QUALIFICATION_PORT" "${voice_arguments[@]}"
+      - name: Retain the honest service phase receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-web-phase-services-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwq-${{ github.run_id }}-${{ github.run_attempt }}-services/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  qualify-backend-web:
+    needs: [qualify-backend-web-gates, qualify-backend-web-services]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (!cancelled()) }}
+    name: qualify-backend-web
+    runs-on: [self-hosted, astral-backend-web-qualification]
+    environment: release-backend-web
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      SOURCE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+      BACKEND_WEB_PRODUCER_SHA: ${{ vars.BACKEND_WEB_PRODUCER_SHA }}
+      BACKEND_WEB_PRODUCER_RUNNER: ${{ vars.BACKEND_WEB_PRODUCER_RUNNER }}
+    steps:
+      - name: Verify installed policy, runner and exact successful candidate CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          def require(value):
+              if not value:
+                  raise SystemExit("protected producer policy, runner or CI identity is invalid")
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["BACKEND_WEB_PRODUCER_SHA"]))
+          require(os.environ["GITHUB_WORKFLOW_SHA"] == os.environ["BACKEND_WEB_PRODUCER_SHA"])
+          require(os.environ["RUNNER_NAME"] == os.environ["BACKEND_WEB_PRODUCER_RUNNER"])
+          require(re.fullmatch(r"[0-9a-f]{40}", os.environ["CANDIDATE_SHA"]))
+          require(re.fullmatch(r"[1-9][0-9]*", os.environ["SOURCE_CI_RUN_ID"]))
+          run = json.loads(subprocess.check_output(["gh", "api", "repos/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["SOURCE_CI_RUN_ID"]]))
+          require(run.get("path") == ".github/workflows/ci.yml" and run.get("name") == "CI")
+          require(run.get("status") == "completed" and run.get("conclusion") == "success")
+          require(run.get("head_sha") == os.environ["CANDIDATE_SHA"])
+          require(run.get("head_repository", {}).get("full_name") == os.environ["GITHUB_REPOSITORY"])
+          require(run.get("event") in {"pull_request", "push"})
+          PY
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ env.BACKEND_WEB_PRODUCER_SHA }}
+          path: policy
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Create the private phase receipt directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipts="$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-receipts"
+          if [ -e "$receipts" ] || [ -L "$receipts" ]; then echo "::error::phase receipt directory $receipts already exists"; exit 1; fi
+          install -d -m 0700 "$receipts"
+      - name: Download every current-attempt phase receipt
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: backend-web-phase-*-${{ github.run_id }}-${{ github.run_attempt }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/bwq-${{ github.run_id }}-${{ github.run_attempt }}-receipts
+      - name: Join the phase receipts into honest qualification status
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I policy/scripts/produce_backend_web_qualification.py --protected \
+            --phase assemble \
+            --policy-commit "$BACKEND_WEB_PRODUCER_SHA" --candidate-sha "$CANDIDATE_SHA" \
+            --receipts "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-receipts" \
+            --output "$RUNNER_TEMP/bwq-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-evidence"
       - name: Retain honest phase status even when qualification is incomplete
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

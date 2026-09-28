@@ -27,6 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "config/backend-web-evidence.schema.json"
 CONSUMER = ".github/workflows/backend-web-readiness.yml"
 PRODUCER = ".github/workflows/backend-web-qualification-protected.yml"
+PRODUCER_JOB = "qualify-backend-web"
+PRODUCER_PHASE_JOBS = (
+    "qualify-backend-web-gates-tests",
+    "qualify-backend-web-gates-persistent_agents",
+    "qualify-backend-web-gates-modules",
+    "qualify-backend-web-services",
+    PRODUCER_JOB,
+)
 HEX40 = re.compile(r"[0-9a-f]{40}")
 HEX64 = re.compile(r"[0-9a-f]{64}")
 IMAGE = re.compile(r"(?:[a-zA-Z0-9._:/-]+@)?sha256:[0-9a-f]{64}")
@@ -296,13 +304,17 @@ def reconstruct_source(run: dict[str, Any], jobs: list[dict[str, Any]], artifact
              "source run is not the installed protected producer")
     attempt = run.get("run_attempt")
     _require(type(attempt) is int and attempt > 0, "source attempt is invalid")
-    matched = [job for job in jobs if job.get("name") == "qualify-backend-web"]
-    _require(len(matched) == 1, "protected producer job is missing or ambiguous")
-    job = matched[0]
-    _require(job.get("status") == "completed" and job.get("conclusion") == "success"
-             and job.get("run_id") == int(run_id) and job.get("run_attempt") == attempt
-             and job.get("runner_name") == runner and type(job.get("id")) is int,
-             "protected producer job or runner identity differs")
+    phase_jobs = {}
+    for name in PRODUCER_PHASE_JOBS:
+        matched = [job for job in jobs if job.get("name") == name]
+        _require(len(matched) == 1, "protected producer phase job is missing or ambiguous")
+        job = matched[0]
+        _require(job.get("status") == "completed" and job.get("conclusion") == "success"
+                 and job.get("run_id") == int(run_id) and job.get("run_attempt") == attempt
+                 and job.get("runner_name") == runner and type(job.get("id")) is int,
+                 "protected producer job or runner identity differs")
+        phase_jobs[name] = job["id"]
+    _require(len(set(phase_jobs.values())) == len(phase_jobs), "protected producer phase jobs are not distinct")
     _require(str(artifact.get("id")) == artifact_id
              and artifact.get("name") == f"backend-web-qualification-{run_id}-{attempt}"
              and artifact.get("expired") is False
@@ -312,8 +324,8 @@ def reconstruct_source(run: dict[str, Any], jobs: list[dict[str, Any]], artifact
              and type(artifact.get("size_in_bytes")) is int
              and 0 < artifact["size_in_bytes"] <= 512 * 1024 * 1024,
              "source artifact identity is invalid")
-    return {"run_id": run_id, "run_attempt": attempt, "job_id": job["id"],
-            "runner_name": runner, "artifact_id": artifact_id,
+    return {"run_id": run_id, "run_attempt": attempt, "job_id": phase_jobs[PRODUCER_JOB],
+            "phase_job_ids": phase_jobs, "runner_name": runner, "artifact_id": artifact_id,
             "artifact_sha256": artifact["digest"].split(":", 1)[1], "producer_sha": producer_sha}
 
 
