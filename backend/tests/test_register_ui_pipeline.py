@@ -158,9 +158,15 @@ async def test_register_ui_delivers_welcome_and_dashboard(
     assert frame_types.index("rote_config") > frame_types.index("system_config")
 
     rote_frame = next(f for f in ws.task.outputs if f.get("type") == "rote_config")
-    assert set(rote_frame) == {"type", "device_profile", "speech_server_available"}
+    assert set(rote_frame) == {
+        "type",
+        "device_profile",
+        "speech_server_available",
+        "viewport_snapshot_supported",
+    }
     assert isinstance(rote_frame["speech_server_available"], bool)
     assert rote_frame["speech_server_available"] is orch.speech_server_available()
+    assert rote_frame["viewport_snapshot_supported"] is True
 
 
 async def test_register_ui_audit_events_recorded_in_order(
