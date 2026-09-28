@@ -23,7 +23,7 @@
     "lets": {
       "repository": "https://github.com/AstralDeep/LETS.git",
       "path": "components/LETS",
-      "commit": "0333cd6ce8638603bd8150a2f480d9e51e5fd4d5",
+      "commit": "bf72d6f06765ccf3150ac60a97c3f4b8b1191b93",
       "ref": "v1.0.11",
       "contract_version": "1.0.11"
     }
