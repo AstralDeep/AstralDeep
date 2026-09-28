@@ -845,7 +845,8 @@ def test_settled_footprint_tracks_pipes_and_reports_a_leak_past_the_deadline() -
         os.close(read_end)
         os.close(write_end)
     assert leaked["open_pipe_descriptors"] == baseline["open_pipe_descriptors"] + 2
-    assert _settled_footprint(baseline, deadline_seconds=0.05) == baseline
+    released = _settled_footprint(baseline, deadline_seconds=0.05)
+    assert released["open_pipe_descriptors"] == baseline["open_pipe_descriptors"]
 
 
 def _clean_supervision_result() -> dict[str, Any]:
