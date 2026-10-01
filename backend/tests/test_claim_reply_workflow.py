@@ -11,7 +11,11 @@ ACTION = "AstralDeep/astraldeep.github.io/actions/claim-reply@d7ab78f98bc6a508c7
 
 def assert_contract(text):
     assert re.search(r"(?m)^permissions: \{\}$", text)
-    assert re.search(r"(?m)^    if: github.ref == 'refs/heads/main'$", text)
+    guard = (
+        "    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+        " && (github.ref == 'refs/heads/main')"
+    )
+    assert re.search(r"(?m)^" + re.escape(guard) + r"$", text)
     assert re.findall(r"(?m)^  ([\w-]+):$", text.split("jobs:\n", 1)[1]) == ["reply"]
     assert re.findall(r"(?m)^    timeout-minutes: (\d+)$", text) == ["5"]
     assert re.findall(r"(?m)^      (\S+): (read|write)$", text) == [("issues", "write")]
