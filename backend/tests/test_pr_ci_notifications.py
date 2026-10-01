@@ -8,11 +8,15 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "pr-ci-notifications.yml"
 ACTION = "AstralDeep/astraldeep.github.io/actions/pr-ci@f1930907e1f702e341fe03f73e102e156ec3e36e"
 NAMES = ["CI"]
+GUARD = (
+    "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+    " && (github.ref == 'refs/heads/main')"
+)
 
 def assert_contract(text):
     assert re.search(r"(?m)^permissions: \{\}$", text)
     assert re.findall(r"(?m)^  ([\w-]+):$", text.split("jobs:\n", 1)[1]) == ["notify"]
-    assert re.findall(r"(?m)^    if: (.*)$", text) == ["github.ref == 'refs/heads/main'"]
+    assert re.findall(r"(?m)^    if: (.*)$", text) == [GUARD]
     assert re.findall(r"(?m)^    timeout-minutes: (\d+)$", text) == ["5"]
     assert re.findall(r"(?m)^      (\S+): (read|write)$", text) == [
         ("actions", "read"), ("issues", "write"), ("pull-requests", "write")
@@ -46,6 +50,8 @@ class PrCiNotificationsTests(unittest.TestCase):
             ("pull-requests: write", "id-token: write"),
             (ACTION, ACTION.rsplit("@", 1)[0] + "@main"),
             ("refs/heads/main", "refs/heads/candidate"),
+            (GUARD, GUARD.split(" && ", 1)[0]),
+            (GUARD, GUARD.replace(" && ", " || ")),
             ("timeout-minutes: 5", "timeout-minutes: 31"),
             ("permissions: {}", "permissions: write-all"),
             ("cancel-in-progress: false", "cancel-in-progress: true"),
