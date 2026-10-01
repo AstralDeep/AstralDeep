@@ -1,32 +1,34 @@
-# Routes bounty claim comments to a pinned responder without checking out repository code.
-name: Bounty claim guidance
+# Reconciles source issue claims through the pinned community action without checking out repository code.
+name: Bounty claims
 on:
   issue_comment:
     types: [created, edited]
+  schedule:
+    - cron: '4-59/5 * * * *'
   workflow_dispatch:
     inputs:
       comment_id:
-        description: Existing issue comment ID to inspect or answer
-        required: true
+        description: Comment ID, or leave empty to reconcile all claims
+        required: false
         type: string
       dry_run:
-        description: Preview the reply without posting
+        description: Preview without changing comments or assignments
         required: true
         type: boolean
         default: true
 permissions: {}
 concurrency:
-  group: bounty-claim-guidance-${{ github.event.comment.id || inputs.comment_id }}
+  group: bounty-claims
   cancel-in-progress: false
 jobs:
   reply:
-    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.ref == 'refs/heads/main')
+    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.ref == 'refs/heads/main' && (github.event_name != 'issue_comment' || github.event.comment.user.type == 'User'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       issues: write
     steps:
-      - uses: AstralDeep/astraldeep.github.io/actions/claim-reply@d7ab78f98bc6a508c7b4717fbb0ea0b61abcb3ff
+      - uses: AstralDeep/astraldeep.github.io/actions/claim-reply@e649eaa2288ef7d75f01857f067bd82f13de2033
         with:
           comment-id: ${{ inputs.comment_id || '' }}
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}

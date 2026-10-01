@@ -301,6 +301,12 @@ verification records.
 
 ## Documentation
 
+Looking for a contribution? Browse the [bounty board](https://astraldeep.github.io/bounties.html)
+and read the [claiming and points guide](https://astraldeep.github.io/contribute.html) before
+starting. It explains reservations, pull request requirements, and how verified awards reach
+the leaderboard across all five core repositories. To report a new problem or suggest an
+improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/issues/new?template=issue.md).
+
 | Guide | Covers |
 |---|---|
 | [Production deployment](docs/production-deployment.md) | Deploying and operating AstralDeep in production |
