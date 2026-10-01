@@ -28,7 +28,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: AstralDeep/astraldeep.github.io/actions/claim-reply@3d2d31aa243fdfde35be30ce46de0065430ea4cf
+      - uses: AstralDeep/astraldeep.github.io/actions/claim-reply@054490f832b47eeb99b193dae10e409ca1bc8c9e
         with:
           comment-id: ${{ inputs.comment_id || '' }}
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
