@@ -1,0 +1,32 @@
+# Routes bounty claim comments to a pinned responder without checking out repository code.
+name: Bounty claim guidance
+on:
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      comment_id:
+        description: Existing issue comment ID to inspect or answer
+        required: true
+        type: string
+      dry_run:
+        description: Preview the reply without posting
+        required: true
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: bounty-claim-guidance-${{ github.event.comment.id || inputs.comment_id }}
+  cancel-in-progress: false
+jobs:
+  reply:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: AstralDeep/astraldeep.github.io/actions/claim-reply@d7ab78f98bc6a508c7b4717fbb0ea0b61abcb3ff
+        with:
+          comment-id: ${{ inputs.comment_id || '' }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
