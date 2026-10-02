@@ -1,0 +1,2 @@
+-r requirements-gaiakeep-tests.txt
+-r ../backend/requirements-gaiakeep.txt

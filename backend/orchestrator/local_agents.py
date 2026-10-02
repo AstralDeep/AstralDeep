@@ -45,6 +45,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "web-research-1",
     "remote-compute-1",
     "computer-use-1",
+    "gaiakeep-1",
 )
 
 
@@ -140,6 +141,11 @@ async def register_built_ins(orch) -> List[str]:
                     dirs.append(name)
     except Exception:  # noqa: BLE001
         logger.debug("Feature 076 flag check failed (non-fatal)", exc_info=True)
+    try:
+        if flags.is_enabled("gaiakeep") and flags.is_enabled("cresco"):
+            dirs.append("gaiakeep")
+    except Exception:
+        logger.debug("GaiaKeep flag check failed; agent remains disabled", exc_info=True)
     for dir_name in dirs:
         try:
             cls = _load_agent_class(dir_name)

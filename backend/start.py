@@ -47,6 +47,14 @@ def _remote_compute_enabled() -> bool:
         return False
 
 
+def _gaiakeep_enabled() -> bool:
+    from shared.feature_flags import flags
+    try:
+        return flags.is_enabled("gaiakeep") and flags.is_enabled("cresco")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
                            interval_s: float = 0.5) -> bool:
     url = f"http://localhost:{port}/healthz"
@@ -151,6 +159,11 @@ def main(process_supervisor=None):
                     continue
                 if inprocess_enabled:
                     print(f"Running {item} in-process (no port)")
+                    continue
+            if item == "gaiakeep":
+                if not _gaiakeep_enabled():
+                    continue
+                if inprocess_enabled:
                     continue
             print(f"Starting {item} agent on port {next_port}...")
             process_supervisor.spawn(

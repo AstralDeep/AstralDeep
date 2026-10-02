@@ -11,6 +11,7 @@ import ipaddress
 import shlex
 import socket
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Protocol, Tuple, runtime_checkable
@@ -189,7 +190,11 @@ class ParamikoTransport:
         else:
             connect_kwargs["password"] = target.secret
 
-        client.connect(**connect_kwargs)
+        try:
+            client.connect(**connect_kwargs)
+        except Exception:
+            client.close()
+            raise
 
         # Re-checks peer post-connect: closes a DNS-rebinding gap
         peer_ip = None
@@ -203,6 +208,26 @@ class ParamikoTransport:
                 target.address, str(peer_ip),
                 "connected peer not in the vetted address set (possible DNS rebinding)")
         return client, policy
+
+    @contextmanager
+    def open_tunnel(self, target: MachineTarget, port: int, *, timeout: float = 10):
+        if not target.host_key_fingerprint:
+            raise HostKeyMismatch('A pinned SSH host key is required.')
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError('Invalid tunnel port.')
+        client, _ = self._connect(target, timeout)
+        channel = None
+        try:
+            channel = client.get_transport().open_channel(
+                'direct-tcpip', ('127.0.0.1', port), ('127.0.0.1', 0), timeout=timeout)
+            channel.settimeout(timeout)
+            yield channel
+        finally:
+            try:
+                if channel is not None:
+                    channel.close()
+            finally:
+                client.close()
 
     def _verdict_for_exception(self, exc: Exception) -> Optional[Verdict]:
         if isinstance(exc, net_guard.BlockedTargetError):

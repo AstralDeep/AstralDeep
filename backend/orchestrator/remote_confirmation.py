@@ -118,8 +118,21 @@ def _computer_use_summary(orch, user_id: str, tool_name: str, args: Dict[str, An
 
 
 def _policies() -> Dict[str, AgentConfirmationPolicy]:
+    from agents.gaiakeep.catalog import READ_TOOLS, TOOLS, is_mutation
     from orchestrator import computer_use_policy
     return {
+        "gaiakeep-1": AgentConfirmationPolicy(
+            agent_id="gaiakeep-1",
+            classification={name: "always" if is_mutation(name) else "never" for name in TOOLS},
+            machine_key="machine_id",
+            gate_unclassified_unattended=True,
+            unattended_allowed=READ_TOOLS,
+            card_title="Confirm a GaiaKeep change",
+            card_caption="Approve this exact operation after checking its parameters and native Gaia role requirements.",
+            summary=_gaiakeep_summary,
+            machine_label=_machine_label,
+            auto_continue=True,
+        ),
         MUTATING_AGENT_ID: AgentConfirmationPolicy(
             agent_id=MUTATING_AGENT_ID,
             classification=DESTRUCTIVE_CLASSIFICATION,
@@ -154,7 +167,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
     }
 
 
-GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1"})
+GATED_AGENT_IDS = frozenset({MUTATING_AGENT_ID, "computer-use-1", "gaiakeep-1"})
 
 
 def policy_for(agent_id: Optional[str]) -> Optional[AgentConfirmationPolicy]:
@@ -256,10 +269,19 @@ def _summary(orch, user_id: str, tool_name: str, args: Dict[str, Any]) -> str:
     return f"{tool_name} on {m}"
 
 
+def _gaiakeep_summary(orch, user_id: str, tool_name: str, args: dict[str, Any]) -> str:
+    from agents.gaiakeep.client import clean_result
+    public = {k: v for k, v in args.items() if not str(k).startswith("_") and k != "data_base64"}
+    if "data_base64" in args:
+        public["upload_base64_sha256"] = hashlib.sha256(str(args["data_base64"]).encode()).hexdigest()
+    preview = json.dumps(clean_result(public), ensure_ascii=False, sort_keys=True)
+    return f"{tool_name} on {_machine_label(orch, user_id, args.get('machine_id'))}: {preview}"
+
+
 def classification_for(tool_name: str, agent_id: Optional[str] = None) -> Any:
     policy = policy_for(agent_id) if agent_id else None
     table = policy.classification if policy is not None else DESTRUCTIVE_CLASSIFICATION
-    return table.get(tool_name)
+    return table.get(tool_name, "always" if agent_id == "gaiakeep-1" else None)
 
 
 def is_destructive_unattended(tool_name: str, args: Dict[str, Any],
@@ -439,6 +461,14 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
     policy = policy_for(agent_id)
     if policy is None:
         return None
+    if agent_id == "gaiakeep-1":
+        from agents.gaiakeep.catalog import validate
+        public = {k: v for k, v in args.items() if not str(k).startswith("_") and k not in {"user_id", "session_id"}}
+        try:
+            validate(tool_name, public)
+        except ValueError:
+            return ("Invalid GaiaKeep arguments; no operation was sent.",
+                    [Alert(message="Invalid GaiaKeep arguments; no operation was sent.", variant="error").to_dict()])
     machine_ref = args.get(policy.machine_key)
     classification = classification_for(tool_name, agent_id)
     if classification is None and not policy.gate_unclassified_unattended:
