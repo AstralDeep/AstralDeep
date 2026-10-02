@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "claim-reply.yml"
-ACTION = "AstralDeep/astraldeep.github.io/actions/claim-reply@e649eaa2288ef7d75f01857f067bd82f13de2033"
+ACTION = "AstralDeep/astraldeep.github.io/actions/claim-reply@87501ca5d93dc3b0592fe4dbbb7d39f50109084b"
 
 
 def assert_contract(text):
@@ -51,7 +51,7 @@ class ClaimReplyWorkflowTests(unittest.TestCase):
             ("issues: write", "contents: write"),
             (
                 ACTION,
-                ACTION.replace("e649eaa2288ef7d75f01857f067bd82f13de2033", "main"),
+                ACTION.rsplit("@", 1)[0] + "@main",
             ),
             ("refs/heads/main", "refs/heads/candidate"),
             ("timeout-minutes: 5", "timeout-minutes: 31"),
