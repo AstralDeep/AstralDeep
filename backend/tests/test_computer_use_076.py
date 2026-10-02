@@ -147,14 +147,19 @@ def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
     assert policy.SCOPES["write_file"] == policy.SCOPES["delete_path"] == "tools:files"
 
 
-def test_gate_policy_table_covers_both_agents_and_063_is_unchanged():
-    assert rc.GATED_AGENT_IDS == {"remote-compute-1", "computer-use-1"}
+def test_gate_policy_table_covers_each_agent_and_063_is_unchanged():
+    assert rc.GATED_AGENT_IDS == {"remote-compute-1", "computer-use-1", "gaiakeep-1"}
     p063 = rc.policy_for("remote-compute-1")
     assert p063.classification is rc.DESTRUCTIVE_CLASSIFICATION
     assert p063.gate_unclassified_unattended is False
     p076 = rc.policy_for("computer-use-1")
     assert p076.classification is policy.DESTRUCTIVE_CLASSIFICATION
     assert p076.gate_unclassified_unattended is True
+    gaia = rc.policy_for("gaiakeep-1")
+    assert gaia.gate_unclassified_unattended is True
+    assert rc.classification_for("gaiakeep_upload_file", "gaiakeep-1") == "always"
+    assert rc.is_destructive_unattended("unreviewed", {}, "gaiakeep-1") is True
+    assert rc.is_destructive_unattended("gaiakeep_read_file", {}, "gaiakeep-1") is False
     assert rc.policy_for("weather-1") is None
     assert rc.classification_for("remove_path") == "always"
     assert rc.classification_for("write_file", "computer-use-1") == "always"

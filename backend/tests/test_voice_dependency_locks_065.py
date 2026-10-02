@@ -69,12 +69,15 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "Dockerfile": "04f2a968ce4ae650800bdc44c03b9ed9978e132f5b7b64880158a339f17c83eb",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
     "backend/requirements.txt": "fe67aa0d442cb441aa930cb28050f3480740c7e0557d24c02fa9d7d41fa7599c",
+    "backend/requirements-gaiakeep.txt": "ff3a544a99000866ee615b6733ffced8a72ff9dc85458cfeac2ec048ede2af00",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
     "pyproject.toml": "f55b689d2c1e52b13596b7172f2f218b2788ea8edb1271a68ff5f85370c0c50d",
     "tooling/backend-ci/requirements.in": "6fc8c8dd178365a4c3102506b6f7b8a64ec7088c9b4484746ace40b9f3883fdf",
     "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",
+    "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
+    "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
     "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",
     "tooling/ui-ci/requirements.lock.txt": "4a975d1c0adf7dcbd389cf4829513501780ee58af545a229a921ed8e66985570",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
