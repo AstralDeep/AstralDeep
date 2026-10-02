@@ -478,6 +478,17 @@ and the happy path works."
   an environment-approved exception/debt job MAY receive only the narrowly
   protected branch write needed for an append-only debt or resolution record.
   Ordinary CI and candidate evidence jobs MUST remain read-only.
+- The separate `pr-ci-notifications.yml` metadata controller MAY use only
+  `actions: read`, `issues: write`, and `pull-requests: write` with the built-in
+  token to report current-head CI failures and request maintainer review after
+  all applicable qualification workflows pass. It MUST run only on exact
+  `refs/heads/main` through the reviewed, commit-pinned community action,
+  serialize completion events and recovery, check out no repository code,
+  execute no PR input, download no artifacts, and use no secrets, OIDC,
+  contents-write, approval, rerun, merge, publishing or release authority.
+  Its contract tests MUST preserve those boundaries. First-time contributor
+  run approval remains manual. This controller does not qualify product
+  changes or replace maintainer code review.
 
 **Rationale**: A change that is "almost done" is a future
 incident. Setting the merge bar at production-ready — not
@@ -819,4 +830,4 @@ guidance when conflicts arise.
   before merge, and known shortfalls are tracked as follow-up
   work until closed.
 
-**Version**: 6.0.1 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-09-28
+**Version**: 6.1.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-10-01

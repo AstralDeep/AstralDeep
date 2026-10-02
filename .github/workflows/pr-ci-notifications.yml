@@ -1,0 +1,32 @@
+# Reports current-head CI results through trusted metadata without checking out PR code.
+name: PR CI notifications
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+  schedule:
+    - cron: '11-59/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview notifications without changing comments or review requests
+        required: true
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: pr-ci-notifications
+  cancel-in-progress: false
+jobs:
+  notify:
+    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: AstralDeep/astraldeep.github.io/actions/pr-ci@f1930907e1f702e341fe03f73e102e156ec3e36e
+        with:
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
