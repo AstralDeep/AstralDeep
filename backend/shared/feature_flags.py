@@ -44,6 +44,8 @@ class FeatureFlags:
             "bg_continuity": self._read("FF_BG_CONTINUITY", True),
             "byo_agents": self._read("FF_BYO_AGENTS", False),
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
+            "gaiakeep": self._read("FF_GAIAKEEP", False),
+            "cresco": self._read("FF_CRESCO", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),

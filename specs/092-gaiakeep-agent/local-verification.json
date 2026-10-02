@@ -1,0 +1,133 @@
+{
+  "base": "1e23538deeaf68bad71b432e45e78155c484c820",
+  "total": 744,
+  "covered": 733,
+  "percent": 98.52,
+  "coverage_sha256": "f117cca8bd585992b9c71d3985ef48b598d289b5a5582f9e7d600c87e654a7e2",
+  "files": [
+    {
+      "file": "backend/orchestrator/local_agents.py",
+      "covered": 5,
+      "changed_statements": 5,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "eb68f1a35ebcb5fd55a9afdfac4ce243d0001b12eca2f10ccda3f22dcc419a1a"
+    },
+    {
+      "file": "backend/orchestrator/orchestrator.py",
+      "covered": 5,
+      "changed_statements": 5,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "aeefc9c0bba1b48571f1981e6eb66e571d8db763b9153a40e0d356e17d770753"
+    },
+    {
+      "file": "backend/orchestrator/remote_confirmation.py",
+      "covered": 17,
+      "changed_statements": 17,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "725dcea909613f8d05b63e2365b5523564742048db89a18739f4274efe498907"
+    },
+    {
+      "file": "backend/orchestrator/remote_transport.py",
+      "covered": 22,
+      "changed_statements": 22,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "ff3463991bbaf4c615cbc6c0a40f070e7a9226925bb52a6c266dc47ecaad4607"
+    },
+    {
+      "file": "backend/orchestrator/taint.py",
+      "covered": 3,
+      "changed_statements": 3,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "8bd7436570b037375fff8c768d7a87a50cb6dcac22c8916e6a3656770b1f038c"
+    },
+    {
+      "file": "backend/shared/feature_flags.py",
+      "covered": 0,
+      "changed_statements": 0,
+      "percent": null,
+      "missing": [],
+      "source_sha256": "73706ad86688a5748309b045c9f139320450d5fb1a602b35b1c5cdd5e9089fa5"
+    },
+    {
+      "file": "backend/start.py",
+      "covered": 11,
+      "changed_statements": 11,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "3e93418a3b39cec7e486f8793f9ade4e61dea4314c794d2c91d0252cb3f17b56"
+    },
+    {
+      "file": "backend/agents/gaiakeep/__init__.py",
+      "covered": 0,
+      "changed_statements": 0,
+      "percent": null,
+      "missing": [],
+      "source_sha256": "db0e53d31a13824499eaea5c990e41a1edfcb1919586102223abf9b50e060744"
+    },
+    {
+      "file": "backend/agents/gaiakeep/catalog.py",
+      "covered": 84,
+      "changed_statements": 89,
+      "percent": 94.38,
+      "missing": [
+        34,
+        117,
+        135,
+        136,
+        137
+      ],
+      "source_sha256": "b9264e17837c47125ac992892ade61f3463aac997608aed2759e26adcb064398"
+    },
+    {
+      "file": "backend/agents/gaiakeep/client.py",
+      "covered": 209,
+      "changed_statements": 211,
+      "percent": 99.05,
+      "missing": [
+        180,
+        184
+      ],
+      "source_sha256": "f2624865ad945d5e9a9cadbfd20d8179b294bd32ee6be2844c98074189248152"
+    },
+    {
+      "file": "backend/agents/gaiakeep/gaiakeep_agent.py",
+      "covered": 40,
+      "changed_statements": 41,
+      "percent": 97.56,
+      "missing": [
+        67
+      ],
+      "source_sha256": "5708a8050d34061f5e9abc535f74d2a037fd4ca6785e918edca04f2bf95b8c00"
+    },
+    {
+      "file": "backend/agents/gaiakeep/mcp_server.py",
+      "covered": 98,
+      "changed_statements": 98,
+      "percent": 100.0,
+      "missing": [],
+      "source_sha256": "8473a13611000696ee9d21ad9e2ed9caf5bf53240f1b95205c0df8f1ebeeb71a"
+    },
+    {
+      "file": "backend/agents/gaiakeep/transport.py",
+      "covered": 239,
+      "changed_statements": 242,
+      "percent": 98.76,
+      "missing": [
+        62,
+        145,
+        146
+      ],
+      "source_sha256": "922c4cc36fd8de1e7f313178657598ea79648fac33dc348be78390f3bd91c6ea"
+    }
+  ],
+  "kind": "local-diagnostic-only",
+  "python": "3.11.15",
+  "deterministic_tests": 396,
+  "private_sdk_qualification_tests": 3,
+  "ruff": "0.15.21"
+}

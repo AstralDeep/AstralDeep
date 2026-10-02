@@ -1,0 +1,140 @@
+"""Builds closed public tool schemas from pinned metadata and shares conservative mutation policy with dispatch."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path, PurePosixPath
+
+MAX_FILE = 8 << 20
+MAX_RPC = 1 << 20
+PROTECTED = frozenset({'principal', 'audience', 'sig', 'sig_ts', 'sig_nonce', 'sig_params',
+                       'user', 'approver', 'client_rpc_id', 'events', 'grant',
+                       'reconstruct_token', 'up_stream', 'down_stream', 'ident_key',
+                       'ident_id', 'transfer_id'})
+MODERN_PROTOTYPE = frozenset({'listfiles', 'createproject', 'projectmember', 'commit',
+                             'projectfiles', 'resolve', 'promote', 'approvereconstruct',
+                             'reconstructauth'})
+METADATA = json.loads(Path(__file__).with_name('capabilities.json').read_text(encoding='utf-8'))
+REVISION = METADATA['revision']
+ACTIONS = {item['action']: item for item in METADATA['actions']}
+FILE_ACTIONS = frozenset({'core.put', 'core.get', 'core.haveopen', 'core.have'})
+
+
+def relative_path(value):
+    if (not isinstance(value, str) or not value or len(value) > 4096 or '\\' in value
+            or ':' in value or '\x00' in value or value.startswith('/')
+            or any(p in {'', '.', '..'} for p in value.split('/'))):
+        raise ValueError('A relative collection path is required.')
+    return str(PurePosixPath(value))
+
+
+def owned_fields(action):
+    fields = set(PROTECTED)
+    if action in {'core.put', 'core.get'}:
+        fields.add('xfer')
+    return fields
+
+
+def _schema(fields, required):
+    return {'type': 'object', 'properties': fields, 'required': required, 'additionalProperties': False}
+
+
+def _field(kind):
+    if kind in {'int', 'long'}:
+        return {'type': 'integer', 'minimum': -(2 ** 63), 'maximum': 2 ** 63 - 1}
+    if kind == 'boolean':
+        return {'type': 'boolean'}
+    return {'type': 'string', 'maxLength': 65536}
+
+
+def _tools():
+    out = {}
+    for action, item in ACTIONS.items():
+        if action in FILE_ACTIONS:
+            continue
+        params = {p['name']: _field(p['type']) for p in item['parameters']
+                  if p['name'] not in owned_fields(action)}
+        required = [p['name'] for p in item['parameters']
+                    if p['required'] and p['name'] in params]
+        name = 'gaiakeep_' + action.replace('.', '_')
+        scope = 'tools:system' if item['system'] else ('tools:read' if item['read'] else 'tools:write')
+        out[name] = {'action': action, 'scope': scope,
+                     'description': f'Call GaiaKeep {action}; Gaia enforces native roles. '
+                                    + ('Requires operator legacy opt-in. ' if item['legacy'] else '')
+                                    + ('Requires human approval.' if not item['read'] else 'Reads remote state.'),
+                     'input_schema': _schema({'machine_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+                                              'params': _schema(params, required)}, ['machine_id', 'params'])}
+        if action == 'fetch':
+            out[name]['description'] = 'Legacy fetch is unsupported until its bounded receiver is qualified. Use gaiakeep_read_file for versioned files.'
+    common = {'machine_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+              'path': {'type': 'string', 'minLength': 1, 'maxLength': 4096}}
+    out['gaiakeep_upload_file'] = {'action': 'upload', 'scope': 'tools:write',
+        'description': 'Publish a new version containing one file (up to 8 MiB) and move the branch head; '
+                       'include base_vid to retain its other files. Requires human approval.',
+        'input_schema': _schema(dict(common, collection_id={'type': 'string', 'minLength': 1, 'maxLength': 256},
+                                    data_base64={'type': 'string', 'maxLength': 4 * ((MAX_FILE + 2) // 3)},
+                                    branch={'type': 'string', 'minLength': 1, 'maxLength': 256},
+                                    strategy={'enum': ['ingest', 'have']},
+                                    base_vid={'type': 'string', 'minLength': 1, 'maxLength': 256},
+                                    expected_head={'type': 'string', 'minLength': 1, 'maxLength': 256}),
+                                ['machine_id', 'path', 'collection_id', 'data_base64'])}
+    out['gaiakeep_read_file'] = {'action': 'read', 'scope': 'tools:read',
+        'description': 'Read and verify one versioned file (up to 8 MiB), returning base64 bytes and SHA256.',
+        'input_schema': _schema(dict(common, vid={'type': 'string', 'minLength': 1, 'maxLength': 256}),
+                                ['machine_id', 'path', 'vid'])}
+    return out
+
+
+TOOLS = _tools()
+READ_TOOLS = frozenset(name for name, item in TOOLS.items()
+                       if item['action'] == 'read' or ACTIONS.get(item['action'], {}).get('read', False))
+
+
+def is_mutation(name):
+    return name not in READ_TOOLS
+
+
+def _bounded_json(value, depth=0):
+    if depth > 16:
+        raise ValueError('JSON nesting exceeds the allowed depth.')
+    if isinstance(value, (dict, list)):
+        if len(value) > 10000:
+            raise ValueError('JSON contains too many entries.')
+        for item in value.values() if isinstance(value, dict) else value:
+            _bounded_json(item, depth + 1)
+
+
+def validate(name, arguments):
+    from jsonschema import Draft202012Validator
+    if name not in TOOLS:
+        raise ValueError('Unknown GaiaKeep tool.')
+    try:
+        Draft202012Validator(TOOLS[name]['input_schema']).validate(arguments)
+        encoded = json.dumps(arguments, allow_nan=False).encode()
+    except Exception as exc:
+        raise ValueError('Invalid GaiaKeep tool arguments.') from exc
+    if len(encoded) > (12 << 20 if name == 'gaiakeep_upload_file' else MAX_RPC):
+        raise ValueError('Tool arguments exceed the allowed size.')
+    if is_mutation(name) and name != 'gaiakeep_upload_file' and len(encoded) > 10000:
+        raise ValueError('Mutation parameters exceed the approval display bound.')
+    if name == 'gaiakeep_upload_file' and arguments.get('strategy') == 'have' and arguments.get('base_vid'):
+        raise ValueError('Deduplication upload does not support a base version.')
+    params = arguments.get('params', {})
+    for key, value in params.items():
+        if isinstance(value, str) and value.lstrip().startswith(('{', '[')):
+            try:
+                _bounded_json(json.loads(value))
+            except (ValueError, RecursionError) as exc:
+                raise ValueError('Invalid nested JSON parameter.') from exc
+        if key in {'path', 'new_path', 'dest_path'}:
+            relative_path(value)
+        if key == 'request_id' and (not isinstance(value, str) or not 16 <= len(value) <= 64
+                                    or any(not (c.isascii() and (c.isalnum() or c in '_-')) for c in value)):
+            raise ValueError('Invalid GaiaKeep idempotency request identifier.')
+        if key in {'limit', 'wait_ms', 'size', 'length', 'chunk', 'window', 'pages'}:
+            maximum = {'limit': 1000, 'wait_ms': 20000, 'pages': 1024}.get(key, MAX_FILE)
+            if isinstance(value, bool) or not str(value).isdigit() or not 0 <= int(value) <= maximum:
+                raise ValueError('Numeric parameter exceeds the allowed bound.')
+    if 'path' in arguments:
+        relative_path(arguments['path'])
+    return arguments

@@ -20,7 +20,7 @@ _UNTRUSTED_TOOLS = {
 }
 _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      "remote-compute-1",
-                     "computer-use-1"}
+                     "computer-use-1", "gaiakeep-1"}
 
 _SINK_TOOLS = {
     "send_*", "post_*", "create_*", "update_*",
@@ -49,6 +49,9 @@ def classify_source(agent: Optional[str], tool: Optional[str]) -> int:
 
 
 def is_sink(agent: Optional[str], tool: Optional[str]) -> bool:
+    if agent == "gaiakeep-1":
+        from agents.gaiakeep.catalog import is_mutation
+        return is_mutation(tool)
     name = tool or ""
     return any(fnmatch.fnmatchcase(name, pat) for pat in _SINK_TOOLS)
 
