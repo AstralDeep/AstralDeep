@@ -42,12 +42,12 @@ def runtime(monkeypatch, tmp_path):
     class Core:
         def __init__(self, transport, address, **kwargs):
             records['constructed'].append((address, kwargs))
+            self.transport, self.address = transport, address
             self.profile = None
             self.signer = SimpleNamespace(principal='owner')
 
         def call(self, action, params, timeout=None):
-            records['calls'].append((action, params))
-            return {'status': '10', 'text': 'private-service-key', 'job_id': 'native-job'}
+            return self.transport.call(self.address, action, params, timeout or 20)
 
         def read(self, vid, path, max_bytes=None):
             records['calls'].append(('read', vid, path, max_bytes))
@@ -71,9 +71,21 @@ def runtime(monkeypatch, tmp_path):
         def remaining(self, timeout):
             return timeout
 
+        def call(self, addr, action, params, timeout):
+            records['calls'].append((action, params))
+            return {'status': '10', 'text': 'private-service-key', 'job_id': 'native-job'}
+
         def close(self):
             records['closed'].append('transport')
 
+    class TransportError(Exception):
+        pass
+
+    class RpcTimeout(TransportError):
+        pass
+
+    monkeypatch.setitem(sys.modules, 'gaiakeep.errors', SimpleNamespace(
+        TransportError=TransportError, RpcTimeout=RpcTimeout))
     monkeypatch.setattr(transport, 'VerifiedLoopbackTransport', Loopback, raising=False)
     monkeypatch.setattr(ssl, 'create_default_context', lambda **kwargs: SimpleNamespace(
         verify_mode=ssl.CERT_REQUIRED, check_hostname=True, cadata=kwargs.get('cadata')))

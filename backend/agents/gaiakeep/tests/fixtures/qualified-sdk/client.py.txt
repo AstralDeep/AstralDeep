@@ -1,0 +1,580 @@
+"""
+CoreClient: the supported Python client for the GaiaKeep storage core (io.cresco.gfs core.* verbs).
+
+- Every call is signed (GFS-REQ-1) as one principal, addressed to the core's audience.
+- The core leader serves every verb: a follower answers status 12 with core_leader, and the client retries
+  once at the named leader (at most `redirects` hops; with no leader known it waits and asks again).
+- Follower reads (OUT-31): with read_peers set, core.head, core.list and core.get go to those core peers
+  first, signed with read_peer=<that peer>, the consistency asked for and min_index = the highest
+  commit_index this client has seen (read-your-writes: a read never shows state older than the client's
+  own last write). A peer that cannot serve (status 12: no read index, behind, partitioned) or does not
+  answer is skipped; status 11 (busy) backs off; when no read peer serves, the read goes to the leader.
+  Anything else a read peer answers (a refusal, not found) is authoritative: it ran after its barrier.
+- Control goes over MsgEvent RPC with short, class-based timeouts (C0 20 s, C1 60 s, opens and commits
+  20 s); bytes go only over GKT flows on the dataplane (transfer.py).
+- Fails closed: the core's identity key is pinned by the caller (core_public_key); a key exchange, event
+  or download that does not verify raises IntegrityError.
+"""
+import json as _json
+import os
+import threading
+import time
+
+from . import jobs as _jobs, log
+from .errors import BadRequest, NotFound, OutcomeUnknown, RpcTimeout, raise_for, TransportError
+from .events import EventHub
+from .ingest import Ingest, IngestTarget
+from .keys import parse_public, load_private
+from .signing import Signer, unsigned
+from .transfer import Transfers, new_id
+from .transport import decode_params, json_param, numbers, strip_transport
+
+NOT_LEADER = "12"
+
+# how far past the client's clock a core's replay_horizon may be for the client to sign at it (twice the default window)
+MAX_HORIZON_AHEAD_MS = 600_000
+# signed verbs every core peer answers itself (no leader redirect): core.snapshot compacts that peer's log, core.audit
+# and core.auditverify read and verify that peer's own audit log (A3); each is signed for the peer it is sent to (the
+# peer_audience that peer's core.status names), so it cannot be replayed on another peer (A2)
+ANY_PEER = ("core.snapshot", "core.audit", "core.auditverify")
+
+
+def _horizon_of(r):
+    """The replay horizon a status-3 refusal names (ms), or None."""
+    if not r or str(r.get("status")) != "3" or not r.get("replay_horizon"):
+        return None
+    try:
+        return int(r["replay_horizon"])
+    except (TypeError, ValueError):
+        return None
+BUSY = "11"
+# reads a core peer that is not the leader may serve (CoreService.FOLLOWER_READS)
+FOLLOWER_READS = ("core.head", "core.list", "core.get")
+LINEARIZABLE, SESSION = "linearizable", "session"
+
+
+class Timeouts:
+    """Seconds. C0 instant control, C1 bounded reads, opens and commits: opmodel §1 and §3. sync_verb bounds a
+    job verb that a wave-1 core runs synchronously. A transport's own cap (max_rpc_seconds; 30 s on the 1.3
+    Cresco transports) applies on top of every one of these."""
+
+    def __init__(self, c0=20.0, c1=60.0, open=20.0, commit=20.0, commit_wait=600.0, flow_stall=120.0,
+                 flow_max=6 * 3600.0, legacy_floor_bytes_per_s=20e6, legacy_min=120.0, legacy_max=6 * 3600.0,
+                 sync_verb=600.0):
+        self.c0, self.c1, self.open, self.commit, self.sync_verb = c0, c1, open, commit, sync_verb
+        self.commit_wait, self.flow_stall, self.flow_max = commit_wait, flow_stall, flow_max
+        self.legacy_floor, self.legacy_min, self.legacy_max = legacy_floor_bytes_per_s, legacy_min, legacy_max
+
+    def legacy_publish(self, total_bytes):
+        """The wave-1 streaming publish holds its RPC for the whole upload: bound it by the bytes."""
+        return max(self.legacy_min, min(self.legacy_max, 60.0 + total_bytes / self.legacy_floor))
+
+
+C1_VERBS = ("core.list", "core.versions", "core.branches", "core.diff", "core.audit", "core.extractlist",
+            "core.jobleaves", "core.auditverify")
+# reads that change nothing: after a dropped connection they are re-signed (fresh nonce) and asked once more
+IDEMPOTENT_READS = C1_VERBS + ("core.status", "core.whoami", "core.head", "core.putstatus", "core.job")
+CAP_JOBS_1 = "jobs-1"
+_PATH_PARAMS = ("path", "new_path")
+
+
+class CoreClient:
+    """A signed, leader-following client of one storage core.
+
+    transport        a gaiakeep.transport.Transport (CrescoTransport for the fabric)
+    addr             any core peer, "region:agent:plugin"
+    signer           a gaiakeep.signing.Signer (or principal= and key= / key_file=)
+    core_public_key  the core identity key (base64url SPKI), pinned out of band. Required.
+    read_peers       core peers to read from ("region:agent:plugin", nearest first); None: every read goes to
+                     the leader. Reads are spread over them round-robin, falling back to the leader.
+    read_consistency "linearizable" (default: the peer asks the leader for a read index first) or "session"
+                     (the peer waits only for this client's min_index; the core must enable it)
+    """
+
+    def __init__(self, transport, addr, signer=None, core_public_key=None, principal=None, key=None, key_file=None,
+                 audience=None, flows=4, chunk=1 << 20, window_bytes=16 << 20, timeouts=None, redirects=5,
+                 redirect_wait=1.0, rto=None, read_peers=None, read_consistency=LINEARIZABLE, busy_backoff_max=2.0,
+                 digests="auto"):
+        if read_consistency not in (LINEARIZABLE, SESSION):
+            raise ValueError("read_consistency must be linearizable or session")
+        # digests (METADATA-CRYPTO.md §12): "auto" (keyed when core.status names mac in digests, else a core from
+        # before it: the raw sha256), "mac" (keyed only; no raw digest ever leaves this client) or "sha256" (legacy)
+        if digests not in ("auto", "mac", "sha256"):
+            raise ValueError("digests must be auto, mac or sha256")
+        self._digest_mode, self._digests = digests, None
+        if not core_public_key:
+            raise ValueError("core_public_key is required: pin the core identity key out of band "
+                             "(CoreClient.fetch_core_public_key shows what a core claims; verify it before pinning)")
+        if signer is None:
+            if key is None and key_file:
+                key = load_private(key_file)
+            if not principal or key is None:
+                raise ValueError("a signer, or principal and key/key_file, is required")
+            signer = Signer(principal, key)
+        self.transport, self.addr, self.signer = transport, addr, signer
+        self.core_key = parse_public(core_public_key)
+        if audience:
+            self.signer.audience = audience
+        self.timeouts = timeouts or Timeouts()
+        self.redirects, self.redirect_wait = redirects, redirect_wait
+        self.events = EventHub(self.core_key)
+        self.transfers = Transfers(self, flows=flows, chunk=chunk, window_bytes=window_bytes, rto=rto)
+        self._caps = None
+        self._lock = threading.Lock()
+        self._peer_audiences = {}
+        self.read_peers = [p for p in (read_peers or []) if p]
+        self.read_consistency = read_consistency
+        self.busy_backoff_max = busy_backoff_max
+        # the highest commit_index any reply named: every read asks for at least this much (read-your-writes)
+        self.commit_index = 0
+        self._next_peer = 0
+        self.read_stats = {"follower": 0, "leader_fallback": 0, "skipped": {}}
+        self.profile = None                      # the Profile, when made by from_profile
+        self._own_transport = False
+
+    # ------------------------------------------------------------------------------------------ plumbing
+
+    @classmethod
+    def from_profile(cls, path=None, transport=None, **overrides):
+        """A client for the connection profile at `path` (else $GAIAKEEP_PROFILE, else
+        ~/.gaiakeep/gaiakeep-profile.json; see gaiakeep.profile). Without `transport` it connects a CrescoTransport
+        to the profile's gateway (pycrescolib). `overrides` replace the profile's CoreClient options (flows=...).
+        The client's `profile` attribute is the Profile it was made from."""
+        from .profile import load
+        prof = load(path)
+        opts = prof.client_options()
+        opts.update(overrides)
+        own = transport is None
+        t = prof.transport() if own else transport
+        try:
+            c = cls(t, prof.core_addr, **opts)
+        except Exception:
+            if own:
+                t.close()
+            raise
+        c.profile = prof
+        c._own_transport = own
+        return c
+
+    @staticmethod
+    def fetch_core_public_key(transport, addr, timeout=20.0):
+        """What core.status at `addr` claims as the core identity key. Unauthenticated: an operator must verify
+        it (for example against the core's log or the index config) before pinning it."""
+        r = raise_for("core.status", transport.call(addr, "core.status", {}, timeout))
+        return r.get("core_public_key")
+
+    def close(self):
+        self.transfers.close()
+        if self._own_transport:                 # from_profile connected it: close it too
+            self.transport.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    def _raw(self, addr, action, params, timeout, audience=None, not_before=None):
+        p = params if unsigned(action) else self.signer.sign(action, params, audience=audience, not_before=not_before)
+        r = self.transport.call(addr, action, p, timeout)
+        self._saw(r)
+        return r
+
+    def _saw(self, r):
+        """Remember the highest commit_index a reply named (a mutation's, or the index a read reflected)."""
+        if not r or str(r.get("status")) != "10":
+            return
+        try:
+            ci = int(r.get("commit_index") or 0)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            if ci > self.commit_index:
+                self.commit_index = ci
+
+    def _skip(self, peer, why):
+        with self._lock:
+            k = str(why).split(":")[0] or "no_answer"
+            self.read_stats["skipped"][k] = self.read_stats["skipped"].get(k, 0) + 1
+        log.info("read peer skipped", peer=peer, reason=why)
+
+    def _follower_read(self, action, params, timeout, redact):
+        """A read at the read peers in turn (round-robin start), then at the leader. See the module docstring."""
+        with self._lock:
+            start = self._next_peer
+            self._next_peer = (self._next_peer + 1) % len(self.read_peers)
+            min_index = self.commit_index
+        order = self.read_peers[start:] + self.read_peers[:start]
+        for peer in order:
+            p = dict(params)
+            p["read_peer"] = peer
+            p["consistency"] = self.read_consistency
+            p["min_index"] = str(min_index)
+            try:
+                # a read addressed to a peer is signed for that peer alone (its core.status peer_audience, A2)
+                aud = self._peer_audience(peer)
+                r = self._raw(peer, action, p, timeout, aud)
+                h = _horizon_of(r)
+                if h and h - int(time.time() * 1000) <= MAX_HORIZON_AHEAD_MS:
+                    r = self._raw(peer, action, p, timeout, aud, h)       # just elected or started (A4): once, at its horizon
+            except TransportError as e:
+                self._skip(peer, type(e).__name__)
+                continue
+            if r is None:
+                self._skip(peer, "no_answer")
+                continue
+            st = str(r.get("status"))
+            if st == NOT_LEADER:
+                self._skip(peer, r.get("reason") or "not_served")
+                continue
+            if st == BUSY:
+                try:
+                    wait = int(r.get("retry_after_ms") or 200) / 1000.0
+                except ValueError:
+                    wait = 0.2
+                time.sleep(min(self.busy_backoff_max, wait))
+                self._skip(peer, "busy")
+                continue
+            with self._lock:
+                self.read_stats["follower"] += 1
+            return strip_transport(raise_for(action, r, redact))
+        with self._lock:
+            self.read_stats["leader_fallback"] += 1
+        return None
+
+    def call(self, action, params=None, timeout=None):
+        """Call a core verb on the leader. Returns the reply params (status 10); raises the typed error otherwise.
+        Every attempt is signed afresh (new nonce). Only idempotent reads are asked again after a dropped
+        connection; anything else raises OutcomeUnknown."""
+        if timeout is None:
+            timeout = self.timeouts.c1 if action in C1_VERBS else self.timeouts.c0
+        if not unsigned(action) and not self.signer.audience:
+            self._learn_audience()
+        params = params or {}
+        redact = [params.get(k) for k in _PATH_PARAMS if params.get(k)]
+        if self.read_peers and action in FOLLOWER_READS and "read_peer" not in params:
+            r = self._follower_read(action, params, timeout, redact)
+            if r is not None:
+                return r
+            # no read peer served it: the leader does, and it too must reflect this client's writes
+            params = dict(params, min_index=str(self.commit_index))
+        addr = self.addr
+        audience = self._peer_audience(addr) if action in ANY_PEER else None
+        hops = 0
+        reasked = False
+        resigned = False
+        not_before = None
+        t0 = time.monotonic()
+        while True:
+            try:
+                r = self._raw(addr, action, params, timeout, audience, not_before)
+            except TransportError as e:
+                timed_out = isinstance(e, RpcTimeout) and not isinstance(e, OutcomeUnknown)
+                if timed_out or reasked or action not in IDEMPOTENT_READS:
+                    raise
+                reasked = True
+                log.info("connection dropped: asking an idempotent read again", action=action)
+                continue
+            if r is not None and str(r.get("status")) == NOT_LEADER and hops < self.redirects:
+                hops += 1
+                nxt = r.get("core_leader") or ""
+                if nxt and nxt != addr:
+                    log.info("following the core leader", action=action, leader=nxt, redirects=hops)
+                    addr = nxt                 # one retry per redirect
+                else:
+                    time.sleep(self.redirect_wait)          # an election is under way
+                continue
+            # a core just elected or started refuses what was signed before its replay horizon (status 3 naming
+            # replay_horizon; nothing ran): signed afresh at the horizon, it is accepted. Once per call.
+            h = _horizon_of(r)
+            if h and not resigned and h - int(time.time() * 1000) <= MAX_HORIZON_AHEAD_MS:
+                resigned = True
+                not_before = h
+                log.info("re-signing past the core's replay horizon (it was just elected or started)", action=action, at=addr)
+                continue
+            if addr != self.addr:
+                self.addr = addr               # sticky: the next call starts at the leader
+            if r is not None and str(r.get("status")) != "10":
+                log.debug("core refused", action=action, status=r.get("status"), ms=int((time.monotonic() - t0) * 1000))
+            return strip_transport(raise_for(action, r, redact))
+
+    def _peer_audience(self, addr):
+        """The audience a request answered by peer `addr` itself must sign: its core.status peer_audience (cached)."""
+        with self._lock:
+            a = self._peer_audiences.get(addr)
+        if a:
+            return a
+        r = raise_for("core.status", self.transport.call(addr, "core.status", {}, self.timeouts.c0))
+        a = r.get("peer_audience")
+        if not a:
+            raise TransportError(f"core.status at {addr} did not name a peer audience; core.snapshot cannot be addressed")
+        with self._lock:
+            self._peer_audiences[addr] = a
+        return a
+
+    def _learn_audience(self):
+        st = self.status()
+        aud = st.get("audience")
+        if not aud:
+            raise TransportError("core.status did not name an audience; signed requests cannot be addressed")
+        self.signer.audience = aud
+
+    # ---------------------------------------------------------------------------------------- C0 / C1
+
+    def status(self):
+        """core.status (unsigned, any peer): the reply params with the decoded core_status merged in."""
+        r = raise_for("core.status", self.transport.call(self.addr, "core.status", {}, self.timeouts.c0))
+        out = dict(json_param(r, "core_status") or {})
+        out.update({k: v for k, v in strip_transport(r).items() if k != "core_status"})
+        return out
+
+    def capabilities(self, refresh=False):
+        """What the core advertises (core.status `capabilities`), e.g. {"ingest-1a", "jobs-1"}."""
+        if self._caps is None or refresh:
+            st = self.status()
+            caps = st.get("capabilities") or []
+            if isinstance(caps, str):
+                caps = [c.strip() for c in caps.split(",") if c.strip()]
+            self._caps = set(caps)
+        return self._caps
+
+    def keyed_digests(self, refresh=False):
+        """Whether uploads name files by file_nonce and prove their digests (keyed), per the digests option and, for
+        "auto", the core's core.status digests (read once). Sets the transfers' mode."""
+        if self._digest_mode == "mac":
+            keyed = True
+        elif self._digest_mode == "sha256":
+            keyed = False
+        else:
+            if self._digests is None or refresh:
+                d = self.status().get("digests") or []
+                if isinstance(d, str):
+                    d = [x.strip() for x in d.split(",") if x.strip()]
+                self._digests = set(d)
+            keyed = "mac" in self._digests
+        self.transfers.keyed = keyed
+        return keyed
+
+    def whoami(self):
+        """The principal the core verified: {principal_id, tenant (None for a system principal), roles: [...]}."""
+        r = decode_params(self.call("core.whoami"))
+        roles = r.get("roles") or []
+        if isinstance(roles, str):
+            roles = [x for x in roles.split(",") if x]
+        return {"principal_id": r.get("principal_id") or self.signer.principal, "tenant": r.get("tenant"),
+                "roles": list(roles)}
+
+    def head(self, collection_id, branch="main"):
+        """The head version {vid, number, collection_id, branch}; raises NotFound when the branch has none."""
+        r = decode_params(self.call("core.head", {"collection_id": collection_id, "branch": branch}))
+        return {k: r.get(k) for k in ("vid", "number", "collection_id", "branch")}
+
+    def head_or_none(self, collection_id, branch="main"):
+        """head(), or None when the branch has no version yet."""
+        try:
+            return self.head(collection_id, branch)
+        except NotFound:
+            return None
+
+    def list(self, vid, after=None, limit=None):
+        """One page of a version's files: {"files": {path: {size, hash, blocks}}, "next": cursor or None, "total"}.
+        Paging (after, limit, next, total) is opmodel work: the wave-1 core ignores after/limit and answers
+        every file in one compressed reply (next and total absent), bounded here by the 64 MiB inflate cap."""
+        p = {"vid": vid}
+        if after is not None:
+            p["after"] = after
+        if limit is not None:
+            p["limit"] = str(int(limit))
+        r = self.call("core.list", p)
+        return {"files": numbers(json_param(r, "files") or {}, "files"), "next": r.get("next") or None,
+                "total": int(r["total"]) if r.get("total") not in (None, "") else None}
+
+    def iter_files(self, vid, page=1000):
+        """Every (path, info) of a version, a page at a time (bounded replies)."""
+        after = None
+        while True:
+            pg = self.list(vid, after=after, limit=page)
+            for path in sorted(pg["files"]):
+                yield path, pg["files"][path]
+            if not pg["next"] or pg["next"] == after:
+                return
+            after = pg["next"]
+
+    # the read helpers below pass None for an option not given: the signer drops None params, and sends numbers
+    # and booleans as JSON text ("5", "true"), as the core reads them
+
+    def versions(self, collection_id, branch=None, after=None, limit=None, order=None, detail=None):
+        """core.versions (C1): one page of a collection's versions, {versions: [...], count, total, next}. Continue
+        with after=next. order desc (default) or asc; detail="files" adds each version's file count and bytes."""
+        return decode_params(self.call("core.versions", {"collection_id": collection_id, "branch": branch, "after": after,
+                                                         "limit": limit, "order": order, "detail": detail}))
+
+    def version(self, vid):
+        """core.version: one version's fields, record (ts, by, note), file count and logical bytes."""
+        return decode_params(self.call("core.version", {"vid": vid}))
+
+    def branches(self, collection_id, after=None, limit=None):
+        """core.branches (C1): one page of a collection's branches and their heads."""
+        return decode_params(self.call("core.branches", {"collection_id": collection_id, "after": after, "limit": limit}))
+
+    def diff(self, a_vid, b_vid, prefix=None, after=None, limit=None, detail=None):
+        """core.diff (C1): one page of the paths added, removed or changed between two versions."""
+        return decode_params(self.call("core.diff", {"a_vid": a_vid, "b_vid": b_vid, "prefix": prefix, "after": after,
+                                                     "limit": limit, "detail": detail}))
+
+    def create_collection(self, collection_id, tenant_id, domain_id=None, profile=None, replication=None,
+                          durability=None, retention=None):
+        """core.collection: a new versioned collection of `tenant_id` (tenant-admin@<tenant>), in `domain_id` or under
+        a policy `profile` (the domain is then the profile's)."""
+        return decode_params(self.call("core.collection", {
+            "collection_id": collection_id, "tenant_id": tenant_id, "domain_id": domain_id, "profile": profile,
+            "replication": replication, "durability": durability, "retention": retention}))
+
+    def extract(self, vid=None, selector=None, members=None, cls=None, ttl_ms=None, pin_mode=None,
+                max_amplification=None, dry_run=False, request_id=None, wait_ms=None):
+        """core.extract (api §4): freeze and pin a citable selection; returns a Job whose result names extract_id,
+        citation, root, leaves, bytes and pinned_until. One member (vid + selector, e.g. "all", "prefix:<p>",
+        "glob:<g>") or `members` [{vid, selector}]. cls: run (default), scratch or cite."""
+        p = {"vid": vid, "selector": selector, "ttl_ms": ttl_ms, "pin_mode": pin_mode,
+             "max_amplification": max_amplification}
+        if members is not None:
+            p["members"] = members if isinstance(members, str) else _json.dumps(members, separators=(",", ":"))
+        if cls:
+            p["class"] = cls
+        if dry_run:
+            p["dry_run"] = "true"
+        return self.start_job("core.extract", p, request_id, wait_ms)
+
+    def extract_status(self, extract_id):
+        """core.extractstatus: an extract's state; for a reader of every member also its certificate and citation."""
+        return decode_params(self.call("core.extractstatus", {"extract_id": extract_id}))
+
+    def extract_list(self, extract_id, after=None, limit=None):
+        """core.extractlist (C1): one page of an extract's leaves {leaves: [...], count, next}."""
+        return decode_params(self.call("core.extractlist", {"extract_id": extract_id, "after": after, "limit": limit}))
+
+    def extract_proof(self, extract_id, leaf):
+        """core.extractproof: one leaf's Merkle proof, the root and the signed certificate."""
+        return decode_params(self.call("core.extractproof", {"extract_id": extract_id, "leaf": str(int(leaf))}))
+
+    def extract_extend(self, extract_id, ttl_ms):
+        """core.extractextend: extend an extract's pin (ttl_ms 0: never expires; past the class maximum needs
+        tenant-admin of every member tenant)."""
+        return decode_params(self.call("core.extractextend", {"extract_id": extract_id, "ttl_ms": str(int(ttl_ms))}))
+
+    def extract_release(self, extract_id):
+        """core.extractrelease: release an extract's pin (the certificate stays resolvable)."""
+        return decode_params(self.call("core.extractrelease", {"extract_id": extract_id}))
+
+    def lifecycle_status(self, lc_id):
+        """core.lcstatus: a lifecycle record's (forget, prune, ...) phase, approvals and counts."""
+        return decode_params(self.call("core.lcstatus", {"lc_id": lc_id}))
+
+    def putstatus(self, upload_id):
+        r = self.call("core.putstatus", {"upload_id": upload_id})
+        out = {"files": json_param(r, "files", compressed=False) or {}}
+        for k in ("commit_state", "vid", "number", "error", "retryable"):
+            if r.get(k) is not None:
+                out[k] = r.get(k)
+        rng = json_param(r, "ranges")
+        if rng is not None:
+            out["ranges"] = rng
+        return out
+
+    def discard(self, upload_id):
+        self.call("core.discard", {"upload_id": upload_id})
+
+    # ---------------------------------------------------------------------------------------- transfers
+
+    def ingest(self, files, collection_id, branch="main", expected_head=None, base_vid=None, deletes=None,
+               request_id=None, mode="auto", legacy_publish="auto", note=None):
+        """Upload local files as one new version. files: {path in the version: local file path}.
+        Returns IngestResult(vid, number, ...). With a §1a core a retry under the same request_id is
+        idempotent; a wave-1 core has no request_id (see Ingest for how a lost answer is resolved).
+        note: the version's note (at most 512 UTF-8 bytes, no control characters), shown by core.versions."""
+        target = IngestTarget(collection_id, branch, expected_head, base_vid, deletes, note)
+        return Ingest(self, files, target, request_id=request_id, mode=mode, legacy_publish=legacy_publish).run()
+
+    def have_ingest(self, files, collection_id, branch="main", expected_head=None, note=None):
+        """Upload local files by have-check (api §3) and publish one version: only the blocks the core lacks travel
+        (a de-identified DICOM copy in a format-adapter domain: its header). Streams each file with bounded memory.
+        Returns (publish reply with vid, {path: stats}); see gaiakeep.have."""
+        from .have import have_ingest
+        return have_ingest(self, files, collection_id, branch, expected_head, note)
+
+    def file_info(self, vid, path):
+        """{size, file_hash, file_alg, file_mac, digests} of one file, from a zero-length core.get (C0; no bytes move).
+        size and file_hash are bound into the core's signed key exchange (GFS-GKT-2), so they are the pinned core's
+        word. A keyed core (core_meta_client_digest=mac, the default) never sends a raw whole-file digest
+        (METADATA-CRYPTO.md §12): file_hash is None, file_alg names the digest algorithm, and file_mac is the core's
+        proof of that digest under this transfer's own key (digests="keyed"); downloads are verified that way. A
+        legacy core names file_hash ("SHA-384:<hex>"; digests="raw")."""
+        lane = self.transfers.lane(0)
+        r, _ = self.transfers.keyed_call("core.get", {"vid": vid, "path": path, "offset": "0", "length": "0",
+                                                      "chunk": str(self.transfers.chunk), "xfer": new_id("", 8),
+                                                      "up_stream": lane.up_name, "down_stream": lane.down_name})
+        return {"size": int(r["size"]), "file_hash": r.get("file_hash"), "file_alg": r.get("file_alg"),
+                "file_mac": r.get("file_mac"), "digests": "raw" if r.get("file_hash") else "keyed"}
+
+    def download(self, vid, path, dest, offset=0, length=None):
+        """Download a file (or a range) to `dest` over K flows; a whole file is verified by its hash."""
+        return self.transfers.download(vid, path, dest, offset=offset, length=length)
+
+    def read(self, vid, path, offset=0, length=None, max_bytes=64 << 20):
+        """A range as bytes (for small reads; bounded by max_bytes). Use download() for files."""
+        import tempfile
+        info = self.file_info(vid, path)
+        n = info["size"] - offset if length is None else min(length, info["size"] - offset)
+        if n > max_bytes:
+            raise BadRequest(f"read of {n} bytes exceeds max_bytes; use download()", action="core.get")
+        fd, tmp = tempfile.mkstemp(prefix="gk-read-")
+        os.close(fd)
+        try:
+            self.transfers.download(vid, path, tmp, size=info["size"], file_hash=info["file_hash"], offset=offset, length=n)
+            with open(tmp, "rb") as f:
+                return f.read()
+        finally:
+            os.unlink(tmp)
+
+    # --------------------------------------------------------------------------------------------- jobs
+
+    def start_job(self, verb, params=None, request_id=None, wait_ms=None):
+        """Submit a C2/C3 verb; returns a Job. request_id (16-64 [A-Za-z0-9_-]) makes a retry return the same job."""
+        return _jobs.start(self, verb, params, request_id=request_id, wait_ms=wait_ms)
+
+    def job(self, job_id):
+        """A handle on an existing job (for example after a restart)."""
+        return _jobs.Job(self, job_id)
+
+    def withdraw(self, collection_id, request_id=None, **kw):
+        return self.start_job("core.withdraw", dict(kw, collection_id=collection_id), request_id)
+
+    def forget(self, tenant_id, selectors, reason, request_id=None, dry_run=False, **kw):
+        """Propose a FORGET (lifecycle): `selectors` names the collections and paths (LIFECYCLE.md:
+        [{collection_id, paths: [...], prefixes: [...], committed_before_ms}]), `reason` one of the lifecycle reasons.
+        Approvals (core.approve) and the time-lock decide when it runs. dry_run=True plans it and journals nothing:
+        the core answers at once, and the returned Job is already DONE with the plan (its counts) as its result."""
+        sel = selectors if isinstance(selectors, str) else _json.dumps(selectors, separators=(",", ":"))
+        if dry_run:
+            kw["dry_run"] = "true"
+        return self.start_job("core.forget", dict(kw, tenant_id=tenant_id, selectors=sel, reason=reason), request_id)
+
+    def prune(self, collection_id, request_id=None, dry_run=False, **kw):
+        if dry_run:
+            kw["dry_run"] = "true"
+        return self.start_job("core.prune", dict(kw, collection_id=collection_id), request_id)
+
+    def destroy_key(self, scope, id, reason, request_id=None, **kw):
+        """Propose destroying a v2 domain's seed (scope DOMAIN, id = the domain) or a tenant's root (scope TENANT,
+        id = the tenant): a crypto-shred lifecycle record, approved and time-locked like any other."""
+        return self.start_job("core.destroykey", dict(kw, scope=scope, id=id, reason=reason), request_id)
+
+    def rotate_master(self, expect_kid=None, request_id=None, **kw):
+        p = dict(kw)
+        if expect_kid:
+            p["expect_kid"] = expect_kid
+        return self.start_job("core.rotatemaster", p, request_id)
+
+    def maintenance(self, verb, request_id=None, **kw):
+        """repair, scrub, gc, trim, recover, census as jobs."""
+        return self.start_job(verb if verb.startswith("core.") else "core." + verb, kw, request_id)

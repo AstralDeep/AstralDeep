@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import importlib
 import importlib.abc
@@ -213,6 +214,38 @@ def _known_collections(core):
     return known_collections(core, with_heads=True)
 
 
+def _sdk_transport(config, context):
+    from gaiakeep.errors import RpcTimeout, TransportError
+    from websockets.exceptions import ConnectionClosed
+
+    from agents.gaiakeep.transport import VerifiedLoopbackTransport
+
+    class SDKTransport(VerifiedLoopbackTransport):
+        def call(self, addr, action, params, timeout):
+            try:
+                return super().call(addr, action, params, timeout)
+            except (ssl.SSLError, PermissionError):
+                raise
+            except ConnectionClosed as exc:
+                codes = [close.code for close in (exc.rcvd, exc.sent) if close is not None]
+                if (time.monotonic() >= self.deadline
+                        or any(code not in {1001, 1006, 1011, 1012, 1013, 1014} for code in codes)):
+                    raise
+                raise TransportError('Gaia RPC connection closed.', action=action) from exc
+            except OSError as exc:
+                if time.monotonic() >= self.deadline:
+                    raise
+                if isinstance(exc, TimeoutError) or exc.errno == errno.ETIMEDOUT:
+                    raise RpcTimeout('Gaia RPC timed out.', action=action) from exc
+                if (isinstance(exc, (ConnectionAbortedError, ConnectionRefusedError, ConnectionResetError, BrokenPipeError))
+                        or exc.errno in {errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE,
+                                         errno.ENETRESET, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH}):
+                    raise TransportError('Gaia RPC connection failed.', action=action) from exc
+                raise
+
+    return SDKTransport(config, tls_context=context)
+
+
 def run(request):
     started = time.monotonic()
     mutation = dispatched = False
@@ -252,8 +285,7 @@ def run(request):
         config = GatewayConfig(trust['core_address'], frozenset(trust['allowed_peers']), trust['tls_name'], '',
                                trust['core_public_key'], profile.service_key, trust['port'],
                                trust.get('allow_legacy', False), trust.get('restore_root', ''))
-        from agents.gaiakeep.transport import VerifiedLoopbackTransport
-        transport = VerifiedLoopbackTransport(config, tls_context=context)
+        transport = _sdk_transport(config, context)
         transport.deadline = started + FLOW_TIMEOUT
         core = CoreClient(
             transport, trust['core_address'], principal=profile.principal, key=key, key_file=None,

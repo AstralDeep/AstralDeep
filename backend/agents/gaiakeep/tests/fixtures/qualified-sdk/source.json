@@ -1,0 +1,31 @@
+{
+  "files": {
+    "LICENSE.txt": {
+      "git_blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "modified": false,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source_url": "https://github.com/GaiaKeep/gfs/blob/f6dc4084f779e41e5cc17cad52483f7e1f5a6c02/LICENSE",
+      "upstream_path": "LICENSE"
+    },
+    "client.py.txt": {
+      "git_blob_sha": "79160058ae26fb9ce892b7885d99148bfec2e8a3",
+      "modified": false,
+      "sha256": "695fc291ec123aa85f12f1415cbd639aae1aadea9f94048dff0e3160705bc109",
+      "source_url": "https://github.com/GaiaKeep/gfs/blob/f6dc4084f779e41e5cc17cad52483f7e1f5a6c02/clients/python/gaiakeep/client.py",
+      "upstream_path": "clients/python/gaiakeep/client.py"
+    },
+    "errors.py.txt": {
+      "git_blob_sha": "8f6b277c7f0be545f51cf1a86e88ecb163f8fe82",
+      "modified": false,
+      "sha256": "5d65db96f57c216a26e36b0132613a32f7cedd677e03f7573fdf16bedc775777",
+      "source_url": "https://github.com/GaiaKeep/gfs/blob/f6dc4084f779e41e5cc17cad52483f7e1f5a6c02/clients/python/gaiakeep/errors.py",
+      "upstream_path": "clients/python/gaiakeep/errors.py"
+    }
+  },
+  "license": "Apache-2.0",
+  "license_file": "LICENSE.txt",
+  "purpose": "Inert public source fixture for deterministic SDK retry-method compatibility tests; never imported by production.",
+  "repository": "https://github.com/GaiaKeep/gfs",
+  "source_revision": "f6dc4084f779e41e5cc17cad52483f7e1f5a6c02",
+  "upstream_notice_file_present": false
+}

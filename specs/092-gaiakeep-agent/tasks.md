@@ -61,6 +61,7 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [ ] T034 Implement automatic redacted Gaia issue logging with bounded rotation and safe sink-failure handling; verify actual failure logging through staging dispatch, then deploy the dedicated operator log mount and confirm it survives backend recreation.
 - [ ] T035 Declare the Gaia schema validator in the production dependency manifest, require catalog validation in the clean product image before test-tooling installation, and repeat exact-candidate staging after the retained missing-dependency failure.
 - [ ] T036 Update the reviewed current dependency inventory for the declared runtime validator and image check, preserving the frozen historical inventory and isolation of CI-only tooling; pass the complete dependency-guard suite and fresh final-candidate CI after the retained stale-guard failures.
+- [x] T037 Adapt transient RPC socket failures to the byte-validated SDK error types so its existing bounded read-peer handling works; retain authoritative TLS, authorization, integrity, protocol and deadline failures, mutation uncertainty without resend, and unchanged streams. Verify exact public SDK retry methods with deterministic inert Apache-2.0 fixtures; repeat candidate-bound CI and staging under T033 before claiming live acceptance.
 
 ## Dependencies and execution
 
