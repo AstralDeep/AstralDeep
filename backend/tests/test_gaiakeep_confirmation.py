@@ -1,6 +1,7 @@
 """Exercises GaiaKeep approval through the actual shared gate and existing Plane proposal test repositories."""
 
 import json
+import re
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -108,6 +109,62 @@ def test_summary_excludes_upload_bytes_and_credentials(monkeypatch):
     assert 'private-file-content' not in summary
     assert 'private-key' not in summary
     assert 'sha256' in summary
+
+
+def test_upload_request_identity_is_retained_before_approval(monkeypatch):
+    db = _FakeDB()
+    orch = _orch(db)
+    ws = object()
+    orch.ui_sessions[ws] = {'user_id': 'owner'}
+    monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
+    tool = 'gaiakeep_upload_file'
+    args = {'machine_id': 'mine', 'collection_id': 'scratch', 'path': 'sample.txt', 'data_base64': 'b2s='}
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, args, 'chat', 'owner')
+    request_id = args['request_id']
+    assert re.fullmatch(r'[A-Za-z0-9_-]{16,64}', request_id)
+    pid, = db.rows
+    stored = json.loads(db.rows[pid]['args_json'])
+    assert stored['request_id'] == request_id
+    db.rows[pid]['status'] = 'approved'
+    altered = dict(args, request_id='different_request_identity', _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, altered, 'chat', 'owner')
+    assert db.rows[pid]['status'] == 'approved'
+    approved = dict(args, _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, approved, 'chat', 'owner') is None
+    assert approved['request_id'] == request_id and db.rows[pid]['status'] == 'consumed'
+
+
+def test_core_request_identity_preparation_preserves_approved_parameters(monkeypatch):
+    db = _FakeDB()
+    orch = _orch(db)
+    ws = object()
+    orch.ui_sessions[ws] = {'user_id': 'owner'}
+    monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
+    original = {'wait_ms': 10}
+    args = {'machine_id': 'mine', 'params': original}
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', 'gaiakeep_core_repair', args, 'chat', 'owner')
+    assert original == {'wait_ms': 10}
+    assert args['params'] == dict(original, request_id=args['params']['request_id'])
+    row, = db.rows.values()
+    assert json.loads(row['args_json'])['params'] == args['params']
+
+
+@pytest.mark.parametrize('strategy', ['ingest', 'have'])
+def test_upload_approval_preserves_the_selected_request_identity_mode(monkeypatch, strategy):
+    db = _FakeDB()
+    orch = _orch(db)
+    ws = object()
+    orch.ui_sessions[ws] = {'user_id': 'owner'}
+    monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
+    args = {'machine_id': 'mine', 'collection_id': 'scratch', 'path': 'sample.txt',
+            'data_base64': 'b2s=', 'strategy': strategy}
+    if strategy == 'ingest':
+        args['request_id'] = 'retained_request_identity'
+    before = json.loads(json.dumps(args))
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', 'gaiakeep_upload_file', args, 'chat', 'owner')
+    assert args == before
+    row, = db.rows.values()
+    assert json.loads(row['args_json']) == before
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@
 
 - The owner supplied Cody's existing client kit/account instructions and authorized checks, PR, merge and sandbox deployment. SSH credentials must suffice; the enrolled profile and private signing key remain on DGX. The previous staging waiver covered only the disabled initial merge.
 - Use a fixed first-party adapter over owner-scoped pinned SSH, an exact remotely installed SDK artifact and operator-supplied certificate/core pins. Do not forward upstream MCP tools' arbitrary host-file paths.
-- The Gaia agent itself must update an operator-readable issue log when its tool handler reports a failure. Manual qualification notes alone do not satisfy this requirement.
+- Astral must automatically update an operator-readable issue log when the Gaia tool handler reports a failure or its governed outer dispatch ends without a confirmed result. A timed-out or cancelled write remains unconfirmed; the worker may still finish. Manual qualification notes alone do not satisfy this requirement.
 
 ## User Scenarios & Testing
 
@@ -78,7 +78,7 @@ An authorized user publishes a bounded file to a collection or retrieves a bound
 - **FR-006**: Resolve SSH credentials only from a caller-owned registered machine with an existing host-key pin; refuse changed or untrusted host identity and blocked egress.
 - **FR-007**: Use only the existing tunnel and operator-configured gateway/core peers; verify gateway TLS on both control and data channels and pin the core identity out of band.
 - **FR-008**: Default SSH mode loads the private Gaia profile/key only inside the caller's DGX account and keeps them there. Native compatibility mode decrypts user Gaia credentials only within the agent boundary. Never expose secret material in results, logs, errors, process arguments, or specifications.
-- **FR-009**: Enforce bounded connection, request, response, decompression, and file-transfer resources; close all sockets, worker threads, and temporary files after a call.
+- **FR-009**: Enforce bounded connection, request, response, decompression, and file-transfer resources; close sockets and temporary files when the bounded worker finishes. An earlier caller timeout or cancellation must not claim that the remote operation was cancelled.
 - **FR-010**: Report native denials, deployment unavailability, unsupported upstream operations, and uncertain effects distinctly; do not fabricate outcomes or automatically retry mutations.
 - **FR-011**: Support bounded authenticated file publication/retrieval in addition to native control operations, without accepting arbitrary local filesystem paths.
 - **FR-012**: Deliver results using approved server-owned components shared by all clients; introduce no new primitive, protocol frame, database schema, or client-specific interface.

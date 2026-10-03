@@ -18292,6 +18292,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # One approval authorizes exactly one physical attempt
             max_retries = 1
 
+        default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+        if agent_id == "gaiakeep-1":
+            from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
+
+            default_timeout = DEFAULT_TIMEOUT
+            max_retries = 1
+
         last_result = None
 
         for attempt in range(1, max_retries + 1):
@@ -18302,7 +18309,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 timeout=(
                     timeout
                     if timeout is not None
-                    else TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+                    else default_timeout
                 ),
                 ui_websocket=websocket,
                 protected_owner_id=user_id,
@@ -18362,7 +18369,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         agent_id: str,
         tool_name: str,
         args: Dict,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         ui_websocket=None,
         protected_owner_id: Optional[str] = None,
         protected_channel: Optional[str] = None,
@@ -18371,6 +18378,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
+        if timeout is None:
+            timeout = 30.0
+            if agent_id == "gaiakeep-1":
+                from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
+
+                timeout = DEFAULT_TIMEOUT
         recorder = self._chat_recorders.get(id(ui_websocket)) if ui_websocket is not None else None
         step_id = None
         if recorder is not None:
@@ -18446,6 +18459,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return await persistent_dispatch.invoke_tool(
                         lambda: original_invoke(capabilities),
                         final_arguments=final_arguments,
+                    )
+            if agent_id == "gaiakeep-1":
+                from orchestrator.gaiakeep_dispatch import invoke as invoke_gaiakeep
+
+                original_gaia_invoke = physical_invoke
+
+                async def physical_invoke(capabilities):
+                    return await invoke_gaiakeep(
+                        tool_name,
+                        final_arguments,
+                        lambda: original_gaia_invoke(capabilities),
                     )
             return await self._execute_governed_attempt(
                 ui_websocket,
@@ -18634,11 +18658,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         verified_identity = verified_identity_for(identity_card, session_claims)
         if verified_identity is None:
+            identity_error = {
+                "message": identity_access_message(identity_card),
+                "retryable": False,
+            }
+            if agent_id == "gaiakeep-1":
+                identity_error["code"] = "required_identity_unavailable"
             return MCPResponse(
-                error={
-                    "message": identity_access_message(identity_card),
-                    "retryable": False,
-                }
+                error=identity_error
             )
         caller_info: Dict[str, Any] = {
             "name": "AstralDeep Orchestrator",
@@ -18913,11 +18940,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         verified_identity = verified_identity_for(identity_card, session_claims)
         if verified_identity is None:
+            identity_error = {
+                "message": identity_access_message(identity_card),
+                "retryable": False,
+            }
+            if agent_id == "gaiakeep-1":
+                identity_error["code"] = "required_identity_unavailable"
             return MCPResponse(
-                error={
-                    "message": identity_access_message(identity_card),
-                    "retryable": False,
-                }
+                error=identity_error
             )
         caller_info: Dict[str, Any] = {
             "name": "AstralDeep Orchestrator",
