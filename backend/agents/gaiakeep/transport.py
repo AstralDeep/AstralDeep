@@ -1,4 +1,4 @@
-"""Provides bounded, correlated native RPC and verified TLS data streams over the caller's pinned SSH machine."""
+"""Provides bounded, correlated native RPC and verified TLS data streams through caller-owned SSH tunnels or the operator-configured loopback gateway."""
 
 from __future__ import annotations
 
@@ -16,15 +16,24 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from orchestrator.remote_transport import ParamikoTransport
-from shared.external_http import validate_egress_url
-
 MAX_RPC = 1 << 20
 MAX_EXPANDED = 4 << 20
 MAX_FRAME = (1 << 20) + 65536
 CONNECT_TIMEOUT = 10
 RPC_TIMEOUT = 20
 FLOW_TIMEOUT = 120
+
+
+def __getattr__(name):
+    if name == 'ParamikoTransport':
+        from orchestrator.remote_transport import ParamikoTransport
+
+        return ParamikoTransport
+    if name == 'validate_egress_url':
+        from shared.external_http import validate_egress_url
+
+        return validate_egress_url
+    raise AttributeError(name)
 
 
 class ProtocolError(Exception):
@@ -169,11 +178,14 @@ class NativeTransport:
 
     @contextmanager
     def _socket(self, path):
+        from orchestrator.remote_transport import ParamikoTransport
+        from shared.external_http import validate_egress_url
         from websockets.sync.client import connect
 
         host = self.target.address
         authority = f'[{host}]' if ':' in host else host
-        validate_egress_url(f'https://{authority}:{self.config.port}')
+        gate = globals().get('validate_egress_url', validate_egress_url)
+        gate(f'https://{authority}:{self.config.port}')
         with ParamikoTransport().open_tunnel(self.target, self.config.port, timeout=CONNECT_TIMEOUT) as channel:
             bridge = SocketBridge(channel, self.deadline)
             ws = None
@@ -240,6 +252,40 @@ class NativeTransport:
         self.streams.clear()
         if error is not None:
             raise error
+
+
+class VerifiedLoopbackTransport(NativeTransport):
+    def __init__(self, config, tls_context=None):
+        if isinstance(config.port, bool) or not isinstance(config.port, int) or not 1 <= config.port <= 65535:
+            raise ValueError('The verified loopback gateway requires a valid operator port.')
+        super().__init__(None, config, tls_context)
+        self.port = config.port
+
+    @contextmanager
+    def _socket(self, path):
+        from websockets.sync.client import connect
+
+        if isinstance(self.config.port, bool) or self.config.port != self.port:
+            raise ValueError('The verified loopback gateway port changed during the operation.')
+        if not self.context.check_hostname or self.context.verify_mode != ssl.CERT_REQUIRED:
+            raise ValueError('Verified TLS is mandatory.')
+        connection = socket.create_connection(('127.0.0.1', self.port),
+                                              timeout=self.remaining(CONNECT_TIMEOUT))
+        ws = None
+        try:
+            ws = connect(f'wss://{self.config.tls_name}:{self.port}{path}',
+                         sock=connection, ssl=self.context,
+                         server_hostname=self.config.tls_name, proxy=None,
+                         additional_headers={'cresco_service_key': self.config.service_key},
+                         compression=None, max_size=MAX_FRAME, max_queue=8,
+                         open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+            yield ws
+        finally:
+            try:
+                if ws is not None:
+                    ws.close()
+            finally:
+                connection.close()
 
 
 class NativeStream:

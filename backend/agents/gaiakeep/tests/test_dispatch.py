@@ -6,11 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 from agents.gaiakeep import catalog, client, mcp_server
+from agents.gaiakeep.remote_client import RemoteCore
 from shared.protocol import MCPRequest
 
 
 @pytest.fixture
 def server(monkeypatch):
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'native')
     monkeypatch.setitem(mcp_server.flags._flags, 'gaiakeep', True)
     monkeypatch.setitem(mcp_server.flags._flags, 'cresco', True)
     monkeypatch.setattr(mcp_server.remote_machines, 'build_target',
@@ -32,13 +34,61 @@ def request(name='gaiakeep_core_whoami', params=None, **context):
 
 def test_list_and_result_shape(server):
     reply = server.process_request(MCPRequest(method='tools/list'))
-    assert len(reply.result['tools']) == 109
+    assert len(reply.result['tools']) == 111
     assert all(t['scope'] for t in reply.result['tools'])
     reply = server.process_request(request())
     reply.validate_result_shape()
     assert reply.result['verdict'] == 'ok'
     assert reply.result['result']['job_id'] == 'real-job'
     assert reply.ui_components[0]['type'] == 'card'
+
+
+@pytest.mark.parametrize('action', ['core.repair', 'read', 'upload'])
+def test_remote_bridge_dispatch_preserves_approved_arguments_and_ids(server, monkeypatch, action):
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    calls = []
+    core = RemoteCore(SimpleNamespace(), {})
+    core.perform = lambda *args: calls.append(args) or ({'data_base64': 'aA==', 'vid': 'v'} if action == 'read'
+                                                      else {'status': '10'})
+    @contextmanager
+    def opened(*args):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    args = {'machine_id': 'mine', 'user_id': 'owner', '_credentials': 'stale-encrypted-private-key',
+            '_credentials_stale': True, '_credentials_encrypted': True}
+    if action == 'upload':
+        args.update(collection_id='c', path='p', data_base64='aA==', request_id='stable-request-id')
+        name = 'gaiakeep_upload_file'
+    elif action == 'read':
+        args.update(vid='v', path='p')
+        name = 'gaiakeep_read_file'
+    else:
+        args['params'] = {'request_id': 'stable-request-id'}
+        name = 'gaiakeep_core_repair'
+    out = server.invoke(name, **args)
+    assert out['_data']['verdict'] == 'ok'
+    assert calls[0][0] == action
+    assert 'machine_id' not in calls[0][1] and 'user_id' not in calls[0][1]
+    if action != 'read':
+        assert out['_data']['reconciliation']['request_id'] == 'stable-request-id'
+
+
+@pytest.mark.parametrize('action', sorted(catalog.LOCAL_READ_ACTIONS))
+def test_account_discovery_is_read_only_ssh_operation(server, monkeypatch, action):
+    assert not catalog.is_mutation('gaiakeep_' + action)
+    args = {'machine_id': 'mine', 'params': {}, 'user_id': 'owner'}
+    assert server.invoke('gaiakeep_' + action, **args)['_data']['verdict'] == 'unsupported'
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    core = RemoteCore(SimpleNamespace(), {})
+    calls = []
+    core.perform = lambda *args: calls.append(args) or {'default_collection': 'mine'}
+    @contextmanager
+    def opened(*args):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    result = server.invoke('gaiakeep_' + action, **args)
+    assert result['_data']['verdict'] == 'ok' and 'reconciliation' not in result['_data']
+    assert calls == [(action, {'params': {}}, None)]
 
 
 @pytest.mark.parametrize('method,params', [('other', {}), ('tools/call', {}),

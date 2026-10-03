@@ -39,6 +39,8 @@ class GaiakeepAgent(BaseA2AAgent):
             raise RuntimeError('GaiaKeep requires the initialized application Plane runtime, repositories and blobs.')
         binding = SimpleNamespace(plane_runtime=plane_runtime, plane_repositories=repositories)
         credentials = CredentialManager(db=binding, plane_runtime=plane_runtime, plane_repositories=repositories)
+        if os.getenv('GAIAKEEP_CONNECTION_MODE', 'ssh') == 'ssh':
+            self.card_metadata = {'required_credentials': []}
         super().__init__(MCPServer(binding, credentials), port=port, port_env_var='GAIAKEEP_AGENT_PORT')
         self.host = '127.0.0.1'
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from functools import partial
 
@@ -12,6 +13,7 @@ from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 
 from agents.gaiakeep import catalog, client
+from agents.gaiakeep.remote_client import RemoteCore
 
 CONTEXT_FIELDS = frozenset({'user_id', 'session_id', '_runtime', '_credentials', '_credentials_stale',
                             '_credentials_encrypted', '_session_llm_credentials', '_session_llm_config',
@@ -47,9 +49,9 @@ class MCPServer:
             user_id = arguments.get('user_id')
             if not isinstance(user_id, str) or not user_id:
                 raise client.AgentError('auth_failed', 'A signed-in owner is required.')
-            credentials = arguments.get('_credentials') or {}
+            credentials = {} if os.getenv('GAIAKEEP_CONNECTION_MODE', 'ssh') == 'ssh' else arguments.get('_credentials') or {}
             if (not isinstance(credentials, dict) or arguments.get('_credentials_encrypted')
-                    or arguments.get('_credentials_stale')):
+                    or arguments.get('_credentials_stale')) and os.getenv('GAIAKEEP_CONNECTION_MODE', 'ssh') != 'ssh':
                 raise client.AgentError('auth_failed', 'Re-enter your GaiaKeep credentials.')
             secrets.extend(v for k, v in credentials.items() if k != 'GAIAKEEP_PRINCIPAL' and isinstance(v, str))
             target = remote_machines.build_target(self.plane_source, self.credential_manager,
@@ -58,7 +60,7 @@ class MCPServer:
             with client.open_client(target, credentials) as (core, config):
                 secrets.append(config.service_key)
                 action = catalog.TOOLS[name]['action']
-                if action not in {'read', 'upload'} and catalog.ACTIONS[action]['legacy'] and not config.allow_legacy:
+                if action not in {'read', 'upload'} and catalog.ACTIONS.get(action, {}).get('legacy') and not config.allow_legacy:
                     raise client.AgentError('unsupported', 'The operator has not enabled GaiaKeep legacy actions.')
                 if action == 'core.legalorder' and public['params'].get('action', 'erase') != 'erase':
                     raise client.AgentError('unsupported', 'GaiaKeep cannot currently sign legal-order shortening.')
@@ -66,13 +68,21 @@ class MCPServer:
                     reconciliation = {k: public[k] for k in ('collection_id', 'path')}
                     reconciliation['branch'] = public.get('branch', 'main')
                     if public.get('strategy', 'ingest') == 'ingest':
-                        reconciliation['request_id'] = uuid.uuid4().hex
+                        reconciliation['request_id'] = public.get('request_id') or uuid.uuid4().hex
+                elif action in catalog.LOCAL_READ_ACTIONS:
+                    params = public['params']
+                    if not isinstance(core, RemoteCore):
+                        raise client.AgentError('unsupported', 'Gaia account discovery requires the SSH connection mode.')
                 elif action != 'read':
                     params = client.prepare_params(action, public['params'])
                     if 'request_id' in params:
                         reconciliation['request_id'] = params['request_id']
                 dispatched = True
-                if action == 'upload':
+                if isinstance(core, RemoteCore):
+                    payload = ({'params': params} if action not in {'read', 'upload'}
+                               else {k: v for k, v in public.items() if k not in {'machine_id', 'request_id'}})
+                    result = core.perform(action, payload, reconciliation.get('request_id') if action == 'upload' else None)
+                elif action == 'upload':
                     result = client.upload(core, public['collection_id'], public['path'],
                                            public['data_base64'], public.get('branch', 'main'),
                                            public.get('strategy', 'ingest'),

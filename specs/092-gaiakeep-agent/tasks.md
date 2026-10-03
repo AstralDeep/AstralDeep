@@ -48,8 +48,17 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [ ] T024 Exercise standard credential/approval/results on every affected client against staging and collect required local/release-evidence gates before merge. No gate or platform waiver is implied by the pending interface.
 - [ ] T025 Qualify and implement legacy fetch only if needed by the owner's deployment: resolve and admit the origin, open a verified-TLS receiver before dispatch, use exact legacy transfer/sequence framing, require contiguous bounded bytes and origin/index SHA256 checks, and validate real legacy grants. Until then the tool refuses before any connection; the pinned SDK has no supported legacy receiver. This remains an explicit incomplete capability, not a live-ready claim.
 
+## Production continuation, 2026-10-03
+
+- [x] T026 Replace the default backend-signing path with a fixed bounded SSH adapter under the registered owner account; keep enrolled profile/key on DGX and preserve native compatibility.
+- [x] T027 Pin the installed 0.2.0 SDK artifact/source/resources, privately snapshot verified bytes, reject bytecode/native drift, and override development TLS on both native channels.
+- [x] T028 Cover SSH stdin/result/diagnostic bounds, deadline and cleanup, profile/core/peer drift, package provenance, current extraction key fields and stable approved ingest request IDs with deterministic Python 3.11 tests.
+- [ ] T029 Run exact-candidate Linux staging and complete T023/T024; retain honest unavailable-client records if a platform cannot run, without claiming an exception.
+- [ ] T030 Push/open/attach the qualified PR, pass hosted CI, normally merge, publish the immutable merge image, update only sandbox backend with reviewed trust/flags and verify rollout/rollback readiness.
+- [ ] T031 Update sandbox issue log and curated vault at each durable checkpoint, with separate vault commits/pushes and no secret/raw-source storage.
+
 ## Dependencies and execution
 
-T001–T006 precede the native client. T007 precedes T008–T010. T011 precedes T012–T015. T016 precedes T017–T018. Qualification follows implementation. T023–T025 depend on the owner's pending endpoint and remain open in this task; no Gaia instance is provisioned to satisfy them.
+T001–T006 precede the native client. T007 precedes T008–T010. T011 precedes T012–T015. T016 precedes T017–T018. Qualification follows implementation. The enrolled endpoint is now available; T023/T024/T029 remain candidate-bound gates. T025 stays optional until the deployment needs legacy fetch. No Gaia instance is provisioned to satisfy qualification.
 
 Independent catalog research/tests and transport research/tests may run in parallel in separate files. Implementation follows the three stories in order, then shared verification and a scoped local commit. All mutations use the existing confirmation repository; no schema, component vocabulary, native UI contract or external fabric deployment changes are planned.

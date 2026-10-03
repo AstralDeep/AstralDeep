@@ -1,3 +1,13 @@
+# Production continuation — 2026-10-03
+
+The initial default-disabled agent merged in PR #226 as `a13c977e6b22c0ce8f1f4980de5e483d15dd9447` and was deployed with both flags false. The owner now supplied the existing enrolled client and authorized checks, PR, qualified merge and sandbox update. The previous disabled-only staging waiver is not extended.
+
+Branch `codex/092-gaiakeep-production` uses owner-scoped pinned SSH execution. Gaia signing/profile/service credentials stay on DGX. Exact SDK 0.2.0 artifact and 23 source/resource hashes are locked and privately snapshotted; verified TLS overrides the development transport. Account/collection discovery yields 111 tools. Existing native controls and bounded workflows retain their permission/approval/taint/audit path. Ingest request IDs support explicit reconciliation without replay. Review repaired watchdog cleanup, stale credential blocking and an unbounded upstream profile reread.
+
+Python 3.11.15 deterministic command in quickstart, including the Gaia and listed surrounding authorization/transport/runtime suites: **545 passed**. Agent coverage: **1092/1115 statements, 97.94%**. Root `ruff check .` and `git diff --check` pass. The SDK lock matches the actual DGX wheel and files. The source adapter ran verified `whoami` against the enrolled account; that is source smoke, not candidate-image staging. No Gaia writes or live product activation occurred in these checks.
+
+Exact-candidate Linux staging with real Keycloak, representative Plane data/migrations, workers, permission/approval/denial/reconciliation/integrity and affected-client acceptance remains required. Candidate SHA/image/evidence receipts stay outside the source tree so recording identity cannot change the candidate. Full hosted CI, merge, immutable image publication and enabled sandbox rollout remain pending. The historical record below describes the original native compatibility implementation.
+
 # Local verification — 2026-10-02
 
 State: locally implemented and test-passing; unpushed, unmerged, undeployed and unreleased. The existing Gaia interface is pending per the owner. This record is local diagnostic evidence, not protected merge/release qualification.

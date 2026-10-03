@@ -1,10 +1,18 @@
 # Implementation Plan: GaiaKeep agent
 
-**Branch**: `codex/092-gaiakeep-agent` | **Date**: 2026-10-02 | **Spec**: [spec.md](spec.md)
+**Branch**: `codex/092-gaiakeep-production` | **Updated**: 2026-10-03 | **Spec**: [spec.md](spec.md)
 
 ## Summary
 
-A first-party Python agent exposes the pinned public GaiaKeep catalog and bounded file conveniences through normal Astral dispatch. It opens a per-call SSH tunnel using the caller's existing registered machine, then uses a TLS-verified native WebSocket transport and the pinned optional GaiaKeep SDK. No fabric, gateway, or Gaia instance is provisioned.
+A first-party Python agent exposes the pinned GaiaKeep catalog and bounded file conveniences through normal Astral dispatch. Default SSH mode executes an ephemeral reviewed adapter under the caller's pinned registered account. The private signing profile/key stay on DGX; verified TLS overrides the upstream development transport. Native backend compatibility remains optional. No fabric, gateway, or Gaia instance is provisioned.
+
+## Production continuation decision
+
+The owner reported the enrolled client on 2026-10-03 and authorized checks, PR, merge and sandbox deployment. Default SSH mode verifies the exact remote 0.2.0 wheel/file lock in `backend/agents/gaiakeep/sdk-artifact.json`, snapshots source/resources and compiles verified bytes without mutable bytecode or unpinned native speedups. The product image needs no private SDK dependency for this mode. Existing declared Paramiko, cryptography, jsonschema and websockets suffice. Native mode retains the original exact private 0.1.0 dependency/provenance below.
+
+The command contains only reviewed first-party bootstrap and its source digest; requests/trust/file bytes use bounded stdin. The entire pinned SSH connection/send/drain/exit has one 120-second deadline. Diagnostics are bounded and discarded. An operator-trusted public CA/core pin/peer set is compared with the private profile; routing remains the login node's loopback at the operator port. Private service/signing keys never return to sandbox. Results have a separate 13 MiB file-wire bound, retain the existing 1 MiB ordinary response bound, and are rechecked for file identity/count/digest. Ingest request IDs can be supplied for explicit reconciliation and remain covered by exact approval arguments. Uncertain mutations are never replayed.
+
+T023/T024 remain gates before activation. Use isolated candidate-image staging with real IAM, Plane-imported representative data, normal migrations, workers and ordinary authenticated owner/approval flows. The earlier owner waiver applied to the disabled initial merge only. No schema, component, primitive or client protocol changes are introduced. The retained design below describes the native compatibility path; the SSH continuation uses the same catalog, verified wire protocol and permission/approval/taint/audit seams.
 
 ## Technical Context
 
@@ -21,9 +29,9 @@ A first-party Python agent exposes the pinned public GaiaKeep catalog and bounde
 - I/II/VI/XII: Python backend, approved Card/CodeBlock/Alert primitives, existing surfaces, short file headers; no component/client edits.
 - III/IV/XI: meaningful deterministic tests, changed-code >=90%, root Ruff. Existing complete merge gates still apply; no network-dependent required test.
 - V/XIV: declare optional exact upstream SDK pin; no private implementation vendoring, no component source/pin changes.
-- VII: Keycloak/RFC8693 dispatch and audit preserved; FF_GAIAKEEP and FF_CRESCO both default off; native wsapi seam only. Runtime CRESCO_SERVICE_KEY stays in environment, user Gaia key is decrypted inside agent. Existing SSH owner isolation and host pins, verified TLS for control AND dataplane, bounded egress, conservative scopes and confirmation for all mutations.
+- VII: Keycloak/RFC8693 dispatch and audit preserved; FF_GAIAKEEP and FF_CRESCO both default off; native wsapi seam only. Default SSH mode keeps Gaia service/signing keys on DGX; native compatibility keeps CRESCO_SERVICE_KEY in environment and decrypts user Gaia key inside agent. Existing SSH owner isolation and host pins, verified TLS for control AND dataplane, bounded egress, conservative scopes and confirmation for all mutations.
 - IX: all durable mechanics use existing Plane facades; no SQL or migrations.
-- X: existing owner-operated DGX Gaia deployment plus sandbox is the intended real-auth staging topology. Owner says deployment pending; actual Gaia role/denial/file flows and every affected client must be verified against a candidate image before merge. Record exact candidate SHA/image, representative collection, host/gateway/core pins and nonsecret observations. No missing-check waiver is requested and no publication is authorized.
+- X: existing owner-operated DGX Gaia deployment plus sandbox is the intended real-auth staging topology. The enrolled client is available; real role/denial/file flows and every affected client must be verified against a candidate image before activation. Record exact candidate SHA/image, representative collection, host/gateway/core pins and nonsecret observations. No missing-check waiver is requested; the owner authorized qualified PR, merge and sandbox deployment.
 - XIII: protocol/source facts cite exact revisions and date; specified, locally test-passing, staging-verified, and deployed remain separate states.
 
 ## Project Structure

@@ -278,7 +278,7 @@ def test_pinned_extraction_certificate():
     signature = key.sign(framed('GFS-XCERT-1'), ec.ECDSA(hashes.SHA384()))
     public = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     reply = {'status': '10', 'cert': cert, 'sig': base64.urlsafe_b64encode(signature).decode().rstrip('='),
-             'signer_pub': base64.urlsafe_b64encode(public).decode().rstrip('='), 'core_public_key': 'untrusted-echo'}
+             'signer_pub': base64.urlsafe_b64encode(public).decode().rstrip('=')}
     extract_id = hashlib.sha384(framed('gfs/extract/v2')).hexdigest()[:48]
     core = SimpleNamespace(core_key=key.public_key(), call=lambda *a, **k: dict(reply))
     result = client.clean_result(client.execute(core, 'core.extractproof', {'extract_id': extract_id, 'leaf': '0'}))
@@ -288,7 +288,12 @@ def test_pinned_extraction_certificate():
     assert base64.b64decode(proof['certificate_utf8_base64']).decode() == cert
     assert proof['certificate_signature'] == reply['sig']
     assert 'sig' not in result
-    for change in [{'cert': cert + ' '}, {'sig': 'bad'}, {'signer_pub': 'wrong'}, {'cert': 'x' * 65537}]:
+    core.call = lambda *a, **k: {k: v for k, v in dict(reply, core_public_key=reply['signer_pub']).items()
+                               if k != 'signer_pub'}
+    assert client.execute(core, 'core.extractproof', {'extract_id': extract_id, 'leaf': '0'})[
+        'verified_certificate']['certificate_verified'] is True
+    for change in [{'cert': cert + ' '}, {'sig': 'bad'}, {'signer_pub': 'wrong'}, {'cert': 'x' * 65537},
+                   {'core_public_key': 'conflicting-pin'}]:
         core.call = lambda *a, _change=change, **k: dict(reply, **_change)
         with pytest.raises(client.AgentError) as error:
             client.execute(core, 'core.extractproof', {'extract_id': extract_id, 'leaf': '0'})
