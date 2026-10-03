@@ -273,6 +273,7 @@ class _ConnectionIngressFrame:
     operation_kind: str
     deadline_at_monotonic: float | None
     deadline_at_utc: datetime | None
+    authenticated_user_id: str | None = field(default=None, repr=False)
     local_final_verified: bool = False
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
     human_request: object = field(default=None, repr=False)
@@ -6879,6 +6880,11 @@ class Orchestrator:
                 if is_credential_save
                 else None
             ),
+            authenticated_user_id=(
+                self._get_user_id(context.websocket)
+                if hasattr(self, "ui_sessions") and hasattr(context, "websocket")
+                else None
+            ),
         )
 
     async def _enqueue_connection_frame(
@@ -7827,6 +7833,8 @@ class Orchestrator:
         self,
         context: ConnectionContext,
         work: _ConnectionOperation,
+        *,
+        user_id: str,
     ) -> str | None:
         chat_id = work.frame.chat_id
         payload = work.frame.parsed.get("payload")
@@ -7852,7 +7860,7 @@ class Orchestrator:
                 row = await asyncio.to_thread(
                     self.history.get_component_by_id,
                     component_id,
-                    user_id=work.owner.owner_user_id or "legacy",
+                    user_id=user_id,
                 )
                 if row is not None:
                     chat_id = row.get("chat_id")
@@ -7888,11 +7896,24 @@ class Orchestrator:
         if work.frame.action not in _CONVERSATION_MUTATION_ACTIONS:
             await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
-        chat_id = await self._conversation_mutation_chat_id(context, work)
+        user_id = self._get_user_id(execution_websocket)
+        if (
+            not isinstance(user_id, str)
+            or not user_id
+            or user_id == "legacy"
+            or user_id != work.frame.authenticated_user_id
+            or (
+                work.owner.owner_user_id is not None
+                and work.owner.owner_user_id != user_id
+            )
+        ):
+            raise RuntimeError("conversation mutation authenticated owner changed")
+        chat_id = await self._conversation_mutation_chat_id(
+            context, work, user_id=user_id,
+        )
         if chat_id is None:
             await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
-        user_id = work.owner.owner_user_id or "legacy"
         stage = None
         token = None
         request_generation = None

@@ -56,6 +56,8 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [ ] T029 Run exact-candidate Linux staging and complete T023/T024; retain honest unavailable-client records if a platform cannot run, without claiming an exception.
 - [ ] T030 Push/open/attach the qualified PR, pass hosted CI, normally merge, publish the immutable merge image, update only sandbox backend with reviewed trust/flags and verify rollout/rollback readiness.
 - [ ] T031 Update sandbox issue log and curated vault at each durable checkpoint, with separate vault commits/pushes and no secret/raw-source storage.
+- [ ] T032 Repair the baseline ordinary UI publication-owner failure using a captured authenticated socket subject, preserving connection-owned operation fences; cover real Plane publication, foreign chat/component isolation and absent/changed queued identities.
+- [ ] T033 Qualify the resulting exact candidate with fresh hosted CI, app-image staging, Gaia dispatch and affected-client observations; retain prior failed attempts and candidate evidence separately. Apple checks are explicitly owner-waived only for this merge.
 
 ## Dependencies and execution
 
