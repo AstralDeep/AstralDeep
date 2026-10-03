@@ -13,6 +13,7 @@ import threading
 import time
 
 from agents.gaiakeep import catalog
+from agents.gaiakeep.transport import validate_failure_detail
 
 MAX_BYTES = 1 << 20
 BACKUPS = 3
@@ -28,7 +29,8 @@ _FILE_NAMES = ('ISSUES.md', *(f'ISSUES.md.{index}' for index in range(1, BACKUPS
 def _warning(message, **metadata):
     try:
         labels = ' | '.join(f"{key}={str(metadata[key]).lower() if type(metadata[key]) is bool else metadata[key]}"
-                            for key in ('timestamp_utc', 'tool', 'verdict', 'phase', 'mutation', 'sink')
+                            for key in ('timestamp_utc', 'tool', 'verdict', 'phase', 'mutation',
+                                        'native_phase', 'failure_kind', 'native_status', 'sink')
                             if key in metadata)
         _LOGGER.warning('%s | %s', message, labels, extra={'gaiakeep_issue': metadata})
     except Exception:
@@ -225,7 +227,7 @@ class IssueLog:
     def __init__(self):
         self._directory = os.getenv('GAIAKEEP_ISSUE_LOG_DIRECTORY')
 
-    def record(self, tool_name, verdict, *, dispatched, mutation):
+    def record(self, tool_name, verdict, *, dispatched, mutation, detail=None):
         if (type(tool_name) is not str or tool_name not in catalog.TOOLS
                 or type(verdict) is not str or verdict not in VERDICTS
                 or type(dispatched) is not bool or type(mutation) is not bool
@@ -235,12 +237,18 @@ class IssueLog:
         timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
         metadata = {'timestamp_utc': timestamp, 'tool': tool_name, 'verdict': verdict,
                     'phase': 'post_dispatch' if dispatched else 'pre_dispatch', 'mutation': mutation}
+        detail = validate_failure_detail(detail)
+        if detail is not None:
+            metadata.update(detail)
         _warning('GaiaKeep operation failed.', **metadata)
         if not self._directory:
             return
         try:
+            suffix = (f" | native_phase={detail['native_phase']} | failure_kind={detail['failure_kind']}"
+                      f" | native_status={detail['native_status'] if detail['native_status'] is not None else 'none'}"
+                      if detail is not None else '')
             line = (f"\n- {timestamp} | tool={tool_name} | verdict={verdict} | phase={metadata['phase']} "
-                    f"| mutation={'true' if mutation else 'false'}\n").encode('ascii')
+                    f"| mutation={'true' if mutation else 'false'}{suffix}\n").encode('ascii')
             if not _THREAD_LOCK.acquire(timeout=LOCK_TIMEOUT):
                 raise TimeoutError
             try:

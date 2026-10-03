@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import gzip
 import io
 import json
@@ -42,6 +43,92 @@ class ProtocolError(Exception):
 
 class ConnectionOpenTimeout(TimeoutError):
     pass
+
+
+FAILURE_PHASES = frozenset({'rpc_open', 'tcp_connect', 'websocket_open', 'rpc_send', 'rpc_receive',
+                          'rpc_decode', 'rpc_response', 'stream_open', 'stream_activation', 'stream_send',
+                          'stream_receive', 'cleanup', 'sdk_validation', 'account_validation',
+                          'sdk_read', 'sdk_upload', 'sdk_control', 'result_validation'})
+FAILURE_KINDS = frozenset({'timeout', 'connection', 'tls', 'authentication', 'authorization',
+                         'integrity', 'protocol', 'invalid_argument', 'native', 'other'})
+
+
+def validate_failure_detail(value):
+    try:
+        if (type(value) is not dict or len(value) != 3
+                or set(value) != {'native_phase', 'failure_kind', 'native_status'}
+                or type(value['native_phase']) is not str or value['native_phase'] not in FAILURE_PHASES
+                or type(value['failure_kind']) is not str or value['failure_kind'] not in FAILURE_KINDS
+                or (value['native_status'] is not None
+                    and (type(value['native_status']) is not int or not 0 <= value['native_status'] <= 999))):
+            return None
+        return dict(value)
+    except Exception:
+        return None
+
+
+def _native_status(value):
+    if type(value) is int:
+        return value if 0 <= value <= 999 else None
+    if type(value) is str and re.fullmatch(r'0|[1-9][0-9]{0,2}', value, flags=re.ASCII):
+        return int(value)
+    return None
+
+
+def _failure_kind(exc, status):
+    name = type(exc).__name__
+    if isinstance(exc, ssl.SSLError):
+        return 'tls'
+    if isinstance(exc, TimeoutError) or name in {'RpcTimeout', 'OutcomeUnknown', 'TransferTimeout', 'JobTimeout'}:
+        return 'timeout'
+    if name in {'Unauthenticated', 'AuthenticationException'}:
+        return 'authentication'
+    if isinstance(exc, PermissionError) or name in {'Forbidden', 'PolicyRefused'}:
+        return 'authorization'
+    if name in {'IntegrityError', 'InvalidSignature'}:
+        return 'integrity'
+    if isinstance(exc, ProtocolError) or name == 'BadRequest':
+        return 'protocol'
+    if isinstance(exc, (ValueError, TypeError, KeyError)):
+        return 'invalid_argument'
+    if (name in {'TransportError', 'ConnectionClosed', 'ConnectionClosedError', 'ConnectionClosedOK'}
+            or isinstance(exc, (ConnectionError, BrokenPipeError))
+            or isinstance(exc, OSError) and exc.errno in {errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET,
+                                                       errno.EPIPE, errno.ENETRESET, errno.ENETDOWN,
+                                                       errno.ENETUNREACH, errno.EHOSTUNREACH}):
+        return 'connection'
+    return 'native' if status is not None else 'other'
+
+
+def failure_detail(exc, fallback_phase=None):
+    try:
+        current, seen = exc, set()
+        for _ in range(8):
+            if not isinstance(current, BaseException) or id(current) in seen:
+                break
+            seen.add(id(current))
+            detail = validate_failure_detail(getattr(current, '_gaiakeep_failure_detail', None))
+            if detail is not None:
+                return detail
+            current = current.__cause__ or current.__context__
+        if type(fallback_phase) is not str or fallback_phase not in FAILURE_PHASES:
+            return None
+        status = _native_status(getattr(exc, 'status', None))
+        return {'native_phase': fallback_phase, 'failure_kind': _failure_kind(exc, status), 'native_status': status}
+    except Exception:
+        return None
+
+
+def mark_failure(exc, phase, *, native_status=None):
+    try:
+        detail = failure_detail(exc, phase)
+        if detail is not None:
+            if native_status is not None and failure_detail(exc) is None:
+                detail['native_status'] = _native_status(native_status)
+            exc._gaiakeep_failure_detail = detail
+    except Exception:
+        pass
+    return exc
 
 
 def _json(value, limit=MAX_RPC):
@@ -186,7 +273,11 @@ class NativeTransport:
             try:
                 ws = stack.enter_context(self._socket('/api/apisocket'))
             except TimeoutError as exc:
-                raise ConnectionOpenTimeout('The Gaia RPC connection did not open.') from exc
+                error = ConnectionOpenTimeout('The Gaia RPC connection did not open.')
+                detail = failure_detail(exc)
+                if detail is not None:
+                    error._gaiakeep_failure_detail = detail
+                raise mark_failure(error, 'rpc_open') from exc
             yield ws
 
     @contextmanager
@@ -203,19 +294,31 @@ class NativeTransport:
             bridge = SocketBridge(channel, self.deadline)
             ws = None
             try:
-                ws = connect(f'wss://{self.config.tls_name}:{self.config.port}{path}',
-                             sock=bridge.socket, ssl=self.context,
-                             server_hostname=self.config.tls_name, proxy=None,
-                             additional_headers={'cresco_service_key': self.config.service_key},
-                             compression=None, max_size=MAX_FRAME, max_queue=8,
-                             open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+                try:
+                    ws = connect(f'wss://{self.config.tls_name}:{self.config.port}{path}',
+                                 sock=bridge.socket, ssl=self.context,
+                                 server_hostname=self.config.tls_name, proxy=None,
+                                 additional_headers={'cresco_service_key': self.config.service_key},
+                                 compression=None, max_size=MAX_FRAME, max_queue=8,
+                                 open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+                except Exception as exc:
+                    mark_failure(exc, 'websocket_open')
+                    raise
                 yield ws
             finally:
                 try:
                     if ws is not None:
-                        ws.close()
+                        try:
+                            ws.close()
+                        except Exception as exc:
+                            mark_failure(exc, 'cleanup')
+                            raise
                 finally:
-                    bridge.close()
+                    try:
+                        bridge.close()
+                    except Exception as exc:
+                        mark_failure(exc, 'cleanup')
+                        raise
 
     def call(self, addr, action, params, timeout):
         if addr not in self.config.allowed_peers:
@@ -231,11 +334,21 @@ class NativeTransport:
         wire = json.dumps(envelope, allow_nan=False)
         if len(wire.encode()) > MAX_RPC:
             raise ProtocolError('Native request exceeds the RPC bound.')
-        with self._rpc_socket() as ws:
-            ws.send(wire)
-            reply = _json(ws.recv(timeout=self.remaining(seconds)))
+        phase = 'rpc_open'
+        try:
+            with self._rpc_socket() as ws:
+                phase = 'rpc_send'
+                ws.send(wire)
+                phase = 'rpc_receive'
+                raw = ws.recv(timeout=self.remaining(seconds))
+                phase = 'rpc_decode'
+                reply = _json(raw)
+        except Exception as exc:
+            mark_failure(exc, phase)
+            raise
         if reply.get('client_rpc_id') != rpc_id:
-            raise ProtocolError('Native reply correlation failed.')
+            raise mark_failure(ProtocolError('Native reply correlation failed.'), 'rpc_response',
+                               native_status=reply.get('status'))
         reply.pop('client_rpc_id')
         expanded = 0
         for value in reply.values():
@@ -282,42 +395,66 @@ class VerifiedLoopbackTransport(NativeTransport):
             raise ValueError('The verified loopback gateway port changed during the operation.')
         if not self.context.check_hostname or self.context.verify_mode != ssl.CERT_REQUIRED:
             raise ValueError('Verified TLS is mandatory.')
-        connection = socket.create_connection(('127.0.0.1', self.port),
-                                              timeout=self.remaining(CONNECT_TIMEOUT))
+        try:
+            connection = socket.create_connection(('127.0.0.1', self.port),
+                                                  timeout=self.remaining(CONNECT_TIMEOUT))
+        except Exception as exc:
+            mark_failure(exc, 'tcp_connect')
+            raise
         ws = None
         try:
-            ws = connect(f'wss://{self.config.tls_name}:{self.port}{path}',
-                         sock=connection, ssl=self.context,
-                         server_hostname=self.config.tls_name, proxy=None,
-                         additional_headers={'cresco_service_key': self.config.service_key},
-                         compression=None, max_size=MAX_FRAME, max_queue=8,
-                         open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+            try:
+                ws = connect(f'wss://{self.config.tls_name}:{self.port}{path}',
+                             sock=connection, ssl=self.context,
+                             server_hostname=self.config.tls_name, proxy=None,
+                             additional_headers={'cresco_service_key': self.config.service_key},
+                             compression=None, max_size=MAX_FRAME, max_queue=8,
+                             open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+            except Exception as exc:
+                mark_failure(exc, 'websocket_open')
+                raise
             yield ws
         finally:
             try:
                 if ws is not None:
-                    ws.close()
+                    try:
+                        ws.close()
+                    except Exception as exc:
+                        mark_failure(exc, 'cleanup')
+                        raise
             finally:
-                connection.close()
+                try:
+                    connection.close()
+                except Exception as exc:
+                    mark_failure(exc, 'cleanup')
+                    raise
 
 
 class NativeStream:
     def __init__(self, transport, name, handler):
         self.name, self.transport, self.handler = name, transport, handler or (lambda frame: None)
         self.manager = transport._socket('/api/dataplane')
-        self.ws = self.manager.__enter__()
+        try:
+            self.ws = self.manager.__enter__()
+        except Exception as exc:
+            mark_failure(exc, 'stream_open')
+            raise
         self.error = None
         self.closed = False
         self.worker = None
+        phase = 'stream_send'
         try:
             self.ws.send(json.dumps({'ident_key': 'stream_name', 'ident_id': name, 'io_type_key': 'type',
                                     'output_id': 'output', 'input_id': 'input'}))
+            phase = 'stream_activation'
             activation = _json(self.ws.recv(timeout=transport.remaining(CONNECT_TIMEOUT)))
             if activation.get('status_code') != '10':
-                raise ProtocolError('Native stream activation was refused.')
+                raise mark_failure(ProtocolError('Native stream activation was refused.'), phase,
+                                   native_status=activation.get('status_code'))
             self.worker = threading.Thread(target=self._receive, daemon=True)
             self.worker.start()
-        except Exception:
+        except Exception as exc:
+            mark_failure(exc, phase)
             self.close()
             raise
 
@@ -329,26 +466,47 @@ class NativeStream:
                     raise ProtocolError('Native stream frame exceeds its bound.')
                 self.handler(frame.encode() if isinstance(frame, str) else frame)
         except Exception as exc:  # noqa: BLE001
+            mark_failure(exc, 'stream_receive')
             self.error = exc
             self.ws.close()
 
     def send(self, frame):
-        self.transport.remaining(FLOW_TIMEOUT)
+        try:
+            self.transport.remaining(FLOW_TIMEOUT)
+        except Exception as exc:
+            mark_failure(exc, 'stream_send')
+            raise
         if self.closed or self.error is not None:
-            raise ProtocolError('Native stream failed.')
+            error = ProtocolError('Native stream failed.')
+            detail = failure_detail(self.error)
+            if detail is not None:
+                error._gaiakeep_failure_detail = detail
+            raise mark_failure(error, 'stream_send')
         if not isinstance(frame, bytes) or len(frame) > MAX_FRAME:
             raise ProtocolError('Invalid native data frame.')
-        self.ws.send(frame)
+        try:
+            self.ws.send(frame)
+        except Exception as exc:
+            mark_failure(exc, 'stream_send')
+            raise
 
     def close(self):
         if self.closed:
             return
         self.closed = True
         try:
-            self.ws.close()
+            try:
+                self.ws.close()
+            except Exception as exc:
+                mark_failure(exc, 'cleanup')
+                raise
         finally:
             try:
                 if self.worker is not None and self.worker is not threading.current_thread():
                     self.worker.join(timeout=1)
             finally:
-                self.manager.__exit__(None, None, None)
+                try:
+                    self.manager.__exit__(None, None, None)
+                except Exception as exc:
+                    mark_failure(exc, 'cleanup')
+                    raise

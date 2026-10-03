@@ -67,6 +67,7 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [x] T039 Prevent the exact SDK ingest commit from retrying local/native timeout-shaped mutation replies; verify one physical commit, IDs, uncertainty, read fallback and authoritative denials with byte-pinned inert upstream methods. Fresh candidate CI/staging remains required under T033.
 - [x] T040 Publish successful approved Gaia primitive results through the normal owner-scoped workspace path before model continuation; cover single consumption, stored conversation/provenance, missing/error results, permission/foreign/expiry denial and delivery failure without resend. Fresh candidate client/staging acceptance remains required.
 - [x] T041 Distinguish RPC connection-entry timeouts from post-send timeouts so catalog-proven reads can use the pinned SDK's single reconnect; verify bounded repeated failure, fresh signing, zero mutation resend, deadline expiry and unchanged TLS/auth/native/receive/cleanup/stream failures with deterministic exact SDK fixtures. Repeat fresh candidate CI and staging under T033.
+- [x] T042 Add best-effort, closed native failure phase/kind/status to automatic issue entries; verify strict redaction, wrapper attribution, unchanged primary outcomes and retries, malformed-detail containment, real transport/runtime propagation and changed-line coverage. Local implementation passes; qualify the exact replacement candidate under T033/T034 before claiming operational readiness.
 
 ## Dependencies and execution
 

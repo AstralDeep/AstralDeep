@@ -36,6 +36,7 @@ from agents.gaiakeep.transport import (
     NativeTransport,
     ProtocolError,
     decode_compressed,
+    validate_failure_detail,
 )
 
 __all__ = [
@@ -55,9 +56,10 @@ __all__ = [
 
 
 class AgentError(Exception):
-    def __init__(self, verdict, message):
+    def __init__(self, verdict, message, detail=None):
         super().__init__(message)
         self.verdict = verdict
+        self._gaiakeep_failure_detail = validate_failure_detail(detail)
 
 
 def load_sdk():

@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from agents.gaiakeep import catalog, client
-from agents.gaiakeep.transport import FLOW_TIMEOUT, RPC_TIMEOUT, GatewayConfig
+from agents.gaiakeep.transport import FLOW_TIMEOUT, RPC_TIMEOUT, GatewayConfig, failure_detail
 
 SDK_LOCK = json.loads(Path(__file__).with_name('sdk-artifact.json').read_text(encoding='utf-8'))
 
@@ -259,6 +259,7 @@ def run(request):
     started = time.monotonic()
     mutation = dispatched = False
     core = transport = binding = None
+    phase = 'account_validation'
     try:
         if not isinstance(request, dict) or set(request) - {'tool', 'arguments', 'trust', 'request_id'}:
             raise ValueError
@@ -280,8 +281,10 @@ def run(request):
             raise ValueError
         if action == 'upload' and arguments.get('strategy', 'ingest') == 'ingest' and request_id is None:
             raise ValueError
+        phase = 'sdk_validation'
         binding = _validated_sdk()
         CoreClient, Timeouts, GaiaKeepError, raise_for, profiles, keys = binding
+        phase = 'account_validation'
         profile_path = Path.home() / '.gaiakeep' / 'gaiakeep-profile.json'
         profile = profiles.Profile(json.loads(_private_bytes(profile_path, 65536)), str(profile_path))
         _profile_trust(profile, trust)
@@ -306,6 +309,7 @@ def run(request):
         core.profile = profile
         transport.remaining(RPC_TIMEOUT)
         dispatched = True
+        phase = 'sdk_read' if action == 'read' else 'sdk_upload' if action == 'upload' else 'sdk_control'
         if action == 'connection_info':
             result = {'principal': profile.principal, 'tenant': profile.tenant,
                       'default_collection': profile.default_collection, 'default_domain': profile.default_domain,
@@ -322,7 +326,9 @@ def run(request):
             result = client.execute(core, action, arguments['params'], config, {},
                                     sdk_loader=lambda: (CoreClient, Timeouts, GaiaKeepError, raise_for))
         secrets = [profile.service_key, private.decode('ascii', 'ignore'), base64.b64encode(private).decode(), str(profile_path), profile.key_file]
+        phase = 'result_validation'
         result = _result(result, action, secrets)
+        phase = 'cleanup'
         core.close()
         core = None
         transport.close()
@@ -332,6 +338,7 @@ def run(request):
         binding = None
         return {'ok': True, 'result': result}
     except Exception as exc:  # noqa: BLE001
+        detail = failure_detail(exc, phase)
         if isinstance(exc, PermissionError) and not dispatched:
             exc = client.AgentError('auth_failed', 'Your Gaia profile and key must be private files owned by your DGX account.')
         elif isinstance(exc, FileNotFoundError) and not dispatched:
@@ -341,7 +348,10 @@ def run(request):
         verdict, message = client.failure(exc, mutation and dispatched)
         if mutation and dispatched and verdict in {'protocol_error', 'integrity_error'}:
             verdict, message = 'unconfirmed', 'The operation may have taken effect. Check native state before retrying.'
-        return {'ok': False, 'verdict': verdict, 'message': message}
+        response = {'ok': False, 'verdict': verdict, 'message': message}
+        if detail is not None:
+            response['failure_detail'] = detail
+        return response
     finally:
         for item in (core, transport, binding):
             if item is not None:

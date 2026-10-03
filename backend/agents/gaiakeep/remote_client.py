@@ -16,7 +16,7 @@ from pathlib import Path
 from orchestrator.remote_transport import HostKeyMismatch, ParamikoTransport
 
 from agents.gaiakeep import catalog
-from agents.gaiakeep.transport import FLOW_TIMEOUT, MAX_RPC, GatewayConfig, ProtocolError
+from agents.gaiakeep.transport import FLOW_TIMEOUT, MAX_RPC, GatewayConfig, ProtocolError, validate_failure_detail
 
 MAX_WIRE = 13 << 20
 MAX_STDERR = 16384
@@ -176,7 +176,7 @@ class RemoteCore:
                             'unsupported': 'This Gaia operation is not enabled or supported.',
                             'unconfirmed': 'The operation may have taken effect. Check native state before retrying.',
                             'unavailable': 'GaiaKeep is currently unavailable.'}
-                raise AgentError(verdict, messages[verdict])
+                raise AgentError(verdict, messages[verdict], validate_failure_detail(reply.get('failure_detail')))
             result = reply['result']
             if not isinstance(result, dict):
                 raise ValueError

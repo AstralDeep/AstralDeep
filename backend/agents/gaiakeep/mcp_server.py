@@ -15,6 +15,7 @@ from shared.protocol import MCPResponse
 from agents.gaiakeep import catalog, client
 from agents.gaiakeep.issue_log import IssueLog
 from agents.gaiakeep.remote_client import RemoteCore
+from agents.gaiakeep.transport import failure_detail
 
 CONTEXT_FIELDS = frozenset({'user_id', 'session_id', '_runtime', '_credentials', '_credentials_stale',
                             '_credentials_encrypted', '_session_llm_credentials', '_session_llm_config',
@@ -109,11 +110,13 @@ class MCPServer:
                 data['reconciliation'] = reconciliation
             return {'_data': data, '_ui_components': components}
         except Exception as exc:  # noqa: BLE001
+            detail = failure_detail(exc)
             if (dispatched and mutation and isinstance(exc, client.AgentError)
                     and exc.verdict == 'protocol_error'):
                 exc = client.AgentError('unconfirmed', 'The operation may have taken effect. Check native state before retrying.')
             verdict, message = client.failure(exc, mutation and dispatched)
-            self.issue_log.record(name, verdict, dispatched=dispatched, mutation=mutation)
+            self.issue_log.record(name, verdict, dispatched=dispatched, mutation=mutation,
+                                  **({'detail': detail} if detail is not None else {}))
             data = {'verdict': verdict}
             if reconciliation:
                 data['reconciliation'] = reconciliation
