@@ -17,6 +17,33 @@ real_orch = _real_orch
 gaia_server = _gaia_server
 
 
+@pytest.fixture(autouse=True)
+def owned_machine(monkeypatch):
+    from orchestrator import remote_machines
+    monkeypatch.setattr(remote_machines, 'resolve_machine', lambda db, owner, ref: {'owner_user_id': owner})
+
+
+@pytest.mark.parametrize('tool', ['gaiakeep_core_whoami', 'gaiakeep_core_repair'])
+@pytest.mark.parametrize('failure', ['foreign', 'missing', 'repository-failure'])
+def test_owner_denial_precedes_proposal_or_approval_consumption(monkeypatch, tool, failure):
+    from orchestrator import remote_machines
+    db = _FakeDB()
+    orch = _orch(db)
+    calls = []
+    def lookup(source, owner, ref):
+        calls.append((owner, ref))
+        if failure == 'repository-failure':
+            raise OSError('private repository detail')
+        return None
+    monkeypatch.setattr(remote_machines, 'resolve_machine', lookup)
+    args = {'machine_id': 'unavailable', 'params': {}, '_remote_op_proposal_id': 'foreign-approval'}
+    result = rc.evaluate(orch, object(), 'gaiakeep-1', tool, args, 'chat', 'caller')
+    assert result and result[1][0]['type'] == 'alert'
+    assert 'private repository detail' not in str(result)
+    assert calls == [('caller', 'unavailable')] and db.rows == {}
+    assert args['_remote_op_proposal_id'] == 'foreign-approval'
+
+
 def test_every_mutation_requires_approval():
     for name in TOOLS:
         assert rc.classification_for(name, 'gaiakeep-1') == ('always' if is_mutation(name) else 'never')

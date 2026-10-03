@@ -469,6 +469,17 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         except ValueError:
             return ("Invalid GaiaKeep arguments; no operation was sent.",
                     [Alert(message="Invalid GaiaKeep arguments; no operation was sent.", variant="error").to_dict()])
+        from orchestrator import remote_machines
+        try:
+            owned = bool(user_id and remote_machines.resolve_machine(
+                plane_source_from_orchestrator(orch), user_id, args.get("machine_id")))
+        except Exception:  # noqa: BLE001
+            owned = False
+        if not owned:
+            _audit_sync(user_id, "remote_op.owner_denied", "Gaia machine is not available to this owner",
+                        machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
+            return ("GaiaKeep requires a registered machine owned by the signed-in user; no operation was sent.",
+                    [Alert(message="This GaiaKeep machine is not available to your account.", variant="error").to_dict()])
     machine_ref = args.get(policy.machine_key)
     classification = classification_for(tool_name, agent_id)
     if classification is None and not policy.gate_unclassified_unattended:
