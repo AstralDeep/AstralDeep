@@ -79,9 +79,10 @@ def runtime(monkeypatch, tmp_path):
             records['closed'].append('transport')
 
     errors = ModuleType('gaiakeep.errors')
-    error_source = (Path(__file__).parent / 'fixtures' / 'qualified-sdk' / 'errors.py.txt').read_bytes()
+    error_path = Path(__file__).parent / 'fixtures' / 'qualified-sdk' / 'errors.py.txt'
+    error_source = error_path.read_bytes()
     assert hashlib.sha256(error_source).hexdigest() == remote_runtime.SDK_LOCK['files']['gaiakeep/errors.py']
-    exec(compile(error_source, 'qualified-sdk/errors.py.txt', 'exec'), errors.__dict__)
+    exec(compile(error_source, str(error_path), 'exec'), errors.__dict__)
     monkeypatch.setitem(sys.modules, 'gaiakeep.errors', errors)
     monkeypatch.setattr(transport, 'VerifiedLoopbackTransport', Loopback, raising=False)
     monkeypatch.setattr(ssl, 'create_default_context', lambda **kwargs: SimpleNamespace(
