@@ -27,6 +27,6 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: AstralDeep/astraldeep.github.io/actions/pr-ci@f1930907e1f702e341fe03f73e102e156ec3e36e
+      - uses: AstralDeep/astraldeep.github.io/actions/pr-ci@460a3ed56c3c1512e489607417d071f6aa174e82
         with:
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
