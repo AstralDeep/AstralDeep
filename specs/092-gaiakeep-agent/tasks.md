@@ -59,6 +59,7 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [x] T032 Repair the baseline ordinary UI publication-owner failure using a captured authenticated socket subject, preserving connection-owned operation fences; cover real Plane publication, foreign chat/component isolation and absent/changed queued identities.
 - [ ] T033 Qualify the resulting exact candidate with fresh hosted CI, app-image staging, Gaia dispatch and affected-client observations; retain prior failed attempts and candidate evidence separately. Apple checks are explicitly owner-waived only for this merge.
 - [ ] T034 Implement automatic redacted Gaia issue logging with bounded rotation and safe sink-failure handling; verify actual failure logging through staging dispatch, then deploy the dedicated operator log mount and confirm it survives backend recreation.
+- [ ] T035 Declare the Gaia schema validator in the production dependency manifest, require catalog validation in the clean product image before test-tooling installation, and repeat exact-candidate staging after the retained missing-dependency failure.
 
 ## Dependencies and execution
 
