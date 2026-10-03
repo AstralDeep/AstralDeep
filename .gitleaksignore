@@ -34,3 +34,5 @@ d19050b3569f8ba6a2a5389998e3d23dcad8282b:scripts/typesafe_canary_scan.py:typesaf
 # Duplicate historical verification prose: line 1315 is byte-identical to the
 # reviewed d38a02f entry above, describing audit fields rather than a credential.
 9ac6826aaea3484cff265e8a054cc1d81dbfe60c:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315
+# Verified immutable SDK keys.py source SHA256; no account key material.
+2bd6c67005dea8b0a95c2d87ec4c067a3f493305:backend/agents/gaiakeep/sdk-artifact.json:generic-api-key:22
