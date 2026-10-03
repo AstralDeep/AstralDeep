@@ -17,6 +17,7 @@
 
 - The owner supplied Cody's existing client kit/account instructions and authorized checks, PR, merge and sandbox deployment. SSH credentials must suffice; the enrolled profile and private signing key remain on DGX. The previous staging waiver covered only the disabled initial merge.
 - Use a fixed first-party adapter over owner-scoped pinned SSH, an exact remotely installed SDK artifact and operator-supplied certificate/core pins. Do not forward upstream MCP tools' arbitrary host-file paths.
+- The Gaia agent itself must update an operator-readable issue log when its tool handler reports a failure. Manual qualification notes alone do not satisfy this requirement.
 
 ## User Scenarios & Testing
 
@@ -83,6 +84,7 @@ An authorized user publishes a bounded file to a collection or retrieves a bound
 - **FR-012**: Deliver results using approved server-owned components shared by all clients; introduce no new primitive, protocol frame, database schema, or client-specific interface.
 - **FR-013**: Keep private upstream implementation code outside the product repository and declare/pin any optional client dependency reproducibly.
 - **FR-014**: Qualify changed code with at least 90% coverage, meaningful negative/integration tests, and lint. Record staging and live-client verification as pending until the owner's deployment is available.
+- **FR-015**: Automatically append bounded, redacted Markdown operational diagnostics for Gaia tool failures, with timestamp, closed tool/verdict and dispatch/mutation state only. Preserve the primary result and existing authorization/audit path if the configured logging sink fails; report that sink failure through normal logs. Do not log credentials, identities, arguments, file content, paths or raw exception messages.
 
 ### Key Entities
 

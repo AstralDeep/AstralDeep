@@ -1,3 +1,11 @@
+# Automatic runtime issue logging continuation — 2026-10-03
+
+The owner clarified that the Astral Gaia agent must update the issue file itself whenever a tool fails. The continuation adds automatic closed diagnostic labels to normal logs and an optional bounded rotating Markdown sink. A separate Compose bind isolates operator-readable logs from credentials, staging materials and user data; no schema, component pin, dependency or client protocol changes. Logging storage failures preserve the original Gaia verdict and reconciliation identifier and never retry an operation.
+
+The preceding candidate `183956e7cf73b54d82050277b3580b0f2931ed1e` passed all 17 hosted CI jobs with 454/457 changed executable lines covered (99.34%). Its candidate image and isolated runtime source checks passed. Subsequent observer recovery attempts failed before any Gaia operation, first on a stale candidate literal and then during the third WebSocket handshake; those failures remain retained. Strict TLS raw/async diagnostics passed without establishing a product or library defect. These results are historical and do not qualify the new logging runtime.
+
+Final Python 3.11.15 local checks passed 618 tests with three skips (one actual POSIX umask check on Windows and two PostgreSQL checks without a local database). Agent coverage is 1273/1308 executable statements (97.32%); the new logger covers 178/190 (93.68%) and MCP dispatch 110/110 (100%). Root separately reproduced two simultaneous first-file creators: both failure outcomes were preserved, both Markdown rows were present and no sink warning occurred. Ruff and diff checks pass. Raw coverage and source digests are retained outside the candidate tree. Fresh exact-candidate hosted CI, normal-dispatch staging failure logging and Gaia/client acceptance remain required. The PR remains draft until qualification; merge and live sandbox activation remain pending. Apple checks alone are explicitly owner-waived for this merge.
+
 # Production continuation — 2026-10-03
 
 The initial default-disabled agent merged in PR #226 as `a13c977e6b22c0ce8f1f4980de5e483d15dd9447` and was deployed with both flags false. The owner now supplied the existing enrolled client and authorized checks, PR, qualified merge and sandbox update. The previous disabled-only staging waiver is not extended.

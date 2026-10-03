@@ -13,6 +13,7 @@ from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 
 from agents.gaiakeep import catalog, client
+from agents.gaiakeep.issue_log import IssueLog
 from agents.gaiakeep.remote_client import RemoteCore
 
 CONTEXT_FIELDS = frozenset({'user_id', 'session_id', '_runtime', '_credentials', '_credentials_stale',
@@ -28,6 +29,7 @@ class MCPServer:
     def __init__(self, plane_source, credential_manager):
         self.plane_source = plane_source
         self.credential_manager = credential_manager
+        self.issue_log = IssueLog()
         self.tools = {name: dict(info, function=partial(self.invoke, name)) for name, info in catalog.TOOLS.items()}
 
     def get_tool_list(self):
@@ -111,6 +113,7 @@ class MCPServer:
                     and exc.verdict == 'protocol_error'):
                 exc = client.AgentError('unconfirmed', 'The operation may have taken effect. Check native state before retrying.')
             verdict, message = client.failure(exc, mutation and dispatched)
+            self.issue_log.record(name, verdict, dispatched=dispatched, mutation=mutation)
             data = {'verdict': verdict}
             if reconciliation:
                 data['reconciliation'] = reconciliation

@@ -23,6 +23,8 @@ Supply runtime configuration through private files and certificate mounts, never
 | GAIAKEEP_GATEWAY_CA_FILE | Backend-readable mounted PEM trust anchor; only public bytes go to the adapter. |
 | GAIAKEEP_CORE_PUBLIC_KEY | Out-of-band verified base64url P-384 SPKI. |
 | GAIAKEEP_ALLOW_LEGACY | Optional true, default false; requires separately qualified legacy deployment and system permission. |
+| GAIAKEEP_ISSUE_LOG_DIRECTORY | Operator-owned absolute directory for automatic redacted Markdown failures; Compose mounts `/app/gaia-issue-log`. Never expose a directory containing credentials or user uploads. |
+| GAIAKEEP_ISSUE_LOG_HOST_DIRECTORY | Compose-only host directory for the dedicated log mount; default `./backend/logs/gaiakeep`. |
 | GAIAKEEP_RESTORE_ROOT | Legacy restore only: operator-controlled non-root absolute POSIX directory. |
 
 The adapter dials only login-node loopback at the operator port. It compares profile core identity, port and peers against deployment trust and overrides the stock development transport. Certificate/hostname checks apply to both control and encrypted data channels. Profile verify_ssl=false and unverified_dataplane=true cannot disable verification. Model arguments cannot select identity, signing keys, endpoints or profile paths.
@@ -51,6 +53,8 @@ Before production activation, stage the exact clean candidate image using real K
 
 After qualified merge and green CI, deploy the immutable sha-<merge SHA> image and recreate only the backend with reviewed flags/trust mounts. Preserve companion services, data, IAM/audit secrets and prior image/config backups. Disable with FF_GAIAKEEP=false and backend recreation; restart alone does not reread Compose environment or copy source.
 
-Sandbox issue log: /home/sam/gaia-integration/ISSUES.md. Record problems and evidence without private keys or credentials.
+The agent automatically appends failures to `ISSUES.md` in its configured operator directory and emits the same safe diagnostic labels in normal logs. Entries exclude identities, arguments, paths, payloads and exception text. Bounded rotation keeps three backups. A sink failure is visible in normal logs and does not change the primary Gaia outcome or retry a request.
+
+The sandbox rollout will precreate the dedicated host directory `/home/sam/gaia-integration/agent-issues` as Sam UID/GID 1003, mode 2750. Its setgid bit makes root backend-created 0640 files inherit Sam's group, so Sam can read `ISSUES.md`; verify actual ownership/mode and readability after recreation. Mount only this directory. The earlier `/home/sam/gaia-integration/ISSUES.md` contains historical operator qualification notes. Durable product records and authorization/audit provenance remain in AstralPlane. Local log directories are excluded from Git and image build contexts.
 
 SSH account discovery uses gaiakeep_connection_info for the enrolled principal/tenant/default collection and gaiakeep_list_collections for SDK-known collections and heads. Neither accepts profile paths or credentials. These are distinct from mutating core.profile policy operations; native compatibility refuses the local discovery tools.

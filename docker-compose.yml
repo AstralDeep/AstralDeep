@@ -57,6 +57,7 @@ services:
       DB_PORT: 5432
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
+      GAIAKEEP_ISSUE_LOG_DIRECTORY: /app/gaia-issue-log
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
       # The shared env_file may contain worker-native speech credentials.
@@ -86,6 +87,7 @@ services:
       - ./backend/tmp:/app/backend/tmp
       - ./backend/knowledge:/app/backend/knowledge
       - ./backend/agents:/app/backend/agents
+      - "${GAIAKEEP_ISSUE_LOG_HOST_DIRECTORY:-./backend/logs/gaiakeep}:/app/gaia-issue-log"
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/hostfs:ro

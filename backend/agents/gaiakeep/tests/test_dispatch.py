@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from agents.gaiakeep import catalog, client, mcp_server
+from agents.gaiakeep.issue_log import IssueLog
 from agents.gaiakeep.remote_client import RemoteCore
 from shared.protocol import MCPRequest
 
@@ -41,6 +42,75 @@ def test_list_and_result_shape(server):
     assert reply.result['verdict'] == 'ok'
     assert reply.result['result']['job_id'] == 'real-job'
     assert reply.ui_components[0]['type'] == 'card'
+
+
+@pytest.mark.parametrize('name,verdict,mutation', [
+    ('gaiakeep_core_whoami', 'unavailable', False),
+    ('gaiakeep_core_repair', 'unconfirmed', True),
+])
+def test_tool_failure_records_safe_dispatch_state(server, monkeypatch, name, verdict, mutation):
+    records = []
+    monkeypatch.setattr(server.issue_log, 'record',
+                        lambda tool, code, **state: records.append((tool, code, state)))
+    def interrupted(*args):
+        raise TimeoutError('private-password and private-file-content')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    reply = server.process_request(request(name))
+    assert reply.error['data']['verdict'] == verdict
+    assert records == [(name, verdict, {'dispatched': True, 'mutation': mutation})]
+    assert 'private-password' not in str(records) + str(reply.error)
+
+
+def test_preflight_failure_records_without_dispatched_claim(server, monkeypatch):
+    records = []
+    monkeypatch.setattr(server.issue_log, 'record',
+                        lambda tool, code, **state: records.append((tool, code, state)))
+    reply = server.process_request(request(params={'unknown-secret-path': 'private-user-content'}))
+    assert reply.error['data']['verdict'] == 'invalid_argument'
+    assert records == [('gaiakeep_core_whoami', 'invalid_argument', {'dispatched': False, 'mutation': False})]
+    assert 'private-user-content' not in str(records)
+
+
+def test_success_does_not_create_issue(server, monkeypatch):
+    monkeypatch.setattr(server.issue_log, 'record', lambda *args, **kwargs: pytest.fail('successful call logged an issue'))
+    assert server.process_request(request()).result['verdict'] == 'ok'
+
+
+def test_actual_failed_tool_appends_redacted_issue(server, monkeypatch, tmp_path):
+    directory = tmp_path / 'operator-log'
+    monkeypatch.setenv('GAIAKEEP_ISSUE_LOG_DIRECTORY', str(directory))
+    server.issue_log = IssueLog()
+    def interrupted(*args):
+        raise TimeoutError('private-password, private-user-content, /private/patient-path')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    reply = server.process_request(request())
+    assert reply.error['data']['verdict'] == 'unavailable'
+    log = (directory / 'ISSUES.md').read_text()
+    assert len([line for line in log.splitlines() if line.startswith('- ')]) == 1
+    assert 'tool=gaiakeep_core_whoami' in log and 'verdict=unavailable' in log
+    assert 'post_dispatch' in log and 'mutation=false' in log
+    assert all(value not in log for value in ('private-password', 'private-user-content', 'patient-path', 'ssh-password', 'fabric-secret'))
+
+
+def test_sink_failure_preserves_uncertain_write_and_request_id(server, monkeypatch, tmp_path, caplog):
+    from agents.gaiakeep import issue_log
+
+    monkeypatch.setenv('GAIAKEEP_ISSUE_LOG_DIRECTORY', str(tmp_path / 'operator-log'))
+    server.issue_log = IssueLog()
+    attempts = []
+    def interrupted(core, action, params, *args):
+        attempts.append(params['request_id'])
+        raise TimeoutError('private-password')
+    def unavailable_sink(*args):
+        raise OSError('private-log-path')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    monkeypatch.setattr(issue_log, '_append', unavailable_sink)
+    reply = server.process_request(request('gaiakeep_core_repair'))
+    assert reply.error['data']['verdict'] == 'unconfirmed'
+    assert reply.error['data']['reconciliation']['request_id'] == attempts[0]
+    assert len(attempts) == 1
+    assert any(record.gaiakeep_issue.get('sink') == 'unavailable' for record in caplog.records)
+    assert 'private-log-path' not in caplog.text and 'private-password' not in caplog.text + str(reply.error)
 
 
 @pytest.mark.parametrize('action', ['core.repair', 'read', 'upload'])
