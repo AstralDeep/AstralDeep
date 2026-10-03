@@ -218,7 +218,7 @@ def _sdk_transport(config, context):
     from gaiakeep.errors import RpcTimeout, TransportError, from_reply
     from websockets.exceptions import ConnectionClosed
 
-    from agents.gaiakeep.transport import VerifiedLoopbackTransport
+    from agents.gaiakeep.transport import ConnectionOpenTimeout, VerifiedLoopbackTransport
 
     class SDKTransport(VerifiedLoopbackTransport):
         def call(self, addr, action, params, timeout):
@@ -235,6 +235,8 @@ def _sdk_transport(config, context):
             except OSError as exc:
                 if time.monotonic() >= self.deadline:
                     raise
+                if isinstance(exc, ConnectionOpenTimeout) and catalog.ACTIONS.get(action, {}).get('read') is True:
+                    raise TransportError('Gaia RPC connection could not be opened.', action=action) from exc
                 if isinstance(exc, TimeoutError) or exc.errno == errno.ETIMEDOUT:
                     if catalog.ACTIONS.get(action, {}).get('read') is True:
                         raise RpcTimeout('Gaia RPC timed out.', action=action) from exc

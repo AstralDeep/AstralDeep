@@ -13,7 +13,7 @@ import ssl
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 
 MAX_RPC = 1 << 20
@@ -37,6 +37,10 @@ def __getattr__(name):
 
 
 class ProtocolError(Exception):
+    pass
+
+
+class ConnectionOpenTimeout(TimeoutError):
     pass
 
 
@@ -177,6 +181,15 @@ class NativeTransport:
         return value
 
     @contextmanager
+    def _rpc_socket(self):
+        with ExitStack() as stack:
+            try:
+                ws = stack.enter_context(self._socket('/api/apisocket'))
+            except TimeoutError as exc:
+                raise ConnectionOpenTimeout('The Gaia RPC connection did not open.') from exc
+            yield ws
+
+    @contextmanager
     def _socket(self, path):
         from orchestrator.remote_transport import ParamikoTransport
         from shared.external_http import validate_egress_url
@@ -218,7 +231,7 @@ class NativeTransport:
         wire = json.dumps(envelope, allow_nan=False)
         if len(wire.encode()) > MAX_RPC:
             raise ProtocolError('Native request exceeds the RPC bound.')
-        with self._socket('/api/apisocket') as ws:
+        with self._rpc_socket() as ws:
             ws.send(wire)
             reply = _json(ws.recv(timeout=self.remaining(seconds)))
         if reply.get('client_rpc_id') != rpc_id:

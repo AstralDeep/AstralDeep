@@ -22,6 +22,7 @@
 - The owner waived unavailable Apple checks and explicitly deferred Android live credential/approval checks for this merge. Backend, Gaia dispatch, browser, Windows and automatic-log persistence checks still apply. Record those client checks as deferred, never passed.
 - Successful approved Gaia mutations must publish their existing primitive results directly to the stored owner/conversation through the normal workspace publisher; detached model continuation is not sufficient delivery. Consumed approval and publication failure must never resend a mutation.
 - The pinned SDK retries RpcTimeout during ingest commit. Classify mutation and unknown-action local/native timeout outcomes as non-retryable transport uncertainty while preserving read behavior, authoritative denials, IDs and verified channel cleanup.
+- A timeout while opening the verified RPC connection precedes sending the request. Eligible reads may use the pinned SDK's existing single reconnect for that failure; receive/native timeout replies, authoritative denials, expired deadlines and mutation no-resend behavior retain their existing semantics.
 
 ## User Scenarios & Testing
 

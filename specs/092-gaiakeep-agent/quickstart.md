@@ -40,6 +40,7 @@ Every mutation requires normal owner-bound, exact-argument, single-use human app
 Legacy fetch remains unsupported until T025's authenticated receiver is qualified. Legal-order shortening remains unsupported due to the upstream signing/routing collision. Extraction verifies exact certificate bytes/signature and extract ID against the pinned key, including the current SDK public-key field; Merkle leaf inclusion is not claimed. The prototype may wipe data and must not receive PHI or regulated content.
 
 Approved mutation results are published directly through the normal owner-scoped workspace path before optional model continuation. SDK commit timeouts remain unconfirmed and never trigger another commit; reconcile using the retained request/upload/version identity before deciding on any new operation. Read peer fallback and authoritative permission/TLS/protocol denials retain their existing behavior.
+Eligible reads may reconnect once through the pinned SDK when a verified RPC connection times out before sending the request. This stays inside the original deadline; a receive/native timeout or an expired deadline does not gain that reconnect. Mutations and data streams retain their existing behavior.
 
 ## Qualification and rollout
 
