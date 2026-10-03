@@ -16,6 +16,10 @@ T023/T024 remain gates before activation. Use isolated candidate-image staging w
 
 Real staging exposed a pre-existing ordinary UI dispatch failure: connection-owned operations have no user owner, but conversation publication used that field and selected `legacy` instead of the authenticated caller. Capture only the verified socket subject at ingress, require the same current subject before publication and component inference, and retain the original connection-owned operation/fence. Missing, changed and foreign identities must fail before publication or tool dispatch. Qualify the repair against actual Plane publication and execution fences, then collect fresh candidate-image Gaia and client evidence; earlier candidate observations remain historical.
 
+Hosted run 37106771102 verified actual owner publication but found one incorrect new test assertion: completed publication deliberately retires the execution fence. Verify the unchanged connection owner and live fence during execution, then require completed state and stale-fence denial after publication. Retain that failed run separately and qualify the corrected test against real PostgreSQL before the next push.
+
+The corrected test bytes were independently verified against all 15 runtime source files in the 6d68a07f production image with isolated PostgreSQL: 19 focused cases passed with no skips, including the existing stale-base/fence regression. The first fixture failed collection because its temporary mount disallowed loading an executable shared library; that attempt remains retained. The corrected fixture preserved every pre-existing container, network and volume and removed its own temporary resources. This verifies the test correction; the next pushed candidate still requires its own hosted CI and live staging acceptance.
+
 ## Technical Context
 
 - Language/version: Python 3.11.

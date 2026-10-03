@@ -18,7 +18,13 @@ from orchestrator.orchestrator import (
     _ConnectionOperation,
     _CONNECTION_OPERATION_CONTEXT,
 )
-from orchestrator.work_admission import AdmissionClass, OperationOwner, OwnerScope
+from orchestrator.work_admission import (
+    AdmissionClass,
+    OperationOwner,
+    OperationState,
+    OwnerScope,
+    StaleExecutionFenceError,
+)
 from rote.capabilities import DeviceProfile
 from tests.test_conversation_snapshot_060 import (
     _coordinator,
@@ -111,6 +117,9 @@ async def test_connection_publication_uses_captured_authenticated_owner_with_rea
     async def handle(opened, _raw):
         stage = current_conversation_publication()
         assert opened is socket and stage.user_id == OWNER and stage.operation_fence == claim.fence
+        current = await asyncio.to_thread(host.work_admission.assert_current_execution, claim.fence)
+        assert current.owner_user_id is None and current.connection_scope_id == context.connection_scope_id
+        assert current.execution_generation == claim.fence.execution_generation
         handled.append(stage.commit_id)
         await host._append_conversation_message(stage, chat_id=chat, user_id=OWNER, role="assistant", content="Synthetic owner result")
 
@@ -126,9 +135,11 @@ async def test_connection_publication_uses_captured_authenticated_owner_with_rea
     assert actual["messages"][0]["content"] == "Synthetic owner result"
     assert await asyncio.to_thread(host.history.get_chat, chat, user_id=FOREIGN) is None
     assert await asyncio.to_thread(host.history.get_chat, chat, user_id="legacy") is None
-    after = host.work_admission.assert_current_execution(claim.fence)
-    assert after.owner_user_id is None and after.connection_scope_id == claim.operation.connection_scope_id
-    assert after.execution_generation == claim.fence.execution_generation
+    after = await asyncio.to_thread(host.work_admission.query_operation,
+                                    owner=operation.owner, operation_id=operation.operation_id)
+    assert after.state is OperationState.COMPLETED and after.owner_scope is OwnerScope.CONNECTION
+    with pytest.raises(StaleExecutionFenceError):
+        await asyncio.to_thread(host.work_admission.assert_current_execution, claim.fence)
     snapshots = [value for value in socket.frames if value.get("type") == "conversation_snapshot"]
     assert len(snapshots) == 1 and snapshots[0]["chat_id"] == chat
 
