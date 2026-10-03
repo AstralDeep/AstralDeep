@@ -39,6 +39,8 @@ Every mutation requires normal owner-bound, exact-argument, single-use human app
 
 Legacy fetch remains unsupported until T025's authenticated receiver is qualified. Legal-order shortening remains unsupported due to the upstream signing/routing collision. Extraction verifies exact certificate bytes/signature and extract ID against the pinned key, including the current SDK public-key field; Merkle leaf inclusion is not claimed. The prototype may wipe data and must not receive PHI or regulated content.
 
+Approved mutation results are published directly through the normal owner-scoped workspace path before optional model continuation. SDK commit timeouts remain unconfirmed and never trigger another commit; reconcile using the retained request/upload/version identity before deciding on any new operation. Read peer fallback and authoritative permission/TLS/protocol denials retain their existing behavior.
+
 ## Qualification and rollout
 
 Use Python 3.11, AstralDeep's exact composition and tooling/requirements-gaiakeep-tests.txt. Deterministic Gaia tests need no private SDK or live third-party network:

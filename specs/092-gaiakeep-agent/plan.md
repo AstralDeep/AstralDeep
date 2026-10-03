@@ -24,6 +24,10 @@ Hosted run 37106771102 verified actual owner publication but found one incorrect
 
 The corrected test bytes were independently verified against all 15 runtime source files in the 6d68a07f production image with isolated PostgreSQL: 19 focused cases passed with no skips, including the existing stale-base/fence regression. The first fixture failed collection because its temporary mount disallowed loading an executable shared library; that attempt remains retained. The corrected fixture preserved every pre-existing container, network and volume and removed its own temporary resources. This verifies the test correction; the next pushed candidate still requires its own hosted CI and live staging acceptance.
 
+Successful approved Gaia results use the existing owner-scoped workspace publisher immediately after protected tool execution. The copied primitives retain source tool/arguments provenance with protected identity fields excluded. This runs before optional model continuation, which retains its normal authorization path. Missing/error results are not republished, and a delivery failure never retries the consumed mutation.
+
+The pinned SDK ingest commit retries its RpcTimeout type. The verified transport emits that type only for catalog-proven reads; mutation/unknown local timeouts and correlated native timeout-shaped replies become TransportError, retaining native request identities and conservative unconfirmed results. Exact inert public ingest/error/client fixtures exercise the real SDK methods without network access. No SDK production bytes or stream semantics are changed.
+
 ## Technical Context
 
 - Language/version: Python 3.11.

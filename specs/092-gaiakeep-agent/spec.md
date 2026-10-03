@@ -19,6 +19,10 @@
 - Use a fixed first-party adapter over owner-scoped pinned SSH, an exact remotely installed SDK artifact and operator-supplied certificate/core pins. Do not forward upstream MCP tools' arbitrary host-file paths.
 - Astral must automatically update an operator-readable issue log when the Gaia tool handler reports a failure or its governed outer dispatch ends without a confirmed result. A timed-out or cancelled write remains unconfirmed; the worker may still finish. Manual qualification notes alone do not satisfy this requirement.
 
+- The owner waived unavailable Apple checks and explicitly deferred Android live credential/approval checks for this merge. Backend, Gaia dispatch, browser, Windows and automatic-log persistence checks still apply. Record those client checks as deferred, never passed.
+- Successful approved Gaia mutations must publish their existing primitive results directly to the stored owner/conversation through the normal workspace publisher; detached model continuation is not sufficient delivery. Consumed approval and publication failure must never resend a mutation.
+- The pinned SDK retries RpcTimeout during ingest commit. Classify mutation and unknown-action local/native timeout outcomes as non-retryable transport uncertainty while preserving read behavior, authoritative denials, IDs and verified channel cleanup.
+
 ## User Scenarios & Testing
 
 ### User Story 1 - Operate GaiaKeep from Astral (Priority: P1)

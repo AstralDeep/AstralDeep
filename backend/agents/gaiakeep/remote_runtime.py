@@ -215,7 +215,7 @@ def _known_collections(core):
 
 
 def _sdk_transport(config, context):
-    from gaiakeep.errors import RpcTimeout, TransportError
+    from gaiakeep.errors import RpcTimeout, TransportError, from_reply
     from websockets.exceptions import ConnectionClosed
 
     from agents.gaiakeep.transport import VerifiedLoopbackTransport
@@ -223,7 +223,7 @@ def _sdk_transport(config, context):
     class SDKTransport(VerifiedLoopbackTransport):
         def call(self, addr, action, params, timeout):
             try:
-                return super().call(addr, action, params, timeout)
+                reply = super().call(addr, action, params, timeout)
             except (ssl.SSLError, PermissionError):
                 raise
             except ConnectionClosed as exc:
@@ -236,12 +236,19 @@ def _sdk_transport(config, context):
                 if time.monotonic() >= self.deadline:
                     raise
                 if isinstance(exc, TimeoutError) or exc.errno == errno.ETIMEDOUT:
-                    raise RpcTimeout('Gaia RPC timed out.', action=action) from exc
+                    if catalog.ACTIONS.get(action, {}).get('read') is True:
+                        raise RpcTimeout('Gaia RPC timed out.', action=action) from exc
+                    raise TransportError('Gaia RPC timed out.', action=action) from exc
                 if (isinstance(exc, (ConnectionAbortedError, ConnectionRefusedError, ConnectionResetError, BrokenPipeError))
                         or exc.errno in {errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE,
                                          errno.ENETRESET, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH}):
                     raise TransportError('Gaia RPC connection failed.', action=action) from exc
                 raise
+            if catalog.ACTIONS.get(action, {}).get('read') is not True:
+                error = from_reply(action, reply)
+                if isinstance(error, RpcTimeout):
+                    raise TransportError('Gaia RPC outcome is uncertain.', action=action) from error
+            return reply
 
     return SDKTransport(config, tls_context=context)
 

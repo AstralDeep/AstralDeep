@@ -1,4 +1,4 @@
-"""Durable single-use approval cards for destructive remote-compute and computer-use
+"""Durable single-use approval cards for destructive GaiaKeep, remote-compute and computer-use
 operations. The dispatch gate calls evaluate(); approvals re-enter it via
 handle_decision(), stored through astralplane's remote_proposals.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import json
 import logging
@@ -665,6 +666,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         row.conversation_id,
         user_id=user_id,
     )
+    if (row.agent_id == "gaiakeep-1" and websocket is not None and row.conversation_id
+            and result is not None and result.error is None and result.ui_components):
+        components = copy.deepcopy(result.ui_components)
+        public_arguments = {key: value for key, value in row.arguments.items()
+                            if not str(key).startswith("_") and key not in {"user_id", "session_id"}}
+        from orchestrator.orchestrator import _tag_tool_result_source
+        for component in components:
+            _tag_tool_result_source(component, result, row.agent_id, row.tool_name,
+                                    public_arguments, getattr(result, "correlation_id", None))
+        await orch._send_or_replace_components(
+            websocket, components, row.conversation_id, user_id=user_id)
     policy = policy_for(row.agent_id)
     not_attempted = _not_attempted_code(result)
     if policy is not None and policy.retry_grace_s > 0 and not_attempted:

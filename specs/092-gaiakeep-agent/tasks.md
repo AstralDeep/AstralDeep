@@ -64,6 +64,9 @@ Independent test: upload/read round trips use agent-owned temporary files and up
 - [x] T037 Adapt transient RPC socket failures to the byte-validated SDK error types so its existing bounded read-peer handling works; retain authoritative TLS, authorization, integrity, protocol and deadline failures, mutation uncertainty without resend, and unchanged streams. Verify exact public SDK retry methods with deterministic inert Apache-2.0 fixtures; repeat candidate-bound CI and staging under T033 before claiming live acceptance.
 - [ ] T038 Cover governed outer Gaia timeouts/cancellation with automatic fixed-metadata logging and retained pre-approval native request identities; allow one physical attempt in every enforcement mode, preserve explicit budgets and authoritative refusals, then qualify the exact replacement candidate under T033/T034.
 
+- [x] T039 Prevent the exact SDK ingest commit from retrying local/native timeout-shaped mutation replies; verify one physical commit, IDs, uncertainty, read fallback and authoritative denials with byte-pinned inert upstream methods. Fresh candidate CI/staging remains required under T033.
+- [x] T040 Publish successful approved Gaia primitive results through the normal owner-scoped workspace path before model continuation; cover single consumption, stored conversation/provenance, missing/error results, permission/foreign/expiry denial and delivery failure without resend. Fresh candidate client/staging acceptance remains required.
+
 ## Dependencies and execution
 
 T001–T006 precede the native client. T007 precedes T008–T010. T011 precedes T012–T015. T016 precedes T017–T018. Qualification follows implementation. The enrolled endpoint is now available; T023/T024/T029 remain candidate-bound gates. T025 stays optional until the deployment needs legacy fetch. No Gaia instance is provisioned to satisfy qualification.

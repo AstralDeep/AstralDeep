@@ -9,7 +9,7 @@ import ssl
 import stat
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from agents.gaiakeep import client, remote_runtime, transport
@@ -78,14 +78,11 @@ def runtime(monkeypatch, tmp_path):
         def close(self):
             records['closed'].append('transport')
 
-    class TransportError(Exception):
-        pass
-
-    class RpcTimeout(TransportError):
-        pass
-
-    monkeypatch.setitem(sys.modules, 'gaiakeep.errors', SimpleNamespace(
-        TransportError=TransportError, RpcTimeout=RpcTimeout))
+    errors = ModuleType('gaiakeep.errors')
+    error_source = (Path(__file__).parent / 'fixtures' / 'qualified-sdk' / 'errors.py.txt').read_bytes()
+    assert hashlib.sha256(error_source).hexdigest() == remote_runtime.SDK_LOCK['files']['gaiakeep/errors.py']
+    exec(compile(error_source, 'qualified-sdk/errors.py.txt', 'exec'), errors.__dict__)
+    monkeypatch.setitem(sys.modules, 'gaiakeep.errors', errors)
     monkeypatch.setattr(transport, 'VerifiedLoopbackTransport', Loopback, raising=False)
     monkeypatch.setattr(ssl, 'create_default_context', lambda **kwargs: SimpleNamespace(
         verify_mode=ssl.CERT_REQUIRED, check_hostname=True, cadata=kwargs.get('cadata')))

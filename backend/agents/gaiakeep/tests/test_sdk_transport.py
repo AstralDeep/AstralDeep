@@ -51,20 +51,27 @@ def sdk(monkeypatch):
                  'OutcomeUnknown': errors.OutcomeUnknown, 'raise_for': errors.raise_for,
                  'strip_transport': lambda reply: reply, 'json_param': lambda reply, field: None,
                  'unsigned': lambda action: action == 'core.status',
-                 'log': SimpleNamespace(info=lambda *args, **kwargs: None, debug=lambda *args, **kwargs: None)}
+                 'log': SimpleNamespace(info=lambda *args, **kwargs: None, debug=lambda *args, **kwargs: None,
+                                        warn=lambda *args, **kwargs: None)}
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURES / 'client.py.txt'), 'exec'), namespace)
-    return SimpleNamespace(errors=errors, Core=namespace['CoreClient'])
+    ingest = next(node for node in ast.parse(data['ingest.py.txt']).body
+                  if isinstance(node, ast.ClassDef) and node.name == 'Ingest')
+    ingest.body = [method for method in ingest.body if isinstance(method, ast.FunctionDef) and method.name == '_commit']
+    assert len(ingest.body) == 1
+    exec(compile(ast.Module(body=[ingest], type_ignores=[]), str(FIXTURES / 'ingest.py.txt'), 'exec'), namespace)
+    return SimpleNamespace(errors=errors, Core=namespace['CoreClient'], Ingest=namespace['Ingest'])
 
 
 @pytest.fixture
 def rpc(monkeypatch, sdk):
-    records = {'calls': [], 'closed': [], 'failures': {}, 'statuses': {}}
+    records = {'calls': [], 'closed': [], 'failures': {}, 'statuses': {}, 'payloads': [], 'replies': {}}
     config = transport.GatewayConfig('r:l:p', frozenset({'r:l:p', 'r:a:p', 'r:b:p'}),
                                       'gateway.test', '', 'fixture-public-key', 'fixture-service-key')
 
     class Socket:
         def send(self, value):
             self.envelope = json.loads(value)
+            records['payloads'].append(self.envelope['message_payload'])
 
         def recv(self, timeout):
             info, payload = self.envelope['message_info'], self.envelope['message_payload']
@@ -76,8 +83,10 @@ def rpc(monkeypatch, sdk):
                 if records.get('expire_on_failure'):
                     compatible.deadline = 0
                 raise failure
-            return json.dumps({'status': records['statuses'].get((peer, action), '10'), 'client_rpc_id': payload['client_rpc_id'],
-                               'audience': 'fixture-audience', 'peer_audience': 'fixture-peer-audience', 'vid': 'verified-head'})
+            reply = records['replies'].get((peer, action),
+                       {'status': records['statuses'].get((peer, action), '10'), 'audience': 'fixture-audience',
+                        'peer_audience': 'fixture-peer-audience', 'vid': 'verified-head'})
+            return json.dumps(dict(reply, client_rpc_id=payload['client_rpc_id']))
 
         def close(self):
             records['closed'].append(True)
@@ -99,7 +108,7 @@ def rpc(monkeypatch, sdk):
         instance = sdk.Core()
         instance.transport, instance.addr = native, 'r:l:p'
         instance.signer = SimpleNamespace(audience=None, sign=lambda action, params, **kwargs: dict(params))
-        instance.timeouts = SimpleNamespace(c0=20, c1=20)
+        instance.timeouts = SimpleNamespace(c0=20, c1=20, commit=20)
         instance.read_peers, instance.read_consistency = list(read_peers), 'linearizable'
         instance._next_peer, instance.commit_index = 0, 0
         instance._lock = threading.Lock()
@@ -159,8 +168,137 @@ def test_transient_mutation_failure_is_uncertain_and_not_resent(rpc, failure):
     rpc.records['failures'][('r:l:p', 'core.put')] = failure
     with pytest.raises(rpc.sdk.errors.TransportError) as raised:
         rpc.core(rpc.compatible).call('core.put', {'upload_id': 'synthetic'})
+    assert type(raised.value) is rpc.sdk.errors.TransportError
     assert [call for call in rpc.records['calls'] if call[1] == 'core.put'] == [('r:l:p', 'core.put')]
     assert client.failure(raised.value, True)[0] == 'unconfirmed'
+
+
+@pytest.mark.parametrize('failure', [TimeoutError('private'), OSError(errno.ETIMEDOUT, 'private')])
+def test_real_ingest_commit_timeout_is_uncertain_without_resend(rpc, failure):
+    rpc.records['failures'][('r:l:p', 'core.commit')] = failure
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {'receipt': 'synthetic-proof'})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    with pytest.raises(rpc.sdk.errors.TransportError) as raised:
+        ingest._commit('synthetic-upload')
+    assert type(raised.value) is rpc.sdk.errors.TransportError
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+    committed = [payload for payload in rpc.records['payloads'] if payload['action'] == 'core.commit']
+    assert len(committed) == 1
+    assert committed[0]['request_id'] == 'synthetic-request' and committed[0]['upload_id'] == 'synthetic-upload'
+    assert committed[0]['receipt'] == 'synthetic-proof'
+    assert client.failure(raised.value, True)[0] == 'unconfirmed'
+    assert len(rpc.records['closed']) == len(rpc.records['calls'])
+
+
+def test_real_ingest_commit_success_preserves_the_native_result(rpc):
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {'receipt': 'synthetic-proof'})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    reply = ingest._commit('synthetic-upload')
+    assert reply['status'] == '10' and reply['vid'] == 'verified-head'
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+    assert len(rpc.records['closed']) == len(rpc.records['calls'])
+
+
+@pytest.mark.parametrize('reply', [{'status': '500'}, {'status': '504'}, {'error': 'private'}, {}])
+def test_real_ingest_native_uncertain_commit_reply_is_not_resent(rpc, reply):
+    rpc.records['replies'][('r:l:p', 'core.commit')] = reply
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    with pytest.raises(rpc.sdk.errors.TransportError) as raised:
+        ingest._commit('synthetic-upload')
+    assert type(raised.value) is rpc.sdk.errors.TransportError
+    assert isinstance(raised.value.__cause__, rpc.sdk.errors.RpcTimeout)
+    assert 'private' not in str(raised.value) and client.failure(raised.value, True)[0] == 'unconfirmed'
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+    assert len(rpc.records['closed']) == len(rpc.records['calls'])
+
+
+@pytest.mark.parametrize('action', ['core.put', 'unknown.action'])
+@pytest.mark.parametrize('reply', [{'status': '500'}, {'status': '504'}, {}])
+def test_uncertain_native_mutation_and_unknown_replies_have_no_retry_type(rpc, action, reply):
+    rpc.records['replies'][('r:l:p', action)] = reply
+    with pytest.raises(rpc.sdk.errors.TransportError) as raised:
+        rpc.compatible.call('r:l:p', action, {}, 20)
+    assert type(raised.value) is rpc.sdk.errors.TransportError
+    assert rpc.records['calls'] == [('r:l:p', action)] and rpc.records['closed'] == [True]
+
+
+@pytest.mark.parametrize('reply', [{'status': '500'}, {'status': '504'}, {'error': 'private'}, {}])
+def test_native_read_timeout_preserves_the_existing_sdk_refusal(rpc, reply):
+    rpc.records['replies'][('r:a:p', 'core.head')] = reply
+    assert rpc.compatible.call('r:a:p', 'core.head', {}, 20) == reply
+    rpc.records['calls'].clear()
+    with pytest.raises(rpc.sdk.errors.RpcTimeout):
+        rpc.core(rpc.compatible).call('core.head', {'collection_id': 'scratch', 'branch': 'main'})
+    assert head_calls(rpc) == ['r:a:p']
+
+
+@pytest.mark.parametrize('status,name', [('3', 'Unauthenticated'), ('4', 'Forbidden'), ('7', 'PolicyRefused'),
+                                       ('8', 'BadRequest'), ('9', 'NotFound'), ('6', 'Failed'),
+                                       ('13', 'Deferred'), ('15', 'StageRequired')])
+def test_real_ingest_native_refusals_preserve_the_exact_sdk_type(rpc, status, name):
+    reply = {'status': status}
+    rpc.records['replies'][('r:l:p', 'core.commit')] = reply
+    assert rpc.compatible.call('r:l:p', 'core.commit', {}, 20) == reply
+    rpc.records['calls'].clear()
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    with pytest.raises(getattr(rpc.sdk.errors, name)) as raised:
+        ingest._commit('synthetic-upload')
+    assert type(raised.value) is getattr(rpc.sdk.errors, name)
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+
+
+@pytest.mark.parametrize('action,read', [('core.head', True), ('core.get', True), ('core.put', False),
+                                       ('core.commit', False), ('unknown.action', False)])
+@pytest.mark.parametrize('failure', [TimeoutError('private'), OSError(errno.ETIMEDOUT, 'private')])
+def test_only_pinned_read_rpc_timeouts_have_the_sdk_timeout_type(rpc, action, read, failure):
+    rpc.records['failures'][('r:l:p', action)] = failure
+    with pytest.raises(rpc.sdk.errors.TransportError) as raised:
+        rpc.compatible.call('r:l:p', action, {}, 20)
+    expected = rpc.sdk.errors.RpcTimeout if read else rpc.sdk.errors.TransportError
+    assert type(raised.value) is expected and raised.value.action == action
+    assert raised.value.__cause__ is failure and 'private' not in str(raised.value)
+    assert rpc.records['calls'] == [('r:l:p', action)] and rpc.records['closed'] == [True]
+
+
+@pytest.mark.parametrize('failure', [ssl.SSLCertVerificationError('private'), PermissionError('private'),
+                                     transport.ProtocolError('private'),
+                                     ConnectionClosedError(Close(1008, 'private'), None)])
+def test_real_ingest_commit_denials_are_never_repeated_or_normalized(rpc, failure):
+    rpc.records['failures'][('r:l:p', 'core.commit')] = failure
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    with pytest.raises(type(failure)) as raised:
+        ingest._commit('synthetic-upload')
+    assert raised.value is failure
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+    assert len(rpc.records['closed']) == len(rpc.records['calls'])
+
+
+def test_real_ingest_commit_deadline_expiry_never_repeats(rpc):
+    failure = TimeoutError('private')
+    rpc.records['failures'][('r:l:p', 'core.commit')] = failure
+    rpc.records['expire_on_failure'] = True
+    core = rpc.core(rpc.compatible)
+    core.transfers = SimpleNamespace(proof_params=lambda upload: {})
+    ingest = rpc.sdk.Ingest()
+    ingest.client, ingest.request_id = core, 'synthetic-request'
+    with pytest.raises(TimeoutError) as raised:
+        ingest._commit('synthetic-upload')
+    assert raised.value is failure
+    assert [call for call in rpc.records['calls'] if call[1] == 'core.commit'] == [('r:l:p', 'core.commit')]
+    assert len(rpc.records['closed']) == len(rpc.records['calls'])
 
 
 @pytest.mark.parametrize('failure', [ssl.SSLCertVerificationError('private'), ssl.SSLError('private'),
