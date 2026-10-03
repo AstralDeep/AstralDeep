@@ -50,6 +50,10 @@ REVIEWED_089_FINGERPRINTS = {
     "d38a02f1f56c9778d9ba6ae4fa8b25de1123ebee:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315",
     "9ac6826aaea3484cff265e8a054cc1d81dbfe60c:specs/089-typesafe-a8p-integration/verification.md:generic-api-key:1315",
 }
+REVIEWED_GAIA_SDK_FINGERPRINT = (
+    "2bd6c67005dea8b0a95c2d87ec4c067a3f493305:"
+    "backend/agents/gaiakeep/sdk-artifact.json:generic-api-key:22"
+)
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -202,11 +206,12 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert comments, "a baseline entry with no recorded reason is not reviewed"
     assert all(line.lstrip("#").strip() for line in comments)
     fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 24
+    assert len(fingerprints) == 25
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
     assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
+    assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
