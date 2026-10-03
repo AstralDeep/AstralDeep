@@ -41,7 +41,7 @@ class ProtocolError(Exception):
     pass
 
 
-class ConnectionOpenTimeout(TimeoutError):
+class ConnectionOpenError(OSError):
     pass
 
 
@@ -129,6 +129,24 @@ def mark_failure(exc, phase, *, native_status=None):
     except Exception:
         pass
     return exc
+
+
+def _raise_opening_error(exc):
+    from websockets.exceptions import ConnectionClosed
+
+    codes = [close.code for close in (exc.rcvd, exc.sent) if close is not None] if isinstance(exc, ConnectionClosed) else []
+    transient_close = bool(codes) and all(code in {1001, 1006, 1011, 1012, 1013, 1014} for code in codes)
+    if (not isinstance(exc, (ssl.SSLError, PermissionError))
+            and (isinstance(exc, (TimeoutError, ConnectionError)) or transient_close
+                 or isinstance(exc, OSError) and exc.errno in {
+                     errno.ETIMEDOUT, errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET,
+                     errno.EPIPE, errno.ENETRESET, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH})):
+        error = ConnectionOpenError('The Gaia connection could not be opened.')
+        detail = failure_detail(exc)
+        if detail is not None:
+            error._gaiakeep_failure_detail = detail
+        raise error from exc
+    raise exc
 
 
 def _json(value, limit=MAX_RPC):
@@ -268,16 +286,25 @@ class NativeTransport:
         return value
 
     @contextmanager
+    def _opening_socket(self, path):
+        failure = None
+        for _ in range(2):
+            if failure is not None and time.monotonic() >= self.deadline:
+                raise failure
+            self.remaining(CONNECT_TIMEOUT)
+            with ExitStack() as stack:
+                try:
+                    ws = stack.enter_context(self._socket(path))
+                except ConnectionOpenError as exc:
+                    failure = exc
+                else:
+                    yield ws
+                    return
+        raise failure
+
+    @contextmanager
     def _rpc_socket(self):
-        with ExitStack() as stack:
-            try:
-                ws = stack.enter_context(self._socket('/api/apisocket'))
-            except TimeoutError as exc:
-                error = ConnectionOpenTimeout('The Gaia RPC connection did not open.')
-                detail = failure_detail(exc)
-                if detail is not None:
-                    error._gaiakeep_failure_detail = detail
-                raise mark_failure(error, 'rpc_open') from exc
+        with self._opening_socket('/api/apisocket') as ws:
             yield ws
 
     @contextmanager
@@ -290,6 +317,7 @@ class NativeTransport:
         authority = f'[{host}]' if ':' in host else host
         gate = globals().get('validate_egress_url', validate_egress_url)
         gate(f'https://{authority}:{self.config.port}')
+        opening_error = None
         with ParamikoTransport().open_tunnel(self.target, self.config.port, timeout=CONNECT_TIMEOUT) as channel:
             bridge = SocketBridge(channel, self.deadline)
             ws = None
@@ -302,9 +330,9 @@ class NativeTransport:
                                  compression=None, max_size=MAX_FRAME, max_queue=8,
                                  open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
                 except Exception as exc:
-                    mark_failure(exc, 'websocket_open')
-                    raise
-                yield ws
+                    opening_error = mark_failure(exc, 'websocket_open')
+                if opening_error is None:
+                    yield ws
             finally:
                 try:
                     if ws is not None:
@@ -319,6 +347,8 @@ class NativeTransport:
                     except Exception as exc:
                         mark_failure(exc, 'cleanup')
                         raise
+        if opening_error is not None:
+            _raise_opening_error(opening_error)
 
     def call(self, addr, action, params, timeout):
         if addr not in self.config.allowed_peers:
@@ -395,25 +425,26 @@ class VerifiedLoopbackTransport(NativeTransport):
             raise ValueError('The verified loopback gateway port changed during the operation.')
         if not self.context.check_hostname or self.context.verify_mode != ssl.CERT_REQUIRED:
             raise ValueError('Verified TLS is mandatory.')
-        try:
-            connection = socket.create_connection(('127.0.0.1', self.port),
-                                                  timeout=self.remaining(CONNECT_TIMEOUT))
-        except Exception as exc:
-            mark_failure(exc, 'tcp_connect')
-            raise
-        ws = None
+        seconds = self.remaining(CONNECT_TIMEOUT)
+        connection = ws = opening_error = None
         try:
             try:
-                ws = connect(f'wss://{self.config.tls_name}:{self.port}{path}',
-                             sock=connection, ssl=self.context,
-                             server_hostname=self.config.tls_name, proxy=None,
-                             additional_headers={'cresco_service_key': self.config.service_key},
-                             compression=None, max_size=MAX_FRAME, max_queue=8,
-                             open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+                connection = socket.create_connection(('127.0.0.1', self.port),
+                                                      timeout=seconds)
             except Exception as exc:
-                mark_failure(exc, 'websocket_open')
-                raise
-            yield ws
+                opening_error = mark_failure(exc, 'tcp_connect')
+            if opening_error is None:
+                try:
+                    ws = connect(f'wss://{self.config.tls_name}:{self.port}{path}',
+                                 sock=connection, ssl=self.context,
+                                 server_hostname=self.config.tls_name, proxy=None,
+                                 additional_headers={'cresco_service_key': self.config.service_key},
+                                 compression=None, max_size=MAX_FRAME, max_queue=8,
+                                 open_timeout=self.remaining(CONNECT_TIMEOUT), close_timeout=1)
+                except Exception as exc:
+                    opening_error = mark_failure(exc, 'websocket_open')
+            if opening_error is None:
+                yield ws
         finally:
             try:
                 if ws is not None:
@@ -423,17 +454,20 @@ class VerifiedLoopbackTransport(NativeTransport):
                         mark_failure(exc, 'cleanup')
                         raise
             finally:
-                try:
-                    connection.close()
-                except Exception as exc:
-                    mark_failure(exc, 'cleanup')
-                    raise
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception as exc:
+                        mark_failure(exc, 'cleanup')
+                        raise
+        if opening_error is not None:
+            _raise_opening_error(opening_error)
 
 
 class NativeStream:
     def __init__(self, transport, name, handler):
         self.name, self.transport, self.handler = name, transport, handler or (lambda frame: None)
-        self.manager = transport._socket('/api/dataplane')
+        self.manager = transport._opening_socket('/api/dataplane')
         try:
             self.ws = self.manager.__enter__()
         except Exception as exc:

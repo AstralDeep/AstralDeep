@@ -24,15 +24,18 @@ SECRET = 'private-user-password /patient/path and content'
 @pytest.mark.parametrize('phase', ['tcp_connect', 'websocket_open'])
 def test_connection_entry_wrapper_retains_original_boundary(fabric, monkeypatch, phase):
     inner = transport.mark_failure(TimeoutError(SECRET), phase)
+    openings = []
 
     @contextmanager
     def opened(path):
-        raise inner
+        openings.append(path)
+        transport._raise_opening_error(inner)
         yield
 
     monkeypatch.setattr(fabric, '_socket', opened)
-    with pytest.raises(transport.ConnectionOpenTimeout) as caught:
+    with pytest.raises(transport.ConnectionOpenError) as caught:
         fabric.call('r:a:p', 'core.status', {}, 20)
+    assert openings == ['/api/apisocket', '/api/apisocket']
     assert caught.value.__cause__ is inner
     assert transport.failure_detail(caught.value) == {
         'native_phase': phase, 'failure_kind': 'timeout', 'native_status': None}

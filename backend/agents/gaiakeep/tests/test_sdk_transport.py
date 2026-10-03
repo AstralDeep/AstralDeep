@@ -100,7 +100,7 @@ def rpc(monkeypatch, sdk):
         if failure is not None:
             if records.get('expire_on_failure'):
                 compatible.deadline = 0
-            raise failure
+            transport._raise_opening_error(transport.mark_failure(failure, 'websocket_open'))
         socket = Socket()
         try:
             yield socket
@@ -140,7 +140,7 @@ def test_existing_raw_timeout_aborts_before_healthy_follower(rpc):
 
 
 @pytest.mark.parametrize('failure', [TimeoutError('private'), ConnectionResetError('private'),
-                                     OSError(errno.ENETUNREACH, 'private'), ConnectionClosedError(None, None)])
+                                     OSError(errno.ENETUNREACH, 'private'), ConnectionClosedError(Close(1011, ''), None)])
 def test_transient_failed_follower_reaches_next_admitted_peer(rpc, failure):
     rpc.records['failures'][('r:a:p', 'core.head')] = failure
     core = rpc.core(rpc.compatible)
@@ -169,7 +169,7 @@ def test_all_peers_fail_only_within_existing_sdk_read_attempts(rpc, failure, cou
                                      OSError(errno.ECONNRESET, 'private'), OSError(errno.EPIPE, 'private'),
                                      OSError(errno.ENETRESET, 'private'), OSError(errno.ENETDOWN, 'private'),
                                      OSError(errno.ENETUNREACH, 'private'), OSError(errno.EHOSTUNREACH, 'private'),
-                                     ConnectionClosedError(None, None),
+                                     ConnectionClosedError(Close(1011, ''), None),
                                      *[ConnectionClosedError(Close(code, ''), None) for code in (1001, 1006, 1011, 1012, 1013, 1014)]])
 def test_transient_mutation_failure_is_uncertain_and_not_resent(rpc, failure):
     rpc.records['failures'][('r:l:p', 'core.put')] = failure
@@ -386,7 +386,7 @@ def test_stream_errors_remain_outside_rpc_normalization(rpc, monkeypatch):
     assert raised.value is failure and rpc.records['calls'] == []
 
 
-def test_pre_send_read_open_timeout_uses_one_sdk_reconnect(rpc):
+def test_pre_send_read_open_timeout_retries_entry_without_resigning(rpc):
     rpc.records['opening_failures'] = [None, TimeoutError('private handshake'), None]
     core = rpc.core(rpc.compatible)
     signed = []
@@ -395,19 +395,19 @@ def test_pre_send_read_open_timeout_uses_one_sdk_reconnect(rpc):
         return dict(params)
     core.signer.sign = sign
     assert core.call('core.branches', {'collection_id': 'scratch', 'limit': 1000})['status'] == '10'
-    assert signed == ['core.branches', 'core.branches']
+    assert signed == ['core.branches']
     assert rpc.records['openings'] == 3
     assert rpc.records['calls'] == [('r:l:p', 'core.status'), ('r:l:p', 'core.branches')]
     assert len(rpc.records['payloads']) == len(rpc.records['closed']) == 2
 
 
-def test_pre_send_read_open_failure_stops_after_one_sdk_reconnect(rpc):
+def test_pre_send_read_open_failure_stops_after_two_entries(rpc):
     failure = TimeoutError('private handshake')
     rpc.records['opening_failures'] = [None, failure, failure]
     with pytest.raises(rpc.sdk.errors.TransportError) as raised:
         rpc.core(rpc.compatible).call('core.branches', {'collection_id': 'scratch'})
-    assert type(raised.value) is rpc.sdk.errors.TransportError
-    assert isinstance(raised.value.__cause__, transport.ConnectionOpenTimeout)
+    assert type(raised.value) is rpc.sdk.errors.RpcTimeout
+    assert isinstance(raised.value.__cause__, transport.ConnectionOpenError)
     assert raised.value.__cause__.__cause__ is failure
     assert 'private' not in str(raised.value)
     assert rpc.records['openings'] == 3 and rpc.records['calls'] == [('r:l:p', 'core.status')]
@@ -416,17 +416,17 @@ def test_pre_send_read_open_failure_stops_after_one_sdk_reconnect(rpc):
 
 @pytest.mark.parametrize('action', ['core.put', 'core.commit', 'unknown.action'])
 def test_pre_send_mutation_and_unknown_open_timeouts_never_resend(rpc, action):
-    rpc.records['opening_failures'] = [None, TimeoutError('private handshake')]
+    rpc.records['opening_failures'] = [None, TimeoutError('private handshake'), TimeoutError('private handshake')]
     with pytest.raises(rpc.sdk.errors.TransportError) as raised:
         rpc.core(rpc.compatible).call(action, {'upload_id': 'synthetic'})
     assert type(raised.value) is rpc.sdk.errors.TransportError
     assert client.failure(raised.value, True)[0] == 'unconfirmed'
-    assert rpc.records['openings'] == 2 and rpc.records['calls'] == [('r:l:p', 'core.status')]
+    assert rpc.records['openings'] == 3 and rpc.records['calls'] == [('r:l:p', 'core.status')]
     assert len(rpc.records['payloads']) == len(rpc.records['closed']) == 1
 
 
 def test_real_ingest_pre_send_commit_open_timeout_never_resends(rpc):
-    rpc.records['opening_failures'] = [None, TimeoutError('private handshake')]
+    rpc.records['opening_failures'] = [None, TimeoutError('private handshake'), TimeoutError('private handshake')]
     core = rpc.core(rpc.compatible)
     core.transfers = SimpleNamespace(proof_params=lambda upload: {'receipt': 'synthetic-proof'})
     signed = []
@@ -440,7 +440,7 @@ def test_real_ingest_pre_send_commit_open_timeout_never_resends(rpc):
         ingest._commit('synthetic-upload')
     assert signed == [('core.commit', {'upload_id': 'synthetic-upload', 'request_id': 'synthetic-request',
                                       'receipt': 'synthetic-proof'})]
-    assert rpc.records['openings'] == 2 and rpc.records['calls'] == [('r:l:p', 'core.status')]
+    assert rpc.records['openings'] == 3 and rpc.records['calls'] == [('r:l:p', 'core.status')]
 
 
 @pytest.mark.parametrize('failure', [ssl.SSLCertVerificationError('private'), ssl.SSLError('private'),
@@ -458,7 +458,7 @@ def test_pre_send_open_deadline_expiry_never_reconnects(rpc):
     failure = TimeoutError('private handshake')
     rpc.records['opening_failures'] = [None, failure]
     rpc.records['expire_on_failure'] = True
-    with pytest.raises(transport.ConnectionOpenTimeout) as raised:
+    with pytest.raises(transport.ConnectionOpenError) as raised:
         rpc.core(rpc.compatible).call('core.branches', {'collection_id': 'scratch'})
     assert raised.value.__cause__ is failure
     assert rpc.records['openings'] == 2 and rpc.records['calls'] == [('r:l:p', 'core.status')]
