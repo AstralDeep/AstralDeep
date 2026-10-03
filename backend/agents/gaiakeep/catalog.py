@@ -18,6 +18,7 @@ METADATA = json.loads(Path(__file__).with_name('capabilities.json').read_text(en
 REVISION = METADATA['revision']
 ACTIONS = {item['action']: item for item in METADATA['actions']}
 FILE_ACTIONS = frozenset({'core.put', 'core.get', 'core.haveopen', 'core.have'})
+LOCAL_READ_ACTIONS = frozenset({'connection_info', 'list_collections'})
 
 
 def relative_path(value):
@@ -76,18 +77,27 @@ def _tools():
                                     branch={'type': 'string', 'minLength': 1, 'maxLength': 256},
                                     strategy={'enum': ['ingest', 'have']},
                                     base_vid={'type': 'string', 'minLength': 1, 'maxLength': 256},
+                                    request_id={'type': 'string', 'pattern': '^[A-Za-z0-9_-]{16,64}$'},
                                     expected_head={'type': 'string', 'minLength': 1, 'maxLength': 256}),
                                 ['machine_id', 'path', 'collection_id', 'data_base64'])}
     out['gaiakeep_read_file'] = {'action': 'read', 'scope': 'tools:read',
         'description': 'Read and verify one versioned file (up to 8 MiB), returning base64 bytes and SHA256.',
         'input_schema': _schema(dict(common, vid={'type': 'string', 'minLength': 1, 'maxLength': 256}),
                                 ['machine_id', 'path', 'vid'])}
+    for action, description in (
+        ('connection_info', 'Show your enrolled Gaia principal, tenant and default collection without credentials or paths.'),
+        ('list_collections', 'Discover collections available to your enrolled Gaia account, including its default collection.'),
+    ):
+        out['gaiakeep_' + action] = {'action': action, 'scope': 'tools:read', 'description': description,
+            'input_schema': _schema({'machine_id': common['machine_id'], 'params': _schema({}, [])},
+                                    ['machine_id', 'params'])}
     return out
 
 
 TOOLS = _tools()
 READ_TOOLS = frozenset(name for name, item in TOOLS.items()
-                       if item['action'] == 'read' or ACTIONS.get(item['action'], {}).get('read', False))
+                       if item['action'] == 'read' or item['action'] in LOCAL_READ_ACTIONS
+                       or ACTIONS.get(item['action'], {}).get('read', False))
 
 
 def is_mutation(name):
@@ -119,6 +129,8 @@ def validate(name, arguments):
         raise ValueError('Mutation parameters exceed the approval display bound.')
     if name == 'gaiakeep_upload_file' and arguments.get('strategy') == 'have' and arguments.get('base_vid'):
         raise ValueError('Deduplication upload does not support a base version.')
+    if name == 'gaiakeep_upload_file' and arguments.get('strategy') == 'have' and arguments.get('request_id'):
+        raise ValueError('Deduplication upload does not support a request identifier.')
     params = arguments.get('params', {})
     for key, value in params.items():
         if isinstance(value, str) and value.lstrip().startswith(('{', '[')):

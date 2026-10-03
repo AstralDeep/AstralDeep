@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import re
 import tempfile
 import uuid
@@ -91,6 +92,15 @@ def credential_identity(credentials):
 
 @contextmanager
 def open_client(target, credentials, config=None):
+    mode = os.getenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    if config is None and mode == 'ssh':
+        from agents.gaiakeep.remote_client import open_remote_client
+
+        with open_remote_client(target) as opened:
+            yield opened
+        return
+    if mode not in {'ssh', 'native'}:
+        raise AgentError('not_configured', 'Select a supported GaiaKeep connection mode.')
     principal, key = credential_identity(credentials)
     CoreClient, Timeouts, _, _ = load_sdk()
     try:
@@ -171,7 +181,10 @@ def _info(*parts):
 
 def _certificate(core, reply, extract_id):
     try:
-        cert, signature, signer = reply['cert'], reply['sig'], reply['signer_pub']
+        cert, signature = reply['cert'], reply['sig']
+        signer = reply.get('core_public_key', reply.get('signer_pub'))
+        if 'core_public_key' in reply and 'signer_pub' in reply and reply['core_public_key'] != reply['signer_pub']:
+            raise ValueError
         if not isinstance(cert, str) or len(cert.encode()) > 65536 or len(signature) > 300 or len(signer) > 300:
             raise ValueError
         signer_bytes = base64.urlsafe_b64decode(signer + '=' * (-len(signer) % 4))
@@ -189,7 +202,7 @@ def _certificate(core, reply, extract_id):
         raise AgentError('integrity_error', 'GaiaKeep extraction certificate failed its pinned identity check.') from exc
 
 
-def execute(core, action, params, config=None, credentials=None):
+def execute(core, action, params, config=None, credentials=None, sdk_loader=None):
     if action == 'fetch':
         raise AgentError('unsupported', 'Legacy fetch requires a separately qualified bounded receiver. Use the versioned file read tool.')
     if action in FILE_ACTIONS:
@@ -223,7 +236,7 @@ def execute(core, action, params, config=None, credentials=None):
                 if token:
                     params['reconstruct_token'] = token
             reply = core.transport.call(config.core_address, action, params, RPC_TIMEOUT)
-        _, _, _, raise_for = load_sdk()
+        _, _, _, raise_for = (sdk_loader or load_sdk)()
         reply = raise_for(action, reply)
     else:
         reply = core.call(action, params, timeout=RPC_TIMEOUT)

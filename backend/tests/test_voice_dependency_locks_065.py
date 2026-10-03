@@ -1,7 +1,4 @@
-"""Supply-chain lock tests for the Windows client's LiveKit pin and the contract
-validator's dependency lock: exact hashes, isolation from product manifests, and a
-scoped policy for which files may drift from the frozen baseline.
-"""
+"""Verifies reviewed dependency hashes, native pins and separation of CI tooling from runtime manifests. Gaia input validation retains its declared runtime schema-validator pin."""
 
 from __future__ import annotations
 
@@ -66,9 +63,9 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
-    "Dockerfile": "04f2a968ce4ae650800bdc44c03b9ed9978e132f5b7b64880158a339f17c83eb",
+    "Dockerfile": "46737b00d717721adfe0fc2a0ff6f2e0ac26e08ec8a7310b4246f48c81c482c3",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "fe67aa0d442cb441aa930cb28050f3480740c7e0557d24c02fa9d7d41fa7599c",
+    "backend/requirements.txt": "7e85de45ea6ee8ed55259369330fb129b2fcb3e123414533b55f7fb610081e5d",
     "backend/requirements-gaiakeep.txt": "ff3a544a99000866ee615b6733ffced8a72ff9dc85458cfeac2ec048ede2af00",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
@@ -317,7 +314,7 @@ def test_contract_validator_lock_is_exact_complete_and_hash_locked() -> None:
     )
 
 
-def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None:
+def test_contract_validator_tooling_stays_isolated_from_runtime_validation() -> None:
     product_manifests = (
         REPO_ROOT / "backend" / "requirements.txt",
         WINDOWS_ROOT / "requirements.in",
@@ -331,7 +328,8 @@ def test_contract_validator_dependencies_stay_out_of_product_manifests() -> None
         text = path.read_text(encoding="utf-8").lower()
         assert "tooling/contract-ci" not in text, path
         assert "openapi-spec-validator" not in text, path
-        assert re.search(r"(?m)^jsonschema(?:\[.*\])?\s*[=<>~!]", text) is None, path
+        expected_schema = ["jsonschema==4.25.1"] if path == REPO_ROOT / "backend" / "requirements.txt" else []
+        assert re.findall(r"(?m)^jsonschema(?:\[.*\])?\s*[=<>~!].*$", text) == expected_schema, path
 
 
 def test_dependency_authorities_match_reviewed_inventory_and_baseline() -> None:

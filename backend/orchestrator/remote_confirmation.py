@@ -1,4 +1,4 @@
-"""Durable single-use approval cards for destructive remote-compute and computer-use
+"""Durable single-use approval cards for destructive GaiaKeep, remote-compute and computer-use
 operations. The dispatch gate calls evaluate(); approvals re-enter it via
 handle_decision(), stored through astralplane's remote_proposals.
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import json
 import logging
@@ -469,6 +470,26 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
         except ValueError:
             return ("Invalid GaiaKeep arguments; no operation was sent.",
                     [Alert(message="Invalid GaiaKeep arguments; no operation was sent.", variant="error").to_dict()])
+        from orchestrator import remote_machines
+        try:
+            owned = bool(user_id and remote_machines.resolve_machine(
+                plane_source_from_orchestrator(orch), user_id, args.get("machine_id")))
+        except Exception:  # noqa: BLE001
+            owned = False
+        if not owned:
+            _audit_sync(user_id, "remote_op.owner_denied", "Gaia machine is not available to this owner",
+                        machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
+            return ("GaiaKeep requires a registered machine owned by the signed-in user; no operation was sent.",
+                    [Alert(message="This GaiaKeep machine is not available to your account.", variant="error").to_dict()])
+        from agents.gaiakeep.catalog import TOOLS
+        from orchestrator.gaiakeep_dispatch import prepare_reconciliation
+
+        reconciliation = prepare_reconciliation(tool_name, public)
+        if "request_id" in reconciliation:
+            if TOOLS[tool_name]["action"] == "upload":
+                args["request_id"] = reconciliation["request_id"]
+            else:
+                args["params"] = dict(public["params"], request_id=reconciliation["request_id"])
     machine_ref = args.get(policy.machine_key)
     classification = classification_for(tool_name, agent_id)
     if classification is None and not policy.gate_unclassified_unattended:
@@ -645,6 +666,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         row.conversation_id,
         user_id=user_id,
     )
+    if (row.agent_id == "gaiakeep-1" and websocket is not None and row.conversation_id
+            and result is not None and result.error is None and result.ui_components):
+        components = copy.deepcopy(result.ui_components)
+        public_arguments = {key: value for key, value in row.arguments.items()
+                            if not str(key).startswith("_") and key not in {"user_id", "session_id"}}
+        from orchestrator.orchestrator import _tag_tool_result_source
+        for component in components:
+            _tag_tool_result_source(component, result, row.agent_id, row.tool_name,
+                                    public_arguments, getattr(result, "correlation_id", None))
+        await orch._send_or_replace_components(
+            websocket, components, row.conversation_id, user_id=user_id)
     policy = policy_for(row.agent_id)
     not_attempted = _not_attempted_code(result)
     if policy is not None and policy.retry_grace_s > 0 and not_attempted:

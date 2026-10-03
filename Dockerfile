@@ -69,6 +69,8 @@ RUN python -m spacy download en_core_web_lg
 
 COPY backend/ ./backend/
 
+RUN PYTHONPATH=/app/backend python -c "from agents.gaiakeep.catalog import validate; validate('gaiakeep_core_whoami', {'machine_id': 'runtime-check', 'params': {}})"
+
 COPY backend/start-docker.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/start-docker.sh
 

@@ -1,0 +1,247 @@
+"""
+Typed errors for the GaiaKeep storage core.
+
+Every failure a caller can act on has its own class. `from_reply` maps a core reply to one of them,
+using the status codes the core uses (docs: clients/README.md, "Errors"):
+
+  10 ok                    3 unauthenticated          4 forbidden
+  5  internal / journal     6 failed (StaleHead: ...)  7 policy refusal (rule)
+  8  bad request            9 not found / stopping     11 busy (retry_after_ms)
+  12 not the leader (core_leader)                     13 deferred (retry_after_ms, est_ms)
+  500 / 504 the RPC itself failed or timed out (message_info.rpc_timeout_ms)
+  no status  the transport answered instead of the core (wsapi's {"error": "Cresco rpc response was null"}
+             after its 30 s cap): RpcTimeout, since the core may still have acted
+
+Exception messages carry the core's status_desc, never a signature, a nonce or a key. The core's status_desc
+can name a path ("no such file <path>"); the client replaces the path params it sent with their log digest
+(<path:1a2b...>), but other identifiers the core chooses to echo may remain, so treat exception messages
+like the data they describe when logging them.
+"""
+import hashlib
+
+
+class GaiaKeepError(Exception):
+    """Base class. `status` is the core's status code (a string) when the core answered."""
+
+    retryable = False
+
+    def __init__(self, message, status=None, action=None, retryable=None, detail=None):
+        super().__init__(message)
+        self.status = status
+        self.action = action
+        if retryable is not None:
+            self.retryable = retryable
+        self.detail = detail or {}
+
+
+class TransportError(GaiaKeepError):
+    """No usable answer: the connection failed or the core did not reply."""
+    retryable = True
+
+
+class RpcTimeout(TransportError):
+    """The RPC timed out (no reply, or status 504). For a mutation the outcome is unknown: retry with the
+    same request_id so the core answers idempotently."""
+
+
+class OutcomeUnknown(RpcTimeout):
+    """The request may or may not have taken effect, and the client will not resend it on its own: the verb is
+    not idempotent on this core (a wave-1 core runs job verbs synchronously and has no request_id), or the
+    connection dropped after the signed request may have reached the core. Check the state (core.head,
+    core.putstatus, core.job) before retrying."""
+    retryable = False
+
+
+class Unauthenticated(GaiaKeepError):
+    """Status 3: no valid signature, unknown or disabled principal, stale, replayed or wrong audience."""
+
+
+class Forbidden(GaiaKeepError):
+    """Status 4: a proven principal without the role the verb needs (an unknown id also answers 4)."""
+
+
+class InternalError(GaiaKeepError):
+    """Status 5: the core failed (journal, audit log, commit timeout). A mutation's outcome may be unknown."""
+
+
+class Failed(GaiaKeepError):
+    """Status 6: the core refused or failed the request (generic)."""
+
+
+class StaleHead(Failed):
+    """Status 6 "StaleHead": the branch moved. `head` (the current head vid) and `upload_kept` (whether the
+    staged upload was kept for a retry) are filled only by a core that sends them (opmodel §1a); the wave-1
+    core sends only the status and its text, so they are None and False there: read core.head yourself."""
+
+    def __init__(self, message, head=None, upload_kept=False, **kw):
+        super().__init__(message, **kw)
+        self.head = head
+        self.upload_kept = upload_kept
+
+
+class PolicyRefused(GaiaKeepError):
+    """Status 7: a policy rule refused the request; `rule` names it."""
+
+    def __init__(self, message, rule=None, **kw):
+        super().__init__(message, **kw)
+        self.rule = rule
+
+
+class BadRequest(GaiaKeepError):
+    """Status 8: malformed request, unknown action, or a verb this core does not serve."""
+
+
+class NotFound(GaiaKeepError):
+    """Status 9: absent after authorization (or the plugin is stopping)."""
+
+
+class RetryAfter(GaiaKeepError):
+    """Status 11 (busy) or any reply carrying retry_after_ms: try again after `retry_after_ms`."""
+    retryable = True
+
+    def __init__(self, message, retry_after_ms=1000, **kw):
+        super().__init__(message, **kw)
+        self.retry_after_ms = retry_after_ms
+
+
+class Deferred(RetryAfter):
+    """Status 13: the work goes on; poll for its outcome (core.job job_id, or the verb's own status such as
+    core.putstatus commit_state). `est_ms` is the estimate when the core gives one."""
+
+    def __init__(self, message, est_ms=None, **kw):
+        super().__init__(message, **kw)
+        self.est_ms = est_ms
+
+
+class StageRequired(RetryAfter):
+    """Status 15: the range is only on a deferred medium (tape). Stage it (core.stage), then retry after
+    `retry_after_ms`; `est_ms` is the core's estimate and `bytes_needed` what the stage will bring back."""
+
+    def __init__(self, message, est_ms=None, bytes_needed=None, **kw):
+        super().__init__(message, **kw)
+        self.est_ms = est_ms
+        self.bytes_needed = bytes_needed
+
+
+class NotLeader(GaiaKeepError):
+    """Status 12: this peer is not the core leader. `leader` names the leader ('' while an election runs).
+    CoreClient follows the redirect itself; this escapes only when redirects are exhausted."""
+    retryable = True
+
+    def __init__(self, message, leader=None, **kw):
+        super().__init__(message, **kw)
+        self.leader = leader
+
+
+class IntegrityError(GaiaKeepError):
+    """Something the core sent did not verify: a key exchange not signed by the pinned core key, a
+    whole-file hash mismatch, a forged frame stream. Never retried silently."""
+
+
+class TransferError(GaiaKeepError):
+    """A GKT flow failed."""
+    retryable = True
+
+
+class TransferAborted(TransferError):
+    """The receiver sent an authenticated ABORT; `reason` is its text."""
+
+    def __init__(self, message, reason=None, **kw):
+        super().__init__(message, **kw)
+        self.reason = reason
+
+
+class TransferTimeout(TransferError):
+    """A flow made no progress before its deadline."""
+
+
+class JobFailed(GaiaKeepError):
+    """A job ended FAILED. `code` is the core's error code; `retryable` and `reupload` are its flags."""
+
+    def __init__(self, message, code=None, retryable=False, reupload=False, job_id=None, **kw):
+        super().__init__(message, retryable=retryable, **kw)
+        self.code = code
+        self.reupload = reupload
+        self.job_id = job_id
+
+
+class JobCancelled(JobFailed):
+    """A job ended CANCELLED (or ABANDONED)."""
+
+
+class JobTimeout(GaiaKeepError):
+    """job.wait(timeout) returned before the job ended; the job keeps running."""
+    retryable = True
+
+
+class CommitFailed(GaiaKeepError):
+    """An ingest commit ended failed (after `committing`)."""
+
+
+_BY_STATUS = {"3": Unauthenticated, "4": Forbidden, "5": InternalError, "6": Failed, "7": PolicyRefused,
+              "8": BadRequest, "9": NotFound, "11": RetryAfter, "12": NotLeader, "13": Deferred,
+              "14": RetryAfter, "15": StageRequired}
+
+
+def _int(v, default=None):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _digest(v):
+    return hashlib.sha384(str(v).encode("utf-8")).hexdigest()[:16]
+
+
+def redact(text, values):
+    """text with every non-empty value in `values` replaced by <path:digest> (log.path_digest's form)."""
+    for v in sorted({v for v in values or () if isinstance(v, str) and v}, key=len, reverse=True):
+        text = text.replace(v, f"<path:{_digest(v)}>")
+    return text
+
+
+def from_reply(action, reply, redact_values=()):
+    """The exception for a failed reply (a dict of reply params), or None if the reply is ok (status 10).
+    redact_values: param values (paths) to replace by their digest in the message."""
+    if reply is None or reply == {}:
+        return RpcTimeout(f"{action}: no reply", action=action)
+    status = str(reply.get("status") or "")
+    if not status:
+        # not the core's answer: the transport's (wsapi answers {"error": ...} when the core's reply did not
+        # come back within its RPC cap). The core may still be acting on the request.
+        why = str(reply.get("error") or "no status")[:120]
+        return RpcTimeout(f"{action}: the transport answered instead of the core ({why}); the outcome is unknown",
+                          action=action, detail={"transport_error": why})
+    if status == "10":
+        return None
+    desc = redact(str(reply.get("status_desc") or ""), redact_values)
+    msg = f"{action}: status {status}: {desc}" if desc else f"{action}: status {status}"
+    kw = {"status": status, "action": action}
+    if status in ("504", "500"):
+        return RpcTimeout(msg, **kw)
+    if status == "12":
+        return NotLeader(msg, leader=reply.get("core_leader") or "", **kw)
+    if status == "6" and desc.startswith("StaleHead"):
+        return StaleHead(msg, head=reply.get("head"), upload_kept=str(reply.get("upload_kept")).lower() == "true", **kw)
+    if status == "13":
+        ra = _int(reply.get("retry_after_ms"), 1000)
+        return Deferred(msg, est_ms=_int(reply.get("est_ms")), retry_after_ms=ra, **kw)
+    if status == "15":
+        ra = _int(reply.get("retry_after_ms"), 1000)
+        return StageRequired(msg, est_ms=_int(reply.get("est_ms")), bytes_needed=_int(reply.get("bytes_needed")),
+                             retry_after_ms=ra, **kw)
+    if status in ("11", "14") or reply.get("retry_after_ms") is not None:
+        return RetryAfter(msg, retry_after_ms=_int(reply.get("retry_after_ms"), 1000), **kw)
+    if status == "7":
+        return PolicyRefused(msg, rule=reply.get("rule"), **kw)
+    cls = _BY_STATUS.get(status, GaiaKeepError)
+    return cls(msg, **kw)
+
+
+def raise_for(action, reply, redact_values=()):
+    """Raise the typed error for a failed reply; return the reply when it is ok."""
+    e = from_reply(action, reply, redact_values)
+    if e is not None:
+        raise e
+    return reply

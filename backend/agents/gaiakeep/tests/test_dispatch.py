@@ -6,11 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 from agents.gaiakeep import catalog, client, mcp_server
+from agents.gaiakeep.issue_log import IssueLog
+from agents.gaiakeep.remote_client import RemoteCore
 from shared.protocol import MCPRequest
 
 
 @pytest.fixture
 def server(monkeypatch):
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'native')
     monkeypatch.setitem(mcp_server.flags._flags, 'gaiakeep', True)
     monkeypatch.setitem(mcp_server.flags._flags, 'cresco', True)
     monkeypatch.setattr(mcp_server.remote_machines, 'build_target',
@@ -32,13 +35,130 @@ def request(name='gaiakeep_core_whoami', params=None, **context):
 
 def test_list_and_result_shape(server):
     reply = server.process_request(MCPRequest(method='tools/list'))
-    assert len(reply.result['tools']) == 109
+    assert len(reply.result['tools']) == 111
     assert all(t['scope'] for t in reply.result['tools'])
     reply = server.process_request(request())
     reply.validate_result_shape()
     assert reply.result['verdict'] == 'ok'
     assert reply.result['result']['job_id'] == 'real-job'
     assert reply.ui_components[0]['type'] == 'card'
+
+
+@pytest.mark.parametrize('name,verdict,mutation', [
+    ('gaiakeep_core_whoami', 'unavailable', False),
+    ('gaiakeep_core_repair', 'unconfirmed', True),
+])
+def test_tool_failure_records_safe_dispatch_state(server, monkeypatch, name, verdict, mutation):
+    records = []
+    monkeypatch.setattr(server.issue_log, 'record',
+                        lambda tool, code, **state: records.append((tool, code, state)))
+    def interrupted(*args):
+        raise TimeoutError('private-password and private-file-content')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    reply = server.process_request(request(name))
+    assert reply.error['data']['verdict'] == verdict
+    assert records == [(name, verdict, {'dispatched': True, 'mutation': mutation})]
+    assert 'private-password' not in str(records) + str(reply.error)
+
+
+def test_preflight_failure_records_without_dispatched_claim(server, monkeypatch):
+    records = []
+    monkeypatch.setattr(server.issue_log, 'record',
+                        lambda tool, code, **state: records.append((tool, code, state)))
+    reply = server.process_request(request(params={'unknown-secret-path': 'private-user-content'}))
+    assert reply.error['data']['verdict'] == 'invalid_argument'
+    assert records == [('gaiakeep_core_whoami', 'invalid_argument', {'dispatched': False, 'mutation': False})]
+    assert 'private-user-content' not in str(records)
+
+
+def test_success_does_not_create_issue(server, monkeypatch):
+    monkeypatch.setattr(server.issue_log, 'record', lambda *args, **kwargs: pytest.fail('successful call logged an issue'))
+    assert server.process_request(request()).result['verdict'] == 'ok'
+
+
+def test_actual_failed_tool_appends_redacted_issue(server, monkeypatch, tmp_path):
+    directory = tmp_path / 'operator-log'
+    monkeypatch.setenv('GAIAKEEP_ISSUE_LOG_DIRECTORY', str(directory))
+    server.issue_log = IssueLog()
+    def interrupted(*args):
+        raise TimeoutError('private-password, private-user-content, /private/patient-path')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    reply = server.process_request(request())
+    assert reply.error['data']['verdict'] == 'unavailable'
+    log = (directory / 'ISSUES.md').read_text()
+    assert len([line for line in log.splitlines() if line.startswith('- ')]) == 1
+    assert 'tool=gaiakeep_core_whoami' in log and 'verdict=unavailable' in log
+    assert 'post_dispatch' in log and 'mutation=false' in log
+    assert all(value not in log for value in ('private-password', 'private-user-content', 'patient-path', 'ssh-password', 'fabric-secret'))
+
+
+def test_sink_failure_preserves_uncertain_write_and_request_id(server, monkeypatch, tmp_path, caplog):
+    from agents.gaiakeep import issue_log
+
+    monkeypatch.setenv('GAIAKEEP_ISSUE_LOG_DIRECTORY', str(tmp_path / 'operator-log'))
+    server.issue_log = IssueLog()
+    attempts = []
+    def interrupted(core, action, params, *args):
+        attempts.append(params['request_id'])
+        raise TimeoutError('private-password')
+    def unavailable_sink(*args):
+        raise OSError('private-log-path')
+    monkeypatch.setattr(client, 'execute', interrupted)
+    monkeypatch.setattr(issue_log, '_append', unavailable_sink)
+    reply = server.process_request(request('gaiakeep_core_repair'))
+    assert reply.error['data']['verdict'] == 'unconfirmed'
+    assert reply.error['data']['reconciliation']['request_id'] == attempts[0]
+    assert len(attempts) == 1
+    assert any(record.gaiakeep_issue.get('sink') == 'unavailable' for record in caplog.records)
+    assert 'private-log-path' not in caplog.text and 'private-password' not in caplog.text + str(reply.error)
+
+
+@pytest.mark.parametrize('action', ['core.repair', 'read', 'upload'])
+def test_remote_bridge_dispatch_preserves_approved_arguments_and_ids(server, monkeypatch, action):
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    calls = []
+    core = RemoteCore(SimpleNamespace(), {})
+    core.perform = lambda *args: calls.append(args) or ({'data_base64': 'aA==', 'vid': 'v'} if action == 'read'
+                                                      else {'status': '10'})
+    @contextmanager
+    def opened(*args):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    args = {'machine_id': 'mine', 'user_id': 'owner', '_credentials': 'stale-encrypted-private-key',
+            '_credentials_stale': True, '_credentials_encrypted': True}
+    if action == 'upload':
+        args.update(collection_id='c', path='p', data_base64='aA==', request_id='stable-request-id')
+        name = 'gaiakeep_upload_file'
+    elif action == 'read':
+        args.update(vid='v', path='p')
+        name = 'gaiakeep_read_file'
+    else:
+        args['params'] = {'request_id': 'stable-request-id'}
+        name = 'gaiakeep_core_repair'
+    out = server.invoke(name, **args)
+    assert out['_data']['verdict'] == 'ok'
+    assert calls[0][0] == action
+    assert 'machine_id' not in calls[0][1] and 'user_id' not in calls[0][1]
+    if action != 'read':
+        assert out['_data']['reconciliation']['request_id'] == 'stable-request-id'
+
+
+@pytest.mark.parametrize('action', sorted(catalog.LOCAL_READ_ACTIONS))
+def test_account_discovery_is_read_only_ssh_operation(server, monkeypatch, action):
+    assert not catalog.is_mutation('gaiakeep_' + action)
+    args = {'machine_id': 'mine', 'params': {}, 'user_id': 'owner'}
+    assert server.invoke('gaiakeep_' + action, **args)['_data']['verdict'] == 'unsupported'
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    core = RemoteCore(SimpleNamespace(), {})
+    calls = []
+    core.perform = lambda *args: calls.append(args) or {'default_collection': 'mine'}
+    @contextmanager
+    def opened(*args):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    result = server.invoke('gaiakeep_' + action, **args)
+    assert result['_data']['verdict'] == 'ok' and 'reconciliation' not in result['_data']
+    assert calls == [(action, {'params': {}}, None)]
 
 
 @pytest.mark.parametrize('method,params', [('other', {}), ('tools/call', {}),
