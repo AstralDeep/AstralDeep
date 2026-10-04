@@ -5,7 +5,8 @@ title: ''
 ---
 
 Use the sections that help explain your issue; remove the rest. Search existing issues first.
-To claim an existing bounty, comment `/claim` on that issue instead of opening a new one.
+For an existing bounty, open a pull request with `Closes #N` in its description.
+The points bot credits the PR author after it merges into `main` and closes the bounty.
 
 ## Problem or idea
 
