@@ -26,6 +26,18 @@ def bind_owner_context(arguments, user_id):
     arguments['user_id'] = user_id
 
 
+def _machine_target(plane_source, credential_manager, user_id, reference, mutation):
+    try:
+        return remote_machines.build_target(plane_source, credential_manager, user_id, reference)
+    except remote_machines.MachineNotFound as exc:
+        if mutation:
+            raise client.AgentError('invalid_argument', 'GaiaKeep changes require the registered machine ID.') from exc
+        machine = remote_machines.resolve_machine(plane_source, user_id, reference)
+        if machine is None:
+            raise client.AgentError('invalid_argument', 'Select a registered machine you own.') from exc
+        return remote_machines.build_target(plane_source, credential_manager, user_id, machine['machine_id'])
+
+
 class MCPServer:
     def __init__(self, plane_source, credential_manager):
         self.plane_source = plane_source
@@ -57,8 +69,8 @@ class MCPServer:
                     or arguments.get('_credentials_stale')) and os.getenv('GAIAKEEP_CONNECTION_MODE', 'ssh') != 'ssh':
                 raise client.AgentError('auth_failed', 'Re-enter your GaiaKeep credentials.')
             secrets.extend(v for k, v in credentials.items() if k != 'GAIAKEEP_PRINCIPAL' and isinstance(v, str))
-            target = remote_machines.build_target(self.plane_source, self.credential_manager,
-                                                  user_id, public['machine_id'])
+            target = _machine_target(self.plane_source, self.credential_manager,
+                                     user_id, public['machine_id'], mutation)
             secrets.extend([target.secret, target.passphrase])
             with client.open_client(target, credentials) as (core, config):
                 secrets.append(config.service_key)
