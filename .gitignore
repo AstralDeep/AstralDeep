@@ -2,6 +2,7 @@ data/
 plans/
 tmp_uploads/
 backend/tmp/
+backend/logs/
 # Security-benchmark run artifacts (spec 047) - generated, never committed.
 # Covers the default backend/security_benchmark/_artifacts/ and any stray
 # mis-pathed copy (e.g. backend/backend/... from an accidental --out run).

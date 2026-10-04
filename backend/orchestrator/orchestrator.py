@@ -4,6 +4,7 @@ orchestrator/api.py; dispatches into chrome_events.py and agent_lifecycle.py.
 """
 
 import asyncio
+import copy
 import contextvars
 import hashlib
 import json
@@ -273,6 +274,7 @@ class _ConnectionIngressFrame:
     operation_kind: str
     deadline_at_monotonic: float | None
     deadline_at_utc: datetime | None
+    authenticated_user_id: str | None = field(default=None, repr=False)
     local_final_verified: bool = False
     work_read: "WorkSurfaceRead | None" = field(default=None, repr=False)
     human_request: object = field(default=None, repr=False)
@@ -6879,6 +6881,11 @@ class Orchestrator:
                 if is_credential_save
                 else None
             ),
+            authenticated_user_id=(
+                self._get_user_id(context.websocket)
+                if hasattr(self, "ui_sessions") and hasattr(context, "websocket")
+                else None
+            ),
         )
 
     async def _enqueue_connection_frame(
@@ -7827,6 +7834,8 @@ class Orchestrator:
         self,
         context: ConnectionContext,
         work: _ConnectionOperation,
+        *,
+        user_id: str,
     ) -> str | None:
         chat_id = work.frame.chat_id
         payload = work.frame.parsed.get("payload")
@@ -7852,7 +7861,7 @@ class Orchestrator:
                 row = await asyncio.to_thread(
                     self.history.get_component_by_id,
                     component_id,
-                    user_id=work.owner.owner_user_id or "legacy",
+                    user_id=user_id,
                 )
                 if row is not None:
                     chat_id = row.get("chat_id")
@@ -7888,11 +7897,24 @@ class Orchestrator:
         if work.frame.action not in _CONVERSATION_MUTATION_ACTIONS:
             await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
-        chat_id = await self._conversation_mutation_chat_id(context, work)
+        user_id = self._get_user_id(execution_websocket)
+        if (
+            not isinstance(user_id, str)
+            or not user_id
+            or user_id == "legacy"
+            or user_id != work.frame.authenticated_user_id
+            or (
+                work.owner.owner_user_id is not None
+                and work.owner.owner_user_id != user_id
+            )
+        ):
+            raise RuntimeError("conversation mutation authenticated owner changed")
+        chat_id = await self._conversation_mutation_chat_id(
+            context, work, user_id=user_id,
+        )
         if chat_id is None:
             await self.handle_ui_message(execution_websocket, work.frame.raw)
             return
-        user_id = work.owner.owner_user_id or "legacy"
         stage = None
         token = None
         request_generation = None
@@ -11085,11 +11107,23 @@ class Orchestrator:
                         )
                         if isinstance(auth, GateRefusal):
                             if auth.render_components:
-                                await self.send_ui_render(
-                                    websocket,
-                                    auth.render_components,
-                                    target=auth.render_target or "chat",
-                                )
+                                if (agent_id == "gaiakeep-1" and chat_id
+                                        and all(isinstance(component, dict)
+                                                and component.get("type") == "card"
+                                                and str(component.get("id") or "").startswith("au_approval_")
+                                                for component in auth.render_components)):
+                                    components = copy.deepcopy(auth.render_components)
+                                    for component in components:
+                                        _tag_source(component, agent_id, tool_name)
+                                    await self._send_or_replace_components(
+                                        websocket, components, chat_id, user_id=user_id,
+                                    )
+                                else:
+                                    await self.send_ui_render(
+                                        websocket,
+                                        auth.render_components,
+                                        target=auth.render_target or "chat",
+                                    )
                             return
                         result = await self._execute_with_retry_audited(
                             websocket,
@@ -11101,7 +11135,21 @@ class Orchestrator:
                             channel="websocket",
                         )
                         if result and result.ui_components:
-                            await self.send_ui_render(websocket, result.ui_components)
+                            if agent_id == "gaiakeep-1" and chat_id and result.error is None:
+                                components = copy.deepcopy(result.ui_components)
+                                public_arguments = {key: value for key, value in auth.args.items()
+                                                    if not str(key).startswith("_")
+                                                    and key not in {"user_id", "session_id"}}
+                                for component in components:
+                                    _tag_tool_result_source(
+                                        component, result, agent_id, tool_name, public_arguments,
+                                        getattr(result, "correlation_id", None),
+                                    )
+                                await self._send_or_replace_components(
+                                    websocket, components, chat_id, user_id=user_id,
+                                )
+                            else:
+                                await self.send_ui_render(websocket, result.ui_components)
                         elif result and result.error:
                             await self.send_ui_render(websocket, [
                                 Alert(message=result.error.get("message", "Pagination failed"), variant="error").to_dict()
@@ -18271,6 +18319,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             # One approval authorizes exactly one physical attempt
             max_retries = 1
 
+        default_timeout = TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+        if agent_id == "gaiakeep-1":
+            from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
+
+            default_timeout = DEFAULT_TIMEOUT
+            max_retries = 1
+
         last_result = None
 
         for attempt in range(1, max_retries + 1):
@@ -18281,7 +18336,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 timeout=(
                     timeout
                     if timeout is not None
-                    else TOOL_TIMEOUT_OVERRIDES.get(tool_name, 30.0)
+                    else default_timeout
                 ),
                 ui_websocket=websocket,
                 protected_owner_id=user_id,
@@ -18341,7 +18396,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         agent_id: str,
         tool_name: str,
         args: Dict,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         ui_websocket=None,
         protected_owner_id: Optional[str] = None,
         protected_channel: Optional[str] = None,
@@ -18350,6 +18405,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
+        if timeout is None:
+            timeout = 30.0
+            if agent_id == "gaiakeep-1":
+                from orchestrator.gaiakeep_dispatch import DEFAULT_TIMEOUT
+
+                timeout = DEFAULT_TIMEOUT
         recorder = self._chat_recorders.get(id(ui_websocket)) if ui_websocket is not None else None
         step_id = None
         if recorder is not None:
@@ -18425,6 +18486,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return await persistent_dispatch.invoke_tool(
                         lambda: original_invoke(capabilities),
                         final_arguments=final_arguments,
+                    )
+            if agent_id == "gaiakeep-1":
+                from orchestrator.gaiakeep_dispatch import invoke as invoke_gaiakeep
+
+                original_gaia_invoke = physical_invoke
+
+                async def physical_invoke(capabilities):
+                    return await invoke_gaiakeep(
+                        tool_name,
+                        final_arguments,
+                        lambda: original_gaia_invoke(capabilities),
                     )
             return await self._execute_governed_attempt(
                 ui_websocket,
@@ -18613,11 +18685,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         verified_identity = verified_identity_for(identity_card, session_claims)
         if verified_identity is None:
+            identity_error = {
+                "message": identity_access_message(identity_card),
+                "retryable": False,
+            }
+            if agent_id == "gaiakeep-1":
+                identity_error["code"] = "required_identity_unavailable"
             return MCPResponse(
-                error={
-                    "message": identity_access_message(identity_card),
-                    "retryable": False,
-                }
+                error=identity_error
             )
         caller_info: Dict[str, Any] = {
             "name": "AstralDeep Orchestrator",
@@ -18892,11 +18967,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         verified_identity = verified_identity_for(identity_card, session_claims)
         if verified_identity is None:
+            identity_error = {
+                "message": identity_access_message(identity_card),
+                "retryable": False,
+            }
+            if agent_id == "gaiakeep-1":
+                identity_error["code"] = "required_identity_unavailable"
             return MCPResponse(
-                error={
-                    "message": identity_access_message(identity_card),
-                    "retryable": False,
-                }
+                error=identity_error
             )
         caller_info: Dict[str, Any] = {
             "name": "AstralDeep Orchestrator",

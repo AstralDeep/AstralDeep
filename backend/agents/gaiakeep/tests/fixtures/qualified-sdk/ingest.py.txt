@@ -1,0 +1,514 @@
+"""
+Ingest: files -> one new version, over striped multi-flow parts (opmodel §1a).
+
+Two server protocols sit behind one call, CoreClient.ingest(...):
+
+- "1a" (opmodel §1a; used when core.status advertises the capability "ingest-1a"):
+  the first core.put of the upload also names its target (collection_id, branch, expected_head, base_vid,
+  deletes, request_id, ingest=1a); the core processes parts as they land; when every part is acknowledged
+  the client calls core.commit(upload_id, request_id), a short RPC. It answers the version, or
+  state=committing: the outcome then arrives as a signed event on the transfer's down_stream, with
+  core.putstatus (commit_state) as the authoritative fallback. A flow that fails is resumed: core.putstatus
+  reports the chunk ranges each part holds (`ranges`), and the part is re-opened with resume=true and sends
+  only what is missing. If the leader changes, the staged parts are gone: the whole upload is sent again
+  under the same request_id (a commit already journaled answers with its vid).
+
+- "legacy" (the wave-1 protocol, until the core advertises "ingest-1a"), in one of two forms:
+  * staged (the default on the Cresco transports): each part is opened just before it is sent, `flows` at a
+    time; once every part is acknowledged the client polls core.putstatus (short C0 calls) until every file
+    is VERIFIED, then calls core.publish(upload_id) without streaming. No RPC lasts beyond one C0 call except
+    that publish, which runs the chunking of already-staged bytes.
+  * streaming: every part is opened, then core.publish(upload_id, streaming=true) runs while the parts
+    stream, as eval/gkt.ingest does. That RPC is held for the whole upload, so it is used only when the
+    transport can hold it (max_rpc_seconds is None or long enough: never on the 1.3 Cresco transports,
+    which cap an RPC at 30 s), when every part can be in flight at once (len(parts) <= flows: the core sizes
+    each flow's window by the flows open, and aborts a flow 30 minutes after it was opened unless it
+    finished), and when the upload should finish well inside those 30 minutes.
+  A failure discards the upload (core.discard). A publish whose answer is lost (a timeout, or the transport
+  answering for the core) is resolved, not retried: the client waits until core.putstatus shows the upload
+  gone (the core discards it when the publish ends), then reads core.head; a new head whose files match
+  ours (path, size, hash) is the answer, an unchanged head raises CommitFailed (retryable), anything else
+  raises OutcomeUnknown. Legacy mode has no request_id, so a blind retry could create a second version.
+"""
+import os
+import queue
+import threading
+import time
+import concurrent.futures as cf
+
+from . import log
+from .errors import (CommitFailed, GaiaKeepError, NotLeader, OutcomeUnknown, RpcTimeout, TransferAborted,
+                     TransferError, TransferTimeout, IntegrityError)
+from .transfer import Transfers, new_id, same_file
+
+CAP_INGEST_1A = "ingest-1a"
+# the core aborts an upload flow this long after it was opened unless it finished (StreamService.openPutClaimed)
+CORE_FLOW_EXPIRY_S = 30 * 60
+
+
+class IngestTarget:
+    """Where an ingest lands."""
+
+    def __init__(self, collection_id, branch="main", expected_head=None, base_vid=None, deletes=None, note=None):
+        if not collection_id:
+            raise ValueError("collection_id required")
+        if note is not None and (len(note.encode("utf-8")) > 512 or any(ord(ch) < 32 or ord(ch) == 127 for ch in note)):
+            raise ValueError("note: at most 512 UTF-8 bytes, no control characters")
+        self.collection_id, self.branch = collection_id, branch or "main"
+        self.expected_head, self.base_vid = expected_head, base_vid
+        self.deletes = list(deletes) if deletes else None
+        self.note = note or None
+
+    def params(self):
+        p = {"collection_id": self.collection_id, "branch": self.branch}
+        if self.expected_head:
+            p["expected_head"] = self.expected_head
+        if self.base_vid:
+            p["base_vid"] = self.base_vid
+        if self.deletes is not None:
+            p["deletes"] = self.deletes
+        if self.note:
+            p["note"] = self.note
+        return p
+
+
+class IngestResult:
+    def __init__(self, vid, number, collection_id, branch, request_id, upload_id, mode, bytes_, retransmits,
+                 resumed_parts=0, reuploads=0, via=None, publish=None, resolved=False):
+        self.vid, self.number, self.collection_id, self.branch = vid, number, collection_id, branch
+        self.request_id, self.upload_id, self.mode = request_id, upload_id, mode
+        self.bytes, self.retransmits, self.resumed_parts, self.reuploads = bytes_, retransmits, resumed_parts, reuploads
+        self.via = via
+        self.publish = publish          # "commit" (1a), "streaming" or "staged" (legacy)
+        self.resolved = resolved        # the publish's answer was lost and the vid was read back from core.head
+
+    def __repr__(self):
+        return f"IngestResult(vid={self.vid!r}, number={self.number}, mode={self.mode}, bytes={self.bytes})"
+
+
+class _LeaderMoved(Exception):
+    pass
+
+
+_UNKNOWN = object()                     # the head before the publish could not be read
+
+
+class _PublishLost(Exception):
+    """core.publish's answer was lost (a timeout, or the transport answering for the core)."""
+
+    def __init__(self, cause):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+def _check_request_id(r):
+    if not (16 <= len(r) <= 64) or not all(c.isalnum() or c in "_-" for c in r):
+        raise ValueError("request_id must be 16-64 characters of [A-Za-z0-9_-]")
+    return r
+
+
+class Ingest:
+    """One ingest call. `files`: {path in the version: local file path}."""
+
+    def __init__(self, client, files, target, request_id=None, mode="auto", part_retries=2, reuploads=1,
+                 legacy_publish="auto"):
+        self.client, self.target = client, target
+        self.files = dict(files)
+        for p, local in self.files.items():
+            if not isinstance(local, (str, os.PathLike)) or not os.path.isfile(local):
+                raise ValueError("ingest takes local file paths (it streams from disk, never from memory)")
+        self.request_id = _check_request_id(request_id or new_id("r", 16))
+        self.mode = mode
+        if legacy_publish not in ("auto", "staged", "streaming"):
+            raise ValueError("legacy_publish must be auto, staged or streaming")
+        self.legacy_publish = legacy_publish
+        self.part_retries, self.reuploads = part_retries, reuploads
+        self.x: Transfers = client.transfers
+
+    # ---------------------------------------------------------------------------------------------------
+
+    def run(self):
+        mode = self.mode
+        if mode == "auto":
+            mode = "1a" if CAP_INGEST_1A in self.client.capabilities() else "legacy"
+        if mode == "legacy":
+            return self._legacy()
+        if mode != "1a":
+            raise ValueError("mode must be auto, 1a or legacy")
+        attempt = 0
+        while True:
+            try:
+                return self._one_upload_1a(reuploads=attempt)
+            except _LeaderMoved as e:
+                if attempt >= self.reuploads:
+                    raise NotLeader(f"ingest: the core leader changed during the upload ({e}); retry with request_id "
+                                    f"{self.request_id}", action="ingest")
+                attempt += 1
+                log.warn("leader changed during ingest: uploading again under the same request_id",
+                         request_id=self.request_id, attempt=attempt)
+
+    # --------------------------------------------------------------------------------------------- §1a
+
+    def _one_upload_1a(self, reuploads):
+        c, x = self.client, self.x
+        upload = new_id("u", 16)
+        plan = Transfers.plan(self.files, x.chunk, x.flows, keyed=self.client.keyed_digests())
+        parts = [p for fparts in plan for p in fparts]
+        lanes = x.lanes()
+        leader = c.addr
+        hub_q = c.events.watch("upload", upload)
+        fds = {}
+        try:
+            for fp in plan:
+                fds[fp[0].path] = os.open(fp[0].local, os.O_RDONLY)
+            target = dict(self.target.params())
+            target.update({"request_id": self.request_id, "ingest": "1a"})
+            first = parts[0]
+            opened_first = x.open_part(lanes[0], upload, first, target)     # names the target once
+            # a redirect on the first open (a client addressed to a follower) staged nothing anywhere else: the part
+            # is open at the leader that answered, so the upload carries on there instead of starting again
+            leader = c.addr
+            resumed = [0]
+            failed = []
+            stop = threading.Event()
+
+            def work(i, part, pre=None):
+                lane = lanes[i % len(lanes)]
+                tries = 0
+                opened, skip = pre, None
+                while True:
+                    if stop.is_set():
+                        return
+                    try:
+                        if opened is None:
+                            extra = {"collection_id": self.target.collection_id}
+                            if skip is not None:
+                                extra["resume"] = "true"
+                            opened = x.open_part(lane, upload, part, extra)
+                            if c.addr != leader:
+                                raise _LeaderMoved("redirected on open")
+                        x.send_part(lane, part, fds[part.path], opened, skip=skip)
+                        return
+                    except (TransferError,) as e:
+                        if isinstance(e, TransferAborted) or tries >= self.part_retries:
+                            raise
+                        tries += 1
+                        skip = self._received(upload, part)
+                        part.resumed_skip = len(skip)
+                        resumed[0] += 1
+                        opened = None
+                        log.info("resuming part", upload_id=upload, part=part.k, parts=part.K, path=part.path,
+                                 attempt=tries, missing=part.total - len(skip))
+
+            with cf.ThreadPoolExecutor(max(1, x.flows)) as ex:
+                futs = [ex.submit(work, 0, first, opened_first)] + \
+                       [ex.submit(work, i, p) for i, p in enumerate(parts[1:], start=1)]
+                for f in cf.as_completed(futs):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        failed.append(e)
+                        stop.set()
+            if failed:
+                self._discard(upload)
+                e = failed[0]
+                if isinstance(e, (_LeaderMoved, NotLeader)):
+                    raise _LeaderMoved(str(e))
+                raise e
+            try:
+                r = self._commit(upload)
+            except NotLeader as e:
+                raise _LeaderMoved(str(e))
+            if c.addr != leader:
+                raise _LeaderMoved("redirected on commit")
+            state = (r.get("state") or "committed").lower()
+            if state == "committing":
+                r = self._await_commit(upload, hub_q)
+            return self._result(r, upload, "1a", parts, resumed[0], reuploads)
+        finally:
+            c.events.unwatch("upload", upload)
+            for fd in fds.values():
+                os.close(fd)
+
+    def _received(self, upload, part):
+        """Chunks (flow seqs) the core holds for this part, from core.putstatus `ranges`."""
+        r = self.client.call("core.putstatus", {"upload_id": upload})
+        from .transport import json_param
+        ranges = json_param(r, "ranges") or {}
+        have = set()
+        for a, b in (ranges.get(part.path, {}) or {}).get(str(part.k), []):
+            have.update(range(int(a), min(int(b), part.total)))
+        return have
+
+    def _commit(self, upload):
+        c = self.client
+        tries = 0
+        while True:
+            try:
+                return c.call("core.commit", {"upload_id": upload, "request_id": self.request_id,
+                                              **c.transfers.proof_params(upload)},
+                              timeout=c.timeouts.commit)
+            except RpcTimeout:
+                tries += 1                       # idempotent by request_id: ask again
+                if tries > 2:
+                    raise
+                log.warn("core.commit timed out, repeating (idempotent)", request_id=self.request_id, attempt=tries)
+
+    def _await_commit(self, upload, q):
+        """The outcome of a commit that answered `committing`: the signed event, else core.putstatus polling."""
+        c = self.client
+        deadline = time.monotonic() + c.timeouts.commit_wait
+        poll = 1.0
+        next_poll = time.monotonic() + poll
+        while time.monotonic() < deadline:
+            try:
+                ev = q.get(timeout=max(0.05, min(poll, next_poll - time.monotonic())))
+                st = (ev.get("state") or "").lower()
+                if st in ("committed", "done"):
+                    return ev
+                if st in ("failed",):
+                    raise CommitFailed(f"ingest commit failed: {ev.get('error')}", status=None, action="core.commit",
+                                       detail={"error": ev.get("error")})
+                continue
+            except queue.Empty:
+                pass
+            if time.monotonic() >= next_poll:
+                r = c.call("core.putstatus", {"upload_id": upload})
+                st = (r.get("commit_state") or "").lower()
+                if st == "committed":
+                    return r
+                if st == "failed":
+                    raise CommitFailed(f"ingest commit failed: {r.get('error')}", action="core.commit",
+                                       retryable=str(r.get("retryable")).lower() == "true")
+                poll = min(10.0, poll * 2)
+                next_poll = time.monotonic() + poll
+        raise RpcTimeout(f"ingest: commit still running after {c.timeouts.commit_wait:.0f} s "
+                         f"(request_id {self.request_id}; core.putstatus has the outcome)", action="core.commit")
+
+    def _discard(self, upload):
+        try:
+            self.client.call("core.discard", {"upload_id": upload})
+        except GaiaKeepError:
+            pass
+
+    # ------------------------------------------------------------------------------------------- legacy
+
+    def _legacy_form(self, parts, total_bytes):
+        if self.legacy_publish != "auto":
+            return self.legacy_publish
+        cap = getattr(self.client.transport, "max_rpc_seconds", None)
+        need = self.client.timeouts.legacy_publish(total_bytes)
+        fits = cap is None or cap >= need
+        return "streaming" if fits and len(parts) <= self.x.flows and need <= CORE_FLOW_EXPIRY_S / 2 else "staged"
+
+    def _legacy(self):
+        c, x = self.client, self.x
+        upload = new_id("u", 8)
+        plan = Transfers.plan(self.files, x.chunk, x.flows, keyed=self.client.keyed_digests())
+        parts = [p for fparts in plan for p in fparts]
+        total_bytes = sum(fp[0].size for fp in plan)
+        form = self._legacy_form(parts, total_bytes)
+        try:                                     # to resolve a lost publish answer; best effort (needs read access)
+            pre = c.head_or_none(self.target.collection_id, self.target.branch)
+        except GaiaKeepError:
+            pre = _UNKNOWN
+        fds = {}
+        try:
+            for fp in plan:
+                fds[fp[0].path] = os.open(fp[0].local, os.O_RDONLY)
+            if form == "streaming":
+                r = self._legacy_streaming(upload, parts, fds, total_bytes)
+            else:
+                r = self._legacy_staged(upload, parts, fds, total_bytes)
+            resolved = False
+        except _PublishLost as lost:
+            r = self._resolve_publish(upload, pre, plan, lost.cause)
+            resolved = True
+        finally:
+            for fd in fds.values():
+                os.close(fd)
+        res = self._result(r, upload, "legacy", parts, 0, 0)
+        res.publish, res.resolved = form, resolved
+        return res
+
+    def _publish(self, upload, total_bytes, streaming):
+        c = self.client
+        p = dict(self.target.params())
+        p["upload_id"] = upload
+        if streaming:
+            p["streaming"] = "true"
+        p.update(self.client.transfers.proof_params(upload))     # keyed: every file's digest proven
+        try:
+            return c.call("core.publish", p, timeout=c.timeouts.legacy_publish(total_bytes))
+        except RpcTimeout as e:
+            raise _PublishLost(e)          # the answer was lost, not necessarily the publish: resolved by _legacy
+
+    def _stop_all(self, why):
+        for lane in self.x.lanes():
+            for s in list(lane.routes.values()):
+                if hasattr(s, "stop"):
+                    s.stop(why)
+
+    def _legacy_staged(self, upload, parts, fds, total_bytes):
+        """Parts opened lazily, `flows` at a time; publish once the core has VERIFIED every file."""
+        c, x = self.client, self.x
+        lanes = x.lanes()
+        stop = threading.Event()
+        extra = {"collection_id": self.target.collection_id}
+
+        def work(i, part):
+            if stop.is_set():
+                return
+            lane = lanes[i % len(lanes)]
+            opened = x.open_part(lane, upload, part, extra)
+            x.send_part(lane, part, fds[part.path], opened)
+
+        failed = []
+        with cf.ThreadPoolExecutor(max(1, x.flows)) as ex:
+            futs = [ex.submit(work, i, p) for i, p in enumerate(parts)]
+            for f in cf.as_completed(futs):
+                try:
+                    f.result()
+                except Exception as e:
+                    if not failed:
+                        stop.set()
+                        self._stop_all("another part of the upload failed")
+                    failed.append(e)
+        if failed:
+            self._discard(upload)
+            raise failed[0]
+        try:
+            self._await_verified(upload, {p.path for p in parts})
+            return self._publish(upload, total_bytes, streaming=False)
+        except _PublishLost:
+            raise                                # the publish may be running: never discard under it
+        except Exception:
+            self._discard(upload)                # a refused publish: the wave-1 core discarded it already
+            raise
+
+    def _await_verified(self, upload, paths):
+        """Poll core.putstatus (C0) until the core holds every file whole: VERIFIED (its sha256 matched), or, keyed,
+        RECEIVED (the digest is proven by the publish's file_macs)."""
+        c = self.client
+        deadline = time.monotonic() + c.timeouts.commit_wait
+        poll = 0.02
+        while True:
+            files = c.putstatus(upload)["files"]
+            states = {files.get(p) for p in paths}
+            ok = {"VERIFIED", "RECEIVED"} if c.transfers.keyed else {"VERIFIED"}
+            if states and states <= ok:
+                return
+            bad = sorted(p for p in paths if files.get(p) in ("CORRUPT", "FAILED"))
+            if bad:
+                raise IntegrityError(f"ingest: the core did not verify {len(bad)} file(s) of upload {upload} "
+                                     f"(the bytes it received do not match their sha256)")
+            if time.monotonic() > deadline:
+                raise TransferTimeout(f"ingest: upload {upload} not verified after {c.timeouts.commit_wait:.0f} s")
+            time.sleep(poll)
+            poll = min(1.0, poll * 2)
+
+    def _legacy_streaming(self, upload, parts, fds, total_bytes):
+        """Every part opened (the streaming publish snapshots the upload's files), then the publish streams."""
+        c, x = self.client, self.x
+        lanes = x.lanes()
+        opened = []
+        try:
+            for i, p in enumerate(parts):
+                opened.append(x.open_part(lanes[i % len(lanes)], upload, p, {"collection_id": self.target.collection_id}))
+        except Exception:
+            self._discard(upload)
+            raise
+        result, publish_done = {}, threading.Event()
+
+        def publish():
+            try:
+                result["r"] = self._publish(upload, total_bytes, streaming=True)
+            except Exception as e:
+                result["e"] = e
+            finally:
+                publish_done.set()
+
+        pub = threading.Thread(target=publish, name="gaiakeep-publish", daemon=True)
+        pub.start()
+        failed = []
+        with cf.ThreadPoolExecutor(max(1, x.flows)) as ex:
+            futs = [ex.submit(x.send_part, lanes[i % len(lanes)], p, fds[p.path], opened[i]) for i, p in enumerate(parts)]
+            pending = set(futs)
+            stopped = False
+            while pending:
+                done, pending = cf.wait(pending, timeout=0.1)
+                for f in done:
+                    try:
+                        f.result()
+                    except Exception as e:
+                        failed.append(e)
+                if not stopped and (failed or (publish_done.is_set() and "e" in result)):
+                    stopped = True
+                    self._stop_all("the upload failed")
+        if failed and "r" not in result:
+            self._discard(upload)                # ends the publish's streams too
+        pub.join()
+        if "r" in result:
+            return result["r"]                   # the core verified every file's hash: a late sender error is moot
+        e = result.get("e")
+        if isinstance(e, _PublishLost):
+            raise e                              # resolved from putstatus and head, whatever the senders did
+        self._discard(upload)
+        raise failed[0] if failed else e         # a sender's failure is why a publish we discarded under failed
+
+    def _resolve_publish(self, upload, pre, plan, cause):
+        """A publish whose answer was lost: wait until the core is done with the upload, then read the head."""
+        c = self.client
+        t = self.target
+        log.warn("core.publish answer lost: resolving from core.putstatus and core.head", upload_id=upload,
+                 error_class=type(cause).__name__)
+        deadline = time.monotonic() + c.timeouts.commit_wait
+        poll = 0.25
+        while True:
+            try:
+                files = c.putstatus(upload)["files"]
+            except GaiaKeepError:
+                files = None
+            if files is not None and (not files or set(files.values()) <= {"FAILED", "CORRUPT"}):
+                break                            # the publish ended: the core discards the upload either way
+            if time.monotonic() > deadline:
+                raise OutcomeUnknown(f"ingest: core.publish of upload {upload} is still running after "
+                                     f"{c.timeouts.commit_wait:.0f} s; check core.head before retrying",
+                                     action="core.publish", detail={"upload_id": upload}) from cause
+            time.sleep(poll)
+            poll = min(5.0, poll * 2)
+        try:
+            head = c.head_or_none(t.collection_id, t.branch)
+            unchanged = head is None or (pre is not _UNKNOWN and pre is not None and head["vid"] == pre["vid"])
+            listed = None if unchanged else c.list(head["vid"])["files"]
+        except GaiaKeepError as e:
+            raise OutcomeUnknown(f"ingest: core.publish of upload {upload} ended, but its version could not be read "
+                                 f"back ({type(e).__name__})", action="core.publish") from cause
+        if unchanged:
+            raise CommitFailed(f"ingest: core.publish of upload {upload} ended without a new version on the branch",
+                               action="core.publish", retryable=True) from cause
+        for fp in plan:
+            p0 = fp[0]
+            fe = listed.get(p0.path)
+            # the listing names no raw digest (a keyed content tag at most): the stored file is compared through a
+            # zero-length core.get, whose file_hash (legacy) or file_mac (keyed) is the core's word
+            if not fe or int(fe.get("size", -1)) != p0.size or not same_file(self.client.transfers, head["vid"], p0.path, p0.local, p0.size):
+                raise OutcomeUnknown(f"ingest: the head moved to {head['vid']} after a lost publish answer, but it does "
+                                     f"not hold this upload's files", action="core.publish",
+                                     detail={"head": head["vid"]}) from cause
+        for d in t.deletes or ():
+            if d in listed:
+                raise OutcomeUnknown(f"ingest: the head moved to {head['vid']} but still holds a path this publish "
+                                     f"deletes", action="core.publish", detail={"head": head["vid"]}) from cause
+        log.info("lost publish answer resolved from the head", upload_id=upload, vid=head["vid"])
+        return {"vid": head["vid"], "number": head["number"], "collection_id": t.collection_id, "branch": t.branch}
+
+    def _result(self, r, upload, mode, parts, resumed, reuploads):
+        vid = r.get("vid")
+        if not vid:
+            raise IntegrityError("ingest: the core answered without a vid")
+        n = r.get("number")
+        return IngestResult(vid, int(n) if n not in (None, "") else None, r.get("collection_id") or self.target.collection_id,
+                            r.get("branch") or self.target.branch, self.request_id, upload, mode,
+                            sum(p.size for p in parts if p.k == 0), sum(p.retransmits for p in parts), resumed, reuploads,
+                            via=self.client.addr)

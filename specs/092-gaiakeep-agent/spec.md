@@ -1,9 +1,9 @@
 # Feature Specification: GaiaKeep agent
 
-**Feature Branch**: `codex/092-gaiakeep-agent`
+**Feature Branch**: `codex/092-gaiakeep-production` (continuation of merged `codex/092-gaiakeep-agent`)
 **Created**: 2026-10-02
-**Status**: Implemented locally; deterministic qualification recorded in verification.md. Existing-deployment/client qualification and the legacy fetch receiver remain pending.
-**Input**: Create an AstralDeep agent for all public GaiaKeep actions. Use the existing sandbox-to-DGX SSH tunnel. Do not provision Cresco or create a GaiaKeep instance. The owner believes the GaiaKeep interface is still pending and requests agent development now.
+**Status**: Production continuation in progress; checks and exact-candidate staging/client qualification are recorded separately in verification.md. Legacy fetch remains unsupported.
+**Input**: Create an AstralDeep agent for all public GaiaKeep actions through the existing sandbox-to-DGX SSH tunnel. Do not provision Cresco or create a GaiaKeep instance. The owner now reports the enrolled DGX client is available and requests checks, a production-ready PR, qualified merge and live sandbox update.
 
 ## Clarifications
 
@@ -12,6 +12,17 @@
 - Q: Is infrastructure provisioning required? → A: Forget Cresco setup; use the existing SSH listener on sandbox port 40000.
 - Q: May the agent create its own GaiaKeep instance? → A: No; discover and connect only to the existing deployment.
 - Q: Should agent development wait for the interface? → A: Focus on the Astral agent now; the owner will report when the interface is up.
+
+### Session 2026-10-03
+
+- The owner supplied Cody's existing client kit/account instructions and authorized checks, PR, merge and sandbox deployment. SSH credentials must suffice; the enrolled profile and private signing key remain on DGX. The previous staging waiver covered only the disabled initial merge.
+- Use a fixed first-party adapter over owner-scoped pinned SSH, an exact remotely installed SDK artifact and operator-supplied certificate/core pins. Do not forward upstream MCP tools' arbitrary host-file paths.
+- Astral must automatically update an operator-readable issue log when the Gaia tool handler reports a failure or its governed outer dispatch ends without a confirmed result. A timed-out or cancelled write remains unconfirmed; the worker may still finish. Manual qualification notes alone do not satisfy this requirement.
+
+- The owner waived unavailable Apple checks and explicitly deferred Android live credential/approval checks for this merge. Backend, Gaia dispatch, browser, Windows and automatic-log persistence checks still apply. Record those client checks as deferred, never passed.
+- Successful approved Gaia mutations must publish their existing primitive results directly to the stored owner/conversation through the normal workspace publisher; detached model continuation is not sufficient delivery. Consumed approval and publication failure must never resend a mutation.
+- The pinned SDK retries RpcTimeout during ingest commit. Classify mutation and unknown-action local/native timeout outcomes as non-retryable transport uncertainty while preserving read behavior, authoritative denials, IDs and verified channel cleanup.
+- A timeout while opening the verified RPC connection precedes sending the request. Eligible reads may use the pinned SDK's existing single reconnect for that failure; receive/native timeout replies, authoritative denials, expired deadlines and mutation no-resend behavior retain their existing semantics.
 
 ## User Scenarios & Testing
 
@@ -29,7 +40,7 @@ An authorized user asks Astral to inspect and manage their GaiaKeep collections,
 
 ### User Story 2 - Connect with isolated credentials (Priority: P1)
 
-Users register their DGX SSH connection in Astral and separately configure their GaiaKeep identity. Connections verify the host, gateway, and core identities and use only the caller's machine and credentials.
+Users register their DGX SSH connection in Astral; the enrolled Gaia profile and signing key stay in that account. Connections verify the host, gateway, and core identities and use only the caller's machine and local enrolled identity.
 
 **Independent Test**: Attempt cross-owner access, changed host keys, invalid gateway certificates, wrong core identity, forged caller identity, and missing credentials; every attempt fails before an unauthorized effect.
 
@@ -71,13 +82,14 @@ An authorized user publishes a bounded file to a collection or retrieves a bound
 - **FR-005**: Keep the integration disabled by default and require its external-fabric boundary flag as well as its own feature flag.
 - **FR-006**: Resolve SSH credentials only from a caller-owned registered machine with an existing host-key pin; refuse changed or untrusted host identity and blocked egress.
 - **FR-007**: Use only the existing tunnel and operator-configured gateway/core peers; verify gateway TLS on both control and data channels and pin the core identity out of band.
-- **FR-008**: Decrypt per-user Gaia credentials only within the agent boundary; never expose secret material in results, logs, errors, or specifications.
-- **FR-009**: Enforce bounded connection, request, response, decompression, and file-transfer resources; close all sockets, worker threads, and temporary files after a call.
+- **FR-008**: Default SSH mode loads the private Gaia profile/key only inside the caller's DGX account and keeps them there. Native compatibility mode decrypts user Gaia credentials only within the agent boundary. Never expose secret material in results, logs, errors, process arguments, or specifications.
+- **FR-009**: Enforce bounded connection, request, response, decompression, and file-transfer resources; close sockets and temporary files when the bounded worker finishes. An earlier caller timeout or cancellation must not claim that the remote operation was cancelled.
 - **FR-010**: Report native denials, deployment unavailability, unsupported upstream operations, and uncertain effects distinctly; do not fabricate outcomes or automatically retry mutations.
 - **FR-011**: Support bounded authenticated file publication/retrieval in addition to native control operations, without accepting arbitrary local filesystem paths.
 - **FR-012**: Deliver results using approved server-owned components shared by all clients; introduce no new primitive, protocol frame, database schema, or client-specific interface.
 - **FR-013**: Keep private upstream implementation code outside the product repository and declare/pin any optional client dependency reproducibly.
 - **FR-014**: Qualify changed code with at least 90% coverage, meaningful negative/integration tests, and lint. Record staging and live-client verification as pending until the owner's deployment is available.
+- **FR-015**: Automatically append bounded, redacted Markdown operational diagnostics for Gaia tool failures, with timestamp, closed tool/verdict and dispatch/mutation state. Optional native diagnostics contain only a closed failure-phase label, closed error-kind label and canonical numeric status from 0 through 999 or no status. Preserve the primary result and existing authorization/audit path if optional diagnostics or the configured logging sink fail; report sink failure through normal logs. Do not log credentials, identities, arguments, file content, paths or raw exception messages.
 
 ### Key Entities
 
@@ -100,6 +112,6 @@ An authorized user publishes a bounded file to a collection or retrieves a bound
 ## Assumptions
 
 - The owner supplies the existing Gaia deployment address, trusted identities, and enrolled user credentials when ready.
-- Astral's existing remote-machine credential surface supplies SSH registration; Gaia credentials use the existing agent credential surface.
+- Astral's remote-machine credential surface supplies SSH registration. Default SSH mode uses the account's qualified Gaia installation without backend signing credentials; native compatibility retains the encrypted agent credential surface.
 - Privileged public capabilities remain available to authorized users; their availability does not imply permission to run them.
 - Protocol defects in the pinned upstream release are surfaced and recorded, rather than repaired by deploying an independent Gaia instance.

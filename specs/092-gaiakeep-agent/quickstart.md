@@ -1,10 +1,50 @@
-# GaiaKeep agent handoff
+# GaiaKeep operator guide
 
-The implementation is local on `codex/092-gaiakeep-agent`; it has not been pushed or deployed. [Local verification](verification.md) records checks and remaining qualification. No Cresco agent, tunnel service or independent Gaia instance was provisioned.
+PR #226 merged the default-disabled agent at a13c977e6b22c0ce8f1f4980de5e483d15dd9447. The production continuation is codex/092-gaiakeep-production; verification.md records exact-candidate staging and affected-client qualification separately. No Cresco service or Gaia instance is provisioned.
 
-## Local checks
+## Account and trust configuration
 
-Use Python 3.11 with AstralDeep's normal dependencies and exact composed component wheels installed. Install `tooling/requirements-gaiakeep-tests.txt` in an isolated environment. Deterministic tests require neither the private Gaia SDK nor live services. From the root with `backend` on `PYTHONPATH`:
+Run the deployment owner's Gaia client setup under each enrolled DGX login account. The qualified installation is ~/.gaiakeep/venv/bin/python with ~/.gaiakeep/gaiakeep-profile.json and its account-owned P-384 key. Profile/key files must be owner-only regular files. The remote SDK is the exact 0.2.0 wheel and source/resource digests in backend/agents/gaiakeep/sdk-artifact.json. The ephemeral adapter snapshots verified SDK bytes, ignores mutable bytecode and native speedups, and uses supported pure-Python chunking. It does not install a service on the login node.
+
+Register your DGX account in Astral's Remote machines surface using the existing SSH endpoint. Probe and pin its host key. SSH credentials remain encrypted in Astral; Gaia's private signing key and gateway service key remain on the DGX. The default SSH mode needs no Gaia key entry in agent credentials. Grant individual tools explicitly; Gaia remains excluded from automatic safe-agent permission seeding.
+
+Sandbox's existing 128.163.202.61:40000 listener reaches the DGX login node. The backend must reach that public address from its container. Its narrow bridge/source-IP/firewall allowance must follow a container address or network replacement. The container's localhost does not reach this listener; SSH egress policy remains enforced.
+
+Supply runtime configuration through private files and certificate mounts, never committed values:
+
+| Variable | Requirement |
+|---|---|
+| FF_GAIAKEEP, FF_CRESCO | Both true for opt-in registration; both default false. Cresco flag gates the existing native gateway seam. |
+| GAIAKEEP_CONNECTION_MODE | Default ssh: run the reviewed adapter in the caller's pinned login account. |
+| GAIAKEEP_CORE_ADDRESS | Existing core region:agent:plugin triple. |
+| GAIAKEEP_ALLOWED_PEERS | Up to 16 admitted triples including core and qualified read peers. |
+| GAIAKEEP_GATEWAY_PORT | Existing login-node loopback gateway port; SSH mode default 28282. |
+| GAIAKEEP_GATEWAY_TLS_NAME | Out-of-band verified certificate hostname. |
+| GAIAKEEP_GATEWAY_CA_FILE | Backend-readable mounted PEM trust anchor; only public bytes go to the adapter. |
+| GAIAKEEP_CORE_PUBLIC_KEY | Out-of-band verified base64url P-384 SPKI. |
+| GAIAKEEP_ALLOW_LEGACY | Optional true, default false; requires separately qualified legacy deployment and system permission. |
+| GAIAKEEP_ISSUE_LOG_DIRECTORY | Operator-owned absolute directory for automatic redacted Markdown failures; Compose mounts `/app/gaia-issue-log`. Never expose a directory containing credentials or user uploads. |
+| GAIAKEEP_ISSUE_LOG_HOST_DIRECTORY | Compose-only host directory for the dedicated log mount; default `./backend/logs/gaiakeep`. |
+| GAIAKEEP_RESTORE_ROOT | Legacy restore only: operator-controlled non-root absolute POSIX directory. |
+
+The adapter dials only login-node loopback at the operator port. It compares profile core identity, port and peers against deployment trust and overrides the stock development transport. Certificate/hostname checks apply to both control and encrypted data channels. Profile verify_ssl=false and unverified_dataplane=true cannot disable verification. Model arguments cannot select identity, signing keys, endpoints or profile paths.
+
+The production image already contains Astral's declared Paramiko, cryptography, jsonschema and websockets dependencies. Remote SDK installation is separate. Optional native compatibility mode retains the exact private SDK in backend/requirements-gaiakeep.txt, encrypted GAIAKEEP_PRINCIPAL/GAIAKEEP_PRIVATE_KEY, runtime CRESCO_SERVICE_KEY and all trust fields; its default gateway port is 8282. It is not the sandbox production mode. Do not install an SDK into a running container as a deployment substitute.
+
+## Bounds and outcomes
+
+The catalog retains 111 declarations, 107 control tools, two bounded file workflows and two SSH account-discovery tools. Files are at most 8 MiB decoded; encryption/key exchange remain SDK-owned. Upload publishes one relative file and moves the selected branch head. Use base_vid to retain other files and expected_head for concurrency. Ingest accepts optional request_id matching 16–64 ASCII letters/digits/underscore/hyphen; its ID survives success or uncertainty for explicit reconciliation. Have-upload accepts neither base_vid nor request_id.
+
+Every mutation requires normal owner-bound, exact-argument, single-use human approval. Uncertain writes are never replayed. Native jobs/IDs are retained without claiming completion. Ordinary RPC/results are bounded to 1 MiB, aggregate gzip expansion to 4 MiB, diagnostics to 16 KiB and the whole SSH operation to 120 seconds. File results use a separate 13 MiB wire limit. Request bytes use stdin rather than process arguments; raw remote diagnostics are never returned.
+
+Legacy fetch remains unsupported until T025's authenticated receiver is qualified. Legal-order shortening remains unsupported due to the upstream signing/routing collision. Extraction verifies exact certificate bytes/signature and extract ID against the pinned key, including the current SDK public-key field; Merkle leaf inclusion is not claimed. The prototype may wipe data and must not receive PHI or regulated content.
+
+Successful Gaia results and issued approval cards are published through the normal owner-scoped conversation workspace and survive ordinary conversation hydration. Approval cards keep a stable identity so approve/decline replaces the issued card. Successful approved results use a separate owner-scoped conversation commit before optional model continuation; a publication failure never repeats the completed Gaia mutation. Permission refusals, failed tool results and unrelated agents retain their existing delivery behavior. SDK commit timeouts remain unconfirmed and never trigger another commit; reconcile using the retained request/upload/version identity before deciding on any new operation. Read peer fallback and authoritative permission/TLS/protocol denials retain their existing behavior.
+Control and data connections may make at most two opening attempts for a recognized transient network failure before sending any frame. Each attempt retains the existing ten-second opening cap and the original operation deadline. Cleanup must finish successfully before another opening attempt; TLS, authorization, protocol, unknown close-code and cleanup failures stop immediately. Exhausted control openings do not gain an additional SDK reconnect or commit attempt. Requests, stream registrations and activation are never resent by this recovery path.
+
+## Qualification and rollout
+
+Use Python 3.11, AstralDeep's exact composition and tooling/requirements-gaiakeep-tests.txt. Deterministic Gaia tests need no private SDK or live third-party network:
 
 ```text
 python -m pytest -c backend/pytest.ini backend/agents/gaiakeep/tests backend/tests/test_gaiakeep_confirmation.py backend/tests/test_gaiakeep_tunnel.py backend/tests/test_remote_confirmation_063.py backend/tests/test_remote_coverage_misc_063.py backend/tests/test_remote_taint_063.py backend/tests/test_remote_orchestrator_wiring_063.py backend/tests/test_start_wait.py -q
@@ -12,37 +52,12 @@ ruff check .
 git diff --check
 ```
 
-The modules runner discovers `backend/agents/gaiakeep/tests` automatically. Optional SDK qualification is separate: install `tooling/requirements-gaiakeep-sdk-tests.txt` using existing authorized GitHub access, then run `python -m pytest -c backend/pytest.ini tooling/gaiakeep -q`. Installed SDK `direct_url.json` must record the exact pinned commit; unqualified index packages/wheels without that provenance are refused. Private implementation stays outside the product tree.
+Before production activation, stage the exact clean candidate image using real Keycloak, Plane-imported representative data, normal migrations, workers and isolated mounts/networks. Use the supported backend-web initializer and qualification driver. Verify authenticated dispatch, permission/cross-owner denial, exact approval/decline/replay, approved bounded publication/readback, job reconciliation, failed SSH/TLS/core pins and disconnected-write uncertainty. Exercise credential/approval/results on every affected client; retain candidate-bound evidence. Local/source smoke alone is not staging qualification.
 
-## Configure the existing deployment when ready
+After qualified merge and green CI, deploy the immutable sha-<merge SHA> image and recreate only the backend with reviewed flags/trust mounts. Preserve companion services, data, IAM/audit secrets and prior image/config backups. Disable with FF_GAIAKEEP=false and backend recreation; restart alone does not reread Compose environment or copy source.
 
-Build an agent-capable candidate image with `backend/requirements-gaiakeep.txt` installed before enabling the flags. This optional manifest declares the exact private SDK pin, `websockets>=15,<17` and `jsonschema>=4.21,<5`. Supply configuration through normal deployment secret/configuration paths, never committed values:
+The agent automatically appends failures to `ISSUES.md` in its configured operator directory and emits the same safe diagnostic labels in normal logs. Entries exclude identities, arguments, paths, payloads and exception text. When available, `native_phase`, `failure_kind` and `native_status` identify the failure boundary using fixed labels and a numeric status or `none`. Missing or malformed optional detail leaves the original entry intact. Bounded rotation keeps three backups. A sink failure is visible in normal logs and does not change the primary Gaia outcome or retry a request.
 
-| Variable | Required value |
-|---|---|
-| `FF_GAIAKEEP`, `FF_CRESCO` | Both true for opt-in registration, default false. Cresco flag controls access to the existing native gateway only. |
-| `GAIAKEEP_CORE_ADDRESS` | Existing core region:agent:plugin triple. |
-| `GAIAKEEP_ALLOWED_PEERS` | Comma-separated admitted triples, up to 16, including the core. |
-| `GAIAKEEP_GATEWAY_PORT` | Existing remote loopback gateway port, default 8282. |
-| `GAIAKEEP_GATEWAY_TLS_NAME` | Verified hostname from the gateway certificate. |
-| `GAIAKEEP_GATEWAY_CA_FILE` | Readable trusted PEM CA/certificate file. |
-| `GAIAKEEP_CORE_PUBLIC_KEY` | Out-of-band verified base64url SPKI core identity key. |
-| `CRESCO_SERVICE_KEY` | Runtime-only existing gateway service key. |
-| `GAIAKEEP_ALLOW_LEGACY` | Optional true, default false; legacy system tools also need explicit permission. |
-| `GAIAKEEP_RESTORE_ROOT` | For legacy restore: administrator-controlled absolute POSIX directory other than `/`. User destination remains relative beneath it. |
+The sandbox rollout will precreate the dedicated host directory `/home/sam/gaia-integration/agent-issues` as Sam UID/GID 1003, mode 2750. Its setgid bit makes root backend-created 0640 files inherit Sam's group, so Sam can read `ISSUES.md`; verify actual ownership/mode and readability after recreation. Mount only this directory. The earlier `/home/sam/gaia-integration/ISSUES.md` contains historical operator qualification notes. Durable product records and authorization/audit provenance remain in AstralPlane. Local log directories are excluded from Git and image build contexts.
 
-Register a caller-owned DGX SSH machine in Remote machines and probe/pin its existing host key. The endpoint must be reachable from the backend's network namespace and pass existing SSH/HTTP egress gates. Discovery verified sandbox `128.163.202.61` → `localhost:40000` → login node; it did not establish public or container reachability of port 40000. The sandbox host's localhost is not the backend container's localhost. Existing SSH policy rejects loopback targets; this feature adds no bypass. Qualify the existing endpoint mapping before connection.
-
-In agent credentials, each user supplies their enrolled `GAIAKEEP_PRINCIPAL` and `GAIAKEEP_PRIVATE_KEY`. For the password-style field, use single-line base64 of an unencrypted ECDSA P-384 PEM key; raw PEM is also accepted by the agent. Optional `GAIAKEEP_RECONSTRUCTION_TOKEN` is for applicable legacy restore. SSH auth and Gaia identity/roles are separate. Grant tools explicitly; Gaia is excluded from automatic safe-agent seeding. Models cannot supply identity, signatures, stream selectors or tokens.
-
-## Semantics and limits
-
-The 111 declarations have 107 control surfaces plus two complete bounded file tools. Four encrypted transfer primitives belong to SDK upload/read workflows. Upload creates one new version and moves the branch head; `base_vid` preserves other files and `expected_head` guards concurrency. Both strategies support a head guard; have does not support `base_vid`. Files: 8 MiB decoded, 120-second flow. RPCs: 1 MiB; aggregate gzip expansion: 4 MiB. Ordinary ingest/control request IDs survive uncertain results for reconciliation. Do not blindly retry unconfirmed writes.
-
-Legacy `fetch` is explicitly unsupported until its bounded authenticated receiver is implemented/qualified (T025); the pinned SDK contains no supported receiver. Legal-order shortening is unsupported because of the upstream action-field collision. Extraction verifies the signed certificate, not Merkle leaf inclusion. Redaction-changed certificates are omitted and lose the verified claim.
-
-## Pending qualification and disablement
-
-When the owner reports the interface ready, record trust configuration and qualify an exact candidate SHA/image with representative nonsecret collection data. Test actual whoami/status, permitted reads, insufficient-role denial, cross-user refusal, approval decline/expiry/replay, an approved mutation and job reconciliation, an encrypted file round trip on Linux, failed host/TLS/core pins, and disconnect cleanup. Exercise credentials, approval and results on every affected client. Complete merge/release gates remain required; local tests do not waive them. SDK `pread`/`pwrite` transfers still need Linux verification.
-
-Disable by setting `FF_GAIAKEEP=false` and recreating the candidate container. Restart alone does not install ordinary source changes or reread Compose environment. Neither placement registers Gaia with flags off, and invocation checks again. Existing encrypted credentials and audit retain their normal lifecycle.
+SSH account discovery uses gaiakeep_connection_info for the enrolled principal/tenant/default collection and gaiakeep_list_collections for SDK-known collections and heads. Neither accepts profile paths or credentials. These are distinct from mutating core.profile policy operations; native compatibility refuses the local discovery tools.

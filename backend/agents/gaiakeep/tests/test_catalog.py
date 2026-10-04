@@ -4,10 +4,18 @@ import pytest
 from agents.gaiakeep import catalog
 
 
+@pytest.mark.parametrize('change', [{'request_id': 'short'}, {'request_id': 'x' * 65},
+                                  {'strategy': 'have', 'request_id': 'stable-request-id'}])
+def test_upload_id_is_bounded_and_matches_supported_ingest_strategy(change):
+    with pytest.raises(ValueError):
+        catalog.validate('gaiakeep_upload_file', dict(machine_id='mine', path='p', collection_id='c',
+                                                     data_base64='aA==', **change))
+
+
 def test_complete_closed_catalog():
     assert len(catalog.ACTIONS) == 111
     assert sum(a.startswith('core.') for a in catalog.ACTIONS) == 90
-    assert len(catalog.TOOLS) == 109
+    assert len(catalog.TOOLS) == 111
     assert catalog.FILE_ACTIONS == {'core.put', 'core.get', 'core.haveopen', 'core.have'}
     for info in catalog.TOOLS.values():
         schema = info['input_schema']
