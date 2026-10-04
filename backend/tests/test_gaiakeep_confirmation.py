@@ -257,6 +257,9 @@ def approved_gaia_delivery(monkeypatch, gaia_server):
     websocket = _WS()
     orch.ui_sessions[websocket] = {'user_id': USER}
     orch._send_or_replace_components = AsyncMock(return_value=[{'created': True}])
+    async def publish(**arguments):
+        return await arguments['mutation']()
+    orch.run_detached_conversation_mutation = AsyncMock(side_effect=publish)
     original_policy = rc.policy_for
     policy = original_policy('gaiakeep-1')
     policy.auto_continue = False

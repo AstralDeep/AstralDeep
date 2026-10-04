@@ -4,6 +4,7 @@ orchestrator/api.py; dispatches into chrome_events.py and agent_lifecycle.py.
 """
 
 import asyncio
+import copy
 import contextvars
 import hashlib
 import json
@@ -11106,11 +11107,23 @@ class Orchestrator:
                         )
                         if isinstance(auth, GateRefusal):
                             if auth.render_components:
-                                await self.send_ui_render(
-                                    websocket,
-                                    auth.render_components,
-                                    target=auth.render_target or "chat",
-                                )
+                                if (agent_id == "gaiakeep-1" and chat_id
+                                        and all(isinstance(component, dict)
+                                                and component.get("type") == "card"
+                                                and str(component.get("id") or "").startswith("au_approval_")
+                                                for component in auth.render_components)):
+                                    components = copy.deepcopy(auth.render_components)
+                                    for component in components:
+                                        _tag_source(component, agent_id, tool_name)
+                                    await self._send_or_replace_components(
+                                        websocket, components, chat_id, user_id=user_id,
+                                    )
+                                else:
+                                    await self.send_ui_render(
+                                        websocket,
+                                        auth.render_components,
+                                        target=auth.render_target or "chat",
+                                    )
                             return
                         result = await self._execute_with_retry_audited(
                             websocket,
@@ -11122,7 +11135,21 @@ class Orchestrator:
                             channel="websocket",
                         )
                         if result and result.ui_components:
-                            await self.send_ui_render(websocket, result.ui_components)
+                            if agent_id == "gaiakeep-1" and chat_id and result.error is None:
+                                components = copy.deepcopy(result.ui_components)
+                                public_arguments = {key: value for key, value in auth.args.items()
+                                                    if not str(key).startswith("_")
+                                                    and key not in {"user_id", "session_id"}}
+                                for component in components:
+                                    _tag_tool_result_source(
+                                        component, result, agent_id, tool_name, public_arguments,
+                                        getattr(result, "correlation_id", None),
+                                    )
+                                await self._send_or_replace_components(
+                                    websocket, components, chat_id, user_id=user_id,
+                                )
+                            else:
+                                await self.send_ui_render(websocket, result.ui_components)
                         elif result and result.error:
                             await self.send_ui_render(websocket, [
                                 Alert(message=result.error.get("message", "Pagination failed"), variant="error").to_dict()

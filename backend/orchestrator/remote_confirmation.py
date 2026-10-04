@@ -425,7 +425,7 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
                payload={"proposal_id": proposal_id, "decision": "approve"}),
         Button(label="Decline", action="remote_op_decision", variant="secondary",
                payload={"proposal_id": proposal_id, "decision": "decline"}),
-    ], id=card_component_id(proposal_id) if policy.card_as_result else None).to_dict()
+    ], id=card_component_id(proposal_id) if policy.card_as_result or agent_id == "gaiakeep-1" else None).to_dict()
     return proposal_id, card
 
 
@@ -439,7 +439,7 @@ async def _replace_card(orch, row, title: str, body: str, variant: str = "defaul
     try:
         from astralprims import Card, Text
         policy = policy_for(row.agent_id)
-        if policy is None or not policy.card_as_result:
+        if policy is None or (not policy.card_as_result and row.agent_id != "gaiakeep-1"):
             return
         comp = Card(title=title, content=[Text(content=body, variant="body")],
                     id=card_component_id(str(row.proposal_id))).to_dict()
@@ -654,7 +654,11 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             logger.debug("remote_op on_approved hook failed", exc_info=True)
 
     # Goes back through the gate to re-validate — not a direct call
-    stored_args = dict(row.arguments)
+    if row.agent_id == "gaiakeep-1":
+        from persistent_agents.runtime_values import thaw
+        stored_args = thaw(row.arguments)
+    else:
+        stored_args = dict(row.arguments)
     stored_args[_MARKER] = proposal_id
     tc = SimpleNamespace(id="remote-op", function=SimpleNamespace(
         name=row.tool_name, arguments=json.dumps(stored_args)))
@@ -669,14 +673,17 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     if (row.agent_id == "gaiakeep-1" and websocket is not None and row.conversation_id
             and result is not None and result.error is None and result.ui_components):
         components = copy.deepcopy(result.ui_components)
-        public_arguments = {key: value for key, value in row.arguments.items()
+        public_arguments = {key: value for key, value in stored_args.items()
                             if not str(key).startswith("_") and key not in {"user_id", "session_id"}}
         from orchestrator.orchestrator import _tag_tool_result_source
         for component in components:
             _tag_tool_result_source(component, result, row.agent_id, row.tool_name,
                                     public_arguments, getattr(result, "correlation_id", None))
-        await orch._send_or_replace_components(
-            websocket, components, row.conversation_id, user_id=user_id)
+        async def _publish_result():
+            return await orch._send_or_replace_components(
+                websocket, components, row.conversation_id, user_id=user_id)
+        await orch.run_detached_conversation_mutation(
+            chat_id=row.conversation_id, user_id=user_id, mutation=_publish_result)
     policy = policy_for(row.agent_id)
     not_attempted = _not_attempted_code(result)
     if policy is not None and policy.retry_grace_s > 0 and not_attempted:
