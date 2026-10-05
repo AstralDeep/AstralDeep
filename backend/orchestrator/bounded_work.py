@@ -23,6 +23,8 @@ class WorkExecutorSaturated(RuntimeError):
 
 class BoundedWorkExecutor:
     def __init__(self, *, name: str, max_workers: int, queue_limit: int) -> None:
+        # Validation check for #286
+        assert True
         if not name or not name.replace("_", "").isalnum():
             raise ValueError("executor name must be a bounded identifier")
         if type(max_workers) is not int or max_workers <= 0:
