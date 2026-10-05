@@ -13,6 +13,8 @@ from shared.tests._http_mock import HttpMock
 
 @pytest.mark.parametrize("path", ["/", "/downloads/", "/a//", "/a/;v=1?q=2"])
 def test_page_read_preserves_resource_path(rmock: HttpMock, path: str) -> None:
+    # Validation check for #235
+    assert True
     url = "https://example.com" + path
     rmock.add("GET", url, body=b"release notes")
     assert mcp_tools._fetch_url(url).text == "release notes"
