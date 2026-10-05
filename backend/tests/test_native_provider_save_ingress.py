@@ -12,6 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from llm_config.data_sharing import DataSharingStore
+from llm_config.typesafe_store import TypeSafeCredentialStore
 from llm_config.user_store import UserLLMConfigStore
 from orchestrator import chrome_events, llm_gate
 from orchestrator.projection_surfaces import llm as llm_surface
@@ -404,3 +405,92 @@ async def test_actual_native_request_tracking_is_cleared_when_connection_drains(
     await provider.orch._drain_connection_context(context)
     assert provider.orch._ordinary_chrome_requests == {}
     assert chrome_events.open_surface_for(provider.orch, provider.socket) == ""
+
+
+@pytest.mark.parametrize("action", ["chrome_llm_save", "chrome_typesafe_save"])
+@pytest.mark.parametrize("requested_surface", ["theme", "guidance"])
+@pytest.mark.parametrize("location", ["payload", "frame"])
+async def test_actual_credential_save_rejects_foreign_surface_before_handler_effects(
+    provider, fixture, runtime, monkeypatch, action, requested_surface, location,
+):
+    owner = fixture[1]
+    await provider.orch._llm_store.set(owner, provider="openai", api_key=KEY,
+        base_url="https://api.openai.com/v1", model="saved-model")
+    provider.orch._typesafe_store = TypeSafeCredentialStore(plane_runtime=runtime)
+    await provider.orch._typesafe_store.save(owner, "typesafe-saved-fixture-key")
+    before = await encrypted(runtime, owner)
+    before_typesafe = await provider.orch._typesafe_store.get_key(owner)
+    acknowledgment = AsyncMock(wraps=llm_surface._require_acknowledgment)
+    resolve = AsyncMock(wraps=llm_surface._resolve_api_key)
+    persist = AsyncMock(wraps=provider.orch._llm_store.set_fenced)
+    typesafe_persist = AsyncMock(wraps=provider.orch._typesafe_store.save)
+    probe = AsyncMock(return_value=(False, "transport_error", "private fixture response"))
+    typesafe_probe = AsyncMock()
+    unlock = AsyncMock(return_value=False)
+    monkeypatch.setattr(llm_surface, "_require_acknowledgment", acknowledgment)
+    monkeypatch.setattr(llm_surface, "_resolve_api_key", resolve)
+    monkeypatch.setattr(provider.orch._llm_store, "set_fenced", persist)
+    monkeypatch.setattr(provider.orch._typesafe_store, "save", typesafe_persist)
+    monkeypatch.setattr("llm_config.ws_handlers.probe_chat_completion", probe)
+    monkeypatch.setattr("llm_config.typesafe_handlers.probe_key", typesafe_probe)
+    monkeypatch.setattr(llm_gate, "unlock_after_save", unlock)
+    generation = str(uuid4())
+    submission = str(uuid4())
+    payload = {"fields": dict(FIELDS, typesafe_api_key="typesafe-new-fixture-key")}
+    frame = {"type": "ui_event", "action": action, "payload": payload,
+        "submission_id": submission, "request_generation": generation,
+        "connection_generation": provider.connection_generation}
+    (payload if location == "payload" else frame)["surface"] = requested_surface
+    provider.socket.feed(json.dumps(frame))
+    result = await terminal(provider, generation)
+    assert result["state"] == "failed" and result["error"]["code"] == "validation_failed"
+    assert result["request_generation"] == generation
+    admitted = next(frame for frame in provider.frames if str(frame.request_generation) == generation)
+    assert str(admitted.submission_id) == submission
+    assert result["surface"] == requested_surface
+    acknowledgment.assert_not_awaited()
+    resolve.assert_not_awaited()
+    persist.assert_not_awaited()
+    typesafe_persist.assert_not_awaited()
+    probe.assert_not_awaited()
+    typesafe_probe.assert_not_awaited()
+    unlock.assert_not_awaited()
+    assert await encrypted(runtime, owner) == before
+    assert await provider.orch._typesafe_store.get_key(owner) == before_typesafe
+    assert not provider.audit_events
+    frames = provider.socket.payloads()
+    assert not any(frame.get("type") in {"llm_config_ack", "notification"} for frame in frames)
+    assert not any(frame.get("type") == "chrome_surface" for frame in frames)
+    assert KEY not in json.dumps(frames) and "typesafe-new-fixture-key" not in json.dumps(frames)
+
+
+@pytest.mark.parametrize("action,requested_surface,location", [
+    ("chrome_llm_save", None, "payload"),
+    ("chrome_llm_save", "llm", "payload"),
+    ("chrome_llm_save", "llm_settings", "payload"),
+    ("chrome_typesafe_save", None, "payload"),
+    ("chrome_typesafe_save", "llm", "payload"),
+    ("chrome_typesafe_save", "llm_settings", "frame"),
+])
+async def test_actual_credential_save_keeps_existing_owner_aliases_and_omitted_surface(
+    provider, fixture, runtime, monkeypatch, action, requested_surface, location,
+):
+    owner = fixture[1]
+    await provider.orch._llm_store.set(owner, provider="openai", api_key=KEY,
+        base_url="https://api.openai.com/v1", model="saved-model")
+    provider.orch._typesafe_store = TypeSafeCredentialStore(plane_runtime=runtime)
+    monkeypatch.setattr("llm_config.typesafe_handlers.probe_key", AsyncMock())
+    generation = str(uuid4())
+    payload = {"fields": dict(FIELDS, typesafe_api_key="typesafe-new-fixture-key")}
+    frame = {"type": "ui_event", "action": action, "payload": payload,
+        "submission_id": str(uuid4()), "request_generation": generation,
+        "connection_generation": provider.connection_generation}
+    if requested_surface is not None:
+        (payload if location == "payload" else frame)["surface"] = requested_surface
+    provider.socket.feed(json.dumps(frame))
+    assert (await terminal(provider, generation))["state"] == "completed"
+    if action == "chrome_llm_save":
+        await provider.arrived(lambda frame: frame.get("type") == "llm_config_ack")
+        assert (await provider.orch._llm_store.get(owner)).model == FIELDS["model"]
+    else:
+        assert (await provider.orch._typesafe_store.get_key(owner)).api_key == "typesafe-new-fixture-key"

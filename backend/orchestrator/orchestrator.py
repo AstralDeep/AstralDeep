@@ -8169,6 +8169,13 @@ class Orchestrator:
             )
             runtime_websocket = None
             try:
+                if (work.frame.action in {"chrome_llm_save", "chrome_typesafe_save"}
+                        and work.frame.surface not in {None, "llm", "llm_settings"}):
+                    raise LLMConfigOperationFailure(
+                        state=OperationState.FAILED,
+                        code="validation_failed",
+                        safe_summary="This action does not belong to the requested surface.",
+                    )
                 if work.frame.operation_kind == "llm_credential_save":
                     deadline_monotonic = work.frame.deadline_at_monotonic
                     deadline_utc = work.frame.deadline_at_utc
