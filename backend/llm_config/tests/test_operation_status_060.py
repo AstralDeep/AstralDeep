@@ -346,38 +346,28 @@ async def test_accepted_status_is_immediate_and_canonical() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("probe_result", "state", "code"),
+    "probe_result",
     [
-        ((False, "auth_failed", "HTTP 401"), OperationState.FAILED, "validation_failed"),
-        ((False, "model_not_found", "HTTP 404"), OperationState.FAILED, "validation_failed"),
-        (
-            (False, "transport_error", "DNS resolution failed"),
-            OperationState.RETRYABLE,
-            "network_unavailable",
-        ),
-        (
-            (False, "provider_unavailable", "HTTP 503"),
-            OperationState.RETRYABLE,
-            "provider_unavailable",
-        ),
+        (False, "auth_failed", "HTTP 401"),
+        (False, "model_not_found", "HTTP 404"),
+        (False, "transport_error", "DNS resolution failed"),
+        (False, "provider_unavailable", "HTTP 503"),
     ],
 )
-async def test_probe_failures_map_to_corrective_or_retryable_terminal(
+async def test_post_save_probe_failures_preserve_completed_operation_and_warn(
     monkeypatch,
     store,
     fake_db,
     fake_recorder,
     safe_send,
     probe_result,
-    state,
-    code,
 ) -> None:
     async def _probe(**_kwargs):
         return probe_result
 
     monkeypatch.setattr(handlers, "probe_chat_completion", _probe)
     coordinator = _coordinator()
-    _owner, _accepted, claim = _accepted_claim(coordinator)
+    owner, _accepted, claim = _accepted_claim(coordinator)
     runtime = _operation_runtime(
         coordinator=coordinator,
         fence=claim.fence,
@@ -386,11 +376,8 @@ async def test_probe_failures_map_to_corrective_or_retryable_terminal(
         emit_phase=AsyncMock(),
         unlock_after_save=AsyncMock(),
     )
-    failure_type = getattr(handlers, "LLMConfigOperationFailure", None)
-    assert failure_type is not None
-
-    with _activate_runtime(runtime), pytest.raises(failure_type) as captured:
-        await handlers.handle_llm_config_set(
+    with _activate_runtime(runtime):
+        assert await handlers.handle_llm_config_set(
             safe_send=safe_send,
             websocket=object(),
             config=_config(),
@@ -398,11 +385,14 @@ async def test_probe_failures_map_to_corrective_or_retryable_terminal(
             auth_principal=USER_ID,
             store=store,
             recorder=fake_recorder,
-        )
-
-    assert captured.value.state is state
-    assert captured.value.code == code
-    assert fake_db.users == {}
+        ) is True
+    assert runtime.failure is None and runtime.completed_operation.state is OperationState.COMPLETED
+    assert API_KEY not in fake_db.users[USER_ID]["api_key_enc"]
+    safe_send.assert_not_awaited()
+    await runtime.connection_check()
+    warning = json.loads(safe_send.await_args.args[1])
+    assert warning["type"] == "notification" and warning["level"] == "warning"
+    assert coordinator.query_operation(owner=owner, operation_id=claim.fence.operation_id).state is OperationState.COMPLETED
     runtime.unlock_after_save.assert_not_awaited()
 
 
@@ -448,7 +438,6 @@ async def test_success_phases_then_fenced_persistence_and_unlock(
 
     assert saved is True
     assert [(state, phase) for state, phase, _label in phases] == [
-        ("validating", "validating_credentials"),
         ("persisting", "saving_credentials"),
     ]
     assert fake_db.users[USER_ID]["api_key_enc"] != API_KEY
@@ -553,22 +542,16 @@ async def test_terminal_fence_blocks_late_persistence_and_unlock(
     fake_recorder,
     safe_send,
 ) -> None:
-    probe_finished = asyncio.Event()
-
-    async def _probe(**_kwargs):
-        await asyncio.sleep(0.03)
-        probe_finished.set()
-        return True, None, None
-
-    monkeypatch.setattr(handlers, "probe_chat_completion", _probe)
+    probe = AsyncMock()
+    monkeypatch.setattr(handlers, "probe_chat_completion", probe)
     coordinator = _coordinator()
     _owner, _accepted, claim = _accepted_claim(coordinator)
     unlock = AsyncMock()
     runtime = _operation_runtime(
         coordinator=coordinator,
         fence=claim.fence,
-        deadline_at_monotonic=time.monotonic() + 0.01,
-        deadline_at_utc=datetime.now(UTC) + timedelta(seconds=0.01),
+        deadline_at_monotonic=time.monotonic() - 1,
+        deadline_at_utc=datetime.now(UTC) - timedelta(seconds=1),
         emit_phase=AsyncMock(),
         unlock_after_save=unlock,
     )
@@ -586,7 +569,8 @@ async def test_terminal_fence_blocks_late_persistence_and_unlock(
             recorder=fake_recorder,
         )
 
-    assert probe_finished.is_set()
+    probe.assert_not_awaited()
+    assert runtime.connection_check is None
     assert captured.value.state is OperationState.RETRYABLE
     assert captured.value.code == "deadline_exceeded"
     assert fake_db.users == {}

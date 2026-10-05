@@ -106,11 +106,13 @@ def test_success_returns_ok_true(client, fake_recorder):
     assert "sk-realkey1234567890abcd" not in serialised
 
 
+@pytest.mark.parametrize("probe_error", [None, "connection refused", "HTTP 401 unauthorized"])
 def test_probe_is_transient_and_cannot_replace_saved_runtime_config(
     client,
     app,
     store,
     fake_db,
+    probe_error,
 ):
     store.set_sync(
         "test_user",
@@ -121,7 +123,8 @@ def test_probe_is_transient_and_cannot_replace_saved_runtime_config(
     )
     app.state.orchestrator._llm_store = store
     fake = MagicMock()
-    fake.chat.completions.create = MagicMock(return_value=_success_response())
+    fake.chat.completions.create = MagicMock(return_value=_success_response(),
+        side_effect=RuntimeError(probe_error) if probe_error else None)
 
     with patch("llm_config.api.OpenAI", return_value=fake):
         response = client.post(
@@ -134,7 +137,7 @@ def test_probe_is_transient_and_cannot_replace_saved_runtime_config(
         )
 
     assert response.status_code == 200
-    assert response.json()["ok"] is True
+    assert response.json()["ok"] is (probe_error is None)
     assert response.json()["model"] == "prospective-model"
     assert store.get_sync("test_user").model == "saved-model"
     assert fake_db.users["test_user"]["model"] == "saved-model"

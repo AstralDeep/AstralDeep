@@ -1,6 +1,6 @@
-"""WebSocket handlers for saving/clearing a user's LLM configuration: re-probes the
-exact submitted triple before persisting via user_store.py, audits, and acks. Returns
-whether a row changed so the caller can re-gate the user's sockets.
+"""Persists and acknowledges a user's encrypted provider configuration through user_store.py.
+Connection checks follow accepted saves and report advisory warnings without reversing persistence.
+Clearing remains owner-scoped and lets callers update the account's setup gate.
 """
 
 from __future__ import annotations
@@ -14,12 +14,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Iterator, Optional
+from urllib.parse import urlsplit
+
+import httpx
 
 from audit.recorder import Recorder
 from orchestrator.work_admission import OperationState, StaleExecutionFenceError
 
 from .audit_events import record_llm_config_change
-from .probe import probe_chat_completion
+from .probe import PROBE_TIMEOUT_SECONDS, classify_probe_error, probe_chat_completion
 from .providers import get_preset, resolve_base_url
 from .user_store import LLMConfigCommitDeadlineExceeded, UserLLMConfigStore
 
@@ -44,6 +47,9 @@ class LLMConfigOperationContext:
         default=None, init=False
     )
     completed_operation: Any | None = field(default=None, init=False)
+    connection_check: Callable[[], Awaitable[None]] | None = field(
+        default=None, init=False, repr=False
+    )
 
     def remember_failure(
         self, failure: "LLMConfigOperationFailure"
@@ -131,9 +137,35 @@ def _operation_failure(error_class: str | None) -> LLMConfigOperationFailure:
     )
 
 
-def validate_config_submission(config: Dict[str, Any]) -> tuple:
+def validate_config_field_types(config: Any) -> Dict[str, str]:
     if not isinstance(config, dict):
-        return {}, {"config": "malformed payload"}
+        return {"config": "malformed payload"}
+    return {name: "must be text" for name in ("provider", "api_key", "model", "base_url")
+            if config.get(name) is not None and not isinstance(config[name], str)}
+
+
+def validate_endpoint_syntax(base_url: str) -> str | None:
+    try:
+        parts = urlsplit(base_url)
+        if parts.scheme not in {"http", "https"}:
+            return "endpoint address must start with http:// or https://"
+        if parts.username is not None or parts.password is not None:
+            return "endpoint address must not contain credentials"
+        if (any(ord(char) < 32 or ord(char) == 127 for char in base_url)
+                or any(char.isspace() for char in parts.netloc) or "\\" in parts.netloc):
+            return "endpoint address is malformed"
+        if not parts.hostname or not httpx.URL(base_url).host:
+            return "endpoint address requires a valid host"
+        _ = parts.port
+    except (ValueError, httpx.InvalidURL):
+        return "endpoint address has an invalid host or port"
+    return None
+
+
+def validate_config_submission(config: Dict[str, Any]) -> tuple:
+    malformed = validate_config_field_types(config)
+    if malformed:
+        return {}, malformed
     provider = (config.get("provider") or "custom").strip().lower()
     api_key = (config.get("api_key") or "").strip()
     model = (config.get("model") or "").strip()
@@ -147,8 +179,10 @@ def validate_config_submission(config: Dict[str, Any]) -> tuple:
     base_url = resolve_base_url(provider, submitted_url)
     if not base_url:
         errors["base_url"] = "endpoint address is required"
-    elif not (base_url.startswith("http://") or base_url.startswith("https://")):
-        errors["base_url"] = "endpoint address must start with http:// or https://"
+    else:
+        endpoint_error = validate_endpoint_syntax(base_url)
+        if endpoint_error:
+            errors["base_url"] = endpoint_error
     if not model:
         errors["model"] = "model is required"
     if preset.key_required and not api_key:
@@ -178,6 +212,36 @@ async def _send_invalid(safe_send: SafeSend, websocket: Any,
     await safe_send(websocket, json.dumps(payload))
 
 
+async def _check_saved_configuration(
+    *, safe_send: SafeSend, websocket: Any, fields: Dict[str, str],
+    actor_user_id: str, auth_principal: str, recorder: Recorder,
+) -> None:
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+            ok, error_class, _ = await probe_chat_completion(
+                api_key=fields["api_key"], base_url=fields["base_url"], model=fields["model"])
+    except TimeoutError:
+        ok, error_class = False, "transport_error"
+    except Exception as exc:
+        ok, error_class = False, classify_probe_error(exc)
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+            await record_llm_config_change(recorder, actor_user_id=actor_user_id,
+                auth_principal=auth_principal, action="tested", base_url=fields["base_url"],
+                model=fields["model"], transport="ws", result="success" if ok else "failure",
+                error_class=error_class if not ok else None)
+    except Exception:
+        logger.warning("Saved provider connection-check audit unavailable")
+    if not ok:
+        reason = _operation_failure(error_class).safe_summary
+        try:
+            await safe_send(websocket, json.dumps({"type": "notification",
+                "title": "Provider settings saved", "level": "warning",
+                "body": f"Connection test failed: {reason}. Your saved settings remain available."}))
+        except Exception:
+            logger.warning("Saved provider connection warning could not be delivered")
+
+
 async def handle_llm_config_set(
     *,
     safe_send: SafeSend,
@@ -187,6 +251,7 @@ async def handle_llm_config_set(
     auth_principal: str,
     store: UserLLMConfigStore,
     recorder: Recorder,
+    after_save: UnlockCallback | None = None,
 ) -> bool:
     operation = _ACTIVE_LLM_CONFIG_OPERATION.get()
     fields, errors = validate_config_submission(config)
@@ -202,44 +267,6 @@ async def handle_llm_config_set(
                 code="validation_failed",
                 safe_summary="The provider settings are invalid",
             ))
-        return False
-
-    if operation is not None:
-        await operation.phase(
-            "validating",
-            "validating_credentials",
-            "Checking your provider credentials…",
-        )
-
-    ok, error_class, upstream = await probe_chat_completion(
-        api_key=fields["api_key"], base_url=fields["base_url"], model=fields["model"])
-    try:
-        await record_llm_config_change(
-            recorder,
-            actor_user_id=actor_user_id,
-            auth_principal=auth_principal,
-            action="tested",
-            base_url=fields["base_url"],
-            model=fields["model"],
-            transport="ws",
-            result="success" if ok else "failure",
-            error_class=error_class if not ok else None,
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.warning(f"llm_config_change(tested) audit failed (non-fatal): {exc}")
-    if not ok:
-        failure = _operation_failure(error_class)
-        await _send_invalid(
-            safe_send, websocket,
-            (
-                failure.safe_summary
-                if operation is not None
-                else f"Connection test failed ({error_class}): {upstream or 'no details'}"
-            ),
-            error_class=error_class,
-        )
-        if operation is not None:
-            raise operation.remember_failure(failure)
         return False
 
     if operation is not None:
@@ -289,25 +316,34 @@ async def handle_llm_config_set(
         return False
 
     action = "updated" if prior is not None else "created"
-    try:
-        await record_llm_config_change(
-            recorder,
-            actor_user_id=actor_user_id,
-            auth_principal=auth_principal,
-            action=action,
-            base_url=fields["base_url"],
-            model=fields["model"],
-            transport="ws",
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.warning(f"llm_config_change audit failed (non-fatal): {exc}")
+
+    async def connection_check() -> None:
+        try:
+            async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+                await record_llm_config_change(recorder, actor_user_id=actor_user_id,
+                    auth_principal=auth_principal, action=action, base_url=fields["base_url"],
+                    model=fields["model"], transport="ws")
+        except Exception:
+            logger.warning("Saved provider change audit unavailable")
+        await _check_saved_configuration(safe_send=safe_send, websocket=websocket,
+            fields=fields, actor_user_id=actor_user_id, auth_principal=auth_principal,
+            recorder=recorder)
+
+    if operation is not None:
+        operation.connection_check = connection_check
 
     # Ack is the outer wrapper's job — avoids a terminal-state race
     if operation is None:
-        await safe_send(
-            websocket,
-            json.dumps({"type": "llm_config_ack", "ok": True}),
-        )
+        try:
+            await safe_send(websocket, json.dumps({"type": "llm_config_ack", "ok": True}))
+        except Exception:
+            logger.warning("Saved provider acknowledgement could not be delivered")
+        if after_save is not None:
+            try:
+                await after_save()
+            except Exception:
+                logger.warning("Saved provider setup projection unavailable")
+        await connection_check()
     return True
 
 
