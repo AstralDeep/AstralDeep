@@ -104,6 +104,8 @@ class StreamSubscription:
     max_seq_seen: int = 0
     seq_offset: int = 0
     persist_done: bool = False
+    progress_persisted_at: float = 0.0
+    progress_digest: str = ""
 
     max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES
     max_fps: int = DEFAULT_MAX_FPS

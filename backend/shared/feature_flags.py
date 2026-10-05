@@ -37,6 +37,7 @@ class FeatureFlags:
             "typesafe_routing": self._read("FF_TYPESAFE_ROUTING", True),
             "first_turn_contract": self._read("FF_FIRST_TURN_CONTRACT", True),
             "stream_artifacts": self._read("FF_STREAM_ARTIFACTS", True),
+            "stream_progress": self._read("FF_STREAM_PROGRESS", False),
             "designer_all_devices": self._read("FF_DESIGNER_ALL_DEVICES", True),
             "component_refine": self._read("FF_COMPONENT_REFINE", True),
             "artifact_export": self._read("FF_ARTIFACT_EXPORT", True),

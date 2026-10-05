@@ -5271,6 +5271,9 @@ class Orchestrator:
                 entry["max_fps"] = skill_metadata.get("max_fps", 30)
                 entry["min_fps"] = skill_metadata.get("min_fps", 5)
                 entry["max_chunk_bytes"] = skill_metadata.get("max_chunk_bytes", 65536)
+                progress = skill_metadata.get("persist_progress_s")
+                if isinstance(progress, (int, float)) and not isinstance(progress, bool) and progress >= 5:
+                    entry["persist_progress_s"] = float(progress)
             self._streamable_tools[skill.id] = entry
 
         public_key_jwk = getattr(card, 'metadata', {}).get("public_key_jwk") if getattr(card, 'metadata', None) else None
@@ -5598,6 +5601,7 @@ class Orchestrator:
                         )
                     if sub is not None:
                         await self._persist_stream_terminal(sub)
+                        await self._persist_stream_progress(sub)
 
             elif isinstance(msg, ToolStreamEnd) and flags.is_enabled("tool_streaming"):
                 if self.stream_manager is not None:
@@ -19559,11 +19563,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
         return sub
 
+    async def _persist_stream_progress(self, sub) -> None:
+        import copy
+        from orchestrator.stream_manager import StreamState
+        interval = (self._streamable_tools.get(sub.tool_name) or {}).get("persist_progress_s")
+        if (not interval or not flags.is_enabled("stream_progress")
+                or sub.bridged_component_id is None or sub.persist_done
+                or sub.state is not StreamState.ACTIVE
+                or sub.retained_chunk is None or not sub.retained_chunk.components):
+            return
+        moment = time.monotonic()
+        if sub.progress_persisted_at and moment - sub.progress_persisted_at < interval:
+            return
+        components = copy.deepcopy(sub.retained_chunk.components)
+        digest = hashlib.sha256(
+            json.dumps(components, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        if digest == sub.progress_digest:
+            return
+        sub.progress_persisted_at = moment
+        sub.progress_digest = digest
+        await self._persist_stream_components(sub, components, final=False)
+
     async def _persist_stream_terminal(self, sub) -> None:
         import copy
         from orchestrator.stream_manager import StreamState
-        cid = sub.bridged_component_id
-        if cid is None:
+        if sub.bridged_component_id is None:
             return
         if sub.persist_done:
             return
@@ -19580,6 +19604,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             components = copy.deepcopy(sub.retained_chunk.components)
         else:
             return
+        await self._persist_stream_components(sub, components, final=True)
+
+    async def _persist_stream_components(self, sub, components, *, final: bool) -> None:
+        cid = sub.bridged_component_id
         for comp in components:
             if isinstance(comp, dict):
                 if str(comp.get("id", "")).startswith("stream-"):
@@ -19606,8 +19634,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 user_id=user_id,
                 mutation=_persist_terminal,
             )
-            sub.persist_done = True
+            if final:
+                sub.persist_done = True
         except Exception:
+            if not final:
+                logger.debug("stream_artifacts.progress_skipped stream=%s component=%s",
+                             sub.stream_id, cid, exc_info=True)
+                return
             logger.exception(
                 "stream_artifacts.persist_failed stream=%s component=%s agent=%s "
                 "tool=%s chat=%s user=%s",
