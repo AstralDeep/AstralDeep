@@ -1,10 +1,11 @@
-"""Exercises the agent card, MCP dispatch, feature-flag gating, in-process registration,
-subprocess start-up, safe-seed treatment, taint classification and tool naming rules.
+"""Exercises the agent card, MCP dispatch, the orchestrator's in-process transport,
+feature-flag gating, registration, subprocess start-up, safe-seed treatment, taint
+classification and tool naming rules.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -13,10 +14,11 @@ from agents.fhir import fhir_agent, mcp_tools
 from agents.fhir.mcp_server import MCPServer
 from orchestrator import taint, tool_feedback
 from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, FIRST_PARTY_PUBLIC_AGENT_IDS
+from orchestrator.orchestrator import Orchestrator
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from shared.feature_flags import FeatureFlags
 from shared.phi_redactor import PHI_FIELD_PATTERNS
-from shared.protocol import MCPRequest
+from shared.protocol import MCPRequest, MCPResponse, Message
 from shared.stream_sdk import is_streaming_tool
 
 EXPECTED_TOOLS = {
@@ -33,6 +35,25 @@ def agent(monkeypatch):
 
 def call(name, arguments=None):
     return MCPServer().process_request(MCPRequest(request_id="r", method="tools/call", params={"name": name, "arguments": arguments or {}}))
+
+
+class LoopbackOrchestrator:
+    def __init__(self, agent):
+        self.local_agents = {agent.card.agent_id: agent}
+        self.pending_requests = {}
+        self.pending_ui_sockets = {}
+        self.stream_manager = None
+        self.frames = 0
+        self._dispatch_context = {}
+        self._register_dispatch_context = MethodType(Orchestrator._register_dispatch_context, self)
+        self.execute = MethodType(Orchestrator._execute_in_process, self)
+
+    async def handle_agent_message(self, websocket, message):
+        self.frames += 1
+        reply = Message.from_json(message)
+        pending = self.pending_requests.get(reply.request_id) if isinstance(reply, MCPResponse) else None
+        if pending is not None and not pending.done():
+            pending.set_result(reply)
 
 
 def test_registry_entries_are_well_formed_read_only_tools():
@@ -87,6 +108,22 @@ def test_server_lists_and_dispatches_tools(connected):
     response = call("icu_census", {"limit": 3, "_runtime": object(), "session_id": "s", "user_id": "u"})
     assert response.error is None and response.result["patients_in_icu"] == 1
     assert response.ui_components[0]["id"] == "fhir-icu-census"
+
+
+@pytest.mark.asyncio
+async def test_in_process_transport_carries_cards_and_coded_errors(connected, agent):
+    orchestrator = LoopbackOrchestrator(agent)
+    census = await orchestrator.execute("fhir-1", "icu_census", {"limit": 3}, timeout=10.0)
+    assert census.error is None and census.result["patients_in_icu"] == 1
+    assert [component["id"] for component in census.ui_components] == ["fhir-icu-census"]
+    overview = await orchestrator.execute("fhir-1", "patient_overview", {"patient": "002-1"}, timeout=10.0)
+    assert overview.error is None and overview.ui_components[0]["id"] == "fhir-patient-002-1"
+    missing = await orchestrator.execute("fhir-1", "patient_overview", {"patient": "999-9"}, timeout=10.0)
+    assert missing.error["code"] == "FHIR_NOT_FOUND" and not missing.ui_components
+    feed = await orchestrator.execute("fhir-1", "watch_icu_activity", {"minutes": 1}, timeout=10.0)
+    assert feed.error is None and feed.ui_components[0]["id"] == "fhir-feed"
+    assert orchestrator.frames == 4 and orchestrator.pending_requests == {}
+    assert connected.deleted == ["sub-1", "sub-2"]
 
 
 def test_server_reports_coded_and_unexpected_failures(connected, monkeypatch):

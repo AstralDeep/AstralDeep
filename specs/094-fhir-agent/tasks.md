@@ -31,3 +31,9 @@ Input: spec.md and plan.md in this directory.
 - [x] T013 Write backend/agents/fhir/tests with an in-memory FHIR server covering client, view models, every tool, the feed, dispatch and gating (SC-001).
 - [x] T014 Document the flag and settings in .env.example and docs/fhir-agent.md; list the agent in README.md.
 - [ ] T015 Record local, image-gate and live results in verification.md (SC-002, SC-003).
+
+## Polish after rendering against live data
+
+- [x] T016 [US2] Read trends and charted doses newest first, note a truncated window on the card and thin chart series without losing extremes (FR-011).
+- [x] T017 [US1] [US2] Fit the census table to the canvas, separate chart colours, add the mean arterial pressure reference line, skip single-point charts and show plain labels, units and statuses (FR-010).
+- [x] T018 Drive the agent through the orchestrator's in-process transport in backend/agents/fhir/tests/test_agent.py (SC-001).

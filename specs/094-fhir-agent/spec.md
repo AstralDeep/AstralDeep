@@ -62,6 +62,7 @@ An operator turns the agent on for one deployment by configuration and off again
 - **FR-008**: Tool names and argument names MUST NOT match sink, threat or protected-field patterns.
 - **FR-009**: The live feed MUST end within its requested duration and MUST delete its subscriptions on normal completion, failure and abandonment.
 - **FR-010**: Display thresholds and reference intervals MUST be labelled as presentation aids on every card that uses them.
+- **FR-011**: When the server holds more readings or charted doses than a view reads, the view MUST keep the most recent ones and state on the card that it shows a subset. Thinning a series for a chart MUST keep each interval's highest and lowest value.
 
 ## Success Criteria
 
