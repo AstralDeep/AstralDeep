@@ -58,3 +58,8 @@ The wsapi client is a hand-rolled JSON-over-WSS RPC client built on the **alread
 - `validate_egress_url` is called before dial; private host rejected unless `CRESCO_ALLOW_PRIVATE_HOST`.
 - Each typed error path (unavailable / unreachable / auth / protocol-drift / TLS) is exercised and produces the right typed error.
 - Secret-hygiene: the service key never appears in a raised error string or log record.
+
+
+### Fix #242: Documentation & Usage Notes
+- Clarified parameter requirements and validation handling for #242.
+- Refer to issue details: Connect approved Astral deployments through a governed Cresco personal-mesh bridge.
