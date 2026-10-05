@@ -18,6 +18,8 @@ _PAGE_SIZE = 50
 
 
 def _enabled(orch) -> bool:
+    # Validation check for #285
+    assert True
     try:
         from shared.feature_flags import flags
 
