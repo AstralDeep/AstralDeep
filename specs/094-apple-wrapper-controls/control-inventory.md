@@ -1,0 +1,112 @@
+# Control and Parity Inventory
+
+Date: 2026-10-05. Reference: the server-owned web shell and surface definitions, with the same role, account state and content. Baseline live observations are in [audit.md](audit.md); candidate qualification is in [verification.md](verification.md). A source/test reference is not a live pass.
+
+## Evidence and dispositions
+
+- **Fixture** means a deterministic test exercising the renderer, controller or authenticated server boundary. Credential and destructive journeys use disposable data. Test secrets never represent the owner's credentials.
+- **Live** means the candidate application was exercised against the normal backend and real Keycloak; only explicitly recorded actions qualify.
+- iOS/iPadOS, macOS and Android support ordinary settings through the same server primitives. Compact layouts may stack cards, scroll filters/actions and use native pickers/sheets; labels, submitted values, permission boundaries and outcomes stay the same. Windows is a shared-contract regression target.
+- Watch uses its existing bounded read/control capabilities and explicit phone handoffs for forms, arbitrary color editing and authoring. Interactive web tours and administrator web tooling retain the existing server-owned dispositions. An offered ordinary Drafts or Advanced control does not qualify as a web-only exception.
+- Buttons that send a prompt, start an agent/job, generate/refine an agent, grant access, upload or delete owner data are not run on the owner's account. Their success/denial/cancel paths require disposable fixtures. The owner separately authorized the supplied provider credentials in the requested product form; that live configuration is recorded below and never used as a test fixture.
+
+## Wrapper and dashboard
+
+| Control | Required outcome and adaptation | Qualification reference |
+|---|---|---|
+| Agent directory / agent detail / back | The same authorized directory and description; compact sheet returns to the current work. | Deep native console/agent suites; native console tests; candidate live pending |
+| Dashboard / current conversation | Server welcome hierarchy, shared font/color roles, examples and discovery; switching preserves conversation and draft. | Web continuity suite; Apple console/viewport tests; Android shell tests; candidate live pending |
+| All, Dashboards, Research, Live Data, Utilities filters | Filter server examples; horizontally scrollable on narrow screens, with the selected state visible. | Web continuity; native responsive console qualification pending |
+| Example Run | Submit only the chosen server prompt after an intentional action. | Fixture only; no live query |
+| Example Load prompt | Put exactly the example text in the composer without sending. | Web continuity; candidate live pending |
+| New chat | Clear the unsent draft and return to server welcome; retain accepted theme. | Web continuity; native welcome/controller tests; candidate live pending |
+| History open / filter / select / close | Confirmed empty differs from connecting/failure; preserve current work until a selection succeeds. | Native history/connection tests; candidate live pending |
+| Composer text / Send / Stop | Unsent edits survive navigation; empty Send unavailable; intentional submission/stop follows the real dispatcher. | Existing transport/controller suites; no live query |
+| Attach / file chooser / cancel / upload | Cancel performs no upload; upload requires ordinary scoped permission and limits. | Existing attachment/native workspace tests; fixture only |
+| Voice start / stop / permission / cancel | Existing authenticated voice lifecycle and approved microphone permission; cancel does not begin a chat turn. | Existing voice/controller suites; fixture only |
+| More / settings / destination / close / retry | Every authorized item remains reachable; nested navigation changes response ownership; retries retain edits and retire stale requests. | Ordinary correlation + native controller tests; candidate live pending |
+| Layout retry | Current scoped hydration only, bounded retries, truthful failure text and preserved existing content. Zero-turn failure must not claim a saved result. | Apple viewport tests; Android/Windows viewport suites; candidate live pending |
+| Appearance / size / keyboard / rotation | Shared design roles, reachable controls and visible contrast at phone/tablet/desktop and larger text. | Native build/render tests; candidate live comparison pending |
+| Sign out | Clear private account/session state and active operations without changing durable owner content. | Existing owner/session lifecycle fixtures; not performed on owner session |
+
+## Ordinary settings journeys
+
+Each row includes every distinct action route owned by that surface. Repeated row buttons (for individual agents, memories, drafts or machines) use the same route but must preserve their particular owner/entity payload. `chrome_open` covers tabs, details, pagination, edit/new and back navigation; it must not submit the form.
+
+| Surface and controls | Required outcome | Server/renderer fixture references |
+|---|---|---|
+| Agents: Owned/Public/Drafts, agent detail, tool permissions, visibility, safe mode, credentials, enable/disable | Correct role/entity defaults and readable choices; only authorized scoped changes; credential placeholders remain blank. | `chrome/test_surface_agents.py`, `test_native_agents_088.py`, `test_native_console.py`, authority suites |
+| LLM: provider/model selectors, endpoint, password, sharing acknowledgment, Load models, Test connection, Save, Clear configuration | Labels are distinct; wire values/defaults agree; keep a blank replacement key only at the saved endpoint; pending operations cannot duplicate; validation failures retain edits. Save acknowledges encrypted persistence before testing; external failure warns without erasing the saved configuration or retaining the mandatory gate. | `chrome/test_surface_llm.py`, `test_native_provider_save_ingress.py`, `test_llm_first_run_gate.py`, `llm_config/tests`, native parameter-form/operation tests |
+| TypeSafe key: Save / Remove | Its own named operation and acknowledgment; failure has no provider-save success. | LLM surface/config tests; native operation tests; fixture only |
+| Personalization: Profile, Memory, Skills, Schedule, Dreaming tabs; save profile, edit/delete memory, toggle skill | Saved fields/defaults and condition visibility agree; scope denials do not widen grants; deleted/editable entities stay owner-scoped. | `chrome/test_surface_personalization.py`, Projection chrome personalization tests |
+| Schedule: pause/resume/delete/run job; create/revise/pause/resume/stop/revoke/run assignment; approval decision | Existing execution/approval gates, selected entity, accepted state and terminal outcomes. | `chrome/test_surface_assignments.py`, persistent-agent authority/revision suites; fixture only |
+| Dreaming: toggle / trigger sweep | Saved preference and explicit trigger, with permission/failure feedback. | Personalization tests; fixture only |
+| Audit: filters / previous / next / row/detail navigation | Owner-visible audit history, deterministic pagination and empty/error states. | `chrome/test_surface_audit.py`, `test_native_audit_088.py` |
+| Theme: Midnight, Daylight, Ocean, Sunset, Forest; all color roles, custom color editor, Apply, Cancel | Actual swatches; arbitrary valid hex; accepted server palette owns visible state; rejection/cancel retains prior palette. | `chrome/test_surface_theme.py`, native settings/theme tests; web rejected-color fixture |
+| Private notes: list/search/new/edit/save/enable/disable/forget/back | Guidance ownership, revision checks and correlated private navigation remain mandatory; stale/current responses never cross owners. | `test_guidance_surface_088.py`, guidance ingress/Postgres/authority suites; Projection guidance tests |
+| Advanced: selection controls / clear selection / back | Authorized scoped selection changes; exact generation/token cleanup; no chat query. | `test_native_selection_ingress.py`, `test_guidance_ingress_088.py`, `test_turn_selection_surface_089.py` |
+| Drafts: list/open/back/create form/generate/refine/approve/discard; revision apply/discard | Native primitive workflow matches web; owner Plane getters, validation, security/approval gates and refreshed accepted list. | `chrome/test_native_drafts.py`, `test_surface_drafts.py`, agentic creation tests; execution/destruction fixture only |
+| My agents & skills: listing/new/edit/specify/plan/tasks/clarify/analyze/generate/revise/delete; quick creation/answers/resend/dismiss; skill save/edit/toggle/delete; declarative preview/commands | Stage-specific readable actions, local-machine capability explanations, ordinary authorization and accepted state. | `test_byo_authoring_surface.py`, `test_authoring_ux_077.py`, BYO admission/concurrency/authority suites |
+| Remote machines: add/probe/delete, credential save/remove, retrust | Correct host/entity; no foreign-owner credential access; saved host trust/credential gates, honest probe failures. | `chrome/test_surface_remote_machines.py`, remote credential revocation tests |
+| My computers: start/stop/pause/resume session, forget | Existing session admission/owner authorization, accurate state and explicit unsupported-device guidance. | Computer/session/BYO authority tests; fixture only |
+| Connections: issue/revoke | Existing scoped permission/credential protections and explicit outcome; no access expansion from cancellation. | Projection connection rendering + Deep owner/publication/authority tests; fixture only |
+| Saved results / workspace timeline / attachments / pulse | Owner-scoped read navigation; view/live state, older/newer paging, selected result and upload/delete protections. | `chrome/test_surface_saved_results.py`, `test_native_surfaces_044.py`, workspace/attachment/owner suites |
+| User guide: topic/navigation/back | Device-appropriate available controls and capability handoffs. | `chrome/test_surface_guide.py`; candidate live pending |
+| Take a tour / administrator tool review / tutorial admin / system LLM | Existing explicit device and role dispositions; unauthorized actions never execute. | `chrome/test_surface_tour.py`, `test_surface_admin_tools.py`, ordinary correlation admin denial tests |
+
+## Action route inventory
+
+The following inventory is bound to the checked-out server registry, including specialized guidance and draft ingress. No route is inferred from a historical spec. Unknown/malformed routes must be unavailable or fail explicitly.
+
+| Owner | Action routes |
+|---|---|
+| Shared navigation | `chrome_open`, `chrome_close` |
+| Agents | `chrome_perms_save`, `chrome_visibility_set`, `chrome_safe_set`, `chrome_credentials_save`, `chrome_credential_delete`, `chrome_agent_enabled` |
+| LLM | `chrome_llm_models`, `chrome_llm_test`, `chrome_llm_save`, `chrome_llm_clear`, `chrome_typesafe_save`, `chrome_typesafe_clear` |
+| Personalization | `chrome_profile_save`, `chrome_memory_update`, `chrome_memory_delete`, `chrome_skill_toggle`, `chrome_job_pause`, `chrome_job_resume`, `chrome_job_delete`, `chrome_job_run_now`, `chrome_assignment_create`, `chrome_assignment_revise`, `chrome_assignment_pause`, `chrome_assignment_resume`, `chrome_assignment_stop`, `chrome_assignment_revoke`, `chrome_assignment_run_now`, `chrome_assignment_approval_decide`, `chrome_dreaming_toggle`, `chrome_dreaming_trigger` |
+| Audit | `chrome_audit_page` |
+| Appearance | `chrome_theme_preset`, `save_theme` |
+| Guidance / Advanced | `chrome_note_search`, `chrome_note_save`, `chrome_note_toggle`, `chrome_note_forget`, `chrome_turn_selection_set`, `chrome_declarative_view`, `chrome_declarative_command` |
+| Drafts | `chrome_draft_create`, `draft_approve`, `draft_refine`, `draft_discard`, `revision_apply`, `revision_discard` |
+| Agent authoring / skills | `chrome_author_start`, `chrome_author_draft`, `chrome_author_edit`, `chrome_author_advance`, `chrome_author_specify`, `chrome_author_plan`, `chrome_author_tasks`, `chrome_author_clarify`, `chrome_author_analyze`, `chrome_author_generate`, `chrome_author_list`, `chrome_author_delete`, `chrome_author_revise`, `chrome_author_quick_create`, `chrome_author_quick_answers`, `chrome_author_quick_resend`, `chrome_author_quick_dismiss`, `chrome_user_skill_save`, `chrome_user_skill_edit`, `chrome_user_skill_toggle`, `chrome_user_skill_delete` |
+| Remote machines | `chrome_machine_add`, `chrome_machine_probe`, `chrome_machine_delete`, `chrome_machine_credential_set`, `chrome_machine_credential_delete`, `chrome_machine_retrust` |
+| Connections | `chrome_connection_issue`, `chrome_connection_revoke` |
+| My computers | `chrome_computer_session_start`, `chrome_computer_session_stop`, `chrome_computer_session_pause`, `chrome_computer_session_resume`, `chrome_computer_forget` |
+| Workspace / attachments | `chrome_workspace_timeline_view`, `chrome_workspace_timeline_live`, `chrome_attachment_delete` |
+| Tour / administrator | `chrome_tour_event`, `chrome_admin_proposal_decide`, `chrome_admin_step_save`, `chrome_admin_step_archive`, `chrome_admin_step_restore`, `chrome_llm_sys_models`, `chrome_llm_sys_test`, `chrome_llm_sys_save`, `chrome_llm_sys_clear` |
+
+## Candidate live results
+
+The isolated candidate backend uses real Keycloak, development configuration, sibling Projection sources and a dedicated disposable UI database. Owner configuration is confined to that preview; production deployment is unchanged. The owner has completed sign-in on the final rebuilt devices. Root inspected repaired iPhone and iPad sessions before the final close-only binary and the diagnostic Android session. Final rebuilt mobile sign-in and macOS startup follow-up remain pending. Baseline audit, synthetic fixtures and unsigned builds do not establish authenticated live parity.
+
+| Form factor / control | Observed result |
+|---|---|
+| iPhone 17 Pro / Advanced / Refresh / Close | Advanced opened with authorized selection controls; Refresh completed. Closing before initial provider configuration restored the mandatory setup gate. No query was sent. |
+| iPhone / provider options and four actions | Full readable provider labels, Custom selection and distinct Load models, Test connection, Save and Save TypeSafe key controls are present. A blank-key model request reports a visible error and retains inputs. |
+| iPhone / authorized provider Save | After the owner entered the supplied fields and acknowledgment, Save closed mandatory setup and reported “Provider settings saved” followed by a connection failure warning stating the saved settings remain available. |
+| iPhone / reopen LLM settings | Confirmed configured state, saved Custom provider, endpoint and model, plus the saved-key placeholder. An external failed probe did not require re-entry. The optional TypeSafe key remains a separate Save action. |
+| iPhone / New chat | A stale conversation from the previous database reported Chat not found. New chat cleared that stale state and restored the server welcome without a query. |
+| Final iPhone / dashboard filters | All, Dashboards, Research, Live data and Utilities each expose a selected state and respectively six, one, three, two and one accessible Load prompt controls in the observed scroll positions. Lazy rendering means this is not a total-card count. No Run action was used. |
+| Final iPhone / Load prompt | Build a business dashboard fills the composer, enables Send and preserves zero chat turns. The prompt was not submitted. |
+| Final iPhone / settings navigation and configured reopen | Agent directory opens; Settings exposes nine ordinary destinations plus Sign out. Agents has Owned/Public/Drafts controls. LLM reopens configured with the saved endpoint/model, readable Custom choice and blank replacement-key placeholder. |
+| Final iPhone / supplied optional key | Automatic secure-field entry succeeded without exposing the value. Initial Save truthfully reported the missing already-pinned SDK. After installing it and restarting the preview, the normal Save returned “TypeSafe key saved” and the independent status became Active. No query was sent. |
+| Final iPhone / all five theme presets | Daylight, Ocean, Sunset, Forest and Midnight all return accepted saved state and their corresponding background hex values. Daylight visibly repaints the shell, cards, swatches and controls to light appearance. Midnight was restored. |
+| iPad / owner-signed repaired preview | Dashboard visually renders seven server examples in two columns. Filters select, Load business dashboard fills the composer with zero conversation turns, and New chat clears it. No Run or Send was used. |
+| iPad / saved account state and navigation | LLM is Configured with saved endpoint/model and TypeSafe Active. Theme reads the phone's #123ABC custom primary, then accepts Midnight restoration. Personalization tabs and Public/Drafts open; Drafts exposes Generate & self-test, which was not run. |
+| Final iPhone/iPad / close-only binary reinstall | The local unsigned preview could not persist its sign-in because it lacked simulated application identity. Corrected through normal Xcode simulator signing, without deleting app data or Keychain. Final owner sign-in requested; earlier live results are dated checks before this binary. |
+| Android / current debug sign-in | Existing HTTP debug endpoint cannot create the HTTPS-only custody scope. The same failure exists at unchanged HEAD; local candidate IAM qualification is blocked without changing the security boundary. |
+| Android / diagnostic supported HTTPS build | Unchanged release variant built, test-signed and installed without clearing data; the owner completed normal sandbox Keycloak sign-in. Root observed the shared welcome and a selected Dashboards filter with one example. It cannot qualify the local repaired server. |
+| Android / later session state | A later observation showed “Session unavailable. Sign in again.” The earlier dashboard check is a dated observation, not continuing authentication proof. The message comes from an unchanged refresh catch-all. Read-only endpoint/log checks and existing auth tests did not establish its specific cause. No new sign-in or fallback was performed by the agent. |
+
+Remaining live checks and final source-bound tests are recorded in verification.md. The macOS preview waits in synchronous Keychain loading at startup; its UI responsiveness repair now passes 320 iOS and 43 scoped macOS units, with final signed-in UI inspection awaiting manual unlock. Unsafe execution/destruction/permission-expansion controls remain fixture-only under the owner's scope.
+
+## Four provider-operation fixture outcomes
+
+These are disposable fixtures, independent of the owner's keys. The final combined Deep gate includes all server rows; Core and native controller suites cover exact route/label and pending-operation ownership.
+
+| Control | Fixture outcome and evidence |
+|---|---|
+| Load models | `test_models_success_rerenders_with_select` returns escaped labeled choices and saved defaults. Catalog failure, invalid URL, missing required key and changed-endpoint reuse reject explicitly without Save. Apple ParameterFormTests retains the distinct `chrome_llm_models` route. |
+| Test connection | Explicit success/failure keeps configuration unchanged and uses its own `chrome_llm_test` route. Surface tests and complete llm_config tests cover provider response classification and required-field denial. |
+| Save | Actual authenticated ingress commits encrypted owner settings, acknowledges/unlocks before a held or failed probe, and preserves completed state plus a warning. Raw malformed fields, credential-bearing/invalid endpoints, missing acknowledgment, changed-endpoint saved-key forwarding and persistence failure reject before success. Delayed Save preserves both queued Theme and same-provider new drafts. |
+| Save TypeSafe key | Separate `chrome_typesafe_save` route, consent/store availability and verification failure are covered in surface/config fixtures. Apple controller rejects all four routes without a usable transport. The live supplied optional key separately returned Saved and Active after repairing the preview's missing already-declared SDK; no query was sent. |

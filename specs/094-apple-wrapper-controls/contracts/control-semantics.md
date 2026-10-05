@@ -1,0 +1,16 @@
+# Control Semantics
+
+Existing UI protocol and chrome event vocabulary remain authoritative. Repairs change interpretation/composition, not published vocabulary.
+
+1. Typed children remain subject to component adaptation. Untyped form actions retain label, action and payload; they are not renderable text. Read-only profiles receive no executable descriptor and action caps include all exposed actions.
+2. Select options are strings or objects with stable value and readable label. Clients display labels and submit values. Saved values absent from refreshed catalogs remain recoverable. Checklist defaults are submitted-value sets.
+3. Conditions accept existing explicit field/equals descriptors and controller/value mappings. Rendering/submission share resolved form state; edits belong to the form identity.
+4. Invalid routing produces an unavailable state. A tap sends its declared operation once with the form snapshot/payload. Pending/rejected/completed outcomes do not invent success or discard corrective input.
+5. Accepted theme/preferences own active colors and system appearance. Arbitrary valid custom colors can be entered/canceled. Rejected saves cannot change appearance or active indication.
+6. Drafts uses owner-scoped existing policy/actions/primitives. Guidance retains navigation authority/correlation. Generic watch forms/colors retain advertised phone/desktop handoffs.
+7. Examples load the composer only. Live qualification preserves no-chat-query and credential/approval/cancellation/permission protections.
+8. Provider Save validates product fields, acknowledgment, authorization and same-endpoint credential reuse, then stores the encrypted configuration and acknowledges persistence before probing. Failed external authentication, transport or model checks leave that saved configuration available and emit a distinct connection warning. Storage or structural validation failure has no saved acknowledgment. Test connection and Load models remain explicit independent operations. User-supplied credentials are entered only into the requested application settings and never copied into fixtures or reports.
+
+Ordinary modal requests/results reuse the optional request_generation field with canonical lowercase UUID4. The server echoes only the initiating registry/handler-owned surface on the same socket. Clients require an exact match whenever an echo exists and retire pending work on navigation, close or disconnect. Legacy no-echo ordinary results have bounded current-surface/socket compatibility, with an explicit same-surface stale-reply limitation; guidance/work retain their mandatory fail-closed fences. New correlation behavior needs the candidate backend for complete live qualification.
+
+An accepted ordinary action may close its modal with an empty surface_key, empty title/components, admin_only false, no selection and the exact current request_generation. The server records current native request ownership at canonical authenticated ingress, before queued execution; navigating to another form or reopening the same form retires the old generation. Delayed Save completion cannot close the new draft. Mandatory first-run account unlock keeps its existing authoritative uncorrelated transition.
