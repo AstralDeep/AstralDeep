@@ -142,3 +142,14 @@ Changed by this task: this Markdown report only. No product source, flag default
 
 Recommended next checkpoint: define one bounded feature for owner-bound, failure-preserving compaction and exact observation recall, establish the baseline, and evaluate those mechanisms independently. Adoption remains PROPOSED until its implementation and exact-candidate evidence are reviewed.
 
+## Current-work comparison, refreshed October 4
+
+The following primary-source comparison was refreshed after the owner's research-first instruction. These papers do not establish clinical usability, tenant isolation or AstralDeep production safety; the application choices below are engineering inferences.
+
+| Work and publication status | Demonstrated mechanism | AstralDeep inference |
+|---|---|---|
+| Rui Ye et al., *AgentFold: Long-Horizon Web Agents with Proactive Context Management*, [arXiv 2510.24699](https://arxiv.org/abs/2510.24699), 2025 preprint version consulted; conference status not verified because OpenReview returned a browser challenge | Learned multiscale folding for long web-search trajectories | Useful later for planning-boundary experiments; model training and lossy summaries add scope to the first infrastructure repair. |
+| Alex L. Zhang, Tim Kraska and Omar Khattab, *Recursive Language Models*, [arXiv 2512.24601v3](https://arxiv.org/html/2512.24601v3), revised May 2026 preprint version consulted | External prompt variables and programmatic recursive model calls over long-context tasks | Consider for bounded corpus analysis later. A general REPL plus recursive calls needs separate containment, delegation, egress and spend qualification. |
+| Xiaochuan Li, Ryan Ming, Meng Chu, Shuai Shao, Rong Jin and Chenyan Xiong, *ACM: Agentic Context Management for Long Horizon Tasks*, [arXiv 2607.23809v1](https://arxiv.org/html/2607.23809v1), July 2026 preprint | Stores discarded raw messages and uses context-management/recall tools; post-training improves evaluated search/coding outcomes | Supports preserving raw evidence first. Its model-mediated recall can still omit details; storage-level preservation does not prove recall correctness. |
+
+The first recommendation remains owner-scoped exact observation pages and failure-preserving compaction. It fits SoL-Pi's ObservationPack and ACM's preservation direction with a smaller authority surface than model-controlled history replacement or a general recursive REPL. Deterministic authorization, integrity and bounded retrieval still win because none of these benchmarks qualifies those security properties. Keep measured quality, full costs and ordinary dispatch denials in the experiment; no reported gain here is an AstralDeep result.

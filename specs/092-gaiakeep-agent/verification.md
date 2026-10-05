@@ -158,3 +158,18 @@ Changed executable production coverage is **406/428 (94.86%)** against `c4a47d70
 | Composition expectation used by fixtures | `02884addfea82e3e0f5ed67d9f3f03bc9242d05ff4b6e6bc92b8eea4240fabda` |
 
 Independent approval and layout-preservation review is clear. Exact approval-fix activation and ordinary browser proposal/reload/decline observations are the next separate checkpoint. Full approved transfers and job reconciliation remain blocked by gfs #13; hosted CI is not being awaited under the owner's explicit instruction.
+
+### Parsed primitive presentation and qualified final backend snapshot
+
+This continuation uses scale mode for the owner's production-readiness request. Gaia JSON strings now produce bounded status badges, metric cards, key/value sections and typed table rows through Python annotations and internal column descriptors. It uses only installed, pinned primitives and their existing client contract. Structural depth, successive encoding layers, entries, parse bytes, visible UTF-8 cell text, rows, columns and sections have explicit limits and honest omission notices. Dataset paths, identifiers and notes stay literal; decoded credential fields and binary/certificate/proof artifacts stay out of the display. The sanitized canonical result, approved arguments, native request/version/job identity and pending verdict remain unchanged.
+
+Final root qualification in the disposable production Python 3.11.17/internal-only PostgreSQL fixture passes **1,360 tests, zero skips**, in **97.89 seconds**, with four non-failing WebSocket deprecation warnings. It repeats the preceding full Gaia and shared approval/publication/tunnel/dispatch/authorization scope, adding `backend/agents/gaiakeep/tests/test_presentation.py` and `test_presentation_dispatch.py`. The isolated no-SDK runtime phase again passes 84 tests before installing the exact current optional wheel. Linux Ruff 0.15.21 targeting Python 3.11 and diff checks pass. Changed executable coverage against `c4a47d7067c5b3a475bf516423ba614640de784b` is **632/658 (96.05%)**, including presenter **224/228 (98.25%)** and MCP binding **22/22**. The separately qualified five dependency-authority checks retain their unchanged manifests and historical baseline.
+
+| Evidence | SHA256 |
+|---|---|
+| Final presentation/backend/tooling payload | `8741b1600f20fdf146f51a7acbd776dfc8dbb18e07ad65fd925fc69a5058a031` |
+| Final coverage JSON | `9285c0944ac0628aeee8c04fa3f463fe6e5dc1401de7f6133fe401214790c562` |
+| Final 1,360-case JUnit XML | `fb496ab297776bca5c4a4e0abe5d84957190c17b9464a5a65a21eee943e7ab81` |
+| No-SDK 84-case JUnit XML | `52e0ad5fbee2dcc4417dc26b09312b59e318f2ade4ff044bd3d3a4e4e8143029` |
+
+Independent final presentation review also passes 46 focused tests against exact pinned Primitives/Projection bytes and their actual renderer on Python 3.11.15. Review-driven repairs preserve map identities without overwriting native names, retain nested wrapper detail, scrub literal reconciliation values and decoded secrets, account for the total visible text budget, and omit actual certificate/base64 proof fields while retaining verification flags. Real renderer cases keep malicious HTML and action-shaped JSON as escaped data. Full approved transfer/job acceptance remains blocked by upstream gfs #13; final image activation and ordinary browser evidence are recorded separately below when observed. Native clients were not live-exercised for this continuation; their existing primitive vocabulary is unchanged.

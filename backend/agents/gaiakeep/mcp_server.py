@@ -7,13 +7,14 @@ import os
 import uuid
 from functools import partial
 
-from astralprims import Alert, Card, CodeBlock
+from astralprims import Alert
 from orchestrator import remote_machines
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 
 from agents.gaiakeep import catalog, client
 from agents.gaiakeep.issue_log import IssueLog
+from agents.gaiakeep.presentation import result_components
 from agents.gaiakeep.remote_client import RemoteCore
 from agents.gaiakeep.transport import failure_detail
 
@@ -127,8 +128,8 @@ class MCPServer:
                 if 'commit_job' not in native:
                     raise client.AgentError('protocol_error', 'The pending version lacks a valid commit job identifier.')
                 reconciliation.update(native)
-            components = [Card(title='GaiaKeep version awaiting durable copies' if pending else 'GaiaKeep result',
-                               content=[CodeBlock(code=serialized[:16000], language='json')]).to_dict()]
+            components = result_components(name, result, pending=pending, reconciliation=reconciliation,
+                                           secrets=tuple(secret for secret in secrets if isinstance(secret, str)))
             data = {'verdict': 'pending' if pending else 'ok', 'result': result}
             if reconciliation:
                 data['reconciliation'] = reconciliation
