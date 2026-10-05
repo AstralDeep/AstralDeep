@@ -46,17 +46,17 @@
 
 **Independent test**: Ordinary destinations, validation/cancel/denial, initial failure/recovery, surface result ownership and retained edits without a chat query.
 
-- [x] T020 [P] [US4] Add first-connection/recovery and surface-state regressions, repair Apple Views/Screens.swift and Android ui/Screens.kt in ../AstralProjection with their app tests.
+- [x] T020 [P] [US4] Add first-connection/recovery and surface-state regressions, repair Apple Views/Screens.swift and Android ui/Screens.kt in ../AstralProjection with their app tests. Registered-token expiry, retained-form server ownership and Advanced retry destination/authorization repairs pass final deterministic gates and signed iPhone/iPad reconnect checks; remaining whole-client qualification belongs to T024/T025.
 - [x] T021 [US4] Inventory every ordinary settings/wrapper control from server definitions and client affordances in specs/094-apple-wrapper-controls/control-inventory.md; test safe successes, invalid input, denials, duplicate taps and cancellation using disposable fixtures.
 - [x] T022 [US4] Verify no unauthorized credential mutation or effects, upload/deletion or query from canceled/navigation actions; record test and live evidence in specs/094-apple-wrapper-controls/verification.md.
 
 ## Phase 7: Integration and Qualification
 
-- [x] T023 Review shared authorization/adaptation seams; update exact changed-file digests/reasons in ../AstralProjection/provenance/transformations.json and run its guard. Final startup digest and strict guard are refreshed; post-extraction tests are bound independently.
+- [x] T023 Review shared authorization/adaptation seams; update exact changed-file digests/reasons in ../AstralProjection/provenance/transformations.json and run its guard. Final AppModel digest matches committed bytes; immutable replay/protocol/workflow guard passes 135 with four existing PowerShell skips. Post-extraction tests are bound independently; root verifies current source, coverage inputs and products.
 - [ ] T024 Run affected Python/JS/Swift/Kotlin lint, meaningful suites and changed-line coverage at the candidate revision; record commands/results/baselines in specs/094-apple-wrapper-controls/verification.md.
 - [ ] T025 Build/test iOS/iPadOS/macOS/watch/Android and run Windows regression; personally live-verify affected form factors with real backend/identity in specs/094-apple-wrapper-controls/verification.md. Retain unavailable evidence as pending.
 - [x] T026 Adopt only the exact CI-qualified Projection revision in Deep; otherwise document the outstanding qualification and unchanged pin in specs/094-apple-wrapper-controls/verification.md. Never fake adoption/deployment.
-- [x] T027 Reconcile task/spec/inventory state, preserve local recoverable commits without product push, and update curated ../kos-wiki/wiki/astral-apple-clients.md, synthesis-astral-native-ui-v2.md, index.md and log.md with a separate vault commit/push. Reviewed source is locally committed; the curated checkpoint is pushed and independently verified as 830bc32e1ff952026c9f692e664c13c9653a0f64. T019/T024/T025 retain incomplete qualification explicitly.
+- [ ] T027 Reconcile task/spec/inventory state, preserve local recoverable commits without product push, and update curated ../kos-wiki/wiki/astral-apple-clients.md, synthesis-astral-native-ui-v2.md, index.md and log.md with a separate vault commit/push. The prior curated checkpoint is pushed and independently verified as 830bc32e1ff952026c9f692e664c13c9653a0f64; final recovery findings and source checkpoints still need preservation. T019/T024/T025 retain incomplete qualification explicitly.
 
 ## Dependencies and Parallel Work
 

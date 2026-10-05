@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-05
 
-**Status**: Approved for implementation — owner instruction on 2026-10-05: "Fix it all and fix it good."
+**Status**: Implemented local candidate; full component qualification and adoption pending. Owner approved implementation on 2026-10-05: "Fix it all and fix it good."
 
 **Input**: "Open up the simulator and click on every single button that you can find in the app wrapper. You don't need to send a query in. Most of the issues stem from buttons not working in the settings modal. Find any of these issues and create a spec, then stop so I can review. Do this quickly." Follow-up: "The dashboard interface is inconsistent with the web client. That needs to be fixed, along with all other consistency issues between web and mobile. Mobile/Apple clients should follow web design and function."
 
@@ -25,6 +25,7 @@ A signed-in user sees the account's actual saved settings and can identify and u
 3. **Given** untouched saved fields and a blank replacement key, **When** the user saves at the existing endpoint, **Then** the account retains its provider, model and existing key under the same rules as web.
 4. **Given** invalid input, missing acknowledgment, insufficient permission or a storage failure, **When** Save is attempted, **Then** the failure is visible, entered values remain available for correction, and no persistence success is reported.
 5. **Given** structurally valid, authorized provider settings, **When** Save is selected, **Then** encrypted account persistence succeeds before the connection test begins, the user receives an accurate saved acknowledgment, and an external connection/authentication/model failure produces a separate warning while retaining the saved credentials for correction and retry.
+6. **Given** a loaded provider form retained through normal reconnection, **When** a current authorized Save completes, **Then** its matching ordinary panel closes and the saved acknowledgment and advisory warning remain available; completion cannot dismiss a newer form.
 
 ### User Story 2 - Use a consistent dashboard and wrapper (Priority: P1)
 
@@ -41,6 +42,7 @@ A user moving between web, mobile and Apple recognizes the dashboard, directory,
 3. **Given** an example, **When** Load prompt is selected, **Then** its text appears in the composer without sending; New chat clears that draft as on web.
 4. **Given** an authorized user, **When** Drafts or Advanced settings is selected, **Then** the ordinary workflow offered on web opens and functions, without a placeholder or persistent load failure.
 5. **Given** a capability requiring another device, **When** the user encounters it, **Then** the approved explanation and handoff provide a clear next step.
+6. **Given** Advanced settings fails to load, **When** Retry is selected, **Then** the original authorized Advanced read is retried or its stale authorization is explained; it never silently opens Private notes instead.
 
 ### User Story 3 - Apply and customize appearance (Priority: P1)
 
@@ -71,6 +73,7 @@ A user completes ordinary web settings journeys for permissions, personalization
 2. **Given** the server is unreachable before any successful connection, **When** the app opens, **Then** it shows connecting/failure status and recovery guidance without claiming unavailable history or settings are empty.
 3. **Given** an open form, **When** a response arrives, the keyboard opens or the device resizes, **Then** controls remain reachable and edits remain attached to the correct form and active work.
 4. **Given** an attachment, permission, credential or destructive operation is canceled, **When** its dialog closes, **Then** no upload, access expansion, deletion or chat query occurs.
+5. **Given** an idle socket whose registered identity expires or whose access token rotates, **When** the user reopens private settings, **Then** normal authentication renewal restores an authorized read without restarting the app; expired requests remain rejected and writes or queries are never automatically replayed.
 
 ### Edge Cases
 
@@ -81,6 +84,7 @@ A user completes ordinary web settings journeys for permissions, personalization
 - Unknown actions, rejected permissions, failed theme saves, blank replacement credentials and endpoint changes.
 - A delayed provider Save completes after navigation to another settings form or a new draft in the same form; it must not dismiss the newer draft.
 - A normal OS Keychain read waits during startup; the Apple interface remains responsive and a later sign-out or new sign-in retires that restoration.
+- A loaded form survives physical socket replacement, but its server modal ownership must be re-established only by a current authorized action; old or foreign requests cannot claim it.
 - Watch capability handoffs and explicitly bounded role-restricted or web-only entries.
 
 ## Requirements *(mandatory)*
@@ -100,7 +104,7 @@ A user completes ordinary web settings journeys for permissions, personalization
 - **FR-011**: Theme selection MUST update all visible surfaces, active indication and saved account state consistently. Preset previews MUST show the actual colors.
 - **FR-012**: Support every valid custom theme color supported by web for all existing roles, display the current value, and report failed/rejected saves without false success.
 - **FR-013**: Agents/permissions, provider settings, personalization, audit, theme, private notes, agents/skills, remote machines and user guide MUST support ordinary web operations: navigation, filtering, validation, save/reopen and cancellation. Help MUST describe available device controls and capabilities.
-- **FR-014**: Distinguish connecting, connected, stale, failed, loading and confirmed-empty states from first launch. Surface failures MUST offer recovery without concealing the failure or losing entered work.
+- **FR-014**: Distinguish connecting, connected, stale, failed, loading and confirmed-empty states from first launch. Surface failures MUST offer recovery without concealing the failure or losing entered work. Idle registered-token expiry and token rotation MUST recover through normal authentication, preserving current owner/socket fences and never automatically replaying writes or queries. Read recovery MUST retain the requested destination and its existing authorization, with an explicit failure when that authority is stale.
 - **FR-015**: Credential, permission, upload, destructive and execution actions MUST retain web authentication, owner isolation, acknowledgment, approval, auditing and cancellation protections. Denials MUST produce no unauthorized effect.
 - **FR-016**: Qualify web, iOS/iPadOS, macOS and Android at relevant form factors, plus watchOS's approved capabilities/handoffs. Shared changes MUST preserve existing Windows functionality and contracts.
 - **FR-017**: Verify successes, invalid input, denials, service failures, recovery, repeated taps, cancellation and saved-state reopening. Use disposable fixtures for credential/destructive operations; the owner's live secrets and data MUST not become test fixtures.
