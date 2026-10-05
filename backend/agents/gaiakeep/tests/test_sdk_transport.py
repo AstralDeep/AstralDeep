@@ -131,6 +131,31 @@ def head_calls(rpc):
     return [peer for peer, action in rpc.records['calls'] if action == 'core.head']
 
 
+@pytest.mark.parametrize('mode', ['compatible', 'unadapted'])
+def test_qualified_sdk_pending_response_survives_both_transport_modes_without_retry(rpc, mode):
+    rpc.records['replies'][('r:l:p', 'core.publish')] = {'status': '10', 'vid': 'version-42', 'commit_job': 'durable-42'}
+    core = rpc.core(getattr(rpc, mode), read_peers=())
+    core.call('core.publish', {'request_id': 'retained-request', 'upload_id': 'upload-42'})
+    result = client.publication_result(core, SimpleNamespace(vid='version-42', request_id='retained-request'))
+    assert result['commit_job'] == 'durable-42'
+    rpc.records['replies'][('r:l:p', 'core.list')] = {'status': '16', 'vid': 'version-42', 'commit_job': 'durable-42'}
+    with pytest.raises(client.AgentError) as error:
+        core.call('core.list', {'vid': 'version-42'})
+    assert error.value.verdict == 'pending' and error.value.reconciliation['commit_job'] == 'durable-42'
+    assert [action for _, action in rpc.records['calls']].count('core.publish') == 1
+    assert [action for _, action in rpc.records['calls']].count('core.list') == 1
+
+
+@pytest.mark.parametrize('mode', ['compatible', 'unadapted'])
+def test_qualified_sdk_malformed_pending_identifier_is_unconfirmed_once(rpc, mode):
+    rpc.records['replies'][('r:l:p', 'core.publish')] = {'status': '10', 'vid': 'version-42', 'commit_job': '../secret'}
+    core = rpc.core(getattr(rpc, mode), read_peers=())
+    with pytest.raises(client.AgentError) as error:
+        core.call('core.publish', {'request_id': 'retained-request'})
+    assert error.value.verdict == 'unconfirmed'
+    assert [action for _, action in rpc.records['calls']].count('core.publish') == 1
+
+
 def test_existing_raw_timeout_aborts_before_healthy_follower(rpc):
     failure = TimeoutError('private socket failure')
     rpc.records['failures'][('r:a:p', 'core.head')] = failure

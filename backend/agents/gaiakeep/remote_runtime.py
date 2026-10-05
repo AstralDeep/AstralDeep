@@ -200,7 +200,8 @@ def _result(value, action, secrets):
         if (len(data) > catalog.MAX_FILE or type(value.get('byte_count')) is not int or value['byte_count'] != len(data)
                 or value.get('sha256') != hashlib.sha256(data).hexdigest()):
             raise client.AgentError('integrity_error', 'Gaia file result failed its byte integrity check.')
-    out = client.clean_result(value, secrets)
+    out = (client.clean_dataset_result(value, secrets) if action in catalog.DATASET_ACTIONS
+           else client.clean_result(value, secrets))
     if not isinstance(out, dict) or len(json.dumps(out, allow_nan=False).encode()) > catalog.MAX_RPC:
         raise client.AgentError('protocol_error', 'The Gaia result exceeds its bounded object contract.')
     if action == 'read':
@@ -208,10 +209,20 @@ def _result(value, action, secrets):
     return out
 
 
-def _known_collections(core):
-    from gaiakeep.ops import known_collections
+def _known_collections(core, params=None):
+    params = {} if params is None else params
+    if (not isinstance(params, dict) or set(params) - {'after', 'limit'}
+            or ('after' in params and (not isinstance(params['after'], str) or len(params['after']) > 4096))
+            or ('limit' in params and (type(params['limit']) is not int or not 1 <= params['limit'] <= 1000))):
+        raise client.AgentError('invalid_argument', 'Invalid bounded Gaia collection discovery parameters.')
+    if not core.profile.tenant:
+        if params.get('after'):
+            raise client.AgentError('invalid_argument', 'A system-only profile has no tenant collection cursor.')
+        from gaiakeep.ops import known_collections
 
-    return known_collections(core, with_heads=True)
+        return known_collections(core, with_heads=False)
+    return client.execute(core, 'core.collections', dict(params, tenant_id=core.profile.tenant,
+                                                       limit=params.get('limit', 100)))
 
 
 def _sdk_transport(config, context):
@@ -248,13 +259,16 @@ def _sdk_transport(config, context):
                                          errno.ENETRESET, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH}):
                     raise TransportError('Gaia RPC connection failed.', action=action) from exc
                 raise
+            client.observe_native_reply(self, action, params, reply)
+            error = from_reply(action, reply)
             if catalog.ACTIONS.get(action, {}).get('read') is not True:
-                error = from_reply(action, reply)
                 if isinstance(error, RpcTimeout):
                     raise TransportError('Gaia RPC outcome is uncertain.', action=action) from error
             return reply
 
-    return SDKTransport(config, tls_context=context)
+    transport = SDKTransport(config, tls_context=context)
+    transport.publication_metadata = {}
+    return transport
 
 
 def run(request):
@@ -277,11 +291,11 @@ def run(request):
         request_id = request.get('request_id')
         if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,64}', request_id)):
             raise ValueError
-        if request_id is not None and (action != 'upload' or arguments.get('strategy', 'ingest') == 'have'):
+        if request_id is not None and (action not in catalog.UPLOAD_ACTIONS or arguments.get('strategy', 'ingest') == 'have'):
             raise ValueError
         if arguments.get('request_id') is not None and arguments['request_id'] != request_id:
             raise ValueError
-        if action == 'upload' and arguments.get('strategy', 'ingest') == 'ingest' and request_id is None:
+        if action in catalog.UPLOAD_ACTIONS and arguments.get('strategy', 'ingest') == 'ingest' and request_id is None:
             raise ValueError
         phase = 'sdk_validation'
         binding = _validated_sdk()
@@ -311,19 +325,35 @@ def run(request):
         core.profile = profile
         transport.remaining(RPC_TIMEOUT)
         dispatched = True
-        phase = 'sdk_read' if action == 'read' else 'sdk_upload' if action == 'upload' else 'sdk_control'
+        phase = 'sdk_read' if action in {'read', 'inspect_dataset', 'download_dataset'} else 'sdk_upload' if action in catalog.UPLOAD_ACTIONS else 'sdk_control'
         if action == 'connection_info':
             result = {'principal': profile.principal, 'tenant': profile.tenant,
                       'default_collection': profile.default_collection, 'default_domain': profile.default_domain,
                       'client_version': SDK_LOCK['version']}
         elif action == 'list_collections':
-            result = _known_collections(core)
+            result = _known_collections(core, arguments['params'])
         elif action == 'read':
             result = client.read(core, arguments['vid'], arguments['path'])
         elif action == 'upload':
             result = client.upload(core, arguments['collection_id'], arguments['path'], arguments['data_base64'],
                                    arguments.get('branch', 'main'), arguments.get('strategy', 'ingest'),
-                                   arguments.get('base_vid'), arguments.get('expected_head'), request_id)
+                                   arguments.get('base_vid'), arguments.get('expected_head'), request_id, arguments.get('note'))
+        elif action in catalog.DATASET_ACTIONS:
+            from agents.gaiakeep import dataset_workspace
+
+            deadline = started + FLOW_TIMEOUT
+            if action == 'inspect_dataset':
+                result = dataset_workspace.inspect(arguments['dataset_ref'], deadline)
+            elif action == 'upload_dataset':
+                dispatched = False
+
+                def on_dispatch():
+                    nonlocal dispatched
+                    dispatched = True
+
+                result = dataset_workspace.upload(core, dict(arguments, request_id=request_id), deadline, on_dispatch)
+            else:
+                result = dataset_workspace.download(core, arguments, deadline)
         else:
             result = client.execute(core, action, arguments['params'], config, {},
                                     sdk_loader=lambda: (CoreClient, Timeouts, GaiaKeepError, raise_for))
@@ -351,6 +381,9 @@ def run(request):
         if mutation and dispatched and verdict in {'protocol_error', 'integrity_error'}:
             verdict, message = 'unconfirmed', 'The operation may have taken effect. Check native state before retrying.'
         response = {'ok': False, 'verdict': verdict, 'message': message}
+        reconciliation = client.native_reconciliation(exc)
+        if verdict == 'pending' and reconciliation:
+            response['reconciliation'] = reconciliation
         if detail is not None:
             response['failure_detail'] = detail
         return response

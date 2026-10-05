@@ -19,7 +19,7 @@ MAX_BYTES = 1 << 20
 BACKUPS = 3
 LOCK_TIMEOUT = 2.0
 VERDICTS = frozenset({'not_configured', 'unsupported', 'auth_failed', 'invalid_argument',
-                     'protocol_error', 'integrity_error', 'upstream_denied', 'unavailable', 'unconfirmed'})
+                     'protocol_error', 'integrity_error', 'upstream_denied', 'unavailable', 'unconfirmed', 'pending'})
 _LOGGER = logging.getLogger(__name__)
 _THREAD_LOCK = threading.Lock()
 _WINDOWS = os.name == 'nt'

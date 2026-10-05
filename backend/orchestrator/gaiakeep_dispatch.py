@@ -16,14 +16,15 @@ PROTOCOL_REFUSALS = frozenset({-32020, -32021, -32022, -32600, -32601, -32602})
 
 def _supports_request_id(name):
     action = catalog.TOOLS[name]['action']
-    return (action == 'upload'
+    return (action in catalog.UPLOAD_ACTIONS
             or (catalog.is_mutation(name) and any(
                 field['name'] == 'request_id' for field in catalog.ACTIONS.get(action, {}).get('parameters', []))))
 
 
 def _reconciliation(name, public):
-    if catalog.TOOLS[name]['action'] == 'upload':
-        retained = {key: public[key] for key in ('collection_id', 'path')}
+    if catalog.TOOLS[name]['action'] in catalog.UPLOAD_ACTIONS:
+        fields = ('collection_id', 'path') if catalog.TOOLS[name]['action'] == 'upload' else ('collection_id', 'dataset_ref', 'manifest_sha256')
+        retained = {key: public[key] for key in fields}
         retained['branch'] = public.get('branch', 'main')
         if public.get('strategy', 'ingest') == 'ingest' and 'request_id' in public:
             retained['request_id'] = public['request_id']
@@ -38,7 +39,7 @@ def prepare_reconciliation(name, public):
     if not catalog.is_mutation(name) or not _supports_request_id(name):
         return {}
     prepared = dict(public)
-    if catalog.TOOLS[name]['action'] == 'upload':
+    if catalog.TOOLS[name]['action'] in catalog.UPLOAD_ACTIONS:
         if public.get('strategy', 'ingest') == 'ingest':
             prepared['request_id'] = public.get('request_id') or uuid.uuid4().hex
     else:
@@ -88,7 +89,7 @@ async def invoke(name, arguments, physical_call):
         catalog.validate(name, public)
         reconciliation = _reconciliation(name, public)
         needs_id = (_supports_request_id(name)
-                    and (catalog.TOOLS[name]['action'] != 'upload'
+                    and (catalog.TOOLS[name]['action'] not in catalog.UPLOAD_ACTIONS
                          or public.get('strategy', 'ingest') == 'ingest'))
         if needs_id and 'request_id' not in reconciliation:
             raise ValueError

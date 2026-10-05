@@ -11106,13 +11106,14 @@ class Orchestrator:
                             stream_params=dict(params),
                         )
                         if isinstance(auth, GateRefusal):
-                            if auth.render_components:
+                            from orchestrator.remote_confirmation import is_approval_card_result
+                            refusal_components = auth.render_components
+                            if agent_id == "gaiakeep-1" and auth.response.error is None:
+                                refusal_components = refusal_components or auth.response.ui_components
+                            if refusal_components:
                                 if (agent_id == "gaiakeep-1" and chat_id
-                                        and all(isinstance(component, dict)
-                                                and component.get("type") == "card"
-                                                and str(component.get("id") or "").startswith("au_approval_")
-                                                for component in auth.render_components)):
-                                    components = copy.deepcopy(auth.render_components)
+                                        and is_approval_card_result(refusal_components)):
+                                    components = copy.deepcopy(refusal_components)
                                     for component in components:
                                         _tag_source(component, agent_id, tool_name)
                                     await self._send_or_replace_components(
@@ -11121,7 +11122,7 @@ class Orchestrator:
                                 else:
                                     await self.send_ui_render(
                                         websocket,
-                                        auth.render_components,
+                                        refusal_components,
                                         target=auth.render_target or "chat",
                                     )
                             return
@@ -16863,7 +16864,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if _conf is not None:
                 _msg, _comps = _conf
                 _policy = remote_confirmation.policy_for(agent_id)
-                if _policy is not None and _policy.card_as_result:
+                if (_policy is not None and _policy.card_as_result
+                        and (agent_id != "gaiakeep-1" or remote_confirmation.is_approval_card_result(_comps))):
                     return GateRefusal(
                         response=MCPResponse(
                             result={"_data": {"status": "confirmation_required", "message": _msg}},

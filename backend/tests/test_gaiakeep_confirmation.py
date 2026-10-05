@@ -137,6 +137,37 @@ def test_upload_request_identity_is_retained_before_approval(monkeypatch):
     assert approved['request_id'] == request_id and db.rows[pid]['status'] == 'consumed'
 
 
+@pytest.mark.parametrize('tool', ['gaiakeep_upload_dataset', 'gaiakeep_download_dataset'])
+def test_dataset_io_uses_owner_bound_single_use_approval_and_content_fingerprint(monkeypatch, tool):
+    db = _FakeDB()
+    orch = _orch(db)
+    ws = object()
+    orch.ui_sessions[ws] = {'user_id': 'owner'}
+    monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
+    args = {'machine_id': 'mine', 'dataset_ref': 'run42'}
+    changed_field = 'vid'
+    if tool == 'gaiakeep_upload_dataset':
+        args.update(collection_id='runs', manifest_sha256='a' * 64, expected_head='existing-version', note='run results')
+        changed_field = 'manifest_sha256'
+    else:
+        args['vid'] = 'immutable-version'
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, args, 'chat', 'owner')
+    pid, = db.rows
+    stored = json.loads(db.rows[pid]['args_json'])
+    assert stored == args and stored['dataset_ref'] == 'run42'
+    if tool == 'gaiakeep_upload_dataset':
+        assert re.fullmatch(r'[A-Za-z0-9_-]{16,64}', stored['request_id'])
+    db.rows[pid]['status'] = 'approved'
+    altered = dict(args, **{changed_field: 'b' * 64}, _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, altered, 'chat', 'owner')
+    assert db.rows[pid]['status'] == 'approved'
+    approved = dict(args, _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, approved, 'chat', 'owner') is None
+    assert db.rows[pid]['status'] == 'consumed'
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, dict(args, _remote_op_proposal_id=pid), 'chat', 'owner')
+    assert rc.evaluate(orch, None, 'gaiakeep-1', tool, dict(args), 'chat', 'owner')
+
+
 def test_core_request_identity_preparation_preserves_approved_parameters(monkeypatch):
     db = _FakeDB()
     orch = _orch(db)
@@ -171,17 +202,112 @@ def test_upload_approval_preserves_the_selected_request_identity_mode(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monkeypatch):
+@pytest.mark.parametrize('mode', ['single', 'parallel'])
+async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monkeypatch, mode):
     monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
     tool = 'gaiakeep_core_auditack'
-    response = await real_orch.execute_single_tool(
-        _WS(), _tc(tool, {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': 'attacker'}),
-        {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
-    assert 'confirmation_required' in response.error['message']
+    tool_call = _tc(tool, {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': 'attacker'})
+    real_orch._execute_with_retry_audited = AsyncMock()
+    if mode == 'single':
+        response = await real_orch.execute_single_tool(_WS(), tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    else:
+        response, = await real_orch.execute_parallel_tools(_WS(), [tool_call], {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    assert response.error is None and response.result['_data']['status'] == 'confirmation_required'
     row, = real_orch.proposal_storage.rows.values()
+    assert response.ui_components[0]['id'] == rc.card_component_id(row['proposal_id'])
+    assert rc.is_approval_card_result(response.ui_components)
     assert row['owner_user_id'] == USER
     assert json.loads(row['args_json'])['user_id'] == USER
     real_orch.tool_permissions.is_tool_allowed.assert_called_once_with(USER, 'gaiakeep-1', tool)
+    real_orch._execute_with_retry_audited.assert_not_awaited()
+    real_orch.send_ui_render.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['single', 'parallel'])
+@pytest.mark.parametrize('case', ['invalid-arguments', 'foreign-machine', 'machine-lookup-failure',
+                                 'unattended', 'stale-approval', 'changed-approval', 'permission'])
+async def test_normal_gaia_denial_remains_an_error_without_pending_result(real_orch, monkeypatch, mode, case):
+    from orchestrator import remote_machines
+    tool = 'gaiakeep_core_auditack'
+    args = {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': USER}
+    socket = _WS()
+    if case == 'invalid-arguments':
+        args['params'] = {'principal': 'attacker'}
+    elif case == 'foreign-machine':
+        monkeypatch.setattr(remote_machines, 'resolve_machine', lambda *a: None)
+    elif case == 'machine-lookup-failure':
+        def fail(*a):
+            raise OSError('private repository detail')
+        monkeypatch.setattr(remote_machines, 'resolve_machine', fail)
+    elif case == 'unattended':
+        socket.machine_claims = {'machine_class': 'scheduler'}
+    elif case == 'stale-approval':
+        args['_remote_op_proposal_id'] = 'missing-proposal'
+    elif case == 'changed-approval':
+        _seed(real_orch.proposal_storage, 'approved', owner=USER, verb=tool, args=copy.deepcopy(args),
+              agent_id='gaiakeep-1')
+        args['params'] = {'reason': 'changed'}
+        args['_remote_op_proposal_id'] = 'approved'
+    else:
+        real_orch.tool_permissions.is_tool_allowed.return_value = False
+    before = copy.deepcopy(real_orch.proposal_storage.rows)
+    real_orch._execute_with_retry_audited = AsyncMock()
+    tool_call = _tc(tool, args)
+    if mode == 'single':
+        response = await real_orch.execute_single_tool(socket, tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    else:
+        response, = await real_orch.execute_parallel_tools(socket, [tool_call], {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    assert response.error and response.error['retryable'] is False
+    assert response.result is None and response.ui_components is None
+    assert 'private repository detail' not in json.dumps(response.error)
+    assert real_orch.proposal_storage.rows == before
+    real_orch.send_ui_render.assert_awaited_once()
+    assert all(component['type'] == 'alert'
+               for call in real_orch.send_ui_render.await_args_list for component in call.args[1])
+    real_orch._execute_with_retry_audited.assert_not_awaited()
+
+
+@pytest.mark.parametrize('case', ['not-list', 'empty', 'multiple', 'not-object', 'alert', 'numeric-id',
+                                 'wrong-id', 'short-id', 'invalid-id', 'missing-content', 'missing-button',
+                                 'wrong-action', 'wrong-proposal', 'wrong-decision', 'extra-payload'])
+def test_only_complete_issued_approval_cards_are_pending_results(case):
+    _proposal, issued = rc._create_proposal(_orch(_FakeDB()), USER, 'chat', 'gaiakeep-1',
+                                          'gaiakeep_core_auditack', {'machine_id': 'mine', 'params': {}})
+    components = [issued]
+    if case == 'not-list':
+        components = tuple(components)
+    elif case == 'empty':
+        components = []
+    elif case == 'multiple':
+        components.append({'type': 'alert', 'message': 'denied'})
+    elif case == 'not-object':
+        components[0] = None
+    elif case == 'alert':
+        issued['type'] = 'alert'
+    elif case == 'numeric-id':
+        issued['id'] = 42
+    elif case == 'wrong-id':
+        issued['id'] = 'unrelated-card'
+    elif case == 'short-id':
+        issued['id'] = rc.card_component_id('a')
+    elif case == 'invalid-id':
+        issued['id'] = rc.card_component_id('z' * 32)
+    elif case == 'missing-content':
+        issued['content'] = None
+    elif case == 'missing-button':
+        issued['content'].pop()
+    else:
+        button = next(item for item in issued['content'] if item['type'] == 'button')
+        if case == 'wrong-action':
+            button['action'] = 'execute_tool'
+        elif case == 'wrong-proposal':
+            button['payload']['proposal_id'] = 'b' * 32
+        elif case == 'wrong-decision':
+            button['payload']['decision'] = 'decline'
+        else:
+            button['payload']['machine_id'] = 'attacker'
+    assert rc.is_approval_card_result(components) is False
 
 
 @pytest.mark.asyncio

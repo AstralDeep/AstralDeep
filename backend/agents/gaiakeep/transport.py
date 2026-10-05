@@ -277,6 +277,7 @@ class NativeTransport:
         if not self.context.check_hostname or self.context.verify_mode != ssl.CERT_REQUIRED:
             raise ValueError('Verified TLS is mandatory.')
         self.streams = []
+        self.publication_metadata = {}
         self.deadline = time.monotonic() + FLOW_TIMEOUT
 
     def remaining(self, cap):
@@ -389,6 +390,9 @@ class NativeTransport:
                     raise ProtocolError('Invalid compressed reply content.') from exc
                 if expanded > MAX_EXPANDED:
                     raise ProtocolError('Compressed reply exceeds the aggregate expansion bound.')
+        from agents.gaiakeep.client import observe_native_reply
+
+        observe_native_reply(self, action, params, reply)
         return reply
 
     def open_stream(self, name, on_frame):

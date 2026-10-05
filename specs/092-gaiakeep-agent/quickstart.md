@@ -1,5 +1,7 @@
 # GaiaKeep operator guide
 
+Current archival workflow and SDK update instructions are in the [2026-10-04 continuation](#upstream-and-local-dataset-continuation-2026-10-04). Earlier qualification observations remain historical.
+
 PR #226 merged the default-disabled agent at a13c977e6b22c0ce8f1f4980de5e483d15dd9447. The production continuation is codex/092-gaiakeep-production; verification.md records exact-candidate staging and affected-client qualification separately. No Cresco service or Gaia instance is provisioned.
 
 ## Account and trust configuration
@@ -61,3 +63,42 @@ The agent automatically appends failures to `ISSUES.md` in its configured operat
 The sandbox rollout will precreate the dedicated host directory `/home/sam/gaia-integration/agent-issues` as Sam UID/GID 1003, mode 2750. Its setgid bit makes root backend-created 0640 files inherit Sam's group, so Sam can read `ISSUES.md`; verify actual ownership/mode and readability after recreation. Mount only this directory. The earlier `/home/sam/gaia-integration/ISSUES.md` contains historical operator qualification notes. Durable product records and authorization/audit provenance remain in AstralPlane. Local log directories are excluded from Git and image build contexts.
 
 SSH account discovery uses gaiakeep_connection_info for the enrolled principal/tenant/default collection and gaiakeep_list_collections for SDK-known collections and heads. Neither accepts profile paths or credentials. These are distinct from mutating core.profile policy operations; native compatibility refuses the local discovery tools.
+## Upstream and local dataset continuation, 2026-10-04
+
+The current integration targets GaiaKeep/gfs `f86ec85d5526d3273150725d79eee1a389237e37`, docs `51d41bc6af8b6e57f714448ff58baa155ab48a23` and dashboard `6101b5526bb7c59fefb6308fc4f4de60d4e1a17d`. The gfs client still identifies itself as 0.2.0, so version alone cannot qualify an installation. The exact pure wheel SHA256 is `89a4565b61a42dd7adcef578958027d60eae85a28bceb2ac65f52c63b6958065`; `sdk-artifact.json` also binds all 24 source/resource files. The catalog retains 115 native declarations and exposes 118 tools: 111 control tools, two bounded inline file workflows, two account-discovery reads and three local dataset workflows.
+
+Update the existing enrolled login account before changing the backend SDK lock. Retain its previous exact wheel and environment inventory for rollback, copy the reviewed wheel to an account-owned directory, independently check its SHA256, and run the existing interpreter's supported pip operation:
+
+```sh
+"$HOME/.gaiakeep/venv/bin/python" -m pip install --no-deps --force-reinstall /operator/verified/gaiakeep-0.2.0-py3-none-any.whl
+```
+
+The wheel path above is operator supplied; it is never an agent argument. Keep the existing Gaia profile, private signing key, service key, gateway certificate and Astral machine registration. Verify `direct_url.json` contains the admitted archive SHA256 and verify every installed source digest before switching the backend image. The remote adapter independently repeats these checks before importing snapshotted source. Rollback requires the prior image and its matching prior wheel together. Installing or updating the account client is an operator deployment action; the agent does not self-install packages or provision Cresco services.
+
+An operator or existing job runner can place completed run outputs under `~/.gaiakeep/astral-workspace/<dataset_ref>` in the enrolled account. `.gaiakeep` and `astral-workspace` must be owned by that account with mode 0700; dataset directories/files must be account owned and protected from group/other writers. Dataset references contain at most 64 ASCII letters, digits, underscores or hyphens and begin with a letter or digit. Symlinks, hard links, special files, absolute paths and traversal are refused. No tool accepts an upstream local path or lets the model choose a different workspace root.
+
+For example, after a job creates `run42/metrics.json` and `run42/model.bin`, use the ordinary agent tools in this order:
+
+1. Read `gaiakeep_connection_info` and one page of `gaiakeep_list_collections`. Tenant collection discovery calls native `core.collections`; pass its `next` cursor back as `after`. `core.branches` identifies the intended branch head.
+2. Call `gaiakeep_inspect_dataset` with the owned machine ID and `dataset_ref="run42"`. Its sorted manifest contains relative file keys, byte counts and SHA256 fingerprints. The manifest digest binds every key, size and file digest.
+3. Propose `gaiakeep_upload_dataset` with the same machine/reference, returned `manifest_sha256`, collection, selected branch and `expected_head`. Use `prefix="runs/42"` and a short `note` to describe results. If `base_vid` is omitted, it defaults to `expected_head`, retaining existing dataset files and adding the completed run in one native version. A server-generated native request ID is bound before approval. Approval is exact argument, owner bound and single use.
+4. At execution, the adapter reopens confined descriptors, rehashes every source, compares the approved digest and creates private unlinked snapshots before native ingest. A file changed since approval is refused before upload. Keep the returned request/upload/version/job IDs for reconciliation.
+5. To retrieve a fixed version locally, propose `gaiakeep_download_dataset` with an immutable `vid` and a fresh dataset reference. This writes local files and therefore requires the same mutation approval. It never replaces an existing reference. Each whole-file SDK transfer and additional signed digest proof must pass; a complete manifest is checked before and after atomic no-replace directory publication. Failed transfers clean up unpublished staging.
+
+Local dataset workflows require Linux SSH mode and are bounded to 256 files, 1 GiB total, 1,024 directory entries, 16 nested directories and the existing 120-second operation deadline. Larger datasets need a separate qualified transfer scope. Inline file workflows retain their 8 MiB decoded limit. Version notes are at most 512 UTF-8 bytes and contain no control characters. These bounds apply to remote version listings before any download directory or stream is created.
+
+Native publication may return `commit_job` while tape copies are still being verified. That result is `pending`, with the job/version identity preserved, and does not claim durable completion. Poll `gaiakeep_core_job` using that job ID; status 16 reads remain pending and must not trigger another publication. `gaiakeep_core_jobs` provides bounded principal-scoped job discovery. Both SSH and native compatibility transports retain canonical publication metadata even though the upstream ingest result currently drops it. An invalid job token yields an unconfirmed result instead of false success.
+
+Results render as existing Astral cards, status badges, key/value fields and typed tables. Encoded JSON is decoded for display; identifiers, dataset paths and notes remain literal. Boolean and numeric table cells retain their types. Tables preview at most 50 returned rows and eight columns, with explicit notices for shortened or omitted detail. Credentials, file bytes and opaque proof artifacts are excluded from this view; the canonical result and reconciliation remain available unchanged.
+
+The inherited legacy `getcapabilities` surface remains conservatively approval gated and requires operator legacy opt-in; a confirmation card is an outstanding approval, not a native outage. Use the pinned tool catalog and `core.status` for supported modern discovery. Semantic cross-agent relations, panAtlas operational data and UofL resource provisioning remain future work. This continuation implements archival/retrieval and versioned result augmentation.
+
+The final parsed-presentation and approval snapshot passed 1,360 tests with zero skips in a disposable production Python 3.11.17 container on an internal network containing only throwaway PostgreSQL 17. It includes actual SDK raw/keyed proof, atomic destination, owner-scoped approval/publication and real primitive-renderer fixtures. Reproduce its scoped invocation from the candidate root with the owning repository's declared application dependencies, coverage tooling and exact current SDK wheel installed:
+
+```sh
+PYTHONPATH="$PWD/backend" python -m pytest -c backend/pytest.ini backend/agents/gaiakeep/tests backend/tests/test_gaiakeep_confirmation.py backend/tests/test_gaiakeep_tunnel.py backend/tests/test_gaiakeep_outer_dispatch.py backend/tests/test_remote_confirmation_063.py backend/tests/test_gaiakeep_ui_publication.py backend/tests/test_connection_publication_owner.py backend/tests/test_tool_feedback.py backend/tests/test_authorize_and_prepare.py backend/tests/test_computer_use_076.py -q
+```
+
+When candidate files are mounted read only, direct `COVERAGE_FILE` and report destinations to a separate evidence mount and use Ruff `--no-cache`. See the dated verification record for exact source/evidence digests and changed-line coverage. This deterministic run does not substitute for ordinary authenticated live transfer and approval acceptance after the matched account SDK/backend update.
+
+S1 now runs the qualified backend with the matched account SDK. Ordinary signed-in browser inspection renders the actual manifest as primitive cards and tables; an upload proposal survives reload, and declining it persists across another reload with an owner-bound audit record. Full approved upload/download and durability-job acceptance remain blocked by the upstream core's non-serving state in [gfs issue 13](https://github.com/GaiaKeep/gfs/issues/13). This sandbox activation does not qualify a release or complete production acceptance.

@@ -21,7 +21,7 @@ from agents.gaiakeep.transport import FLOW_TIMEOUT, MAX_RPC, GatewayConfig, Prot
 MAX_WIRE = 13 << 20
 MAX_STDERR = 16384
 BUNDLE_FILES = ('catalog.py', 'client.py', 'transport.py', 'remote_runtime.py',
-                'capabilities.json', 'sdk-artifact.json')
+                'dataset_workspace.py', 'capabilities.json', 'sdk-artifact.json')
 
 
 def _bundle():
@@ -165,7 +165,7 @@ class RemoteCore:
             if not reply['ok']:
                 verdict = reply.get('verdict')
                 if verdict not in {'not_configured', 'auth_failed', 'integrity_error', 'upstream_denied',
-                                   'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable'}:
+                                   'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable', 'pending'}:
                     raise ValueError
                 messages = {'not_configured': 'The DGX Gaia client or trust configuration needs attention.',
                             'auth_failed': 'GaiaKeep authentication failed.',
@@ -175,8 +175,10 @@ class RemoteCore:
                             'protocol_error': 'GaiaKeep returned an invalid response.',
                             'unsupported': 'This Gaia operation is not enabled or supported.',
                             'unconfirmed': 'The operation may have taken effect. Check native state before retrying.',
+                            'pending': 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.',
                             'unavailable': 'GaiaKeep is currently unavailable.'}
-                raise AgentError(verdict, messages[verdict], validate_failure_detail(reply.get('failure_detail')))
+                raise AgentError(verdict, messages[verdict], validate_failure_detail(reply.get('failure_detail')),
+                                 reply.get('reconciliation') if verdict == 'pending' else None)
             result = reply['result']
             if not isinstance(result, dict):
                 raise ValueError

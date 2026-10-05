@@ -61,6 +61,45 @@ def test_rpc(monkeypatch, fabric):
     assert ws.closed
 
 
+def test_native_publication_retains_commit_job_even_when_ingest_result_drops_it(monkeypatch, fabric):
+    from agents.gaiakeep import client
+
+    ws = Socket([lambda w: wire_reply(w, vid='version-42', commit_job='durable-42', job_id='ingest-42')])
+    install_socket(monkeypatch, fabric, ws)
+    fabric.call('r:a:p', 'core.publish', {'request_id': 'retained-request', 'upload_id': 'upload-42'}, 20)
+    core = SimpleNamespace(transport=fabric)
+    result = client.publication_result(core, SimpleNamespace(vid='version-42', request_id='retained-request'))
+    assert result['commit_job'] == 'durable-42' and result['job_id'] == 'ingest-42'
+    assert len(ws.sent) == 1
+
+
+@pytest.mark.parametrize('job', [None, [], {}, 1, '', '../private-job', 'x' * 257])
+def test_native_malformed_publication_job_never_reports_success_or_replays(monkeypatch, fabric, job):
+    from agents.gaiakeep import client
+
+    ws = Socket([lambda w: wire_reply(w, vid='version-42', commit_job=job)])
+    install_socket(monkeypatch, fabric, ws)
+    with pytest.raises(client.AgentError) as error:
+        fabric.call('r:a:p', 'core.publish', {'request_id': 'retained-request'}, 20)
+    assert error.value.verdict == 'unconfirmed' and len(ws.sent) == 1 and not fabric.publication_metadata
+
+
+def test_native_committing_read_preserves_safe_reconciliation_without_republication(monkeypatch, fabric):
+    from agents.gaiakeep import client
+
+    def pending(w):
+        sent = json.loads(w.sent[-1])
+        return json.dumps({'status': '16', 'client_rpc_id': sent['message_payload']['client_rpc_id'],
+                           'commit_job': 'durable-42', 'vid': 'version-42', 'secret': 'private-value'})
+    ws = Socket([pending])
+    install_socket(monkeypatch, fabric, ws)
+    with pytest.raises(client.AgentError) as error:
+        fabric.call('r:a:p', 'core.list', {'vid': 'version-42'}, 20)
+    assert error.value.verdict == 'pending'
+    assert error.value.reconciliation == {'commit_job': 'durable-42', 'vid': 'version-42'}
+    assert transport.failure_detail(error.value)['native_status'] == 16 and len(ws.sent) == 1
+
+
 @pytest.mark.parametrize('reply', ['[]', '{', json.dumps({'status': '10', 'client_rpc_id': 'wrong'})])
 def test_bad_correlation(monkeypatch, fabric, reply):
     ws = Socket([reply])

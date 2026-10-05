@@ -56,10 +56,45 @@ __all__ = [
 
 
 class AgentError(Exception):
-    def __init__(self, verdict, message, detail=None):
+    def __init__(self, verdict, message, detail=None, reconciliation=None):
         super().__init__(message)
         self.verdict = verdict
         self._gaiakeep_failure_detail = validate_failure_detail(detail)
+        self.reconciliation = native_reconciliation(reconciliation)
+
+
+def native_reconciliation(value):
+    if not isinstance(value, dict):
+        value = getattr(value, 'reconciliation', None) or getattr(value, 'detail', None)
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if key in {'commit_job', 'job_id', 'vid'}
+            and isinstance(item, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}', item)}
+
+
+def publication_result(core, value):
+    result = dataclasses.asdict(value) if dataclasses.is_dataclass(value) else dict(vars(value))
+    publications = getattr(getattr(core, 'transport', None), 'publication_metadata', {})
+    for field in ('request_id', 'upload_id', 'vid'):
+        metadata = publications.get(result.get(field), {})
+        if metadata and ('vid' not in metadata or metadata['vid'] == result.get('vid')):
+            result.update(metadata)
+    return result
+
+
+def observe_native_reply(transport, action, params, reply):
+    status = reply.get('status')
+    metadata = native_reconciliation(reply)
+    if status in {16, '16'}:
+        raise AgentError('pending', 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.',
+                         {'native_phase': 'rpc_response', 'failure_kind': 'native', 'native_status': 16}, metadata)
+    if status in {10, '10'} and action in {'core.commit', 'core.publish'}:
+        if 'commit_job' in reply and 'commit_job' not in metadata:
+            raise AgentError('unconfirmed', 'The publication job could not be validated. Reconcile the retained request before any further publication.',
+                             {'native_phase': 'rpc_response', 'failure_kind': 'protocol', 'native_status': 10}, metadata)
+        for identifier in (params.get('request_id'), params.get('upload_id'), metadata.get('vid')):
+            if isinstance(identifier, str):
+                transport.publication_metadata[identifier] = metadata
 
 
 def load_sdk():
@@ -129,13 +164,13 @@ def open_client(target, credentials, config=None):
             transport.close()
 
 
-def clean_result(value, secrets=(), depth=0):
+def clean_result(value, secrets=(), depth=0, decode_strings=True):
     if depth > 16:
         raise AgentError('protocol_error', 'The Gaia response exceeds the nesting bound.')
     if isinstance(value, dict):
         if len(value) > 10000:
             raise AgentError('protocol_error', 'The Gaia response exceeds the entry bound.')
-        out = {clean_result(str(k), secrets, depth + 1): clean_result(v, secrets, depth + 1) for k, v in value.items()
+        out = {clean_result(str(k), secrets, depth + 1, decode_strings): clean_result(v, secrets, depth + 1, decode_strings) for k, v in value.items()
                if not re.search(r'(^sig($|_)|token|secret|private|service_key|(^|_)grant$)', str(k), re.IGNORECASE)}
         if value.get('certificate_verified') is True and 'certificate_signature' in value and out != value:
             return {'certificate_verified': False, 'leaf_inclusion_verified': False, 'artifact_omitted': True}
@@ -143,13 +178,13 @@ def clean_result(value, secrets=(), depth=0):
     if isinstance(value, list):
         if len(value) > 10000:
             raise AgentError('protocol_error', 'The Gaia response exceeds the entry bound.')
-        return [clean_result(v, secrets, depth + 1) for v in value]
+        return [clean_result(v, secrets, depth + 1, decode_strings) for v in value]
     if isinstance(value, str):
         if len(value.encode()) > MAX_EXPANDED:
             raise AgentError('protocol_error', 'The Gaia response exceeds the text bound.')
-        if value.startswith('H4sI'):
+        if decode_strings and value.startswith('H4sI'):
             return clean_result(decode_compressed(value), secrets, depth + 1)
-        if value.lstrip().startswith(('{', '[')):
+        if decode_strings and value.lstrip().startswith(('{', '[')):
             try:
                 return clean_result(json.loads(value), secrets, depth + 1)
             except (ValueError, RecursionError):
@@ -165,6 +200,13 @@ def clean_result(value, secrets=(), depth=0):
             raise AgentError('protocol_error', 'Non-finite Gaia response value.')
         return value
     raise AgentError('protocol_error', 'Unsupported Gaia response value.')
+
+
+def clean_dataset_result(value, secrets=()):
+    result = clean_result(value, secrets, decode_strings=False)
+    if 'files' in value and value['files'] != result.get('files'):
+        raise AgentError('protocol_error', 'The dataset manifest could not be safely represented without changing its fingerprint.')
+    return result
 
 
 def prepare_params(action, params):
@@ -257,7 +299,7 @@ def execute(core, action, params, config=None, credentials=None, sdk_loader=None
 
 
 def upload(core, collection_id, path, data_base64, branch, strategy='ingest', base_vid=None, expected_head=None,
-           request_id=None):
+           request_id=None, note=None):
     try:
         path = relative_path(path)
         data = base64.b64decode(data_base64, validate=True)
@@ -270,12 +312,12 @@ def upload(core, collection_id, path, data_base64, branch, strategy='ingest', ba
         source.write_bytes(data)
         if strategy == 'have':
             reply, stats = core.have_ingest({path: str(source)}, collection_id=collection_id,
-                                           branch=branch, expected_head=expected_head)
+                                           branch=branch, expected_head=expected_head, note=note)
             return {'publication': reply, 'deduplication': stats}
         result = core.ingest({path: str(source)}, collection_id=collection_id, branch=branch,
                              request_id=request_id or uuid.uuid4().hex, mode='1a', legacy_publish='staged',
-                             base_vid=base_vid, expected_head=expected_head)
-        return dataclasses.asdict(result) if dataclasses.is_dataclass(result) else vars(result)
+                             base_vid=base_vid, expected_head=expected_head, note=note)
+        return publication_result(core, result)
 
 
 def read(core, vid, path):
@@ -294,6 +336,8 @@ def failure(exc, mutation):
         return 'auth_failed', 'GaiaKeep authentication failed.'
     if name in {'IntegrityError', 'InvalidSignature'}:
         return 'integrity_error', 'GaiaKeep data or identity verification failed.'
+    if name == 'CommitPending':
+        return 'pending', 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.'
     if name in {'Forbidden', 'PolicyRefused', 'NotFound', 'BadRequest', 'Failed', 'StaleHead', 'RetryAfter'}:
         return 'upstream_denied', 'GaiaKeep refused the operation; inspect the native state before retrying.'
     if isinstance(exc, ValueError) and not mutation:

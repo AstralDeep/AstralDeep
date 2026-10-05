@@ -133,6 +133,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             summary=_gaiakeep_summary,
             machine_label=_machine_label,
             auto_continue=True,
+            card_as_result=True,
         ),
         MUTATING_AGENT_ID: AgentConfirmationPolicy(
             agent_id=MUTATING_AGENT_ID,
@@ -433,6 +434,29 @@ def card_component_id(proposal_id: str) -> str:
     return f"au_approval_{proposal_id}"
 
 
+def is_approval_card_result(components: Any) -> bool:
+    if not isinstance(components, list) or len(components) != 1:
+        return False
+    card = components[0]
+    if not isinstance(card, dict) or card.get("type") != "card":
+        return False
+    ident = card.get("id")
+    if not isinstance(ident, str) or not ident.startswith("au_approval_"):
+        return False
+    proposal_id = ident.removeprefix("au_approval_")
+    if len(proposal_id) != 32 or any(char not in "0123456789abcdef" for char in proposal_id):
+        return False
+    content = card.get("content")
+    if not isinstance(content, list):
+        return False
+    buttons = [item for item in content if isinstance(item, dict) and item.get("type") == "button"]
+    return len(buttons) == 2 and all(
+        button.get("action") == "remote_op_decision"
+        and button.get("payload") == {"proposal_id": proposal_id, "decision": decision}
+        for button, decision in zip(buttons, ("approve", "decline"))
+    )
+
+
 async def _replace_card(orch, row, title: str, body: str, variant: str = "default") -> None:
     if not row.conversation_id:
         return
@@ -481,12 +505,12 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                         machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
             return ("GaiaKeep requires a registered machine owned by the signed-in user; no operation was sent.",
                     [Alert(message="This GaiaKeep machine is not available to your account.", variant="error").to_dict()])
-        from agents.gaiakeep.catalog import TOOLS
+        from agents.gaiakeep.catalog import TOOLS, UPLOAD_ACTIONS
         from orchestrator.gaiakeep_dispatch import prepare_reconciliation
 
         reconciliation = prepare_reconciliation(tool_name, public)
         if "request_id" in reconciliation:
-            if TOOLS[tool_name]["action"] == "upload":
+            if TOOLS[tool_name]["action"] in UPLOAD_ACTIONS:
                 args["request_id"] = reconciliation["request_id"]
             else:
                 args["params"] = dict(public["params"], request_id=reconciliation["request_id"])
