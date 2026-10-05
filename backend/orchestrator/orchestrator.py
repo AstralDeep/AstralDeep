@@ -22296,6 +22296,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):
                     seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
+                if not flags.is_enabled("fhir"):
+                    seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
                 await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
         except Exception:
             logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)

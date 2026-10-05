@@ -1,0 +1,432 @@
+"""Builds the astralprims cards the FHIR agent returns: census, patient overview, vital
+trends, laboratory results, medication review, timeline, source status and record tables.
+mcp_tools.py passes in view models from clinical.py and returns each card's dict.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from astralprims import (
+    ActionGroup,
+    Alert,
+    Button,
+    Card,
+    Gauge,
+    Grid,
+    Hero,
+    KeyValue,
+    MetricCard,
+    PlotlyChart,
+    StatGroup,
+    Table,
+    Text,
+    Timeline,
+)
+
+from agents.fhir import clinical
+
+GRID_COLOR = "rgba(148,163,184,0.18)"
+BAND_COLOR = "rgba(16,185,129,0.10)"
+DISCLAIMER = (
+    "De-identified demonstration data replayed from the eICU Collaborative Research Database demo. "
+    "Flags use fixed display thresholds and are not clinical advice."
+)
+
+
+def plot_time(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def ask(label: str, message: str, variant: str = "secondary") -> Button:
+    return Button(label=label, action="chat_message", payload={"message": message}, variant=variant)
+
+
+def axis(title: str, **extra: Any) -> Dict[str, Any]:
+    return {"title": title, "gridcolor": GRID_COLOR, "zeroline": False, **extra}
+
+
+def band(low: float, high: float, reference: str = "y") -> Dict[str, Any]:
+    return {
+        "type": "rect", "xref": "paper", "x0": 0, "x1": 1, "yref": reference, "y0": low, "y1": high,
+        "fillcolor": BAND_COLOR, "line": {"width": 0}, "layer": "below",
+    }
+
+
+def line(label: str, points: Sequence[Tuple[datetime, float]], color: str, **extra: Any) -> Dict[str, Any]:
+    return {
+        "type": "scatter", "mode": "lines", "name": label, "x": [plot_time(when) for when, _ in points],
+        "y": [value for _, value in points], "line": {"color": color, "width": 2}, **extra,
+    }
+
+
+def vital_tiles(latest: Dict[str, clinical.Reading], now: Optional[datetime], keys: Sequence[str]) -> List[MetricCard]:
+    tiles = []
+    for key in keys:
+        item = latest.get(key)
+        vital = clinical.VITALS_BY_KEY[key]
+        if item is None:
+            tiles.append(MetricCard(title=vital.label, value="—", subtitle="no reading"))
+            continue
+        tiles.append(MetricCard(
+            title=vital.label,
+            value=f"{item.display} {vital.unit}".strip(),
+            subtitle=clinical.ago(item.when, now) or clinical.format_time(item.when),
+            variant=vital.variant(item.value),
+        ))
+    return tiles
+
+
+def census_card(
+    as_of: Optional[datetime],
+    total: int,
+    rows: List[Dict[str, Any]],
+    units: List[Tuple[str, int]],
+    admissions: List[Tuple[datetime, int]],
+    admitted_last_hour: int,
+) -> Card:
+    critical = sum(1 for row in rows if row["flag"] == "Critical")
+    badges = [f"{admitted_last_hour} admitted in the last hour", f"{len(units)} unit types"]
+    if critical:
+        badges.append(f"{critical} of {len(rows)} shown flagged critical")
+    content: List[Any] = [
+        Hero(
+            eyebrow="Live FHIR R5 feed",
+            title=f"{total} patients in intensive care",
+            subtitle=f"As of {clinical.format_time(as_of)}",
+            variant="gradient",
+            badges=badges,
+        ),
+        StatGroup(title="Census by unit type", columns=4, items=[{"label": unit, "value": str(count)} for unit, count in units[:8]]),
+    ]
+    if admissions:
+        content.append(PlotlyChart(
+            title="ICU admissions per hour, last 24 hours",
+            data=[{
+                "type": "bar", "name": "Admissions", "x": [plot_time(when) for when, _ in admissions],
+                "y": [count for _, count in admissions], "marker": {"color": "#6366F1"},
+            }],
+            layout={"xaxis": axis("", type="date"), "yaxis": axis("Admissions", rangemode="tozero"), "showlegend": False, "bargap": 0.15},
+        ))
+    content.append(Table(
+        headers=["Patient", "Unit", "Admitted", "In unit", "Admission diagnosis", "HR", "SpO2", "MAP", "Vitals"],
+        rows=[
+            [row["patient"], row["unit"], row["admitted"], row["stay"], row["reason"], row["heart_rate"],
+             row["oxygen_saturation"], row["mean_arterial_pressure"], row["flag"]]
+            for row in rows
+        ],
+        attributes={"title": "Most recently admitted"},
+    ))
+    buttons = [ask("Refresh census", "Refresh the ICU census from the FHIR feed", "primary")]
+    for row in [row for row in rows if row["flag"] == "Critical"][:2] or rows[:1]:
+        buttons.append(ask(f"Open patient {row['patient']}", f"Show the FHIR patient overview for patient {row['patient']}"))
+    content.append(ActionGroup(buttons=buttons, label="Next"))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title="ICU census", id="fhir-icu-census", content=content)
+
+
+def patient_card(
+    patient_id: str,
+    headline: str,
+    eyebrow: str,
+    badges: List[str],
+    latest: Dict[str, clinical.Reading],
+    now: Optional[datetime],
+    facts: List[Dict[str, str]],
+    risks: List[Tuple[str, float]],
+    problems: List[List[str]],
+    medications: List[List[str]],
+    labs: List[Dict[str, Any]],
+    allergies: List[str],
+) -> Card:
+    content: List[Any] = [
+        Hero(eyebrow=eyebrow, title=f"Patient {patient_id}", subtitle=headline, variant="gradient", badges=badges),
+        Grid(columns=4, children=vital_tiles(latest, now, (
+            "heart_rate", "oxygen_saturation", "respiratory_rate", "mean_arterial_pressure",
+            "systolic", "diastolic", "temperature", "glasgow_coma_score",
+        ))),
+        KeyValue(title="Stay", items=facts, columns=3),
+    ]
+    if risks:
+        content.append(Grid(columns=len(risks), children=[
+            Gauge(
+                label=label, value=max(0.0, min(1.0, probability)), display_value=f"{probability * 100:.1f}%",
+                subtitle="APACHE prediction",
+                thresholds=[{"at": 0.0, "variant": "default"}, {"at": 0.2, "variant": "warning"}, {"at": 0.5, "variant": "error"}],
+            )
+            for label, probability in risks
+        ]))
+    if allergies:
+        content.append(Alert(title="Allergies", message=", ".join(allergies), variant="warning"))
+    if problems:
+        content.append(Table(headers=["Problem", "Status", "Recorded"], rows=problems, attributes={"title": "Problems"}))
+    if labs:
+        content.append(Table(
+            headers=["Test", "Result", "Reference", "Flag", "Change", "Collected"],
+            rows=[[row["label"], f"{row['value']} {row['unit']}".strip(), row["reference"], row["flag"], row["change"],
+                   clinical.format_time(row["when"])] for row in labs],
+            attributes={"title": "Key laboratory results"},
+        ))
+    if medications:
+        content.append(Table(headers=["Medication", "Dose and schedule", "Started"], rows=medications, attributes={"title": "Active orders"}))
+    content.append(ActionGroup(label="Explore", buttons=[
+        ask("Vital sign trends", f"Chart the vital sign trends for FHIR patient {patient_id}", "primary"),
+        ask("Laboratory results", f"Show the laboratory results for FHIR patient {patient_id}"),
+        ask("Medications", f"Review the medications for FHIR patient {patient_id}"),
+        ask("Timeline", f"Show the clinical timeline for FHIR patient {patient_id}"),
+    ]))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title=f"Patient {patient_id}", id=f"fhir-patient-{patient_id}", content=content)
+
+
+def vitals_card(
+    patient_id: str,
+    hours: int,
+    now: Optional[datetime],
+    latest: Dict[str, clinical.Reading],
+    summary: List[Dict[str, str]],
+    traces: Dict[str, List[Tuple[datetime, float]]],
+) -> Card:
+    content: List[Any] = [
+        Hero(
+            eyebrow="Vital sign trends", title=f"Patient {patient_id}",
+            subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
+        ),
+        StatGroup(title="Latest, with range over the window", columns=4, items=summary),
+    ]
+    cardiac = [
+        line(clinical.VITALS_BY_KEY[key].label, traces[key], clinical.VITALS_BY_KEY[key].color)
+        for key in ("heart_rate", "respiratory_rate") if traces.get(key)
+    ]
+    if traces.get("oxygen_saturation"):
+        vital = clinical.VITALS_BY_KEY["oxygen_saturation"]
+        cardiac.append(line(vital.label, traces["oxygen_saturation"], vital.color, yaxis="y2"))
+    if cardiac:
+        content.append(PlotlyChart(
+            title="Heart rate, respiratory rate and SpO2",
+            data=cardiac,
+            layout={
+                "xaxis": axis("", type="date"),
+                "yaxis": axis("per minute"),
+                "yaxis2": {"title": "SpO2 %", "overlaying": "y", "side": "right", "range": [70, 100], "showgrid": False},
+                "shapes": [band(60, 100)],
+                "hovermode": "x unified",
+                "legend": {"orientation": "h", "y": -0.25},
+            },
+        ))
+    pressure = [
+        line(clinical.VITALS_BY_KEY[key].label, traces[key], clinical.VITALS_BY_KEY[key].color)
+        for key in ("systolic", "mean_arterial_pressure", "diastolic") if traces.get(key)
+    ]
+    if pressure:
+        content.append(PlotlyChart(
+            title="Blood pressure",
+            data=pressure,
+            layout={
+                "xaxis": axis("", type="date"), "yaxis": axis("mmHg"), "shapes": [band(65, 110)],
+                "hovermode": "x unified", "legend": {"orientation": "h", "y": -0.25},
+            },
+        ))
+    if traces.get("temperature"):
+        vital = clinical.VITALS_BY_KEY["temperature"]
+        content.append(PlotlyChart(
+            title="Temperature",
+            data=[line(vital.label, traces["temperature"], vital.color, mode="lines+markers")],
+            layout={"xaxis": axis("", type="date"), "yaxis": axis("°C"), "shapes": [band(36.0, 38.3)], "showlegend": False},
+        ))
+    if len(content) == 2:
+        content.append(Alert(message=f"No vital signs were recorded for this patient in the last {hours} hours.", variant="info"))
+    content.append(ActionGroup(label="Next", buttons=[
+        ask("Refresh", f"Chart the vital sign trends for FHIR patient {patient_id} over the last {hours} hours", "primary"),
+        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+    ]))
+    content.append(Text(content="Shaded bands mark typical adult ranges. " + DISCLAIMER, variant="caption"))
+    return Card(title=f"Vital signs: patient {patient_id}", id=f"fhir-vitals-{patient_id}", content=content)
+
+
+def labs_card(patient_id: str, hours: int, now: Optional[datetime], rows: List[Dict[str, Any]]) -> Card:
+    abnormal = [row for row in rows if row["flag"] in ("Critical", "Moderate")]
+    content: List[Any] = [
+        Hero(
+            eyebrow="Laboratory results", title=f"Patient {patient_id}",
+            subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
+            badges=[f"{len(rows)} tests", f"{len(abnormal)} outside reference"],
+        ),
+    ]
+    if not rows:
+        content.append(Alert(message=f"No laboratory results were reported for this patient in the last {hours} hours.", variant="info"))
+    else:
+        content.append(Table(
+            headers=["Test", "Result", "Reference", "Flag", "Change", "Collected"],
+            rows=[[row["label"], f"{row['value']} {row['unit']}".strip(), row["reference"], row["flag"], row["change"],
+                   clinical.format_time(row["when"])] for row in rows],
+            attributes={"title": "Latest result per test"},
+        ))
+        charts = []
+        for row in [row for row in rows if len(row["history"]) >= 2][:4]:
+            interval = clinical.LAB_RANGES.get(row["key"])
+            shapes = [band(interval.low, interval.high)] if interval and interval.low is not None and interval.high is not None else []
+            charts.append(PlotlyChart(
+                title=f"{row['label']} ({row['unit']})" if row["unit"] else row["label"],
+                data=[line(row["label"], row["history"], "#6366F1", mode="lines+markers")],
+                layout={"xaxis": axis("", type="date"), "yaxis": axis(row["unit"]), "shapes": shapes, "showlegend": False},
+            ))
+        if charts:
+            content.append(Grid(columns=2, children=charts))
+    content.append(ActionGroup(label="Next", buttons=[
+        ask("Refresh", f"Show the laboratory results for FHIR patient {patient_id} over the last {hours} hours", "primary"),
+        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+    ]))
+    content.append(Text(content="Reference intervals are typical adult values. " + DISCLAIMER, variant="caption"))
+    return Card(title=f"Laboratory results: patient {patient_id}", id=f"fhir-labs-{patient_id}", content=content)
+
+
+def medications_card(
+    patient_id: str,
+    now: Optional[datetime],
+    counts: Dict[str, int],
+    orders: List[List[str]],
+    infusions: Dict[str, List[Tuple[datetime, float]]],
+    infusion_units: Dict[str, str],
+    home: List[List[str]],
+) -> Card:
+    content: List[Any] = [
+        Hero(
+            eyebrow="Medication review", title=f"Patient {patient_id}",
+            subtitle=f"As of {clinical.format_time(now)}", variant="subtle",
+        ),
+        StatGroup(columns=4, items=[
+            {"label": "Active orders", "value": str(counts.get("active", 0))},
+            {"label": "Completed", "value": str(counts.get("completed", 0))},
+            {"label": "Cancelled", "value": str(counts.get("cancelled", 0))},
+            {"label": "Home medications", "value": str(len(home))},
+        ]),
+    ]
+    if orders:
+        content.append(Table(headers=["Medication", "Dose and schedule", "Status", "Ordered"], rows=orders, attributes={"title": "Orders"}))
+    palette = ("#EF4444", "#3B82F6", "#10B981", "#F59E0B", "#A855F7", "#14B8A6")
+    traces = [
+        line(f"{name} ({infusion_units.get(name, '')})".replace(" ()", ""), points, palette[index % len(palette)], line={
+            "color": palette[index % len(palette)], "width": 2, "shape": "hv",
+        })
+        for index, (name, points) in enumerate(infusions.items())
+    ]
+    if traces:
+        content.append(PlotlyChart(
+            title="Charted infusion rates",
+            data=traces,
+            layout={"xaxis": axis("", type="date"), "yaxis": axis("Rate", rangemode="tozero"), "legend": {"orientation": "h", "y": -0.25}},
+        ))
+    if home:
+        content.append(Table(headers=["Home medication", "Dose"], rows=home, attributes={"title": "Before admission"}))
+    if not orders and not traces and not home:
+        content.append(Alert(message="No medication records are available for this patient yet.", variant="info"))
+    content.append(ActionGroup(label="Next", buttons=[
+        ask("Refresh", f"Review the medications for FHIR patient {patient_id}", "primary"),
+        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+    ]))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title=f"Medications: patient {patient_id}", id=f"fhir-medications-{patient_id}", content=content)
+
+
+def timeline_card(patient_id: str, hours: int, now: Optional[datetime], events: List[Dict[str, Any]], total: int) -> Card:
+    content: List[Any] = [
+        Hero(
+            eyebrow="Clinical timeline", title=f"Patient {patient_id}",
+            subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
+            badges=[f"{total} events"],
+        ),
+    ]
+    if events:
+        content.append(Timeline(items=[
+            {
+                "title": event["title"], "time": clinical.format_time(event["when"]),
+                **({"description": event["description"]} if event["description"] else {}), "variant": event["variant"],
+            }
+            for event in events
+        ]))
+    else:
+        content.append(Alert(message=f"Nothing was recorded for this patient in the last {hours} hours.", variant="info"))
+    if total > len(events):
+        content.append(Text(content=f"Showing the {len(events)} most recent of {total} events.", variant="caption"))
+    content.append(ActionGroup(label="Next", buttons=[
+        ask("Refresh", f"Show the clinical timeline for FHIR patient {patient_id} over the last {hours} hours", "primary"),
+        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+    ]))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title=f"Timeline: patient {patient_id}", id=f"fhir-timeline-{patient_id}", content=content)
+
+
+def source_card(
+    title: str,
+    subtitle: str,
+    badges: List[str],
+    stats: List[Dict[str, str]],
+    facts: List[Dict[str, str]],
+    resources: List[List[str]],
+) -> Card:
+    content: List[Any] = [
+        Hero(eyebrow="FHIR data source", title=title, subtitle=subtitle, variant="gradient", badges=badges),
+    ]
+    if stats:
+        content.append(StatGroup(columns=4, items=stats))
+    content.append(KeyValue(title="Server", items=facts, columns=2))
+    if resources:
+        content.append(Table(headers=["Resource", "Interactions", "Search parameters"], rows=resources, attributes={"title": "What can be queried"}))
+    content.append(ActionGroup(label="Try", buttons=[
+        ask("ICU census", "Show the current ICU census from the FHIR feed", "primary"),
+        ask("Watch the live feed", "Watch the live ICU activity feed for two minutes"),
+    ]))
+    return Card(title="FHIR data source", id="fhir-source", content=content)
+
+
+def records_card(resource_type: str, headers: List[str], rows: List[List[str]], total: Optional[int], query: str) -> Card:
+    shown = f"Showing {len(rows)}" + (f" of {total}" if total is not None and total > len(rows) else "")
+    content: List[Any] = [
+        Hero(eyebrow="FHIR search", title=f"{resource_type} records", subtitle=f"{shown} · {query or 'no filters'}", variant="subtle"),
+    ]
+    if rows:
+        content.append(Table(headers=headers, rows=rows, attributes={"title": f"{resource_type} results"}))
+    else:
+        content.append(Alert(message="No records matched this search.", variant="info"))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title=f"FHIR search: {resource_type}", id=f"fhir-records-{resource_type.lower()}", content=content)
+
+
+def feed_card(
+    now: Optional[datetime],
+    watching: bool,
+    counters: Dict[str, int],
+    events: List[Dict[str, Any]],
+    recent: List[List[str]],
+) -> Card:
+    state = "Listening" if watching else "Finished"
+    content: List[Any] = [
+        Hero(
+            eyebrow="Live FHIR subscription", title="ICU activity feed",
+            subtitle=f"{state} · as of {clinical.format_time(now)}", variant="gradient",
+            badges=[f"{counters.get('events', 0)} notifications", "R5 topic subscriptions"],
+        ),
+        StatGroup(columns=4, items=[
+            {"label": "Admissions", "value": str(counters.get("admissions", 0))},
+            {"label": "Discharges", "value": str(counters.get("discharges", 0))},
+            {"label": "New results", "value": str(counters.get("observations", 0))},
+            {"label": "Flagged readings", "value": str(counters.get("flagged", 0)),
+             "variant": "error" if counters.get("flagged") else "default"},
+        ]),
+    ]
+    if events:
+        content.append(Timeline(title="Notable events", items=[
+            {
+                "title": event["title"], "time": clinical.format_time(event["when"]),
+                **({"description": event["description"]} if event["description"] else {}), "variant": event["variant"],
+            }
+            for event in events
+        ]))
+    if recent:
+        content.append(Table(headers=["Time", "Patient", "Measurement", "Value"], rows=recent, attributes={"title": "Latest results"}))
+    if not events and not recent:
+        content.append(Alert(message="Waiting for the next notifications from the feed.", variant="info"))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title="ICU activity feed", id="fhir-feed", content=content)

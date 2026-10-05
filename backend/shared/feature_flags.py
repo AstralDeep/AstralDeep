@@ -45,6 +45,7 @@ class FeatureFlags:
             "byo_agents": self._read("FF_BYO_AGENTS", False),
             "remote_compute": self._read("FF_REMOTE_COMPUTE", False),
             "gaiakeep": self._read("FF_GAIAKEEP", False),
+            "fhir": self._read("FF_FHIR", False),
             "cresco": self._read("FF_CRESCO", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),

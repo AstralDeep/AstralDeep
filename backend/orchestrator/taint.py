@@ -20,7 +20,7 @@ _UNTRUSTED_TOOLS = {
 }
 _UNTRUSTED_AGENTS = {"web-research-1", "summarizer-1",
                      "remote-compute-1",
-                     "computer-use-1", "gaiakeep-1"}
+                     "computer-use-1", "gaiakeep-1", "fhir-1"}
 
 _SINK_TOOLS = {
     "send_*", "post_*", "create_*", "update_*",

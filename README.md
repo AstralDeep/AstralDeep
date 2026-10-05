@@ -269,6 +269,7 @@ Bundled first-party agents live in `backend/agents/`:
 | `connectors` | Office, design, developer, and creative tools behind one MCP surface |
 | `computer_use` | Drives the user's own desktop from any of their clients |
 | `remote_compute` | Remote-compute verbs, combining the read-only `remote_observe` and the gated `remote_control` tiers |
+| `fhir` | Read-only clinical dashboards and a live activity feed over an operator-configured HL7 FHIR R5 server |
 | `dice_roller` | A sample agent used by the test suite |
 
 Beyond the bundled set:
@@ -320,6 +321,7 @@ improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/i
 | [Your own agents and skills](docs/your-own-agents-and-skills.md) | Authoring agents and skills |
 | [Remote compute agents](docs/remote-compute-agents.md) | Operating remote-compute agents |
 | [Remote computer control](docs/remote-computer-control.md) | Controlling a remote computer |
+| [FHIR Clinical Data agent](docs/fhir-agent.md) | Connecting the FHIR agent to a FHIR R5 server |
 | [MCP server endpoint](docs/mcp-server-endpoint.md) | AstralDeep's MCP endpoint |
 | [External LETS warden](docs/lets-external-warden.md) | Running with LETS enforcement |
 | [Migration rollback](docs/migration-rollback-074.md) | Rolling back the component-split migration |
