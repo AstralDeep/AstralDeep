@@ -35,6 +35,8 @@ _INJECTION_PATTERNS = (
 
 
 def inspect_client_surface(path: str = _CLIENT_JS) -> Dict[str, Any]:
+    if path is None:
+        raise ValueError(f'path cannot be None')
     try:
         with open(path, "r", encoding="utf-8") as fh:
             src = fh.read()
