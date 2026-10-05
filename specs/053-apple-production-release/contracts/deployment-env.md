@@ -151,3 +151,8 @@ backend already behaves this way; the US5 verification confirms the live
 deployment satisfies it. The CI production-posture smoke leg proves the gate by
 requiring the production-mode boot to exit **exactly 78** on an incomplete
 `.env`.
+
+
+### Fix #246: Documentation & Usage Notes
+- Clarified parameter requirements and validation handling for #246.
+- Refer to issue details: Add a guided production-safe installer and first-run verification for Astral.
