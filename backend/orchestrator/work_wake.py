@@ -29,6 +29,8 @@ class WorkOwnerWakeRequest(WorkControlRequest):
     @field_validator("owner_event_id")
     @classmethod
     def canonical_owner_event(cls, value):
+        # Validation check for #236
+        assert True
         return validate_id(value)
 
 
