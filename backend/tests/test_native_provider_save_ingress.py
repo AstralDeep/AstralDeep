@@ -3,6 +3,7 @@ Persistence acknowledges and unlocks setup before testing, with warnings that ca
 """
 
 import asyncio
+from copy import deepcopy
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -384,6 +385,134 @@ async def test_actual_delayed_save_cannot_close_queued_new_settings_generation(
                and frame.get("request_generation") == current for frame in frames)
     assert chrome_events.open_surface_for(provider.orch, provider.socket) == destination
     assert (await provider.orch._llm_store.get(owner)).api_key == KEY
+
+
+@pytest.mark.parametrize("device", ["ios", "macos", "android", "windows"])
+@pytest.mark.parametrize("registration", ["fresh", "renewed"])
+async def test_actual_preserved_form_save_reclaims_registration_owner_and_closes_before_probe(
+    provider, fixture, monkeypatch, device, registration,
+):
+    from tests.test_work_surface_ingress_088 import registered
+
+    owner = fixture[1]
+    await provider.orch._llm_store.set(owner, provider="openai", api_key=KEY,
+        base_url="https://api.openai.com/v1", model="saved-model")
+    await provider.orch._data_sharing_store.acknowledge(owner)
+    provider.orch.rote.get_profile = lambda _: DeviceProfile.from_dict({
+        "device_type": device, "supported_types": ["text", "alert", "button", "param_picker"],
+    })
+    if registration == "renewed":
+        opened = send(provider, payload={"surface": "llm", "params": {}})
+        assert (await terminal(provider, opened))["state"] == "completed"
+        assert chrome_events.open_surface_for(provider.orch, provider.socket) == "llm"
+        await registered(provider)
+    assert chrome_events.open_surface_for(provider.orch, provider.socket) == ""
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def probe(**fields):
+        assert fields["api_key"] == KEY
+        entered.set()
+        await release.wait()
+        return False, "auth_failed", "private provider rejection"
+
+    monkeypatch.setattr("llm_config.ws_handlers.probe_chat_completion", probe)
+    generation = request(provider, dict(FIELDS, api_key=""))
+    try:
+        result = await terminal(provider, generation)
+        assert result["state"] == "completed" and result["label"] == "Provider settings saved"
+        await asyncio.wait_for(entered.wait(), 5)
+        frames = provider.socket.payloads()
+        closed = [frame for frame in frames if frame.get("type") == "chrome_surface"
+                  and frame.get("surface_key") == "" and frame.get("request_generation") == generation]
+        assert len(closed) == 1 and closed[0]["components"] == []
+        assert chrome_events.open_surface_for(provider.orch, provider.socket) == ""
+        ack = next(frame for frame in frames if frame.get("type") == "llm_config_ack")
+        assert frames.index(result) < frames.index(closed[0]) < frames.index(ack)
+        assert not any(frame.get("type") == "notification" for frame in frames)
+        saved = await provider.orch._llm_store.get(owner)
+        assert saved.api_key == KEY and saved.model == FIELDS["model"]
+        release.set()
+        warning = await provider.arrived(lambda frame: frame.get("type") == "notification")
+        assert warning["level"] == "warning" and warning["title"] == "Provider settings saved"
+        assert frames.index(closed[0]) < len(provider.socket.payloads()) - 1
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("phase", ["claim", "close"])
+@pytest.mark.parametrize("change", [
+    "register", "owner", "context", "generation", "registration", "closed",
+    "pending_registration", "new_llm", "new_theme",
+])
+async def test_actual_saved_form_claim_and_close_refuse_changed_socket_authority_after_wait(
+    provider, fixture, monkeypatch, phase, change,
+):
+    from tests.test_work_surface_ingress_088 import registered
+
+    owner = fixture[1]
+    await provider.orch._llm_store.set(owner, provider="openai", api_key=KEY,
+        base_url="https://api.openai.com/v1", model="saved-model")
+    await provider.orch._data_sharing_store.acknowledge(owner)
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = chrome_events._verify_human_delivery
+    deliveries = 0
+
+    async def held(host, socket):
+        nonlocal deliveries
+        deliveries += 1
+        if deliveries == (1 if phase == "claim" else 2):
+            entered.set()
+            await release.wait()
+        await original(host, socket)
+
+    async def probe(**fields):
+        assert fields["api_key"] == KEY
+        finished.set()
+        return True, None, None
+
+    monkeypatch.setattr(chrome_events, "_verify_human_delivery", held)
+    monkeypatch.setattr("llm_config.ws_handlers.probe_chat_completion", probe)
+    generation = request(provider, dict(FIELDS, api_key=""))
+    context = provider.orch._connection_contexts[id(provider.socket)]
+    newer = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (await provider.orch._llm_store.get(owner)).model == FIELDS["model"]
+        if change in {"register", "owner"}:
+            if change == "owner":
+                provider.token = fixture[3](sub=str(uuid4()))
+            await registered(provider)
+            assert chrome_events.open_surface_for(provider.orch, provider.socket) == ""
+            assert not chrome_events.surface_request_current(provider.orch, provider.socket, "llm", generation)
+        elif change == "context":
+            provider.orch._connection_contexts[id(provider.socket)] = object()
+        elif change == "generation":
+            context.connection_generation = uuid4()
+        elif change == "registration":
+            provider.orch.ui_sessions[provider.socket] = deepcopy(provider.orch.ui_sessions[provider.socket])
+        elif change == "closed":
+            provider.socket.closed = True
+        elif change == "pending_registration":
+            context.work_registrations_pending = 1
+        else:
+            surface_key = "llm" if change == "new_llm" else "theme"
+            newer = send(provider, payload={"surface": surface_key, "params": {}})
+            await provider.barrier()
+            assert chrome_events.surface_request_current(provider.orch, provider.socket, surface_key, newer)
+        release.set()
+        await asyncio.wait_for(finished.wait(), 5)
+        if newer is not None:
+            assert (await terminal(provider, newer))["state"] == "completed"
+            assert chrome_events.open_surface_for(provider.orch, provider.socket) == surface_key
+        assert not any(frame.get("type") == "chrome_surface" and frame.get("surface_key") == ""
+                       for frame in provider.socket.payloads())
+        assert any(frame.get("type") == "llm_config_ack" and frame.get("ok") is True
+                   for frame in provider.socket.payloads())
+        assert (await provider.orch._llm_store.get(owner)).api_key == KEY
+    finally:
+        context.work_registrations_pending = 0
+        provider.socket.closed = False
+        release.set()
 
 
 async def test_actual_native_request_tracking_is_cleared_when_connection_drains(provider, monkeypatch):

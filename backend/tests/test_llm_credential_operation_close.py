@@ -45,6 +45,7 @@ def orch(monkeypatch):
     o._notify_interactive_capacity = AsyncMock()
     o._call_work_admission = AsyncMock(return_value=_completed())
     o.ui_sessions = {}
+    o._connection_contexts = {}
     o.llm_configured_for = AsyncMock(return_value=True)
     sent = []
 
@@ -70,10 +71,14 @@ def _ctx(orch, device):
     from orchestrator.chrome_events import _note_open_surface
 
     ws = MagicMock()
+    ws.closed = False
     orch.rote.register_device(ws, {"device_type": device})
     orch.ui_sessions[ws] = {"sub": "owner-1", "realm_access": {"roles": ["user"]}}
     _note_open_surface(orch, ws, "llm")
-    return SimpleNamespace(websocket=ws), ws
+    context = SimpleNamespace(websocket=ws, registered=True, closing=False,
+        work_registrations_pending=0, connection_generation=uuid4())
+    orch._connection_contexts[id(ws)] = context
+    return context, ws
 
 
 async def _pending_save(orch, websocket, work):

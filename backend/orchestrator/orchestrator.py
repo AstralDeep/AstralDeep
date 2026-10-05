@@ -7698,13 +7698,16 @@ class Orchestrator:
             return terminal
         if not unlocked and work.frame.action == "chrome_llm_save":
             try:
-                from orchestrator.chrome_events import is_native_sdui, push_close
+                from orchestrator.chrome_events import claim_current_action_surface, is_native_sdui, push_close
 
                 if is_native_sdui(self, context.websocket) and (
                     time.monotonic() < deadline
                 ):
-                    await push_close(self, context.websocket, surface_key="llm",
-                                     request_generation=str(work.frame.request_generation))
+                    current = await claim_current_action_surface(self, context.websocket, "llm",
+                        str(work.frame.request_generation), work.owner.owner_user_id or "legacy")
+                    if current is not None:
+                        await push_close(self, context.websocket, surface_key="llm",
+                            request_generation=str(work.frame.request_generation), delivery_guard=current)
             except Exception:
                 logger.debug(
                     "credential save surface close failed (non-fatal)",

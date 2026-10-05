@@ -3,7 +3,9 @@ Real Plane theme preferences retain owner isolation, while invalid saves produce
 """
 
 import asyncio
+from copy import deepcopy
 import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -61,6 +63,146 @@ async def test_actual_native_custom_color_returns_accepted_full_palette(native_t
     assert applied["type"] == "theme_apply" and applied["colors"]["accent"] == "#ABCDEF"
     assert set(applied["colors"]) == {key for key, _ in theme._COLOR_KEYS}
     assert await stored(native_theme, fixture[1]) == {"colors": applied["colors"]}
+
+
+async def test_actual_retained_theme_form_reclaims_its_owned_result_after_registration(native_theme, fixture):
+    from tests.test_work_surface_ingress_088 import registered
+
+    await registered(native_theme)
+    assert chrome_events.open_surface_for(native_theme.orch, native_theme.socket) == ""
+    generation = send(native_theme, action="save_theme", payload={
+        "surface": "theme", "theme": {"color_key": "accent", "color_value": "#ABCDEF"},
+    })
+    assert (await terminal(native_theme, generation))["state"] == "completed"
+    frame, = responses(native_theme, generation)
+    assert frame["components"][0]["type"] == "theme_apply"
+    assert frame["components"][0]["colors"]["accent"] == "#ABCDEF"
+    assert chrome_events.open_surface_for(native_theme.orch, native_theme.socket) == "theme"
+    assert await stored(native_theme, fixture[1]) == {"colors": frame["components"][0]["colors"]}
+
+
+@pytest.mark.parametrize("change", [
+    "register", "owner", "reused_generation", "context", "registration", "roles", "connection_generation",
+])
+@pytest.mark.parametrize("phase", ["handler", "render", "delivery"])
+async def test_actual_held_theme_result_stays_with_original_socket_registration(
+    native_theme, fixture, monkeypatch, change, phase,
+):
+    from tests.test_work_surface_ingress_088 import registered
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    handler = theme.HANDLERS["save_theme"]
+    calls = 0
+    deliveries = 0
+
+    async def held(host, socket, owner, roles, payload):
+        nonlocal calls
+        calls += 1
+        result = await handler(host, socket, owner, roles, payload)
+        if phase == "handler":
+            entered.set()
+            await release.wait()
+        return result
+
+    builder = theme.components
+    delivery = chrome_events._verify_human_delivery
+
+    async def held_builder(*args, **kwargs):
+        result = await builder(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        return result
+
+    async def held_delivery(*args, **kwargs):
+        nonlocal deliveries
+        deliveries += 1
+        if deliveries == 2:
+            entered.set()
+            await release.wait()
+        await delivery(*args, **kwargs)
+
+    monkeypatch.setattr(chrome_events, "_handlers", lambda: {"save_theme": ("theme", held)})
+    if phase == "render":
+        monkeypatch.setattr(theme, "components", held_builder)
+    if phase == "delivery":
+        monkeypatch.setattr(chrome_events, "_verify_human_delivery", held_delivery)
+    context = native_theme.orch._connection_contexts[id(native_theme.socket)]
+    generation = send(native_theme, action="save_theme", payload={
+        "surface": "theme", "theme": {"color_key": "accent", "color_value": "#123456"},
+    })
+    newer = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (await stored(native_theme, fixture[1]))["colors"]["accent"] == "#123456"
+        if change in {"register", "owner", "reused_generation"}:
+            if change != "register":
+                native_theme.token = fixture[3](sub=str(uuid4()))
+            await registered(native_theme)
+            assert chrome_events.open_surface_for(native_theme.orch, native_theme.socket) == ""
+            if change == "reused_generation":
+                newer = send(native_theme, payload={"surface": "theme"}, generation=generation)
+                await native_theme.barrier()
+                assert chrome_events.surface_request_current(native_theme.orch, native_theme.socket, "theme", newer)
+        elif change == "context":
+            native_theme.orch._connection_contexts[id(native_theme.socket)] = object()
+        elif change == "registration":
+            native_theme.orch.ui_sessions[native_theme.socket] = deepcopy(native_theme.orch.ui_sessions[native_theme.socket])
+        elif change == "roles":
+            native_theme.orch.ui_sessions[native_theme.socket]["realm_access"]["roles"].append("admin")
+        else:
+            context.connection_generation = uuid4()
+        release.set()
+        assert (await terminal(native_theme, generation))["state"] == "completed"
+        if newer is not None:
+            assert (await terminal(native_theme, newer))["state"] == "completed"
+            assert chrome_events.open_surface_for(native_theme.orch, native_theme.socket) == "theme"
+        assert not any("#123456" in json.dumps(frame) for frame in responses(native_theme, generation))
+        assert calls == 1 and (await stored(native_theme, fixture[1]))["colors"]["accent"] == "#123456"
+    finally:
+        native_theme.orch._connection_contexts[id(native_theme.socket)] = context
+        release.set()
+
+
+@pytest.mark.parametrize("change", ["register", "owner", "context", "connection_generation"])
+async def test_actual_theme_claim_retired_during_authorization_never_invokes_handler(
+    native_theme, fixture, monkeypatch, change,
+):
+    from tests.test_work_surface_ingress_088 import registered
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = chrome_events._verify_human_delivery
+
+    async def held(host, socket):
+        entered.set()
+        await release.wait()
+        await original(host, socket)
+
+    handler = AsyncMock(wraps=theme.HANDLERS["save_theme"])
+    monkeypatch.setattr(chrome_events, "_handlers", lambda: {"save_theme": ("theme", handler)})
+    monkeypatch.setattr(chrome_events, "_verify_human_delivery", held)
+    context = native_theme.orch._connection_contexts[id(native_theme.socket)]
+    previous = await stored(native_theme, fixture[1])
+    generation = send(native_theme, action="save_theme", payload={
+        "surface": "theme", "theme": {"color_key": "accent", "color_value": "#123456"},
+    })
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if change in {"register", "owner"}:
+            if change == "owner":
+                native_theme.token = fixture[3](sub=str(uuid4()))
+            await registered(native_theme)
+        elif change == "context":
+            native_theme.orch._connection_contexts[id(native_theme.socket)] = object()
+        else:
+            context.connection_generation = uuid4()
+        release.set()
+        assert (await terminal(native_theme, generation))["state"] == "failed"
+        handler.assert_not_awaited()
+        assert responses(native_theme, generation) == []
+        assert await stored(native_theme, fixture[1]) == previous
+    finally:
+        native_theme.orch._connection_contexts[id(native_theme.socket)] = context
+        release.set()
 
 
 async def test_actual_native_successive_custom_colors_preserve_other_saved_roles(native_theme, fixture):
