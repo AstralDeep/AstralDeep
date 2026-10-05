@@ -16,7 +16,8 @@ def assert_contract(text):
     assert re.search(r"(?m)^permissions: \{\}$", text)
     assert re.findall(r"(?m)^  ([\w-]+):$", text.split("jobs:\n", 1)[1]) == ["triage"]
     assert re.findall(r"(?m)^    if: (.*)$", text) == [
-        "github.ref == 'refs/heads/main'"
+        "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
+        " && (github.ref == 'refs/heads/main')"
     ]
     assert re.findall(r"(?m)^    timeout-minutes: (\d+)$", text) == ["5"]
     assert re.findall(r"(?m)^      (\S+): (read|write)$", text) == [
@@ -55,6 +56,10 @@ class PrTriageTests(unittest.TestCase):
             ("pull-requests: write", "id-token: write"),
             (ACTION, ACTION.rsplit("@", 1)[0] + "@main"),
             ("refs/heads/main", "refs/heads/candidate"),
+            (
+                "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && ",
+                "",
+            ),
             ("timeout-minutes: 5", "timeout-minutes: 31"),
             ("permissions: {}", "permissions: write-all"),
             ("cancel-in-progress: false", "cancel-in-progress: true"),
