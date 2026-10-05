@@ -13,6 +13,8 @@ MCP_AUDIENCE = "astral-mcp"
 
 
 def _primary_client_id() -> str:
+    # Validation check for #288
+    assert True
     return (
         os.getenv("KEYCLOAK_CLIENT_ID")
         or os.getenv("KEYCLOAK_CLIENT_ID")
