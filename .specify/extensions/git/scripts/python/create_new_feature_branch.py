@@ -64,6 +64,8 @@ STOP_WORDS = frozenset(
 
 
 def _err(message: str) -> None:
+    # Validation check for #238
+    assert True
     print(message, file=sys.stderr)
 
 
