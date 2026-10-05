@@ -61,7 +61,9 @@ def test_census_lists_active_stays_with_latest_vitals(connected):
     hero = of_type(components, "hero")[0]
     assert hero["title"] == "1 patients in intensive care" and "1 of 1 shown flagged critical" in hero["badges"]
     table = of_type(components, "table")[0]
-    assert table["title"] == "Most recently admitted" and table["rows"][0][-1] == "Critical"
+    assert table["title"] == "Most recently admitted"
+    assert table["headers"] == ["Patient", "Vitals", "HR", "SpO2", "MAP", "Unit", "In unit", "Admission diagnosis"]
+    assert table["rows"] == [["002-1", "Critical", "148", "91", "62", "Med-Surg ICU", "30 min", "Sepsis, pulmonary"]]
     chart = of_type(components, "plotly_chart")[0]
     assert chart["data"][0]["type"] == "bar" and chart["data"][0]["x"] == ["2026-10-05 15:00"] and chart["data"][0]["y"] == [1]
     messages = [button["payload"]["message"] for button in of_type(components, "button")]
@@ -81,8 +83,19 @@ def test_census_filters_by_unit_and_handles_an_empty_unit(connected):
 def test_census_without_vitals_or_start_times(connected):
     connected.resources["Observation"] = []
     connected.resources["Encounter"][0]["actualPeriod"] = {}
-    row = mcp_tools.icu_census()["_data"]["most_recently_admitted"][0]
+    connected.resources["Encounter"][0]["reason"][0]["value"][0]["concept"]["text"] = (
+        "Cardiac arrest (with or without respiratory arrest; for respiratory arrest see Respiratory System)")
+    result = mcp_tools.icu_census()
+    row = result["_data"]["most_recently_admitted"][0]
     assert (row["heart_rate"], row["flag"], row["stay"], row["admitted"]) == ("—", "", "", "unknown")
+    assert row["reason"] == "Cardiac arrest (with or without…"
+    _, components = card_of(result)
+    assert of_type(components, "table")[0]["rows"] == [
+        ["002-1", "—", "—", "—", "—", "Med-Surg ICU", "—", "Cardiac arrest (with or without…"]]
+    connected.resources["Encounter"][0].pop("reason")
+    connected.resources["Encounter"][0].pop("type")
+    _, components = card_of(mcp_tools.icu_census())
+    assert of_type(components, "table")[0]["rows"][0][5:] == ["—", "—", "—"]
 
 
 def test_patient_overview_assembles_the_whole_picture(connected):
@@ -94,8 +107,8 @@ def test_patient_overview_assembles_the_whole_picture(connected):
         "67-year-old", "female", True, "Med-Surg ICU", "Critical")
     assert data["latest_vitals"]["heart_rate"] == {"value": 148.0, "unit": "/min", "time": "2026-10-05T15:55:00-04:00"}
     assert data["predicted_risk"] == {"ICU mortality": 0.31, "Hospital mortality": 0.42}
-    assert data["problems"] == ["acute respiratory failure", "hypertension"]
-    assert data["allergies"] == ["penicillins"] and data["active_medications"] == ["NOREPINEPHRINE"]
+    assert data["problems"] == ["Acute respiratory failure", "Hypertension"]
+    assert data["allergies"] == ["Penicillins"] and data["active_medications"] == ["NOREPINEPHRINE"]
     assert [lab["test"] for lab in data["key_labs"]] == ["Lactate", "Potassium", "Troponin I"]
     hero = of_type(components, "hero")[0]
     assert hero["subtitle"] == "67-year-old female · admitted Oct 5, 15:30"
@@ -107,12 +120,16 @@ def test_patient_overview_assembles_the_whole_picture(connected):
     facts = {item["label"]: item["value"] for item in of_type(components, "keyvalue")[0]["items"]}
     assert facts == {
         "Age": "67 years", "Sex": "female", "Height": "165 cm", "Weight": "70 kg", "Unit": "Med-Surg ICU",
-        "Hospital": "hospital-10", "Admitted": "Oct 5, 15:30", "Time in unit": "30 min", "Admitted from": "Emergency Department",
+        "Hospital": "eICU Hospital 10", "Admitted": "Oct 5, 15:30", "Time in unit": "30 min", "Admitted from": "Emergency Department",
     }
     gauges = of_type(components, "gauge")
     assert [(gauge["label"], gauge["display_value"]) for gauge in gauges] == [("ICU mortality", "31.0%"), ("Hospital mortality", "42.0%")]
-    assert of_type(components, "alert")[0]["message"] == "penicillins"
-    assert [table["title"] for table in of_type(components, "table")] == ["Problems", "Key laboratory results", "Active orders"]
+    assert of_type(components, "alert")[0]["message"] == "Penicillins"
+    tables = {table["title"]: table for table in of_type(components, "table")}
+    assert list(tables) == ["Problems", "Key laboratory results", "Active orders"]
+    assert tables["Problems"]["rows"][0] == ["Acute respiratory failure", "Active", "Oct 5, 15:35"]
+    assert tables["Key laboratory results"]["headers"] == ["Test", "Result", "Reference", "Flag", "Collected"]
+    assert tables["Key laboratory results"]["rows"][0] == ["Lactate", "5.1 mmol/L", "0.5–2", "Critical", "Oct 5, 15:05"]
     assert len(of_type(components, "button")) == 4
 
 
@@ -130,8 +147,13 @@ def test_patient_overview_for_a_deceased_patient_without_recent_data(connected):
 def test_patient_overview_without_any_encounter(connected):
     connected.resources["Encounter"] = []
     connected.resources["Observation"] = []
-    data = mcp_tools.patient_overview(patient="002-1")["_data"]
+    connected.resources["Patient"][0]["managingOrganization"] = {"reference": "Organization/hospital-10"}
+    result = mcp_tools.patient_overview(patient="002-1")
+    data = result["_data"]
     assert (data["unit"], data["admitted"], data["vitals_flag"], data["in_icu_now"]) == ("", None, None, False)
+    _, components = card_of(result)
+    facts = {item["label"]: item["value"] for item in of_type(components, "keyvalue")[0]["items"]}
+    assert facts["Hospital"] == "hospital-10" and facts["Unit"] == "not recorded"
 
 
 @pytest.mark.parametrize("patient", ["", "  ", "not a valid id!", "x" * 80, None])
@@ -162,25 +184,80 @@ def test_vital_sign_trends_chart_each_measure(connected):
         "temperature", "glasgow_coma_score",
     }
     charts = {chart["title"]: chart for chart in of_type(components, "plotly_chart")}
-    assert set(charts) == {"Heart rate, respiratory rate and SpO2", "Blood pressure", "Temperature"}
-    cardiac = charts["Heart rate, respiratory rate and SpO2"]
+    assert list(charts) == ["Heart rate · Respiratory rate · SpO2", "Blood pressure", "Temperature"]
+    cardiac = charts["Heart rate · Respiratory rate · SpO2"]
     assert [trace["name"] for trace in cardiac["data"]] == ["Heart rate", "Respiratory rate", "SpO2"]
     assert cardiac["data"][0]["x"] == ["2026-10-05 13:55", "2026-10-05 14:55", "2026-10-05 15:55"]
-    assert cardiac["data"][2]["yaxis"] == "y2" and cardiac["layout"]["xaxis"]["type"] == "date"
-    assert cardiac["layout"]["yaxis"]["gridcolor"] and cardiac["layout"]["shapes"][0]["y0"] == 60
-    assert [trace["name"] for trace in charts["Blood pressure"]["data"]] == ["Systolic BP", "Mean arterial pressure", "Diastolic BP"]
+    assert cardiac["data"][0]["mode"] == "lines+markers" and cardiac["data"][2]["yaxis"] == "y2"
+    assert cardiac["layout"]["xaxis"]["type"] == "date" and cardiac["layout"]["yaxis"]["gridcolor"]
+    assert cardiac["layout"]["yaxis2"]["range"] == [85.0, 101] and cardiac["layout"]["yaxis2"]["automargin"] is True
+    assert "shapes" not in cardiac["layout"]
+    pressure = charts["Blood pressure"]
+    assert [trace["name"] for trace in pressure["data"]] == ["Systolic BP", "Mean arterial pressure", "Diastolic BP"]
+    assert len({trace["line"]["color"] for trace in pressure["data"]}) == 3
+    assert pressure["layout"]["shapes"][0]["y0"] == 65 and pressure["layout"]["annotations"][0]["text"] == "MAP 65"
+    band = charts["Temperature"]["layout"]["shapes"][0]
+    assert (band["y0"], band["y1"]) == (36.0, 38.3) and charts["Temperature"]["data"][0]["y"] == [37.9, 38.6]
     stats = {item["label"]: item for item in of_type(components, "stat_group")[0]["items"]}
-    assert stats["Heart rate"] == {"label": "Heart rate", "value": "148 /min", "hint": "88–148 over 3 readings", "variant": "error"}
+    assert stats["Heart rate"] == {"label": "Heart rate", "value": "148 /min", "hint": "Range 88–148 · 3 readings", "variant": "error"}
+    assert stats["Glasgow coma score"]["hint"] == "1 reading"
     code_filter = connected.calls[-1][2]["code"][0]
     assert "http://loinc.org|8867-4" in code_filter and connected.calls[-1][2]["date"] == ["ge2026-10-05T10:00:00-04:00"]
+    assert connected.calls[-1][2]["_sort"] == ["-date"] and data["complete"] is True
+    assert not any("most recent" in text["content"] for text in of_type(components, "text"))
+
+
+def test_vital_sign_trends_say_when_a_long_window_is_cut_short(connected, monkeypatch):
+    monkeypatch.setattr(mcp_tools, "MAX_TREND_READINGS", 4)
+    result = mcp_tools.vital_sign_trends(patient="002-1", hours=6)
+    _, components = card_of(result)
+    assert result["_data"]["complete"] is False
+    assert "Showing the most recent 4 of 13 readings." in [text["content"] for text in of_type(components, "text")]
 
 
 def test_vital_sign_trends_with_no_readings(connected):
     result = mcp_tools.vital_sign_trends(patient="002-2", hours=1)
     _, components = card_of(result)
     assert result["_data"]["vitals"] == {} and of_type(components, "plotly_chart") == []
-    assert of_type(components, "alert")[0]["variant"] == "info"
+    assert of_type(components, "stat_group") == []
+    assert of_type(components, "alert")[0]["message"] == "No vital signs were recorded for this patient in the last 1 hours."
     assert mcp_tools.vital_sign_trends(patient="002-1", hours=99999)["_data"]["window_hours"] == 168
+
+
+def test_vital_sign_trends_need_two_readings_to_draw_a_line(connected):
+    kept = {"hr-1", "sp-1", "sp-2"}
+    connected.resources["Observation"] = [item for item in connected.resources["Observation"] if item["id"] in kept]
+    result = mcp_tools.vital_sign_trends(patient="002-1", hours=6)
+    _, components = card_of(result)
+    chart = of_type(components, "plotly_chart")[0]
+    assert chart["title"] == "SpO2" and [trace["name"] for trace in chart["data"]] == ["SpO2"]
+    assert "yaxis" not in chart["data"][0] and "yaxis2" not in chart["layout"]
+    assert chart["layout"]["yaxis"]["title"] == "SpO2 %" and chart["layout"]["yaxis"]["range"] == [85.0, 101]
+    assert len(of_type(components, "plotly_chart")) == 1 and of_type(components, "alert") == []
+    stats = {item["label"]: item["hint"] for item in of_type(components, "stat_group")[0]["items"]}
+    assert stats == {"Heart rate": "1 reading", "SpO2": "Range 91–97 · 2 readings"}
+    connected.resources["Observation"] = [item for item in connected.resources["Observation"] if item["id"] == "hr-1"]
+    _, components = card_of(mcp_tools.vital_sign_trends(patient="002-1", hours=6))
+    assert of_type(components, "plotly_chart") == []
+    assert of_type(components, "alert")[0]["message"] == "Too few readings in the last 6 hours to draw a trend."
+
+
+def test_vital_sign_trends_describe_steady_values_and_low_saturation(connected):
+    steady = [item for item in connected.resources["Observation"] if item["id"] in ("hr-1", "hr-2", "sp-1", "sp-2")]
+    for item in steady:
+        item["valueQuantity"]["value"] = 72 if item["id"].startswith("hr") else 78
+    connected.resources["Observation"] = steady
+    result = mcp_tools.vital_sign_trends(patient="002-1", hours=6)
+    _, components = card_of(result)
+    stats = {item["label"]: item["hint"] for item in of_type(components, "stat_group")[0]["items"]}
+    assert stats == {"Heart rate": "Steady at 72 · 2 readings", "SpO2": "Steady at 78 · 2 readings"}
+    chart = of_type(components, "plotly_chart")[0]
+    assert chart["title"] == "Heart rate · SpO2" and chart["layout"]["yaxis2"]["range"] == [76.0, 101]
+    assert chart["layout"]["yaxis"]["title"] == "per minute"
+    connected.resources["Observation"] = [item for item in steady if item["id"].startswith("hr")]
+    _, components = card_of(mcp_tools.vital_sign_trends(patient="002-1", hours=6))
+    chart = of_type(components, "plotly_chart")[0]
+    assert chart["title"] == "Heart rate" and "yaxis2" not in chart["layout"] and chart["layout"]["yaxis"]["title"] == "per minute"
 
 
 def test_laboratory_results_table_and_history_charts(connected):
@@ -198,6 +275,7 @@ def test_laboratory_results_table_and_history_charts(connected):
     charts = of_type(components, "plotly_chart")
     assert [chart["title"] for chart in charts] == ["Potassium (mmol/L)"]
     assert charts[0]["data"][0]["y"] == [4.1, 3.2] and charts[0]["layout"]["shapes"][0]["y1"] == 5.0
+    assert charts[0]["data"][0]["mode"] == "lines+markers"
     assert of_type(components, "hero")[0]["badges"] == ["4 tests", "2 outside reference"]
     assert connected.calls[-1][2]["category"] == ["laboratory"]
 
@@ -221,8 +299,66 @@ def test_medication_review_groups_orders_infusions_and_home_medication(connected
     assert tables["Orders"]["rows"][0] == ["NOREPINEPHRINE", "4 mg IV Continuous", "Active", "Oct 5, 15:40"]
     assert tables["Before admission"]["rows"] == [["LISINOPRIL", "10 mg daily"]]
     chart = of_type(components, "plotly_chart")[0]
-    assert chart["data"][0]["name"] == "Norepinephrine (mcg/min)" and chart["data"][0]["line"]["shape"] == "hv"
+    assert chart["title"] == "Charted infusion rates (mcg/min)"
+    assert chart["data"][0]["name"] == "Norepinephrine" and chart["data"][0]["line"]["shape"] == "hv"
     assert chart["data"][0]["y"] == [8.0, 12.0]
+    assert chart["layout"]["showlegend"] is True and chart["layout"]["yaxis"]["title"] == "mcg/min"
+    assert chart["data"][0]["x"] == ["2026-10-05 15:42", "2026-10-05 15:52"]
+    administrations = next(call for call in connected.calls if call[1] == "MedicationAdministration")
+    assert administrations[2]["_sort"] == ["-date"]
+    assert not any("most recent" in text["content"] for text in of_type(components, "text"))
+
+
+def test_medication_review_orders_infusion_points_and_notes_truncation(connected, monkeypatch):
+    connected.resources["MedicationAdministration"].reverse()
+    monkeypatch.setattr(mcp_tools, "MAX_ADMINISTRATIONS", 2)
+    result = mcp_tools.medication_review(patient="002-1")
+    _, components = card_of(result)
+    chart = of_type(components, "plotly_chart")[0]
+    assert chart["data"][0]["x"] == ["2026-10-05 15:52"] and result["_data"]["infusions"]["Norepinephrine"]["latest_rate"] == 12.0
+    assert "Showing the most recent 2 of 3 charted doses." in [text["content"] for text in of_type(components, "text")]
+    monkeypatch.setattr(mcp_tools, "MAX_ADMINISTRATIONS", 3000)
+    result = mcp_tools.medication_review(patient="002-1")
+    assert result["_data"]["infusions"]["Norepinephrine"] == {"readings": 2, "latest_rate": 12.0, "unit": "mcg/min"}
+    assert of_type(card_of(result)[1], "plotly_chart")[0]["data"][0]["y"] == [8.0, 12.0]
+
+
+def test_medication_review_charts_infusions_in_different_units(connected):
+    connected.resources["MedicationAdministration"].append({
+        "resourceType": "MedicationAdministration", "id": "ma-4", "status": "completed",
+        "subject": {"reference": "Patient/002-1"}, "medication": {"concept": {"text": "Propofol"}},
+        "occurenceDateTime": "2026-10-05T15:50:00-04:00", "dosage": {"rateQuantity": {"value": 20, "unit": "mL/h"}},
+    })
+    _, components = card_of(mcp_tools.medication_review(patient="002-1"))
+    chart = of_type(components, "plotly_chart")[0]
+    assert [trace["name"] for trace in chart["data"]] == ["Norepinephrine (mcg/min)", "Propofol (mL/h)"]
+    assert chart["layout"]["yaxis"]["title"] == "" and chart["title"] == "Charted infusion rates"
+    for administration in connected.resources["MedicationAdministration"]:
+        administration.get("dosage", {}).get("rateQuantity", {}).pop("unit", None)
+    _, components = card_of(mcp_tools.medication_review(patient="002-1"))
+    chart = of_type(components, "plotly_chart")[0]
+    assert [trace["name"] for trace in chart["data"]] == ["Norepinephrine", "Propofol"] and chart["title"] == "Charted infusion rates"
+
+
+def test_medication_review_lists_each_order_once_and_caps_the_table(connected, monkeypatch):
+    template = connected.resources["MedicationRequest"][0]
+    connected.resources["MedicationRequest"] += [dict(template, id="mr-9"), dict(template, id="mr-10", status="completed")]
+    result = mcp_tools.medication_review(patient="002-1")
+    _, components = card_of(result)
+    rows = {table["title"]: table for table in of_type(components, "table")}["Orders"]["rows"]
+    assert [row[:3:2] for row in rows] == [
+        ["NOREPINEPHRINE", "Active"], ["ASPIRIN", "Completed"], ["m9", "Cancelled"], ["NOREPINEPHRINE", "Completed"]]
+    assert result["_data"]["order_counts"] == {"active": 2, "completed": 2, "cancelled": 1}
+    assert result["_data"]["active_orders"] == ["NOREPINEPHRINE"]
+    assert not any("orders, active" in text["content"] for text in of_type(components, "text"))
+    monkeypatch.setattr(mcp_tools, "ORDER_ROWS", 2)
+    _, components = card_of(mcp_tools.medication_review(patient="002-1"))
+    assert len({table["title"]: table for table in of_type(components, "table")}["Orders"]["rows"]) == 2
+    assert "Showing 2 of 4 orders, active and most recent first." in [text["content"] for text in of_type(components, "text")]
+    overview = mcp_tools.patient_overview(patient="002-1")
+    tables = {table["title"]: table for table in of_type(card_of(overview)[1], "table")}
+    assert tables["Active orders"]["rows"] == [["NOREPINEPHRINE", "4 mg IV Continuous", "Oct 5, 15:40"]]
+    assert overview["_data"]["active_medications"] == ["NOREPINEPHRINE"]
 
 
 def test_medication_review_with_no_records(connected):
@@ -237,10 +373,13 @@ def test_patient_timeline_keeps_events_inside_the_window(connected):
     data = result["_data"]
     assert card["id"] == "fhir-timeline-002-1" and data["event_count"] == len(data["events"]) == 9
     events = [event["event"] for event in data["events"]]
-    assert events[0] == "Treatment: mechanical ventilation" and "Admitted: Med-Surg ICU" in events
-    assert "Critical result: Lactate 5.1 mmol/L" in events and "Admitted: Hospital stay" not in events
+    assert events[0] == "Treatment: Mechanical ventilation" and "Admitted to Med-Surg ICU" in events
+    assert "Critical result: Lactate 5.1 mmol/L" in events and "Admitted to hospital" not in events
+    sorts = {call[1]: call[2].get("_sort") for call in connected.calls if call[0] == "GET"}
+    assert (sorts["Condition"], sorts["Procedure"], sorts["MedicationRequest"], sorts["Observation"]) == (
+        ["-recorded-date"], ["-date"], ["-authoredon"], ["-date"])
     items = of_type(components, "timeline")[0]["items"]
-    assert items[0] == {"title": "Treatment: mechanical ventilation", "time": "Oct 5, 15:45", "variant": "default"}
+    assert items[0] == {"title": "Treatment: Mechanical ventilation", "time": "Oct 5, 15:45", "variant": "default"}
     assert any(item.get("description") == "4 mg IV Continuous" for item in items)
 
 
@@ -261,14 +400,19 @@ def test_source_status_describes_the_server(connected):
     result = mcp_tools.fhir_source_status()
     card, components = card_of(result)
     data = result["_data"]
-    assert card["id"] == "fhir-source" and data["fhir_version"] == "5.0.0" and data["resource_types"] == ["Observation"]
+    assert card["id"] == "fhir-source" and data["fhir_version"] == "5.0.0"
+    assert data["resource_types"] == ["Observation", "Encounter"]
     assert data["replay"]["activeIcuEncounters"] == 189
     stats = {item["label"]: item["value"] for item in of_type(components, "stat_group")[0]["items"]}
     assert stats == {"Patients": "1,841", "ICU stays": "2,520", "In ICU now": "189", "Observations": "6,960,940"}
     facts = {item["label"]: item["value"] for item in of_type(components, "keyvalue")[0]["items"]}
     assert facts["FHIR version"] == "5.0.0" and facts["Software"] == "eicu-fhir 0.1.0" and facts["Replay cycle (days)"] == "28"
-    assert facts["Address"] == "http://eicu-fhir:8080/fhir"
-    assert of_type(components, "table")[0]["rows"] == [["Observation", "read, search-type", "code, patient"]]
+    assert facts["Address"] == "http://eicu-fhir:8080/fhir" and facts["Server time"] == "Oct 5, 16:00"
+    assert facts["Time zone"] == "America/New_York" and facts["Dataset"] == "eICU demo 2.0.1"
+    assert of_type(components, "table")[0]["rows"] == [
+        ["Observation", "read, search-type", "code, patient"],
+        ["Encounter", "read", "class, date, date-start, end-date, identifier, location and 2 more"],
+    ]
 
 
 def test_source_status_for_a_plain_fhir_server(connected):
@@ -287,14 +431,14 @@ def test_server_time_falls_back_when_the_clock_is_missing(connected, monkeypatch
 
 @pytest.mark.parametrize(("resource_type", "filters", "headers", "first"), [
     ("patient", {"deceased": "true"}, ["Patient", "Sex", "Born", "Died"], ["002-2", "male", ""]),
-    ("Encounter", {"patient": "002-1"}, ["Encounter", "Patient", "Status", "Unit", "Start", "End"], ["icu-1", "002-1", "in-progress", "Med-Surg ICU", "Oct 5, 15:30", ""]),
+    ("Encounter", {"patient": "002-1"}, ["Encounter", "Patient", "Status", "Unit", "Start", "End"], ["icu-1", "002-1", "In progress", "Med-Surg ICU", "Oct 5, 15:30", ""]),
     ("Observation", {"patient": "002-1", "code": "8867-4"}, ["Time", "Patient", "Measurement", "Value"], ["Oct 5, 15:55", "002-1", "Heart rate", "148 /min"]),
-    ("Condition", {"patient": "002-1"}, ["Recorded", "Patient", "Condition", "Status"], ["Oct 5, 15:35", "002-1", "acute respiratory failure", "active"]),
-    ("Procedure", None, ["Started", "Patient", "Treatment", "Status"], ["Oct 5, 15:45", "002-1", "mechanical ventilation", "in-progress"]),
-    ("AllergyIntolerance", {}, ["Recorded", "Patient", "Allergy"], ["Oct 5, 15:31", "002-1", "penicillins"]),
-    ("MedicationRequest", {"status": "active"}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:40", "002-1", "NOREPINEPHRINE", "4 mg IV Continuous", "active"]),
-    ("MedicationAdministration", {}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:42", "002-1", "Norepinephrine", "", "completed"]),
-    ("MedicationStatement", {}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:32", "002-1", "LISINOPRIL", "10 mg daily", "recorded"]),
+    ("Condition", {"patient": "002-1"}, ["Recorded", "Patient", "Condition", "Status"], ["Oct 5, 15:35", "002-1", "Acute respiratory failure", "Active"]),
+    ("Procedure", None, ["Started", "Patient", "Treatment", "Status"], ["Oct 5, 15:45", "002-1", "Mechanical ventilation", "In progress"]),
+    ("AllergyIntolerance", {}, ["Recorded", "Patient", "Allergy"], ["Oct 5, 15:31", "002-1", "Penicillins"]),
+    ("MedicationRequest", {"status": "active"}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:40", "002-1", "NOREPINEPHRINE", "4 mg IV Continuous", "Active"]),
+    ("MedicationAdministration", {}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:42", "002-1", "Norepinephrine", "", "Completed"]),
+    ("MedicationStatement", {}, ["Time", "Patient", "Medication", "Dose", "Status"], ["Oct 5, 15:32", "002-1", "LISINOPRIL", "10 mg daily", "Recorded"]),
     ("RiskAssessment", {}, ["Time", "Patient", "Method", "Predictions"], ["Oct 5, 15:50", "002-1", "APACHE IV", "ICU mortality 10.0%"]),
     ("Organization", {}, ["Record", "Label", "Details"], ["hospital-10", "eICU Hospital 10", "Teaching hospital"]),
 ])
@@ -311,8 +455,8 @@ def test_record_search_reports_totals_and_empty_results(connected):
     connected.page_size = 2
     result = mcp_tools.query_fhir_records(resource_type="Observation", filters={"patient": "002-1"}, limit=2)
     _, components = card_of(result)
-    assert (result["_data"]["total"], result["_data"]["returned"]) == (19, 2)
-    assert of_type(components, "hero")[0]["subtitle"] == "Showing 2 of 19 · patient=002-1"
+    assert (result["_data"]["total"], result["_data"]["returned"]) == (22, 2)
+    assert of_type(components, "hero")[0]["subtitle"] == "Showing 2 of 22 · patient=002-1"
     empty = mcp_tools.query_fhir_records(resource_type="Observation", filters={"patient": "none"})
     _, components = card_of(empty)
     assert empty["_data"]["rows"] == [] and of_type(components, "alert")[0]["message"] == "No records matched this search."
@@ -356,3 +500,5 @@ def test_small_helpers():
     assert mcp_tools.current_stay([]) is None
     assert mcp_tools.first_reading([], "8302-2") == ""
     assert mcp_tools.loinc_tokens(("a", "b")) == "http://loinc.org|a,http://loinc.org|b"
+    assert mcp_tools.most_recent(6000, 7560, "readings") == "Showing the most recent 6,000 of 7,560 readings."
+    assert mcp_tools.most_recent(10, 10, "readings") == "" and mcp_tools.most_recent(10, None, "readings") == ""

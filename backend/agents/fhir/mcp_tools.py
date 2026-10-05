@@ -25,6 +25,11 @@ POLL_SECONDS = 10.0
 SECONDS_PER_MINUTE = 60.0
 MAX_WATCH_MINUTES = 10
 EVENT_BATCH = 200
+CENSUS_REASON_LENGTH = 40
+LISTED_PARAMETERS = 6
+MAX_TREND_READINGS = 6000
+MAX_ADMINISTRATIONS = 3000
+ORDER_ROWS = 15
 
 
 def tool_guard(function: Callable[..., Dict[str, Any]]) -> Callable[..., Dict[str, Any]]:
@@ -91,6 +96,10 @@ def reading_text(item: Optional[clinical.Reading]) -> str:
     return item.display if item else "—"
 
 
+def most_recent(shown: int, total: Optional[int], noun: str) -> str:
+    return f"Showing the most recent {shown:,} of {total:,} {noun}." if total is not None and total > shown else ""
+
+
 @tool_guard
 def icu_census(limit: int = 15, unit: str = "", **_: Any) -> Dict[str, Any]:
     client = connect()
@@ -124,7 +133,7 @@ def icu_census(limit: int = 15, unit: str = "", **_: Any) -> Dict[str, Any]:
             "unit": clinical.encounter_unit(encounter),
             "admitted": clinical.format_time(start),
             "stay": clinical.duration((now - start).total_seconds() / 60) if start else "",
-            "reason": clinical.admission_reason(encounter),
+            "reason": clinical.shorten(clinical.admission_reason(encounter), CENSUS_REASON_LENGTH),
             "heart_rate": reading_text(latest.get("heart_rate")),
             "oxygen_saturation": reading_text(latest.get("oxygen_saturation")),
             "mean_arterial_pressure": reading_text(latest.get("mean_arterial_pressure")),
@@ -194,7 +203,7 @@ def patient_overview(patient: str = "", **_: Any) -> Dict[str, Any]:
         {"label": "Height", "value": first_reading(observations, "8302-2") or "not recorded"},
         {"label": "Weight", "value": first_reading(observations, "29463-7") or "not recorded"},
         {"label": "Unit", "value": unit or "not recorded"},
-        {"label": "Hospital", "value": clinical.reference_id(record.get("managingOrganization")) or "not recorded"},
+        {"label": "Hospital", "value": clinical.reference_label(record.get("managingOrganization")) or "not recorded"},
         {"label": "Admitted", "value": clinical.format_time(start)},
         {"label": "Time in unit", "value": clinical.duration(stay_minutes) if stay_minutes is not None else "not recorded"},
         {"label": "Admitted from", "value": clinical.concept_text(admission.get("admitSource")) or "not recorded"},
@@ -214,19 +223,19 @@ def patient_overview(patient: str = "", **_: Any) -> Dict[str, Any]:
     seen: set = set()
     problems = []
     for condition in conditions:
-        label = clinical.concept_text(condition.get("code"))
+        label = clinical.sentence_case(clinical.concept_text(condition.get("code")))
         if not label or label.lower() in seen:
             continue
         seen.add(label.lower())
-        status = clinical.concept_text(condition.get("clinicalStatus")).capitalize()
+        status = clinical.status_text(clinical.concept_text(condition.get("clinicalStatus")))
         problems.append([label, status, clinical.format_time(clinical.parse_time(condition.get("recordedDate")))])
-    medications = [
+    medications = clinical.distinct(
         [clinical.medication_text(order), clinical.dosage_text(order), clinical.format_time(clinical.parse_time(order.get("authoredOn")))]
         for order in orders
-    ]
+    )
     laboratory = [item for item in observations if "laboratory" in clinical.categories(item)]
     labs = [row for row in clinical.lab_rows(laboratory) if row["key"] in clinical.KEY_LABS or row["flag"] in ("Critical", "Moderate")]
-    allergy_names = sorted({clinical.concept_text(item.get("code")) for item in allergies} - {""})
+    allergy_names = sorted({clinical.sentence_case(clinical.concept_text(item.get("code"))) for item in allergies} - {""})
 
     card = presentation.patient_card(
         identifier, headline, unit or "Intensive care", badges, latest, now, facts, risks,
@@ -249,7 +258,7 @@ def patient_overview(patient: str = "", **_: Any) -> Dict[str, Any]:
         },
         "predicted_risk": {label: probability for label, probability in risks},
         "problems": [row[0] for row in problems[:12]],
-        "active_medications": [row[0] for row in medications[:12]],
+        "active_medications": list(dict.fromkeys(row[0] for row in medications))[:12],
         "allergies": allergy_names,
         "key_labs": [
             {"test": row["label"], "value": row["number"], "unit": row["unit"], "flag": row["flag"]} for row in labs[:10]
@@ -263,10 +272,10 @@ def vital_sign_trends(patient: str = "", hours: int = 24, **_: Any) -> Dict[str,
     hours = bounded(hours, 24, 1, 168)
     client = connect()
     now = server_time(client)
-    observations, _ = client.search(
+    observations, total = client.search(
         "Observation",
-        [("patient", identifier), ("code", loinc_tokens(clinical.VITAL_CODES)), ("date", since(now, hours)), ("_sort", "date")],
-        4000,
+        [("patient", identifier), ("code", loinc_tokens(clinical.VITAL_CODES)), ("date", since(now, hours)), ("_sort", "-date")],
+        MAX_TREND_READINGS,
     )
     latest = clinical.latest_vitals(observations)
     traces: Dict[str, List[Tuple[datetime, float]]] = {}
@@ -276,13 +285,15 @@ def vital_sign_trends(patient: str = "", hours: int = 24, **_: Any) -> Dict[str,
         points = clinical.series(observations, vital)
         if not points:
             continue
-        traces[vital.key] = points
+        traces[vital.key] = clinical.thin(points)
         values = [value for _, value in points]
         newest = latest[vital.key]
+        low, high = clinical.format_number(min(values)), clinical.format_number(max(values))
+        spread = "" if len(values) == 1 else f"Steady at {low} · " if low == high else f"Range {low}–{high} · "
         summary.append({
             "label": vital.label,
             "value": f"{newest.display} {vital.unit}".strip(),
-            "hint": f"{clinical.format_number(min(values))}–{clinical.format_number(max(values))} over {len(values)} readings",
+            "hint": spread + clinical.count_of(len(values), "reading"),
             "variant": vital.variant(newest.value),
         })
         data[vital.key] = {
@@ -290,8 +301,11 @@ def vital_sign_trends(patient: str = "", hours: int = 24, **_: Any) -> Dict[str,
             "mean": round(sum(values) / len(values), 2), "readings": len(values), "unit": vital.unit,
             "latest_time": iso(newest.when),
         }
-    card = presentation.vitals_card(identifier, hours, now, latest, summary, traces)
-    return result(card, {"patient": identifier, "as_of": iso(now), "window_hours": hours, "vitals": data})
+    note = most_recent(len(observations), total, "readings")
+    card = presentation.vitals_card(identifier, hours, now, summary, traces, note)
+    return result(card, {
+        "patient": identifier, "as_of": iso(now), "window_hours": hours, "vitals": data, "complete": not note,
+    })
 
 
 @tool_guard
@@ -328,15 +342,19 @@ def medication_review(patient: str = "", **_: Any) -> Dict[str, Any]:
     client = connect()
     now = server_time(client)
     orders, _ = client.search("MedicationRequest", [("patient", identifier), ("_sort", "-authoredon")], 300)
-    administrations, _ = client.search("MedicationAdministration", [("patient", identifier), ("_sort", "date")], 1500)
+    administrations, charted = client.search(
+        "MedicationAdministration", [("patient", identifier), ("_sort", "-date")], MAX_ADMINISTRATIONS,
+    )
     statements, _ = client.search("MedicationStatement", [("patient", identifier)], 100)
     counts = Counter(str(order.get("status") or "unknown") for order in orders)
     ranked = sorted(orders, key=lambda order: order.get("status") != "active")
-    order_rows = [
-        [clinical.medication_text(order), clinical.dosage_text(order), str(order.get("status") or "").capitalize(),
+    order_rows = clinical.distinct(
+        [clinical.medication_text(order), clinical.dosage_text(order), clinical.status_text(order.get("status")),
          clinical.format_time(clinical.parse_time(order.get("authoredOn")))]
-        for order in ranked[:30]
-    ]
+        for order in ranked
+    )
+    listed = order_rows[:ORDER_ROWS]
+    active = list(dict.fromkeys(clinical.medication_text(order) for order in ranked if order.get("status") == "active"))
     series: Dict[str, List[Tuple[datetime, float]]] = {}
     units: Dict[str, str] = {}
     for administration in administrations:
@@ -348,14 +366,20 @@ def medication_review(patient: str = "", **_: Any) -> Dict[str, Any]:
         label = clinical.medication_text(administration)
         series.setdefault(label, []).append((when, float(value)))
         units.setdefault(label, str(rate.get("unit") or ""))
-    busiest = dict(sorted(series.items(), key=lambda item: len(item[1]), reverse=True)[:6])
-    home = [[clinical.medication_text(statement), clinical.dosage_text(statement)] for statement in statements]
-    card = presentation.medications_card(identifier, now, dict(counts), order_rows, busiest, units, home)
+    busiest = {label: sorted(points) for label, points in sorted(series.items(), key=lambda item: len(item[1]), reverse=True)[:6]}
+    home = [[clinical.sentence_case(clinical.medication_text(statement)), clinical.dosage_text(statement)] for statement in statements]
+    notes = {
+        "orders": f"Showing {len(listed)} of {len(order_rows)} orders, active and most recent first." if len(order_rows) > len(listed) else "",
+        "infusions": most_recent(len(administrations), charted, "charted doses"),
+    }
+    card = presentation.medications_card(
+        identifier, now, dict(counts), listed, {label: clinical.thin(points) for label, points in busiest.items()}, units, home, notes,
+    )
     return result(card, {
         "patient": identifier,
         "as_of": iso(now),
         "order_counts": dict(counts),
-        "active_orders": [row[0] for row, order in zip(order_rows, ranked) if order.get("status") == "active"],
+        "active_orders": active[:40],
         "infusions": {label: {"readings": len(points), "latest_rate": points[-1][1], "unit": units.get(label, "")} for label, points in busiest.items()},
         "home_medications": [row[0] for row in home],
     })
@@ -371,10 +395,10 @@ def patient_timeline(patient: str = "", hours: int = 48, **_: Any) -> Dict[str, 
     resources: List[Dict[str, Any]] = []
     for resource_type, parameters, limit in (
         ("Encounter", [("patient", identifier)], 30),
-        ("Condition", [("patient", identifier), ("recorded-date", start)], 100),
-        ("Procedure", [("patient", identifier), ("date", start)], 100),
-        ("MedicationRequest", [("patient", identifier), ("authoredon", start)], 200),
-        ("Observation", [("patient", identifier), ("category", "laboratory"), ("date", start)], 1000),
+        ("Condition", [("patient", identifier), ("recorded-date", start), ("_sort", "-recorded-date")], 100),
+        ("Procedure", [("patient", identifier), ("date", start), ("_sort", "-date")], 100),
+        ("MedicationRequest", [("patient", identifier), ("authoredon", start), ("_sort", "-authoredon")], 200),
+        ("Observation", [("patient", identifier), ("category", "laboratory"), ("date", start), ("_sort", "-date")], 1000),
     ):
         found, _ = client.search(resource_type, parameters, limit)
         resources += found
@@ -404,7 +428,10 @@ def fhir_source_status(**_: Any) -> Dict[str, Any]:
     resources = []
     for entry in rest.get("resource") or []:
         interactions = ", ".join(str(item.get("code")) for item in entry.get("interaction") or [])
-        parameters = ", ".join(str(item.get("name")) for item in entry.get("searchParam") or [])
+        names = [str(item.get("name")) for item in entry.get("searchParam") or []]
+        parameters = ", ".join(names[:LISTED_PARAMETERS])
+        if len(names) > LISTED_PARAMETERS:
+            parameters += f" and {len(names) - LISTED_PARAMETERS} more"
         resources.append([str(entry.get("type")), interactions, parameters])
     stats = [
         {"label": label, "value": f"{replay[key]:,}"}
@@ -418,7 +445,8 @@ def fhir_source_status(**_: Any) -> Dict[str, Any]:
     ]
     for label, key in (("Server time", "now"), ("Time zone", "timezone"), ("Replay cycle (days)", "cycleDays"), ("Dataset", "dataset"), ("Definitions", "definitionsSource"), ("Definitions tag", "definitionsTag")):
         if replay.get(key) is not None:
-            facts.append({"label": label, "value": str(replay[key])})
+            moment = clinical.parse_time(replay[key]) if key == "now" else None
+            facts.append({"label": label, "value": clinical.format_time(moment) if moment else str(replay[key])})
     badges = [f"FHIR {statement.get('fhirVersion')}", f"{len(resources)} resource types"]
     card = presentation.source_card(
         str(statement.get("title") or statement.get("name") or "FHIR server"),
@@ -444,7 +472,7 @@ def record_row(resource: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     if kind == "Encounter":
         start, end = clinical.encounter_period(resource)
         return ["Encounter", "Patient", "Status", "Unit", "Start", "End"], [
-            str(resource.get("id", "")), patient, str(resource.get("status", "")), clinical.encounter_unit(resource),
+            str(resource.get("id", "")), patient, clinical.status_text(resource.get("status")), clinical.encounter_unit(resource),
             clinical.format_time(start), clinical.format_time(end) if end else "",
         ]
     if kind == "Observation":
@@ -455,22 +483,24 @@ def record_row(resource: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     if kind == "Condition":
         return ["Recorded", "Patient", "Condition", "Status"], [
             clinical.format_time(clinical.parse_time(resource.get("recordedDate"))), patient,
-            clinical.concept_text(resource.get("code")), clinical.concept_text(resource.get("clinicalStatus")),
+            clinical.sentence_case(clinical.concept_text(resource.get("code"))),
+            clinical.status_text(clinical.concept_text(resource.get("clinicalStatus"))),
         ]
     if kind == "Procedure":
         return ["Started", "Patient", "Treatment", "Status"], [
             clinical.format_time(clinical.parse_time((resource.get("occurrencePeriod") or {}).get("start"))), patient,
-            clinical.concept_text(resource.get("code")), str(resource.get("status", "")),
+            clinical.sentence_case(clinical.concept_text(resource.get("code"))), clinical.status_text(resource.get("status")),
         ]
     if kind == "AllergyIntolerance":
         return ["Recorded", "Patient", "Allergy"], [
-            clinical.format_time(clinical.parse_time(resource.get("recordedDate"))), patient, clinical.concept_text(resource.get("code")),
+            clinical.format_time(clinical.parse_time(resource.get("recordedDate"))), patient,
+            clinical.sentence_case(clinical.concept_text(resource.get("code"))),
         ]
     if kind in ("MedicationRequest", "MedicationStatement", "MedicationAdministration"):
         when = resource.get("authoredOn") or resource.get("dateAsserted") or resource.get("occurenceDateTime")
         return ["Time", "Patient", "Medication", "Dose", "Status"], [
             clinical.format_time(clinical.parse_time(when)), patient, clinical.medication_text(resource),
-            clinical.dosage_text(resource), str(resource.get("status", "")),
+            clinical.dosage_text(resource), clinical.status_text(resource.get("status")),
         ]
     if kind == "RiskAssessment":
         predictions = "; ".join(

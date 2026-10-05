@@ -49,14 +49,18 @@ VITALS: Tuple[Vital, ...] = (
     Vital("oxygen_saturation", "SpO2", ("59408-5", "2708-6"), "%", 88, 92, None, None, color="#3B82F6"),
     Vital("respiratory_rate", "Respiratory rate", ("9279-1",), "/min", 8, 10, 28, 35, color="#10B981"),
     Vital("systolic", "Systolic BP", ("85354-9",), "mmHg", 80, 90, 180, 200, component="8480-6", color="#F59E0B"),
-    Vital("diastolic", "Diastolic BP", ("85354-9",), "mmHg", None, None, None, None, component="8462-4", color="#FBBF24"),
-    Vital("mean_arterial_pressure", "Mean arterial pressure", ("85354-9",), "mmHg", 55, 65, 130, None, component="8478-0", color="#D97706"),
+    Vital("diastolic", "Diastolic BP", ("85354-9",), "mmHg", None, None, None, None, component="8462-4", color="#06B6D4"),
+    Vital("mean_arterial_pressure", "Mean arterial pressure", ("85354-9",), "mmHg", 55, 65, 130, None, component="8478-0", color="#8B5CF6"),
     Vital("temperature", "Temperature", ("8310-5",), "°C", 35.0, 36.0, 38.3, 39.5, color="#A855F7"),
     Vital("glasgow_coma_score", "Glasgow coma score", ("9269-2",), "", 9, 13, None, None, color="#14B8A6"),
 )
 VITALS_BY_KEY: Dict[str, Vital] = {vital.key: vital for vital in VITALS}
 VITAL_CODES: Tuple[str, ...] = tuple(dict.fromkeys(code for vital in VITALS for code in vital.codes))
 CENSUS_VITALS = ("heart_rate", "oxygen_saturation", "mean_arterial_pressure")
+ENCOUNTER_TITLES: Dict[str, Tuple[str, str]] = {
+    "ACUTE": ("Admitted to {place}", "Left {place}"),
+    "IMP": ("Admitted to hospital", "Discharged from hospital"),
+}
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,27 @@ def format_number(value: float) -> str:
     return str(int(rounded)) if rounded == int(rounded) else f"{rounded:g}"
 
 
+def sentence_case(text: str) -> str:
+    first = text.split(" ", 1)[0].rstrip(",.;:").replace("-", "")
+    return text[:1].upper() + text[1:] if first.isalpha() and first.islower() else text
+
+
+def shorten(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0] if " " in text[:limit] else text[:limit]
+    return cut.rstrip(" ,;:(/-") + "…"
+
+
+def count_of(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def distinct(rows: Iterable[Sequence[str]]) -> List[List[str]]:
+    return [list(row) for row in dict.fromkeys(tuple(row) for row in rows)]
+
+
 def ago(moment: Optional[datetime], now: Optional[datetime]) -> str:
     if moment is None or now is None:
         return ""
@@ -207,6 +232,12 @@ def reference_id(reference: Any) -> str:
     return reference["reference"].rsplit("/", 1)[-1]
 
 
+def reference_label(reference: Any) -> str:
+    if isinstance(reference, dict) and isinstance(reference.get("display"), str) and reference["display"].strip():
+        return reference["display"].strip()
+    return reference_id(reference)
+
+
 def categories(observation: Dict[str, Any]) -> Tuple[str, ...]:
     found = []
     for concept in observation.get("category") or []:
@@ -250,10 +281,11 @@ def display_value(observation: Dict[str, Any]) -> Tuple[Optional[float], str, st
 def reading(observation: Dict[str, Any]) -> Reading:
     value, display, unit, comparator = display_value(observation)
     codes = loinc_codes(observation.get("code"))
-    label = concept_text(observation.get("code")) or "Observation"
+    known = next((LAB_RANGES[code] for code in codes if code in LAB_RANGES), None)
+    label = known.label if known else sentence_case(concept_text(observation.get("code"))) or "Observation"
     key = codes[0] if codes else label
-    return Reading(key, label, value, display, unit, observation_time(observation), codes[0] if codes else None,
-                   categories(observation), comparator)
+    return Reading(key, label, value, display, "" if unit.lower() == label.lower() else unit, observation_time(observation),
+                   codes[0] if codes else None, categories(observation), comparator)
 
 
 def component_value(observation: Dict[str, Any], code: str) -> Optional[float]:
@@ -296,17 +328,27 @@ def worst_variant(readings: Dict[str, Reading], keys: Sequence[str] = ()) -> str
     return worst
 
 
-def series(observations: Iterable[Dict[str, Any]], vital: Vital, maximum: int = 300) -> List[Tuple[datetime, float]]:
-    points = []
+def series(observations: Iterable[Dict[str, Any]], vital: Vital) -> List[Tuple[datetime, float]]:
+    simultaneous: Dict[datetime, List[float]] = {}
     for observation in observations:
         when, value = observation_time(observation), vital_value(observation, vital)
         if when is not None and value is not None:
-            points.append((when, value))
-    points.sort(key=lambda point: point[0])
-    if len(points) > maximum:
-        step = len(points) / maximum
-        points = [points[int(index * step)] for index in range(maximum - 1)] + [points[-1]]
-    return points
+            simultaneous.setdefault(when, []).append(value)
+    return [(when, round(sum(values) / len(values), 2)) for when, values in sorted(simultaneous.items())]
+
+
+def thin(points: Sequence[Tuple[datetime, float]], maximum: int = 300) -> List[Tuple[datetime, float]]:
+    if len(points) <= maximum:
+        return list(points)
+    buckets = max(1, (maximum - 2) // 2)
+    width = len(points) / buckets
+    kept = {points[0], points[-1]}
+    for index in range(buckets):
+        chunk = points[int(index * width):int((index + 1) * width)]
+        if chunk:
+            kept.add(min(chunk, key=lambda point: point[1]))
+            kept.add(max(chunk, key=lambda point: point[1]))
+    return sorted(kept)
 
 
 def lab_rows(observations: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -370,6 +412,16 @@ def encounter_unit(encounter: Dict[str, Any]) -> str:
     return concept_text(types[0]) if types else ""
 
 
+def encounter_kind(encounter: Dict[str, Any]) -> str:
+    types = encounter.get("type") or []
+    kind = concept_text(types[1]) if len(types) > 1 else ""
+    return "" if kind.lower().startswith("admit") else kind[:1].upper() + kind[1:]
+
+
+def status_text(code: Any) -> str:
+    return str(code or "").replace("-", " ").capitalize()
+
+
 def admission_reason(encounter: Dict[str, Any]) -> str:
     for reason in encounter.get("reason") or []:
         for value in reason.get("value") or []:
@@ -381,7 +433,7 @@ def admission_reason(encounter: Dict[str, Any]) -> str:
 
 def medication_text(resource: Dict[str, Any]) -> str:
     medication = resource.get("medication") or {}
-    return concept_text(medication.get("concept")) or reference_id(medication.get("reference")) or "Unspecified medication"
+    return concept_text(medication.get("concept")) or reference_label(medication.get("reference")) or "Unspecified medication"
 
 
 def dosage_text(resource: Dict[str, Any]) -> str:
@@ -396,20 +448,29 @@ def timeline_events(resources: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]
         kind = resource.get("resourceType")
         if kind == "Encounter":
             start, end = encounter_period(resource)
-            place = encounter_unit(resource) or ("Hospital stay" if encounter_class(resource) == "IMP" else "Encounter")
+            opened, closed = ENCOUNTER_TITLES.get(encounter_class(resource), ("Encounter started", "Encounter ended"))
+            place = encounter_unit(resource) or "intensive care"
             if start:
-                events.append({"when": start, "title": f"Admitted: {place}", "description": admission_reason(resource), "variant": "info"})
+                events.append({
+                    "when": start, "title": opened.format(place=place),
+                    "description": admission_reason(resource) or encounter_kind(resource), "variant": "info",
+                })
             if end:
                 disposition = concept_text((resource.get("admission") or {}).get("dischargeDisposition"))
-                events.append({"when": end, "title": f"Discharged: {place}", "description": disposition, "variant": "success"})
+                events.append({
+                    "when": end, "title": closed.format(place=place), "description": f"To {disposition}" if disposition else "",
+                    "variant": "success",
+                })
         elif kind == "Condition":
             when = parse_time(resource.get("recordedDate"))
             if when:
-                events.append({"when": when, "title": f"Diagnosis: {concept_text(resource.get('code'))}", "description": "", "variant": "warning"})
+                name = sentence_case(concept_text(resource.get("code")))
+                events.append({"when": when, "title": f"Diagnosis: {name}", "description": "", "variant": "warning"})
         elif kind == "Procedure":
             when = parse_time((resource.get("occurrencePeriod") or {}).get("start") or resource.get("occurrenceDateTime"))
             if when:
-                events.append({"when": when, "title": f"Treatment: {concept_text(resource.get('code'))}", "description": "", "variant": "default"})
+                name = sentence_case(concept_text(resource.get("code")))
+                events.append({"when": when, "title": f"Treatment: {name}", "description": "", "variant": "default"})
         elif kind == "MedicationRequest":
             when = parse_time(resource.get("authoredOn"))
             if when:

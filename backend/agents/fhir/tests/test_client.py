@@ -56,7 +56,7 @@ def test_search_follows_next_links_up_to_the_limit(server, settings):
     server.page_size = 4
     api = FhirClient(settings, transport=server)
     observations, total = api.search("Observation", [("patient", "002-1")], 10)
-    assert len(observations) == 10 and total == 19
+    assert len(observations) == 10 and total == 22
     assert [call[2].get("_offset") for call in server.calls] == [None, ["4"], ["8"]]
     everything, _ = api.search("Observation", [("patient", "002-1")], 0)
     assert len(everything) == 1

@@ -5,6 +5,7 @@ mcp_tools.py passes in view models from clinical.py and returns each card's dict
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -29,6 +30,9 @@ from agents.fhir import clinical
 
 GRID_COLOR = "rgba(148,163,184,0.18)"
 BAND_COLOR = "rgba(16,185,129,0.10)"
+REFERENCE_COLOR = "rgba(148,163,184,0.85)"
+LEGEND = {"orientation": "h", "y": -0.22}
+SPARSE_POINTS = 24
 DISCLAIMER = (
     "De-identified demonstration data replayed from the eICU Collaborative Research Database demo. "
     "Flags use fixed display thresholds and are not clinical advice."
@@ -54,11 +58,40 @@ def band(low: float, high: float, reference: str = "y") -> Dict[str, Any]:
     }
 
 
+def reference_line(level: float) -> Dict[str, Any]:
+    return {
+        "type": "line", "xref": "paper", "x0": 0, "x1": 1, "yref": "y", "y0": level, "y1": level,
+        "line": {"color": REFERENCE_COLOR, "width": 1, "dash": "dot"}, "layer": "below",
+    }
+
+
+def reference_note(level: float, text: str) -> Dict[str, Any]:
+    return {
+        "xref": "paper", "x": 1, "xanchor": "right", "yref": "y", "y": level, "yanchor": "bottom", "text": text,
+        "showarrow": False, "font": {"size": 10, "color": REFERENCE_COLOR},
+    }
+
+
 def line(label: str, points: Sequence[Tuple[datetime, float]], color: str, **extra: Any) -> Dict[str, Any]:
     return {
-        "type": "scatter", "mode": "lines", "name": label, "x": [plot_time(when) for when, _ in points],
-        "y": [value for _, value in points], "line": {"color": color, "width": 2}, **extra,
+        "type": "scatter", "mode": "lines+markers" if len(points) <= SPARSE_POINTS else "lines", "name": label,
+        "x": [plot_time(when) for when, _ in points], "y": [value for _, value in points],
+        "line": {"color": color, "width": 2}, "marker": {"color": color, "size": 5}, **extra,
     }
+
+
+def lab_table(rows: List[Dict[str, Any]], title: str) -> Table:
+    changes = any(row["change"] for row in rows)
+    headers = ["Test", "Result", "Reference", "Flag"] + (["Change"] if changes else []) + ["Collected"]
+    return Table(
+        headers=headers,
+        rows=[
+            [row["label"], f"{row['value']} {row['unit']}".strip(), row["reference"], row["flag"]]
+            + ([row["change"]] if changes else []) + [clinical.format_time(row["when"])]
+            for row in rows
+        ],
+        attributes={"title": title},
+    )
 
 
 def vital_tiles(latest: Dict[str, clinical.Reading], now: Optional[datetime], keys: Sequence[str]) -> List[MetricCard]:
@@ -110,10 +143,10 @@ def census_card(
             layout={"xaxis": axis("", type="date"), "yaxis": axis("Admissions", rangemode="tozero"), "showlegend": False, "bargap": 0.15},
         ))
     content.append(Table(
-        headers=["Patient", "Unit", "Admitted", "In unit", "Admission diagnosis", "HR", "SpO2", "MAP", "Vitals"],
+        headers=["Patient", "Vitals", "HR", "SpO2", "MAP", "Unit", "In unit", "Admission diagnosis"],
         rows=[
-            [row["patient"], row["unit"], row["admitted"], row["stay"], row["reason"], row["heart_rate"],
-             row["oxygen_saturation"], row["mean_arterial_pressure"], row["flag"]]
+            [row["patient"], row["flag"] or "—", row["heart_rate"], row["oxygen_saturation"], row["mean_arterial_pressure"],
+             row["unit"] or "—", row["stay"] or "—", row["reason"] or "—"]
             for row in rows
         ],
         attributes={"title": "Most recently admitted"},
@@ -162,12 +195,7 @@ def patient_card(
     if problems:
         content.append(Table(headers=["Problem", "Status", "Recorded"], rows=problems, attributes={"title": "Problems"}))
     if labs:
-        content.append(Table(
-            headers=["Test", "Result", "Reference", "Flag", "Change", "Collected"],
-            rows=[[row["label"], f"{row['value']} {row['unit']}".strip(), row["reference"], row["flag"], row["change"],
-                   clinical.format_time(row["when"])] for row in labs],
-            attributes={"title": "Key laboratory results"},
-        ))
+        content.append(lab_table(labs, "Key laboratory results"))
     if medications:
         content.append(Table(headers=["Medication", "Dose and schedule", "Started"], rows=medications, attributes={"title": "Active orders"}))
     content.append(ActionGroup(label="Explore", buttons=[
@@ -184,64 +212,79 @@ def vitals_card(
     patient_id: str,
     hours: int,
     now: Optional[datetime],
-    latest: Dict[str, clinical.Reading],
     summary: List[Dict[str, str]],
     traces: Dict[str, List[Tuple[datetime, float]]],
+    note: str = "",
 ) -> Card:
     content: List[Any] = [
         Hero(
             eyebrow="Vital sign trends", title=f"Patient {patient_id}",
             subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
         ),
-        StatGroup(title="Latest, with range over the window", columns=4, items=summary),
     ]
-    cardiac = [
-        line(clinical.VITALS_BY_KEY[key].label, traces[key], clinical.VITALS_BY_KEY[key].color)
-        for key in ("heart_rate", "respiratory_rate") if traces.get(key)
+    if summary:
+        content.append(StatGroup(title="Latest, with range over the window", columns=4, items=summary))
+    drawn = {key: points for key, points in traces.items() if len(points) >= 2}
+    charts: List[Any] = []
+    rates = [
+        line(clinical.VITALS_BY_KEY[key].label, drawn[key], clinical.VITALS_BY_KEY[key].color)
+        for key in ("heart_rate", "respiratory_rate") if key in drawn
     ]
-    if traces.get("oxygen_saturation"):
-        vital = clinical.VITALS_BY_KEY["oxygen_saturation"]
-        cardiac.append(line(vital.label, traces["oxygen_saturation"], vital.color, yaxis="y2"))
-    if cardiac:
-        content.append(PlotlyChart(
-            title="Heart rate, respiratory rate and SpO2",
-            data=cardiac,
-            layout={
-                "xaxis": axis("", type="date"),
-                "yaxis": axis("per minute"),
-                "yaxis2": {"title": "SpO2 %", "overlaying": "y", "side": "right", "range": [70, 100], "showgrid": False},
-                "shapes": [band(60, 100)],
-                "hovermode": "x unified",
-                "legend": {"orientation": "h", "y": -0.25},
-            },
-        ))
+    saturation = drawn.get("oxygen_saturation")
+    if rates or saturation:
+        layout: Dict[str, Any] = {"xaxis": axis("", type="date"), "hovermode": "x unified", "legend": LEGEND}
+        if saturation:
+            vital = clinical.VITALS_BY_KEY["oxygen_saturation"]
+            lowest = min(85.0, math.floor(min(value for _, value in saturation)) - 2.0)
+            scale = {"title": "SpO2 %", "range": [lowest, 101], "zeroline": False}
+            if rates:
+                rates.append(line(vital.label, saturation, vital.color, yaxis="y2"))
+                layout["yaxis"] = axis("per minute")
+                layout["yaxis2"] = {**scale, "overlaying": "y", "side": "right", "showgrid": False, "automargin": True}
+            else:
+                rates.append(line(vital.label, saturation, vital.color))
+                layout["yaxis"] = {**scale, "gridcolor": GRID_COLOR}
+        else:
+            layout["yaxis"] = axis("per minute")
+        charts.append(PlotlyChart(title=" · ".join(trace["name"] for trace in rates), data=rates, layout=layout))
     pressure = [
-        line(clinical.VITALS_BY_KEY[key].label, traces[key], clinical.VITALS_BY_KEY[key].color)
-        for key in ("systolic", "mean_arterial_pressure", "diastolic") if traces.get(key)
+        line(clinical.VITALS_BY_KEY[key].label, drawn[key], clinical.VITALS_BY_KEY[key].color)
+        for key in ("systolic", "mean_arterial_pressure", "diastolic") if key in drawn
     ]
     if pressure:
-        content.append(PlotlyChart(
+        target = clinical.VITALS_BY_KEY["mean_arterial_pressure"].low_warning
+        charts.append(PlotlyChart(
             title="Blood pressure",
             data=pressure,
             layout={
-                "xaxis": axis("", type="date"), "yaxis": axis("mmHg"), "shapes": [band(65, 110)],
-                "hovermode": "x unified", "legend": {"orientation": "h", "y": -0.25},
+                "xaxis": axis("", type="date"), "yaxis": axis("mmHg"), "hovermode": "x unified", "legend": LEGEND,
+                "shapes": [reference_line(target)], "annotations": [reference_note(target, f"MAP {target:g}")],
             },
         ))
-    if traces.get("temperature"):
+    if "temperature" in drawn:
         vital = clinical.VITALS_BY_KEY["temperature"]
-        content.append(PlotlyChart(
+        charts.append(PlotlyChart(
             title="Temperature",
-            data=[line(vital.label, traces["temperature"], vital.color, mode="lines+markers")],
-            layout={"xaxis": axis("", type="date"), "yaxis": axis("°C"), "shapes": [band(36.0, 38.3)], "showlegend": False},
+            data=[line(vital.label, drawn["temperature"], vital.color)],
+            layout={
+                "xaxis": axis("", type="date"), "yaxis": axis("°C"), "showlegend": False,
+                "shapes": [band(vital.low_warning, vital.high_warning)],
+            },
         ))
-    if len(content) == 2:
+    content += charts
+    if not traces:
         content.append(Alert(message=f"No vital signs were recorded for this patient in the last {hours} hours.", variant="info"))
+    elif not charts:
+        content.append(Alert(message=f"Too few readings in the last {hours} hours to draw a trend.", variant="info"))
+    if note:
+        content.append(Text(content=note, variant="caption"))
     content.append(ActionGroup(label="Next", buttons=[
         ask("Refresh", f"Chart the vital sign trends for FHIR patient {patient_id} over the last {hours} hours", "primary"),
         ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
     ]))
-    content.append(Text(content="Shaded bands mark typical adult ranges. " + DISCLAIMER, variant="caption"))
+    content.append(Text(
+        content="The dotted line and the shaded band mark typical adult targets. " + DISCLAIMER, variant="caption",
+    ))
     return Card(title=f"Vital signs: patient {patient_id}", id=f"fhir-vitals-{patient_id}", content=content)
 
 
@@ -257,19 +300,14 @@ def labs_card(patient_id: str, hours: int, now: Optional[datetime], rows: List[D
     if not rows:
         content.append(Alert(message=f"No laboratory results were reported for this patient in the last {hours} hours.", variant="info"))
     else:
-        content.append(Table(
-            headers=["Test", "Result", "Reference", "Flag", "Change", "Collected"],
-            rows=[[row["label"], f"{row['value']} {row['unit']}".strip(), row["reference"], row["flag"], row["change"],
-                   clinical.format_time(row["when"])] for row in rows],
-            attributes={"title": "Latest result per test"},
-        ))
+        content.append(lab_table(rows, "Latest result per test"))
         charts = []
         for row in [row for row in rows if len(row["history"]) >= 2][:4]:
             interval = clinical.LAB_RANGES.get(row["key"])
             shapes = [band(interval.low, interval.high)] if interval and interval.low is not None and interval.high is not None else []
             charts.append(PlotlyChart(
                 title=f"{row['label']} ({row['unit']})" if row["unit"] else row["label"],
-                data=[line(row["label"], row["history"], "#6366F1", mode="lines+markers")],
+                data=[line(row["label"], row["history"], "#6366F1")],
                 layout={"xaxis": axis("", type="date"), "yaxis": axis(row["unit"]), "shapes": shapes, "showlegend": False},
             ))
         if charts:
@@ -290,6 +328,7 @@ def medications_card(
     infusions: Dict[str, List[Tuple[datetime, float]]],
     infusion_units: Dict[str, str],
     home: List[List[str]],
+    notes: Dict[str, str],
 ) -> Card:
     content: List[Any] = [
         Hero(
@@ -305,19 +344,24 @@ def medications_card(
     ]
     if orders:
         content.append(Table(headers=["Medication", "Dose and schedule", "Status", "Ordered"], rows=orders, attributes={"title": "Orders"}))
+    if notes.get("orders"):
+        content.append(Text(content=notes["orders"], variant="caption"))
     palette = ("#EF4444", "#3B82F6", "#10B981", "#F59E0B", "#A855F7", "#14B8A6")
+    units = {infusion_units.get(name, "") for name in infusions}
+    shared = units.pop() if len(units) == 1 else ""
     traces = [
-        line(f"{name} ({infusion_units.get(name, '')})".replace(" ()", ""), points, palette[index % len(palette)], line={
-            "color": palette[index % len(palette)], "width": 2, "shape": "hv",
-        })
+        line(name if shared or not infusion_units.get(name) else f"{name} ({infusion_units[name]})", points, palette[index % len(palette)],
+             line={"color": palette[index % len(palette)], "width": 2, "shape": "hv"})
         for index, (name, points) in enumerate(infusions.items())
     ]
     if traces:
         content.append(PlotlyChart(
-            title="Charted infusion rates",
+            title=f"Charted infusion rates ({shared})" if shared else "Charted infusion rates",
             data=traces,
-            layout={"xaxis": axis("", type="date"), "yaxis": axis("Rate", rangemode="tozero"), "legend": {"orientation": "h", "y": -0.25}},
+            layout={"xaxis": axis("", type="date"), "yaxis": axis(shared, rangemode="tozero"), "showlegend": True, "legend": LEGEND},
         ))
+    if notes.get("infusions"):
+        content.append(Text(content=notes["infusions"], variant="caption"))
     if home:
         content.append(Table(headers=["Home medication", "Dose"], rows=home, attributes={"title": "Before admission"}))
     if not orders and not traces and not home:

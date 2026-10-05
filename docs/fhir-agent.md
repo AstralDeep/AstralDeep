@@ -52,6 +52,11 @@ Each tool returns one top-level card with a stable id, so calling it again for t
 patient updates the card in place. The model receives a compact summary instead of the
 raw resources.
 
+Long windows stay bounded. Trends read at most the 6,000 most recent readings and the
+medication review at most the 3,000 most recent charted doses; when the server holds more,
+the card says how many are shown. Charts are thinned to a few hundred points per series in
+a way that keeps each interval's highest and lowest value, so brief spikes stay visible.
+
 ## Security posture
 
 - **Egress.** Every request goes through `shared/external_http.py`. Only the host named in

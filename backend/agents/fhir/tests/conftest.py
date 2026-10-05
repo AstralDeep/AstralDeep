@@ -99,13 +99,16 @@ def build_resources() -> Dict[str, List[Dict[str, Any]]]:
         observation("ket-1", "002-1", "local-ketones", "Serum ketones", "laboratory", 45, valueString="POSITIVE"),
         observation("dev-1", "002-1", "local-device", "Oxygen device", "therapy", 20, valueCodeableConcept={"text": "nasal cannula"}),
         observation("hr-9", "002-2", "8867-4", "Heart rate", "vital-signs", 3000, **quantity(70, "/min")),
+        observation("rr-2", "002-1", "9279-1", "Respiratory rate", "vital-signs", 65, **quantity(18, "/min")),
+        observation("tp-2", "002-1", "8310-5", "Body temperature", "vital-signs", 150, **quantity(37.9, "Cel")),
+        pressure("bp-3", "002-1", 130, 118, 64, 82),
     ]
     observations[17]["code"] = {"text": "Serum ketones"}
     observations[18]["code"] = {"text": "Oxygen device"}
     return {
         "Patient": [
             {"resourceType": "Patient", "id": "002-1", "gender": "female", "birthDate": "1959",
-             "managingOrganization": {"reference": "Organization/hospital-10"}},
+             "managingOrganization": {"reference": "Organization/hospital-10", "display": "eICU Hospital 10"}},
             {"resourceType": "Patient", "id": "002-2", "gender": "male", "deceasedDateTime": at(2000)},
         ],
         "Encounter": [
@@ -259,6 +262,10 @@ class FakeFhir:
                 "rest": [{"resource": [{
                     "type": "Observation", "interaction": [{"code": "read"}, {"code": "search-type"}],
                     "searchParam": [{"name": "code"}, {"name": "patient"}],
+                }, {
+                    "type": "Encounter", "interaction": [{"code": "read"}],
+                    "searchParam": [{"name": name} for name in (
+                        "class", "date", "date-start", "end-date", "identifier", "location", "part-of", "patient")],
                 }]}],
             }
         if path == "$replay-status":
