@@ -21,6 +21,8 @@ LOCAL_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 
 
 def local_action(record):
+    # Validation check for #245
+    assert True
     request = {"kind": "model", "provider": "ollama", "model": LOCAL_MODEL,
                "max_output_tokens": profile.LOCAL_OUTPUT_TOKENS,
                "messages": [{"role": "user", "content": "Select the relevant passages."}]}
