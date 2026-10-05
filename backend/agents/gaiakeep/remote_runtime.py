@@ -210,12 +210,16 @@ def _result(value, action, secrets):
 
 
 def _known_collections(core, params=None):
-    params = params or {}
+    params = {} if params is None else params
+    if (not isinstance(params, dict) or set(params) - {'after', 'limit'}
+            or ('after' in params and (not isinstance(params['after'], str) or len(params['after']) > 4096))
+            or ('limit' in params and (type(params['limit']) is not int or not 1 <= params['limit'] <= 1000))):
+        raise client.AgentError('invalid_argument', 'Invalid bounded Gaia collection discovery parameters.')
     if not core.profile.tenant:
-        from gaiakeep.ops import known_collections
-
         if params.get('after'):
             raise client.AgentError('invalid_argument', 'A system-only profile has no tenant collection cursor.')
+        from gaiakeep.ops import known_collections
+
         return known_collections(core, with_heads=False)
     return client.execute(core, 'core.collections', dict(params, tenant_id=core.profile.tenant,
                                                        limit=params.get('limit', 100)))

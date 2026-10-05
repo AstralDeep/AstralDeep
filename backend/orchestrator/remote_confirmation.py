@@ -133,6 +133,7 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             summary=_gaiakeep_summary,
             machine_label=_machine_label,
             auto_continue=True,
+            card_as_result=True,
         ),
         MUTATING_AGENT_ID: AgentConfirmationPolicy(
             agent_id=MUTATING_AGENT_ID,
@@ -431,6 +432,29 @@ def _create_proposal(orch, user_id: str, chat_id: str | None, agent_id: str,
 
 def card_component_id(proposal_id: str) -> str:
     return f"au_approval_{proposal_id}"
+
+
+def is_approval_card_result(components: Any) -> bool:
+    if not isinstance(components, list) or len(components) != 1:
+        return False
+    card = components[0]
+    if not isinstance(card, dict) or card.get("type") != "card":
+        return False
+    ident = card.get("id")
+    if not isinstance(ident, str) or not ident.startswith("au_approval_"):
+        return False
+    proposal_id = ident.removeprefix("au_approval_")
+    if len(proposal_id) != 32 or any(char not in "0123456789abcdef" for char in proposal_id):
+        return False
+    content = card.get("content")
+    if not isinstance(content, list):
+        return False
+    buttons = [item for item in content if isinstance(item, dict) and item.get("type") == "button"]
+    return len(buttons) == 2 and all(
+        button.get("action") == "remote_op_decision"
+        and button.get("payload") == {"proposal_id": proposal_id, "decision": decision}
+        for button, decision in zip(buttons, ("approve", "decline"))
+    )
 
 
 async def _replace_card(orch, row, title: str, body: str, variant: str = "default") -> None:

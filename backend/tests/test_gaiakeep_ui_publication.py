@@ -4,7 +4,7 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -21,10 +21,15 @@ from tests.test_remote_confirmation_063 import _FakeDB, _orch
 
 
 def card(proposal=None):
-    proposal = proposal or str(uuid4())
+    proposal = proposal or uuid4().hex
     return {"type": "card", "id": "au_approval_" + proposal,
-            "content": [{"type": "button", "label": "Approve", "action": "remote_op_decision",
-                         "payload": {"proposal_id": proposal, "decision": "approve"}}]}
+            "content": [{"type": "button", "label": label, "action": "remote_op_decision",
+                         "payload": {"proposal_id": proposal, "decision": decision}}
+                        for label, decision in (("Approve", "approve"), ("Decline", "decline"))]}
+
+
+def confirmation(issued):
+    return MCPResponse(result={"_data": {"status": "confirmation_required"}}, ui_components=[issued])
 
 
 def response():
@@ -78,12 +83,14 @@ async def test_normalized_owned_gaia_result_is_published_without_mutating_respon
 
 
 @pytest.mark.asyncio
-async def test_issued_gaia_confirmation_is_published_without_dispatch_or_source_arguments(host):
+@pytest.mark.parametrize("delivery", ["result", "legacy"])
+async def test_issued_gaia_confirmation_is_published_without_dispatch_or_source_arguments(host, delivery):
     host, socket = host
     issued = card()
     host._authorize_and_prepare.return_value = GateRefusal(
-        response=MCPResponse(error={"message": "confirmation_required", "retryable": False}),
-        render_components=[issued], render_target="chat")
+        response=confirmation(issued) if delivery == "result" else MCPResponse(
+            error={"message": "confirmation_required", "retryable": False}),
+        render_components=None if delivery == "result" else [issued], render_target="chat")
     before = copy.deepcopy(issued)
     await paginate(host, socket, tool="gaiakeep_upload")
     host._execute_with_retry_audited.assert_not_awaited()
@@ -92,6 +99,29 @@ async def test_issued_gaia_confirmation_is_published_without_dispatch_or_source_
     assert published["id"] == issued["id"] and published["_source_agent"] == "gaiakeep-1"
     assert "_source_params" not in published and issued == before
     host.send_ui_render.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_gaia_card_without_conversation_stays_transient(host):
+    host, socket = host
+    issued = card()
+    host._authorize_and_prepare.return_value = GateRefusal(response=confirmation(issued))
+    await paginate(host, socket, chat=None, tool="gaiakeep_upload_dataset")
+    host._send_or_replace_components.assert_not_awaited()
+    host._execute_with_retry_audited.assert_not_awaited()
+    host.send_ui_render.assert_awaited_once_with(socket, [issued], target="chat")
+
+
+@pytest.mark.asyncio
+async def test_pending_card_publication_failure_never_dispatches_the_mutation(host):
+    host, socket = host
+    host._authorize_and_prepare.return_value = GateRefusal(response=confirmation(card()))
+    host._send_or_replace_components.side_effect = OSError("publication closed")
+    await paginate(host, socket, tool="gaiakeep_upload_dataset")
+    host._execute_with_retry_audited.assert_not_awaited()
+    host._send_or_replace_components.assert_awaited_once()
+    host.send_ui_render.assert_awaited_once()
+    assert host.send_ui_render.await_args.args[1][0]["type"] == "alert"
 
 
 @pytest.mark.asyncio
@@ -139,16 +169,24 @@ async def test_real_connection_stage_commits_gaia_canvas_and_fresh_owned_hydrati
     host, socket, context = runtime()
     attach_plane(host, database)
     chat = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
-    host._authorize_and_prepare = AsyncMock(return_value=PreparedDispatch(
-        args={"machine_id": "authorized-machine", "params": {}}, stream_params={}, cap_job_id=None, delegation_token=None))
+    host.runtime_composition = SimpleNamespace(plane=SimpleNamespace(runtime=database, repositories=database.repositories))
     host._execute_with_retry_audited = AsyncMock(return_value=response())
+    tool = "gaiakeep_connection_info"
     if kind == "proposal":
-        host._authorize_and_prepare.return_value = GateRefusal(
-            response=MCPResponse(error={"message": "confirmation_required"}), render_components=[card()], render_target="chat")
+        tool = "gaiakeep_core_repair"
+        host.security_flags = {}
+        host.agent_cards = {}
+        host.tool_permissions = MagicMock()
+        host.tool_permissions.is_tool_allowed.return_value = True
+        monkeypatch.setattr("orchestrator.remote_machines.resolve_machine", lambda *a: {"owner_user_id": OWNER})
+        monkeypatch.setattr(rc, "_machine_label", lambda *a: "registered DGX")
+    else:
+        host._authorize_and_prepare = AsyncMock(return_value=PreparedDispatch(
+            args={"machine_id": "authorized-machine", "params": {}}, stream_params={}, cap_job_id=None, delegation_token=None))
     host.send_ui_render = AsyncMock()
     monkeypatch.setattr("audit.hooks.record_ws_action", AsyncMock())
     monkeypatch.setattr("audit.hooks.record_workspace_event", AsyncMock())
-    ingress = frame(host, context, chat_id=chat, agent_id="gaiakeep-1", tool_name="gaiakeep_connection_info",
+    ingress = frame(host, context, chat_id=chat, agent_id="gaiakeep-1", tool_name=tool,
                     params={"machine_id": "authorized-machine", "params": {}})
     operation, claim, _before = await asyncio.to_thread(admitted, host, context, ingress)
     token = _CONNECTION_OPERATION_CONTEXT.set({"operation": claim.operation, "owner": operation.owner,
@@ -171,14 +209,19 @@ async def test_real_connection_stage_commits_gaia_canvas_and_fresh_owned_hydrati
     assert all(call.kwargs.get("target") == "history" for call in host.send_ui_render.await_args_list)
     if kind == "proposal":
         host._execute_with_retry_audited.assert_not_awaited()
+        assert restored["canvas"]["components"][0]["id"].startswith("au_approval_")
+        assert "_source_params" not in restored["canvas"]["components"][0]
+        assert [item["payload"]["decision"] for item in restored["canvas"]["components"][0]["content"]
+                if item["type"] == "button"] == ["approve", "decline"]
 
 
-def test_gaia_proposal_gets_a_stable_replaceable_identity_without_policy_change():
+def test_gaia_proposal_gets_a_stable_replaceable_result_identity():
     host = _orch(_FakeDB())
     pid, component = rc._create_proposal(host, OWNER, "owned-chat", "gaiakeep-1", "gaiakeep_core_repair",
                                        {"machine_id": "owned-machine", "params": {}})
     assert component["id"] == rc.card_component_id(pid)
-    assert rc.policy_for("gaiakeep-1").card_as_result is False
+    assert rc.policy_for("gaiakeep-1").card_as_result is True
+    assert rc.is_approval_card_result([component]) is True
     _other_pid, other = rc._create_proposal(host, OWNER, "owned-chat", "remote-compute-1", "remove_path",
                                            {"machine_id": "owned-machine", "path": "/synthetic"})
     assert other.get("id") is None
@@ -194,7 +237,7 @@ async def test_actual_gaia_decision_restores_only_owned_committed_result_or_decl
     args = {"machine_id": "owned-machine", "params": {"request_id": "original-native-request"}, "user_id": OWNER}
     proposal, issued = rc._create_proposal(host, OWNER, chat, "gaiakeep-1", "gaiakeep_core_repair", args)
     host._authorize_and_prepare = AsyncMock(return_value=GateRefusal(
-        response=MCPResponse(error={"message": "confirmation_required"}), render_components=[issued], render_target="chat"))
+        response=confirmation(issued)))
     host.send_ui_render = AsyncMock()
     monkeypatch.setattr("audit.hooks.record_ws_action", AsyncMock())
     monkeypatch.setattr("audit.hooks.record_workspace_event", AsyncMock())

@@ -1,6 +1,7 @@
 """Verifies remote SDK integrity, private identity, pinned deployment trust and bounded operation results without a live service."""
 
 import base64
+import builtins
 import hashlib
 import importlib.metadata
 import json
@@ -152,6 +153,23 @@ def test_paged_collection_discovery_uses_profile_tenant_and_native_bounds(runtim
     assert calls == [('core.collections', {'after': 'previous', 'limit': 17, 'tenant_id': 'owner-tenant'})]
     with pytest.raises(client.AgentError):
         remote_runtime._known_collections(SimpleNamespace(profile=SimpleNamespace(tenant=None)), {'after': 'previous'})
+
+
+@pytest.mark.parametrize('params', [{'after': 'previous'}, {'after': False}, {'after': []},
+                                   {'after': 'x' * 4097}, {'limit': True}, {'limit': 0}, {'limit': 1001},
+                                   {'principal': 'forged'}, {'tenant_id': 'forged'}, [], 0])
+def test_invalid_collection_discovery_refuses_before_optional_sdk_import(monkeypatch, params):
+    imported = []
+    original = builtins.__import__
+    def without_sdk(name, *args, **kwargs):
+        if name == 'gaiakeep' or name.startswith('gaiakeep.'):
+            imported.append(name)
+            raise ModuleNotFoundError('The optional SDK is deliberately unavailable.')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', without_sdk)
+    with pytest.raises(client.AgentError) as error:
+        remote_runtime._known_collections(SimpleNamespace(profile=SimpleNamespace(tenant=None)), params)
+    assert error.value.verdict == 'invalid_argument' and not imported
 
 
 def test_dataset_manifest_paths_remain_typed_strings_through_remote_sanitizer():
