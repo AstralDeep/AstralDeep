@@ -64,8 +64,17 @@ addresses the findings; a maintainer reviews the new head before any further clo
 
 `pr-triage.yml` runs only from exact `refs/heads/main` using a reviewed, full-SHA-pinned
 community action and the built-in short-lived token. Its only permissions are `issues: write`
-and `pull-requests: write`. It serializes comment events and periodic recovery, checks out no
-repository code, executes no contributor text, downloads no artifacts, and has no secrets,
-OIDC, contents-write, workflow approval/rerun, merge, publishing, or release authority.
+and `pull-requests: write`. Only PR comments containing `/astral-triage close ` enter the
+triage job; ordinary issue comments and unrelated PR comments are skipped before runner
+allocation. Context scans and decision jobs share one repository-wide job concurrency group.
+The controller checks out no repository code, executes no contributor text, downloads no
+artifacts, and has no secrets, OIDC, contents-write, workflow approval/rerun, merge,
+publishing, or release authority.
 Semantic quality judgments remain maintainer decisions. This policy does not replace product
 review, required checks, security policy, the owning constitution, or release qualification.
+
+Scheduled and manual-dispatch scans reconcile context only; they never replay closure
+commands. GitHub may replace a pending job even with `cancel-in-progress: false`. Confirm
+the public decision receipt and PR state after a command; if a run was cancelled without
+applying the decision, review the current head again and post a fresh command or close
+manually with the same evidence.
