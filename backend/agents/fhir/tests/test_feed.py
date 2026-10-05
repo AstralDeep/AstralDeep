@@ -39,7 +39,8 @@ async def test_feed_streams_counts_events_and_cleans_up(connected, fast):
     stream = mcp_tools.watch_icu_activity({"minutes": 1}, {})
     first = await stream.__anext__()
     assert first.terminal is False and first.raw["watching"] is True and first.raw["events"] == 0
-    assert first.components[0]["type"] == "card" and first.components[0]["id"] == "fhir-feed"
+    assert first.components[0]["type"] == "card" and first.components[0]["title"] == "ICU activity feed"
+    assert "id" not in first.components[0]
     created = [call for call in connected.calls if call[0] == "POST"]
     assert len(created) == 2 and set(connected.subscriptions) == {"sub-1", "sub-2"}
     connected.subscriptions.update(feed_events())
@@ -124,7 +125,7 @@ def test_server_returns_the_first_chunk_when_called_without_streaming(connected)
         "name": "watch_icu_activity", "arguments": {"minutes": 3, "_runtime": object(), "session_id": "s"},
     }))
     assert response.error is None and response.result["watching"] is True
-    assert response.ui_components[0]["id"] == "fhir-feed"
+    assert response.ui_components[0]["title"] == "ICU activity feed" and "id" not in response.ui_components[0]
     assert connected.deleted == ["sub-1", "sub-2"]
     topics = [call[2] for call in connected.calls if call[1] == "SubscriptionTopic"]
     assert topics == [{}] and TOPIC_BASE
@@ -146,3 +147,72 @@ def test_server_handles_a_stream_that_yields_nothing(connected, monkeypatch):
     response = MCPServer().process_request(MCPRequest(request_id="r3", method="tools/call", params={"name": "watch_icu_activity"}))
     assert response.result is None and response.ui_components == []
     assert at(0)
+
+
+@pytest.fixture
+def live(monkeypatch):
+    monkeypatch.setattr(mcp_tools, "LIVE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(mcp_tools, "SECONDS_PER_MINUTE", 0.08)
+
+
+async def test_vitals_stream_updates_one_card_until_it_ends(connected, live):
+    stream = mcp_tools.stream_patient_vitals({"patient": "Patient/002-1", "minutes": 1}, {})
+    first = await stream.__anext__()
+    card = first.components[0]
+    assert first.terminal is False and card["title"] == "Live vitals: patient 002-1" and "id" not in card
+    assert first.raw["watching"] is True and first.raw["new_readings"] == 0
+    assert first.raw["latest_vitals"]["heart_rate"]["value"] == 148.0 and "presentation" in first.raw
+    hero = card["content"][0]
+    assert hero["subtitle"] == "Streaming for 1 min · as of Oct 5, 16:00"
+    assert hero["badges"] == ["0 new readings since the stream began", "Updates as readings arrive"]
+    assert [part["type"] for part in card["content"]] == ["hero", "grid", "plotly_chart", "plotly_chart", "action_group", "text"]
+    assert [chart["title"] for chart in card["content"][2:4]] == ["Heart rate · Respiratory rate · SpO2", "Blood pressure"]
+    assert [button["label"] for button in card["content"][-2]["buttons"]] == ["Patient overview"]
+    connected.resources["Observation"].append(
+        observation("hr-new", "002-1", "8867-4", "Heart rate", "vital-signs", -1, **quantity(101, "/min")))
+    chunks = [chunk async for chunk in stream]
+    final = chunks[-1]
+    assert final.terminal is True and final.raw["watching"] is False and final.raw["new_readings"] == 1
+    assert final.raw["latest_vitals"]["heart_rate"]["value"] == 101.0
+    ended = final.components[0]["content"]
+    assert ended[0]["subtitle"].startswith("Stream ended") and ended[0]["badges"][0] == "1 new reading since the stream began"
+    again = ended[-2]["buttons"][0]
+    assert (again["label"], again["action"]) == ("Stream again", "stream_subscribe")
+    assert again["payload"] == {"tool_name": "stream_patient_vitals", "params": {"patient": "002-1", "minutes": 1}}
+    assert chunks[0].components == chunks[1].components or len(chunks) < 3
+    assert json.dumps(final.components, allow_nan=False) and final.serialized_size() < 65536
+
+
+async def test_vitals_stream_shows_latest_known_values_outside_the_chart_window(connected, live):
+    connected.resources["Observation"] = [item for item in connected.resources["Observation"] if item["id"] in ("hr-9",)]
+    connected.resources["Observation"][0]["subject"] = {"reference": "Patient/002-1"}
+    stream = mcp_tools.stream_patient_vitals({"patient": "002-1"}, {})
+    first = await stream.__anext__()
+    await stream.aclose()
+    card = first.components[0]
+    assert first.raw["latest_vitals"]["heart_rate"]["value"] == 70.0
+    assert [part["type"] for part in card["content"]] == ["hero", "grid", "action_group", "text"]
+    assert card["content"][0]["subtitle"].startswith("Streaming for 5 min")
+
+
+async def test_vitals_stream_reports_bad_patients_and_outages(connected, live):
+    refused = [chunk async for chunk in mcp_tools.stream_patient_vitals({"patient": "not a patient!"}, {})]
+    assert len(refused) == 1 and refused[0].terminal is True and refused[0].error["code"] == "FHIR_BAD_REQUEST"
+    missing = [chunk async for chunk in mcp_tools.stream_patient_vitals({"patient": "999-9"}, {})]
+    assert missing[0].error["code"] == "FHIR_NOT_FOUND" and missing[0].components == []
+    stream = mcp_tools.stream_patient_vitals({"patient": "002-1", "minutes": 1}, {})
+    first = await stream.__anext__()
+    connected.failures["Observation"] = external_http.ServiceUnreachableError("down")
+    chunks = [chunk async for chunk in stream]
+    assert len(chunks) == 1 and chunks[0].terminal is True
+    assert chunks[0].raw["watching"] is False and chunks[0].components == first.components
+
+
+def test_vitals_stream_first_chunk_serves_the_non_streaming_path(connected):
+    response = MCPServer().process_request(MCPRequest(
+        request_id="live", method="tools/call", params={"name": "stream_patient_vitals", "arguments": {"patient": "002-1", "_runtime": object()}}))
+    assert response.error is None and response.result["patient"] == "002-1" and response.result["watching"] is True
+    assert response.ui_components[0]["title"] == "Live vitals: patient 002-1"
+    refused = MCPServer().process_request(MCPRequest(
+        request_id="live", method="tools/call", params={"name": "stream_patient_vitals", "arguments": {"patient": ""}}))
+    assert refused.error["code"] == "FHIR_BAD_REQUEST"

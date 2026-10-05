@@ -23,7 +23,7 @@ from shared.stream_sdk import is_streaming_tool
 
 EXPECTED_TOOLS = {
     "icu_census", "patient_overview", "vital_sign_trends", "laboratory_results", "medication_review", "patient_timeline",
-    "query_fhir_records", "fhir_source_status", "watch_icu_activity",
+    "query_fhir_records", "fhir_source_status", "watch_icu_activity", "stream_patient_vitals",
 }
 
 
@@ -66,10 +66,14 @@ def test_registry_entries_are_well_formed_read_only_tools():
     assert mcp_tools.TOOL_REGISTRY["query_fhir_records"]["input_schema"]["required"] == ["resource_type"]
 
 
-def test_feed_tool_declares_push_streaming():
-    entry = mcp_tools.TOOL_REGISTRY["watch_icu_activity"]
+@pytest.mark.parametrize("name", ["watch_icu_activity", "stream_patient_vitals"])
+def test_stream_tools_declare_push_streaming_and_progress(name):
+    entry = mcp_tools.TOOL_REGISTRY[name]
     assert is_streaming_tool(entry["function"])
-    assert entry["metadata"] == {"streamable": True, "streaming_kind": "push", "max_fps": 1, "min_fps": 1, "max_chunk_bytes": 65536}
+    assert entry["metadata"] == {
+        "streamable": True, "streaming_kind": "push", "max_fps": 1, "min_fps": 1, "max_chunk_bytes": 65536,
+        "persist_progress_s": 15,
+    }
 
 
 def test_tool_names_and_arguments_stay_clear_of_platform_gates():
@@ -88,6 +92,7 @@ def test_card_describes_the_agent(agent):
     assert {skill.name for skill in card.skills} == EXPECTED_TOOLS
     assert [example["title"] for example in card.metadata["examples"]] == [
         "ICU census", "Patient overview", "Vital sign trends", "Live activity"]
+    assert "most concerning vital signs" in card.metadata["examples"][1]["prompt"]
     assert all(example["prompt"] for example in card.metadata["examples"])
     feed = next(skill for skill in card.skills if skill.name == "watch_icu_activity")
     assert feed.metadata["streaming_kind"] == "push" and feed.scope == "tools:read"
@@ -121,8 +126,10 @@ async def test_in_process_transport_carries_cards_and_coded_errors(connected, ag
     missing = await orchestrator.execute("fhir-1", "patient_overview", {"patient": "999-9"}, timeout=10.0)
     assert missing.error["code"] == "FHIR_NOT_FOUND" and not missing.ui_components
     feed = await orchestrator.execute("fhir-1", "watch_icu_activity", {"minutes": 1}, timeout=10.0)
-    assert feed.error is None and feed.ui_components[0]["id"] == "fhir-feed"
-    assert orchestrator.frames == 4 and orchestrator.pending_requests == {}
+    assert feed.error is None and feed.ui_components[0]["title"] == "ICU activity feed"
+    live = await orchestrator.execute("fhir-1", "stream_patient_vitals", {"patient": "002-1"}, timeout=10.0)
+    assert live.error is None and live.ui_components[0]["title"] == "Live vitals: patient 002-1"
+    assert orchestrator.frames == 5 and orchestrator.pending_requests == {}
     assert connected.deleted == ["sub-1", "sub-2"]
 
 

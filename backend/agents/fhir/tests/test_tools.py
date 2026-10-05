@@ -66,9 +66,38 @@ def test_census_lists_active_stays_with_latest_vitals(connected):
     assert table["rows"] == [["002-1", "Critical", "148", "91", "62", "Med-Surg ICU", "30 min", "Sepsis, pulmonary"]]
     chart = of_type(components, "plotly_chart")[0]
     assert chart["data"][0]["type"] == "bar" and chart["data"][0]["x"] == ["2026-10-05 15:00"] and chart["data"][0]["y"] == [1]
-    messages = [button["payload"]["message"] for button in of_type(components, "button")]
-    assert messages == ["Refresh the ICU census from the FHIR feed", "Show the FHIR patient overview for patient 002-1"]
-    assert all(button["action"] == "chat_message" for button in of_type(components, "button"))
+    buttons = of_type(components, "button")
+    assert [(button["label"], button["action"], button["payload"]) for button in buttons] == [
+        ("Refresh census", "component_action", {"kind": "refresh"}),
+        ("Open patient 002-1", "chat_message", {"message": "Show the FHIR patient overview for patient 002-1"}),
+    ]
+    assert "do not output UI components" in data["presentation"]
+
+
+def test_cards_offer_live_streams_only_when_the_platform_can_show_them(connected, monkeypatch):
+    def labels(result):
+        return [button["label"] for button in of_type(card_of(result)[1], "button")]
+
+    assert mcp_tools.live_available() is False
+    assert "Watch live feed" not in labels(mcp_tools.icu_census())
+    assert "Stream live vitals" not in labels(mcp_tools.patient_overview(patient="002-1"))
+    assert "Stream live" not in labels(mcp_tools.vital_sign_trends(patient="002-1"))
+    monkeypatch.setitem(mcp_tools.flags._flags, "tool_streaming", True)
+    assert mcp_tools.live_available() is False
+    monkeypatch.setitem(mcp_tools.flags._flags, "stream_progress", True)
+    assert mcp_tools.live_available() is True
+    census = {button["label"]: button for button in of_type(card_of(mcp_tools.icu_census())[1], "button")}
+    assert census["Watch live feed"]["action"] == "stream_subscribe"
+    assert census["Watch live feed"]["payload"] == {"tool_name": "watch_icu_activity", "params": {"minutes": 5}}
+    overview = {button["label"]: button for button in of_type(card_of(mcp_tools.patient_overview(patient="002-1"))[1], "button")}
+    assert list(overview) == ["Vital sign trends", "Stream live vitals", "Laboratory results", "Medications", "Timeline"]
+    assert overview["Stream live vitals"]["payload"] == {
+        "tool_name": "stream_patient_vitals", "params": {"patient": "002-1", "minutes": 5}}
+    trends = {button["label"]: button for button in of_type(card_of(mcp_tools.vital_sign_trends(patient="002-1"))[1], "button")}
+    assert list(trends) == ["Refresh", "Stream live", "Patient overview"]
+    assert trends["Refresh"]["action"] == "component_action" and trends["Stream live"]["action"] == "stream_subscribe"
+    monkeypatch.setattr(mcp_tools.flags, "is_enabled", lambda name: 1 / 0)
+    assert mcp_tools.live_available() is False
 
 
 def test_census_filters_by_unit_and_handles_an_empty_unit(connected):
@@ -139,6 +168,7 @@ def test_patient_overview_for_a_deceased_patient_without_recent_data(connected):
     data = result["_data"]
     assert data["in_icu_now"] is False and data["deceased"] and data["unit"] == "Cardiac ICU" and data["predicted_risk"] == {}
     assert of_type(components, "hero")[0]["badges"][0] == "Deceased"
+    assert of_type(components, "metric") != [] and of_type(components, "alert") == []
     facts = {item["label"]: item["value"] for item in of_type(components, "keyvalue")[0]["items"]}
     assert facts["Age"] == "not recorded" and facts["Discharged to"] == "Floor" and "Died" in facts
     assert of_type(components, "gauge") == [] and [table["title"] for table in of_type(components, "table")] == []
@@ -154,6 +184,8 @@ def test_patient_overview_without_any_encounter(connected):
     _, components = card_of(result)
     facts = {item["label"]: item["value"] for item in of_type(components, "keyvalue")[0]["items"]}
     assert facts["Hospital"] == "hospital-10" and facts["Unit"] == "not recorded"
+    assert of_type(components, "metric") == []
+    assert of_type(components, "alert")[0]["message"] == "No vital signs have been charted for this patient yet."
 
 
 @pytest.mark.parametrize("patient", ["", "  ", "not a valid id!", "x" * 80, None])

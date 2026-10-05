@@ -44,6 +44,11 @@ The user asks to watch the ICU and a card updates as admissions, discharges and 
 
 **Independent Test**: With scripted subscription events, the stream yields a first card, updated cards with correct counters and a terminal card, and deletes its subscriptions however it ends.
 
+**Acceptance Scenarios**:
+
+1. **Given** a card whose data can be streamed, **When** the platform can show live streams, **Then** the card carries a button that starts the stream without a model call, and the button is absent otherwise.
+2. **Given** a running stream of one patient's vital signs, **When** a new reading arrives, **Then** the same card shows it and counts it, and the stream ends by itself within the requested time.
+
 ### User Story 4 - Operate it safely (Priority: P1)
 
 An operator turns the agent on for one deployment by configuration and off again without leaving anything behind.
@@ -62,6 +67,8 @@ An operator turns the agent on for one deployment by configuration and off again
 - **FR-008**: Tool names and argument names MUST NOT match sink, threat or protected-field patterns.
 - **FR-009**: The live feed MUST end within its requested duration and MUST delete its subscriptions on normal completion, failure and abandonment.
 - **FR-010**: Display thresholds and reference intervals MUST be labelled as presentation aids on every card that uses them.
+- **FR-012**: Cards whose data can be streamed MUST offer the stream through an astralprims button only while `tool_streaming` and `stream_progress` are both on. A streamed card MUST carry no author id so the stream and its saved state share one canvas component.
+- **FR-013**: With `FF_STREAM_PROGRESS` on, the orchestrator MUST save a bridged push stream's latest content to the canvas while it runs, only for tools that declare `persist_progress_s`, no more often than that interval and only when the content changed. With the flag off, stream behavior MUST be unchanged.
 - **FR-011**: When the server holds more readings or charted doses than a view reads, the view MUST keep the most recent ones and state on the card that it shows a subset. Thinning a series for a chart MUST keep each interval's highest and lowest value.
 
 ## Success Criteria

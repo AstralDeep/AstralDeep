@@ -13,12 +13,12 @@ A bundled first-party Python agent, `fhir-1`, reads one operator-configured FHIR
 | `backend/agents/fhir/client.py` | Settings from the environment; REST calls through `shared/external_http.py`; paging; error codes |
 | `backend/agents/fhir/clinical.py` | Pure view models: readings, display thresholds, reference intervals, series, timeline events |
 | `backend/agents/fhir/presentation.py` | One card builder per tool |
-| `backend/agents/fhir/mcp_tools.py` | Eight request/response tools, one push-streaming tool, the registry |
+| `backend/agents/fhir/mcp_tools.py` | Eight request/response tools, two push-streaming tools, the registry |
 | `backend/agents/fhir/mcp_server.py` | Dispatch, coded errors, first-chunk path for the streaming tool |
 | `backend/agents/fhir/fhir_agent.py` | Agent class and a standalone entry point that refuses to start with the flag off |
 | `backend/agents/fhir/tests/` | In-memory FHIR server and the suites for each module |
 
-Touched outside the agent directory: the flag in `shared/feature_flags.py`; the id and gated directory in `orchestrator/local_agents.py`; the subprocess gate in `start.py`; the safe-seed filter in `orchestrator/orchestrator.py`; the untrusted set in `orchestrator/taint.py`; seven public messages in `orchestrator/tool_feedback.py`; the seed expectations in `tests/test_remote_orchestrator_wiring_063.py`; `.env.example`, `README.md`, `.gitignore` and `docs/fhir-agent.md`.
+Touched outside the agent directory: the stream progress save in `orchestrator/orchestrator.py` and `orchestrator/stream_manager.py` with its `stream_progress` flag; the `fhir` flag in `shared/feature_flags.py`; the id and gated directory in `orchestrator/local_agents.py`; the subprocess gate in `start.py`; the safe-seed filter in `orchestrator/orchestrator.py`; the untrusted set in `orchestrator/taint.py`; seven public messages in `orchestrator/tool_feedback.py`; the seed expectations in `tests/test_remote_orchestrator_wiring_063.py`; `.env.example`, `README.md`, `.gitignore` and `docs/fhir-agent.md`.
 
 ## Decisions
 
@@ -28,7 +28,9 @@ Touched outside the agent directory: the flag in `shared/feature_flags.py`; the 
 - **Per-call private-host allowance.** `external_http.request(..., allowed_private_hosts=[configured host])` admits exactly the configured server for this agent's calls. The global `EXTERNAL_AGENT_ALLOWED_PRIVATE_HOSTS` is left alone so no other caller can reach it.
 - **Environment configuration.** There is no operator-level secret store for agent service keys; the precedent for operator configuration is the environment. Per-user credentials do not apply because the feed is a deployment resource, not a user account.
 - **Untrusted source.** A clinical feed can carry free text written by anyone upstream, so its output is treated like the other remote data sources for taint tracking.
-- **Live feed as a push stream.** The feed uses the existing `@streaming_tool` contract and polls the server's `$events` operation through the same egress helper, so no WebSocket client or second egress path is introduced. On web the card is a preview during the turn and is persisted when the stream ends.
+- **Live feed as a push stream.** The feed uses the existing `@streaming_tool` contract and polls the server's `$events` operation through the same egress helper, so no WebSocket client or second egress path is introduced.
+- **Saved stream progress.** The web client drops stream frames unless a turn is in flight and applies only committed canvas updates, so a stream that persisted only its final state looked frozen. Behind the default-off `FF_STREAM_PROGRESS` flag the orchestrator now saves a running stream's latest content with the same detached mutation it already used for the final state, for tools that opt in, throttled and skipped when nothing changed. No protocol frame, primitive or client changes.
+- **Buttons instead of a model call.** Stream buttons send `stream_subscribe` and refresh buttons send `component_action`; both are existing client actions that the orchestrator authorizes like any tool call.
 - **Display thresholds in code.** Alert colours and reference intervals are fixed constants in `clinical.py` and every card states that they are not clinical advice. They never alter data.
 
 ## Constitution check

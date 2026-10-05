@@ -37,3 +37,9 @@ Input: spec.md and plan.md in this directory.
 - [x] T016 [US2] Read trends and charted doses newest first, note a truncated window on the card and thin chart series without losing extremes (FR-011).
 - [x] T017 [US1] [US2] Fit the census table to the canvas, separate chart colours, add the mean arterial pressure reference line, skip single-point charts and show plain labels, units and statuses (FR-010).
 - [x] T018 Drive the agent through the orchestrator's in-process transport in backend/agents/fhir/tests/test_agent.py (SC-001).
+
+## Live streams on the canvas
+
+- [x] T019 [US3] Save a running stream's progress to the canvas behind `FF_STREAM_PROGRESS` in backend/orchestrator/orchestrator.py and backend/orchestrator/stream_manager.py, with tests in backend/tests/test_stream_inprocess.py and backend/tests/test_audit_hardening_coverage.py (FR-013).
+- [x] T020 [US3] Add `stream_patient_vitals`, the flag-aware stream buttons and direct refresh buttons, and drop the feed card's author id (FR-012).
+- [x] T021 [US2] Show one notice instead of eight empty tiles when no vital signs are charted, and tell the model the card is already on the canvas.

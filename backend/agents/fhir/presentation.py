@@ -33,6 +33,11 @@ BAND_COLOR = "rgba(16,185,129,0.10)"
 REFERENCE_COLOR = "rgba(148,163,184,0.85)"
 LEGEND = {"orientation": "h", "y": -0.22}
 SPARSE_POINTS = 24
+LIVE_MINUTES = 5
+VITAL_TILES = (
+    "heart_rate", "oxygen_saturation", "respiratory_rate", "mean_arterial_pressure",
+    "systolic", "diastolic", "temperature", "glasgow_coma_score",
+)
 DISCLAIMER = (
     "De-identified demonstration data replayed from the eICU Collaborative Research Database demo. "
     "Flags use fixed display thresholds and are not clinical advice."
@@ -45,6 +50,14 @@ def plot_time(moment: datetime) -> str:
 
 def ask(label: str, message: str, variant: str = "secondary") -> Button:
     return Button(label=label, action="chat_message", payload={"message": message}, variant=variant)
+
+
+def refresh(label: str = "Refresh") -> Button:
+    return Button(label=label, action="component_action", payload={"kind": "refresh"}, variant="primary")
+
+
+def go_live(label: str, tool: str, parameters: Dict[str, Any]) -> Button:
+    return Button(label=label, action="stream_subscribe", payload={"tool_name": tool, "params": parameters}, variant="secondary")
 
 
 def axis(title: str, **extra: Any) -> Dict[str, Any]:
@@ -118,6 +131,7 @@ def census_card(
     units: List[Tuple[str, int]],
     admissions: List[Tuple[datetime, int]],
     admitted_last_hour: int,
+    live: bool = False,
 ) -> Card:
     critical = sum(1 for row in rows if row["flag"] == "Critical")
     badges = [f"{admitted_last_hour} admitted in the last hour", f"{len(units)} unit types"]
@@ -151,7 +165,9 @@ def census_card(
         ],
         attributes={"title": "Most recently admitted"},
     ))
-    buttons = [ask("Refresh census", "Refresh the ICU census from the FHIR feed", "primary")]
+    buttons = [refresh("Refresh census")]
+    if live:
+        buttons.append(go_live("Watch live feed", "watch_icu_activity", {"minutes": LIVE_MINUTES}))
     for row in [row for row in rows if row["flag"] == "Critical"][:2] or rows[:1]:
         buttons.append(ask(f"Open patient {row['patient']}", f"Show the FHIR patient overview for patient {row['patient']}"))
     content.append(ActionGroup(buttons=buttons, label="Next"))
@@ -172,13 +188,12 @@ def patient_card(
     medications: List[List[str]],
     labs: List[Dict[str, Any]],
     allergies: List[str],
+    live: bool = False,
 ) -> Card:
     content: List[Any] = [
         Hero(eyebrow=eyebrow, title=f"Patient {patient_id}", subtitle=headline, variant="gradient", badges=badges),
-        Grid(columns=4, children=vital_tiles(latest, now, (
-            "heart_rate", "oxygen_saturation", "respiratory_rate", "mean_arterial_pressure",
-            "systolic", "diastolic", "temperature", "glasgow_coma_score",
-        ))),
+        Grid(columns=4, children=vital_tiles(latest, now, VITAL_TILES)) if latest
+        else Alert(message="No vital signs have been charted for this patient yet.", variant="info"),
         KeyValue(title="Stay", items=facts, columns=3),
     ]
     if risks:
@@ -198,32 +213,20 @@ def patient_card(
         content.append(lab_table(labs, "Key laboratory results"))
     if medications:
         content.append(Table(headers=["Medication", "Dose and schedule", "Started"], rows=medications, attributes={"title": "Active orders"}))
-    content.append(ActionGroup(label="Explore", buttons=[
+    explore = [
         ask("Vital sign trends", f"Chart the vital sign trends for FHIR patient {patient_id}", "primary"),
         ask("Laboratory results", f"Show the laboratory results for FHIR patient {patient_id}"),
         ask("Medications", f"Review the medications for FHIR patient {patient_id}"),
         ask("Timeline", f"Show the clinical timeline for FHIR patient {patient_id}"),
-    ]))
+    ]
+    if live:
+        explore.insert(1, go_live("Stream live vitals", "stream_patient_vitals", {"patient": patient_id, "minutes": LIVE_MINUTES}))
+    content.append(ActionGroup(label="Explore", buttons=explore))
     content.append(Text(content=DISCLAIMER, variant="caption"))
     return Card(title=f"Patient {patient_id}", id=f"fhir-patient-{patient_id}", content=content)
 
 
-def vitals_card(
-    patient_id: str,
-    hours: int,
-    now: Optional[datetime],
-    summary: List[Dict[str, str]],
-    traces: Dict[str, List[Tuple[datetime, float]]],
-    note: str = "",
-) -> Card:
-    content: List[Any] = [
-        Hero(
-            eyebrow="Vital sign trends", title=f"Patient {patient_id}",
-            subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
-        ),
-    ]
-    if summary:
-        content.append(StatGroup(title="Latest, with range over the window", columns=4, items=summary))
+def trend_charts(traces: Dict[str, List[Tuple[datetime, float]]]) -> List[Any]:
     drawn = {key: points for key, points in traces.items() if len(points) >= 2}
     charts: List[Any] = []
     rates = [
@@ -271,6 +274,27 @@ def vitals_card(
                 "shapes": [band(vital.low_warning, vital.high_warning)],
             },
         ))
+    return charts
+
+
+def vitals_card(
+    patient_id: str,
+    hours: int,
+    now: Optional[datetime],
+    summary: List[Dict[str, str]],
+    traces: Dict[str, List[Tuple[datetime, float]]],
+    note: str = "",
+    live: bool = False,
+) -> Card:
+    content: List[Any] = [
+        Hero(
+            eyebrow="Vital sign trends", title=f"Patient {patient_id}",
+            subtitle=f"Last {hours} hours · as of {clinical.format_time(now)}", variant="subtle",
+        ),
+    ]
+    if summary:
+        content.append(StatGroup(title="Latest, with range over the window", columns=4, items=summary))
+    charts = trend_charts(traces)
     content += charts
     if not traces:
         content.append(Alert(message=f"No vital signs were recorded for this patient in the last {hours} hours.", variant="info"))
@@ -278,14 +302,42 @@ def vitals_card(
         content.append(Alert(message=f"Too few readings in the last {hours} hours to draw a trend.", variant="info"))
     if note:
         content.append(Text(content=note, variant="caption"))
-    content.append(ActionGroup(label="Next", buttons=[
-        ask("Refresh", f"Chart the vital sign trends for FHIR patient {patient_id} over the last {hours} hours", "primary"),
-        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
-    ]))
+    buttons = [refresh(), ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}")]
+    if live:
+        buttons.insert(1, go_live("Stream live", "stream_patient_vitals", {"patient": patient_id, "minutes": LIVE_MINUTES}))
+    content.append(ActionGroup(label="Next", buttons=buttons))
     content.append(Text(
         content="The dotted line and the shaded band mark typical adult targets. " + DISCLAIMER, variant="caption",
     ))
     return Card(title=f"Vital signs: patient {patient_id}", id=f"fhir-vitals-{patient_id}", content=content)
+
+
+def live_vitals_card(
+    patient_id: str,
+    watching: bool,
+    minutes: int,
+    fresh: int,
+    latest: Dict[str, clinical.Reading],
+    now: Optional[datetime],
+    traces: Dict[str, List[Tuple[datetime, float]]],
+) -> Card:
+    state = f"Streaming for {minutes} min" if watching else "Stream ended"
+    content: List[Any] = [
+        Hero(
+            eyebrow="Live FHIR stream", title=f"Patient {patient_id}",
+            subtitle=f"{state} · as of {clinical.format_time(now)}", variant="gradient",
+            badges=[f"{clinical.count_of(fresh, 'new reading')} since the stream began", "Updates as readings arrive"],
+        ),
+        Grid(columns=4, children=vital_tiles(latest, now, VITAL_TILES)) if latest
+        else Alert(message="No vital signs have been charted for this patient yet.", variant="info"),
+    ]
+    content += trend_charts(traces)
+    buttons = [ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}")]
+    if not watching:
+        buttons.insert(0, go_live("Stream again", "stream_patient_vitals", {"patient": patient_id, "minutes": minutes}))
+    content.append(ActionGroup(label="Next", buttons=buttons))
+    content.append(Text(content=DISCLAIMER, variant="caption"))
+    return Card(title=f"Live vitals: patient {patient_id}", content=content)
 
 
 def labs_card(patient_id: str, hours: int, now: Optional[datetime], rows: List[Dict[str, Any]]) -> Card:
@@ -313,8 +365,7 @@ def labs_card(patient_id: str, hours: int, now: Optional[datetime], rows: List[D
         if charts:
             content.append(Grid(columns=2, children=charts))
     content.append(ActionGroup(label="Next", buttons=[
-        ask("Refresh", f"Show the laboratory results for FHIR patient {patient_id} over the last {hours} hours", "primary"),
-        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+        refresh(), ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
     ]))
     content.append(Text(content="Reference intervals are typical adult values. " + DISCLAIMER, variant="caption"))
     return Card(title=f"Laboratory results: patient {patient_id}", id=f"fhir-labs-{patient_id}", content=content)
@@ -367,8 +418,7 @@ def medications_card(
     if not orders and not traces and not home:
         content.append(Alert(message="No medication records are available for this patient yet.", variant="info"))
     content.append(ActionGroup(label="Next", buttons=[
-        ask("Refresh", f"Review the medications for FHIR patient {patient_id}", "primary"),
-        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+        refresh(), ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
     ]))
     content.append(Text(content=DISCLAIMER, variant="caption"))
     return Card(title=f"Medications: patient {patient_id}", id=f"fhir-medications-{patient_id}", content=content)
@@ -395,8 +445,7 @@ def timeline_card(patient_id: str, hours: int, now: Optional[datetime], events: 
     if total > len(events):
         content.append(Text(content=f"Showing the {len(events)} most recent of {total} events.", variant="caption"))
     content.append(ActionGroup(label="Next", buttons=[
-        ask("Refresh", f"Show the clinical timeline for FHIR patient {patient_id} over the last {hours} hours", "primary"),
-        ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
+        refresh(), ask("Patient overview", f"Show the FHIR patient overview for patient {patient_id}"),
     ]))
     content.append(Text(content=DISCLAIMER, variant="caption"))
     return Card(title=f"Timeline: patient {patient_id}", id=f"fhir-timeline-{patient_id}", content=content)
@@ -473,4 +522,4 @@ def feed_card(
     if not events and not recent:
         content.append(Alert(message="Waiting for the next notifications from the feed.", variant="info"))
     content.append(Text(content=DISCLAIMER, variant="caption"))
-    return Card(title="ICU activity feed", id="fhir-feed", content=content)
+    return Card(title="ICU activity feed", content=content)

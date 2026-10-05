@@ -27,18 +27,18 @@ class FhirAgent(BaseA2AAgent):
     description = (
         "Reads a live HL7 FHIR R5 clinical feed: ICU census, patient overviews, "
         "vital sign trends, laboratory results, medications and timelines, plus "
-        "a live activity feed over FHIR subscriptions. Read-only."
+        "live vital sign and activity streams. Read-only."
     )
     examples = [
         {"title": "ICU census",
          "prompt": "Show the current ICU census from the FHIR feed"},
         {"title": "Patient overview",
-         "prompt": "Open the FHIR patient overview for the most recently admitted ICU patient"},
+         "prompt": "Open the FHIR patient overview for the ICU patient with the most concerning vital signs"},
         {"title": "Vital sign trends",
-         "prompt": "Chart the last 12 hours of vital signs for the most recently admitted "
-                   "ICU patient in the FHIR feed"},
+         "prompt": "Chart the last 12 hours of vital signs for the ICU patient with the most "
+                   "concerning vital signs in the FHIR feed"},
         {"title": "Live activity",
-         "prompt": "Watch the live ICU activity feed for two minutes"},
+         "prompt": "Watch the live ICU activity feed for five minutes"},
     ]
     skill_tags = ["fhir", "hl7", "clinical", "icu"]
 

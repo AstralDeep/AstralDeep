@@ -47,6 +47,7 @@ to enable its tools one by one.
 | `query_fhir_records` | `tools:search` | A read-only FHIR search over one of twelve resource types, as a table |
 | `fhir_source_status` | `tools:read` | FHIR version, resource types and search parameters, replay clock and dataset |
 | `watch_icu_activity` | `tools:read` | A push-streaming card fed by FHIR R5 topic subscriptions |
+| `stream_patient_vitals` | `tools:read` | A push-streaming card with one patient's latest vital signs and two-hour trend |
 
 Each tool returns one top-level card with a stable id, so calling it again for the same
 patient updates the card in place. The model receives a compact summary instead of the
@@ -56,6 +57,32 @@ Long windows stay bounded. Trends read at most the 6,000 most recent readings an
 medication review at most the 3,000 most recent charted doses; when the server holds more,
 the card says how many are shown. Charts are thinned to a few hundred points per series in
 a way that keeps each interval's highest and lowest value, so brief spikes stay visible.
+
+## Live streams
+
+The two streaming tools keep one card up to date for a bounded time (the feed up to 10
+minutes, a patient's vital signs up to 15). The census card offers **Watch live feed**, and
+the patient overview and vital sign cards offer **Stream live vitals**. Those buttons send
+`stream_subscribe` straight to the orchestrator, so no model call is involved, and a
+finished vitals stream offers **Stream again**.
+
+The web client applies committed canvas updates but ignores stream frames outside an
+in-flight turn, so a stream is only visible when the orchestrator saves its progress to
+the canvas. That is the fail-closed `FF_STREAM_PROGRESS` flag: with it on, a streaming
+tool that declares `persist_progress_s` has its latest content saved at most that often
+(15 seconds for these two) and only when it changed. With the flag off the agent hides the
+stream buttons, and a stream called through chat shows its first card only.
+
+```text
+FF_TOOL_STREAMING=true
+FF_STREAM_ARTIFACTS=true
+FF_STREAM_PROGRESS=true
+```
+
+The replay feed advances once a minute, so expect about one update a minute. Each update
+re-renders the canvas, and the current web client returns to the top of the canvas when it
+does. The other cards' **Refresh** buttons re-run that card's own tool in place through
+`component_action`, also without a model call.
 
 ## Security posture
 
@@ -69,7 +96,8 @@ a way that keeps each interval's highest and lowest value, so brief spikes stay 
   feed cannot be laundered into a write or egress tool.
 - **Read-only.** No tool name matches a sink pattern. The only non-read requests the agent
   makes are creating and deleting its own short-lived `Subscription` resources for the
-  live feed; it deletes them when the stream ends or is abandoned.
+  live feed; it deletes them when the stream ends or is abandoned. The vital sign stream
+  only reads.
 - **Failures.** Users see one of seven fixed messages (`FHIR_NOT_CONFIGURED`,
   `FHIR_AUTH_FAILED`, `FHIR_BLOCKED`, `FHIR_UNAVAILABLE`, `FHIR_NOT_FOUND`,
   `FHIR_BAD_REQUEST`, `FHIR_INVALID_RESPONSE`); server text is never shown.

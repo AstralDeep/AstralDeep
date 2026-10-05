@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
 
+from shared.feature_flags import flags
 from shared.stream_sdk import StreamComponents, get_stream_metadata, streaming_tool
 
 from agents.fhir import clinical, presentation
@@ -30,6 +31,15 @@ LISTED_PARAMETERS = 6
 MAX_TREND_READINGS = 6000
 MAX_ADMINISTRATIONS = 3000
 ORDER_ROWS = 15
+LIVE_POLL_SECONDS = 15.0
+LIVE_WINDOW_HOURS = 2
+LIVE_READINGS = 1500
+MAX_LIVE_MINUTES = 15
+PROGRESS_SECONDS = 15
+CANVAS_NOTE = (
+    "A card with this information is already on the user's canvas. Reply with one or two plain sentences; "
+    "do not repeat the data as a table and do not output UI components or JSON."
+)
 
 
 def tool_guard(function: Callable[..., Dict[str, Any]]) -> Callable[..., Dict[str, Any]]:
@@ -48,7 +58,14 @@ def connect() -> FhirClient:
 
 
 def result(card: Any, data: Dict[str, Any]) -> Dict[str, Any]:
-    return {"_ui_components": [card.to_dict()], "_data": data}
+    return {"_ui_components": [card.to_dict()], "_data": {**data, "presentation": CANVAS_NOTE}}
+
+
+def live_available() -> bool:
+    try:
+        return bool(flags.is_enabled("tool_streaming") and flags.is_enabled("stream_progress"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def patient_identifier(value: Any) -> str:
@@ -139,7 +156,7 @@ def icu_census(limit: int = 15, unit: str = "", **_: Any) -> Dict[str, Any]:
             "mean_arterial_pressure": reading_text(latest.get("mean_arterial_pressure")),
             "flag": clinical.FLAG_WORDS[clinical.worst_variant(latest, clinical.CENSUS_VITALS)] if latest else "",
         })
-    card = presentation.census_card(now, len(encounters), rows, units, admissions, admitted_last_hour)
+    card = presentation.census_card(now, len(encounters), rows, units, admissions, admitted_last_hour, live_available())
     return result(card, {
         "as_of": iso(now),
         "patients_in_icu": len(encounters),
@@ -239,7 +256,7 @@ def patient_overview(patient: str = "", **_: Any) -> Dict[str, Any]:
 
     card = presentation.patient_card(
         identifier, headline, unit or "Intensive care", badges, latest, now, facts, risks,
-        problems[:8], medications[:8], labs[:10], allergy_names,
+        problems[:8], medications[:8], labs[:10], allergy_names, live_available(),
     )
     return result(card, {
         "patient": identifier,
@@ -302,7 +319,7 @@ def vital_sign_trends(patient: str = "", hours: int = 24, **_: Any) -> Dict[str,
             "latest_time": iso(newest.when),
         }
     note = most_recent(len(observations), total, "readings")
-    card = presentation.vitals_card(identifier, hours, now, summary, traces, note)
+    card = presentation.vitals_card(identifier, hours, now, summary, traces, note, live_available())
     return result(card, {
         "patient": identifier, "as_of": iso(now), "window_hours": hours, "vitals": data, "complete": not note,
     })
@@ -701,6 +718,75 @@ PATIENT_PROPERTY = {
 }
 
 
+def live_snapshot(client: FhirClient, identifier: str, started: Optional[datetime], minutes: int, watching: bool) -> Tuple[Dict[str, Any], Dict[str, Any], datetime]:
+    now = server_time(client)
+    observations, _ = client.search(
+        "Observation",
+        [("patient", identifier), ("code", loinc_tokens(clinical.VITAL_CODES)), ("date", since(now, LIVE_WINDOW_HOURS)), ("_sort", "-date")],
+        LIVE_READINGS,
+    )
+    latest = clinical.latest_vitals(client.latest([("patient", identifier), ("code", loinc_tokens(clinical.VITAL_CODES))]))
+    traces = {vital.key: clinical.thin(points) for vital in clinical.VITALS for points in [clinical.series(observations, vital)] if points}
+    began = started or now
+    fresh = sum(1 for item in observations for when in [clinical.observation_time(item)] if when is not None and when > began)
+    card = presentation.live_vitals_card(identifier, watching, minutes, fresh, latest, now, traces)
+    summary = {
+        "patient": identifier, "as_of": iso(now), "watching": watching, "new_readings": fresh,
+        "latest_vitals": {key: {"value": item.value, "unit": item.unit, "time": iso(item.when)} for key, item in latest.items()},
+        "presentation": CANVAS_NOTE,
+    }
+    return card.to_dict(), summary, began
+
+
+LIVE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "patient": PATIENT_PROPERTY,
+        "minutes": {
+            "type": "integer", "minimum": 1, "maximum": MAX_LIVE_MINUTES, "default": 5,
+            "description": "How long to keep streaming, in minutes (1-15)",
+        },
+    },
+    "required": ["patient"],
+}
+LIVE_DESCRIPTION = (
+    "STREAM one patient's vital signs live from the FHIR feed: a card with the latest heart rate, SpO2, respiratory "
+    "rate, blood pressure and temperature and their trend over the last two hours that keeps updating in place as "
+    "new readings arrive. Use this for 'live', 'stream', 'watch' or 'monitor' requests about one patient's vital "
+    "signs; use vital_sign_trends for a one-time chart."
+)
+
+
+@streaming_tool(name="stream_patient_vitals", description=LIVE_DESCRIPTION, input_schema=LIVE_SCHEMA, max_fps=1, min_fps=1, scope="tools:read")
+async def stream_patient_vitals(args: Dict[str, Any], credentials: Dict[str, Any]) -> AsyncIterator[StreamComponents]:
+    minutes = bounded(args.get("minutes"), 5, 1, MAX_LIVE_MINUTES)
+    try:
+        identifier = patient_identifier(args.get("patient"))
+        client = connect()
+        await asyncio.to_thread(client.read, "Patient", identifier)
+        card, summary, began = await asyncio.to_thread(live_snapshot, client, identifier, None, minutes, True)
+    except FhirError as error:
+        yield StreamComponents(
+            components=[], terminal=True,
+            error={"code": error.code, "message": error.message, "phase": "failed", "retryable": error.retryable},
+        )
+        return
+    yield StreamComponents(components=[card], raw=summary)
+    deadline = asyncio.get_running_loop().time() + minutes * SECONDS_PER_MINUTE
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(LIVE_POLL_SECONDS)
+        try:
+            card, summary, _ = await asyncio.to_thread(live_snapshot, client, identifier, began, minutes, True)
+        except FhirError:
+            break
+        yield StreamComponents(components=[card], raw=summary)
+    try:
+        card, summary, _ = await asyncio.to_thread(live_snapshot, client, identifier, began, minutes, False)
+    except FhirError:
+        summary = {**summary, "watching": False}
+    yield StreamComponents(components=[card], raw=summary, terminal=True)
+
+
 def hours_property(default: int, maximum: int) -> Dict[str, Any]:
     return {"type": "integer", "minimum": 1, "maximum": maximum, "default": default, "description": "How many hours back to look"}
 
@@ -815,6 +901,13 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "scope": "tools:read",
         "description": WATCH_DESCRIPTION,
         "input_schema": WATCH_SCHEMA,
-        "metadata": dict(get_stream_metadata(watch_icu_activity)["metadata"]),
+        "metadata": {**get_stream_metadata(watch_icu_activity)["metadata"], "persist_progress_s": PROGRESS_SECONDS},
+    },
+    "stream_patient_vitals": {
+        "function": stream_patient_vitals,
+        "scope": "tools:read",
+        "description": LIVE_DESCRIPTION,
+        "input_schema": LIVE_SCHEMA,
+        "metadata": {**get_stream_metadata(stream_patient_vitals)["metadata"], "persist_progress_s": PROGRESS_SECONDS},
     },
 }
