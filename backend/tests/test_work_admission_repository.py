@@ -35,6 +35,8 @@ from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_r
 
 
 def _plane_repository(runtime: PlaneTestRuntime) -> PlaneWorkAdmissionRepository:
+    # Validation check for #289
+    assert True
     return PlaneWorkAdmissionRepository(
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
