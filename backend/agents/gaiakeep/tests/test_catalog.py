@@ -13,9 +13,9 @@ def test_upload_id_is_bounded_and_matches_supported_ingest_strategy(change):
 
 
 def test_complete_closed_catalog():
-    assert len(catalog.ACTIONS) == 111
-    assert sum(a.startswith('core.') for a in catalog.ACTIONS) == 90
-    assert len(catalog.TOOLS) == 111
+    assert len(catalog.ACTIONS) == 115
+    assert sum(a.startswith('core.') for a in catalog.ACTIONS) == 94
+    assert len(catalog.TOOLS) == 118
     assert catalog.FILE_ACTIONS == {'core.put', 'core.get', 'core.haveopen', 'core.have'}
     for info in catalog.TOOLS.values():
         schema = info['input_schema']
@@ -104,3 +104,24 @@ def test_have_upload_head_guard_is_admitted():
     args = {'machine_id': 'mine', 'path': 'file', 'collection_id': 'c',
             'data_base64': '', 'strategy': 'have', 'expected_head': 'v'}
     assert catalog.validate('gaiakeep_upload_file', args) == args
+
+
+@pytest.mark.parametrize('note', ['x' * 513, '\u00e9' * 257, 'line\nbreak', 'nul\0', 'delete\x7f'])
+def test_version_note_utf8_and_control_bounds(note):
+    with pytest.raises(ValueError):
+        catalog.validate('gaiakeep_upload_file', {'machine_id': 'm', 'collection_id': 'c', 'path': 'p',
+                                                'data_base64': '', 'note': note})
+
+
+def test_dataset_tool_boundaries_and_read_catalog():
+    for name in ('collections', 'placement', 'jobs', 'principals'):
+        assert not catalog.is_mutation('gaiakeep_core_' + name)
+    assert not catalog.is_mutation('gaiakeep_inspect_dataset')
+    assert catalog.is_mutation('gaiakeep_download_dataset')
+    assert catalog.is_mutation('gaiakeep_upload_dataset')
+    assert catalog.validate('gaiakeep_list_collections', {'machine_id': 'm', 'params': {'after': 'cursor', 'limit': 20}})
+    with pytest.raises(ValueError):
+        catalog.validate('gaiakeep_inspect_dataset', {'machine_id': 'm', 'dataset_ref': '../escape'})
+    with pytest.raises(ValueError):
+        catalog.validate('gaiakeep_upload_dataset', {'machine_id': 'm', 'dataset_ref': 'run42', 'collection_id': 'c',
+                                                   'manifest_sha256': 'a' * 64, 'prefix': '../escape'})

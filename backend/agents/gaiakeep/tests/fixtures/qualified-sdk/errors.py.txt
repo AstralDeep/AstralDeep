@@ -178,9 +178,15 @@ class CommitFailed(GaiaKeepError):
     """An ingest commit ended failed (after `committing`)."""
 
 
+class CommitPending(GaiaKeepError):
+    """Status 16: a durable dataset's version is committing to VERIFIED tape copies (gfs#8) — reads open
+    when the commit job the publish reply named (`commit_job`) finishes. Not retryable by the transport:
+    await the job, then read."""
+
+
 _BY_STATUS = {"3": Unauthenticated, "4": Forbidden, "5": InternalError, "6": Failed, "7": PolicyRefused,
               "8": BadRequest, "9": NotFound, "11": RetryAfter, "12": NotLeader, "13": Deferred,
-              "14": RetryAfter, "15": StageRequired}
+              "14": RetryAfter, "15": StageRequired, "16": CommitPending}
 
 
 def _int(v, default=None):
@@ -231,6 +237,8 @@ def from_reply(action, reply, redact_values=()):
         ra = _int(reply.get("retry_after_ms"), 1000)
         return StageRequired(msg, est_ms=_int(reply.get("est_ms")), bytes_needed=_int(reply.get("bytes_needed")),
                              retry_after_ms=ra, **kw)
+    if status == "16":
+        return CommitPending(msg, **kw)
     if status in ("11", "14") or reply.get("retry_after_ms") is not None:
         return RetryAfter(msg, retry_after_ms=_int(reply.get("retry_after_ms"), 1000), **kw)
     if status == "7":

@@ -35,7 +35,7 @@ def request(name='gaiakeep_core_whoami', params=None, **context):
 
 def test_list_and_result_shape(server):
     reply = server.process_request(MCPRequest(method='tools/list'))
-    assert len(reply.result['tools']) == 111
+    assert len(reply.result['tools']) == 118
     assert all(t['scope'] for t in reply.result['tools'])
     reply = server.process_request(request())
     reply.validate_result_shape()
@@ -161,6 +161,69 @@ def test_account_discovery_is_read_only_ssh_operation(server, monkeypatch, actio
     assert calls == [(action, {'params': {}}, None)]
 
 
+@pytest.mark.parametrize('action', ['inspect_dataset', 'upload_dataset', 'download_dataset'])
+def test_local_dataset_tools_require_remote_mode_and_preserve_public_arguments(server, monkeypatch, action):
+    args = {'machine_id': 'mine', 'dataset_ref': 'run42', 'user_id': 'owner'}
+    if action == 'upload_dataset':
+        args.update(collection_id='runs', manifest_sha256='a' * 64, request_id='retained_request_identity',
+                    expected_head='base-version', prefix='runs/42', note='completed run')
+    if action == 'download_dataset':
+        args.update(vid='immutable-version')
+    name = 'gaiakeep_' + action
+    assert server.invoke(name, **args)['_data']['verdict'] == 'unsupported'
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    core, calls = RemoteCore(SimpleNamespace(), {}), []
+    core.perform = lambda *values: calls.append(values) or {'dataset_ref': 'run42'}
+    @contextmanager
+    def opened(*values):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    out = server.invoke(name, **args)
+    assert out['_data']['verdict'] == 'ok'
+    payload = {key: value for key, value in args.items() if key not in {'machine_id', 'user_id', 'request_id'}}
+    assert calls == [(action, payload, args.get('request_id'))]
+    if action == 'upload_dataset':
+        assert out['_data']['reconciliation']['manifest_sha256'] == 'a' * 64
+
+
+def test_successful_pending_publication_is_publishable_with_safe_job_identity(server, monkeypatch):
+    monkeypatch.setattr(client, 'upload', lambda *args: {'publication': {'vid': 'version-42', 'commit_job': 'durable-42'}})
+    args = {'machine_id': 'mine', 'collection_id': 'runs', 'path': 'p', 'data_base64': 'aA==',
+            'request_id': 'retained_request_identity', 'user_id': 'owner'}
+    out = server.invoke('gaiakeep_upload_file', **args)
+    assert '_error' not in out and out['_data']['verdict'] == 'pending'
+    assert out['_data']['reconciliation']['commit_job'] == 'durable-42'
+    assert out['_ui_components'][0]['title'] == 'GaiaKeep version awaiting durable copies'
+    monkeypatch.setattr(client, 'upload', lambda *args: {'publication': {'vid': 'version-42', 'commit_job': '../bad'}})
+    assert server.invoke('gaiakeep_upload_file', **args)['_data']['verdict'] == 'unconfirmed'
+
+
+def test_pending_read_failure_preserves_job_and_explicit_wait_message(server, monkeypatch):
+    def waiting(*args):
+        raise client.AgentError('pending', 'This version is awaiting durable copies; check its commit job.',
+                                reconciliation={'commit_job': 'durable-42', 'vid': 'version-42'})
+    monkeypatch.setattr(client, 'execute', waiting)
+    out = server.process_request(request('gaiakeep_core_list', {'vid': 'version-42'}))
+    assert out.error['data']['verdict'] == 'pending'
+    assert out.error['data']['reconciliation'] == {'commit_job': 'durable-42', 'vid': 'version-42'}
+    assert 'awaiting durable copies' in out.error['message']
+
+
+def test_dataset_mcp_sanitizer_preserves_json_literal_filename_and_manifest_digest(server, monkeypatch):
+    from agents.gaiakeep.dataset_workspace import _manifest
+
+    monkeypatch.setenv('GAIAKEEP_CONNECTION_MODE', 'ssh')
+    manifest = _manifest([{'path': '["metrics"]', 'size': 1, 'sha256': 'a' * 64}])
+    core = RemoteCore(SimpleNamespace(), {})
+    core.perform = lambda *values: manifest
+    @contextmanager
+    def opened(*values):
+        yield core, SimpleNamespace(service_key='', allow_legacy=False)
+    monkeypatch.setattr(client, 'open_client', opened)
+    result = server.invoke('gaiakeep_inspect_dataset', machine_id='mine', dataset_ref='run42', user_id='owner')
+    assert result['_data']['result'] == manifest and result['_data']['result']['files'][0]['path'] == '["metrics"]'
+
+
 @pytest.mark.parametrize('method,params', [('other', {}), ('tools/call', {}),
                                          ('tools/call', {'name': 'gaiakeep_core_whoami', 'arguments': []})])
 def test_bad_request(server, method, params):
@@ -240,8 +303,8 @@ def test_legacy_fetch_never_opens_a_connection(server, monkeypatch):
 
 def test_upload_timeout_retains_exact_ingest_identity(server, monkeypatch):
     calls = []
-    def interrupted(*args):
-        calls.append(args[-1])
+    def interrupted(core, collection_id, path, data_base64, branch, strategy, base_vid, expected_head, request_id, note):
+        calls.append(request_id)
         raise TimeoutError()
     monkeypatch.setattr(client, 'upload', interrupted)
     req = request()

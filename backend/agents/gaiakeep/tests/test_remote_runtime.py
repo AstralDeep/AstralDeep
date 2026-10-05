@@ -121,7 +121,7 @@ def test_connection_summary_exposes_only_safe_discovery_fields(runtime):
 
 def test_collection_discovery_uses_validated_identity(runtime, monkeypatch):
     calls = []
-    def collections(core):
+    def collections(core, params=None):
         calls.append(core.profile.principal)
         core.call('core.whoami', {})
         core.call('core.head', {'collection_id': core.profile.default_collection})
@@ -135,13 +135,33 @@ def test_collection_discovery_uses_validated_identity(runtime, monkeypatch):
 
 
 def test_discovery_denial_remains_read_failure(runtime, monkeypatch):
-    def refused(core):
+    def refused(core, params=None):
         raise type('Forbidden', (Exception,), {})('private-service-key')
     monkeypatch.setattr(remote_runtime, '_known_collections', refused)
     request = runtime.request()
     request['tool'] = 'gaiakeep_list_collections'
     out = remote_runtime.run(request)
     assert out['verdict'] == 'upstream_denied' and 'private-service-key' not in str(out)
+
+
+def test_paged_collection_discovery_uses_profile_tenant_and_native_bounds(runtime, monkeypatch):
+    calls = []
+    monkeypatch.setattr(client, 'execute', lambda core, action, params: calls.append((action, params)) or {'next': 'next'})
+    core = SimpleNamespace(profile=runtime.profile)
+    assert remote_runtime._known_collections(core, {'after': 'previous', 'limit': 17}) == {'next': 'next'}
+    assert calls == [('core.collections', {'after': 'previous', 'limit': 17, 'tenant_id': 'owner-tenant'})]
+    with pytest.raises(client.AgentError):
+        remote_runtime._known_collections(SimpleNamespace(profile=SimpleNamespace(tenant=None)), {'after': 'previous'})
+
+
+def test_dataset_manifest_paths_remain_typed_strings_through_remote_sanitizer():
+    from agents.gaiakeep.dataset_workspace import _manifest
+
+    manifest = _manifest([{'path': '["metrics"]', 'size': 1, 'sha256': 'a' * 64}])
+    assert remote_runtime._result(manifest, 'inspect_dataset', ()) == manifest
+    assert client.clean_dataset_result(dict(manifest, secret='private-value'), ('private-value',)) == manifest
+    with pytest.raises(client.AgentError):
+        client.clean_dataset_result(manifest, ('metrics',))
 
 
 @pytest.mark.parametrize('payload', [None, {}, {'tool': [], 'arguments': {}, 'trust': {}},
@@ -345,7 +365,7 @@ def test_exact_sdk_source_import_ignores_cached_bytecode(sdk_tree):
     out = remote_runtime._validated_sdk()
     assert tuple(out)[:4] == (object, dict, Exception, str)
     assert os.environ['GAIAKEEP_PURE_PYTHON'] == '1'
-    assert remote_runtime._known_collections(object()) == {'with_heads': True}
+    assert remote_runtime._known_collections(SimpleNamespace(profile=SimpleNamespace(tenant=None))) == {'with_heads': False}
     finder = sys.meta_path[0]
     assert finder.find_spec('other') is None
     with pytest.raises(ImportError):

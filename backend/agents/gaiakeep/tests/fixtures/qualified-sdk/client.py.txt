@@ -71,7 +71,7 @@ class Timeouts:
 
 
 C1_VERBS = ("core.list", "core.versions", "core.branches", "core.diff", "core.audit", "core.extractlist",
-            "core.jobleaves", "core.auditverify")
+            "core.jobleaves", "core.auditverify", "core.collections", "core.placement", "core.jobs", "core.principals")
 # reads that change nothing: after a dropped connection they are re-signed (fresh nonce) and asked once more
 IDEMPOTENT_READS = C1_VERBS + ("core.status", "core.whoami", "core.head", "core.putstatus", "core.job")
 CAP_JOBS_1 = "jobs-1"
@@ -417,6 +417,40 @@ class CoreClient:
         """core.branches (C1): one page of a collection's branches and their heads."""
         return decode_params(self.call("core.branches", {"collection_id": collection_id, "after": after, "limit": limit}))
 
+    # the storage dashboard's listings (C1): one page each, {<rows>: [...], count, next}; continue with after=next
+
+    def collections(self, tenant_id, after=None, limit=None):
+        """core.collections (C1): one page of a tenant's collections in id order, {collections: [...], count, next}. A row
+        carries what the caller may read: domain, mode, replication and durability for its tenant-admin; retention class,
+        profile, version and branch counts for a reader."""
+        return decode_params(self.call("core.collections", {"tenant_id": tenant_id, "after": after, "limit": limit}))
+
+    def placement(self, vid, path, after=None, limit=None, tape=None):
+        """core.placement (C1): one page of where a file's blocks are, {blocks: [{n, offset, length, required, state,
+        copies}], count, size, blocks_total, next}. tape=True asks archive sites for presence and mount."""
+        return decode_params(self.call("core.placement", {"vid": vid, "path": path, "after": after, "limit": limit,
+                                                          "tape": tape}))
+
+    def jobs(self, after=None, limit=None, state=None, principal_id=None):
+        """core.jobs (C1): one page of jobs, newest first, {jobs: [...], count, next}: the caller's own, or (an auditor)
+        everyone's or principal_id's. state="open" lists only jobs not yet ended."""
+        return decode_params(self.call("core.jobs", {"after": after, "limit": limit, "state": state,
+                                                     "principal_id": principal_id}))
+
+    def principals(self, tenant_id=None, after=None, limit=None):
+        """core.principals (C1): one page of a tenant's principals (tenant-admin), or the system ones (system-admin, no
+        tenant_id), {principals: [...], count, next}."""
+        return decode_params(self.call("core.principals", {"tenant_id": tenant_id, "after": after, "limit": limit}))
+
+    def retention_classes(self, after=None, limit=None):
+        """core.retention op=list (C1): one page of retention classes in name order, {classes: [...], count, next}."""
+        return decode_params(self.call("core.retention", {"op": "list", "after": after, "limit": limit}))
+
+    def tape_library(self, site):
+        """core.tapevol op=library (system-admin): an archive site's library, {library: {config, drives, slots_total,
+        volumes_by_state, ..., counters}}."""
+        return decode_params(self.call("core.tapevol", {"op": "library", "site": site}))
+
     def diff(self, a_vid, b_vid, prefix=None, after=None, limit=None, detail=None):
         """core.diff (C1): one page of the paths added, removed or changed between two versions."""
         return decode_params(self.call("core.diff", {"a_vid": a_vid, "b_vid": b_vid, "prefix": prefix, "after": after,
@@ -434,7 +468,19 @@ class CoreClient:
                 max_amplification=None, dry_run=False, request_id=None, wait_ms=None):
         """core.extract (api §4): freeze and pin a citable selection; returns a Job whose result names extract_id,
         citation, root, leaves, bytes and pinned_until. One member (vid + selector, e.g. "all", "prefix:<p>",
-        "glob:<g>") or `members` [{vid, selector}]. cls: run (default), scratch or cite."""
+        "glob:<g>") or `members` [{vid, selector}]. cls: run (default), scratch or cite.
+        Selectors are validated against the core's grammar before the job is created: a malformed one
+        raises ValueError here instead of failing the job later with an opaque bad-request (gfs#4 F3)."""
+        from . import ops
+        if members is None:
+            bad = ops.selector_error(selector)
+            if bad:
+                raise ValueError(f"{selector}: {bad}" if selector else bad)
+        for m in (members or []):
+            if isinstance(m, dict):
+                bad = ops.selector_error(m.get("selector"))
+                if bad:
+                    raise ValueError(f"{m.get('selector')}: {bad}" if m.get("selector") else bad)
         p = {"vid": vid, "selector": selector, "ttl_ms": ttl_ms, "pin_mode": pin_mode,
              "max_amplification": max_amplification}
         if members is not None:
@@ -446,8 +492,23 @@ class CoreClient:
         return self.start_job("core.extract", p, request_id, wait_ms)
 
     def extract_status(self, extract_id):
-        """core.extractstatus: an extract's state; for a reader of every member also its certificate and citation."""
-        return decode_params(self.call("core.extractstatus", {"extract_id": extract_id}))
+        """core.extractstatus: an extract's state; for a reader of every member also its certificate and citation.
+        The certificate's `root` and `citation` are promoted to the top level (parsed out of the cert
+        string) so `st["root"]` matches the extract result without re-parsing the certificate (gfs#4 F6)."""
+        st = decode_params(self.call("core.extractstatus", {"extract_id": extract_id}))
+        cert = st.get("cert")
+        if cert is not None and not st.get("root"):
+            c = cert
+            if isinstance(c, str):
+                try:
+                    c = _json.loads(c)
+                except ValueError:
+                    c = None
+            if isinstance(c, dict):
+                for k in ("root", "citation"):
+                    if k in c and k not in st:
+                        st[k] = c[k]
+        return st
 
     def extract_list(self, extract_id, after=None, limit=None):
         """core.extractlist (C1): one page of an extract's leaves {leaves: [...], count, next}."""

@@ -137,6 +137,37 @@ def test_upload_request_identity_is_retained_before_approval(monkeypatch):
     assert approved['request_id'] == request_id and db.rows[pid]['status'] == 'consumed'
 
 
+@pytest.mark.parametrize('tool', ['gaiakeep_upload_dataset', 'gaiakeep_download_dataset'])
+def test_dataset_io_uses_owner_bound_single_use_approval_and_content_fingerprint(monkeypatch, tool):
+    db = _FakeDB()
+    orch = _orch(db)
+    ws = object()
+    orch.ui_sessions[ws] = {'user_id': 'owner'}
+    monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
+    args = {'machine_id': 'mine', 'dataset_ref': 'run42'}
+    changed_field = 'vid'
+    if tool == 'gaiakeep_upload_dataset':
+        args.update(collection_id='runs', manifest_sha256='a' * 64, expected_head='existing-version', note='run results')
+        changed_field = 'manifest_sha256'
+    else:
+        args['vid'] = 'immutable-version'
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, args, 'chat', 'owner')
+    pid, = db.rows
+    stored = json.loads(db.rows[pid]['args_json'])
+    assert stored == args and stored['dataset_ref'] == 'run42'
+    if tool == 'gaiakeep_upload_dataset':
+        assert re.fullmatch(r'[A-Za-z0-9_-]{16,64}', stored['request_id'])
+    db.rows[pid]['status'] = 'approved'
+    altered = dict(args, **{changed_field: 'b' * 64}, _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, altered, 'chat', 'owner')
+    assert db.rows[pid]['status'] == 'approved'
+    approved = dict(args, _remote_op_proposal_id=pid)
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, approved, 'chat', 'owner') is None
+    assert db.rows[pid]['status'] == 'consumed'
+    assert rc.evaluate(orch, ws, 'gaiakeep-1', tool, dict(args, _remote_op_proposal_id=pid), 'chat', 'owner')
+    assert rc.evaluate(orch, None, 'gaiakeep-1', tool, dict(args), 'chat', 'owner')
+
+
 def test_core_request_identity_preparation_preserves_approved_parameters(monkeypatch):
     db = _FakeDB()
     orch = _orch(db)

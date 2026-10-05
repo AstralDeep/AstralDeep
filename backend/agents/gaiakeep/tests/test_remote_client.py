@@ -231,6 +231,9 @@ def test_native_and_upload_request_binding(monkeypatch):
     assert seen[-1]['arguments']['params']['request_id'] == 'stable-request-id'
     core.perform('upload', {'collection_id': 'c', 'path': 'p', 'data_base64': 'aA=='}, 'reconcile-request')
     assert seen[-1]['request_id'] == 'reconcile-request'
+    core.perform('upload_dataset', {'collection_id': 'c', 'dataset_ref': 'run42', 'manifest_sha256': 'a' * 64},
+                 'reconcile-request')
+    assert seen[-1]['tool'] == 'gaiakeep_upload_dataset' and seen[-1]['request_id'] == 'reconcile-request'
 
 
 @pytest.mark.parametrize('reply', [[], {}, {'ok': 1}, {'ok': False, 'verdict': 'fake'},
@@ -241,12 +244,21 @@ def test_malformed_result(reply, monkeypatch):
 
 
 @pytest.mark.parametrize('verdict', ['not_configured', 'auth_failed', 'integrity_error', 'upstream_denied',
-    'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable'])
+    'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable', 'pending'])
 def test_failure_envelope_never_echoes_remote_message(verdict, monkeypatch):
     core = remote_reply(monkeypatch, {'ok': False, 'verdict': verdict, 'message': 'secret traceback'})
     with pytest.raises(client.AgentError) as error:
         core.perform('core.whoami', {'params': {}})
     assert error.value.verdict == verdict and 'secret' not in str(error.value)
+
+
+def test_pending_envelope_retains_only_closed_native_reconciliation(monkeypatch):
+    core = remote_reply(monkeypatch, {'ok': False, 'verdict': 'pending', 'message': 'private-data',
+        'reconciliation': {'commit_job': 'durable-42', 'vid': 'version-42', 'job_id': '../private', 'path': '/private'}})
+    with pytest.raises(client.AgentError) as error:
+        core.perform('core.list', {'params': {'vid': 'version-42'}})
+    assert error.value.reconciliation == {'commit_job': 'durable-42', 'vid': 'version-42'}
+    assert 'private' not in str(error.value)
 
 
 def test_rpc_result_bound(monkeypatch):

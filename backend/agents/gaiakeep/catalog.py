@@ -19,6 +19,8 @@ REVISION = METADATA['revision']
 ACTIONS = {item['action']: item for item in METADATA['actions']}
 FILE_ACTIONS = frozenset({'core.put', 'core.get', 'core.haveopen', 'core.have'})
 LOCAL_READ_ACTIONS = frozenset({'connection_info', 'list_collections'})
+DATASET_ACTIONS = frozenset({'inspect_dataset', 'upload_dataset', 'download_dataset'})
+UPLOAD_ACTIONS = frozenset({'upload', 'upload_dataset'})
 
 
 def relative_path(value):
@@ -53,7 +55,8 @@ def _tools():
     for action, item in ACTIONS.items():
         if action in FILE_ACTIONS:
             continue
-        params = {p['name']: _field(p['type']) for p in item['parameters']
+        params = {p['name']: dict(_field(p['type']), **({'description': p['description']} if p.get('description') else {}))
+                  for p in item['parameters']
                   if p['name'] not in owned_fields(action)}
         required = [p['name'] for p in item['parameters']
                     if p['required'] and p['name'] in params]
@@ -78,6 +81,7 @@ def _tools():
                                     strategy={'enum': ['ingest', 'have']},
                                     base_vid={'type': 'string', 'minLength': 1, 'maxLength': 256},
                                     request_id={'type': 'string', 'pattern': '^[A-Za-z0-9_-]{16,64}$'},
+                                    note={'type': 'string', 'maxLength': 512},
                                     expected_head={'type': 'string', 'minLength': 1, 'maxLength': 256}),
                                 ['machine_id', 'path', 'collection_id', 'data_base64'])}
     out['gaiakeep_read_file'] = {'action': 'read', 'scope': 'tools:read',
@@ -86,17 +90,36 @@ def _tools():
                                 ['machine_id', 'path', 'vid'])}
     for action, description in (
         ('connection_info', 'Show your enrolled Gaia principal, tenant and default collection without credentials or paths.'),
-        ('list_collections', 'Discover collections available to your enrolled Gaia account, including its default collection.'),
+        ('list_collections', 'Read one page of collections visible to your enrolled Gaia tenant; pass next back as after.'),
     ):
+        fields = ({'after': {'type': 'string', 'maxLength': 4096},
+                   'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000}} if action == 'list_collections' else {})
         out['gaiakeep_' + action] = {'action': action, 'scope': 'tools:read', 'description': description,
-            'input_schema': _schema({'machine_id': common['machine_id'], 'params': _schema({}, [])},
+            'input_schema': _schema({'machine_id': common['machine_id'], 'params': _schema(fields, [])},
                                     ['machine_id', 'params'])}
+    dataset = {'machine_id': common['machine_id'],
+               'dataset_ref': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'}}
+    out['gaiakeep_inspect_dataset'] = {'action': 'inspect_dataset', 'scope': 'tools:read',
+        'description': 'Inspect a local dataset under your Linux Gaia account workspace; return its bounded content manifest and SHA256 for upload approval. At most 256 files and 1 GiB.',
+        'input_schema': _schema(dataset, ['machine_id', 'dataset_ref'])}
+    out['gaiakeep_download_dataset'] = {'action': 'download_dataset', 'scope': 'tools:write',
+        'description': 'Download and verify a complete version (at most 256 files and 1 GiB) into a new account workspace dataset reference. Existing references are never overwritten. Writes local files and requires human approval.',
+        'input_schema': _schema(dict(dataset, vid={'type': 'string', 'minLength': 1, 'maxLength': 256}),
+                                ['machine_id', 'dataset_ref', 'vid'])}
+    upload_fields = out['gaiakeep_upload_file']['input_schema']['properties']
+    out['gaiakeep_upload_dataset'] = {'action': 'upload_dataset', 'scope': 'tools:write',
+        'description': 'Publish one atomic version from an inspected local dataset. Bind manifest_sha256 from inspect_dataset into approval; changed bytes are refused. For an existing branch include expected_head; base_vid defaults to that head to preserve other files. Prefix and note can identify a completed run. At most 256 files and 1 GiB; human approval required.',
+        'input_schema': _schema(dict(dataset,
+                                    **{name: upload_fields[name] for name in ('collection_id', 'branch', 'base_vid', 'expected_head', 'request_id', 'note')},
+                                    manifest_sha256={'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                                    prefix={'type': 'string', 'minLength': 1, 'maxLength': 4096}),
+                                ['machine_id', 'dataset_ref', 'collection_id', 'manifest_sha256'])}
     return out
 
 
 TOOLS = _tools()
 READ_TOOLS = frozenset(name for name, item in TOOLS.items()
-                       if item['action'] == 'read' or item['action'] in LOCAL_READ_ACTIONS
+                       if item['action'] in {'read', 'inspect_dataset'} or item['action'] in LOCAL_READ_ACTIONS
                        or ACTIONS.get(item['action'], {}).get('read', False))
 
 
@@ -131,6 +154,9 @@ def validate(name, arguments):
         raise ValueError('Deduplication upload does not support a base version.')
     if name == 'gaiakeep_upload_file' and arguments.get('strategy') == 'have' and arguments.get('request_id'):
         raise ValueError('Deduplication upload does not support a request identifier.')
+    if 'note' in arguments and (len(arguments['note'].encode('utf-8')) > 512
+                                or any(ord(c) < 32 or ord(c) == 127 for c in arguments['note'])):
+        raise ValueError('Version notes allow at most 512 UTF-8 bytes without control characters.')
     params = arguments.get('params', {})
     for key, value in params.items():
         if isinstance(value, str) and value.lstrip().startswith(('{', '[')):
@@ -149,4 +175,6 @@ def validate(name, arguments):
                 raise ValueError('Numeric parameter exceeds the allowed bound.')
     if 'path' in arguments:
         relative_path(arguments['path'])
+    if 'prefix' in arguments:
+        relative_path(arguments['prefix'])
     return arguments

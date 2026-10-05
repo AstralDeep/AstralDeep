@@ -23,7 +23,7 @@ def test_card_and_plane_bindings(monkeypatch):
     agent = gaiakeep_agent.GaiakeepAgent(port=8998, plane_runtime=runtime, plane_repositories=repos, plane_blobs=blobs)
     assert agent.card.agent_id == 'gaiakeep-1'
     assert agent.host == '127.0.0.1'
-    assert len(agent.card.skills) == 111
+    assert len(agent.card.skills) == 118
     assert agent.card.metadata['required_credentials'] == []
     assert captured[0]['plane_runtime'] is runtime
     assert agent.mcp_server.plane_source.plane_repositories is repos

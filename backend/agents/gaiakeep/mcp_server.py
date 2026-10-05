@@ -75,12 +75,15 @@ class MCPServer:
             with client.open_client(target, credentials) as (core, config):
                 secrets.append(config.service_key)
                 action = catalog.TOOLS[name]['action']
+                if action in catalog.DATASET_ACTIONS and not isinstance(core, RemoteCore):
+                    raise client.AgentError('unsupported', 'Local dataset workflows require the qualified Linux SSH account.')
                 if action not in {'read', 'upload'} and catalog.ACTIONS.get(action, {}).get('legacy') and not config.allow_legacy:
                     raise client.AgentError('unsupported', 'The operator has not enabled GaiaKeep legacy actions.')
                 if action == 'core.legalorder' and public['params'].get('action', 'erase') != 'erase':
                     raise client.AgentError('unsupported', 'GaiaKeep cannot currently sign legal-order shortening.')
-                if action == 'upload':
-                    reconciliation = {k: public[k] for k in ('collection_id', 'path')}
+                if action in catalog.UPLOAD_ACTIONS:
+                    fields = ('collection_id', 'path') if action == 'upload' else ('collection_id', 'dataset_ref', 'manifest_sha256')
+                    reconciliation = {k: public[k] for k in fields}
                     reconciliation['branch'] = public.get('branch', 'main')
                     if public.get('strategy', 'ingest') == 'ingest':
                         reconciliation['request_id'] = public.get('request_id') or uuid.uuid4().hex
@@ -88,21 +91,21 @@ class MCPServer:
                     params = public['params']
                     if not isinstance(core, RemoteCore):
                         raise client.AgentError('unsupported', 'Gaia account discovery requires the SSH connection mode.')
-                elif action != 'read':
+                elif action != 'read' and action not in catalog.DATASET_ACTIONS:
                     params = client.prepare_params(action, public['params'])
                     if 'request_id' in params:
                         reconciliation['request_id'] = params['request_id']
                 dispatched = True
                 if isinstance(core, RemoteCore):
-                    payload = ({'params': params} if action not in {'read', 'upload'}
+                    payload = ({'params': params} if action not in {'read', 'upload'} | catalog.DATASET_ACTIONS
                                else {k: v for k, v in public.items() if k not in {'machine_id', 'request_id'}})
-                    result = core.perform(action, payload, reconciliation.get('request_id') if action == 'upload' else None)
+                    result = core.perform(action, payload, reconciliation.get('request_id') if action in catalog.UPLOAD_ACTIONS else None)
                 elif action == 'upload':
                     result = client.upload(core, public['collection_id'], public['path'],
                                            public['data_base64'], public.get('branch', 'main'),
                                            public.get('strategy', 'ingest'),
                                            public.get('base_vid'), public.get('expected_head'),
-                                           reconciliation.get('request_id'))
+                                           reconciliation.get('request_id'), public.get('note'))
                 elif action == 'read':
                     result = client.read(core, public['vid'], public['path'])
                 else:
@@ -112,12 +115,21 @@ class MCPServer:
                 result = client.clean_result(result, secrets)
                 result['data_base64'] = data_base64
             else:
-                result = client.clean_result(result, secrets)
+                result = (client.clean_dataset_result(result, secrets) if action in catalog.DATASET_ACTIONS
+                          else client.clean_result(result, secrets))
             serialized = json.dumps({k: v for k, v in result.items() if k != 'data_base64'}, ensure_ascii=False)
             if len(serialized.encode()) > client.MAX_RPC:
                 raise client.AgentError('protocol_error', 'The Gaia result exceeds the response bound; request a smaller page.')
-            components = [Card(title='GaiaKeep result', content=[CodeBlock(code=serialized[:16000], language='json')]).to_dict()]
-            data = {'verdict': 'ok', 'result': result}
+            publication = result.get('publication', result)
+            pending = isinstance(publication, dict) and 'commit_job' in publication
+            if pending:
+                native = client.native_reconciliation(publication)
+                if 'commit_job' not in native:
+                    raise client.AgentError('protocol_error', 'The pending version lacks a valid commit job identifier.')
+                reconciliation.update(native)
+            components = [Card(title='GaiaKeep version awaiting durable copies' if pending else 'GaiaKeep result',
+                               content=[CodeBlock(code=serialized[:16000], language='json')]).to_dict()]
+            data = {'verdict': 'pending' if pending else 'ok', 'result': result}
             if reconciliation:
                 data['reconciliation'] = reconciliation
             return {'_data': data, '_ui_components': components}
@@ -127,6 +139,8 @@ class MCPServer:
                     and exc.verdict == 'protocol_error'):
                 exc = client.AgentError('unconfirmed', 'The operation may have taken effect. Check native state before retrying.')
             verdict, message = client.failure(exc, mutation and dispatched)
+            if verdict == 'pending':
+                reconciliation.update(client.native_reconciliation(exc))
             self.issue_log.record(name, verdict, dispatched=dispatched, mutation=mutation,
                                   **({'detail': detail} if detail is not None else {}))
             data = {'verdict': verdict}

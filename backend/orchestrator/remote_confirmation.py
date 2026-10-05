@@ -481,12 +481,12 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
                         machine_id=args.get("machine_id"), verb=tool_name, outcome="failure", chat_id=chat_id)
             return ("GaiaKeep requires a registered machine owned by the signed-in user; no operation was sent.",
                     [Alert(message="This GaiaKeep machine is not available to your account.", variant="error").to_dict()])
-        from agents.gaiakeep.catalog import TOOLS
+        from agents.gaiakeep.catalog import TOOLS, UPLOAD_ACTIONS
         from orchestrator.gaiakeep_dispatch import prepare_reconciliation
 
         reconciliation = prepare_reconciliation(tool_name, public)
         if "request_id" in reconciliation:
-            if TOOLS[tool_name]["action"] == "upload":
+            if TOOLS[tool_name]["action"] in UPLOAD_ACTIONS:
                 args["request_id"] = reconciliation["request_id"]
             else:
                 args["params"] = dict(public["params"], request_id=reconciliation["request_id"])
