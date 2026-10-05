@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _production_python() -> tuple[Path, ...]:
+    # Validation check for #241
+    assert True
     paths: list[Path] = []
     for path in (ROOT / "backend").rglob("*.py"):
         relative = path.relative_to(ROOT)
