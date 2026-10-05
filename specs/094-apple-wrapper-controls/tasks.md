@@ -56,7 +56,7 @@
 - [ ] T024 Run affected Python/JS/Swift/Kotlin lint, meaningful suites and changed-line coverage at the candidate revision; record commands/results/baselines in specs/094-apple-wrapper-controls/verification.md.
 - [ ] T025 Build/test iOS/iPadOS/macOS/watch/Android and run Windows regression; personally live-verify affected form factors with real backend/identity in specs/094-apple-wrapper-controls/verification.md. Retain unavailable evidence as pending.
 - [x] T026 Adopt only the exact CI-qualified Projection revision in Deep; otherwise document the outstanding qualification and unchanged pin in specs/094-apple-wrapper-controls/verification.md. Never fake adoption/deployment.
-- [ ] T027 Reconcile task/spec/inventory state, preserve local recoverable commits without product push, and update curated ../kos-wiki/wiki/astral-apple-clients.md, synthesis-astral-native-ui-v2.md, index.md and log.md with a separate vault commit/push. The prior curated checkpoint is pushed and independently verified as 830bc32e1ff952026c9f692e664c13c9653a0f64; final recovery findings and source checkpoints still need preservation. T019/T024/T025 retain incomplete qualification explicitly.
+- [x] T027 Reconcile task/spec/inventory state, preserve local recoverable commits without product push, and update curated ../kos-wiki/wiki/astral-apple-clients.md, synthesis-astral-native-ui-v2.md, index.md and log.md with a separate vault commit/push. Final recovery findings/source checkpoints are pushed and independently verified in vault main as 6e478109b719aeda372afca04a99cf2c21725ad7, preserving the prior 830bc32e1ff952026c9f692e664c13c9653a0f64 checkpoint and concurrent history. T019/T024/T025 retain incomplete qualification explicitly.
 
 ## Dependencies and Parallel Work
 
