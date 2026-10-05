@@ -6969,7 +6969,9 @@ class Orchestrator:
                     context, frame, code="operation_failed", retryable=False,
                 )
                 return
-        from orchestrator.human_request_authority import capture_human_socket_request
+        from orchestrator.human_request_authority import (
+            ExpiredHumanSocketRequest, capture_human_socket_request,
+        )
         from persistent_agents.models import AssignmentError
 
         try:
@@ -7002,14 +7004,20 @@ class Orchestrator:
             frame.close_work_read()
             raise
         except (AssignmentError, TimeoutError) as exc:
-            frame.close_work_read()
-            logger.warning("human request capture failed action=%s cause=%s",
-                           frame.action, getattr(exc, "code", type(exc).__name__))
-            if frame.action != "chat_message":
-                await self._send_connection_admission_refusal(
-                    context, frame, code="operation_failed", retryable=False,
-                )
-                return
+            try:
+                logger.warning("human request capture failed action=%s cause=%s",
+                               frame.action, getattr(exc, "code", type(exc).__name__))
+                if frame.action != "chat_message":
+                    await self._send_connection_admission_refusal(
+                        context, frame, code="operation_failed", retryable=False,
+                    )
+                    if type(exc) is ExpiredHumanSocketRequest:
+                        await exc.request_authentication(self)
+                    return
+            finally:
+                frame.close_work_read()
+                if type(exc) is ExpiredHumanSocketRequest:
+                    exc.request.close()
         from orchestrator.chrome_events import capture_surface_request
 
         capture_surface_request(self, context.websocket, frame.action, frame.parsed.get("payload"),

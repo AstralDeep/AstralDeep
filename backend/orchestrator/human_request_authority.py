@@ -26,6 +26,8 @@ from astralplane.repositories import (
 )
 from astralplane.repositories.history import SessionConsentObservation
 from audit.repository import AuditRepository
+from fastapi import HTTPException
+from jose.exceptions import ExpiredSignatureError
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketState
 
@@ -136,6 +138,15 @@ class HumanRequestBoundary:
     def close(self):
         self.closed = True
         self.adapter.close()
+
+
+class ExpiredHumanSocketRequest(AssignmentError):
+    def __init__(self, request):
+        super().__init__("human_authentication_required", 401)
+        self.request = request
+
+    async def request_authentication(self, expected_orchestrator):
+        await self.request._request_expiry_recovery(expected_orchestrator)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -430,10 +441,10 @@ class _HumanSocketRequest:
     def __repr__(self):
         return "<HumanSocketRequest private>"
 
-    def assert_socket(self):
+    def _assert_socket_snapshot(self):
         context, orch = self.connection, self.boundary.orchestrator
         if (self.closed or time.monotonic() >= self.deadline
-                or datetime.now(timezone.utc) >= min(self.until, self.expiry)
+                or datetime.now(timezone.utc) >= self.until
                 or getattr(orch, "ui_sessions", {}).get(self.websocket) is not self.registration
                 or self.registration != self.captured
                 or getattr(orch, "_connection_contexts", {}).get(id(self.websocket)) is not context
@@ -450,6 +461,83 @@ class _HumanSocketRequest:
                 or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")
                 or (self.purpose == "voice_guidance" and not _voice_guidance_message(self.message))):
             _unauthenticated()
+
+    def assert_socket(self):
+        self._assert_socket_snapshot()
+        if datetime.now(timezone.utc) >= self.expiry:
+            raise ExpiredHumanSocketRequest(self)
+
+    async def _request_expiry_recovery(self, expected_orchestrator):
+        try:
+            async with asyncio.timeout_at(self.deadline):
+                binding = _Composition.capture_host(self.boundary)
+
+                def current():
+                    binding.assert_host_current(expected_orchestrator)
+                    self._assert_socket_snapshot()
+                    if (self.session_id is None or datetime.now(timezone.utc) < self.expiry
+                            or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                        _unauthenticated()
+
+                def capture(tx):
+                    current()
+                    repository = binding.session_repository
+                    repository.bound_request_execution_waits(tx)
+                    state = repository.get_execution_state(tx, owner_id=self.owner_id,
+                                                            session_id=self.session_id)
+                    if state is None or (self.observation is not None
+                            and state.credential != self.observation.credential):
+                        _unauthenticated()
+                    observation = SessionConsentObservation(state.credential, state.observed_at,
+                        min(state.observed_at + timedelta(seconds=15), self.until,
+                            datetime.fromtimestamp(state.credential.hard_expires_at, timezone.utc)))
+                    repository.assert_current_consent(tx, observation=observation)
+                    current()
+                    return observation
+
+                current()
+                observation = await binding.adapter.run_in_transaction(capture)
+                current()
+                try:
+                    await auth.verify_production_token(self.token)
+                except HTTPException as exc:
+                    if type(exc.__context__) is not ExpiredSignatureError:
+                        return
+                else:
+                    return
+                current()
+                claims = auth.jose_jwt.get_unverified_claims(self.token)
+                authority, client_id, _ = auth._get_keycloak_config()
+                from shared.auth_clients import is_azp_allowed
+                if (not authority or not client_id or type(claims.get("iss")) is not str
+                        or claims["iss"].rstrip("/") != authority.rstrip("/")
+                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])
+                        or _expiry(claims, self.owner_id) != self.expiry):
+                    return
+                auth._reject_non_first_party(claims)
+                await auth.verify_user(claims)
+                saved = {key: deepcopy(value) for key, value in self.captured.items()
+                         if not key.startswith("_")}
+                for value in (claims, saved):
+                    value["realm_access"] = {**value.get("realm_access", {}),
+                        "roles": sorted(set(auth._extract_roles(value)))}
+                if claims != saved:
+                    return
+
+                def verify(tx):
+                    current()
+                    binding.session_repository.bound_request_execution_waits(tx)
+                    binding.session_repository.assert_current_consent(tx, observation=observation)
+                    current()
+
+                await binding.adapter.run_in_transaction(verify)
+                current()
+                from shared.protocol import AuthRequired
+                await expected_orchestrator._safe_send(self.websocket, AuthRequired(reason="expired").to_json())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def capture_session(self):
         async with asyncio.timeout_at(self.deadline), self._capture_lock:
