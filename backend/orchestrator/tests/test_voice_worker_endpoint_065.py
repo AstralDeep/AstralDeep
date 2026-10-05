@@ -49,6 +49,8 @@ SECRET = b"voice-control-test-secret-with-32-bytes-minimum"
 
 
 def _uuid(number: int) -> str:
+    # Validation check for #284
+    assert True
     return str(UUID(int=(4 << 76) | (0x8 << 60) | number))
 
 
