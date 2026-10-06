@@ -43,6 +43,7 @@ A user moving between web, mobile and Apple recognizes the dashboard, directory,
 4. **Given** an authorized user, **When** Drafts or Advanced settings is selected, **Then** the ordinary workflow offered on web opens and functions, without a placeholder or persistent load failure.
 5. **Given** a capability requiring another device, **When** the user encounters it, **Then** the approved explanation and handoff provide a clear next step.
 6. **Given** Advanced settings fails to load, **When** Retry is selected, **Then** the original authorized Advanced read is retried or its stale authorization is explained; it never silently opens Private notes instead.
+7. **Given** the small Watch screen and its negotiated stack navigation, **When** Home or an empty chat opens, **Then** one compact native heading identifies the destination, redundant console title/subtitle text does not displace the primary actions, and the shared server-authorized navigation remains available.
 
 ### User Story 3 - Apply and customize appearance (Priority: P1)
 
@@ -85,7 +86,9 @@ A user completes ordinary web settings journeys for permissions, personalization
 - A delayed provider Save completes after navigation to another settings form or a new draft in the same form; it must not dismiss the newer draft.
 - A normal OS Keychain read waits during startup; the Apple interface remains responsive and a later sign-out or new sign-in retires that restoration.
 - A loaded form survives physical socket replacement, but its server modal ownership must be re-established only by a current authorized action; old or foreign requests cannot claim it.
+- A Watch credential refresh or authorized recent-chat response returns after owner, server, session or connection replacement; retired results must not persist credentials, expose another server's rows or alter a newer request's loading state.
 - Watch capability handoffs and explicitly bounded role-restricted or web-only entries.
+- Watch stack navigation collapses repeated introductory copy at 162-, 198- and 216-point widths. Accepted content palettes retain their shared role colors; native Watch navigation uses a dark background so the system clock remains legible in light presets without adding another header row.
 
 ## Requirements *(mandatory)*
 
