@@ -211,6 +211,26 @@ async def test_progress_persists_while_the_stream_is_still_running(ongoing):
     assert sub.persist_done is True
 
 
+async def test_a_failed_progress_save_is_skipped_and_the_final_state_still_persists(ongoing, monkeypatch):
+    orch, ws, chat_id, user_id, agent = ongoing
+    sub = await _start(orch, ws, chat_id, user_id)
+    save = orch.run_detached_conversation_mutation
+
+    async def refuse(**_):
+        raise RuntimeError("conversation is busy")
+
+    monkeypatch.setattr(orch, "run_detached_conversation_mutation", refuse)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == []
+    assert sub.persist_done is False
+    monkeypatch.setattr(orch, "run_detached_conversation_mutation", save)
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+    assert await _persisted_values(orch, chat_id, user_id) == [1]
+    assert sub.persist_done is True
+
+
 @pytest.mark.parametrize("flag, interval", [(False, 5.0), (True, None)])
 async def test_progress_is_not_persisted_without_the_flag_or_the_tool_opting_in(ongoing, flag, interval):
     orch, ws, chat_id, user_id, agent = ongoing
