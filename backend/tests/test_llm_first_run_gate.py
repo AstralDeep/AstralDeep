@@ -1,6 +1,6 @@
 """Tests for llm_config/ws_handlers.py and orchestrator/llm_gate.py: the mandatory
 first-run setup gate's device-specific dialogs, refusal of other surfaces while
-unconfigured, probe-gated save with multi-socket unlock fan-out, and its kill switch.
+unconfigured, acknowledged save with multi-socket unlock fan-out, and its kill switch.
 """
 
 from __future__ import annotations
@@ -152,6 +152,105 @@ async def test_chrome_open_other_surface_refused_while_unconfigured(orch):
     assert "Theme" not in frames[-1][1]["html"]
 
 
+@pytest.mark.parametrize("device", NATIVE_DEVICES)
+@pytest.mark.parametrize("action", ["chrome_open", "chrome_theme_apply"])
+async def test_correlated_ordinary_refusal_keeps_authoritative_setup_without_borrowing_generation(
+        orch, monkeypatch, device, action):
+    uid = _uid()
+    ws = _register(orch, uid, device=device)
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("The mandatory provider gate must not execute a blocked setting action")
+
+    monkeypatch.setattr(chrome_events, "_handlers", lambda: {"chrome_theme_apply": ("theme", forbidden)})
+    chrome_events._note_open_surface(orch, ws, "theme")
+    handled = await chrome_events.handle_chrome_event(orch, ws, action,
+        {"surface": "theme"}, uid, request_generation=str(uuid.uuid4()))
+    assert handled is True
+    frame, = [frame for _, frame in _frames(orch, "chrome_surface")]
+    assert frame["surface_key"] == "llm" and frame["mode"] == "mandatory"
+    assert "request_generation" not in frame
+    assert orch._ws_llm_gated[id(ws)] is True
+    assert chrome_events.open_surface_for(orch, ws) == "llm"
+
+
+@pytest.mark.parametrize("action", ["chrome_llm_models", "chrome_llm_test"])
+async def test_allowed_first_run_native_actions_deliver_owned_refresh_and_keep_the_gate(orch, monkeypatch, action):
+    uid = _uid()
+    ws = _register(orch, uid, device="ios")
+    await llm_gate.push_setup_dialog(orch, ws, uid)
+    calls = []
+
+    async def refresh(host, target, owner, roles, payload):
+        calls.append(owner)
+        return ("llm", {"first_run": True}, "")
+
+    monkeypatch.setattr(chrome_events, "_handlers", lambda: {action: ("llm", refresh)})
+    generation = str(uuid.uuid4())
+    await chrome_events.handle_chrome_event(orch, ws, action,
+        {"surface": "llm", "fields": {"first_run": "true"}}, uid, request_generation=generation)
+    assert calls == [uid]
+    mandatory, refreshed = [frame for _, frame in _frames(orch, "chrome_surface")]
+    assert mandatory["mode"] == "mandatory"
+    assert refreshed["surface_key"] == "llm" and refreshed["request_generation"] == generation
+    assert orch._ws_llm_gated[id(ws)] is True
+
+
+async def test_successful_setup_close_clears_current_modal_ownership(orch):
+    uid = _uid()
+    ws = _register(orch, uid, device="ios")
+    await llm_gate.push_setup_dialog(orch, ws, uid)
+    await llm_gate._push_gate_close(orch, ws)
+    assert chrome_events.open_surface_for(orch, ws) == ""
+
+
+async def test_undelivered_mandatory_setup_preserves_the_gate_and_previous_modal(orch, monkeypatch):
+    uid = _uid()
+    ws = _register(orch, uid, device="ios")
+    chrome_events._note_open_surface(orch, ws, "theme")
+
+    async def failed_send(target, frame):
+        return False
+
+    monkeypatch.setattr(orch, "_safe_send", failed_send)
+    await llm_gate.push_setup_dialog(orch, ws, uid)
+    assert orch._ws_llm_gated[id(ws)] is True
+    assert chrome_events.open_surface_for(orch, ws) == "theme"
+
+
+async def test_mandatory_setup_adaptation_failure_never_sends_unadapted_provider_controls(orch, monkeypatch):
+    from rote.adapter import ComponentAdapter
+
+    uid = _uid()
+    ws = _register(orch, uid, device="ios")
+
+    def denied(components, profile):
+        raise ValueError("form budget exceeded")
+
+    monkeypatch.setattr(ComponentAdapter, "adapt", denied)
+    await llm_gate.push_setup_dialog(orch, ws, uid)
+    frame, = [frame for _, frame in _frames(orch, "chrome_surface")]
+    assert frame["mode"] == "mandatory" and frame["surface_key"] == "llm"
+    assert frame["components"][0]["type"] == "alert"
+    assert frame["components"][0]["variant"] == "error"
+    assert "chrome_llm_save" not in json.dumps(frame)
+    assert orch._ws_llm_gated[id(ws)] is True
+
+
+async def test_correlated_web_settings_keep_the_existing_html_result(orch, monkeypatch):
+    uid = _uid()
+    ws = _register(orch, uid)
+    await llm_gate.push_setup_dialog(orch, ws, uid)
+
+    async def refresh(host, target, owner, roles, payload):
+        return ("llm", {"first_run": True}, "")
+
+    monkeypatch.setattr(chrome_events, "_handlers", lambda: {"chrome_llm_models": ("llm", refresh)})
+    await chrome_events.handle_chrome_event(orch, ws, "chrome_llm_models",
+        {"surface": "llm"}, uid, request_generation=str(uuid.uuid4()))
+    assert len(_frames(orch, "chrome_render")) == 2
+
+
 async def test_chrome_close_refused_while_unconfigured(orch):
     uid = _uid()
     ws = _register(orch, uid)
@@ -201,7 +300,7 @@ async def test_configured_user_passes_through_untouched(orch):
         await orch._llm_store.clear(uid)
 
 
-async def test_probe_gated_save_persists_and_returns_true(orch, monkeypatch):
+async def test_acknowledged_save_persists_and_returns_true(orch, monkeypatch):
     from llm_config.ws_handlers import handle_llm_config_set
 
     probed = {}

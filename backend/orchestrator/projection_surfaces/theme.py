@@ -9,6 +9,8 @@ import logging
 import re
 from collections.abc import Mapping
 
+from astralplane.repositories.preferences import ThemePreferenceRecord
+
 from webrender.chrome import esc, notice_block, render_one
 from webrender.chrome.surfaces import _sdui
 
@@ -90,6 +92,49 @@ def _save_theme(orch, user_id: str, theme: dict) -> None:
     context.call(context.repository.put, owner_id=user_id, theme=theme)
 
 
+def _surface_theme(orch, user_id, params):
+    accepted = (params or {}).get("_accepted_theme")
+    if isinstance(accepted, ThemePreferenceRecord) and accepted.owner_id == user_id:
+        return dict(accepted.theme)
+    return _stored_theme(orch, user_id)
+
+
+def _canonical_custom_theme(submitted, current):
+    if not isinstance(submitted, Mapping):
+        raise ValueError("theme must be an object")
+    colors = _effective_colors(current)
+    keys = set(submitted)
+    if keys == {"preset"}:
+        preset = submitted["preset"]
+        if not isinstance(preset, str) or preset.strip().lower() not in PRESETS:
+            raise ValueError("theme preset is unavailable")
+        colors = dict(PRESETS[preset.strip().lower()])
+    else:
+        if keys == {"color_key", "color_value"}:
+            updates = {submitted["color_key"]: submitted["color_value"]}
+        elif keys == {"colors"} and isinstance(submitted["colors"], Mapping):
+            updates = submitted["colors"]
+        else:
+            raise ValueError("theme update is invalid")
+        if not updates or set(updates) - set(colors):
+            raise ValueError("theme contains an unsupported color role")
+        for key, value in updates.items():
+            if not isinstance(value, str) or not (normalized := _normalize_hex(value)):
+                raise ValueError("theme color must contain six hexadecimal digits")
+            colors[key] = normalized.upper()
+    return {"colors": {key: value.upper() for key, value in colors.items()}}
+
+
+def _save_custom_theme(orch, user_id, submitted):
+    context = _theme_context(orch)
+    current = context.call(context.repository.get, owner_id=user_id)
+    canonical = _canonical_custom_theme(submitted, dict(current.theme) if current else {})
+    accepted = context.call(context.repository.put, owner_id=user_id, theme=canonical)
+    if not isinstance(accepted, ThemePreferenceRecord) or accepted.owner_id != user_id:
+        raise RuntimeError("theme persistence did not return an owned preference")
+    return accepted
+
+
 def _effective_colors(theme: dict) -> dict:
     colors = dict(PRESETS[_DEFAULT_PRESET])
     preset = theme.get("preset")
@@ -97,7 +142,7 @@ def _effective_colors(theme: dict) -> dict:
         colors.update(PRESETS[preset])
         return colors
     stored = theme.get("colors")
-    if isinstance(stored, dict):
+    if isinstance(stored, Mapping):
         for key, _label in _COLOR_KEYS:
             hexval = _normalize_hex(stored.get(key))
             if hexval:
@@ -114,7 +159,7 @@ def _summary_text(theme: dict) -> str:
     preset = theme.get("preset")
     if isinstance(preset, str) and preset in PRESETS:
         return f"Current theme: {preset.capitalize()} preset (saved)."
-    if isinstance(theme.get("colors"), dict) or theme.get("color_key"):
+    if isinstance(theme.get("colors"), Mapping) or theme.get("color_key"):
         return "Current theme: custom colors (defaults shown where unset)."
     return f"Current theme: default ({_DEFAULT_PRESET.capitalize()})."
 
@@ -143,7 +188,7 @@ def _preset_card(name: str, active: bool) -> str:
 
 
 async def render(orch, user_id, roles, params) -> str:
-    theme = await asyncio.to_thread(_stored_theme, orch, user_id)
+    theme = await asyncio.to_thread(_surface_theme, orch, user_id, params)
     active_preset = theme.get("preset") if theme.get("preset") in PRESETS else None
     colors = _effective_colors(theme)
 
@@ -167,7 +212,7 @@ async def render(orch, user_id, roles, params) -> str:
 
 
 async def components(orch, user_id, roles, params):
-    theme = await asyncio.to_thread(_stored_theme, orch, user_id)
+    theme = await asyncio.to_thread(_surface_theme, orch, user_id, params)
     active = theme.get("preset") if theme.get("preset") in PRESETS else None
     colors = _effective_colors(theme)
 
@@ -222,4 +267,14 @@ async def _handle_theme_preset(orch, websocket, user_id, roles, payload):
     return ("theme", {}, notice)
 
 
-HANDLERS = {"chrome_theme_preset": _handle_theme_preset}
+async def _handle_custom_theme(orch, websocket, user_id, roles, payload):
+    from orchestrator.chrome_events import is_native_sdui
+    accepted = await asyncio.to_thread(_save_custom_theme, orch, user_id, payload.get("theme"))
+    notice = ""
+    if not is_native_sdui(orch, websocket):
+        notice = render_one({"type": "theme_apply", "colors": dict(accepted.theme["colors"]),
+                             "message": "Theme applied"})
+    return ("theme", {"_accepted_theme": accepted}, notice)
+
+
+HANDLERS = {"chrome_theme_preset": _handle_theme_preset, "save_theme": _handle_custom_theme}

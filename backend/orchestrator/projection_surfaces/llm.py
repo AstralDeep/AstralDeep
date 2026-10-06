@@ -1,6 +1,6 @@
-"""Renders the per-user LLM provider settings surface: provider/endpoint/model config,
-probe-gated save, and the TypeSafe key with its data-sharing acknowledgment. Persists
-via llm_config/ws_handlers.py, shared with the WS llm_config_set branch.
+"""Renders the per-user provider and TypeSafe settings with sharing acknowledgments.
+Provider saves use llm_config/ws_handlers.py for encrypted persistence followed by advisory checks.
+TypeSafe retains its separate credential handler and operation.
 """
 
 from __future__ import annotations
@@ -437,7 +437,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
         intro = (
             '<p class="text-sm text-astral-text">AstralDeep runs on the AI provider '
             "YOU connect — nothing is built in. Pick a provider, paste your API key, "
-            "choose a model, and test the connection to get started.</p>"
+            "choose a model, and save to get started.</p>"
             f"{identity}"
             f'<p class="text-xs text-astral-muted">{esc(_LOCAL_RUNTIME_NOTE)}</p>'
         )
@@ -490,9 +490,7 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
 
     provider_field = _sdui.field(
         "provider", "Provider", "select", default=provider,
-        options=[p.key for p in all_presets()],
-        help="; ".join(f"{p.key} = {p.label}" for p in all_presets()
-                       if p.key != provider)[:200] or None,
+        options=[{"value": p.key, "label": p.label} for p in all_presets()],
     )
     endpoint_default = base_url if provider == CUSTOM_PROVIDER_KEY else (
         getattr(preset, "base_url", "") or "")
@@ -560,9 +558,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         _sdui.badge("configured" if saved is not None else "not configured",
                     "success" if saved is not None else "default"),
     ]
-    if preset is not None and preset.base_url:
-        out.append(_sdui.text(f"Endpoint: {preset.base_url} (set automatically)",
-                              "caption"))
+    if saved is not None:
+        out.append(_sdui.text(f"Saved endpoint: {saved.base_url}", "caption"))
     if provider in ("ollama", "lmstudio") or first_run:
         out.append(_sdui.text(_LOCAL_RUNTIME_NOTE, "caption"))
     out.append(_sdui.alert(_ds.NOTICE_BODY, "warning", _ds.NOTICE_TITLE))
@@ -751,11 +748,28 @@ async def _handle_test(orch: Any, websocket: Any, user_id: str, roles: Any, payl
 
 async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payload: Any):
     _ = roles
-    from llm_config.ws_handlers import handle_llm_config_set
+    from llm_config.ws_handlers import (
+        _send_invalid,
+        handle_llm_config_set,
+        validate_config_field_types,
+        validate_endpoint_syntax,
+    )
+
+    raw = payload.get("fields", {}) if isinstance(payload, dict) else {}
+    errors = validate_config_field_types(raw)
+    if errors:
+        message = "; ".join(f"{key}: {error}" for key, error in errors.items())
+        await _send_invalid(orch._safe_send, websocket, message, fields=errors)
+        return (SURFACE_KEY, {}, notice_block("error", message))
 
     fields = _fields(payload)
     provider = _provider_key(fields)
     keep = _keep_params(fields, provider)
+    base_url = _effective_base_url(provider, fields)
+    endpoint_error = validate_endpoint_syntax(base_url) if base_url else None
+    if endpoint_error:
+        keep.pop("base_url", None)
+        return (SURFACE_KEY, keep, notice_block("error", endpoint_error))
     blocked = await _require_acknowledgment(
         orch, websocket, user_id, payload, target="the LLM provider"
     )
@@ -772,6 +786,18 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             "error", "Configuration store unavailable — try reloading."))
 
     actor_user_id, auth_principal = _actor(orch, websocket, user_id)
+    unlocked = False
+
+    async def after_save():
+        nonlocal unlocked
+        from orchestrator import llm_gate
+        from orchestrator.chrome_events import is_native_sdui, push_close
+
+        unlocked = await llm_gate.unlock_after_save(orch, actor_user_id)
+        if not unlocked and is_native_sdui(orch, websocket):
+            await push_close(orch, websocket)
+        return unlocked
+
     saved = await handle_llm_config_set(
         safe_send=orch._safe_send,
         websocket=websocket,
@@ -785,6 +811,7 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
         auth_principal=auth_principal,
         store=store,
         recorder=orch.audit_recorder,
+        after_save=after_save,
     )
     if not saved:
         return (SURFACE_KEY, keep, notice_block(
@@ -792,17 +819,10 @@ async def _handle_save(orch: Any, websocket: Any, user_id: str, roles: Any, payl
             "Save rejected — check the provider, endpoint, model, and API key, "
             "then test the connection.",
         ))
-    try:
-        from orchestrator import llm_gate
-        unlocked = await llm_gate.unlock_after_save(orch, actor_user_id)
-    except Exception:
-        logger.exception("llm gate unlock failed (non-fatal)")
-        unlocked = False
     if unlocked:
         return None
-    from orchestrator.chrome_events import is_native_sdui, push_close
+    from orchestrator.chrome_events import is_native_sdui
     if is_native_sdui(orch, websocket):
-        await push_close(orch, websocket)
         return None
     suffix = " (kept the previously saved API key)" if used_saved else ""
     return (SURFACE_KEY, keep, notice_block(

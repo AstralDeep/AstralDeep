@@ -1114,6 +1114,8 @@ async def test_real_identity_bearing_generic_action_terminalizes_completed(
     orch = _orchestrator(runtime_module, probe)
     websocket = _socket(runtime_module)
     connection_generation = uuid.uuid4()
+    submission_id = uuid.uuid4()
+    request_identity = uuid.uuid4()
     handled = asyncio.Event()
 
     async def no_audit(**_kwargs: object) -> None:
@@ -1125,10 +1127,16 @@ async def test_real_identity_bearing_generic_action_terminalizes_completed(
         action: str,
         payload: dict[str, Any],
         user_id: str,
+        *,
+        request_generation: str,
     ) -> bool:
+        assert _orchestrator is orch
         assert target is websocket
         assert action == "future_generic_action"
         assert payload["connection_generation"] == str(connection_generation)
+        assert payload["submission_id"] == str(submission_id)
+        assert request_generation == str(request_identity)
+        assert payload["request_generation"] == request_generation
         assert user_id == "runtime-reliability-060"
         handled.set()
         return True
@@ -1146,6 +1154,8 @@ async def test_real_identity_bearing_generic_action_terminalizes_completed(
             _event_frame(
                 "generic-success",
                 action="future_generic_action",
+                submission_id=submission_id,
+                request_generation=request_identity,
                 connection_generation=connection_generation,
             )
         )
@@ -1161,9 +1171,11 @@ async def test_real_identity_bearing_generic_action_terminalizes_completed(
         assert refused == []
         assert len(accepted) == len(terminal) == 1
         assert terminal[0]["state"] == "completed"
-        assert terminal[0]["request_generation"] == accepted[0][
-            "request_generation"
-        ]
+        assert terminal[0]["request_generation"] == str(request_identity)
+        assert accepted[0]["request_generation"] == str(request_identity)
+        assert accepted[0]["connection_generation"] == str(connection_generation)
+        assert terminal[0]["connection_generation"] == str(connection_generation)
+        assert terminal[0]["operation_id"] == accepted[0]["operation_id"]
     finally:
         await _cleanup(orch, websocket, serve, probe, baseline)
 
@@ -1184,17 +1196,31 @@ async def test_real_identity_bearing_generic_action_never_fabricates_completion(
     orch = _orchestrator(runtime_module, probe)
     websocket = _socket(runtime_module)
     connection_generation = uuid.uuid4()
+    submission_id = uuid.uuid4()
+    request_identity = uuid.uuid4()
+    handled_requests: list[str] = []
 
     async def no_audit(**_kwargs: object) -> None:
         return None
 
     async def fail_generic(
         _orchestrator: object,
-        _target: object,
-        _action: str,
-        _payload: dict[str, Any],
-        _user_id: str,
+        target: object,
+        action: str,
+        payload: dict[str, Any],
+        user_id: str,
+        *,
+        request_generation: str,
     ) -> bool:
+        assert _orchestrator is orch
+        assert target is websocket
+        assert action == "future_generic_action"
+        assert payload["connection_generation"] == str(connection_generation)
+        assert payload["submission_id"] == str(submission_id)
+        assert request_generation == str(request_identity)
+        assert payload["request_generation"] == request_generation
+        assert user_id == "runtime-reliability-060"
+        handled_requests.append(request_generation)
         if failure_mode == "raised":
             raise RuntimeError("generic handler probe failure")
         return False
@@ -1212,6 +1238,8 @@ async def test_real_identity_bearing_generic_action_never_fabricates_completion(
             _event_frame(
                 f"generic-{failure_mode}",
                 action="future_generic_action",
+                submission_id=submission_id,
+                request_generation=request_identity,
                 connection_generation=connection_generation,
             )
         )
@@ -1224,9 +1252,15 @@ async def test_real_identity_bearing_generic_action_never_fabricates_completion(
             await asyncio.sleep(0)
 
         assert refused == []
+        assert handled_requests == [str(request_identity)]
         assert len(accepted) == len(terminal) == 1
         assert terminal[0]["state"] == "failed"
         assert terminal[0]["error"]["code"] == "operation_failed"
+        assert terminal[0]["request_generation"] == str(request_identity)
+        assert accepted[0]["request_generation"] == str(request_identity)
+        assert accepted[0]["connection_generation"] == str(connection_generation)
+        assert terminal[0]["connection_generation"] == str(connection_generation)
+        assert terminal[0]["operation_id"] == accepted[0]["operation_id"]
         assert not any(
             frame.get("type") == "operation_status"
             and frame.get("state") == "completed"

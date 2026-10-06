@@ -310,8 +310,7 @@ def test_legacy_chrome_wire_fields_remain_absent(frame):
 
 
 @pytest.mark.parametrize("frame", [ChromeRender(surface_key="work"), ChromeSurface(surface_key="work"),
-    ChromeRender(request_generation=str(uuid4())),
-    ChromeSurface(surface_key="agents", request_generation=str(uuid4()))])
+    ChromeRender(request_generation=str(uuid4()))])
 def test_work_correlation_is_mandatory_and_scoped(frame):
     with pytest.raises(ProtocolValidationError):
         frame.to_json()
