@@ -495,11 +495,12 @@ jobs:
   sdk:
     name: Astral SDK (built and tested outside the product image)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -530,8 +531,22 @@ jobs:
           python -m venv /tmp/astral-sdk-venv
           /tmp/astral-sdk-venv/bin/pip install --upgrade pip
           wheel="$(ls sdk/dist/*.whl)"
-          /tmp/astral-sdk-venv/bin/pip install "${wheel}[dev]"
+          /tmp/astral-sdk-venv/bin/pip install "${wheel}[dev,mcp]"
           /tmp/astral-sdk-venv/bin/python -m pytest -q sdk/tests
+      - name: Measure SDK changed-line coverage against the source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/astral-sdk-cov-venv
+          /tmp/astral-sdk-cov-venv/bin/pip install --upgrade pip
+          wheel="$(ls sdk/dist/*.whl)"
+          /tmp/astral-sdk-cov-venv/bin/pip install "${wheel}[dev,mcp]"
+          /tmp/astral-sdk-cov-venv/bin/pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+          /tmp/astral-sdk-cov-venv/bin/python -m pytest -q sdk/tests \
+            --cov=sdk/astral_sdk --cov-branch --cov-report=xml:build/sdk-coverage.xml
+      - name: Enforce 90 percent changed-line coverage on the SDK
+        run: |
+          diff-cover build/sdk-coverage.xml --compare-branch origin/main --fail-under 90
 
   release-tooling-tests:
     needs: [backend-image]

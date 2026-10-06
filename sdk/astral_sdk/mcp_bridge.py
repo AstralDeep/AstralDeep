@@ -27,7 +27,6 @@ _META_PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
 _META_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 _META_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
 _SERVER_INFO = {"name": "astral-sdk-bridge", "version": "0.1.0"}
-_CANCELLED_ID_LIMIT = 1024
 
 
 class _InvalidToolCall(Exception):
@@ -93,7 +92,8 @@ def _official_handlers(bridge: "Bridge") -> tuple[Any, Any]:
 class Bridge:
     def __init__(self, client: AstralClient) -> None:
         self._client = client
-        self._cancelled_request_ids: dict[Any, None] = {}
+        self._inflight_id: Any = None
+        self._cancelled_inflight: set[Any] = set()
 
     @classmethod
     def connect(cls, base_url: str, token: str, **client_kwargs: Any) -> "Bridge":
@@ -112,10 +112,8 @@ class Bridge:
             self._note_notification(method, request.get("params"))
             return None
         request_id = request["id"]
-        if not isinstance(request_id, (str, int, float)) or isinstance(request_id, bool):
-            return _error_response(None, _INVALID_REQUEST, "request id must be a string or number")
-        if request_id in self._cancelled_request_ids:
-            return None
+        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
+            return _error_response(None, _INVALID_REQUEST, "request id must be a string or integer")
         params = request.get("params")
         if params is None:
             params = {}
@@ -209,29 +207,66 @@ class Bridge:
         if method != "notifications/cancelled" or not isinstance(params, dict):
             return
         request_id = params.get("requestId")
-        if not isinstance(request_id, (str, int, float)) or isinstance(request_id, bool):
+        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
             return
-        self._cancelled_request_ids[request_id] = None
-        while len(self._cancelled_request_ids) > _CANCELLED_ID_LIMIT:
-            del self._cancelled_request_ids[next(iter(self._cancelled_request_ids))]
+        if request_id != self._inflight_id:
+            return
+        self._cancelled_inflight.add(request_id)
 
     def serve_stdio(self, in_stream: IO[str] = sys.stdin, out_stream: IO[str] = sys.stdout) -> None:
-        for line in in_stream:
-            line = line.strip()
+        import queue
+        import threading
+
+        lines: "queue.Queue[Optional[str]]" = queue.Queue()
+
+        def _read_lines() -> None:
+            try:
+                for raw in in_stream:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        lines.put(raw)
+                        continue
+                    if isinstance(message, dict) and "id" not in message:
+                        self._note_notification(message.get("method"), message.get("params"))
+                        continue
+                    lines.put(raw)
+            finally:
+                lines.put(None)
+
+        reader = threading.Thread(target=_read_lines, daemon=True)
+        reader.start()
+        while True:
+            item = lines.get()
+            if item is None:
+                break
+            line = item.strip()
             if not line:
                 continue
             try:
                 request = json.loads(line)
             except json.JSONDecodeError:
-                out_stream.write(json.dumps(
-                    {"jsonrpc": "2.0", "id": None,
-                     "error": {"code": _PARSE_ERROR, "message": "invalid JSON"}}) + "\n")
-                out_stream.flush()
+                self._write_message(out_stream, {"jsonrpc": "2.0", "id": None,
+                                                 "error": {"code": _PARSE_ERROR, "message": "invalid JSON"}})
                 continue
+            request_id = request.get("id") if isinstance(request, dict) else None
+            self._inflight_id = request_id
             response = self.handle(request)
+            suppressed = isinstance(request_id, (str, int)) and not isinstance(request_id, bool) \
+                and request_id in self._cancelled_inflight
+            self._inflight_id = None
+            if suppressed:
+                self._cancelled_inflight.discard(request_id)
+                continue
             if response is not None:
-                out_stream.write(json.dumps(response) + "\n")
-                out_stream.flush()
+                self._write_message(out_stream, response)
+
+    def _write_message(self, out_stream: IO[str], message: dict[str, Any]) -> None:
+        out_stream.write(json.dumps(message) + "\n")
+        out_stream.flush()
 
     def serve_with_official_sdk(self) -> None:
         try:

@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+from astral_sdk.errors import AstralHTTPError
 from astral_sdk.mcp_bridge import Bridge, _official_handlers
 from astral_sdk.tools import ASTRAL_TOOLS, CONTRACT, function_schema
 
@@ -136,16 +137,100 @@ def test_cancellation_with_invalid_request_id_is_ignored(fake_server):
     assert [response["id"] for response in responses] == ["after-invalid"]
 
 
-def test_cancellation_history_is_bounded(fake_server):
+def test_unknown_cancellation_is_ignored_and_the_id_stays_usable(fake_server):
     bridge = _bridge(fake_server)
     try:
-        flood = [{"jsonrpc": "2.0", "method": "notifications/cancelled",
-                  "params": {"requestId": f"c-{index}"}} for index in range(1030)]
-        survivor = _request("tools/list", request_id="alive")
-        responses = _served_lines(bridge, *flood, survivor)
+        cancellation = {"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": "req-7", "reason": "host timeout"}}
+        later = _request("tools/list", request_id="req-7")
+        responses = _served_lines(bridge, cancellation, later)
     finally:
         bridge.close()
-    assert [response["id"] for response in responses] == ["alive"]
+    assert [response["id"] for response in responses] == ["req-7"]
+    assert responses[0]["result"]["resultType"] == "complete"
+
+
+def test_cancellation_after_the_response_was_sent_is_ignored(fake_server):
+    bridge = _bridge(fake_server)
+    try:
+        first = _request("tools/list", request_id="req-1")
+        late_cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled",
+                       "params": {"requestId": "req-1"}}
+        second = _request("tools/list", request_id="req-2")
+        responses = _served_lines(bridge, first, late_cancel, second)
+    finally:
+        bridge.close()
+    assert [response["id"] for response in responses] == ["req-1", "req-2"]
+
+
+def _piped_stdio_lines(fake_server, monkeypatch, script, delay):
+    import os
+    import time
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def slow_get_operation(operation_id, *args, **kwargs):
+        time.sleep(delay)
+        raise AstralHTTPError("work_not_found", code="work_not_found")
+
+    bridge = _bridge(fake_server)
+    monkeypatch.setattr(bridge._client, "get_operation", slow_get_operation)
+
+    def _feed():
+        for line in script:
+            writer.write(line + "\n")
+            writer.flush()
+            time.sleep(0.02)
+        time.sleep(delay * 2)
+        writer.close()
+
+    import threading
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    finally:
+        bridge.close()
+        reader.close()
+
+
+def test_cancellation_during_dispatch_suppresses_only_that_response(fake_server, monkeypatch):
+    script = [
+        json.dumps(_request("tools/call", params={"name": "astral_get_operation",
+                                                  "arguments": {"operation_id": "op-1"}}, request_id="req-7")),
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "req-7"}}),
+        json.dumps(_request("tools/list", request_id="req-8")),
+    ]
+    responses = _piped_stdio_lines(fake_server, monkeypatch, script, delay=0.4)
+    assert [response["id"] for response in responses] == ["req-8"]
+    assert responses[0]["result"]["resultType"] == "complete"
+
+
+def test_cancellation_for_another_id_during_dispatch_is_ignored(fake_server, monkeypatch):
+    script = [
+        json.dumps(_request("tools/call", params={"name": "astral_get_operation",
+                                                  "arguments": {"operation_id": "op-1"}}, request_id="req-7")),
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "other"}}),
+    ]
+    responses = _piped_stdio_lines(fake_server, monkeypatch, script, delay=0.3)
+    assert [response["id"] for response in responses] == ["req-7"]
+    assert responses[0]["result"]["isError"] is True
+
+
+def test_fractional_request_id_is_rejected_as_malformed(fake_server):
+    bridge = _bridge(fake_server)
+    try:
+        fractional = {"jsonrpc": "2.0", "id": 1.5, "method": "server/discover",
+                      "params": {"_meta": _meta()}}
+        response = _served_lines(bridge, fractional)[0]
+    finally:
+        bridge.close()
+    assert response["error"]["code"] == -32600
+    assert "result" not in response
 
 
 def test_discover_reports_versions_capabilities_and_server_info(fake_server):
@@ -293,20 +378,6 @@ def test_malformed_envelope_lines_do_not_terminate_the_stdio_loop(fake_server):
     assert [response["error"]["code"] for response in responses[:5]] == [-32600] * 5
     assert responses[5]["id"] == 7
     assert responses[5]["result"]["resultType"] == "complete"
-
-
-def test_cancelled_request_ids_are_not_answered(fake_server):
-    bridge = _bridge(fake_server)
-    try:
-        cancellation = {"jsonrpc": "2.0", "method": "notifications/cancelled",
-                        "params": {"requestId": "req-7", "reason": "host timeout"}}
-        cancelled = _request("tools/list", request_id="req-7")
-        survivor = _request("tools/list", request_id="req-8")
-        responses = _served_lines(bridge, cancellation, cancelled, survivor)
-    finally:
-        bridge.close()
-    assert [response["id"] for response in responses] == ["req-8"]
-    assert responses[0]["result"]["resultType"] == "complete"
 
 
 def test_malformed_cancellation_notification_is_ignored(fake_server):
