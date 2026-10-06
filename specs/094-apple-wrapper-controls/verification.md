@@ -1,8 +1,30 @@
 # Candidate Verification
 
-Started: 2026-10-05; updated for release preparation on 2026-10-06. Deep remains local on `codex/094-apple-wrapper-controls`; sibling Projection's paired branch is published as draft PR54. This record distinguishes tests, builds, live checks, component qualification and adoption.
+Started: 2026-10-05; updated for actual merged-source Store uploads on 2026-10-06. Projection PR54 and Deep PR312 are merged. This record distinguishes tests, builds, live checks, component qualification, adoption and Apple upload.
 
-## Current completion status
+## Final merged-source Apple upload
+
+[Run 37416550489](https://github.com/AstralDeep/AstralDeep/actions/runs/37416550489), attempt 1, succeeds from main `1bd7d087351bae2fd41205fa800368da19698d10`; signing/upload job `112116342263` completes at `2026-10-06T05:15:56Z`. It archives, signs, exports and strictly validates both products with Xcode 26.6 / `17F113`. Both uploads return `UPLOAD SUCCEEDED with no errors` and `No errors uploading archive`.
+
+- iOS/iPadOS and embedded Watch: Apple delivery `078b12ff-befb-48ee-ae7d-f120db8edf0b`, `2026-10-06T05:15:02Z`; IPA SHA-256 `eccf6118c7af7078869dabfa3acec8c9bb4e957b6f927790ea2759cd2140bc30`.
+- Universal Mac: Apple delivery `3e7116a9-f38d-4571-9ddc-f176701bcd36`, `2026-10-06T05:15:50Z`; PKG SHA-256 `792310e28b81434af4c32e0d3de1ad9a253da97c555309d75fab1d828a470e91`.
+- Provider artifact `11392166097`: raw ZIP matches provider SHA-256 `bf8609a61d7d4e41bf3f22e3c0d4a7a879571f9179c4cf76be14321f31a5e796`; both exported SHA256SUMS entries are independently rehashed. Artifact expires `2026-10-20T05:10:41Z`.
+- Root checks all three APPL plists as **1.8 / 67**, exact registered IDs and `DTXcodeBuild=17F113`; iOS arm64, Watch arm64_32/arm64 and Mac x86_64/arm64. `codesign --verify --deep --strict --verbose=2` exits zero for all three applications; `pkgutil --check-signature` exits zero for the Mac Store installer. `pkgutil --expand-full` and `ditto -xk` operate only on fresh task-owned extraction directories.
+- Full provider signing-job log is retained locally, SHA-256 `013c8b6c61d71f4390ea16a28fda0095fcde1c059410e197169d2d2c6501908f`. [release-upload-receipt.json](release-upload-receipt.json), SHA-256 `a44c503aa258ec2d9ea3dadf7464352a23829ff57ca6d4d270743c05eeb58027`, retains normalized source, bundle, toolchain and delivery identities. Raw signed exports and root receipts are retained under `/tmp/astral-094-apple-store-1_8-build67-37416550489`.
+
+No App Review submission, public release or post-upload processing status is claimed. No separate build-number inventory or provider/browser sign-in was performed. The owner explicitly directed these merges/uploads without waiting for remaining CI; no protected release decision or staging result is fabricated.
+
+## Exact reviewed component native results
+
+Projection Apple run `37414644374` at reviewed head `8c183ea13014cac3e307592fc6ce0fd7125e59b1` passes all nine jobs. Actual summaries and the Core Mac log prove **1,504 passed, two declared skips, zero failures/retries**: Core 296 on both platforms, iOS units 347, Mac units 365, iOS UI 33, Mac UI 14 plus one platform skip, Watch units 143 plus one protected-producer skip, Watch navigation 10. Root independently rehashes all retained provider ZIPs, reports, summaries, logs and **6,612 raw xcresult files**. Apple source/project/workflow bytes match both earlier pinned green `152a81c` and adopted merge `2da04449`.
+
+Final component receipt `/tmp/astral-094-apple-8c183ea-native-identities-final.json` has SHA-256 `302a954c6f66f231f36227da8f00752fd04eb3a40813d721fbc0ffa5f428882b`. Root verification `/tmp/astral-094-apple-8c183ea-root-independent-final.json` has SHA-256 `dbd7c27982476de637d56c5dd5284f61d8a8e484a1453a8edcd8ee05fbfc5da3`.
+
+Windows native job `112110461455` in run `37414644396` exceeds the thirty-minute budget and is canceled by the provider at `2026-10-06T05:08:30Z`. It does not finish tests or produce native changed-line coverage. Its single sixty-second dump shows main cleanup waiting for the reader condition and the reader calculating retained segment length; the underlying native stall remains unproven. Local 20-case/4-of-4 coverage stays separate. Root rehashes all 24 retained Windows evidence artifacts; final receipt `/tmp/astral-094-projection-windows-8c183ea-receipt.json` has SHA-256 `7d3f62a1da22016ae12c063e900fc7201d6c0659f1ae91986d45f87213f45cf3`.
+
+Sandbox deployment is not performed. The read-only documented-host probe with `ssh -T`, `BatchMode=yes`, strict host-key checking, a five-second connection bound and command `id -un` exits 255 at `2026-10-06T05:09:22Z`: `Permission denied (publickey,password)`. No authentication bypass, host mutation or owner-data query occurs. Existing image publication waits for successful main CI; the exact new image/deployment is not claimed.
+
+## Historical functional completion status before final publication
 
 The authorized repairs are implemented and committed. Projection PR54 is merged at `2da0444917bf9b3f733fa04955387409aab89c75` after the owner directs immediate merge/upload without waiting for remaining CI. Deep exact adoption and release follow-through are in progress; the dated final execution record distinguishes all source-bound results. Provider credentials persist before advisory testing; settings retain distinct actions and saved defaults; dashboards, accepted appearance, custom colors, Drafts and Advanced follow the shared web contract. Normal credential renewal and retained-form/retry ownership are repaired. Watch refresh, recent-chat replies and REST credentials retain captured owner/server/session fences. Its small-screen Home and empty Chat collapse repeated introductory headings, and the native navigation container supplies clock contrast while the body retains the accepted palette. The following functional/live table retains its original source-bound evidence; the dated release section records newer attempts.
 
