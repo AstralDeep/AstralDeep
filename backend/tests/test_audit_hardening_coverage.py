@@ -129,6 +129,31 @@ async def test_register_agent_validates_skill_scopes(monkeypatch):
     assert scope_map["ok_tool"] == "tools:read"
 
 
+async def test_register_agent_reads_the_stream_progress_interval(monkeypatch):
+    monkeypatch.setenv("DEFAULT_AGENT_OWNER", "")
+    monkeypatch.setenv("AGENT_API_KEY", "")
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    from orchestrator.orchestrator import Orchestrator
+
+    fake = _RegFakeOrch()
+    fake.register_agent = types.MethodType(Orchestrator.register_agent, fake)
+
+    def skill(name, **metadata):
+        return SimpleNamespace(id=name, description="d", input_schema={}, scope="tools:read",
+                               metadata={"streamable": True, "streaming_kind": "push", **metadata})
+
+    card = SimpleNamespace(agent_id="cov-agent-2", name="Cov", skills=[
+        skill("with_progress", persist_progress_s=15), skill("too_fast", persist_progress_s=1),
+        skill("not_a_number", persist_progress_s=True), skill("plain"),
+    ])
+    await fake.register_agent(None, SimpleNamespace(agent_card=card, api_key=""))
+
+    assert fake._streamable_tools["with_progress"]["persist_progress_s"] == 15.0
+    assert fake._streamable_tools["with_progress"]["kind"] == "push"
+    for name in ("too_fast", "not_a_number", "plain"):
+        assert "persist_progress_s" not in fake._streamable_tools[name]
+
+
 class _CredScrubFakeOrch:
     def __init__(self):
         self.local_agents = {}

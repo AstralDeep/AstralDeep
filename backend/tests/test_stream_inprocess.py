@@ -136,6 +136,117 @@ async def test_terminal_persists_via_loopback(env):
     assert persisted[0]["component_id"].startswith("wc_")
 
 
+class FakeOngoingStreamingAgent:
+    def __init__(self):
+        self.values = asyncio.Queue()
+        self.finish = asyncio.Event()
+        self.cancels = []
+
+    async def handle_mcp_request(self, ws, msg):
+        sid = msg.params["_stream_id"]
+        seq = 0
+        while not self.finish.is_set():
+            value = await self.values.get()
+            if value is None:
+                break
+            seq += 1
+            await ws.send_text(ToolStreamData(
+                request_id=msg.request_id, stream_id=sid, agent_id=AGENT, tool_name=msg.params["name"], seq=seq,
+                components=[{"type": "metric", "title": "M", "value": value, "id": sid}],
+            ).to_json())
+        await ws.send_text(ToolStreamEnd(request_id=msg.request_id, stream_id=sid).to_json())
+
+    async def _handle_stream_cancel(self, msg):
+        self.cancels.append(msg)
+
+
+@pytest.fixture
+def ongoing(env):
+    orch, ws, chat_id, user_id, _ = env
+    agent = FakeOngoingStreamingAgent()
+    orch.local_agents[AGENT] = agent
+    prior = flags._flags.get("stream_progress", False)
+    flags._flags["stream_progress"] = True
+    orch._streamable_tools[TOOL]["persist_progress_s"] = 5.0
+    yield orch, ws, chat_id, user_id, agent
+    flags._flags["stream_progress"] = prior
+
+
+async def _persisted_values(orch, chat_id, user_id):
+    live = await asyncio.to_thread(orch.workspace.live_components, chat_id, user_id)
+    return [component["value"] for component in live if component.get("type") == "metric"]
+
+
+async def _start(orch, ws, chat_id, user_id):
+    stream_id, _ = await orch.stream_manager.subscribe(
+        ws=ws, user_id=user_id, chat_id=chat_id, tool_name=TOOL, agent_id=AGENT, params={"interval_s": 3},
+        tool_metadata=orch._streamable_tools[TOOL],
+    )
+    return orch.stream_manager.subscription_for_stream(stream_id)
+
+
+async def test_progress_persists_while_the_stream_is_still_running(ongoing):
+    orch, ws, chat_id, user_id, agent = ongoing
+    sub = await _start(orch, ws, chat_id, user_id)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == [1]
+    assert sub.persist_done is False and sub.progress_persisted_at > 0
+    await agent.values.put(2)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == [1], "a second save inside the interval must wait"
+    sub.progress_persisted_at -= 6
+    await agent.values.put(2)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == [2]
+    saved_at = sub.progress_persisted_at
+    sub.progress_persisted_at -= 6
+    await agent.values.put(2)
+    await asyncio.sleep(0.2)
+    assert sub.progress_persisted_at == saved_at - 6, "unchanged content must not be saved again"
+    await agent.values.put(3)
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+    assert await _persisted_values(orch, chat_id, user_id) == [3]
+    assert sub.persist_done is True
+
+
+async def test_a_failed_progress_save_is_skipped_and_the_final_state_still_persists(ongoing, monkeypatch):
+    orch, ws, chat_id, user_id, agent = ongoing
+    sub = await _start(orch, ws, chat_id, user_id)
+    save = orch.run_detached_conversation_mutation
+
+    async def refuse(**_):
+        raise RuntimeError("conversation is busy")
+
+    monkeypatch.setattr(orch, "run_detached_conversation_mutation", refuse)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == []
+    assert sub.persist_done is False
+    monkeypatch.setattr(orch, "run_detached_conversation_mutation", save)
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+    assert await _persisted_values(orch, chat_id, user_id) == [1]
+    assert sub.persist_done is True
+
+
+@pytest.mark.parametrize("flag, interval", [(False, 5.0), (True, None)])
+async def test_progress_is_not_persisted_without_the_flag_or_the_tool_opting_in(ongoing, flag, interval):
+    orch, ws, chat_id, user_id, agent = ongoing
+    flags._flags["stream_progress"] = flag
+    if interval is None:
+        orch._streamable_tools[TOOL].pop("persist_progress_s")
+    sub = await _start(orch, ws, chat_id, user_id)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == []
+    assert sub.progress_persisted_at == 0
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+    assert await _persisted_values(orch, chat_id, user_id) == [1]
+
+
 async def test_cancel_reaches_in_process_agent(env):
     orch, ws, chat_id, user_id, agent = env
     await orch._cancel_stream_request(AGENT, "req-x", "stream-x")
