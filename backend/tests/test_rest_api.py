@@ -411,6 +411,21 @@ class TestAgentPermissionEndpoints:
         assert [a["id"] for a in agents] == ["agent-x"]
         assert agents[0]["tools"][0]["name"] == "tool_a"
 
+    def test_list_agents_survives_registration_between_draft_checks(self, client, orch):
+        orch.agent_cards = {
+            "agent-x": _FakeCard("agent-x"),
+            "agent-y": _FakeCard("agent-y"),
+        }
+
+        def register_during_check(agent_id):
+            orch.agent_cards.setdefault("agent-late", _FakeCard("agent-late"))
+            return False
+
+        orch._is_draft_agent.side_effect = register_during_check
+        resp = client.get("/api/agents", headers=AUTH_HEADER)
+        assert resp.status_code == 200
+        assert [a["id"] for a in resp.json()["agents"]] == ["agent-x", "agent-y"]
+
     def test_get_permissions_reads_all_views(self, client, orch):
         orch.agent_cards = {"agent-x": _FakeCard("agent-x")}
         resp = client.get("/api/agents/agent-x/permissions", headers=AUTH_HEADER)
@@ -481,6 +496,23 @@ class TestAgentPermissionEndpoints:
         data = resp.json()
         assert [a["id"] for a in data["agents"]] == ["agent-x"]
         assert data["total_tools"] == 1
+
+    def test_dashboard_survives_registration_during_build(self, client, orch):
+        orch.agent_cards = {
+            "agent-x": _FakeCard("agent-x"),
+            "agent-y": _FakeCard("agent-y"),
+        }
+
+        def register_during_build(user_id, agent_id, tools):
+            orch.agent_cards.setdefault("agent-late", _FakeCard("agent-late"))
+            return {"tool_a": True}
+
+        orch.tool_permissions.get_effective_permissions.side_effect = register_during_build
+        resp = client.get("/api/dashboard", headers=AUTH_HEADER)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [a["id"] for a in data["agents"]] == ["agent-x", "agent-y"]
+        assert data["total_tools"] == 2
 
 
 class TestToolSelectionEndpoints:

@@ -1,5 +1,7 @@
-"""Regression tests for the agent_cards readers that orchestrator/orchestrator.py runs on
-worker threads: each must finish when an agent registers or leaves on the event loop mid-read.
+"""Regression tests for the agent_cards readers that run on worker threads in
+orchestrator/orchestrator.py, orchestrator/tool_visibility.py, and
+orchestrator/projection_surfaces/agents.py: each must finish when an agent registers or
+leaves on the event loop mid-read.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator.orchestrator import Orchestrator
+from orchestrator.projection_surfaces.agents import _agent_rows
+from orchestrator.tool_visibility import eligible_tool_pairs
 from shared.protocol import AgentCard, AgentSkill, CandidateCapabilityMap
 
 _TIMEOUT = 30.0
@@ -202,3 +206,39 @@ def test_tool_owner_lookup_survives_registration_on_another_thread() -> None:
 
     assert owner == "beta-1"
 
+
+def test_eligible_tool_pairs_survive_registration_on_another_thread() -> None:
+    pause = _MidReadPause()
+    orch = _orchestrator(pause, allowed=frozenset({"alpha_tool", "beta_tool"}))
+
+    pairs = _read_while_mutating(
+        orch.agent_cards,
+        pause,
+        lambda: eligible_tool_pairs(orch, "user-1"),
+    )
+
+    assert [(agent_id, skill.id) for agent_id, skill in pairs] == [
+        ("alpha-1", "alpha_tool"),
+        ("beta-1", "beta_tool"),
+    ]
+
+
+def test_agent_surface_rows_survive_registration_on_another_thread() -> None:
+    pause = _MidReadPause()
+
+    def is_draft(agent_id: str) -> bool:
+        pause()
+        return False
+
+    orch = SimpleNamespace(
+        agent_cards={agent_id: _card(agent_id) for agent_id in _REGISTERED},
+        _is_draft_agent=is_draft,
+    )
+
+    rows = _read_while_mutating(
+        orch.agent_cards,
+        pause,
+        lambda: _agent_rows(orch, {}, set()),
+    )
+
+    assert [row["id"] for row in rows] == list(_REGISTERED)
