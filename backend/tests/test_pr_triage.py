@@ -17,7 +17,9 @@ def assert_contract(text):
     assert re.findall(r"(?m)^  ([\w-]+):$", text.split("jobs:\n", 1)[1]) == ["triage"]
     assert re.findall(r"(?m)^    if: (.*)$", text) == [
         "(github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')"
-        " && (github.ref == 'refs/heads/main')"
+        " && (github.ref == 'refs/heads/main' && (github.event_name != 'issue_comment'"
+        " || (github.event.issue.pull_request && contains(github.event.comment.body,"
+        " '/astral-triage close '))))"
     ]
     assert re.findall(r"(?m)^    timeout-minutes: (\d+)$", text) == ["5"]
     assert re.findall(r"(?m)^      (\S+): (read|write)$", text) == [
@@ -28,8 +30,10 @@ def assert_contract(text):
     assert not re.search(
         r"(?m)^\s*(?:- )?(?:run|secrets|env|id-token|contents|environment):", text
     )
-    assert "  group: pr-triage\n" in text
-    assert "  cancel-in-progress: false\n" in text
+    assert not re.search(r"(?m)^concurrency:", text)
+    assert re.findall(r"(?m)^    concurrency:$", text) == ["    concurrency:"]
+    assert re.findall(r"(?m)^      group: (.*)$", text) == ["pr-triage"]
+    assert re.findall(r"(?m)^      cancel-in-progress: (.*)$", text) == ["false"]
     triggers = text.split("on:\n", 1)[1].split("permissions:", 1)[0]
     assert re.findall(r"(?m)^  ([\w-]+):$", triggers) == [
         "issue_comment",
@@ -64,6 +68,16 @@ class PrTriageTests(unittest.TestCase):
             ("permissions: {}", "permissions: write-all"),
             ("cancel-in-progress: false", "cancel-in-progress: true"),
             ("group: pr-triage", "group: pr-triage-${{ github.run_id }}"),
+            ("github.event.issue.pull_request", "true"),
+            ("contains(github.event.comment.body, '/astral-triage close ')", "true"),
+            (
+                "    concurrency:\n      group: pr-triage\n      cancel-in-progress: false\n",
+                "",
+            ),
+            (
+                "jobs:\n",
+                "concurrency:\n  group: pr-triage\n  cancel-in-progress: false\njobs:\n",
+            ),
             ("types: [created]", "types: [created, edited]"),
             ("        default: true", "        default: false"),
             ("    steps:", "    env:\n      TOKEN: value\n    steps:"),
