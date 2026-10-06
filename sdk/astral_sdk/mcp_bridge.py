@@ -27,10 +27,15 @@ _META_PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
 _META_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 _META_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
 _SERVER_INFO = {"name": "astral-sdk-bridge", "version": "0.1.0"}
+_TRACKED_ID_LIMIT = 4096
 
 
 class _InvalidToolCall(Exception):
     pass
+
+
+def _is_valid_id(value: Any) -> bool:
+    return isinstance(value, (str, int)) and not isinstance(value, bool)
 
 
 def _error_response(request_id: Any, code: int, message: str, *, data: Any = None) -> dict[str, Any]:
@@ -218,6 +223,13 @@ class Bridge:
         import threading
 
         lines: "queue.Queue[Optional[str]]" = queue.Queue()
+        reader_seen_requests: set[Any] = set()
+        resolved_ids: set[Any] = set()
+
+        def _track_ids() -> None:
+            for tracked in (reader_seen_requests, resolved_ids):
+                while len(tracked) > _TRACKED_ID_LIMIT:
+                    tracked.pop()
 
         def _read_lines() -> None:
             try:
@@ -230,9 +242,19 @@ class Bridge:
                     except json.JSONDecodeError:
                         lines.put(raw)
                         continue
-                    if isinstance(message, dict) and "id" not in message:
-                        self._note_notification(message.get("method"), message.get("params"))
+                    if not isinstance(message, dict):
+                        lines.put(raw)
                         continue
+                    if "id" not in message:
+                        params = message.get("params")
+                        request_id = params.get("requestId") if isinstance(params, dict) else None
+                        if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id) \
+                                and request_id in reader_seen_requests and request_id not in resolved_ids:
+                            self._cancelled_inflight.add(request_id)
+                        continue
+                    if _is_valid_id(message.get("id")):
+                        reader_seen_requests.add(message["id"])
+                        _track_ids()
                     lines.put(raw)
             finally:
                 lines.put(None)
@@ -253,14 +275,14 @@ class Bridge:
                                                  "error": {"code": _PARSE_ERROR, "message": "invalid JSON"}})
                 continue
             request_id = request.get("id") if isinstance(request, dict) else None
-            self._inflight_id = request_id
             response = self.handle(request)
-            suppressed = isinstance(request_id, (str, int)) and not isinstance(request_id, bool) \
-                and request_id in self._cancelled_inflight
-            self._inflight_id = None
-            if suppressed:
+            if _is_valid_id(request_id):
+                suppressed = request_id in self._cancelled_inflight
                 self._cancelled_inflight.discard(request_id)
-                continue
+                resolved_ids.add(request_id)
+                _track_ids()
+                if suppressed:
+                    continue
             if response is not None:
                 self._write_message(out_stream, response)
 

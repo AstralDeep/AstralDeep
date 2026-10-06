@@ -150,20 +150,20 @@ def test_unknown_cancellation_is_ignored_and_the_id_stays_usable(fake_server):
     assert responses[0]["result"]["resultType"] == "complete"
 
 
-def test_cancellation_after_the_response_was_sent_is_ignored(fake_server):
-    bridge = _bridge(fake_server)
-    try:
-        first = _request("tools/list", request_id="req-1")
-        late_cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled",
-                       "params": {"requestId": "req-1"}}
-        second = _request("tools/list", request_id="req-2")
-        responses = _served_lines(bridge, first, late_cancel, second)
-    finally:
-        bridge.close()
-    assert [response["id"] for response in responses] == ["req-1", "req-2"]
+def test_cancellation_after_the_response_was_sent_is_ignored(fake_server, monkeypatch):
+    script = [
+        json.dumps(_request("tools/list", request_id="req-1")),
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                    "params": {"requestId": "req-1"}}),
+        json.dumps(_request("tools/list", request_id="req-1")),
+    ]
+    responses = _piped_stdio_lines(fake_server, monkeypatch, script, delay=0.5, slow=False)
+    assert [response["id"] for response in responses] == ["req-1", "req-1"]
+    assert responses[0]["result"]["resultType"] == "complete"
+    assert responses[1]["result"]["resultType"] == "complete"
 
 
-def _piped_stdio_lines(fake_server, monkeypatch, script, delay):
+def _piped_stdio_lines(fake_server, monkeypatch, script, delay, burst=False, slow=True):
     import os
     import time
 
@@ -176,13 +176,18 @@ def _piped_stdio_lines(fake_server, monkeypatch, script, delay):
         raise AstralHTTPError("work_not_found", code="work_not_found")
 
     bridge = _bridge(fake_server)
-    monkeypatch.setattr(bridge._client, "get_operation", slow_get_operation)
+    if slow:
+        monkeypatch.setattr(bridge._client, "get_operation", slow_get_operation)
 
     def _feed():
-        for line in script:
-            writer.write(line + "\n")
+        if burst:
+            writer.write("".join(line + "\n" for line in script))
             writer.flush()
-            time.sleep(0.02)
+        else:
+            for line in script:
+                writer.write(line + "\n")
+                writer.flush()
+                time.sleep(0.02)
         time.sleep(delay * 2)
         writer.close()
 
@@ -206,6 +211,18 @@ def test_cancellation_during_dispatch_suppresses_only_that_response(fake_server,
         json.dumps(_request("tools/list", request_id="req-8")),
     ]
     responses = _piped_stdio_lines(fake_server, monkeypatch, script, delay=0.4)
+    assert [response["id"] for response in responses] == ["req-8"]
+    assert responses[0]["result"]["resultType"] == "complete"
+
+
+def test_back_to_back_cancellation_still_suppresses_the_response(fake_server, monkeypatch):
+    script = [
+        json.dumps(_request("tools/call", params={"name": "astral_get_operation",
+                                                  "arguments": {"operation_id": "op-1"}}, request_id="req-7")),
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "req-7"}}),
+        json.dumps(_request("tools/list", request_id="req-8")),
+    ]
+    responses = _piped_stdio_lines(fake_server, monkeypatch, script, delay=0.4, burst=True)
     assert [response["id"] for response in responses] == ["req-8"]
     assert responses[0]["result"]["resultType"] == "complete"
 
