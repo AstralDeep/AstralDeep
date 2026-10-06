@@ -1,11 +1,13 @@
 """Tests for push-streaming to in-process built-in agents in
 orchestrator/orchestrator.py: local agents are routed through a LoopbackSocket into
-handle_agent_message, and cancels reach the agent directly.
+handle_agent_message, cancels reach the agent directly, and a declared duration is
+one deadline that reconnects cannot move.
 """
 
 import asyncio
 import os
 import sys
+import time
 import uuid
 from unittest.mock import MagicMock
 
@@ -13,6 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from orchestrator.stream_manager import LIFETIME_GRACE_SECONDS, StreamLifetime
 from shared.feature_flags import flags
 from shared.protocol import ToolStreamData, ToolStreamEnd
 
@@ -168,6 +171,7 @@ def ongoing(env):
     prior = flags._flags.get("stream_progress", False)
     flags._flags["stream_progress"] = True
     orch._streamable_tools[TOOL]["persist_progress_s"] = 5.0
+    orch._streamable_tools[TOOL]["lifetime"] = StreamLifetime("minutes", 60.0, 5.0, 1.0, 10.0)
     yield orch, ws, chat_id, user_id, agent
     flags._flags["stream_progress"] = prior
 
@@ -211,6 +215,30 @@ async def test_progress_persists_while_the_stream_is_still_running(ongoing):
     assert sub.persist_done is True
 
 
+async def test_a_stream_button_reaches_an_idle_socket_through_its_announced_first_save(ongoing):
+    orch, ws, chat_id, user_id, agent = ongoing
+    connection = str(uuid.uuid4())
+    orch._bind_conversation_scope(
+        ws, chat_id=chat_id, connection_generation=connection, request_generation=str(uuid.uuid4()),
+        purpose="hydration", base_render_revision=0,
+    )["snapshot_completed"] = True
+    await orch._handle_push_stream_subscribe(ws, chat_id, {"tool_name": TOOL, "params": {"interval_s": 4}}, user_id)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    ready, snapshot = [
+        frame for frame in ws.task.outputs
+        if frame.get("type") in ("conversation_commit_ready", "conversation_snapshot")
+    ]
+    assert ready["type"] == "conversation_commit_ready" and snapshot["type"] == "conversation_snapshot"
+    assert ws.task.outputs.index(snapshot) == ws.task.outputs.index(ready) + 1
+    assert ready["connection_generation"] == snapshot["connection_generation"] == connection
+    assert ready["request_generation"] == snapshot["request_generation"]
+    assert ready["render_revision"] == snapshot["render_revision"] == 1
+    assert [item["value"] for item in snapshot["canvas"]["components"] if item.get("type") == "metric"] == [1]
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+
+
 async def test_a_failed_progress_save_is_skipped_and_the_final_state_still_persists(ongoing, monkeypatch):
     orch, ws, chat_id, user_id, agent = ongoing
     sub = await _start(orch, ws, chat_id, user_id)
@@ -231,12 +259,16 @@ async def test_a_failed_progress_save_is_skipped_and_the_final_state_still_persi
     assert sub.persist_done is True
 
 
-@pytest.mark.parametrize("flag, interval", [(False, 5.0), (True, None)])
-async def test_progress_is_not_persisted_without_the_flag_or_the_tool_opting_in(ongoing, flag, interval):
+@pytest.mark.parametrize("flag, interval, bounded", [(False, 5.0, True), (True, None, True), (True, 5.0, False)])
+async def test_progress_is_not_persisted_without_the_flag_the_tool_opting_in_and_a_declared_duration(
+    ongoing, flag, interval, bounded,
+):
     orch, ws, chat_id, user_id, agent = ongoing
     flags._flags["stream_progress"] = flag
     if interval is None:
         orch._streamable_tools[TOOL].pop("persist_progress_s")
+    if not bounded:
+        orch._streamable_tools[TOOL].pop("lifetime")
     sub = await _start(orch, ws, chat_id, user_id)
     await agent.values.put(1)
     await asyncio.sleep(0.2)
@@ -245,6 +277,99 @@ async def test_progress_is_not_persisted_without_the_flag_or_the_tool_opting_in(
     await agent.values.put(None)
     await asyncio.sleep(0.25)
     assert await _persisted_values(orch, chat_id, user_id) == [1]
+
+
+class FakeRestartedAgent:
+    def __init__(self):
+        self.requests = []
+        self.cancels = []
+        self.emit = asyncio.Queue()
+
+    async def handle_mcp_request(self, ws, msg):
+        self.requests.append(msg)
+        sid = msg.params["_stream_id"]
+        await self.emit.get()
+        await ws.send_text(ToolStreamData(
+            request_id=msg.request_id, stream_id=sid, agent_id=AGENT, tool_name=msg.params["name"], seq=1,
+            components=[{"type": "metric", "title": "M", "value": len(self.requests), "id": sid}],
+        ).to_json())
+
+    async def _handle_stream_cancel(self, msg):
+        self.cancels.append(msg)
+
+
+async def test_a_reconnecting_client_cannot_keep_a_stream_past_its_requested_duration(ongoing):
+    orch, ws, chat_id, user_id, _ = ongoing
+    agent = FakeRestartedAgent()
+    orch.local_agents[AGENT] = agent
+    sub = await _start(orch, ws, chat_id, user_id)
+    await agent.emit.put(None)
+    await asyncio.sleep(0.2)
+    deadline = sub.expires_at
+    assert len(agent.requests) == 1 and await _persisted_values(orch, chat_id, user_id) == [1]
+
+    await orch.stream_manager.detach(ws)
+    await orch._resume_chat_streams(ws, user_id, chat_id)
+    await agent.emit.put(None)
+    await asyncio.sleep(0.2)
+    assert len(agent.requests) == 2 and len(agent.cancels) == 1 and sub.expires_at == deadline
+
+    await orch.stream_manager.detach(ws)
+    sub.expires_at = time.monotonic() - 1
+    acknowledged = len(_frames(ws, "stream_subscribed"))
+    await orch._resume_chat_streams(ws, user_id, chat_id)
+    await asyncio.sleep(0.2)
+
+    assert len(agent.requests) == 2 and len(_frames(ws, "stream_subscribed")) == acknowledged
+    assert not orch.stream_manager._active and not orch.stream_manager._dormant
+    assert sub.state_reason == "duration_elapsed" and sub.persist_done is True
+    assert await _persisted_values(orch, chat_id, user_id) == [2]
+
+
+class FakeCancellableAgent:
+    def __init__(self):
+        self.values = asyncio.Queue()
+        self.runs = {}
+        self.cancelled = asyncio.Event()
+
+    async def handle_mcp_request(self, ws, msg):
+        sid = msg.params["_stream_id"]
+        self.runs[sid] = asyncio.current_task()
+        seq = 0
+        try:
+            while True:
+                value = await self.values.get()
+                seq += 1
+                await ws.send_text(ToolStreamData(
+                    request_id=msg.request_id, stream_id=sid, agent_id=AGENT, tool_name=msg.params["name"], seq=seq,
+                    components=[{"type": "metric", "title": "M", "value": value, "id": sid}],
+                ).to_json())
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    async def _handle_stream_cancel(self, msg):
+        self.runs[msg.stream_id].cancel()
+
+
+async def test_an_overdue_in_process_run_saves_its_last_state_before_it_is_cancelled(ongoing):
+    orch, ws, chat_id, user_id, _ = ongoing
+    agent = FakeCancellableAgent()
+    orch.local_agents[AGENT] = agent
+    sub = await _start(orch, ws, chat_id, user_id)
+    await agent.values.put(1)
+    await agent.values.put(2)
+    await asyncio.sleep(0.2)
+    assert await _persisted_values(orch, chat_id, user_id) == [1] and sub.persist_done is False
+
+    sub.expires_at = time.monotonic() - LIFETIME_GRACE_SECONDS - 1
+    await agent.values.put(3)
+    await asyncio.wait_for(agent.cancelled.wait(), 5)
+
+    assert sub.state_reason == "duration_elapsed" and sub.persist_done is True
+    assert not orch.stream_manager._active and not orch.stream_manager._dormant
+    assert await _persisted_values(orch, chat_id, user_id) == [2]
+    assert any(frame.get("terminal") for frame in _frames(ws, "ui_stream_data"))
 
 
 async def test_cancel_reaches_in_process_agent(env):
