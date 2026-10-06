@@ -1,5 +1,19 @@
 # Apple controls candidate handoff
 
+## Current release preparation
+
+The owner authorizes qualification, paired merges, Sandbox deployment and App Store Connect upload, and fixes every uploaded Apple product to **1.8 / build 67**. [release-readiness.md](release-readiness.md) is the current execution record. Projection is published and remote-verified as [draft PR54](https://github.com/AstralDeep/AstralProjection/pull/54), head `152a81c4c064a3393293455a590bbd666f889cb4`. Deep integrates current main `6bb689ea` at local `47ccd03a03251161cf98b078eef143d2c01d2d62`; all four component pins remain unchanged. The other upstream `094-fhir-agent` directory and concurrent component releases are preserved.
+
+Both preparation Release archives succeed and root independently verifies all three products as 1.8/67. They use local Xcode 27 and are not Store-signed. The preceding Projection head passes hosted Python/web/Android but fails iOS/Watch fixtures and reaches the Windows timeout; all failures remain retained. Narrow fixture repairs pass locally; new pinned iOS/Watch/Mac/Core/lint jobs pass, with the final iOS UI lane pending. Python/web/Android/frozen package pass at the new head. Windows source remains a retained diagnostic cancellation with an actual reader-condition stack. Frozen Linux backend tests retain a teardown error; persistent agents and all twenty module suites pass. New merged-source checks pass 1,885 plus 112 authority tests, with 472/478 measured changed Python lines covered. Owner iPhone, iPad, Mac and Watch real-SSO navigation/appearance checks are recorded in the final sections of [verification.md](verification.md); Android candidate trusted-HTTPS/IAM remains unverified. The owner preview and encrypted settings remain available.
+
+The protected staging workflow has an unconditional failure for an unimplemented external credential issuer. Required runner/environments/activation and independently protected decision/publisher bindings are absent. The local canonical parser fails closed with missing provider inputs. Those verified infrastructure gaps prevent compliant Deep push/adoption/merge, deployment, signing and upload; qualifying staging and lead-attested provider evidence cannot be fabricated. No additional ASC login or pre-upload build-number question is needed. No merge, deployment, Store signing, upload or App Review submission has occurred.
+
+The narrow local Apple workflow repair removes both GitHub run-number overrides, so future qualified archives inherit 1.8/67 from the pinned project. Its regression and release/build-surface checks pass 131 with three existing skips; enabling the historical uploader still requires the protected publisher integration. Curated vault checkpoint `631578a3053b0adb007c4825a37285ff424402b7` is published; the next evidence checkpoint will retain the newer CI/archives and local workflow repair.
+
+## Historical local implementation handoff
+
+The following paragraphs retain the earlier local-only checkpoint. Their publication authorization, locked-Mac, owner-Watch and interim test limitations are superseded by the current state above and the dated final verification sections.
+
 The local candidate implements the owner-approved ordinary settings and web/mobile parity repair. Product publication, component CI qualification, adoption, deployment and release remain separate work. Deep and sibling Projection use `codex/094-apple-wrapper-controls`; the composed Projection pin remains unchanged.
 
 Review [the specification](spec.md), [control inventory](control-inventory.md) and [exact verification record](verification.md). Pending qualification tasks remain unchecked in [tasks.md](tasks.md).

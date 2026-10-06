@@ -1,10 +1,10 @@
 # Candidate Verification
 
-Date: 2026-10-05. Implementation is in local `codex/094-apple-wrapper-controls` branches in Deep and sibling Projection. This record distinguishes tests, builds, live checks, component qualification and adoption.
+Started: 2026-10-05; updated for release preparation on 2026-10-06. Deep remains local on `codex/094-apple-wrapper-controls`; sibling Projection's paired branch is published as draft PR54. This record distinguishes tests, builds, live checks, component qualification and adoption.
 
 ## Current completion status
 
-The authorized repairs are implemented and locally committed. Current source is Deep `e89c2a119a02c20be01b07bbeadcaea1624ef7ae` and Projection `7fa5ffbe7203f0c8b01edd93199626885c723179`. Provider credentials persist before advisory testing; settings retain distinct actions and saved defaults; dashboards, accepted appearance, custom colors, Drafts and Advanced follow the shared web contract. Normal credential renewal and retained-form/retry ownership are repaired. Watch refresh, recent-chat replies and REST credentials retain captured owner/server/session fences. Its small-screen Home and empty Chat collapse repeated introductory headings, and the native navigation container supplies clock contrast while the body retains the accepted palette.
+The authorized repairs are implemented and committed. Current source/workflow is Deep `47ccd03a03251161cf98b078eef143d2c01d2d62` and Projection `152a81c4c064a3393293455a590bbd666f889cb4`; exact hosted qualification remains pending. Provider credentials persist before advisory testing; settings retain distinct actions and saved defaults; dashboards, accepted appearance, custom colors, Drafts and Advanced follow the shared web contract. Normal credential renewal and retained-form/retry ownership are repaired. Watch refresh, recent-chat replies and REST credentials retain captured owner/server/session fences. Its small-screen Home and empty Chat collapse repeated introductory headings, and the native navigation container supplies clock contrast while the body retains the accepted palette. The following functional/live table retains its original source-bound evidence; the dated release section records newer attempts.
 
 | Current evidence | Result and boundary |
 |---|---|
@@ -14,7 +14,7 @@ The authorized repairs are implemented and locally committed. Current source is 
 | Owner live checks | iPhone/iPad/Mac provider Save/warning/reopen, Advanced Refresh/reconnect Retry, private reads, all five presets, custom-color validation/persistence and responsive dashboards pass with zero queries. Final signed phone/tablet installs retain owner SSO and expose the dashboard after explicit navigation. The owner completes real Watch SSO; current Home, empty Chat, More/Advanced and all five accepted palettes are observed, including readable Daylight clock contrast. Midnight is restored. |
 | Remaining qualification | Android candidate trusted-HTTPS/IAM; pinned/native/protected CI and service evidence. Broader host/DNS/timing and Firefox/WebKit failures remain recorded below. No passing full qualification or release is claimed. |
 
-Deep's component pin remains unchanged. Product branches are local and unpushed; no adoption, merge, deployment, release or store submission occurs. No dependency, migration, feature flag, primitive or frame/action vocabulary changes. Chronological sections below retain their original source boundaries; the final Watch completion supersedes earlier owner-approval, unpaired-Watch and locked-Mac limits without relabeling failed artifacts.
+Deep's component pin remains unchanged. The owner subsequently authorizes paired merges, deployment and upload, fixes Apple products to 1.8/67, and Projection is published as draft PR54. [release-readiness.md](release-readiness.md) and the release-preparation section below supersede earlier local-only publication boundaries. No adoption, merge, deployment, Store signing, upload or App Review submission has occurred. No dependency, migration, feature flag, primitive or frame/action vocabulary changes. Chronological sections retain their original source boundaries; the final Watch completion supersedes earlier owner-approval, unpaired-Watch and locked-Mac limits without relabeling failed artifacts.
 
 ## Identity and environment
 
@@ -275,3 +275,63 @@ Final public-result completion receipt `root-final-local-completion.json` SHA-25
 ## Final preservation checkpoint
 
 The five reviewed feature documents are locally committed at Deep `9371392c84bfeaa427ac8bc79b89ed964b6c08c7`, bound to production/fixture source `e89c2a11` and final Projection `7fa5ffbe7203f0c8b01edd93199626885c723179`. The separate four-file curated vault checkpoint is committed and pushed as `126e4cd9295d30ca94fb87b817966a8fa49372fd`, independently confirmed as `refs/heads/main` by `git ls-remote`. A concurrent vault update rejected the initial fast-forward push; rebase preserved the entire latest append-only log and all concurrent index/pages before the successful push. Unchanged vault AGENTS identity is verified. Product repositories are clean, on local `codex/094-apple-wrapper-controls`, and unpushed; all four Deep gitlinks and composition remain unchanged. The synthetic unit Watch is stopped separately; authenticated owner phone/tablet/Watch and ready preview remain available for review. T019/T024/T025 explicitly retain external/platform qualification limits.
+
+
+## Release preparation and exact hosted attempts — 2026-10-06
+
+The owner authorizes qualification, paired merges, Sandbox deployment and App Store Connect upload. Released **1.7/build 66** is owner-confirmed; all uploaded Apple products must be exactly **1.8/build 67**, without another build-number inventory query. App Review submission is outside the request. [release-readiness.md](release-readiness.md) records the remaining protected infrastructure requirements.
+
+Projection `e0d8eb8` updates all fourteen versioned project configurations and the exact identity/provenance test. Both Release archive commands succeed with `CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=` under local Xcode 27.0/27A266a:
+
+```text
+xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj -scheme AstralApp -configuration Release -destination 'generic/platform=iOS' -archivePath /tmp/astral-apple-094-release-1_8-build67-ios.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= archive
+xcodebuild -project apple-clients/AstralApp/AstralApp.xcodeproj -scheme AstralApp -configuration Release -destination 'generic/platform=macOS' -archivePath /tmp/astral-apple-094-release-1_8-build67-macos.xcarchive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= archive
+```
+
+Root independently verifies complete manifests/logs, all **90 artifact entries**, registered IDs and all three plists as **1.8/67**. iOS includes Watch; Mac has no Watch and only linker ad-hoc signing. Original archive receipt SHA-256 is `8ec1920244e1eccf99542968114d404e062df024b4c62c9adbba42a79f8624ce`; root receipt is `68bb18ed11397b68b1bc9c2dc89f8c52f6d1f5246c7ee2ffe67599500f580062`. Both reside under `/tmp/astral-apple-094-evidence/`. Later test-only commits preserve the archived production bytes but never replace the archive's `e0d8eb8` identity. These archives are unsigned preparation evidence, not protected release products.
+
+Deep `d099a6d` removes both `CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER"` overrides from `.github/workflows/apple-release.yml`. Its real pre-fix regression rejects those commands. The repaired release/build-surface suites pass **131, with three existing skips and one existing perf-marker warning**, exit zero:
+
+```text
+.venv/bin/python -m pytest -q -p no:cacheprovider scripts/tests/test_component_build_surfaces_074.py backend/tests/test_release_workflows_060.py
+```
+
+Log: `/tmp/astral-094-release-build-identity-gates.log`. Ruff and diff checks pass. The old uploader still lacks the required protected decision/environment/toolchain integration; this version repair does not activate it.
+
+At Projection `190ea62`, provider-bound outcomes are:
+
+| Workflow/job | Actual result |
+| --- | --- |
+| [android-ci 37409100581](https://github.com/AstralDeep/AstralProjection/actions/runs/37409100581) | Required build/unit/instrumented/aggregate pass; isolated next-major advisory is skipped as declared |
+| [Projection CI 37409100572](https://github.com/AstralDeep/AstralProjection/actions/runs/37409100572) | Python, web and frozen Windows package pass; Windows source job exceeds the thirty-minute cap, overall run canceled/required aggregate failed |
+| Web job `112093266037` | All **336** browser cases pass in the exact pinned Playwright image; this is job success, not whole-workflow success |
+| [apple-ci 37409100551](https://github.com/AstralDeep/AstralProjection/actions/runs/37409100551) | Lint, both Core lanes, Mac units, Mac UI and iOS UI pass. One iOS canvas fixture fails all permitted attempts; all three Watch console UI cases fail their old startup assertion. Required aggregate fails |
+
+Raw provider logs are `/tmp/astral-094-projection-{windows-190ea-timeout,ios-current-failed,watch-current-failed,web-190ea-success}.log`; native failure artifacts are retained separately. iOS's underlying error is the private Gestures framework's invalid transition, rather than a capture deadline error. Its bare WKWebView had no native host, and failed throws skipped dismantling. Watch's AX tree exposes the requested compact Home controls; only its test waits for the intentionally removed console heading. The Windows progress proves 263 passing call reports before the next result, without proving whether teardown or the next test body stalls.
+
+Projection `152a81c` repairs only native/browser fixtures and adds Windows thread diagnostics. Canvas mounts the same WKWebView in a retained native window, verifies existing readiness and performs bounded cleanup on success/throw; zoom, pixel difference, retained PNG and production timing assertions persist. Watch waits for Start here/New Chat and additionally denies the repeated console heading. The positive browser fetch fixture now has actual `status: 200, ok: true`; JSON/assertions/timers/denials remain. Windows `faulthandler_timeout=60` prints stacks without changing the thirty-minute job cap or any test timeout/retry/assertion.
+
+| Source-bound repair check | Result |
+| --- | --- |
+| Watch console UI, task-owned Watch simulator | **3/3 pass, zero retries**, log `/tmp/astral-094-watch-compact-ui.log` and its `.xcresult` |
+| Canvas iOS class, new task-owned simulator | **19/19 pass, zero skips/retries**, original receipt SHA `342ec52d372cec7824c8ace565e935ebd064c62e6c2c80d9175c76d5680269be`; root re-hashes all 78 result files and independently reads its result bundle, root receipt SHA `10fc923be28708e165e29c1d30ef16c0a09030ef1776ce15d6aaae8a640ebe97` |
+| Canvas Mac class, root | **20/20 pass, zero skips/retries**, `/tmp/astral-094-root-canvas-mac-receipt.json`, SHA `689e4c03977c1cb5c46203fe3a1117593243fa5b7d2a0e4f799439716571123c` |
+| Strict Swift lint, Ruff and immutable protocol/workflow guards | Pass; **135 plus four existing PowerShell skips**, `/tmp/astral-094-final-native-fixture-guards.log` |
+| Corrected WebKit positive HTTP fixture | Lint and only both affected cases **2/2 pass, zero retries/skips**. Root verifies source/log/JUnit; receipt SHA `5a9dafa90a3c90e3612c3305f4bd06f60f916562ccbd58f8b01ee853ec9b9237` |
+
+Native tests use Xcode 27 diagnostic tooling; pinned Xcode 26.6 remains required. New exact-head runs [37412519564](https://github.com/AstralDeep/AstralProjection/actions/runs/37412519564), [37412519575](https://github.com/AstralDeep/AstralProjection/actions/runs/37412519575) and [37412519511](https://github.com/AstralDeep/AstralProjection/actions/runs/37412519511) qualify Projection `152a81c`. No whole-suite rerun of unchanged source, timeout increase, skip or coverage waiver is used.
+
+At `152a81c`, Python, web, frozen Windows package and the Android required aggregate pass. After those independent Projection CI jobs finish, root stops run `37412519564` to expose the stalled Windows source stack, preserving its canceled status and failed required aggregate. Its actual sixty-second trace shows the high-output timeout catch has entered; cleanup waits for a condition held in reader line-notification, while the monitor waits on the cleanup lock. It does not demonstrate blocked OS pipe I/O. Raw log SHA-256 is `d26bfc79949360653dafc7124cde79862c0fbdcf4c8002cc750c96b91a9229dc`. No passing Windows source gate is claimed.
+
+The isolated Linux lane retains all inputs under `/private/tmp/astral-094-linux-qualification-4319f3ca6355`:
+
+- Production-image and boot diagnostics pass at frozen Deep `7334714`/old component pins. Image SHA is `732851bd6ac8d46faedeca2431c731f91f12cff58f29f1cb688d25db835d9aae`; boot receipt SHA is `da3bad78ed07d5c50403033fda349401846e9349a0514a1420c7c4cdcfde0818`. Root verifies these identities independently. They do not qualify the newer merged source or candidate Projection adoption.
+- Backend `tests` reports **12,552 passed, eleven declared skips, 36 subtests and one teardown error**, 1665.69 seconds. `test_high_tier_sends_one_tool_and_forces_it` fails runtime teardown with Plane `PoolInUseError`, not its assertion. Relevant source is unchanged from main, but an executed baseline proof is missing; the entire group remains failed. Receipt SHA `dcd760390db65a2620e6b8a846e9b3f18188230ae8732a2185c56a3d41338c20` preserves this result.
+- Backend `persistent_agents` passes **947/947, no errors/skips**, 651 seconds; receipt SHA `7ac3398e14742dee53a80bf4c0dd00aac6377c912bd2a7c5a7b062b7e07c6898`. All twenty original unrun `modules` suites pass **5,535 with seventeen declared skips and no errors**, receipt SHA `8a0ef03e4333ecefc979dd459e8e1a70aa2c8c1d2ef7c71129a7e8121ec77219`. Blocking-skip inventories remain empty; real staging/services still cannot be admitted.
+- The ordinary browser attempt reports **330 pass/six fail** because Docker `--network none` makes `navigator.onLine` false. Task-only internal networking proves an online NIC with no external route; only the six affected recovery cases run again and pass. The independent hosted job's **336/336** success stays separate from the failed local attempt. Responsive checks report **102/105**; two malformed positive-fetch setups are repaired above, and a separate WebKit beforeEach/EGL initialization failure remains separately retained. Tooling/lint/converter/offline-worker tests pass **89/89**. The resulting JS coverage union is diagnostic because the original ordinary whole run failed. Browser summary receipt SHA `04113e95cfaa8f32daf2bce84c09c9608d8d07d4fa091bdfe7842ae5c49d72df` binds all attempts and closures.
+
+The separate WebKit initialization failure receives exactly one permitted test retry. Selector preflight proves one original 1440px/200% tab-order case; **1/1 passes**, with graphics/assertions/deadlines unchanged. Retry receipt SHA is `56a714b916003871ed4a04ea2ae9bab872c2a4ce852db93ad4206ec8d3dab1c2`; the preceding invalid zero-test selector launch and original 102/3 attempt are preserved. This closes that individual case without relabeling the original whole run.
+
+Deep subsequently integrates the concurrent eight agent-card snapshot read repairs from main `6bb689ea` without conflicts, producing local `47ccd03`. Root reruns the existing affected integration runner plus upstream card/REST tests: **1,885 pass, one existing warning**, exit zero, 126.93 seconds. A separate targeted authority run passes **112/112** in 26.91 seconds. Every changed executable Python source has a measured current report: **472/478 (98.74%)**, each file at least ninety percent; authority is 68/68 and the probe edit is header/comment-only, with no executable delta. Source, coverage and logs are retained separately under `/tmp/astral-094-deep-merged-47ccd-*`; the frozen Linux `7334714` receipts are never relabeled.
+
+Default-branch release policy is unchanged between inspected `1f4e8fb` and new main `6bb689ea`. The first protected stage-deploy step still unconditionally exits for an unimplemented external ephemeral credential issuer; required isolated runner/environments/activation and independently protected publisher bindings are absent. Current-policy canonical preparation fails closed with missing provider inputs. No Deep push/adoption/merge, Sandbox deployment, Store signing/export/upload or App Review submission is claimed. All live owner data and encrypted settings remain outside Git/evidence fixtures.

@@ -58,6 +58,19 @@
 - [x] T026 Adopt only the exact CI-qualified Projection revision in Deep; otherwise document the outstanding qualification and unchanged pin in specs/094-apple-wrapper-controls/verification.md. Never fake adoption/deployment.
 - [x] T027 Reconcile task/spec/inventory state, preserve local recoverable commits without product push, and update curated ../kos-wiki/wiki/astral-apple-clients.md, synthesis-astral-native-ui-v2.md, index.md and log.md with a separate vault commit/push. The final four-file curated completion checkpoint is committed and pushed to vault main as 126e4cd9295d30ca94fb87b817966a8fa49372fd, independently verified with git ls-remote; prior 6e478109b719aeda372afca04a99cf2c21725ad7 and concurrent history are preserved. Product branches remain local. T019/T024/T025 retain incomplete qualification explicitly.
 
+## Authorized release follow-through
+
+The owner's later authorization includes qualification, paired merges, Sandbox deployment and upload. Every uploaded Apple product is fixed to 1.8/build 67; no separate pre-upload inventory query or App Review submission is included. [release-readiness.md](release-readiness.md) records the source boundaries and protected infrastructure blocker.
+
+- [x] T028 Prepare all fourteen Apple project configurations at 1.8/67; update identity/provenance, build both Release archives and independently verify iOS/Watch/Mac plists and complete manifests. Remove the Deep workflow's run-number overrides and pass its meaningful release/build-surface regression.
+- [x] T029 Integrate current main without losing concurrent work; push the ordinary component candidate and open/attach draft Projection PR54. Deep remains local with unchanged pins because its canonical/protected release prerequisites are absent.
+- [ ] T030 Close exact-head Projection Python/web/Windows/Android/Apple hosted CI and retain native artifacts, coverage, failures and declared skips.
+- [ ] T031 Close remaining real affected-client evidence and functional isolated staging, issuer, runners/environments and independently protected decision prerequisites. Current canonical preparation fails closed; local image/boot success with the old Projection pin is diagnostic only.
+- [ ] T032 Merge qualified Projection, adopt its exact SHA/manifest in Deep, complete composed canonical qualification, then merge Deep through the required protected gate.
+- [ ] T033 Deploy the exact approved immutable composed image to Sandbox and verify normal IAM/service/client behavior through the protected deployment path.
+- [ ] T034 Bind the protected Apple publisher to approved immutable decision/inputs and pinned toolchain; Store-sign, export, validate and upload 1.8/67 for iOS/embedded Watch and Mac, retaining provider delivery receipts.
+- [ ] T035 Publish the next curated vault checkpoint for the exact release-preparation and qualification state before declaring that checkpoint complete.
+
 ## Dependencies and Parallel Work
 
 Setup/foundation and read-only analysis gate precede implementation. T005 unblocks full native action qualification; renderer tests may be developed concurrently. Apple owns T006/011/016/017 and its T014/020 client presentation; mobile owns Android/Windows T007/008/012/018/020; server owns T009/013/014; root owns ROTE/web integration, inventory, gates and evidence. No concurrent edits to one file; coordinate shared semantics before integration. Tests expose defects before repairs. T010/015/019/021/022 depend on their relevant fixes; integration gates depend on the full candidate. Owner requests the full scope, so delivery does not stop at the first story.
