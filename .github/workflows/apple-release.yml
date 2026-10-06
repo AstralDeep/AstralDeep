@@ -229,10 +229,6 @@ jobs:
           fi
           echo "installed $count profile(s)"
 
-      # App Store Connect rejects duplicate build numbers. The CI run number is
-      # monotonic and collision-free. Passed straight to xcodebuild rather than
-      # rewritten into the project with agvtool: both Info.plists already read
-      # $(CURRENT_PROJECT_VERSION), so nothing in the tree needs mutating.
       - name: Render export options from secrets
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -261,7 +257,6 @@ jobs:
           xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" \
             -destination 'generic/platform=iOS' -configuration Release \
             -archivePath "$RUNNER_TEMP/AstralDeep-ios.xcarchive" \
-            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             ASTRAL_DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Manual \
             ASTRAL_PROFILE_IOS="$APPLE_PROFILE_IOS" ASTRAL_PROFILE_WATCH="$APPLE_PROFILE_WATCH"
           test -d "$RUNNER_TEMP/AstralDeep-ios.xcarchive/Products/Applications/AstralDeep.app/Watch/AstralWatch.app" \
@@ -275,7 +270,6 @@ jobs:
           xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" \
             -destination 'generic/platform=macOS' -configuration Release \
             -archivePath "$RUNNER_TEMP/AstralDeep-macos.xcarchive" \
-            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             ASTRAL_DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Manual \
             ASTRAL_PROFILE_MACOS="$APPLE_PROFILE_MACOS"
           # A macOS app must not contain a watchOS app. The embed phase is

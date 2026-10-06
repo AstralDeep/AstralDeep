@@ -201,6 +201,23 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "--ignore" not in component_tests
 
 
+def test_apple_archives_preserve_the_qualified_project_version() -> None:
+    workflow = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
+        encoding="utf-8"
+    )
+    release = _workflow_job(workflow, "release")
+    archive_commands = re.findall(
+        r"(?m)^          xcodebuild archive (?:[^\n]*\\\n)*[^\n]*", release
+    )
+    assert len(archive_commands) == 2
+    for command in archive_commands:
+        arguments = command.replace("\\\n", " ")
+        assert "-configuration Release" in arguments
+        assert "CURRENT_PROJECT_VERSION=" not in arguments
+        assert "MARKETING_VERSION=" not in arguments
+        assert "GITHUB_RUN_NUMBER" not in arguments
+
+
 def test_store_and_signing_workflows_require_explicit_release_events() -> None:
     apple = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
         encoding="utf-8"
