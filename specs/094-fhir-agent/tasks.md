@@ -30,7 +30,7 @@ Input: spec.md and plan.md in this directory.
 
 - [x] T013 Write backend/agents/fhir/tests with an in-memory FHIR server covering client, view models, every tool, the feed, dispatch and gating (SC-001).
 - [x] T014 Document the flag and settings in .env.example and docs/fhir-agent.md; list the agent in README.md.
-- [ ] T015 Record local, image-gate and live results in verification.md (SC-002, SC-003).
+- [x] T015 Record local, image-gate and live results in verification.md (SC-002, SC-003).
 
 ## Polish after rendering against live data
 
