@@ -1,6 +1,22 @@
 # Apple controls candidate handoff
 
-## Current owner-directed execution — 2026-10-06
+## Merged and uploaded — 2026-10-06
+
+Projection [PR54](https://github.com/AstralDeep/AstralProjection/pull/54) merged as `2da0444917bf9b3f733fa04955387409aab89c75`; Deep [PR312](https://github.com/AstralDeep/AstralDeep/pull/312) merged as `1bd7d087351bae2fd41205fa800368da19698d10`. Deep adopts that exact Projection commit and canonical UI digest `cb3efe80edfcd37cfa91d7794ec36a6cb200ffd16745b7d39b48d316b3b039e7`. Concurrent FHIR merges and the Plane, Primitives and LETS pins are preserved.
+
+[Apple upload run 37416550489](https://github.com/AstralDeep/AstralDeep/actions/runs/37416550489) succeeds from exact Deep `1bd7d087` using Xcode 26.6 / `17F113`. Apple validation and upload both succeed for **1.8 / build 67**, including embedded Watch. iOS/Watch delivery UUID is `078b12ff-befb-48ee-ae7d-f120db8edf0b` at 05:15:02 UTC; Mac delivery UUID is `3e7116a9-f38d-4571-9ddc-f176701bcd36` at 05:15:50 UTC. The signing job completes at 05:15:56 UTC and removes its ephemeral keychain. No App Review submission or public App Store release is claimed.
+
+[The verified upload receipt](release-upload-receipt.json) records provider identities, signatures, architectures and immutable export hashes. Root verifies the provider ZIP digest and both checksums, all three signed product plists as 1.8/67, registered bundle IDs, iOS arm64, Watch arm64_32/arm64 and universal Mac x86_64/arm64, strict code signatures and the Mac installer signature. Signed bundles remain in provider artifact `11392166097`, `apple-release-assets`, until October 20; local retained exports and full receipts are under `/tmp/astral-094-apple-store-1_8-build67-37416550489`.
+
+Exact reviewed Projection `8c183ea` passes all nine pinned Apple jobs: **1,504 tests, two declared skips, zero failures/retries**. Root independently rehashes the retained provider artifacts and **6,612 raw xcresult files**, verifies summaries and confirms Apple source/project/workflow bytes match the adopted merge. The native Windows source job exceeds its thirty-minute budget; no completed native coverage or success is claimed. The safe notification change's 20 local passes remain a separate result.
+
+Sandbox is **not deployed**: the October 6 read-only SSH probe to the documented host refuses this machine's authentication. Exact-main image publication is still dependent on the existing main CI publisher. Real Android IAM and full protected staging/release qualification remain open in [tasks.md](tasks.md). The earlier protected infrastructure gaps and failed whole-run diagnostics are retained; the owner's explicit immediate merge/upload instruction does not turn them into passed evidence.
+
+The curated vault delivery checkpoint is separately committed and pushed as `b03c8ea6a32b7474602c6c7e420a8368acb15cb2`, independently matched against remote main. It updates the three existing Apple/native pages, index and append-only log while preserving concurrent work.
+
+This documentation checkpoint changes no runtime, dependency, migration, feature flag, contract or component pin. The functional source and prior owner live verification retain their original boundaries below.
+
+## Historical owner-directed execution before the Deep merge — 2026-10-06
 
 The owner instructs immediate task PR merges and Apple1.8/build67 upload before morning without waiting for remaining CI. Projection [PR54](https://github.com/AstralDeep/AstralProjection/pull/54) merged at `2da0444917bf9b3f733fa04955387409aab89c75`, exact reviewed head `8c183ea13014cac3e307592fc6ce0fd7125e59b1`. Deep integrates current main `f89ba2ae` at local `9de87eac27a2a986ede82dffa7657c7e7a6aa40f`, including concurrent FHIR PR307/308, and prepares that exact Projection pin plus canonical UI digest `cb3efe80edfcd37cfa91d7794ec36a6cb200ffd16745b7d39b48d316b3b039e7`. Other component pins stay unchanged.
 

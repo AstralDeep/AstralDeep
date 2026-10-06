@@ -1,0 +1,125 @@
+{
+  "format": "astral.apple-upload-receipt/v1",
+  "verified_at": "2026-10-06T05:17:30.808259+00:00",
+  "source": {
+    "repository": "AstralDeep/AstralDeep",
+    "deep_commit": "1bd7d087351bae2fd41205fa800368da19698d10",
+    "projection_commit": "2da0444917bf9b3f733fa04955387409aab89c75",
+    "projection_reviewed_head": "8c183ea13014cac3e307592fc6ce0fd7125e59b1",
+    "ui_protocol_digest": "cb3efe80edfcd37cfa91d7794ec36a6cb200ffd16745b7d39b48d316b3b039e7"
+  },
+  "provider": {
+    "run_id": 37416550489,
+    "run_attempt": 1,
+    "job_id": 112116342263,
+    "url": "https://github.com/AstralDeep/AstralDeep/actions/runs/37416550489",
+    "event": "workflow_dispatch",
+    "ref": "main",
+    "conclusion": "success",
+    "created_at": "2026-10-06T05:02:15Z",
+    "completed_at": "2026-10-06T05:15:56Z"
+  },
+  "toolchain": {
+    "runner": "macos-26",
+    "xcode": "26.6",
+    "xcode_build": "17F113"
+  },
+  "version": "1.8",
+  "build": "67",
+  "deliveries": [
+    {
+      "platform": "iOS and embedded watchOS",
+      "delivery_uuid": "078b12ff-befb-48ee-ae7d-f120db8edf0b",
+      "delivered_at": "2026-10-06T05:15:02Z",
+      "validation": "success",
+      "upload": "success",
+      "file": "AstralDeep-ios-main.ipa",
+      "sha256": "eccf6118c7af7078869dabfa3acec8c9bb4e957b6f927790ea2759cd2140bc30"
+    },
+    {
+      "platform": "macOS",
+      "delivery_uuid": "3e7116a9-f38d-4571-9ddc-f176701bcd36",
+      "delivered_at": "2026-10-06T05:15:50Z",
+      "validation": "success",
+      "upload": "success",
+      "file": "AstralDeep-macos-main.pkg",
+      "sha256": "792310e28b81434af4c32e0d3de1ad9a253da97c555309d75fab1d828a470e91"
+    }
+  ],
+  "artifact": {
+    "id": 11392166097,
+    "name": "apple-release-assets",
+    "provider_zip_sha256": "bf8609a61d7d4e41bf3f22e3c0d4a7a879571f9179c4cf76be14321f31a5e796",
+    "expires_at": "2026-10-20T05:10:41Z"
+  },
+  "products": [
+    {
+      "bundle_identifier": "com.personalailabs.astraldeep",
+      "platform": "iphoneos",
+      "version": "1.8",
+      "build": "67",
+      "architectures": "arm64",
+      "xcode_build": "17F113",
+      "sdk": "iphoneos26.5",
+      "codesign_verify_exit": 0,
+      "signing_authorities": [
+        "Apple Distribution: Personalized AI Labs LLC (593LGH35GS)",
+        "Apple Worldwide Developer Relations Certification Authority",
+        "Apple Root CA"
+      ],
+      "executable_sha256": "3bc62998513b04e33a32e6e1837fd8045f54be76f57dd04590e756924fc14f8f"
+    },
+    {
+      "bundle_identifier": "com.personalailabs.astraldeep.watch",
+      "platform": "watchos",
+      "version": "1.8",
+      "build": "67",
+      "architectures": "arm64_32 arm64",
+      "xcode_build": "17F113",
+      "sdk": "watchos26.5",
+      "codesign_verify_exit": 0,
+      "signing_authorities": [
+        "Apple Distribution: Personalized AI Labs LLC (593LGH35GS)",
+        "Apple Worldwide Developer Relations Certification Authority",
+        "Apple Root CA"
+      ],
+      "executable_sha256": "18d5375e7e1f082920a064bad29212c4f8d4924562eb029ddd83ec982e50862a"
+    },
+    {
+      "bundle_identifier": "com.personalailabs.astraldeep",
+      "platform": "macosx",
+      "version": "1.8",
+      "build": "67",
+      "architectures": "x86_64 arm64",
+      "xcode_build": "17F113",
+      "sdk": "macosx26.5",
+      "codesign_verify_exit": 0,
+      "signing_authorities": [
+        "Apple Distribution: Personalized AI Labs LLC (593LGH35GS)",
+        "Apple Worldwide Developer Relations Certification Authority",
+        "Apple Root CA"
+      ],
+      "executable_sha256": "ee6a2487a29595ec65ca43cc06abc502ea1716a3f2403bde0dae6b9521720317"
+    }
+  ],
+  "package_signature_verify_exit": 0,
+  "provider_log_sha256": "013c8b6c61d71f4390ea16a28fda0095fcde1c059410e197169d2d2c6501908f",
+  "official_delivery_lines": [
+    "2026-10-06T05:12:45.0874310Z No errors validating archive at '/Users/runner/work/_temp/export-ios/AstralDeep.ipa'.",
+    "2026-10-06T05:13:37.6290770Z No errors validating archive at '/Users/runner/work/_temp/AstralDeep-macos-store-verified.pkg'.",
+    "2026-10-06T05:15:02.4663900Z UPLOAD SUCCEEDED with no errors",
+    "2026-10-06T05:15:02.4664280Z Delivery UUID: 078b12ff-befb-48ee-ae7d-f120db8edf0b",
+    "2026-10-06T05:15:02.4684690Z No errors uploading archive at '/Users/runner/work/_temp/export-ios/AstralDeep.ipa'.",
+    "2026-10-06T05:15:50.4024100Z UPLOAD SUCCEEDED with no errors",
+    "2026-10-06T05:15:50.4032300Z Delivery UUID: 3e7116a9-f38d-4571-9ddc-f176701bcd36",
+    "2026-10-06T05:15:50.4375370Z No errors uploading archive at '/Users/runner/work/_temp/AstralDeep-macos-store-verified.pkg'."
+  ],
+  "boundaries": {
+    "uploaded": true,
+    "app_review_submitted": false,
+    "public_app_store_release_observed": false,
+    "post_upload_processing_observed": false,
+    "protected_release_decision_created": false,
+    "sandbox_deployed": false
+  }
+}

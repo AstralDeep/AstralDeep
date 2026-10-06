@@ -4,7 +4,20 @@ Prepared: 2026-10-06. Owner release and version decisions were made on October 5
 
 The owner authorizes finishing qualification, paired merges, Sandbox deployment and App Store Connect upload. Every uploaded iOS, embedded Watch and macOS product must carry **version 1.8, build 67**. Released 1.7/build 66 is owner-confirmed. No separate pre-upload build-number lookup or App Review submission is part of this task.
 
-## Current owner-directed execution — 2026-10-06
+## Completed owner-directed merges and Store uploads — 2026-10-06
+
+Both task PRs are merged: [Projection PR54](https://github.com/AstralDeep/AstralProjection/pull/54) at `2da0444917bf9b3f733fa04955387409aab89c75` and [Deep PR312](https://github.com/AstralDeep/AstralDeep/pull/312) at `1bd7d087351bae2fd41205fa800368da19698d10`. The [main-ref upload](https://github.com/AstralDeep/AstralDeep/actions/runs/37416550489) succeeds from exact `1bd7d087`, with pinned Xcode 26.6 / `17F113` and repository-provisioned Store signing. Both products pass strict Apple validation and upload, without renumbering **1.8 / build 67**.
+
+| Uploaded product | Apple delivery receipt | Export SHA-256 |
+| --- | --- | --- |
+| iOS/iPadOS with embedded Watch | `078b12ff-befb-48ee-ae7d-f120db8edf0b`, 05:15:02 UTC | `eccf6118c7af7078869dabfa3acec8c9bb4e957b6f927790ea2759cd2140bc30` |
+| Universal macOS | `3e7116a9-f38d-4571-9ddc-f176701bcd36`, 05:15:50 UTC | `792310e28b81434af4c32e0d3de1ad9a253da97c555309d75fab1d828a470e91` |
+
+Root independently verifies all three product versions, registered IDs, architectures, strict code signatures and the Mac installer signature, plus the provider ZIP and export checksums. [release-upload-receipt.json](release-upload-receipt.json) retains source, job and delivery identities; provider signed artifact `11392166097` expires October 20. The signed job completes and cleans up at 05:15:56 UTC. App Review submission, public availability and post-upload processing status are not claimed.
+
+Exact reviewed Projection Apple CI passes nine jobs with **1,504 tests and two declared skips**, without failures/retries. Native Windows qualification times out at thirty minutes and publishes no completed native changed-line decision. The earlier failed parent diagnostics, corrected narrow regressions and protected infrastructure gaps remain explicit. Sandbox deployment is pending: this machine's read-only SSH authentication probe is refused; the existing immutable image publisher still depends on main CI. See [handoff.md](handoff.md) for the current boundary.
+
+## Historical owner-directed execution before the Deep merge — 2026-10-06
 
 The owner instructs immediate task PR merges and Apple1.8/build67 upload before morning without waiting for remaining CI. Projection [PR54](https://github.com/AstralDeep/AstralProjection/pull/54) merged at `2da0444917bf9b3f733fa04955387409aab89c75`, exact reviewed head `8c183ea13014cac3e307592fc6ce0fd7125e59b1`. Deep integrates current main `f89ba2ae` at local `9de87eac27a2a986ede82dffa7657c7e7a6aa40f`, including concurrent FHIR PR307/308, and prepares that exact Projection pin plus canonical UI digest `cb3efe80edfcd37cfa91d7794ec36a6cb200ffd16745b7d39b48d316b3b039e7`. Other component pins stay unchanged.
 
@@ -57,7 +70,7 @@ The following observations were collected against default-branch policy `1f4e8fb
 
 Default-branch bootstrap verifier SHA-256: `48f72aa8d4c759da2066c186b3d5a0d8fd7dc5cf183aacca343252768247dc37`; lead allowlist SHA-256: `2882305099ce2ce2ad77956e150ef4b08f69283e444c6cbc33b185890b9b4b96`. The clean policy checkout is `/tmp/astral-094-release-policy-main`. Local failure receipt is `/tmp/astral-094-release-local-failure.json`. These are diagnostic identities, not release authorization.
 
-## Remaining execution order
+## Prior qualification-first execution order
 
 1. Close exact-head component CI and remaining affected-client live evidence. Preserve declared skips, failures, coverage reports and original attempt identities.
 2. Integrate the functional external credential issuer and isolated staging runner, install required environments/variables and independently protected workflow/ruleset identities under the existing reviewed design. Produce full canonical staging, service, native and coverage evidence; complete the current-policy local parser and protected decision.

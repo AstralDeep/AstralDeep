@@ -75,8 +75,8 @@ The owner's later authorization includes qualification, paired merges, Sandbox d
 
 The owner directs merge/upload before morning without waiting for CI. T030/T031 and the full protected portions of T032/T034 remain incomplete as qualification obligations; this execution does not invent a protected decision or turn failed evidence green.
 
-- [ ] T036 Complete owner-directed task PR merges with exact-head matching, adopt Projection2da04449/canonical contract in Deep, preserve concurrent main and source-bound evidence. Projection PR54 is merged; Deep merge is pending.
-- [ ] T037 Complete the owner-directed main-ref upload through repository-provisioned signing and strict Store validation, pinnedXcode26.6/17F113 and project1.8/67; retain exact upload receipts and curate the checkpoint. No separate collision lookup or App Review submission.
+- [x] T036 Complete owner-directed task PR merges with exact-head matching, adopt Projection 2da04449/canonical contract in Deep, preserve concurrent main and source-bound evidence. Projection PR54 and Deep PR312 are merged at 2da04449 and 1bd7d087; other component pins remain unchanged.
+- [x] T037 Complete the owner-directed main-ref upload through repository-provisioned signing and strict Store validation, pinned Xcode 26.6/17F113 and project 1.8/67; retain exact upload receipts and curate the checkpoint. Run 37416550489 succeeds from exact 1bd7d087. Both Apple delivery UUIDs, signed versions, code/package signatures and checksums are independently verified in release-upload-receipt.json; curated vault delivery commit b03c8ea6a32b7474602c6c7e420a8368acb15cb2 is pushed and remote-verified. No separate collision lookup or App Review submission.
 
 ## Dependencies and Parallel Work
 
