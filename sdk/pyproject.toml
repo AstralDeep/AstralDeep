@@ -19,7 +19,7 @@ dependencies = [
 # (Constitution V) — this package is built, tested and distributed entirely
 # outside that image (see the `sdk` CI job in .github/workflows/ci.yml).
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=2.0"]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.25"]
 langchain = ["langchain-core>=0.2"]
