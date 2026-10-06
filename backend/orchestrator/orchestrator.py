@@ -16385,7 +16385,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def _find_tool_owner(self, tool_name: str) -> Optional[str]:
         if not tool_name:
             return None
-        for agent_id, card in self.agent_cards.items():
+        for agent_id, card in list(self.agent_cards.items()):
             for skill in getattr(card, "skills", []) or []:
                 if getattr(skill, "id", None) == tool_name:
                     return agent_id
@@ -21899,7 +21899,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             for o in self.user_agent_registry.get_all_agent_ownership()
         }
         agent_list = []
-        for agent_id, card in self.agent_cards.items():
+        for agent_id, card in list(self.agent_cards.items()):
             if self._is_draft_agent(agent_id):
                 continue
             available_tools = [s.id for s in card.skills]
@@ -21970,7 +21970,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def compute_tools_available_for_user(
         self, user_id: str, draft_agent_id: Optional[str] = None
     ) -> bool:
-        for agent_id, card in self.agent_cards.items():
+        for agent_id, card in list(self.agent_cards.items()):
             if agent_id not in self.agents and agent_id not in self.local_agents:
                 continue
             if draft_agent_id and agent_id != draft_agent_id:
@@ -22100,7 +22100,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         exc_info=True,
                     )
             agents = []
-            for agent_id, card in self.agent_cards.items():
+            for agent_id, card in list(self.agent_cards.items()):
                 if self._is_draft_agent(agent_id):
                     continue
                 available_tools = [s.id for s in card.skills]
