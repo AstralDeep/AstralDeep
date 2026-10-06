@@ -50,7 +50,7 @@ def eligible_tool_pairs(
                 machineless = False
         return machineless
 
-    for agent_id, card in orchestrator.agent_cards.items():
+    for agent_id, card in list(orchestrator.agent_cards.items()):
         if agent_id not in orchestrator.agents and agent_id not in orchestrator.local_agents:
             excluded(agent_id, None, "not_connected")
             continue
