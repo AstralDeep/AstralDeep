@@ -68,7 +68,8 @@ An operator turns the agent on for one deployment by configuration and off again
 - **FR-009**: The live feed MUST end within its requested duration and MUST delete its subscriptions on normal completion, failure and abandonment.
 - **FR-010**: Display thresholds and reference intervals MUST be labelled as presentation aids on every card that uses them.
 - **FR-012**: Cards whose data can be streamed MUST offer the stream through an astralprims button only while `tool_streaming` and `stream_progress` are both on. A streamed card MUST carry no author id so the stream and its saved state share one canvas component.
-- **FR-013**: With `FF_STREAM_PROGRESS` on, the orchestrator MUST save a bridged push stream's latest content to the canvas while it runs, only for tools that declare `persist_progress_s`, no more often than that interval and only when the content changed. With the flag off, stream behavior MUST be unchanged.
+- **FR-013**: With `FF_STREAM_PROGRESS` on, the orchestrator MUST save a bridged push stream's latest content to the canvas while it runs, only for tools that declare `persist_progress_s` and a duration argument, no more often than that interval and only when the content changed. With the flag off, stream behavior MUST be unchanged.
+- **FR-014**: The orchestrator MUST hold a push stream whose tool declares a duration argument to one lifetime, counted from the stream's first start. Pausing and resuming MUST NOT move the deadline, a paused stream whose deadline has passed MUST be ended instead of resumed, and a run still going 30 seconds after the deadline MUST be ended.
 - **FR-011**: When the server holds more readings or charted doses than a view reads, the view MUST keep the most recent ones and state on the card that it shows a subset. Thinning a series for a chart MUST keep each interval's highest and lowest value.
 
 ## Success Criteria
