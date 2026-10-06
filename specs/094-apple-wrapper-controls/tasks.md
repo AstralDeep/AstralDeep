@@ -69,7 +69,14 @@ The owner's later authorization includes qualification, paired merges, Sandbox d
 - [ ] T032 Merge qualified Projection, adopt its exact SHA/manifest in Deep, complete composed canonical qualification, then merge Deep through the required protected gate.
 - [ ] T033 Deploy the exact approved immutable composed image to Sandbox and verify normal IAM/service/client behavior through the protected deployment path.
 - [ ] T034 Bind the protected Apple publisher to approved immutable decision/inputs and pinned toolchain; Store-sign, export, validate and upload 1.8/67 for iOS/embedded Watch and Mac, retaining provider delivery receipts.
-- [ ] T035 Publish the next curated vault checkpoint for the exact release-preparation and qualification state before declaring that checkpoint complete.
+- [x] T035 Publish curated release-preparation and actual Projection-merge checkpoints separately as dcc222e797646f2b4a392b318e0cb74844bbc0ac and854d1a8d2544ff3b63f3da028a1a9f8024d8a057; remote main is independently verified. Later merge/upload states require their own checkpoint.
+
+## October 6 immediate execution instruction
+
+The owner directs merge/upload before morning without waiting for CI. T030/T031 and the full protected portions of T032/T034 remain incomplete as qualification obligations; this execution does not invent a protected decision or turn failed evidence green.
+
+- [ ] T036 Complete owner-directed task PR merges with exact-head matching, adopt Projection2da04449/canonical contract in Deep, preserve concurrent main and source-bound evidence. Projection PR54 is merged; Deep merge is pending.
+- [ ] T037 Complete the owner-directed main-ref upload through repository-provisioned signing and strict Store validation, pinnedXcode26.6/17F113 and project1.8/67; retain exact upload receipts and curate the checkpoint. No separate collision lookup or App Review submission.
 
 ## Dependencies and Parallel Work
 

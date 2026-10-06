@@ -20746,6 +20746,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe fallback audit failed (non-fatal)", exc_info=True)
 
     def _typesafe_record_outcome(self, user_id: str, outcome) -> None:
+        if getattr(self, "_typesafe_outcomes_closing", False):
+            return
         store = getattr(self, "_typesafe_store", None)
         credential_outcome = getattr(outcome, "credential_outcome", None)
         fingerprint = getattr(outcome, "fingerprint", None)
@@ -22886,6 +22888,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _close_started_services(self) -> None:
         task = getattr(self, "_started_services_close_task", None)
         if task is None:
+            self._typesafe_outcomes_closing = True
             task = asyncio.create_task(
                 self._close_started_services_once(),
                 name="orchestrator-started-services-close",
@@ -22968,6 +22971,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await self.async_task_manager.stop_retention_sweep()
                 finally:
+                    typesafe_tasks = tuple(
+                        getattr(self, "_typesafe_outcome_tasks", ())
+                    )
+                    if typesafe_tasks:
+                        await asyncio.gather(
+                            *typesafe_tasks, return_exceptions=True
+                        )
                     voice_close_error: BaseException | None = None
                     voice_services = getattr(self, "voice_services", None)
                     if voice_services is not None:

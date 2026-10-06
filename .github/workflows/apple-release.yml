@@ -36,6 +36,8 @@ permissions:
 env:
   PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
   SCHEME: AstralApp
+  XCODE_VERSION: "26.6"
+  XCODE_BUILD: "17F113"
 
 jobs:
   # Cheap Linux gate: a tag push or main-ref manual dispatch is the only release
@@ -54,10 +56,10 @@ jobs:
           echo "release: explicit event=${{ github.event_name }} ref=${{ github.ref }}"
 
   release:
-    name: Archive, sign, upload and submit
+    name: Archive, sign and upload
     needs: gate
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.gate.outputs.release == 'true') }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -65,8 +67,23 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Select the latest stable Xcode
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+      - name: Select exact Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
+            [[ -d "$candidate" ]] || continue
+            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
+               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
+              selected="$candidate"
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
+          sudo xcode-select --switch "$selected/Contents/Developer"
+          [[ "$(xcodebuild -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]]
+          [[ "$(xcodebuild -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]
 
       - name: Require the pinned Mac Store package signer
         run: test -f components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py
@@ -323,7 +340,6 @@ jobs:
       # workflow artifact so the publish job can run with `contents: write`
       # on a Linux runner while this signing job keeps `contents: read`.
       - name: Stage the exported bundles for the release assets
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
           STAGE="$RUNNER_TEMP/release-assets"
           mkdir -p "$STAGE"
@@ -333,7 +349,6 @@ jobs:
           echo "ASSET_STAGE=$STAGE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           name: apple-release-assets
           path: ${{ env.ASSET_STAGE }}
@@ -433,4 +448,3 @@ jobs:
             `.ipa` / `.pkg` are the exact App-Store-signed bundles (not Developer-ID
             notarized), kept here as evidence and for Apple-registered devices;
             `SHA256SUMS` covers both.
-

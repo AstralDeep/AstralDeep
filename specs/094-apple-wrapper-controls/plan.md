@@ -64,3 +64,7 @@ Run narrow meaningful tests first, then affected component gates once the integr
 ## Complexity Tracking
 
 No constitution exception or additional architecture layer. Form semantics helpers normalize the existing wire contract; durable policy and success authority remain server-owned.
+
+## October 6 owner-directed release execution
+
+The owner explicitly directs immediate task PR merges and Apple upload without waiting for remaining CI. Preserve all measured test/coverage failures and the protected-infrastructure audit; use exact reviewed merge identities and repository-provisioned signing through the existing main-ref manual uploader. Adopt merged Projection2da04449 and its canonical protocol digest, remove run-number overrides, and select the same exact Xcode26.6/17F113 used by the passing native lane. Both export templates already disable automatic version/build management. Every uploaded product remains1.8/67; App Review submission remains outside scope.

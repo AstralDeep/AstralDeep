@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-05
 
-**Status**: Implemented candidate; component CI and protected adoption/release remain pending. Projection draft PR54 is published. The owner approved implementation, paired merges, Sandbox deployment and Apple upload, fixing every uploaded Apple product to version 1.8 / build 67.
+**Status**: Implemented; Projection PR54 merged. The owner directs immediate paired merge and Apple 1.8/build67 upload without waiting for remaining CI. Exact component adoption and Deep release follow-through are in progress; complete protected qualification is not claimed.
 
 **Input**: "Open up the simulator and click on every single button that you can find in the app wrapper. You don't need to send a query in. Most of the issues stem from buttons not working in the settings modal. Find any of these issues and create a spec, then stop so I can review. Do this quickly." Follow-up: "The dashboard interface is inconsistent with the web client. That needs to be fixed, along with all other consistency issues between web and mobile. Mobile/Apple clients should follow web design and function."
 

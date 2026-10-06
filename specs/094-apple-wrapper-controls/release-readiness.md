@@ -4,7 +4,17 @@ Prepared: 2026-10-06. Owner release and version decisions were made on October 5
 
 The owner authorizes finishing qualification, paired merges, Sandbox deployment and App Store Connect upload. Every uploaded iOS, embedded Watch and macOS product must carry **version 1.8, build 67**. Released 1.7/build 66 is owner-confirmed. No separate pre-upload build-number lookup or App Review submission is part of this task.
 
-## Source and publication state
+## Current owner-directed execution — 2026-10-06
+
+The owner instructs immediate task PR merges and Apple1.8/build67 upload before morning without waiting for remaining CI. Projection [PR54](https://github.com/AstralDeep/AstralProjection/pull/54) merged at `2da0444917bf9b3f733fa04955387409aab89c75`, exact reviewed head `8c183ea13014cac3e307592fc6ce0fd7125e59b1`. Deep integrates current main `f89ba2ae` at local `9de87eac27a2a986ede82dffa7657c7e7a6aa40f`, including concurrent FHIR PR307/308, and prepares that exact Projection pin plus canonical UI digest `cb3efe80edfcd37cfa91d7794ec36a6cb200ffd16745b7d39b48d316b3b039e7`. Other component pins stay unchanged.
+
+Pinned Apple CI at152a81c passes all nine jobs: Core296 on both platforms, Mac365, iOS347, Watch143+one producer skip and navigation10, iOS UI33, Mac UI14+one platform skip, with no failures/retries. Root independently verifies37 ZIP/report/log identities and6,738 raw xcresult files. The final Windows notification repair passes20 focused cases and4/4 changed lines with both branches covered; exact8c183ea hosted CI is still running and is not represented as passing.
+
+The main-ref uploader is being pinned to macOS26 / Xcode26.6 /17F113 and retains repository signing material, strict Apple validation, exported version preservation and normal registered identities. Local composition verification passes; release/build-surface/composition regression passes251 with three existing skips. The reproduced TypeSafe shutdown race is repaired by joining admitted writers before strict Plane teardown; all five real-factory/pinned-Plane regression cases pass with6/6 added statements and all4 branch outcomes. The failed pre-fix and fixture attempts remain retained. Deep PR/merge and Store upload are pending at this checkpoint. The owner-directed execution does not fabricate the previously unavailable protected release decision or staging proof.
+
+Curated checkpoints `dcc222e797646f2b4a392b318e0cb74844bbc0ac` and `854d1a8d2544ff3b63f3da028a1a9f8024d8a057` are separately committed/pushed and independently remote-verified; the latter records the owner instruction and actual Projection merge. All original source-bound diagnostics below remain retained.
+
+## Prior qualification-first source and publication state
 
 | Repository or artifact | Exact boundary | State |
 | --- | --- | --- |

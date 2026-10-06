@@ -206,6 +206,12 @@ def test_apple_archives_preserve_the_qualified_project_version() -> None:
         encoding="utf-8"
     )
     release = _workflow_job(workflow, "release")
+    assert "runs-on: macos-26" in release
+    assert 'XCODE_VERSION: "26.6"' in workflow
+    assert 'XCODE_BUILD: "17F113"' in workflow
+    assert "Select exact Xcode" in release
+    assert "Build version ${XCODE_BUILD}" in release
+    assert "sort -V | tail -1" not in release
     archive_commands = re.findall(
         r"(?m)^          xcodebuild archive (?:[^\n]*\\\n)*[^\n]*", release
     )
