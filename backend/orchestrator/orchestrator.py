@@ -7944,10 +7944,12 @@ class Orchestrator:
                     execution_websocket, work.frame.raw
                 )
                 if stage.dirty:
+                    # Clients open a commit fence only for a submitted turn, so this commit needs the prelude
                     await self._publish_conversation_snapshot(
                         execution_websocket,
                         stage=stage,
                         request_generation=request_generation,
+                        server_initiated=True,
                     )
                 else:
                     await asyncio.to_thread(

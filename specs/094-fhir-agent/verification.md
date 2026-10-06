@@ -47,7 +47,7 @@ Performed in the owner's signed-in browser session against the eICU replay servi
 | "Watch live feed" on the census card | `f3b5944f` | card appeared without a chat turn and updated by itself to 127 notifications, flagged readings and a discharge |
 | "Stream live vitals" / "Stream live" | `f3b5944f` | live card appeared below the static one and updated when the feed minute advanced |
 | "Live activity" example through chat | `f3b5944f` | one feed card, updated by itself after about a minute to 267 notifications, 1 admission and 2 flagged readings |
-| "Refresh" on the vital sign card | `f3b5944f` | re-ran in place with no chat turn: the card moved from 19:45 to 19:46 and its reading counts changed |
+| "Refresh" on the vital sign card | `f3b5944f` | re-ran with no chat turn while a live stream in the same chat was saving progress: the card moved from 19:45 to 19:46 and its reading counts changed. "Card buttons on an idle tab" below says what this did not show |
 
 Found during the click-through and fixed:
 
@@ -56,6 +56,28 @@ Found during the click-through and fixed:
 - Push streams were not live in the web client: the built-in `live_system_metrics` stream also stayed at its first chunk. `FF_STREAM_PROGRESS` fixes this for tools that opt in.
 
 Known limitation: each saved stream update re-renders the canvas, and the current web client returns to the top of the canvas when that happens. Updates are saved only when content changed, about once a minute for this feed.
+
+## Card buttons on an idle tab
+
+Recorded 2026-10-06 UTC.
+
+The "Refresh" result above was seen while a live stream in the same chat was saving progress. After the two refreshes (2026-10-05 23:45:01 and 23:46:09 UTC) the stream saved 10 and 19 seconds later, and those saves are what updated the open tab. The result did not show that a card button's own commit reaches a tab.
+
+It did not reach one. On sandbox on 2026-10-06, in a chat opened from history with no chat turn and no stream running, "Refresh census" ran `icu_census` and committed a new canvas revision at 02:33:49 and at 03:08:38 UTC, and the open tab kept the old card until a reload. For each click the browser console logged `conversation_continuity transient_frame_ignored`, then `conversation_continuity wrong_scope`.
+
+Cause: the orchestrator sent a client-submitted component operation's commit snapshot under that operation's request generation with no `conversation_commit_ready` prelude. Clients open a commit fence only for a chat turn they submit (`specs/060-runtime-reliability-hardening/contracts/conversation-continuity.md`, sections 2, 3 and 6), so the snapshot matched no fence and was refused. The same delivery path serves every action in `_CONVERSATION_MUTATION_ACTIONS`, not only `component_action`.
+
+Fix: the orchestrator sends the prelude before that snapshot, to every socket the owner has on the chat.
+
+| Check | Result |
+|---|---|
+| `backend/tests/test_connection_publication_owner.py` | 21 passed; the two delivery tests fail on the code before the fix |
+| A stream button from an idle socket, `backend/tests/test_stream_inprocess.py` | passed with no code change: a `stream_subscribe` stream's first progress save was already announced, because stream saves are detached commits |
+| The web client's `client.js` at the pinned AstralProjection commit `f7d6358`, driven by a temporary case in the `tooling/web-ci` Playwright harness | with the old frame order the card stays unchanged and the console logs the two lines seen on sandbox; with the prelude first the card updates and the console logs `commit_ready_applied`, then `snapshot_applied` |
+
+Not verified live: the fix is not deployed, so the idle-tab click-through on sandbox has not been repeated. The Windows, Android and Apple clients were checked by reading their commit-ready reducers, not by running them.
+
+A stream button still depends on `FF_STREAM_PROGRESS`. Without a saved progress update a stream's frames reach no client outside an in-flight turn.
 
 ## Isolation of the FHIR service
 
