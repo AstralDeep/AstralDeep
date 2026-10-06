@@ -1,4 +1,4 @@
-"""Exercises authenticated connection publication against the real conversation repositories and execution fences. It checks captured socket ownership, queued identity changes and component inference without altering operation ownership."""
+"""Exercises authenticated connection publication against the real conversation repositories and execution fences. It checks captured socket ownership, queued identity changes and component inference without altering operation ownership. It also checks that a component commit is announced to every idle socket its owner has on that chat."""
 
 import asyncio
 import copy
@@ -142,6 +142,114 @@ async def test_connection_publication_uses_captured_authenticated_owner_with_rea
         await asyncio.to_thread(host.work_admission.assert_current_execution, claim.fence)
     snapshots = [value for value in socket.frames if value.get("type") == "conversation_snapshot"]
     assert len(snapshots) == 1 and snapshots[0]["chat_id"] == chat
+
+
+def idle_on(host, socket, chat, *, connection_generation=None, owner=OWNER):
+    if socket not in host.ui_clients:
+        host.ui_clients.append(socket)
+    host.ui_sessions[socket] = {"sub": owner}
+    host._ws_active_chat[id(socket)] = chat
+    scope = host._bind_conversation_scope(socket, chat_id=chat, connection_generation=connection_generation or uuid4(),
+                                          request_generation=uuid4(), purpose="hydration", base_render_revision=0)
+    scope["snapshot_completed"] = True
+    return scope
+
+
+def continuity(socket):
+    return [value for value in socket.frames
+            if value.get("type") in {"conversation_commit_ready", "conversation_snapshot"}]
+
+
+async def run_component_action(host, context, chat, handle):
+    ingress = frame(host, context, action="component_action", chat_id=chat, component_id="card", kind="refresh")
+    operation, claim, _ = await asyncio.to_thread(admitted, host, context, ingress)
+    host.handle_ui_message = handle
+    token = _CONNECTION_OPERATION_CONTEXT.set({"operation": claim.operation, "owner": operation.owner,
+                                               "execution_fence": claim.fence})
+    try:
+        await host._run_connection_ui_operation(context, operation)
+    finally:
+        _CONNECTION_OPERATION_CONTEXT.reset(token)
+    return str(claim.operation.request_generation)
+
+
+async def refresh_card(host, chat):
+    await host._append_conversation_message(current_conversation_publication(), chat_id=chat, user_id=OWNER,
+                                            role="assistant", content="Synthetic refreshed card")
+
+
+@pytest.mark.asyncio
+async def test_component_commit_is_announced_to_every_idle_socket_of_the_owner_on_that_chat(database):
+    host, socket, context = runtime()
+    attach_plane(host, database)
+    chat = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
+    elsewhere = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
+    hydrated = idle_on(host, socket, chat, connection_generation=context.connection_generation)
+    peer, away, foreign = Socket(), Socket(), Socket()
+    peer_scope = idle_on(host, peer, chat)
+    idle_on(host, away, elsewhere)
+    idle_on(host, foreign, chat, owner=FOREIGN)
+
+    request = await run_component_action(host, context, chat, lambda _socket, _raw: refresh_card(host, chat))
+
+    assert request != hydrated["request_generation"]
+    for receiver, connection in ((socket, str(context.connection_generation)),
+                                 (peer, peer_scope["connection_generation"])):
+        ready, snapshot = continuity(receiver)
+        assert receiver.frames.index(snapshot) == receiver.frames.index(ready) + 1
+        assert ready == {"type": "conversation_commit_ready", "schema_version": 1, "chat_id": chat,
+                         "connection_generation": connection, "request_generation": request, "render_revision": 1}
+        assert snapshot["type"] == "conversation_snapshot" and snapshot["snapshot_purpose"] == "commit"
+        assert (snapshot["chat_id"], snapshot["connection_generation"], snapshot["request_generation"],
+                snapshot["render_revision"]) == (chat, connection, request, 1)
+        assert snapshot["transcript"][0]["parts"][0]["text"] == "Synthetic refreshed card"
+        scope = host._conversation_scopes[id(receiver)]
+        assert scope["purpose"] == "commit" and scope["request_generation"] == request
+        assert scope["base_render_revision"] == 1 and scope["snapshot_completed"] is True
+    assert continuity(away) == [] and continuity(foreign) == []
+
+
+@pytest.mark.asyncio
+async def test_component_operation_that_changes_nothing_announces_nothing(database):
+    host, socket, context = runtime()
+    attach_plane(host, database)
+    chat = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
+    idle_on(host, socket, chat, connection_generation=context.connection_generation)
+    peer = Socket()
+    peer_scope = copy.deepcopy(idle_on(host, peer, chat))
+
+    await run_component_action(host, context, chat, AsyncMock())
+
+    assert continuity(socket) == [] and peer.frames == []
+    assert host._conversation_scopes[id(peer)] == peer_scope
+    stored = await asyncio.to_thread(host.history.get_chat, chat, user_id=OWNER)
+    assert stored["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_prelude_withholds_that_socket_snapshot_without_blocking_its_peer(database):
+    host, socket, context = runtime()
+    attach_plane(host, database)
+    chat = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
+    idle_on(host, socket, chat, connection_generation=context.connection_generation)
+    peer = Socket()
+    idle_on(host, peer, chat)
+    delivered = socket.send_text
+
+    async def lose_prelude(raw):
+        if json.loads(raw).get("type") == "conversation_commit_ready":
+            raise ConnectionError("synthetic transport loss")
+        await delivered(raw)
+
+    socket.send_text = lose_prelude
+
+    request = await run_component_action(host, context, chat, lambda _socket, _raw: refresh_card(host, chat))
+
+    assert continuity(socket) == []
+    assert [value["type"] for value in continuity(peer)] == ["conversation_commit_ready", "conversation_snapshot"]
+    assert all(value["request_generation"] == request for value in continuity(peer))
+    stored = await asyncio.to_thread(host.history.get_chat, chat, user_id=OWNER)
+    assert stored["messages"][0]["content"] == "Synthetic refreshed card"
 
 
 @pytest.mark.asyncio

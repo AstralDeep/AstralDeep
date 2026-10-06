@@ -211,6 +211,30 @@ async def test_progress_persists_while_the_stream_is_still_running(ongoing):
     assert sub.persist_done is True
 
 
+async def test_a_stream_button_reaches_an_idle_socket_through_its_announced_first_save(ongoing):
+    orch, ws, chat_id, user_id, agent = ongoing
+    connection = str(uuid.uuid4())
+    orch._bind_conversation_scope(
+        ws, chat_id=chat_id, connection_generation=connection, request_generation=str(uuid.uuid4()),
+        purpose="hydration", base_render_revision=0,
+    )["snapshot_completed"] = True
+    await orch._handle_push_stream_subscribe(ws, chat_id, {"tool_name": TOOL, "params": {"interval_s": 4}}, user_id)
+    await agent.values.put(1)
+    await asyncio.sleep(0.2)
+    ready, snapshot = [
+        frame for frame in ws.task.outputs
+        if frame.get("type") in ("conversation_commit_ready", "conversation_snapshot")
+    ]
+    assert ready["type"] == "conversation_commit_ready" and snapshot["type"] == "conversation_snapshot"
+    assert ws.task.outputs.index(snapshot) == ws.task.outputs.index(ready) + 1
+    assert ready["connection_generation"] == snapshot["connection_generation"] == connection
+    assert ready["request_generation"] == snapshot["request_generation"]
+    assert ready["render_revision"] == snapshot["render_revision"] == 1
+    assert [item["value"] for item in snapshot["canvas"]["components"] if item.get("type") == "metric"] == [1]
+    await agent.values.put(None)
+    await asyncio.sleep(0.25)
+
+
 async def test_a_failed_progress_save_is_skipped_and_the_final_state_still_persists(ongoing, monkeypatch):
     orch, ws, chat_id, user_id, agent = ongoing
     sub = await _start(orch, ws, chat_id, user_id)
