@@ -677,7 +677,10 @@ WATCH_DESCRIPTION = (
 )
 
 
-@streaming_tool(name="watch_icu_activity", description=WATCH_DESCRIPTION, input_schema=WATCH_SCHEMA, max_fps=1, min_fps=1, scope="tools:read")
+@streaming_tool(
+    name="watch_icu_activity", description=WATCH_DESCRIPTION, input_schema=WATCH_SCHEMA, max_fps=1, min_fps=1,
+    scope="tools:read", duration_argument="minutes", duration_unit_s=SECONDS_PER_MINUTE,
+)
 async def watch_icu_activity(args: Dict[str, Any], credentials: Dict[str, Any]) -> AsyncIterator[StreamComponents]:
     minutes = bounded(args.get("minutes"), 2, 1, MAX_WATCH_MINUTES)
     state = FeedState()
@@ -757,7 +760,10 @@ LIVE_DESCRIPTION = (
 )
 
 
-@streaming_tool(name="stream_patient_vitals", description=LIVE_DESCRIPTION, input_schema=LIVE_SCHEMA, max_fps=1, min_fps=1, scope="tools:read")
+@streaming_tool(
+    name="stream_patient_vitals", description=LIVE_DESCRIPTION, input_schema=LIVE_SCHEMA, max_fps=1, min_fps=1,
+    scope="tools:read", duration_argument="minutes", duration_unit_s=SECONDS_PER_MINUTE,
+)
 async def stream_patient_vitals(args: Dict[str, Any], credentials: Dict[str, Any]) -> AsyncIterator[StreamComponents]:
     minutes = bounded(args.get("minutes"), 5, 1, MAX_LIVE_MINUTES)
     try:

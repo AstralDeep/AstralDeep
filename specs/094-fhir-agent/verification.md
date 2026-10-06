@@ -95,3 +95,26 @@ Measured after the final deployment. The service publishes no ports and sits on 
 ## Flag-off posture (SC-003)
 
 With `FF_FHIR` off the agent is not registered in-process, not spawned and not in the safe seed; the gate's development boot reports the unchanged agent count. With `FF_STREAM_PROGRESS` off only a stream's final state is saved, as before, and the agent hides its stream buttons.
+
+## Stream time limit
+
+Recorded 2026-10-06 UTC.
+
+On sandbox, the chat request "Watch the live ICU activity feed for five minutes" called `watch_icu_activity` once with `{"minutes": 5}` at 00:00:59 UTC on 2026-10-06. Stream progress was then saved to that chat about once a minute for 2 hours 26 minutes (139 saves, render revision 140), until the app container was recreated at 02:27:09 UTC. No chat turn happened in between, and the saves did not resume after the restart. The last saved card showed 329 notifications, too few for one uninterrupted run.
+
+Cause: leaving a chat or losing the connection pauses a stream and cancels the tool, and coming back resumes it by calling the tool again with its original arguments. The tool sets its deadline when it is called, so every resume began a new five-minute run with fresh counters. A client that reconnects more often than the requested duration keeps the stream alive indefinitely. The paused state is held in memory, so a restart ends it. This matches the sandbox evidence, where the owner's browsers reconnected 49 times in 2 hours 42 minutes. The sandbox run itself was not traced: the app logs at WARNING level and recorded nothing about streams.
+
+Fix: a streaming tool declares its duration argument (`duration_argument` and `duration_unit_s`). The orchestrator works out the requested duration from the stream's own arguments and the tool's input schema, sets the deadline at the stream's first start and never moves it. A paused stream whose deadline has passed is ended instead of resumed, a retry after the deadline ends the stream, and a run still going 30 seconds after the deadline is ended on its next chunk or by the minute sweep. A declaration the orchestrator cannot use keeps the tool from registering as streamable.
+
+| Check | Result |
+|---|---|
+| Local reproduction on the code before the fix: the real `watch_icu_activity` tool against the suite's in-memory FHIR server, through the real orchestrator, with one minute compressed to 0.2 seconds and a client that disconnects and returns every 1.6 minutes | asked for 5 minutes and watched for 30: the tool was started 19 times, once at the start and once per return; the stream was still running at minute 30, with 38 FHIR subscriptions opened and 36 deleted |
+| The same run with the fix | the tool was started 4 times, the last just before minute 5; the stream ended at minute 5.4, its last state was saved, nothing was started afterwards, and all 8 FHIR subscriptions were deleted |
+| Deterministic tests: `backend/tests/test_stream_lifecycle.py`, `test_stream_manager.py`, `test_stream_inprocess.py`, `test_stream_sdk.py`, `test_audit_hardening_coverage.py` and `backend/agents/fhir/tests` | pass; with the tool cancelled before its last state is saved, the two ordering cases fail |
+| The 30 backend test files that touch streaming | 490 passed |
+
+Not verified live: the fix is not deployed.
+
+Storage. Each progress save writes a full copy of the chat's components, so the runaway stream wrote 139 copies. Progress is now saved only for a stream with a declared duration, which bounds one stream at one save per `persist_progress_s` until its deadline: at most about 40 for a ten-minute feed and 60 for a fifteen-minute vital sign stream, and in practice about one a minute because a save happens only when the card changed. Older saves are not pruned.
+
+Known limitation: a stream the orchestrator ends keeps its last live card, for example "Listening", because the tool never sent its closing card. That includes a stream that was resumed and then reached its original deadline.

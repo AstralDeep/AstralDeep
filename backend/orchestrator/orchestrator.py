@@ -111,7 +111,7 @@ from rote.rote import ROTE
 from shared.feature_flags import flags
 from shared.llm_text import strip_reasoning_markup
 from shared.perf import perf_span
-from orchestrator.stream_manager import StreamManager, markdown_safe_prefix_len
+from orchestrator.stream_manager import StreamManager, declared_lifetime, markdown_safe_prefix_len
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 load_dotenv(override=False)
@@ -5268,6 +5268,16 @@ class Orchestrator:
                 entry["min_interval"] = 1
                 entry["max_interval"] = 30
             if kind == "push":
+                try:
+                    lifetime = declared_lifetime(skill_metadata, getattr(skill, "input_schema", None))
+                except ValueError as e:
+                    logger.warning(
+                        f"Agent '{card.agent_id}' tool '{skill.id}' rejected: "
+                        f"invalid stream lifetime: {e}"
+                    )
+                    continue
+                if lifetime is not None:
+                    entry["lifetime"] = lifetime
                 entry["max_fps"] = skill_metadata.get("max_fps", 30)
                 entry["min_fps"] = skill_metadata.get("min_fps", 5)
                 entry["max_chunk_bytes"] = skill_metadata.get("max_chunk_bytes", 65536)
@@ -19570,6 +19580,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.stream_manager import StreamState
         interval = (self._streamable_tools.get(sub.tool_name) or {}).get("persist_progress_s")
         if (not interval or not flags.is_enabled("stream_progress")
+                or sub.expires_at is None
                 or sub.bridged_component_id is None or sub.persist_done
                 or sub.state is not StreamState.ACTIVE
                 or sub.retained_chunk is None or not sub.retained_chunk.components):
@@ -19600,7 +19611,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                          f"an error ({reason}) before completing."),
                 variant="error").to_dict()]
         elif (sub.state is StreamState.STOPPED
-                and sub.state_reason in ("agent_end", "dormant_ttl", "unsubscribe")
+                and sub.state_reason in ("agent_end", "dormant_ttl", "unsubscribe", "duration_elapsed")
                 and sub.retained_chunk is not None
                 and sub.retained_chunk.components):
             components = copy.deepcopy(sub.retained_chunk.components)
