@@ -212,6 +212,16 @@ async def generate_for_underperforming(
                     logger.warning("synth LLM refinement failed for %s/%s: %s",
                                     snap.agent_id, snap.tool_name, exc)
 
+<<<<<<< HEAD
+=======
+            # PostgreSQL text values cannot hold NUL (\x00). Any of the three
+            # inputs (existing artifact, LLM-proposed, LLM-refined) may carry
+            # a NUL — strip them before building the diff so the insert
+            # doesn't fail and the proposal isn't silently dropped.
+            existing_content = existing_content.replace("\x00", "\ufffd")
+            proposed = proposed.replace("\x00", "\ufffd")
+
+>>>>>>> c1b9ce37 (fix(feedback): strip NUL characters before building proposal diff)
             diff = _make_unified_diff(existing_content, proposed, artifact_rel)
             if not diff.strip():
                 continue
