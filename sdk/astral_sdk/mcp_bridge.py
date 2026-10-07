@@ -27,7 +27,6 @@ _META_PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
 _META_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 _META_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
 _SERVER_INFO = {"name": "astral-sdk-bridge", "version": "0.1.0"}
-_TRACKED_ID_LIMIT = 4096
 
 
 class _InvalidToolCall(Exception):
@@ -97,8 +96,6 @@ def _official_handlers(bridge: "Bridge") -> tuple[Any, Any]:
 class Bridge:
     def __init__(self, client: AstralClient) -> None:
         self._client = client
-        self._inflight_id: Any = None
-        self._cancelled_inflight: set[Any] = set()
 
     @classmethod
     def connect(cls, base_url: str, token: str, **client_kwargs: Any) -> "Bridge":
@@ -114,7 +111,6 @@ class Bridge:
         if not isinstance(method, str):
             return _error_response(None, _INVALID_REQUEST, "method must be a string")
         if "id" not in request:
-            self._note_notification(method, request.get("params"))
             return None
         request_id = request["id"]
         if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
@@ -208,28 +204,13 @@ class Bridge:
             raise _InvalidToolCall(f"missing required argument: {exc.args[0] if exc.args else exc}") from exc
         return asdict(value)
 
-    def _note_notification(self, method: str, params: Any) -> None:
-        if method != "notifications/cancelled" or not isinstance(params, dict):
-            return
-        request_id = params.get("requestId")
-        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
-            return
-        if request_id != self._inflight_id:
-            return
-        self._cancelled_inflight.add(request_id)
-
     def serve_stdio(self, in_stream: IO[str] = sys.stdin, out_stream: IO[str] = sys.stdout) -> None:
         import queue
         import threading
 
         lines: "queue.Queue[Optional[str]]" = queue.Queue()
-        reader_seen_requests: set[Any] = set()
-        resolved_ids: set[Any] = set()
-
-        def _track_ids() -> None:
-            for tracked in (reader_seen_requests, resolved_ids):
-                while len(tracked) > _TRACKED_ID_LIMIT:
-                    tracked.pop()
+        outstanding_ids: set[Any] = set()
+        cancelled_ids: set[Any] = set()
 
         def _read_lines() -> None:
             try:
@@ -249,12 +230,11 @@ class Bridge:
                         params = message.get("params")
                         request_id = params.get("requestId") if isinstance(params, dict) else None
                         if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id) \
-                                and request_id in reader_seen_requests and request_id not in resolved_ids:
-                            self._cancelled_inflight.add(request_id)
+                                and request_id in outstanding_ids:
+                            cancelled_ids.add(request_id)
                         continue
                     if _is_valid_id(message.get("id")):
-                        reader_seen_requests.add(message["id"])
-                        _track_ids()
+                        outstanding_ids.add(message["id"])
                     lines.put(raw)
             finally:
                 lines.put(None)
@@ -277,10 +257,9 @@ class Bridge:
             request_id = request.get("id") if isinstance(request, dict) else None
             response = self.handle(request)
             if _is_valid_id(request_id):
-                suppressed = request_id in self._cancelled_inflight
-                self._cancelled_inflight.discard(request_id)
-                resolved_ids.add(request_id)
-                _track_ids()
+                suppressed = request_id in cancelled_ids
+                cancelled_ids.discard(request_id)
+                outstanding_ids.discard(request_id)
                 if suppressed:
                     continue
             if response is not None:

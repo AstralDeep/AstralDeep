@@ -227,6 +227,100 @@ def test_back_to_back_cancellation_still_suppresses_the_response(fake_server, mo
     assert responses[0]["result"]["resultType"] == "complete"
 
 
+def test_request_id_reuse_after_completion_is_cancellable_again(fake_server, monkeypatch):
+    import os
+    import time
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def slow_get_operation(operation_id, *args, **kwargs):
+        time.sleep(0.4)
+        raise AstralHTTPError("work_not_found", code="work_not_found")
+
+    bridge = _bridge(fake_server)
+    monkeypatch.setattr(bridge._client, "get_operation", slow_get_operation)
+    meta = {"io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {}}
+    first = json.dumps({"jsonrpc": "2.0", "id": "req-1", "method": "tools/list", "params": {"_meta": meta}})
+    second = json.dumps({"jsonrpc": "2.0", "id": "req-1", "method": "tools/call",
+                         "params": {"_meta": meta, "name": "astral_get_operation",
+                                    "arguments": {"operation_id": "op-1"}}})
+    cancel = json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                         "params": {"requestId": "req-1"}})
+
+    def _feed():
+        writer.write(first + "\n")
+        writer.flush()
+        time.sleep(0.5)
+        writer.write(second + "\n" + cancel + "\n")
+        writer.flush()
+        time.sleep(1.0)
+        writer.close()
+
+    import threading
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    finally:
+        bridge.close()
+        reader.close()
+    assert [response["id"] for response in responses] == ["req-1"]
+    assert responses[0]["result"]["resultType"] == "complete"
+
+
+def test_cancellation_tracking_is_not_evicted_while_requests_are_outstanding(fake_server, monkeypatch):
+    import os
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def gated_get_operation(operation_id, *args, **kwargs):
+        release.wait(timeout=30)
+        raise AstralHTTPError("work_not_found", code="work_not_found")
+
+    bridge = _bridge(fake_server)
+    monkeypatch.setattr(bridge._client, "get_operation", gated_get_operation)
+    meta = {"io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {}}
+    lines = []
+    for index in range(4097):
+        lines.append(json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/call",
+                                 "params": {"_meta": meta, "name": "astral_get_operation",
+                                            "arguments": {"operation_id": f"op-{index}"}}}))
+    for index in range(4097):
+        lines.append(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                 "params": {"requestId": index}}))
+
+    read_fd, write_fd = os.pipe()
+    pipe_reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def _feed():
+        writer.write("".join(line + "\n" for line in lines))
+        writer.flush()
+        time.sleep(1.0)
+        release.set()
+        time.sleep(2.0)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(pipe_reader, out)
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    finally:
+        bridge.close()
+        pipe_reader.close()
+    assert responses == []
+
+
 def test_cancellation_for_another_id_during_dispatch_is_ignored(fake_server, monkeypatch):
     script = [
         json.dumps(_request("tools/call", params={"name": "astral_get_operation",
