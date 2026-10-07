@@ -301,7 +301,7 @@ def run(request):
         binding = _validated_sdk()
         CoreClient, Timeouts, GaiaKeepError, raise_for, profiles, keys = binding
         phase = 'account_validation'
-        profile_path = Path.home() / '.gaiakeep' / 'gaiakeep-profile.json'
+        profile_path = Path(profiles.resolve_path())
         profile = profiles.Profile(json.loads(_private_bytes(profile_path, 65536)), str(profile_path))
         _profile_trust(profile, trust)
         private = _private_bytes(profile.key_file, 16384)

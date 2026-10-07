@@ -1,3 +1,3 @@
 websockets>=15,<17
 jsonschema>=4.21,<5
-gaiakeep @ git+https://github.com/GaiaKeep/gfs.git@f86ec85d5526d3273150725d79eee1a389237e37#subdirectory=clients/python
+gaiakeep @ git+https://github.com/GaiaKeep/gfs.git@9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9#subdirectory=clients/python

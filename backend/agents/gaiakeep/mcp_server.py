@@ -122,7 +122,8 @@ class MCPServer:
             if len(serialized.encode()) > client.MAX_RPC:
                 raise client.AgentError('protocol_error', 'The Gaia result exceeds the response bound; request a smaller page.')
             publication = result.get('publication', result)
-            pending = isinstance(publication, dict) and 'commit_job' in publication
+            pending = isinstance(publication, dict) and (publication.get('commit_job') is not None
+                                                        or publication.get('pending') is True)
             if pending:
                 native = client.native_reconciliation(publication)
                 if 'commit_job' not in native:
