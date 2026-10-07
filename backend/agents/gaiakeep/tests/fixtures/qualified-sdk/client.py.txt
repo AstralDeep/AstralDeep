@@ -534,7 +534,9 @@ class CoreClient:
     def putstatus(self, upload_id):
         r = self.call("core.putstatus", {"upload_id": upload_id})
         out = {"files": json_param(r, "files", compressed=False) or {}}
-        for k in ("commit_state", "vid", "number", "error", "retryable"):
+        # gfs#14: the native commit-failure fields ride beside commit_state=failed
+        for k in ("commit_state", "vid", "number", "error", "retryable", "code", "reupload", "head",
+                  "job_id", "upload_id", "request_id"):
             if r.get(k) is not None:
                 out[k] = r.get(k)
         rng = json_param(r, "ranges")

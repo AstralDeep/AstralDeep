@@ -251,6 +251,22 @@ def test_bounded_result_failure_cases():
     assert client.failure(client.ProtocolError(), False)[0] == 'protocol_error'
 
 
+def test_native_commit_failure_is_definite_but_same_named_local_failure_is_uncertain():
+    native = type('CommitFailed', (Exception,), {'__module__': 'gaiakeep.errors'})('private-failure')
+    local = type('CommitFailed', (Exception,), {})('private-failure')
+    assert client.failure(native, True)[0] == 'upstream_denied'
+    assert client.failure(local, True)[0] == 'unconfirmed'
+
+
+def test_stage_required_remains_distinct_from_commit_pending():
+    stage = type('StageRequired', (Exception,), {})('private-file-path')
+    pending = type('CommitPending', (Exception,), {})('private-file-path')
+    verdict, message = client.failure(stage, False)
+    assert verdict == 'stage_required' and 'gaiakeep_core_stage' in message
+    assert 'private-file-path' not in message
+    assert client.failure(pending, False)[0] == 'pending'
+
+
 def test_control_cannot_open_dangling_file_sessions():
     with pytest.raises(client.AgentError):
         client.execute(Core(), 'core.put', {})

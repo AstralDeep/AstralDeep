@@ -36,9 +36,9 @@ import threading
 import time
 import concurrent.futures as cf
 
-from . import log
-from .errors import (CommitFailed, GaiaKeepError, NotLeader, OutcomeUnknown, RpcTimeout, TransferAborted,
-                     TransferError, TransferTimeout, IntegrityError)
+from . import errors, log
+from .errors import (CommitFailed, Deferred, GaiaKeepError, NotLeader, OutcomeUnknown, RpcTimeout,
+                     StaleHead, TransferAborted, TransferError, TransferTimeout, IntegrityError)
 from .transfer import Transfers, new_id, same_file
 
 CAP_INGEST_1A = "ingest-1a"
@@ -74,16 +74,21 @@ class IngestTarget:
 
 class IngestResult:
     def __init__(self, vid, number, collection_id, branch, request_id, upload_id, mode, bytes_, retransmits,
-                 resumed_parts=0, reuploads=0, via=None, publish=None, resolved=False):
+                 resumed_parts=0, reuploads=0, via=None, publish=None, resolved=False, commit_job=None, pending=False):
         self.vid, self.number, self.collection_id, self.branch = vid, number, collection_id, branch
         self.request_id, self.upload_id, self.mode = request_id, upload_id, mode
         self.bytes, self.retransmits, self.resumed_parts, self.reuploads = bytes_, retransmits, resumed_parts, reuploads
         self.via = via
         self.publish = publish          # "commit" (1a), "streaming" or "staged" (legacy)
         self.resolved = resolved        # the publish's answer was lost and the vid was read back from core.head
+        # gfs#8: commit_job names the core's commit-on-VERIFIED job for a durable dataset; pending is True while
+        # that job runs (reads answer status 16 until it finishes). None/False: no pending publication.
+        self.commit_job = commit_job
+        self.pending = pending
 
     def __repr__(self):
-        return f"IngestResult(vid={self.vid!r}, number={self.number}, mode={self.mode}, bytes={self.bytes})"
+        pending = ", pending commit_job=" + repr(self.commit_job) if self.pending else ""
+        return f"IngestResult(vid={self.vid!r}, number={self.number}, mode={self.mode}, bytes={self.bytes}{pending})"
 
 
 class _LeaderMoved(Exception):
@@ -91,6 +96,15 @@ class _LeaderMoved(Exception):
 
 
 _UNKNOWN = object()                     # the head before the publish could not be read
+
+
+class _PublishPending(Exception):
+    """The publish answered status 13 state=committing (gfs#15): accepted and still running. Its outcome is
+    awaited from core.putstatus, never discarded or resent."""
+
+    def __init__(self, deferred):
+        super().__init__(str(deferred))
+        self.deferred = deferred
 
 
 class _PublishLost(Exception):
@@ -267,8 +281,11 @@ class Ingest:
                 if st in ("committed", "done"):
                     return ev
                 if st in ("failed",):
-                    raise CommitFailed(f"ingest commit failed: {ev.get('error')}", status=None, action="core.commit",
-                                       detail={"error": ev.get("error")})
+                    # gfs#14: the event's native failure (code, head, retryable, reupload) and the operation
+                    # identities survive every completion route, and stale-head is StaleHead here too.
+                    raise errors.commit_failure_error("core.commit", ev, status=ev.get("status"),
+                                                      detail_extra={"upload_id": upload,
+                                                                    "request_id": self.request_id})
                 continue
             except queue.Empty:
                 pass
@@ -278,8 +295,9 @@ class Ingest:
                 if st == "committed":
                     return r
                 if st == "failed":
-                    raise CommitFailed(f"ingest commit failed: {r.get('error')}", action="core.commit",
-                                       retryable=str(r.get("retryable")).lower() == "true")
+                    raise errors.commit_failure_error("core.commit", r, status=r.get("status"),
+                                                      detail_extra={"upload_id": upload,
+                                                                    "request_id": self.request_id})
                 poll = min(10.0, poll * 2)
                 next_poll = time.monotonic() + poll
         raise RpcTimeout(f"ingest: commit still running after {c.timeouts.commit_wait:.0f} s "
@@ -342,6 +360,10 @@ class Ingest:
             return c.call("core.publish", p, timeout=c.timeouts.legacy_publish(total_bytes))
         except RpcTimeout as e:
             raise _PublishLost(e)          # the answer was lost, not necessarily the publish: resolved by _legacy
+        except Deferred as e:
+            # gfs#15: status 13 state=committing is the core's bounded publication answering that it is still
+            # running: an accepted operation whose outcome must be awaited — never a refusal to discard.
+            raise _PublishPending(e)
 
     def _stop_all(self, why):
         for lane in self.x.lanes():
@@ -382,6 +404,15 @@ class Ingest:
             return self._publish(upload, total_bytes, streaming=False)
         except _PublishLost:
             raise                                # the publish may be running: never discard under it
+        except _PublishPending as pending:
+            return self._await_publish_outcome(upload, pending.deferred)
+        except StaleHead as e:
+            if e.upload_kept:
+                raise                            # the core kept the upload for a retry: discarding would
+                                                 # destroy the retained bytes; report it truthfully as kept
+            self._discard(upload)                # the wave-1 core discarded it already
+            e.upload_kept = False                # it is discarded now: the raised error says so
+            raise
         except Exception:
             self._discard(upload)                # a refused publish: the wave-1 core discarded it already
             raise
@@ -453,8 +484,38 @@ class Ingest:
         e = result.get("e")
         if isinstance(e, _PublishLost):
             raise e                              # resolved from putstatus and head, whatever the senders did
+        if isinstance(e, _PublishPending):
+            return self._await_publish_outcome(upload, e.deferred)   # the senders are done; await the publish
+        if isinstance(e, StaleHead) and e.upload_kept:
+            raise e                              # the core kept the upload for a retry: report it truthfully
         self._discard(upload)
         raise failed[0] if failed else e         # a sender's failure is why a publish we discarded under failed
+
+    def _await_publish_outcome(self, upload, deferred):
+        """A publish that answered committing (gfs#15): the original upload's outcome is awaited from
+        core.putstatus — committed returns the reply (read back through _result as usual), failed raises the
+        native typed failure with its recovery fields. The upload is never discarded or resent here."""
+        c = self.client
+        log.info("core.publish answered committing: awaiting its outcome from core.putstatus",
+                 upload_id=upload, request_id=self.request_id, est_ms=getattr(deferred, "est_ms", None))
+        deadline = time.monotonic() + c.timeouts.commit_wait
+        poll = 0.5
+        while True:
+            r = c.call("core.putstatus", {"upload_id": upload})
+            st = (r.get("commit_state") or "").lower()
+            if st == "committed":
+                return r
+            if st == "failed":
+                raise errors.commit_failure_error("core.publish", r, status=r.get("status"),
+                                                  detail_extra={"upload_id": upload,
+                                                                "request_id": self.request_id})
+            if time.monotonic() > deadline:
+                raise OutcomeUnknown(f"ingest: core.publish of upload {upload} is still running after "
+                                     f"{c.timeouts.commit_wait:.0f} s; check core.putstatus and core.head "
+                                     f"before retrying", action="core.publish",
+                                     detail={"upload_id": upload, "request_id": self.request_id}) from deferred
+            time.sleep(poll)
+            poll = min(5.0, poll * 2)
 
     def _resolve_publish(self, upload, pre, plan, cause):
         """A publish whose answer was lost: wait until the core is done with the upload, then read the head."""
@@ -466,9 +527,19 @@ class Ingest:
         poll = 0.25
         while True:
             try:
-                files = c.putstatus(upload)["files"]
+                st = c.putstatus(upload)
+                files = st.get("files")
+                commit_state = (st.get("commit_state") or "").lower()
             except GaiaKeepError:
-                files = None
+                files, commit_state = None, None
+            # gfs#15: the authoritative terminal state is core.putstatus's commit_state — a deliberately
+            # retained upload (a stale-head the core kept) stays VERIFIED while its commit is over.
+            if commit_state in ("committed", "done"):
+                break
+            if commit_state == "failed":
+                raise errors.commit_failure_error("core.publish", st, status=st.get("status"),
+                                                  detail_extra={"upload_id": upload,
+                                                                "request_id": self.request_id}) from cause
             if files is not None and (not files or set(files.values()) <= {"FAILED", "CORRUPT"}):
                 break                            # the publish ended: the core discards the upload either way
             if time.monotonic() > deadline:
@@ -508,7 +579,13 @@ class Ingest:
         if not vid:
             raise IntegrityError("ingest: the core answered without a vid")
         n = r.get("number")
+        commit_job = r.get("commit_job") or None
+        # gfs#8: a durable dataset's publish answers commit_job while the core is still verifying its tape
+        # copies — the version is not readable until that job finishes (reads answer status 16). The result
+        # carries the job so a caller can poll it without replaying the ingest; pending says accepted vs
+        # durably published.
+        pending = commit_job is not None
         return IngestResult(vid, int(n) if n not in (None, "") else None, r.get("collection_id") or self.target.collection_id,
                             r.get("branch") or self.target.branch, self.request_id, upload, mode,
                             sum(p.size for p in parts if p.k == 0), sum(p.retransmits for p in parts), resumed, reuploads,
-                            via=self.client.addr)
+                            via=self.client.addr, commit_job=commit_job, pending=pending)
