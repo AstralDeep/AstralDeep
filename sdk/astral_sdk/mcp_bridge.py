@@ -28,10 +28,18 @@ _META_PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
 _META_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
 _META_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
 _SERVER_INFO = {"name": "astral-sdk-bridge", "version": "0.1.0"}
+_MAX_PENDING_REQUESTS = 256
+_MAX_LINE_CHARS = 1048576
 
 
 class _InvalidToolCall(Exception):
     pass
+
+
+class _ToolInputError(Exception):
+    def __init__(self, missing: list[str]) -> None:
+        super().__init__(f"missing required argument(s): {', '.join(missing)}")
+        self.missing = missing
 
 
 def _is_valid_id(value: Any) -> bool:
@@ -61,6 +69,24 @@ class _RequestTracker:
             return cancelled
 
 
+class _IntakeGate:
+    def __init__(self, limit: int) -> None:
+        self._lock = threading.Lock()
+        self._limit = limit
+        self._pending = 0
+
+    def admit(self) -> bool:
+        with self._lock:
+            if self._pending >= self._limit:
+                return False
+            self._pending += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._pending -= 1
+
+
 def _error_response(request_id: Any, code: int, message: str, *, data: Any = None) -> dict[str, Any]:
     error: dict[str, Any] = {"code": code, "message": message}
     if data is not None:
@@ -80,6 +106,11 @@ def _execution_failure_result(exc: Exception) -> dict[str, Any]:
     if code is not None:
         result["structuredContent"] = {"code": code}
     return result
+
+
+def _input_validation_failure_result(exc: "_ToolInputError") -> dict[str, Any]:
+    return {"resultType": "complete", "content": [{"type": "text", "text": str(exc)}],
+            "structuredContent": {"code": "invalid_arguments", "missing": list(exc.missing)}, "isError": True}
 
 
 def _mcp_tool_descriptors() -> list[dict[str, Any]]:
@@ -102,6 +133,11 @@ def _official_handlers(bridge: "Bridge") -> tuple[Any, Any]:
             payload = bridge._dispatch(params.name, dict(params.arguments or {}))
         except _InvalidToolCall as exc:
             raise MCPError(code=_INVALID_PARAMS, message=str(exc)) from exc
+        except _ToolInputError as exc:
+            failure = _input_validation_failure_result(exc)
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=failure["content"][0]["text"])],
+                structured_content=failure["structuredContent"], is_error=True)
         except (AstralHTTPError, AstralTimeoutError, RetryExhaustedError) as exc:
             failure = _execution_failure_result(exc)
             kwargs: dict[str, Any] = {
@@ -158,10 +194,12 @@ class Bridge:
                 return _error_response(request_id, _METHOD_NOT_FOUND, f"unknown method: {method}")
         except _InvalidToolCall as exc:
             return _error_response(request_id, _INVALID_PARAMS, str(exc))
+        except _ToolInputError as exc:
+            result = _input_validation_failure_result(exc)
         except (AstralHTTPError, AstralTimeoutError, RetryExhaustedError) as exc:
             result = _execution_failure_result(exc)
         except Exception as exc:
-            return _error_response(request_id, _INTERNAL_ERROR, f"tool dispatch failed: {exc}")
+            return _error_response(request_id, _INTERNAL_ERROR, f"tool dispatch failed: {type(exc).__name__}")
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
     def _meta_failure(self, method: str, params: dict[str, Any], request_id: Any) -> Optional[dict[str, Any]]:
@@ -222,17 +260,18 @@ class Bridge:
         factory = method_for_tool.get(name)
         if factory is None:
             raise _InvalidToolCall(f"unknown tool: {name}")
-        try:
-            value = factory()
-        except KeyError as exc:
-            raise _InvalidToolCall(f"missing required argument: {exc.args[0] if exc.args else exc}") from exc
+        schema = ASTRAL_TOOLS[name].get("input_schema", {})
+        missing = [field for field in schema.get("required", ()) if field not in arguments]
+        if missing:
+            raise _ToolInputError(missing)
+        value = factory()
         return asdict(value)
 
     def serve_stdio(self, in_stream: IO[str] = sys.stdin, out_stream: IO[str] = sys.stdout) -> None:
         import queue
-        import threading
 
-        lines: "queue.Queue[Optional[str]]" = queue.Queue()
+        lines: "queue.Queue[Any]" = queue.Queue()
+        gate = _IntakeGate(_MAX_PENDING_REQUESTS)
         tracker = _RequestTracker()
 
         def _read_lines() -> None:
@@ -241,23 +280,26 @@ class Bridge:
                     line = raw.strip()
                     if not line:
                         continue
+                    if len(line) > _MAX_LINE_CHARS:
+                        lines.put(("OVERSIZE", None))
+                        continue
                     try:
                         message = json.loads(line)
                     except json.JSONDecodeError:
-                        lines.put(raw)
-                        continue
-                    if not isinstance(message, dict):
-                        lines.put(raw)
-                        continue
-                    if "id" not in message:
+                        message = None
+                    if isinstance(message, dict) and "id" not in message:
                         params = message.get("params")
                         request_id = params.get("requestId") if isinstance(params, dict) else None
                         if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id):
                             tracker.cancel(request_id)
                         continue
-                    if _is_valid_id(message.get("id")):
-                        tracker.register(message["id"])
-                    lines.put(raw)
+                    request_id = message.get("id") if isinstance(message, dict) else None
+                    if gate.admit():
+                        if _is_valid_id(request_id):
+                            tracker.register(request_id)
+                        lines.put(("REQ", line))
+                    else:
+                        lines.put(("OVERLOAD", request_id if _is_valid_id(request_id) else None))
             finally:
                 lines.put(None)
 
@@ -267,11 +309,18 @@ class Bridge:
             item = lines.get()
             if item is None:
                 break
-            line = item.strip()
-            if not line:
+            kind, payload = item
+            if kind == "OVERSIZE":
+                self._write_message(out_stream, _error_response(
+                    None, _INVALID_REQUEST, "frame exceeds the maximum line size"))
                 continue
+            if kind == "OVERLOAD":
+                self._write_message(out_stream, _error_response(
+                    payload, _INTERNAL_ERROR, "too many pending requests; retry after earlier requests complete"))
+                continue
+            gate.release()
             try:
-                request = json.loads(line)
+                request = json.loads(payload)
             except json.JSONDecodeError:
                 self._write_message(out_stream, {"jsonrpc": "2.0", "id": None,
                                                  "error": {"code": _PARSE_ERROR, "message": "invalid JSON"}})

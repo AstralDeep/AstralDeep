@@ -119,7 +119,8 @@ def test_unexpected_dispatch_failure_is_a_bounded_internal_error(fake_server, mo
     finally:
         bridge.close()
     assert response["error"]["code"] == -32603
-    assert "synthetic dispatch crash" in response["error"]["message"]
+    assert "RuntimeError" in response["error"]["message"]
+    assert "synthetic dispatch crash" not in response["error"]["message"]
 
 
 def _synthetic_crash(*args, **kwargs):
@@ -273,14 +274,16 @@ def test_request_id_reuse_after_completion_is_cancellable_again(fake_server, mon
     assert responses[0]["result"]["resultType"] == "complete"
 
 
-def test_cancellation_tracking_is_not_evicted_while_requests_are_outstanding(fake_server, monkeypatch):
+def test_intake_is_bounded_and_admitted_cancellations_are_honoured_at_scale(fake_server, monkeypatch):
     import os
     import threading
     import time
 
     release = threading.Event()
+    dequeued = threading.Event()
 
     def gated_get_operation(operation_id, *args, **kwargs):
+        dequeued.set()
         release.wait(timeout=30)
         raise AstralHTTPError("work_not_found", code="work_not_found")
 
@@ -288,26 +291,30 @@ def test_cancellation_tracking_is_not_evicted_while_requests_are_outstanding(fak
     monkeypatch.setattr(bridge._client, "get_operation", gated_get_operation)
     meta = {"io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
             "io.modelcontextprotocol/clientCapabilities": {}}
-    lines = []
-    for index in range(4097):
-        lines.append(json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/call",
-                                 "params": {"_meta": meta, "name": "astral_get_operation",
-                                            "arguments": {"operation_id": f"op-{index}"}}}))
-    for index in range(4097):
-        lines.append(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
-                                 "params": {"requestId": index}}))
+    first = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                        "params": {"_meta": meta, "name": "astral_get_operation",
+                                   "arguments": {"operation_id": "op-0"}}})
+    rest = [json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/call",
+                        "params": {"_meta": meta, "name": "astral_get_operation",
+                                   "arguments": {"operation_id": f"op-{index}"}}})
+            for index in range(1, 4097)]
+    rest += [json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                         "params": {"requestId": index}}) for index in range(4097)]
 
     read_fd, write_fd = os.pipe()
     pipe_reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
     writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
 
     def _feed():
-        writer.write("".join(line + "\n" for line in lines))
+        writer.write(first + "\n")
         writer.flush()
-        time.sleep(1.0)
+        assert dequeued.wait(timeout=10)
+        writer.write("".join(line + "\n" for line in rest))
+        writer.flush()
+        writer.close()
+        time.sleep(0.3)
         release.set()
         time.sleep(2.0)
-        writer.close()
 
     feeder = threading.Thread(target=_feed, daemon=True)
     feeder.start()
@@ -318,7 +325,10 @@ def test_cancellation_tracking_is_not_evicted_while_requests_are_outstanding(fak
     finally:
         bridge.close()
         pipe_reader.close()
-    assert responses == []
+    overload = [response for response in responses if "error" in response]
+    assert {response["id"] for response in overload} == set(range(257, 4097))
+    assert all(response["error"]["code"] == -32603 for response in overload)
+    assert not [response for response in responses if "result" in response]
 
 
 def test_request_tracker_lifecycle_transitions_are_isolated_per_finish():
@@ -420,7 +430,7 @@ def test_unknown_tool_is_invalid_params_not_internal_error(fake_server):
     assert response["error"]["code"] == -32602
 
 
-def test_missing_required_argument_is_invalid_params_and_the_loop_survives(fake_server):
+def test_missing_required_arguments_are_input_validation_errors_and_the_loop_survives(fake_server):
     bridge = _bridge(fake_server)
     try:
         broken = _request("tools/call", params={"name": "astral_get_operation", "arguments": {}}, request_id=1)
@@ -428,9 +438,29 @@ def test_missing_required_argument_is_invalid_params_and_the_loop_survives(fake_
         responses = _served_lines(bridge, broken, followup)
     finally:
         bridge.close()
-    assert responses[0]["error"]["code"] == -32602
+    assert "error" not in responses[0]
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["code"] == "invalid_arguments"
+    assert result["structuredContent"]["missing"] == ["operation_id"]
     assert responses[1]["id"] == 2
     assert responses[1]["result"]["resultType"] == "complete"
+
+
+def test_missing_submit_fields_are_a_deliberate_input_validation_error(fake_server):
+    bridge = _bridge(fake_server)
+    try:
+        request = _request("tools/call", params={"name": "astral_submit_operation", "arguments": {}}, request_id=1)
+        response = _served_lines(bridge, request)[0]
+    finally:
+        bridge.close()
+    assert "error" not in response
+    result = response["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"] == {"code": "invalid_arguments",
+                                           "missing": ["idempotency_key", "name", "instructions"]}
+    assert "TypeError" not in response.__str__()
+    assert "-32603" not in json.dumps(response)
 
 
 def test_upstream_tool_failure_is_a_tool_execution_error(fake_server):
@@ -638,3 +668,128 @@ def test_official_sdk_upstream_failure_is_a_tool_execution_error(fake_server):
         assert result.structured_content == {"code": "work_not_found"}
     finally:
         bridge.close()
+
+
+def test_official_sdk_missing_submit_fields_are_tool_execution_errors(fake_server):
+    pytest.importorskip("mcp", reason="the official mcp package is an optional extra")
+    from mcp import types
+
+    bridge = _bridge(fake_server)
+    try:
+        _list_tools, call_tool = _official_handlers(bridge)
+        import asyncio
+        params = types.CallToolRequestParams(name="astral_submit_operation", arguments={})
+        result = asyncio.run(call_tool(None, params))
+        assert result.is_error is True
+        assert result.structured_content == {"code": "invalid_arguments",
+                                             "missing": ["idempotency_key", "name", "instructions"]}
+        assert "missing required argument(s)" in result.content[0].text
+    finally:
+        bridge.close()
+
+
+def _gated_bridge(fake_server, monkeypatch):
+    import threading
+
+    release = threading.Event()
+    dequeued = threading.Event()
+
+    def gated_get_operation(operation_id, *args, **kwargs):
+        dequeued.set()
+        release.wait(timeout=30)
+        raise AstralHTTPError("work_not_found", code="work_not_found")
+
+    bridge = _bridge(fake_server)
+    monkeypatch.setattr(bridge._client, "get_operation", gated_get_operation)
+    return bridge, release, dequeued
+
+
+def _feed_lines(bridge, script, release, dequeued):
+    import os
+    import threading
+    import time
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def _feed():
+        for chunk in script:
+            kind, payload = chunk
+            if kind == "WAIT_DEQUEUED":
+                assert dequeued.wait(timeout=10)
+                continue
+            writer.write(payload + "\n")
+            writer.flush()
+            time.sleep(0.01)
+        time.sleep(0.3)
+        release.set()
+        time.sleep(1.0)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    finally:
+        bridge.close()
+        reader.close()
+
+
+def _meta_request(method, *, request_id, name=None, arguments=None):
+    params = {"_meta": _meta()}
+    if name is not None:
+        params["name"] = name
+        params["arguments"] = arguments if arguments is not None else {}
+    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+
+
+def test_request_intake_is_bounded_while_dispatch_is_blocked(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps(_meta_request("tools/call", request_id=0,
+                                               name="astral_get_operation",
+                                               arguments={"operation_id": "op-1"}))),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps(_meta_request("tools/list", request_id=index)))
+               for index in range(1, 301)]
+    responses = _feed_lines(bridge, script, release, dequeued)
+    overload = [response for response in responses if "error" in response]
+    answered = [response for response in responses if "result" in response]
+    assert {response["id"] for response in overload} == set(range(257, 301))
+    assert all(response["error"]["code"] == -32603 for response in overload)
+    assert len(answered) == 257
+    assert {response["id"] for response in answered} == {0, *range(1, 257)}
+
+
+def test_cancellation_is_processed_while_intake_is_exhausted(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps(_meta_request("tools/call", request_id=0,
+                                               name="astral_get_operation",
+                                               arguments={"operation_id": "op-1"}))),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps(_meta_request("tools/list", request_id=index)))
+               for index in range(1, 258)]
+    script.append(("RAW", json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                      "params": {"requestId": 0}})))
+    responses = _feed_lines(bridge, script, release, dequeued)
+    answered_ids = {response["id"] for response in responses if "result" in response}
+    assert 0 not in answered_ids
+    assert answered_ids == set(range(1, 257))
+    overload = [response for response in responses if "error" in response]
+    assert {response["id"] for response in overload} == {257}
+
+
+def test_oversized_frame_is_rejected_and_the_loop_survives(fake_server):
+    bridge = _bridge(fake_server)
+    try:
+        oversized = "x" * (2 ** 20 + 1)
+        followup = _request("tools/list", request_id="after-oversize")
+        responses = _served_lines(bridge, oversized, followup)
+    finally:
+        bridge.close()
+    assert responses[0]["error"]["code"] == -32600
+    assert "frame exceeds the maximum line size" in responses[0]["error"]["message"]
+    assert responses[1]["id"] == "after-oversize"
+    assert responses[1]["result"]["resultType"] == "complete"
