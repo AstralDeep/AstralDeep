@@ -37,6 +37,7 @@ from shared.protocol import (
     MCPRequest,
     MCPResponse,
 )
+from shared.a2a_codec import A2A_PROTOCOL_V1
 
 logger = logging.getLogger("A2ABridge")
 
@@ -117,7 +118,11 @@ def custom_card_to_a2a(card: CustomAgentCard, base_url: str) -> A2AAgentCard:
         default_input_modes=["application/json"],
         default_output_modes=["application/json"],
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=base_url),
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=base_url,
+                protocol_version=A2A_PROTOCOL_V1,
+            ),
         ],
         provider=AgentProvider(
             organization="AstralDeep",

@@ -19127,9 +19127,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> Optional[MCPResponse]:
         import uuid
         import httpx
-        from google.protobuf.json_format import ParseDict, MessageToDict
-        from a2a.types import Message as A2AMessage, Role, Task, Message as A2AMsg
+        from google.protobuf.json_format import MessageToDict
+        from a2a.types import Message as A2AMessage, Role
         from shared.a2a_bridge import make_data_part, a2a_response_to_mcp_response
+        from shared.a2a_codec import (
+            UnsupportedProtocolVersion,
+            build_send_headers,
+            build_send_payload,
+            decode_send_result,
+            select_outbound_version,
+        )
 
         request_id = f"a2a_{tool_name}_{_uuid.uuid4().hex}"
 
@@ -19159,19 +19166,29 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             })],
         )
 
+        try:
+            protocol_version = select_outbound_version(
+                getattr(self, "a2a_agent_cards", {}).get(agent_id)
+            )
+        except UnsupportedProtocolVersion as exc:
+            return MCPResponse(
+                request_id=request_id,
+                error={"message": str(exc), "retryable": False},
+            )
+
         headers = {"Content-Type": "application/json"}
+        headers.update(build_send_headers(protocol_version))
         from orchestrator.agent_peer_auth import agent_auth_headers
         headers.update(agent_auth_headers(base_url))
         delegation_token = args.get("_delegation_token")
         if delegation_token:
             headers["Authorization"] = f"Bearer {delegation_token}"
 
-        jsonrpc_payload = {
-            "jsonrpc": "2.0",
-            "method": "message/send",
-            "id": request_id,
-            "params": {"message": MessageToDict(msg, preserving_proto_field_name=True)},
-        }
+        jsonrpc_payload = build_send_payload(
+            MessageToDict(msg, preserving_proto_field_name=True),
+            request_id,
+            protocol_version,
+        )
 
         try:
             logger.info(f"Sent tool call (A2A): {tool_name} → {agent_id}")
@@ -19188,23 +19205,24 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
             result = data.get("result")
-            if isinstance(result, dict):
-                try:
-                    return a2a_response_to_mcp_response(ParseDict(result, Task()), request_id)
-                except Exception:
-                    pass
-                try:
-                    return a2a_response_to_mcp_response(ParseDict(result, A2AMsg()), request_id)
-                except Exception:
-                    pass
-                return MCPResponse(request_id=request_id, result=result)
 
             if result is None:
                 return MCPResponse(
                     request_id=request_id,
                     error={"message": "No response from A2A agent", "retryable": True},
                 )
-            return MCPResponse(request_id=request_id, result=str(result))
+
+            try:
+                projected = decode_send_result(result, protocol_version)
+            except UnsupportedProtocolVersion:
+                return MCPResponse(
+                    request_id=request_id,
+                    error={
+                        "message": "A2A response is not an interpretable Task or Message",
+                        "retryable": False,
+                    },
+                )
+            return a2a_response_to_mcp_response(projected, request_id)
 
         except httpx.TimeoutException:
             logger.error(f"A2A tool call timed out: {tool_name}")

@@ -37,6 +37,7 @@ from shared.a2a_bridge import (
     make_text_part,
     make_data_part,
 )
+from shared.a2a_codec import A2A_PROTOCOL_V1
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
@@ -418,7 +419,11 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         default_input_modes=["text/plain", "application/json"],
         default_output_modes=["application/json"],
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=_public_url()),
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=_public_url(),
+                protocol_version=A2A_PROTOCOL_V1,
+            ),
         ],
         provider=AgentProvider(
             organization="AstralDeep",
