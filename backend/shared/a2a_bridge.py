@@ -40,6 +40,21 @@ from shared.protocol import (
 
 logger = logging.getLogger("A2ABridge")
 
+_A2A_TERMINAL_FAILURES = {
+    A2ATaskState.TASK_STATE_FAILED: (-32603, "Task failed"),
+    A2ATaskState.TASK_STATE_CANCELED: (-32000, "Task canceled"),
+    A2ATaskState.TASK_STATE_REJECTED: (-32000, "Task rejected"),
+}
+_A2A_UNRESOLVED_STATES = {
+    A2ATaskState.TASK_STATE_UNSPECIFIED: "unspecified",
+    A2ATaskState.TASK_STATE_SUBMITTED: "submitted",
+    A2ATaskState.TASK_STATE_WORKING: "working",
+    A2ATaskState.TASK_STATE_INPUT_REQUIRED: "input-required",
+    A2ATaskState.TASK_STATE_AUTH_REQUIRED: "auth-required",
+}
+_A2A_CONTINUATION_UNSUPPORTED_CODE = -32001
+_A2A_MAX_STATUS_MESSAGE_CHARS = 512
+
 
 async def ensure_task_created(context, event_queue) -> None:
     if getattr(context, "current_task", None) is not None:
@@ -258,6 +273,52 @@ def extract_text_from_a2a_message(msg: A2AMessage) -> str:
     return "\n".join(texts)
 
 
+def _status_message_text(status: A2ATaskStatus) -> Optional[str]:
+    if not status.HasField("message"):
+        return None
+    for p in status.message.parts:
+        t = part_text(p)
+        if t is not None:
+            return t[:_A2A_MAX_STATUS_MESSAGE_CHARS]
+    return None
+
+
+def _task_identity(task: A2ATask, state) -> Dict[str, Any]:
+    try:
+        state_name = A2ATaskState.Name(state)
+    except ValueError:
+        state_name = f"unknown-{int(state)}"
+    return {
+        "a2a_task_id": task.id or None,
+        "a2a_context_id": task.context_id or None,
+        "a2a_state": state_name,
+    }
+
+
+def _uncompleted_task_error(task: A2ATask, state) -> Dict[str, Any]:
+    identity = _task_identity(task, state)
+    terminal = _A2A_TERMINAL_FAILURES.get(state)
+    if terminal is not None:
+        code, reason = terminal
+        detail = _status_message_text(task.status)
+        return {
+            "code": code,
+            "message": f"{reason}: {detail}" if detail else reason,
+            "retryable": False,
+            **identity,
+        }
+    label = _A2A_UNRESOLVED_STATES.get(state, f"unknown-{int(state)}")
+    return {
+        "code": _A2A_CONTINUATION_UNSUPPORTED_CODE,
+        "message": (
+            f"A2A task is in state {label} and has not completed; "
+            "task continuation is not supported, so the tool call is not finished"
+        ),
+        "retryable": False,
+        **identity,
+    }
+
+
 def a2a_response_to_mcp_response(
     task_or_message,
     request_id: str,
@@ -269,17 +330,12 @@ def a2a_response_to_mcp_response(
 
     if isinstance(task_or_message, Task):
         task = task_or_message
-        if task.HasField("status") and task.status.state == TaskState.TASK_STATE_FAILED:
-            error_msg = "Task failed"
-            if task.status.HasField("message"):
-                for p in task.status.message.parts:
-                    t = part_text(p)
-                    if t is not None:
-                        error_msg = t
-                        break
+        state = task.status.state
+        if state != TaskState.TASK_STATE_COMPLETED:
             return MCPResponse(
                 request_id=request_id,
-                error={"code": -32603, "message": error_msg, "retryable": False},
+                correlation_id=task.id or None,
+                error=_uncompleted_task_error(task, state),
             )
 
         result = None
@@ -308,6 +364,7 @@ def a2a_response_to_mcp_response(
             request_id=request_id,
             result=result,
             ui_components=ui_components,
+            correlation_id=task.id or None,
         )
 
     return MCPResponse(

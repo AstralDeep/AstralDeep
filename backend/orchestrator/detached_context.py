@@ -11,9 +11,9 @@ import sys
 
 def detached_context(orch) -> contextvars.Context:
     ctx = contextvars.copy_context()
-    from orchestrator.connection_context import CONNECTION_OPERATION_CONTEXT
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
 
-    candidates = [CONNECTION_OPERATION_CONTEXT]
+    candidates = [_CONNECTION_OPERATION_CONTEXT]
     module = sys.modules.get(type(orch).__module__)
     var = getattr(module, "_CONNECTION_OPERATION_CONTEXT", None)
     if isinstance(var, contextvars.ContextVar) and var not in candidates:
