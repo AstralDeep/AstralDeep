@@ -8,14 +8,13 @@ raise so the message is delivered even when the operation_status frame is
 ignored by an idle client with no matching generation fence.
 """
 
-import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from orchestrator.orchestrator import Orchestrator, _CardActionTerminalFailure
-
 
 # ---------------------------------------------------------------------------
 # Minimal orchestrator stub
@@ -114,7 +113,6 @@ async def test_component_action_permission_denied_raises() -> None:
 @pytest.mark.asyncio
 async def test_component_action_tool_error_raises() -> None:
     """A tool result carrying an error must raise _CardActionTerminalFailure with tool_error code."""
-    from contextlib import asynccontextmanager
 
     orch = _build_orch()
     ws = _ws()
@@ -163,7 +161,6 @@ async def test_component_action_timeline_readonly_raises() -> None:
 @pytest.mark.asyncio
 async def test_component_action_success_does_not_raise() -> None:
     """A successful component action must NOT raise _CardActionTerminalFailure."""
-    from contextlib import asynccontextmanager
 
     orch = _build_orch()
     ws = _ws()
@@ -207,11 +204,10 @@ async def test_refine_restore_gate_feature_disabled_raises() -> None:
     """Disabled feature_flag must raise _CardActionTerminalFailure."""
     orch = _build_orch()
     ws = _ws()
-    with patch("shared.feature_flags.flags.is_enabled", return_value=False):
-        with pytest.raises(_CardActionTerminalFailure):
-            await orch._refine_restore_gate(
-                ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
-            )
+    with pytest.raises(_CardActionTerminalFailure), patch("shared.feature_flags.flags.is_enabled", return_value=False):
+        await orch._refine_restore_gate(
+            ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
+        )
     assert any(r["target"] == "chat" for r in orch._rendered_ui)
 
 
@@ -220,9 +216,8 @@ async def test_refine_restore_gate_missing_context_raises() -> None:
     """Missing component context in refine/restore gate must raise."""
     orch = _build_orch()
     ws = _ws()
-    with patch("shared.feature_flags.flags.is_enabled", return_value=True):
-        with pytest.raises(_CardActionTerminalFailure):
-            await orch._refine_restore_gate(ws, "alice", {})
+    with pytest.raises(_CardActionTerminalFailure), patch("shared.feature_flags.flags.is_enabled", return_value=True):
+        await orch._refine_restore_gate(ws, "alice", {})
 
 
 @pytest.mark.asyncio
@@ -231,11 +226,10 @@ async def test_refine_restore_gate_component_not_found_raises() -> None:
     orch = _build_orch()
     ws = _ws()
     orch.workspace.aget_by_component_id = AsyncMock(return_value=None)
-    with patch("shared.feature_flags.flags.is_enabled", return_value=True):
-        with pytest.raises(_CardActionTerminalFailure) as exc_info:
-            await orch._refine_restore_gate(
-                ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
-            )
+    with patch("shared.feature_flags.flags.is_enabled", return_value=True), pytest.raises(_CardActionTerminalFailure) as exc_info:
+        await orch._refine_restore_gate(
+            ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
+        )
     assert exc_info.value.terminal_code == "component_not_found"
     assert any(r["target"] == "chat" for r in orch._rendered_ui)
 
@@ -252,11 +246,10 @@ async def test_refine_restore_gate_permission_denied_raises() -> None:
         }
     })
     orch.tool_permissions.is_tool_allowed = MagicMock(return_value=False)
-    with patch("shared.feature_flags.flags.is_enabled", return_value=True):
-        with pytest.raises(_CardActionTerminalFailure) as exc_info:
-            await orch._refine_restore_gate(
-                ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
-            )
+    with patch("shared.feature_flags.flags.is_enabled", return_value=True), pytest.raises(_CardActionTerminalFailure) as exc_info:
+        await orch._refine_restore_gate(
+            ws, "alice", {"chat_id": "c1", "component_id": "comp1"}
+        )
     assert exc_info.value.terminal_code == "permission_denied"
 
 
@@ -279,12 +272,11 @@ async def test_component_refine_provider_not_configured_raises() -> None:
     orch._llm_audit_principals = MagicMock(return_value=("alice", "alice"))
     orch._record_llm_unconfigured = AsyncMock()
     orch.audit_recorder = MagicMock()
-    with patch("shared.feature_flags.flags.is_enabled", return_value=True):
-        with pytest.raises(_CardActionTerminalFailure) as exc_info:
-            await orch._handle_component_refine(
-                ws, "alice",
-                {"chat_id": "c1", "component_id": "comp1", "instruction": "make it red"},
-            )
+    with pytest.raises(_CardActionTerminalFailure) as exc_info, patch("shared.feature_flags.flags.is_enabled", return_value=True):
+        await orch._handle_component_refine(
+            ws, "alice",
+            {"chat_id": "c1", "component_id": "comp1", "instruction": "make it red"},
+        )
     assert exc_info.value.terminal_code == "provider_not_configured"
     assert any(r["target"] == "chat" for r in orch._rendered_ui)
     assert any("chat_status" in s for s in orch._sent_raw)
@@ -301,12 +293,11 @@ async def test_component_refine_empty_instruction_raises() -> None:
             "_source_tool": "read_spreadsheet",
         }
     })
-    with patch("shared.feature_flags.flags.is_enabled", return_value=True):
-        with pytest.raises(_CardActionTerminalFailure) as exc_info:
-            await orch._handle_component_refine(
-                ws, "alice",
-                {"chat_id": "c1", "component_id": "comp1", "instruction": ""},
-            )
+    with pytest.raises(_CardActionTerminalFailure) as exc_info, patch("shared.feature_flags.flags.is_enabled", return_value=True):
+        await orch._handle_component_refine(
+            ws, "alice",
+            {"chat_id": "c1", "component_id": "comp1", "instruction": ""},
+        )
     assert exc_info.value.terminal_code == "empty_instruction"
     assert any("chat_status" in s for s in orch._sent_raw)
 
