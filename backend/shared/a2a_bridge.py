@@ -258,29 +258,67 @@ def extract_text_from_a2a_message(msg: A2AMessage) -> str:
     return "\n".join(texts)
 
 
+_A2A_TASK_STATE_REASONS = {
+    A2ATaskState.TASK_STATE_UNSPECIFIED: "Task state is unspecified",
+    A2ATaskState.TASK_STATE_SUBMITTED: "Task is pending",
+    A2ATaskState.TASK_STATE_WORKING: "Task is still working",
+    A2ATaskState.TASK_STATE_INPUT_REQUIRED: "Task requires additional input",
+    A2ATaskState.TASK_STATE_AUTH_REQUIRED: "Task requires authorization",
+    A2ATaskState.TASK_STATE_CANCELED: "Task was canceled",
+    A2ATaskState.TASK_STATE_FAILED: "Task failed",
+    A2ATaskState.TASK_STATE_REJECTED: "Task was rejected",
+}
+_A2A_UNKNOWN_TASK_STATE_REASON = "Task did not complete"
+
+
+def _task_state(task: A2ATask) -> int:
+    if task.HasField("status"):
+        return task.status.state
+    return A2ATaskState.TASK_STATE_UNSPECIFIED
+
+
+def _task_state_name(state: int) -> str:
+    descriptor = A2ATaskState.DESCRIPTOR.values_by_number.get(state)
+    return descriptor.name if descriptor is not None else str(state)
+
+
+def _task_state_reason(task: A2ATask, state: int) -> str:
+    if task.HasField("status") and task.status.HasField("message"):
+        for p in task.status.message.parts:
+            t = part_text(p)
+            if t is not None:
+                return t
+    return _A2A_TASK_STATE_REASONS.get(state, _A2A_UNKNOWN_TASK_STATE_REASON)
+
+
+def _unfinished_task_response(task: A2ATask, request_id: str, state: int) -> MCPResponse:
+    error: Dict[str, Any] = {
+        "code": -32603,
+        "message": _task_state_reason(task, state),
+        "retryable": False,
+        "task_state": _task_state_name(state),
+    }
+    if task.id:
+        error["task_id"] = task.id
+    if task.context_id:
+        error["context_id"] = task.context_id
+    return MCPResponse(request_id=request_id, error=error)
+
+
 def a2a_response_to_mcp_response(
     task_or_message,
     request_id: str,
 ) -> MCPResponse:
-    from a2a.types import Task, TaskState, Message as A2AMsg
+    from a2a.types import Task, Message as A2AMsg
 
     if isinstance(task_or_message, A2AMsg):
         return _message_to_mcp_response(task_or_message, request_id)
 
     if isinstance(task_or_message, Task):
         task = task_or_message
-        if task.HasField("status") and task.status.state == TaskState.TASK_STATE_FAILED:
-            error_msg = "Task failed"
-            if task.status.HasField("message"):
-                for p in task.status.message.parts:
-                    t = part_text(p)
-                    if t is not None:
-                        error_msg = t
-                        break
-            return MCPResponse(
-                request_id=request_id,
-                error={"code": -32603, "message": error_msg, "retryable": False},
-            )
+        state = _task_state(task)
+        if state != A2ATaskState.TASK_STATE_COMPLETED:
+            return _unfinished_task_response(task, request_id, state)
 
         result = None
         ui_components = None
