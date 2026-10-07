@@ -11,17 +11,13 @@ import sys
 
 def detached_context(orch) -> contextvars.Context:
     ctx = contextvars.copy_context()
-    candidates = []
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+
+    candidates = [_CONNECTION_OPERATION_CONTEXT]
     module = sys.modules.get(type(orch).__module__)
     var = getattr(module, "_CONNECTION_OPERATION_CONTEXT", None)
-    if isinstance(var, contextvars.ContextVar):
+    if isinstance(var, contextvars.ContextVar) and var not in candidates:
         candidates.append(var)
-    try:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as imported
-    except Exception:  # noqa: BLE001
-        imported = None
-    if isinstance(imported, contextvars.ContextVar) and imported not in candidates:
-        candidates.append(imported)
     for var in candidates:
         ctx.run(var.set, None)
     return ctx

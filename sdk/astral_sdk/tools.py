@@ -26,6 +26,8 @@ TOOL_NAMES: tuple[str, ...] = tuple(CONTRACT["dispatchable_tool_names"])
 FRAMEWORK_CREDENTIAL_SCOPES: tuple[str, ...] = tuple(CONTRACT["framework_credential_scopes"])
 
 MCP_PROTOCOL_VERSION: str = CONTRACT["mcp"]["protocol_version"]
+MCP_SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = tuple(
+    CONTRACT["mcp"].get("supported_protocol_versions", (MCP_PROTOCOL_VERSION,)))
 MCP_AUDIENCE: str = CONTRACT["mcp"]["audience"]
 
 
@@ -49,6 +51,7 @@ __all__ = [
     "TOOL_NAMES",
     "FRAMEWORK_CREDENTIAL_SCOPES",
     "MCP_PROTOCOL_VERSION",
+    "MCP_SUPPORTED_PROTOCOL_VERSIONS",
     "MCP_AUDIENCE",
     "tools_for_scopes",
     "function_schema",
