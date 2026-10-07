@@ -29,6 +29,7 @@ from a2a.types import (
     StringList,
     OpenIdConnectSecurityScheme,
 )
+from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
 from shared.a2a_bridge import (
     ensure_task_created,
@@ -418,7 +419,11 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         default_input_modes=["text/plain", "application/json"],
         default_output_modes=["application/json"],
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=_public_url()),
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=_public_url(),
+                protocol_version=PROTOCOL_VERSION_1_0,
+            ),
         ],
         provider=AgentProvider(
             organization="AstralDeep",

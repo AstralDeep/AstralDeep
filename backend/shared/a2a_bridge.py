@@ -29,6 +29,7 @@ from a2a.types import (
     TaskState as A2ATaskState,
     TaskStatus as A2ATaskStatus,
 )
+from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
 from shared.protocol import (
     AgentCard as CustomAgentCard,
@@ -132,7 +133,11 @@ def custom_card_to_a2a(card: CustomAgentCard, base_url: str) -> A2AAgentCard:
         default_input_modes=["application/json"],
         default_output_modes=["application/json"],
         supported_interfaces=[
-            AgentInterface(protocol_binding="JSONRPC", url=base_url),
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=base_url,
+                protocol_version=PROTOCOL_VERSION_1_0,
+            ),
         ],
         provider=AgentProvider(
             organization="AstralDeep",

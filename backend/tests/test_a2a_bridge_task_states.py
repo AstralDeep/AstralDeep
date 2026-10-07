@@ -10,7 +10,15 @@ from typing import Any, Dict, List
 
 import httpx
 import pytest
-from a2a.types import Artifact, Message as A2AMessage, Role, Task, TaskState, TaskStatus
+from a2a.types import (
+    Artifact,
+    Message as A2AMessage,
+    Role,
+    SendMessageResponse,
+    Task,
+    TaskState,
+    TaskStatus,
+)
 from google.protobuf.json_format import MessageToDict
 
 from orchestrator.orchestrator import Orchestrator
@@ -222,6 +230,8 @@ async def test_strict_peer_working_then_completed_drives_lifecycle_without_secon
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         sends.append(payload)
+        assert payload["method"] == "SendMessage"
+        assert request.headers["A2A-Version"] == "1.0"
         if working["pending"]:
             working["pending"] = False
             task = _task(TaskState.TASK_STATE_WORKING)
@@ -235,7 +245,7 @@ async def test_strict_peer_working_then_completed_drives_lifecycle_without_secon
             json={
                 "jsonrpc": "2.0",
                 "id": payload.get("id"),
-                "result": MessageToDict(task, preserving_proto_field_name=True),
+                "result": MessageToDict(SendMessageResponse(task=task)),
             },
         )
 
