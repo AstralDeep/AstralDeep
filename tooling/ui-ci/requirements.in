@@ -12,3 +12,5 @@ websockets==17.1
 cryptography==48.0.1
 requests==2.34.2
 openai==3.14.1
+uvicorn==0.54.0
+python-dotenv==1.2.2
