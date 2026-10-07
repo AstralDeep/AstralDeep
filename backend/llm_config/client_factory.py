@@ -1,113 +1,55 @@
-"""Pure factory turning a resolved credential record into an OpenAI client: keyless
-configs route through a stripped-Authorization transport, and a missing record raises
-LLMUnavailable rather than borrowing another owner's credentials.
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Optional, Protocol, Tuple
+from typing import Any
 
-from openai import OpenAI
-
-from .local_endpoint import classify_endpoint
-from .types import CredentialSource, LLMUnavailable, ResolvedConfig
-
-
-DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS = 60.0
-
-KEYLESS_API_KEY_SENTINEL = "not-needed"
+from backend.llm_config.store import get_owner_config
+from backend.llm.providers.openai_compatible import OpenAICompatibleClient
+from backend.llm.providers.local import LocalClient
+from backend.llm.providers.anthropic_native_adapter import AnthropicNativeClient
 
 
-def _strip_authorization(request) -> None:
-    request.headers.pop("Authorization", None)
+def _require_owner_credentials(config: dict[str, Any], profile: str) -> tuple[str, str]:
+    endpoint = config.get("provider_endpoint")
+    api_key = config.get("provider_api_key")
+    if not endpoint or not api_key:
+        raise ValueError(f"Missing credentials for profile {profile}")
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        raise ValueError("Invalid provider endpoint")
+    return endpoint, api_key
 
 
-# Fresh client per call — the SDK closes it after use
-def _keyless_http_client():
-    import httpx
+def create_client(owner_id: str, model_name: str, profile_override: str | None = None) -> Any:
+    config = get_owner_config(owner_id)
+    if not isinstance(config, dict):
+        raise ValueError("Owner config not found")
 
-    return httpx.Client(event_hooks={"request": [_strip_authorization]})
+    profile = profile_override or config.get("provider_profile", "openai_compatible")
+    endpoint = config.get("provider_endpoint")
+    api_key = config.get("provider_api_key")
+    timeout = int(config.get("provider_timeout_seconds", 30))
 
-
-def openai_auth_kwargs(api_key: str) -> dict:
-    if api_key and api_key != KEYLESS_API_KEY_SENTINEL:
-        return {"api_key": api_key}
-    return {
-        "api_key": KEYLESS_API_KEY_SENTINEL,
-        "http_client": _keyless_http_client(),
-    }
-
-
-class LLMConfigLike(Protocol):
-    api_key: str
-    base_url: str
-    model: str
-
-
-@dataclass(frozen=True, slots=True)
-class LocalInferenceFrame:
-    local: bool
-    endpoint_class: str
-    keyless: bool
-    model: str
-    audit_base_url: str
-
-
-def local_inference_frame(
-    config: Optional[LLMConfigLike], *, allowlist: Iterable[str] = ()
-) -> LocalInferenceFrame:
-    if config is None:
-        return LocalInferenceFrame(False, "remote", False, "", "")
-    base_url = getattr(config, "base_url", "")
-    base_url = base_url if type(base_url) is str else ""
-    model = getattr(config, "model", "")
-    model = model if type(model) is str else ""
-    api_key = getattr(config, "api_key", "")
-    keyless = not api_key or api_key == KEYLESS_API_KEY_SENTINEL
-    verdict = classify_endpoint(base_url, allowlist=allowlist)
-    return LocalInferenceFrame(
-        local=verdict.local,
-        endpoint_class=verdict.endpoint_class,
-        keyless=keyless,
-        model=model,
-        audit_base_url=verdict.redacted_base_url if verdict.local else base_url,
-    )
-
-
-def build_llm_client(
-    config: Optional[LLMConfigLike],
-    source: CredentialSource,
-    *,
-    timeout: Optional[float] = None,
-) -> Tuple[OpenAI, CredentialSource, ResolvedConfig]:
-    if source == CredentialSource.OPERATOR_DEFAULT:
-        raise ValueError(
-            "CredentialSource.OPERATOR_DEFAULT is retired (feature 054): "
-            "the operator-default credential path no longer exists."
+    if profile == "anthropic_native":
+        endpoint, api_key = _require_owner_credentials(config, profile)
+        if not endpoint.startswith("https://api.anthropic.com"):
+            raise ValueError("Native Claude endpoint must be api.anthropic.com")
+        return AnthropicNativeClient(
+            owner_id=owner_id,
+            endpoint=endpoint.rstrip("/") + "/v1/messages",
+            api_key=api_key,
+            timeout_seconds=timeout,
         )
-    if config is None:
-        raise LLMUnavailable(
-            "No LLM configuration for this context: "
-            + (
-                "the user has not completed provider setup."
-                if source == CredentialSource.USER
-                else "no system credential has been configured by an admin."
-            )
+
+    if profile == "local":
+        return LocalClient(owner_id=owner_id, model_name=model_name)
+
+    if profile == "openai_compatible":
+        endpoint, api_key = _require_owner_credentials(config, profile)
+        return OpenAICompatibleClient(
+            owner_id=owner_id,
+            model_name=model_name,
+            endpoint=endpoint,
+            api_key=api_key,
+            timeout_seconds=timeout,
         )
-    kwargs = {
-        "base_url": config.base_url,
-        "max_retries": 0,
-        "timeout": (
-            DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
-            if timeout is None
-            else timeout
-        ),
-    }
-    kwargs.update(openai_auth_kwargs(config.api_key))
-    client = OpenAI(**kwargs)
-    return (
-        client,
-        source,
-        ResolvedConfig(base_url=config.base_url, model=config.model),
-    )
+
+    raise ValueError(f"Unsupported provider profile: {profile}")
