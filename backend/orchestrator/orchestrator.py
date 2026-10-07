@@ -42,6 +42,11 @@ from orchestrator.history import (
     HistoryManager,
     augment_conversation_snapshot_for_target,
 )
+from orchestrator.connection_context import (
+    _ACTIVE_REQUEST_TEXT,
+    _CONNECTION_OPERATION_CONTEXT,
+    _WORKSPACE_MUTATION_LOCKS,
+)
 from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.delegation import DelegationService
@@ -248,17 +253,6 @@ _CONNECTION_IDENTITY_FIELDS = frozenset(
         "task_id",
     }
 )
-
-_CONNECTION_OPERATION_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = (
-    contextvars.ContextVar("connection_operation_context", default=None)
-)
-_WORKSPACE_MUTATION_LOCKS: contextvars.ContextVar[frozenset[str]] = (
-    contextvars.ContextVar("workspace_mutation_locks", default=frozenset())
-)
-_ACTIVE_REQUEST_TEXT: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "active_request_text", default=""
-)
-
 
 @dataclass
 class _ConnectionIngressFrame:
