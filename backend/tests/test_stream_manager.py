@@ -1,6 +1,6 @@
 """Tests for orchestrator/stream_manager.py's constructable surface: params_hash
 canonicalization, compute_backoff ranges, classify_error routing, StreamSubscription
-invariants, and the token-revocation sweep.
+invariants, declared stream lifetimes, and the token-revocation sweep.
 """
 
 import os
@@ -12,11 +12,14 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from orchestrator.stream_manager import (
+    MAX_STREAM_LIFETIME_SECONDS,
+    StreamLifetime,
     StreamManager,
     StreamState,
     StreamSubscription,
     classify_error,
     compute_backoff,
+    declared_lifetime,
     params_hash,
     MAX_RETRY_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -220,3 +223,53 @@ class TestTokenRevocationSweep:
         assert len(auth_errs) >= 1
         assert sid not in [s.stream_id for s in mgr._active.values()]
         assert ("alice", "c") in mgr._dormant
+
+
+MINUTES = {"type": "integer", "minimum": 1, "maximum": 10, "default": 2}
+
+
+def _schema(**minutes):
+    return {"type": "object", "properties": {"minutes": {**MINUTES, **minutes}}}
+
+
+class TestDeclaredLifetime:
+    def test_a_tool_that_declares_no_duration_argument_has_no_lifetime(self):
+        assert declared_lifetime({"streamable": True}, _schema()) is None
+
+    def test_bounds_come_from_the_tools_own_input_schema(self):
+        lifetime = declared_lifetime({"duration_argument": "minutes", "duration_unit_s": 60}, _schema())
+        assert lifetime == StreamLifetime("minutes", 60.0, 2.0, 1.0, 10.0)
+        assert declared_lifetime({"duration_argument": "minutes"}, _schema()).unit_s == 1.0
+
+    @pytest.mark.parametrize("params, seconds", [
+        ({"minutes": 5}, 300.0), ({"minutes": "3"}, 180.0), ({"minutes": 2.5}, 150.0),
+        ({}, 120.0), ({"minutes": None}, 120.0), ({"minutes": "soon"}, 120.0), ({"minutes": [5]}, 120.0),
+        ({"minutes": 0}, 60.0), ({"minutes": -4}, 60.0), ({"minutes": 99}, 600.0),
+        ({"minutes": float("inf")}, 600.0), ({"minutes": float("nan")}, 600.0),
+    ])
+    def test_requested_duration_is_clamped_the_way_the_schema_bounds_it(self, params, seconds):
+        assert StreamLifetime("minutes", 60.0, 2.0, 1.0, 10.0).seconds(params) == seconds
+
+    @pytest.mark.parametrize("metadata, schema", [
+        ({"duration_argument": "seconds"}, _schema()),
+        ({"duration_argument": 7}, _schema()),
+        ({"duration_argument": "minutes"}, None),
+        ({"duration_argument": "minutes"}, {"properties": []}),
+        ({"duration_argument": "minutes"}, {"properties": {"minutes": {"type": "integer", "maximum": 10}}}),
+        ({"duration_argument": "minutes"}, _schema(maximum=True)),
+        ({"duration_argument": "minutes"}, _schema(default="2")),
+        ({"duration_argument": "minutes", "duration_unit_s": "60"}, _schema()),
+        ({"duration_argument": "minutes", "duration_unit_s": 0}, _schema()),
+        ({"duration_argument": "minutes"}, _schema(minimum=0)),
+        ({"duration_argument": "minutes"}, _schema(default=11)),
+        ({"duration_argument": "minutes"}, _schema(minimum=3)),
+        ({"duration_argument": "minutes", "duration_unit_s": 60}, _schema(maximum=MAX_STREAM_LIFETIME_SECONDS / 60 + 1)),
+    ])
+    def test_an_unusable_declaration_is_refused(self, metadata, schema):
+        with pytest.raises(ValueError):
+            declared_lifetime(metadata, schema)
+
+    def test_the_longest_declarable_stream_is_accepted(self):
+        lifetime = declared_lifetime(
+            {"duration_argument": "minutes", "duration_unit_s": 60}, _schema(maximum=MAX_STREAM_LIFETIME_SECONDS / 60))
+        assert lifetime.seconds({"minutes": 10**6}) == MAX_STREAM_LIFETIME_SECONDS

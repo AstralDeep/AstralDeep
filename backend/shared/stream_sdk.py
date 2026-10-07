@@ -74,6 +74,8 @@ def streaming_tool(
     min_fps: int = 5,
     max_chunk_bytes: int = 65536,
     scope: Optional[str] = None,
+    duration_argument: Optional[str] = None,
+    duration_unit_s: float = 1.0,
 ) -> Callable[[Callable], Callable]:
     if not (1 <= min_fps <= max_fps <= 60):
         raise ValueError(
@@ -85,6 +87,10 @@ def streaming_tool(
             f"@streaming_tool: max_chunk_bytes must be a positive int, "
             f"got {max_chunk_bytes!r}"
         )
+    lifetime: Dict[str, Any] = (
+        {} if duration_argument is None
+        else {"duration_argument": duration_argument, "duration_unit_s": duration_unit_s}
+    )
 
     def decorate(fn: Callable) -> Callable:
         if not asyncio.iscoroutinefunction(fn) and not inspect.isasyncgenfunction(fn):
@@ -115,6 +121,7 @@ def streaming_tool(
                 "max_fps": max_fps,
                 "min_fps": min_fps,
                 "max_chunk_bytes": max_chunk_bytes,
+                **lifetime,
             },
         }
         return fn

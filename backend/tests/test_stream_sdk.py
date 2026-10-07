@@ -39,6 +39,20 @@ class TestStreamingToolDecorator:
         assert meta["metadata"]["streaming_kind"] == "push"
         assert inspect.isasyncgenfunction(my_tool)
 
+    def test_declares_a_duration_argument_only_when_given(self):
+        @streaming_tool(name="t", description="d", input_schema={},
+                        duration_argument="minutes", duration_unit_s=60)
+        async def bounded(args, creds):
+            yield StreamComponents(components=[{"type": "metric"}])
+
+        @streaming_tool(name="t", description="d", input_schema={})
+        async def endless(args, creds):
+            yield StreamComponents(components=[{"type": "metric"}])
+
+        declared = get_stream_metadata(bounded)["metadata"]
+        assert (declared["duration_argument"], declared["duration_unit_s"]) == ("minutes", 60)
+        assert not {"duration_argument", "duration_unit_s"} & set(get_stream_metadata(endless)["metadata"])
+
     def test_marks_streamctx_form(self):
         @streaming_tool(name="t", description="d", input_schema={})
         async def my_tool(args, creds, ctx: StreamCtx):

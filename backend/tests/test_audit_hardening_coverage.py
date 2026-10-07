@@ -154,6 +154,35 @@ async def test_register_agent_reads_the_stream_progress_interval(monkeypatch):
         assert "persist_progress_s" not in fake._streamable_tools[name]
 
 
+async def test_register_agent_reads_a_declared_stream_lifetime_and_refuses_an_unusable_one(monkeypatch):
+    monkeypatch.setenv("DEFAULT_AGENT_OWNER", "")
+    monkeypatch.setenv("AGENT_API_KEY", "")
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    from orchestrator.orchestrator import Orchestrator
+    from orchestrator.stream_manager import StreamLifetime
+
+    fake = _RegFakeOrch()
+    fake.register_agent = types.MethodType(Orchestrator.register_agent, fake)
+    minutes = {"type": "integer", "minimum": 1, "maximum": 10, "default": 2}
+
+    def skill(name, argument, **metadata):
+        return SimpleNamespace(id=name, description="d", scope="tools:read",
+                               input_schema={"type": "object", "properties": {"minutes": argument}},
+                               metadata={"streamable": True, "streaming_kind": "push", **metadata})
+
+    card = SimpleNamespace(agent_id="cov-agent-3", name="Cov", skills=[
+        skill("bounded", minutes, duration_argument="minutes", duration_unit_s=60),
+        skill("no_maximum", {"type": "integer"}, duration_argument="minutes"),
+        skill("endless", minutes),
+    ])
+    await fake.register_agent(None, SimpleNamespace(agent_card=card, api_key=""))
+
+    assert fake._streamable_tools["bounded"]["lifetime"] == StreamLifetime("minutes", 60.0, 2.0, 1.0, 10.0)
+    assert fake._streamable_tools["bounded"]["max_fps"] == 30
+    assert "no_maximum" not in fake._streamable_tools
+    assert "lifetime" not in fake._streamable_tools["endless"]
+
+
 class _CredScrubFakeOrch:
     def __init__(self):
         self.local_agents = {}

@@ -1805,7 +1805,13 @@ class ChromeSurface(Message):
         if self.surface_key in {"work", "guidance"}:
             _require_uuid4(self.request_generation, "request_generation")
         elif self.request_generation is not None:
-            raise ProtocolValidationError("correlated chrome surface must be an owner surface")
+            if (not isinstance(self.surface_key, str) or len(self.surface_key) > 128
+                    or self.region != "modal" or self.mode != "replace"):
+                raise ProtocolValidationError("correlated chrome surface must be a bounded replace modal")
+            if self.surface_key == "" and (self.components != [] or self.title != ""
+                    or self.admin_only is not False or self.selection is not None):
+                raise ProtocolValidationError("correlated close must be an empty nonprivileged modal")
+            _require_uuid4(self.request_generation, "request_generation")
         else:
             data.pop("request_generation")
         if self.selection is None:

@@ -1,5 +1,5 @@
 """Tests for ws_handlers.py's llm_config_set/clear handlers: field validation,
-server-derived base_url for catalog presets, probe-gated save, audit emission, and
+server-derived base_url for catalog presets, acknowledged save and advisory probes, audit emission, and
 the retired register_ui accept-and-ignore path.
 """
 
@@ -72,6 +72,16 @@ async def _set(store, recorder, safe_send, config, user=USER):
      "base_url"),
     ({"provider": "custom", "api_key": KEY, "model": "m",
       "base_url": "ftp://x/v1"}, "base_url"),
+    ({"provider": "custom", "api_key": KEY, "model": "m",
+      "base_url": "https://provider.example:not-a-port/v1"}, "base_url"),
+    ({"provider": "custom", "api_key": KEY, "model": "m",
+      "base_url": "https://[malformed-ipv6]/v1"}, "base_url"),
+    ({"provider": "custom", "api_key": KEY, "model": "m",
+      "base_url": "https://provider.example:65536/v1"}, "base_url"),
+    ({"provider": "custom", "api_key": KEY, "model": "m",
+      "base_url": "https:///v1"}, "base_url"),
+    ({"provider": "custom", "api_key": KEY, "model": "m",
+      "base_url": "https://inline-user:inline-password@provider.example/v1"}, "base_url"),
     ("not-a-dict", "config"),
 ])
 async def test_validation_error_stores_nothing(
@@ -116,6 +126,17 @@ def test_validate_keyless_preset_permits_empty_key():
     assert fields["base_url"] == "http://localhost:11434/v1"
 
 
+@pytest.mark.parametrize("url", [
+    "https://provider.example/v1", "http://localhost:1234/v1",
+    "http://127.0.0.1:11434/v1", "https://[2001:db8::1]:8443/v1",
+    "http://[::1]:1234/v1", "https://provider.example:65535/v1",
+])
+def test_endpoint_syntax_validation_keeps_legitimate_remote_and_local_urls(url):
+    fields, errors = validate_config_submission({"provider": "custom", "api_key": KEY,
+        "model": "m", "base_url": url})
+    assert not errors and fields["base_url"] == url
+
+
 async def test_preset_base_url_ignores_submitted_url(
         store, fake_db, fake_recorder, safe_send, probe_calls):
     result = await _set(store, fake_recorder, safe_send, {
@@ -131,24 +152,22 @@ async def test_preset_base_url_ignores_submitted_url(
     assert fake_db.users[USER]["base_url"] == "https://api.openai.com/v1"
 
 
-async def test_probe_failure_refuses_save(
+async def test_probe_failure_keeps_the_acknowledged_save(
         store, fake_db, fake_recorder, safe_send, probe_fails):
     result = await _set(store, fake_recorder, safe_send, {
         "provider": "openai", "api_key": KEY, "model": "gpt-4o-mini",
     })
-    assert result is False
-    assert store.get_sync(USER) is None
-    assert fake_db.users == {}
+    assert result is True
+    assert store.get_sync(USER).api_key == KEY
+    assert KEY not in fake_db.users[USER]["api_key_enc"]
     events = _events(fake_recorder)
-    assert len(events) == 1
-    assert events[0].inputs_meta["action"] == "tested"
-    assert events[0].outputs_meta == {
+    assert [event.inputs_meta["action"] for event in events] == ["created", "tested"]
+    assert events[1].outputs_meta == {
         "result": "failure", "error_class": "auth_failed"}
     sent = _sent(safe_send)
-    assert sent[-1]["type"] == "error"
-    assert sent[-1]["code"] == "llm_config_invalid"
-    assert sent[-1]["error_class"] == "auth_failed"
-    assert all(m["type"] != "llm_config_ack" for m in sent)
+    assert sent[0] == {"type": "llm_config_ack", "ok": True}
+    assert sent[-1]["type"] == "notification" and sent[-1]["level"] == "warning"
+    assert "saved settings remain" in sent[-1]["body"]
 
 
 async def test_probe_success_persists_audits_and_acks(
@@ -168,8 +187,8 @@ async def test_probe_success_persists_audits_and_acks(
     enc = fake_db.users[USER]["api_key_enc"]
     assert enc and KEY not in enc
     events = _events(fake_recorder)
-    assert [e.inputs_meta["action"] for e in events] == ["tested", "created"]
-    assert events[0].outputs_meta["result"] == "success"
+    assert [e.inputs_meta["action"] for e in events] == ["created", "tested"]
+    assert events[1].outputs_meta["result"] == "success"
     for ev in events:
         assert KEY not in ev.model_dump_json()
     assert _sent(safe_send)[-1] == {"type": "llm_config_ack", "ok": True}
@@ -183,7 +202,7 @@ async def test_second_save_audits_updated(
         "provider": "groq", "api_key": "gsk_newkey1234567890abcdef",
         "model": "llama-3.1-70b"})
     actions = [e.inputs_meta["action"] for e in _events(fake_recorder)]
-    assert actions == ["tested", "created", "tested", "updated"]
+    assert actions == ["created", "tested", "updated", "tested"]
     got = store.get_sync(USER)
     assert got.provider == "groq"
     assert got.base_url == "https://api.groq.com/openai/v1"

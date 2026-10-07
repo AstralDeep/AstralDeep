@@ -111,7 +111,7 @@ from rote.rote import ROTE
 from shared.feature_flags import flags
 from shared.llm_text import strip_reasoning_markup
 from shared.perf import perf_span
-from orchestrator.stream_manager import StreamManager, markdown_safe_prefix_len
+from orchestrator.stream_manager import StreamManager, declared_lifetime, markdown_safe_prefix_len
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
 
 load_dotenv(override=False)
@@ -5268,6 +5268,16 @@ class Orchestrator:
                 entry["min_interval"] = 1
                 entry["max_interval"] = 30
             if kind == "push":
+                try:
+                    lifetime = declared_lifetime(skill_metadata, getattr(skill, "input_schema", None))
+                except ValueError as e:
+                    logger.warning(
+                        f"Agent '{card.agent_id}' tool '{skill.id}' rejected: "
+                        f"invalid stream lifetime: {e}"
+                    )
+                    continue
+                if lifetime is not None:
+                    entry["lifetime"] = lifetime
                 entry["max_fps"] = skill_metadata.get("max_fps", 30)
                 entry["min_fps"] = skill_metadata.get("min_fps", 5)
                 entry["max_chunk_bytes"] = skill_metadata.get("max_chunk_bytes", 65536)
@@ -6591,7 +6601,8 @@ class Orchestrator:
             state=state_value,
             phase=getattr(operation, "phase_code", None) or state_value,
             label={
-                "completed": "Completed",
+                "completed": ("Provider settings saved" if frame.operation_kind == "llm_credential_save"
+                              else "Completed"),
                 "failed": "Failed",
                 "cancelled": "Cancelled",
                 "retryable": "Try again",
@@ -6798,6 +6809,7 @@ class Orchestrator:
             return None
         is_guidance = (action == "chrome_open" and surface == "guidance") or action in {
             "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
+            "chrome_turn_selection_set",
         }
         chat_id = str(chat_value) if chat_value is not None and not (is_work_read or is_guidance) else None
         safe_payload_identity = {
@@ -6971,7 +6983,9 @@ class Orchestrator:
                     context, frame, code="operation_failed", retryable=False,
                 )
                 return
-        from orchestrator.human_request_authority import capture_human_socket_request
+        from orchestrator.human_request_authority import (
+            ExpiredHumanSocketRequest, capture_human_socket_request,
+        )
         from persistent_agents.models import AssignmentError
 
         try:
@@ -7004,14 +7018,24 @@ class Orchestrator:
             frame.close_work_read()
             raise
         except (AssignmentError, TimeoutError) as exc:
-            frame.close_work_read()
-            logger.warning("human request capture failed action=%s cause=%s",
-                           frame.action, getattr(exc, "code", type(exc).__name__))
-            if frame.action != "chat_message":
-                await self._send_connection_admission_refusal(
-                    context, frame, code="operation_failed", retryable=False,
-                )
-                return
+            try:
+                logger.warning("human request capture failed action=%s cause=%s",
+                               frame.action, getattr(exc, "code", type(exc).__name__))
+                if frame.action != "chat_message":
+                    await self._send_connection_admission_refusal(
+                        context, frame, code="operation_failed", retryable=False,
+                    )
+                    if type(exc) is ExpiredHumanSocketRequest:
+                        await exc.request_authentication(self)
+                    return
+            finally:
+                frame.close_work_read()
+                if type(exc) is ExpiredHumanSocketRequest:
+                    exc.request.close()
+        from orchestrator.chrome_events import capture_surface_request
+
+        capture_surface_request(self, context.websocket, frame.action, frame.parsed.get("payload"),
+                                str(frame.request_generation))
         context.submission_digests[
             frame.submission_id
         ] = frame.normalized_digest
@@ -7688,12 +7712,16 @@ class Orchestrator:
             return terminal
         if not unlocked and work.frame.action == "chrome_llm_save":
             try:
-                from orchestrator.chrome_events import is_native_sdui, push_close
+                from orchestrator.chrome_events import claim_current_action_surface, is_native_sdui, push_close
 
                 if is_native_sdui(self, context.websocket) and (
                     time.monotonic() < deadline
                 ):
-                    await push_close(self, context.websocket)
+                    current = await claim_current_action_surface(self, context.websocket, "llm",
+                        str(work.frame.request_generation), work.owner.owner_user_id or "legacy")
+                    if current is not None:
+                        await push_close(self, context.websocket, surface_key="llm",
+                            request_generation=str(work.frame.request_generation), delivery_guard=current)
             except Exception:
                 logger.debug(
                     "credential save surface close failed (non-fatal)",
@@ -7717,9 +7745,31 @@ class Orchestrator:
         context: ConnectionContext,
         work: _ConnectionOperation,
     ) -> bool:
-        from llm_config.ws_handlers import LLMConfigOperationFailure, handle_llm_config_set
+        from llm_config.ws_handlers import (
+            LLMConfigOperationFailure,
+            _send_invalid,
+            handle_llm_config_set,
+            validate_config_field_types,
+        )
 
         from orchestrator.projection_surfaces.llm import _require_acknowledgment
+
+        if work.frame.action == "chrome_llm_save":
+            payload = work.frame.parsed.get("payload")
+            raw = payload.get("fields", {}) if isinstance(payload, dict) else {}
+            errors = validate_config_field_types(raw)
+            if errors:
+                await _send_invalid(
+                    self._safe_send,
+                    context.websocket,
+                    "; ".join(f"{key}: {error}" for key, error in errors.items()),
+                    fields=errors,
+                )
+                raise LLMConfigOperationFailure(
+                    state=OperationState.FAILED,
+                    code="validation_failed",
+                    safe_summary="The provider settings are invalid",
+                )
 
         blocked = await _require_acknowledgment(
             self,
@@ -7944,10 +7994,12 @@ class Orchestrator:
                     execution_websocket, work.frame.raw
                 )
                 if stage.dirty:
+                    # Clients open a commit fence only for a submitted turn, so this commit needs the prelude
                     await self._publish_conversation_snapshot(
                         execution_websocket,
                         stage=stage,
                         request_generation=request_generation,
+                        server_initiated=True,
                     )
                 else:
                     await asyncio.to_thread(
@@ -8080,13 +8132,14 @@ class Orchestrator:
         renewal_task: asyncio.Task[Any] | None = None
         connection_operation_context: dict[str, Any] | None = None
         terminal_operation: Any = None
+        credential_connection_check = None
         progress_task = asyncio.create_task(
             self._emit_long_running_operation_phase(context, work),
             name=f"connection-progress-{work.operation_id}",
         )
 
         async def _execute() -> None:
-            nonlocal connection_operation_context, renewal_task, terminal_operation
+            nonlocal connection_operation_context, renewal_task, terminal_operation, credential_connection_check
             # Wait before claiming: claiming first can deadlock the pool
             if work.predecessors:
                 predecessors = (tuple(asyncio.shield(item) for item in work.predecessors)
@@ -8143,6 +8196,13 @@ class Orchestrator:
             )
             runtime_websocket = None
             try:
+                if (work.frame.action in {"chrome_llm_save", "chrome_typesafe_save"}
+                        and work.frame.surface not in {None, "llm", "llm_settings"}):
+                    raise LLMConfigOperationFailure(
+                        state=OperationState.FAILED,
+                        code="validation_failed",
+                        safe_summary="This action does not belong to the requested surface.",
+                    )
                 if work.frame.operation_kind == "llm_credential_save":
                     deadline_monotonic = work.frame.deadline_at_monotonic
                     deadline_utc = work.frame.deadline_at_utc
@@ -8200,6 +8260,7 @@ class Orchestrator:
                     work.committed_operation = (
                         llm_config_context.completed_operation
                     )
+                    credential_connection_check = llm_config_context.connection_check
                 else:
                     execution_websocket = context.websocket
                     if work.frame.operation_kind == "voice_chat_message":
@@ -8397,6 +8458,8 @@ class Orchestrator:
                 context.pending_reads.discard(work.lane_complete)
                 if not work.lane_complete.done():
                     work.lane_complete.set_result(None)
+        if credential_connection_check is not None and work.committed_operation is not None:
+            await credential_connection_check()
 
     @staticmethod
     def _scrub_terminal_voice_operation(
@@ -8461,6 +8524,10 @@ class Orchestrator:
     ) -> bool:
         parsed = self._parsed_ui_frame(raw)
         control = self._ui_control_kind(parsed)
+        if control in {"register_ui", "close"}:
+            from orchestrator.chrome_events import _note_open_surface
+
+            _note_open_surface(self, context.websocket, "")
         payload = (parsed or {}).get("payload")
         work_candidate = (
             (parsed or {}).get("type") == "ui_event"
@@ -8661,11 +8728,13 @@ class Orchestrator:
             return
         drain_started = time.monotonic()
         context.closing = True
+        from orchestrator.chrome_events import _note_open_surface
         from orchestrator.work_surface_authority import invalidate
         from orchestrator.projection_surfaces.guidance import invalidate_navigation
 
         invalidate(self, context.websocket)
         invalidate_navigation(self, context.websocket)
+        _note_open_surface(self, context.websocket, "")
         context.preregistration.clear()
         for frame in context.ingress:
             frame.close_work_read()
@@ -10028,7 +10097,11 @@ class Orchestrator:
                     handle_llm_config_clear,
                 )
                 if msg.type == "llm_config_set":
-                    saved = await handle_llm_config_set(
+                    async def unlock_saved_provider():
+                        from orchestrator import llm_gate
+                        return await llm_gate.unlock_after_save(self, actor_user_id)
+
+                    await handle_llm_config_set(
                         safe_send=self._safe_send,
                         websocket=websocket,
                         config=getattr(msg, "config", {}) or {},
@@ -10036,13 +10109,8 @@ class Orchestrator:
                         auth_principal=auth_principal,
                         store=self._llm_store,
                         recorder=self.audit_recorder,
+                        after_save=unlock_saved_provider,
                     )
-                    if saved:
-                        try:
-                            from orchestrator import llm_gate
-                            await llm_gate.unlock_after_save(self, actor_user_id)
-                        except Exception:
-                            logger.warning("llm gate unlock failed", exc_info=True)
                 else:
                     removed = await handle_llm_config_clear(
                         safe_send=self._safe_send,
@@ -10964,18 +11032,6 @@ class Orchestrator:
                         msg_out = UIUpdate(components=re_adapted, html=re_html)
                         await self._safe_send(websocket, msg_out.to_json())
 
-                elif msg.action == "save_theme":
-                    theme_data = msg.payload.get("theme")
-                    if theme_data:
-                        try:
-                            await asyncio.to_thread(
-                                self._save_theme_preference,
-                                user_id,
-                                theme_data,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to save theme for {user_id}: {e}")
-
                 elif msg.action == "condense_components":
                     component_ids = msg.payload.get("component_ids", [])
                     logger.info(f"Condense requested: {len(component_ids)} component IDs for user={user_id}")
@@ -11213,13 +11269,14 @@ class Orchestrator:
 
                 else:
                     from orchestrator.chrome_events import handle_chrome_event
-                    work_arguments = {}
+                    work_arguments = {"request_generation": msg.request_generation}
                     if msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "work":
                         work_arguments = {"request_generation": msg.request_generation,
                                           "work_read": work_read}
                     elif ((msg.action == "chrome_open" and (msg.payload or {}).get("surface") == "guidance")
                           or msg.action in {"chrome_note_search", "chrome_note_save",
-                                            "chrome_note_toggle", "chrome_note_forget"}):
+                                            "chrome_note_toggle", "chrome_note_forget",
+                                            "chrome_turn_selection_set"}):
                         work_arguments = {
                             "request_generation": msg.request_generation,
                             "guidance_navigation": (_CONNECTION_OPERATION_CONTEXT.get() or {}).get("guidance_navigation"),
@@ -19568,6 +19625,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.stream_manager import StreamState
         interval = (self._streamable_tools.get(sub.tool_name) or {}).get("persist_progress_s")
         if (not interval or not flags.is_enabled("stream_progress")
+                or sub.expires_at is None
                 or sub.bridged_component_id is None or sub.persist_done
                 or sub.state is not StreamState.ACTIVE
                 or sub.retained_chunk is None or not sub.retained_chunk.components):
@@ -19598,7 +19656,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                          f"an error ({reason}) before completing."),
                 variant="error").to_dict()]
         elif (sub.state is StreamState.STOPPED
-                and sub.state_reason in ("agent_end", "dormant_ttl", "unsubscribe")
+                and sub.state_reason in ("agent_end", "dormant_ttl", "unsubscribe", "duration_elapsed")
                 and sub.retained_chunk is not None
                 and sub.retained_chunk.components):
             components = copy.deepcopy(sub.retained_chunk.components)
@@ -20688,6 +20746,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.debug("TypeSafe fallback audit failed (non-fatal)", exc_info=True)
 
     def _typesafe_record_outcome(self, user_id: str, outcome) -> None:
+        if getattr(self, "_typesafe_outcomes_closing", False):
+            return
         store = getattr(self, "_typesafe_store", None)
         credential_outcome = getattr(outcome, "credential_outcome", None)
         fingerprint = getattr(outcome, "fingerprint", None)
@@ -22828,6 +22888,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _close_started_services(self) -> None:
         task = getattr(self, "_started_services_close_task", None)
         if task is None:
+            self._typesafe_outcomes_closing = True
             task = asyncio.create_task(
                 self._close_started_services_once(),
                 name="orchestrator-started-services-close",
@@ -22910,6 +22971,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await self.async_task_manager.stop_retention_sweep()
                 finally:
+                    typesafe_tasks = tuple(
+                        getattr(self, "_typesafe_outcome_tasks", ())
+                    )
+                    if typesafe_tasks:
+                        await asyncio.gather(
+                            *typesafe_tasks, return_exceptions=True
+                        )
                     voice_close_error: BaseException | None = None
                     voice_services = getattr(self, "voice_services", None)
                     if voice_services is not None:

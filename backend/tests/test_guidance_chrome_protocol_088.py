@@ -28,10 +28,9 @@ def test_guidance_requires_uuid_generation(frame_type, generation):
         frame_type(surface_key="guidance", request_generation=generation).to_json()
 
 
-@pytest.mark.parametrize("frame_type", [ChromeRender, ChromeSurface])
-def test_other_surfaces_cannot_borrow_correlation(frame_type):
+def test_other_web_surfaces_cannot_borrow_private_correlation():
     with pytest.raises(ProtocolValidationError):
-        frame_type(surface_key="agents", request_generation=str(uuid4())).to_json()
+        ChromeRender(surface_key="agents", request_generation=str(uuid4())).to_json()
 
 
 def test_correlated_web_response_requires_modal():

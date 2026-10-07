@@ -1,6 +1,5 @@
-"""Shared connection-probe helper used by llm_config/api.py and every server-side
-credential save path: runs a minimal chat.completions.create and classifies failures,
-without storing or logging the credentials.
+"""Runs bounded prospective and post-save provider checks for api.py and ws_handlers.py.
+Classifies a minimal chat completion without storing or logging credentials.
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from typing import Optional, Tuple
 
 from openai import OpenAI
 
-# Leaves headroom under the caller's overall save deadline
 PROBE_TIMEOUT_SECONDS: float = 8.0
 
 

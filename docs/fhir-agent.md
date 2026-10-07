@@ -69,9 +69,19 @@ finished vitals stream offers **Stream again**.
 The web client applies committed canvas updates but ignores stream frames outside an
 in-flight turn, so a stream is only visible when the orchestrator saves its progress to
 the canvas. That is the fail-closed `FF_STREAM_PROGRESS` flag: with it on, a streaming
-tool that declares `persist_progress_s` has its latest content saved at most that often
-(15 seconds for these two) and only when it changed. With the flag off the agent hides the
-stream buttons, and a stream called through chat shows its first card only.
+tool that declares `persist_progress_s` and a duration argument has its latest content
+saved at most that often (15 seconds for these two) and only when it changed. With the
+flag off the agent hides the stream buttons, and a stream called through chat shows its
+first card only.
+
+A stream runs for the duration it was asked for, counted from its first start. Both tools
+declare `minutes` as their duration argument, so the orchestrator holds the deadline and
+the tool does not have to. Leaving the chat or losing the connection pauses the stream,
+and coming back resumes it by running the tool again, but the deadline does not move. A
+stream whose deadline passed while it was paused is ended instead of resumed, and a run
+still going 30 seconds after the deadline is ended by the orchestrator. Asking again after
+that starts a new stream. A stream the orchestrator ends keeps its last live card, because
+the tool never sent its closing one.
 
 ```text
 FF_TOOL_STREAMING=true

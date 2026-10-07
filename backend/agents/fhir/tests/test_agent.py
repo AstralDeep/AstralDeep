@@ -15,6 +15,7 @@ from agents.fhir.mcp_server import MCPServer
 from orchestrator import taint, tool_feedback
 from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, FIRST_PARTY_PUBLIC_AGENT_IDS
 from orchestrator.orchestrator import Orchestrator
+from orchestrator.stream_manager import declared_lifetime
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from shared.feature_flags import FeatureFlags
 from shared.phi_redactor import PHI_FIELD_PATTERNS
@@ -72,8 +73,16 @@ def test_stream_tools_declare_push_streaming_and_progress(name):
     assert is_streaming_tool(entry["function"])
     assert entry["metadata"] == {
         "streamable": True, "streaming_kind": "push", "max_fps": 1, "min_fps": 1, "max_chunk_bytes": 65536,
-        "persist_progress_s": 15,
+        "persist_progress_s": 15, "duration_argument": "minutes", "duration_unit_s": 60.0,
     }
+
+
+@pytest.mark.parametrize("name, default, longest", [("watch_icu_activity", 120.0, 600.0), ("stream_patient_vitals", 300.0, 900.0)])
+def test_stream_tools_declare_the_duration_the_orchestrator_holds_them_to(name, default, longest):
+    entry = mcp_tools.TOOL_REGISTRY[name]
+    lifetime = declared_lifetime(entry["metadata"], entry["input_schema"])
+    assert lifetime.seconds({}) == default and lifetime.seconds({"minutes": 99}) == longest
+    assert lifetime.seconds({"minutes": 4}) == 240.0 and lifetime.seconds({"minutes": 0}) == 60.0
 
 
 def test_tool_names_and_arguments_stay_clear_of_platform_gates():
