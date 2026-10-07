@@ -21155,7 +21155,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False, "Permission check failed."
         return True, ""
 
-    async def _handle_component_action(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_action(self, websocket, user_id: str, payload: dict[str, Any]):
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         target_id = payload.get("target_component_id") or component_id
@@ -21272,7 +21272,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except _CardActionTerminalFailure:
             raise
         except Exception as e:
-            logger.error(f"component_action failed: {e}", exc_info=True)
+            logger.exception("component_action failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The action failed: {e}", variant="error").to_dict()
             ], target="chat")
@@ -21284,7 +21284,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             }))
 
     async def _refine_restore_gate(self, websocket, user_id: str,
-                                   payload: Dict[str, Any]):
+                                   payload: dict[str, Any]):
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         if not flags.is_enabled("component_refine"):
@@ -21352,7 +21352,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     deny_reason[:200], terminal_code="permission_denied")
         return chat_id, component_id, row
 
-    async def _handle_component_refine(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_refine(self, websocket, user_id: str, payload: dict[str, Any]):
         gate = await self._refine_restore_gate(websocket, user_id, payload)
         chat_id, component_id, _row = gate
         instruction = str(payload.get("instruction") or "").strip()
@@ -21426,7 +21426,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except _CardActionTerminalFailure:
             raise
         except Exception as e:
-            logger.error(f"component_refine failed: {e}", exc_info=True)
+            logger.exception("component_refine failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The refine failed: {e}", variant="error").to_dict()
             ], target="chat")
@@ -21437,7 +21437,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "type": "chat_status", "status": "done", "message": ""
             }))
 
-    async def _handle_component_restore(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_restore(self, websocket, user_id: str, payload: dict[str, Any]):
         gate = await self._refine_restore_gate(websocket, user_id, payload)
         chat_id, component_id, _row = gate
         from orchestrator import artifact_versions
@@ -21490,7 +21490,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except _CardActionTerminalFailure:
             raise
         except Exception as e:
-            logger.error(f"component_restore failed: {e}", exc_info=True)
+            logger.exception("component_restore failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The restore failed: {e}", variant="error").to_dict()
             ], target="chat")
@@ -21501,8 +21501,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "type": "chat_status", "status": "done", "message": ""
             }))
 
-    async def _refine_component_llm(self, websocket, component: Dict[str, Any],
-                                    instruction: str) -> Optional[Dict[str, Any]]:
+    async def _refine_component_llm(self, websocket, component: dict[str, Any],
+                                    instruction: str) -> dict[str, Any] | None:
         from webrender import allowed_primitive_types
         valid_types = set(allowed_primitive_types()) | {"chart"}
         orig_type = str(component.get("type") or "").strip().lower()
