@@ -251,7 +251,7 @@ async def test_advertised_version_method_and_decoder_agree(
         seen["version"] = request.headers[VERSION_HEADER]
         return httpx.Response(
             200,
-            json={"jsonrpc": "2.0", "id": "1", "result": peer_result},
+            json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "result": peer_result},
         )
 
     transport = _RecordingTransport(handler)
@@ -281,7 +281,7 @@ async def test_peer_advertising_both_versions_selects_v1(monkeypatch):
         seen["method"] = json.loads(request.content)["method"]
         seen["version"] = request.headers[VERSION_HEADER]
         return httpx.Response(
-            200, json={"jsonrpc": "2.0", "id": "1", "result": _v1_union_task({"v": 1})}
+            200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "result": _v1_union_task({"v": 1})}
         )
 
     _patch_transport(monkeypatch, _RecordingTransport(handler))
@@ -307,7 +307,7 @@ async def test_v0_3_only_peer_is_supported_only_when_deliberately_selected(monke
             200,
             json={
                 "jsonrpc": "2.0",
-                "id": "1",
+                "id": json.loads(request.content)["id"],
                 "result": {
                     "kind": "message",
                     "messageId": "m-1",
@@ -379,7 +379,7 @@ async def test_malformed_v1_result_is_a_visible_error(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"jsonrpc": "2.0", "id": "1", "result": {"surprise": {"deep": 1}}},
+            json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "result": {"surprise": {"deep": 1}}},
         )
 
     _patch_transport(monkeypatch, _RecordingTransport(handler))
@@ -397,7 +397,7 @@ async def test_malformed_v1_result_is_a_visible_error(monkeypatch):
 async def test_empty_v1_union_is_a_visible_error(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"jsonrpc": "2.0", "id": "1", "result": {}}
+            200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "result": {}}
         )
 
     _patch_transport(monkeypatch, _RecordingTransport(handler))
@@ -416,7 +416,7 @@ async def test_peer_error_and_missing_result_surface_as_responses(monkeypatch):
     def error_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"jsonrpc": "2.0", "id": "1", "error": {"code": -32000, "message": "peer refused"}},
+            json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "error": {"code": -32000, "message": "peer refused"}},
         )
 
     _patch_transport(monkeypatch, _RecordingTransport(error_handler))
@@ -425,11 +425,11 @@ async def test_peer_error_and_missing_result_surface_as_responses(monkeypatch):
     assert refused.error == {"message": "peer refused", "retryable": False}
 
     def empty_handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"jsonrpc": "2.0", "id": "1"})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"]})
 
     _patch_transport(monkeypatch, _RecordingTransport(empty_handler))
     silent = await orch._execute_via_a2a("peer-1", "echo", {}, timeout=5.0)
-    assert silent.error == {"message": "No response from A2A agent", "retryable": True}
+    assert silent.error == {"message": "A2A peer returned a non-conformant JSON-RPC response", "retryable": False}
 
 
 @pytest.mark.asyncio
@@ -445,7 +445,7 @@ async def test_delegation_agent_key_and_caller_capabilities_survive_negotiation(
             "data"
         ]
         return httpx.Response(
-            200, json={"jsonrpc": "2.0", "id": "1", "result": _v1_union_task({"ok": True})}
+            200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "result": _v1_union_task({"ok": True})}
         )
 
     _patch_transport(monkeypatch, _RecordingTransport(handler))
@@ -558,3 +558,333 @@ def test_emitted_cards_declare_protocol_version_1_0():
     orch.tool_permissions = SimpleNamespace(list_disabled_agents=lambda user_id: ())
     emitted = build_orchestrator_a2a_card(orch)
     assert emitted.supported_interfaces[0].protocol_version == "1.0"
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["0.4", "0.9", "1.0rc1", "1.0.dev1", "1.0+canary", "1!1.0", "v1.0", "1.0.0.4"],
+)
+def test_unadvertised_protocol_variants_are_never_normalized_to_supported_versions(version):
+    with pytest.raises(A2ANegotiationError):
+        select_request_version(_card(version))
+
+
+def test_v1_request_uses_canonical_json_field_names():
+    from a2a.types import Message, Role
+    from shared.a2a_codec import build_send_message
+
+    payload = build_send_message(
+        "1.0",
+        Message(
+            message_id="message-1",
+            context_id="context-1",
+            task_id="task-1",
+            role=Role.ROLE_USER,
+            parts=[make_text_part("hello")],
+        ),
+        "request-1",
+    )
+
+    assert payload["params"]["message"]["messageId"] == "message-1"
+    assert payload["params"]["message"]["contextId"] == "context-1"
+    assert payload["params"]["message"]["taskId"] == "task-1"
+    assert "message_id" not in payload["params"]["message"]
+
+
+@pytest.mark.parametrize("version", ["1.0", "0.3"])
+@pytest.mark.asyncio
+async def test_selected_interface_url_and_version_stay_bound(monkeypatch, version):
+    selected_url = f"{PEER_BASE}/rpc/{version}?agent=peer"
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert str(request.url) == selected_url
+        assert request.headers[VERSION_HEADER] == version
+        result = (
+            _v1_union_task({"selected": version})
+            if version == "1.0"
+            else {
+                "kind": "message",
+                "messageId": "legacy-message",
+                "role": "agent",
+                "parts": [{"kind": "text", "text": "legacy"}],
+            }
+        )
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    transport = _RecordingTransport(handler)
+    _patch_transport(monkeypatch, transport)
+    response = await _orchestrator(_card(version, url=selected_url))._execute_via_a2a(
+        "peer-1", "echo", {}
+    )
+
+    assert response.error is None
+    assert len(transport.requests) == 1
+
+
+def test_interface_preference_order_is_respected():
+    card = _card("0.3")
+    card.supported_interfaces.append(
+        AgentInterface(protocol_binding="JSONRPC", url=PEER_URL, protocol_version="1.0")
+    )
+    assert select_request_version(card) == "0.3"
+    card.supported_interfaces[0].protocol_version = "0.9"
+    assert select_request_version(card) == "1.0"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://attacker.example/a2a",
+        "https://localhost:9411/a2a",
+        "http://localhost:9412/a2a",
+        "http://user@localhost:9411/a2a",
+        "http://localhost:9411/a2a#fragment",
+        "http://localhost:bad/a2a",
+        "/relative/a2a",
+    ],
+)
+@pytest.mark.asyncio
+async def test_untrusted_interface_url_is_rejected_before_credentials_or_send(monkeypatch, url):
+    monkeypatch.setenv("AGENT_API_KEY", "test-key-for-isolation")
+    transport = _RecordingTransport(lambda request: httpx.Response(500))
+    _patch_transport(monkeypatch, transport)
+
+    response = await _orchestrator(_card("1.0", url=url))._execute_via_a2a(
+        "peer-1", "echo", {"_delegation_token": "test-delegation"}
+    )
+
+    assert transport.requests == []
+    assert response.result is None
+    assert response.error["retryable"] is False
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"message": {}},
+        {"message": {"messageId": "m", "role": "ROLE_AGENT", "parts": []}},
+        {"message": {"role": "ROLE_AGENT", "parts": [{"text": "hi"}]}},
+        {"message": {"messageId": "m", "role": "ROLE_USER", "parts": [{"text": "hi"}]}},
+        {"message": {"messageId": "m", "role": "ROLE_AGENT", "parts": [{}]}},
+        {"task": {"status": {"state": "TASK_STATE_COMPLETED"}}},
+        {"task": {"id": "t"}},
+        {"task": {"id": "t", "status": {}}},
+    ],
+)
+def test_incomplete_v1_payload_cannot_project_success(result):
+    with pytest.raises(A2ANegotiationError):
+        decode_send_message_result("1.0", result)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["wrong-id", "missing-id", "wrong-jsonrpc", "missing-jsonrpc", "result-and-error", "nonobject", "invalid-json"],
+)
+@pytest.mark.asyncio
+async def test_malformed_rpc_reply_never_succeeds_or_requests_a_retry(monkeypatch, invalid):
+    def handler(request):
+        body = json.loads(request.content)
+        reply = {"jsonrpc": "2.0", "id": body["id"], "result": _v1_union_task({"ok": True})}
+        if invalid == "wrong-id":
+            reply["id"] = "different-request"
+        elif invalid == "missing-id":
+            reply.pop("id")
+        elif invalid == "wrong-jsonrpc":
+            reply["jsonrpc"] = "1.0"
+        elif invalid == "missing-jsonrpc":
+            reply.pop("jsonrpc")
+        elif invalid == "result-and-error":
+            reply["error"] = {"code": -32000, "message": "refused"}
+        elif invalid == "nonobject":
+            reply = [reply]
+        elif invalid == "invalid-json":
+            return httpx.Response(200, content=b"not JSON")
+        return httpx.Response(200, json=reply)
+
+    transport = _RecordingTransport(handler)
+    _patch_transport(monkeypatch, transport)
+    response = await _orchestrator(_card("1.0"))._execute_via_a2a("peer-1", "echo", {})
+
+    assert len(transport.requests) == 1
+    assert response.result is None
+    assert response.error["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_v1_tenant_and_credentials_use_separate_wire_fields(monkeypatch):
+    card = _card("1.0")
+    card.supported_interfaces[0].tenant = "tenant-1"
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["params"]["tenant"] == "tenant-1"
+        data = body["params"]["message"]["parts"][0]["data"]
+        assert data["arguments"] == {"value": 7}
+        assert data["caller_capabilities"] == {"le_ts": {"lease": "lease-1"}}
+        assert request.headers["Authorization"] == "Bearer delegated-token"
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": _v1_union_task({"ok": True})})
+
+    _patch_transport(monkeypatch, _RecordingTransport(handler))
+    response = await _orchestrator(card)._execute_via_a2a(
+        "peer-1", "echo", {"value": 7, "_delegation_token": "delegated-token"},
+        caller_capabilities={"le_ts": {"lease": "lease-1"}},
+    )
+    assert response.error is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_tenant_is_rejected_without_silent_routing_loss(monkeypatch):
+    card = _card("0.3")
+    card.supported_interfaces[0].tenant = "tenant-1"
+    transport = _RecordingTransport(lambda request: httpx.Response(500))
+    _patch_transport(monkeypatch, transport)
+    response = await _orchestrator(card)._execute_via_a2a("peer-1", "echo", {})
+    assert transport.requests == []
+    assert response.error["retryable"] is False
+    assert "tenant" in response.error["message"]
+
+
+def test_legacy_encoder_refuses_a_tenant():
+    from a2a.types import Message, Role
+    from shared.a2a_codec import build_send_message
+
+    with pytest.raises(A2ANegotiationError, match="tenant"):
+        build_send_message("0.3", Message(message_id="m", role=Role.ROLE_USER, parts=[make_text_part("hi")]), "r", tenant="t")
+
+
+@pytest.mark.parametrize("registered,advertised", [
+    ("https://peer.example", "https://PEER.example:443/rpc"),
+    ("http://peer.example:80", "http://peer.example/rpc"),
+])
+def test_same_origin_normalizes_case_and_default_ports(registered, advertised):
+    from shared.a2a_codec import resolve_request_interface
+
+    selected = resolve_request_interface(_card("1.0", url=advertised), registered)
+    assert selected.url == advertised
+    assert selected.version == "1.0"
+
+
+@pytest.mark.asyncio
+async def test_egress_denial_occurs_before_authentication_headers_or_send(monkeypatch):
+    monkeypatch.delenv("EXTERNAL_AGENT_ALLOWED_PRIVATE_HOSTS", raising=False)
+    monkeypatch.delenv("AGENT_KEY_TRUSTED_HOSTS", raising=False)
+    monkeypatch.setattr("shared.external_http._resolve_host_addresses", lambda host: ["10.0.0.9"])
+
+    def forbidden_headers(url):
+        pytest.fail("credentials must not be prepared for a denied destination")
+
+    monkeypatch.setattr("orchestrator.agent_peer_auth.agent_auth_headers", forbidden_headers)
+    private_base = "http://private-peer.example"
+    orch = _orchestrator(_card("1.0", url=f"{private_base}/rpc"))
+    orch.a2a_clients["peer-1"] = private_base
+    transport = _RecordingTransport(lambda request: httpx.Response(500))
+    _patch_transport(monkeypatch, transport)
+
+    response = await orch._execute_via_a2a("peer-1", "echo", {})
+    assert transport.requests == []
+    assert response.error["retryable"] is False
+    assert "egress is blocked" in response.error["message"]
+
+
+@pytest.mark.asyncio
+async def test_response_size_limit_is_enforced_while_streaming(monkeypatch):
+    monkeypatch.setattr("shared.external_http.DEFAULT_MAX_RESPONSE_BYTES", 8)
+    transport = _RecordingTransport(lambda request: httpx.Response(200, content=b"x" * 9))
+    _patch_transport(monkeypatch, transport)
+    response = await _orchestrator(_card("1.0"))._execute_via_a2a("peer-1", "echo", {})
+    assert len(transport.requests) == 1
+    assert response.error["retryable"] is False
+    assert "permitted size" in response.error["message"]
+
+
+@pytest.mark.parametrize("error", ["refused", {}, {"code": True, "message": "refused"}, {"code": -32000, "message": None}])
+@pytest.mark.asyncio
+async def test_malformed_rpc_error_is_not_a_retryable_transport_failure(monkeypatch, error):
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": json.loads(request.content)["id"], "error": error})
+
+    _patch_transport(monkeypatch, _RecordingTransport(handler))
+    response = await _orchestrator(_card("1.0"))._execute_via_a2a("peer-1", "echo", {})
+    assert response.result is None
+    assert response.error["retryable"] is False
+    assert "JSON-RPC error" in response.error["message"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_peer_reply_does_not_repeat_a_tool_effect(monkeypatch):
+    transport = _RecordingTransport(lambda request: httpx.Response(200, content=b"not JSON"))
+    _patch_transport(monkeypatch, transport)
+    orch = _orchestrator(_card("1.0"))
+
+    async def execute_and_wait(agent_id, tool_name, args, **kwargs):
+        return await orch._execute_via_a2a(agent_id, tool_name, args)
+
+    orch.execute_tool_and_wait = execute_and_wait
+    response = await orch._execute_with_retry(None, "peer-1", "echo", {}, user_id="owner-1", channel="rest", audit_correlation_id="corr-1")
+    assert len(transport.requests) == 1
+    assert response.result is None
+    assert response.error["retryable"] is False
+
+
+@pytest.mark.parametrize("result", [None, [], "opaque", {"task": {}, "message": {}}])
+def test_wrong_v1_union_shapes_are_not_accepted(result):
+    with pytest.raises(A2ANegotiationError):
+        decode_send_message_result("1.0", result)
+
+
+@pytest.mark.parametrize("malformation", ["missing-artifact-id", "empty-artifact", "duplicate-artifact", "empty-part", "user-status-message", "empty-status-message"])
+def test_invalid_task_output_or_status_message_cannot_project_success(malformation):
+    result = _v1_union_task({"ok": True})
+    task = result["task"]
+    if malformation == "missing-artifact-id":
+        task["artifacts"][0].pop("artifactId")
+    elif malformation == "empty-artifact":
+        task["artifacts"][0]["parts"] = []
+    elif malformation == "duplicate-artifact":
+        task["artifacts"].append(task["artifacts"][0].copy())
+    elif malformation == "empty-part":
+        task["artifacts"][0]["parts"] = [{}]
+    elif malformation == "user-status-message":
+        task["status"]["message"] = {"messageId": "m", "role": "ROLE_USER", "parts": [{"text": "hi"}]}
+    elif malformation == "empty-status-message":
+        task["status"]["message"] = {"messageId": "m", "role": "ROLE_AGENT", "parts": [{}]}
+    with pytest.raises(A2ANegotiationError):
+        decode_send_message_result("1.0", result)
+
+
+@pytest.mark.parametrize("status,retryable", [(400, False), (401, False), (403, False), (307, False), (429, True), (503, True)])
+@pytest.mark.asyncio
+async def test_http_denials_and_redirects_do_not_redial_or_retry(monkeypatch, status, retryable):
+    transport = _RecordingTransport(lambda request: httpx.Response(status, headers={"Location": "http://attacker.example/rpc"}))
+    _patch_transport(monkeypatch, transport)
+    response = await _orchestrator(_card("1.0"))._execute_via_a2a("peer-1", "echo", {})
+    assert len(transport.requests) == 1
+    assert response.error == {"message": f"A2A peer returned HTTP {status}", "retryable": retryable}
+
+
+@pytest.mark.asyncio
+async def test_timeout_remains_an_explicit_transport_failure(monkeypatch):
+    def handler(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    _patch_transport(monkeypatch, _RecordingTransport(handler))
+    response = await _orchestrator(_card("1.0"))._execute_via_a2a("peer-1", "echo", {})
+    assert response.error == {"message": "A2A tool call timed out", "retryable": True}
+
+
+def test_completed_task_without_artifacts_remains_valid():
+    result = _v1_union_task({})
+    result["task"]["artifacts"] = []
+    decoded = decode_send_message_result("1.0", result)
+    assert decoded.task.id == "task-1"
+
+
+def test_valid_agent_status_message_remains_projectable():
+    result = _v1_union_task({})
+    result["task"]["artifacts"] = []
+    result["task"]["status"]["message"] = {"messageId": "status-1", "role": "ROLE_AGENT", "parts": [{"text": "done"}]}
+    decoded = decode_send_message_result("1.0", result)
+    from shared.a2a_bridge import a2a_response_to_mcp_response
+
+    assert a2a_response_to_mcp_response(decoded.task, "request-1").result == "done"

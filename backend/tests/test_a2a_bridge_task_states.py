@@ -258,6 +258,7 @@ async def test_strict_peer_working_then_completed_drives_lifecycle_without_secon
             super().__init__(transport=transport, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _PatchedAsyncClient)
+    monkeypatch.setattr("shared.external_http._resolve_host_addresses", lambda host: ["93.184.216.34"])
 
     orchestrator = Orchestrator.__new__(Orchestrator)
     orchestrator.a2a_clients = {"agent-1": "http://peer.test"}

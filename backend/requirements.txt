@@ -58,8 +58,8 @@ spacy>=3.7.0
 tzdata>=2024.1
 
 # A2A + MCP
-a2a-sdk[sqlite]>=1.0.2,<2.0
-a2a-sdk[http-server]>=1.0.2,<2.0
+a2a-sdk[sqlite]>=1.1.5,<2.0
+a2a-sdk[http-server]>=1.1.5,<2.0
 httpx>=0.28.1
 
 # Conversational voice control plane (feature 065; lead-developer approved 2026-07-31).
