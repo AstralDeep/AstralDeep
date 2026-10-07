@@ -321,6 +321,25 @@ def test_cancellation_tracking_is_not_evicted_while_requests_are_outstanding(fak
     assert responses == []
 
 
+def test_request_tracker_lifecycle_transitions_are_isolated_per_finish():
+    from astral_sdk.mcp_bridge import _RequestTracker
+
+    tracker = _RequestTracker()
+    tracker.cancel("never-registered")
+    tracker.register("req-1")
+    tracker.register("req-1")
+    tracker.cancel("req-1")
+    assert tracker.finish("req-1") is True
+    assert tracker.finish("req-1") is False
+    tracker.register("req-1")
+    assert tracker.finish("req-1") is False
+    tracker.register("req-2")
+    tracker.cancel("req-2")
+    assert tracker.finish("req-2") is True
+    tracker.register("never-registered")
+    assert tracker.finish("never-registered") is False
+
+
 def test_cancellation_for_another_id_during_dispatch_is_ignored(fake_server, monkeypatch):
     script = [
         json.dumps(_request("tools/call", params={"name": "astral_get_operation",

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from typing import IO, Any, Optional
 
 from astral_sdk.client import AstralClient
@@ -35,6 +36,29 @@ class _InvalidToolCall(Exception):
 
 def _is_valid_id(value: Any) -> bool:
     return isinstance(value, (str, int)) and not isinstance(value, bool)
+
+
+class _RequestTracker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._outstanding: set[Any] = set()
+        self._cancelled: set[Any] = set()
+
+    def register(self, request_id: Any) -> None:
+        with self._lock:
+            self._outstanding.add(request_id)
+
+    def cancel(self, request_id: Any) -> None:
+        with self._lock:
+            if request_id in self._outstanding:
+                self._cancelled.add(request_id)
+
+    def finish(self, request_id: Any) -> bool:
+        with self._lock:
+            cancelled = request_id in self._cancelled
+            self._outstanding.discard(request_id)
+            self._cancelled.discard(request_id)
+            return cancelled
 
 
 def _error_response(request_id: Any, code: int, message: str, *, data: Any = None) -> dict[str, Any]:
@@ -209,8 +233,7 @@ class Bridge:
         import threading
 
         lines: "queue.Queue[Optional[str]]" = queue.Queue()
-        outstanding_ids: set[Any] = set()
-        cancelled_ids: set[Any] = set()
+        tracker = _RequestTracker()
 
         def _read_lines() -> None:
             try:
@@ -229,12 +252,11 @@ class Bridge:
                     if "id" not in message:
                         params = message.get("params")
                         request_id = params.get("requestId") if isinstance(params, dict) else None
-                        if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id) \
-                                and request_id in outstanding_ids:
-                            cancelled_ids.add(request_id)
+                        if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id):
+                            tracker.cancel(request_id)
                         continue
                     if _is_valid_id(message.get("id")):
-                        outstanding_ids.add(message["id"])
+                        tracker.register(message["id"])
                     lines.put(raw)
             finally:
                 lines.put(None)
@@ -256,12 +278,8 @@ class Bridge:
                 continue
             request_id = request.get("id") if isinstance(request, dict) else None
             response = self.handle(request)
-            if _is_valid_id(request_id):
-                suppressed = request_id in cancelled_ids
-                cancelled_ids.discard(request_id)
-                outstanding_ids.discard(request_id)
-                if suppressed:
-                    continue
+            if _is_valid_id(request_id) and tracker.finish(request_id):
+                continue
             if response is not None:
                 self._write_message(out_stream, response)
 
