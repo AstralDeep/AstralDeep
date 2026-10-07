@@ -634,7 +634,7 @@ def _voice_guidance_message(message):
 
 async def current_socket_human_read(*, expected_orchestrator, websocket,
                                     operation_context=None):
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
     context = operation_context
     if not isinstance(context, dict):
         context = _CONNECTION_OPERATION_CONTEXT.get() or {}

@@ -17,7 +17,7 @@ def detached_context(orch) -> contextvars.Context:
     if isinstance(var, contextvars.ContextVar):
         candidates.append(var)
     try:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as imported
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT as imported
     except Exception:  # noqa: BLE001
         imported = None
     if isinstance(imported, contextvars.ContextVar) and imported not in candidates:

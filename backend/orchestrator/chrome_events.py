@@ -593,7 +593,7 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
     import sys
     context_var = getattr(sys.modules.get(type(orch).__module__), "_CONNECTION_OPERATION_CONTEXT", None)
     if context_var is None:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as context_var
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT as context_var
     pending = (context_var.get() or {}).get("human_request")
     if (pending is None or pending.websocket is not websocket or pending.boundary.orchestrator is not orch
             or pending.purpose != "metadata" or pending.method != method or pending.message.get("action") != action
@@ -613,7 +613,7 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                               user_id: str, *, request_generation=None, work_read=None,
                               guidance_navigation=None) -> bool:
     from orchestrator.projection_surfaces import SURFACE_MODULES
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
     from shared.protocol import _require_uuid4
     payload = payload or {}
     if _CONNECTION_OPERATION_CONTEXT.get() is None:
@@ -733,7 +733,7 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
                                      surface_key)
             return True
 
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
         response = _response_scope(orch, websocket, surface_key)
         claim_required = response is not None and _CONNECTION_OPERATION_CONTEXT.get() is not None
         current = await claim_current_action_surface(orch, websocket, surface_key, request_generation, user_id)
