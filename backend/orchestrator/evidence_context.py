@@ -8,7 +8,7 @@ import asyncio
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 import hashlib
@@ -23,13 +23,14 @@ from audit.schemas import AuditEventCreate
 from orchestrator.context_presentation import evidence_components, usage_components
 from orchestrator.context_budget import load_budget
 from orchestrator.context_usage import ContextUsage
+from orchestrator.context_views import ContextViewStore, SourceDependency
 from orchestrator.evidence_archive import (
     EvidenceArchive, EvidenceCaptureError, EvidenceDenied, EvidenceError,
     EvidencePolicyError, EvidenceUnavailable, load_grants, match_grant,
 )
 from orchestrator.safe_compaction import CompactionResult, compact_context, estimate_context_tokens
 from shared.feature_flags import flags
-from shared.protocol import AgentCard, MCPResponse
+from shared.protocol import AgentCard, AgentSkill, MCPResponse
 
 _REQUESTER = ContextVar("evidence_host_requester", default=None)
 _REFERENCE = re.compile(r"obs_[A-Za-z0-9_-]{43}")
@@ -39,7 +40,21 @@ _SERVER_ARGUMENTS = {"user_id", "session_id"}
 _PACK_BYTES = 4096
 _PRIVACY_BYTES = 65536
 _PREVIEW_BYTES = 1024
+_DELIVERY_TOKEN = object()
 logger = logging.getLogger("EvidenceContext")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _EvidenceDelivery:
+    token: object
+    authority: object
+    owner: str
+    chat: str
+    websocket: object
+    result_digest: str
+    component_digest: str
+    state_digest: str
+    adapter_binding: tuple | None = None
 
 
 def enabled() -> bool:
@@ -77,6 +92,15 @@ def requester_binding(orchestrator) -> dict:
 
 def transient_result(result, agent_id) -> bool:
     return result is not None and (agent_id == "evidence-1" or getattr(result, "_evidence_transient", False) is True)
+
+
+def _literal_read_tool(result):
+    data = result.result
+    if type(data) is not dict:
+        return None
+    if data.get("view") == "generated_summary":
+        return "inspect_context_view"
+    return "recall_observation" if data.get("reference") is not None else None
 
 
 def has_references(messages) -> bool:
@@ -146,6 +170,7 @@ class EvidenceContext:
         self.orchestrator = orchestrator
         self.clock = clock or (lambda: datetime.now(UTC))
         self.archive = archive or EvidenceArchive(clock=self.clock)
+        self.views = ContextViewStore(clock=self.clock, view_limit_bytes=16384)
         self.usage = usage or ContextUsage(self._persist, self._recover)
         self._sources = {}
         self._sweep_task = None
@@ -180,6 +205,7 @@ class EvidenceContext:
     def _source_stamp(self, websocket, owner, chat, observation, parent):
         from orchestrator import delegation, policy
         from orchestrator.tool_permissions import turn_permission_memo
+        from personalization.phi_gate import get_phi_gate
 
         session = self.orchestrator.ui_sessions.get(websocket)
         if (not isinstance(session, dict) or session.get("sub") != owner
@@ -214,8 +240,17 @@ class EvidenceContext:
             raise EvidenceDenied() from None
         pending = {key: asdict(call) for key, call in getattr(self.orchestrator, "_hitl_pending_calls", {}).items()
                    if call.owner == owner and call.chat == chat}
+        privacy_gate = get_phi_gate()
+        analyzer = getattr(privacy_gate, "_analyzer", None)
+        analyze = getattr(analyzer, "analyze", None)
+        redact = getattr(privacy_gate, "redact_for_storage", None)
+        privacy = {"gate": id(privacy_gate), "available": getattr(privacy_gate, "available", None) is True,
+                   "analyzer": id(analyzer), "analyze": id(getattr(analyze, "__func__", analyze)),
+                   "redact": id(getattr(redact, "__func__", redact)),
+                   "threshold": getattr(privacy_gate, "_score_threshold", None)}
         return _digest({"card": card.to_dict(), "security": blocked, "policy": raw,
-                        "pending": pending, "claims": {key: value for key, value in session.items() if not key.startswith("_")}})
+                        "pending": pending, "privacy": privacy,
+                        "claims": {key: value for key, value in session.items() if not key.startswith("_")}})
 
     async def _persist(self, event):
         receipt = await asyncio.to_thread(self.orchestrator.audit_repo.insert, event)
@@ -282,6 +317,7 @@ class EvidenceContext:
         record = await asyncio.to_thread(self.orchestrator.history.get_conversation_record, chat, owner)
         if record is None:
             self.archive.revoke(owner_id=owner, conversation_id=chat)
+            self.views.revoke(owner_id=owner, conversation_id=chat)
             raise EvidenceDenied()
         await authority.verify(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
         authority.assert_current(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
@@ -315,6 +351,8 @@ class EvidenceContext:
                                           grant_fingerprint=observation.grant_fingerprint)
             for item in removed:
                 self._sources.pop(item.reference, None)
+                self.views.revoke(owner_id=observation.owner_id, conversation_id=observation.conversation_id,
+                                  source_reference=item.reference)
             raise EvidenceDenied() from None
 
     async def _verify_observation_text(self, observation, grant):
@@ -361,6 +399,7 @@ class EvidenceContext:
         if grant.fingerprint != observation.grant_fingerprint:
             self.archive.revoke(owner_id=owner, conversation_id=chat,
                                 grant_fingerprint=observation.grant_fingerprint)
+            self.views.revoke(owner_id=owner, conversation_id=chat, source_reference=observation.reference)
             raise EvidenceDenied()
         args = observation.source_args
         if policy.policy_enabled():
@@ -389,6 +428,37 @@ class EvidenceContext:
         if current.fingerprint != grant.fingerprint:
             raise EvidenceDenied()
         return grant
+
+    def _view_adapter(self, expected=None, *, tool="inspect_context_view"):
+        from agents.evidence.evidence_agent import EvidenceAgent
+        from agents.evidence.mcp_server import MCPServer
+
+        local = getattr(self.orchestrator, "local_agents", None)
+        cards = getattr(self.orchestrator, "agent_cards", None)
+        adapter = local.get("evidence-1") if type(local) is dict else None
+        server = getattr(adapter, "mcp_server", None)
+        card = getattr(adapter, "card", None)
+        tools = getattr(server, "tools", None)
+        inspect = tools.get(tool) if type(tools) is dict else None
+        if (tool not in {"inspect_context_view", "recall_observation"}
+                or not flags.is_enabled("inprocess_agents") or getattr(self.orchestrator, "_evidence_context", None) is not self
+                or type(adapter) is not EvidenceAgent or type(server) is not MCPServer
+                or server._orchestrator is not self.orchestrator or type(card) is not AgentCard
+                or type(cards) is not dict or cards.get("evidence-1") is not card or card.agent_id != "evidence-1"
+                or type(inspect) is not dict or inspect.get("scope") != "tools:read"
+                or type(card.skills) is not list or not any(
+                    type(skill) is AgentSkill and skill.id == tool and skill.scope == "tools:read"
+                    for skill in card.skills)):
+            raise EvidenceDenied()
+        try:
+            identity = _digest({"card": card.to_dict(), "tools": tools})
+        except (AttributeError, TypeError, ValueError, UnicodeError):
+            raise EvidenceDenied() from None
+        if expected is not None and (type(expected) is not tuple or len(expected) != 4
+                or adapter is not expected[0] or server is not expected[1] or card is not expected[2]
+                or identity != expected[3]):
+            raise EvidenceDenied()
+        return adapter, server, card, identity
 
     def _packing_adapter(self, expected=None):
         from agents.evidence.evidence_agent import EvidenceAgent
@@ -435,6 +505,10 @@ class EvidenceContext:
         try:
             await self._owner(websocket, owner, chat)
             adapter_binding = self._packing_adapter()
+            try:
+                read_adapter = self._view_adapter(tool="recall_observation")
+            except EvidenceDenied:
+                raise EvidenceCaptureError("evidence_recall_unavailable") from None
             grant = self._grant(owner, chat, agent, tool)
             permitted = await self._permitted_text(text)
             source_args = _public_arguments(args)
@@ -462,6 +536,10 @@ class EvidenceContext:
             page = self.archive.read(observation.reference, grant=grant, owner_id=owner,
                                      conversation_id=chat, audience_id=f"user:{owner}")
             self._packing_adapter(adapter_binding)
+            try:
+                self._view_adapter(read_adapter, tool="recall_observation")
+            except EvidenceDenied:
+                raise EvidenceCaptureError("evidence_recall_unavailable") from None
             preview = page.text.encode("utf-8")[:_PREVIEW_BYTES].decode("utf-8", errors="ignore")
             view = {"view": "partial_preview", "untrusted": True,
                     "reference": observation.reference, "digest": observation.digest,
@@ -476,6 +554,7 @@ class EvidenceContext:
                 total=observation.size_bytes, next_offset=0, outcome=observation.outcome,
             )
             packed._evidence_transient = True
+            packed._evidence_view_adapter = read_adapter
             self._sources[observation.reference] = observation
             return packed
         except BaseException as exc:
@@ -522,10 +601,29 @@ class EvidenceContext:
         observation = None
         principal = f"agent:{context['requester_agent']}" if context.get("requester_agent") else owner
         try:
+            view_adapter = self._view_adapter(tool=name) if name in {"inspect_context_view", "recall_observation"} else None
             await self._owner(socket, owner, chat)
+            if view_adapter is not None:
+                self._view_adapter(view_adapter, tool=name)
             if name == "context_usage" and not arguments:
                 totals = await self.usage.totals(owner, chat, refresh=True)
                 return MCPResponse(request_id=request_id, result=totals, ui_components=usage_components(totals))
+            if name == "inspect_context_view" and set(arguments) == {"view_id"}:
+                data = await self._view_content(arguments["view_id"], websocket=socket, owner=owner, chat=chat,
+                    parent=context.get("requester_parent"), initiator=context.get("requester_agent"), adapter_binding=view_adapter)
+                self._view_adapter(view_adapter)
+                await self._audit(owner, chat, "view_read", principal=principal,
+                    extra={"view_digest": _digest(arguments["view_id"]), "bytes": len(data["text"].encode())})
+                self._view_adapter(view_adapter)
+                await self.usage.record_recall(owner, chat, len(data["text"].encode()))
+                self._view_adapter(view_adapter)
+                data = await self._view_content(arguments["view_id"], websocket=socket, owner=owner, chat=chat,
+                    parent=context.get("requester_parent"), initiator=context.get("requester_agent"), adapter_binding=view_adapter)
+                self._view_adapter(view_adapter)
+                response = MCPResponse(request_id=request_id, result=data,
+                    ui_components=evidence_components(state="summary", text=data["text"]))
+                response._evidence_view_adapter = view_adapter
+                return response
             allowed = {"reference", "offset"} if name == "recall_observation" else {"reference"}
             if name not in {"recall_observation", "delete_observation"} or not arguments.keys() <= allowed:
                 raise EvidenceDenied()
@@ -535,6 +633,7 @@ class EvidenceContext:
             if name == "delete_observation":
                 self.archive.delete(reference, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
                 self._sources.pop(reference, None)
+                self.views.revoke(owner_id=owner, conversation_id=chat, source_reference=reference)
                 await self._audit(owner, chat, "delete", principal=principal, observation=observation)
                 return MCPResponse(request_id=request_id, result={"status": "deleted"},
                                    ui_components=evidence_components(state="missing"))
@@ -542,20 +641,26 @@ class EvidenceContext:
                 socket, owner, chat, observation, parent=context.get("requester_parent"),
                 initiator=context.get("requester_agent"),
             )
+            self._view_adapter(view_adapter, tool="recall_observation")
             page = self.archive.read(reference, offset=arguments.get("offset", 0), grant=grant,
                                      owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
             await self._verify_observation_text(observation, grant)
+            self._view_adapter(view_adapter, tool="recall_observation")
             await self._audit(owner, chat, "recall", principal=principal, observation=observation,
                               extra={"start": page.start, "end": page.end})
+            self._view_adapter(view_adapter, tool="recall_observation")
             await self.usage.record_recall(owner, chat, page.end - page.start)
+            self._view_adapter(view_adapter, tool="recall_observation")
             current = await self._source_authorized(
                 socket, owner, chat, observation, parent=context.get("requester_parent"),
                 initiator=context.get("requester_agent"),
             )
+            self._view_adapter(view_adapter, tool="recall_observation")
             page = self.archive.read(reference, offset=page.start, grant=current,
                                      owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
             stamp = self._source_stamp(socket, owner, chat, observation, context.get("requester_parent"))
             await self._verify_observation_text(observation, current)
+            self._view_adapter(view_adapter, tool="recall_observation")
             from orchestrator.context_authority import current_context_authority
             current_context_authority(orchestrator=self.orchestrator, websocket=socket, chat_id=chat)
             if self._source_stamp(socket, owner, chat, observation, context.get("requester_parent")) != stamp:
@@ -563,13 +668,15 @@ class EvidenceContext:
             current = self._grant(owner, chat, observation.source_agent, observation.source_tool)
             page = self.archive.read(reference, offset=page.start, grant=current,
                                      owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
-            return MCPResponse(request_id=request_id, result={**page.to_dict(), "untrusted": True,
+            response = MCPResponse(request_id=request_id, result={**page.to_dict(), "untrusted": True,
                                                               "outcome": observation.outcome},
                                ui_components=evidence_components(
                                    state="source", text=page.text, reference=page.reference, digest=page.digest,
                                    start=page.start, end=page.end, total=page.total,
                                    next_offset=page.next_offset, outcome=observation.outcome,
                                ))
+            response._evidence_view_adapter = view_adapter
+            return response
         except Exception as exc:
             reason = exc.code if isinstance(exc, EvidenceError) else "evidence_unavailable_or_not_authorized"
             refusal_recorded = False
@@ -620,6 +727,7 @@ class EvidenceContext:
                                    ui_components=evidence_components(state="missing"))
             response._evidence_unavailable_reference = observation.reference
             response._evidence_delivery_scope = (owner, chat, websocket, copy.deepcopy(parent), initiator)
+            self._seal_delivery(response, websocket=websocket, owner=owner, chat=chat, parent=parent)
             return response
         except Exception:
             return self._denied(request_id)
@@ -636,6 +744,9 @@ class EvidenceContext:
             return result
         observation = None
         try:
+            read_tool = _literal_read_tool(result)
+            view_adapter = (self._view_adapter(getattr(result, "_evidence_view_adapter", None), tool=read_tool)
+                            if read_tool is not None else None)
             scope = getattr(result, "_evidence_delivery_scope", None)
             if scope is not None:
                 if (type(scope) is not tuple or len(scope) != 5 or scope[:2] != (owner, chat)
@@ -643,21 +754,32 @@ class EvidenceContext:
                     raise EvidenceDenied()
                 parent, initiator = scope[3:]
             await self._owner(websocket, owner, chat)
+            if view_adapter is not None:
+                self._view_adapter(view_adapter, tool=read_tool)
             data = result.result
             if type(data) is not dict:
                 raise EvidenceDenied()
             reference = data.get("reference")
-            if reference is not None:
+            if data.get("view") == "generated_summary":
+                expected = await self._view_content(data.get("view_id"), websocket=websocket, owner=owner, chat=chat,
+                                                    parent=parent, initiator=initiator, adapter_binding=view_adapter)
+                self._view_adapter(view_adapter)
+                if _json(data) != _json(expected):
+                    raise EvidenceDenied()
+                components = evidence_components(state="summary", text=expected["text"])
+            elif reference is not None:
                 observation = self.archive.inspect(reference, owner_id=owner,
                     conversation_id=chat, audience_id=f"user:{owner}")
                 grant = await self._source_authorized(websocket, owner, chat, observation,
                                                        parent=parent, initiator=initiator)
+                self._view_adapter(view_adapter, tool=read_tool)
                 preview = data.get("view") == "partial_preview"
                 offset = 0 if preview else data.get("start")
                 page = self.archive.read(reference, offset=offset, grant=grant, owner_id=owner,
                                          conversation_id=chat, audience_id=f"user:{owner}")
                 stamp = self._source_stamp(websocket, owner, chat, observation, parent)
                 await self._verify_observation_text(observation, grant)
+                self._view_adapter(view_adapter, tool=read_tool)
                 from orchestrator.context_authority import current_context_authority
                 current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
                 if self._source_stamp(websocket, owner, chat, observation, parent) != stamp:
@@ -707,6 +829,10 @@ class EvidenceContext:
             result.result = copy.deepcopy(expected)
             result.ui_components = components
             result._evidence_delivery_scope = (owner, chat, websocket, copy.deepcopy(parent), initiator)
+            if view_adapter is not None:
+                self._view_adapter(view_adapter, tool=read_tool)
+                result._evidence_view_adapter = view_adapter
+            self._seal_delivery(result, websocket=websocket, owner=owner, chat=chat, parent=parent)
             return result
         except Exception as exc:
             try:
@@ -721,6 +847,186 @@ class EvidenceContext:
                     reference=result.result.get("reference") if isinstance(result.result, dict) else None,
                     observation=observation, parent=parent, initiator=initiator)
             return self._denied(result.request_id)
+
+    @staticmethod
+    def _dependency(observation):
+        return SourceDependency(observation.reference, observation.integrity_identity,
+                                observation.grant_fingerprint, observation.expires_at)
+
+    def _view_sources_current(self, dependencies, *, websocket, owner, chat, parent=None, stamps=None):
+        current = {}
+        for dependency in dependencies:
+            observation = self.archive.inspect(dependency.reference, owner_id=owner,
+                conversation_id=chat, audience_id=f"user:{owner}")
+            if self._dependency(observation) != dependency:
+                raise EvidenceDenied()
+            grant = self._grant(owner, chat, observation.source_agent, observation.source_tool)
+            self.archive.read(observation.reference, grant=grant, owner_id=owner,
+                              conversation_id=chat, audience_id=f"user:{owner}")
+            current[dependency.reference] = self._source_stamp(websocket, owner, chat, observation, parent)
+        if stamps is not None and current != stamps:
+            raise EvidenceDenied()
+        return current
+
+    async def summary_view(self, text, messages, *, websocket, owner, chat):
+        captured = None
+        try:
+            adapter_binding = self._view_adapter()
+            await self._owner(websocket, owner, chat)
+            self._view_adapter(adapter_binding)
+            references = sorted(set(_REFERENCE_TOKENS.findall(_json(messages))))
+            if not references or any(_REFERENCE.fullmatch(reference) is None for reference in references):
+                raise EvidenceDenied()
+            dependencies, stamps = [], {}
+            for reference in references:
+                observation = self.archive.inspect(reference, owner_id=owner,
+                    conversation_id=chat, audience_id=f"user:{owner}")
+                await self._source_authorized(websocket, owner, chat, observation)
+                self._view_adapter(adapter_binding)
+                dependencies.append(self._dependency(observation))
+                stamps[reference] = self._source_stamp(websocket, owner, chat, observation, None)
+            permitted = await self._permitted_text(text)
+            self._view_adapter(adapter_binding)
+            if not permitted.strip():
+                raise EvidenceDenied()
+            await self._owner(websocket, owner, chat)
+            self._view_adapter(adapter_binding)
+            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
+            captured = self.views.capture(permitted, owner_id=owner, conversation_id=chat,
+                                          audience_id=f"user:{owner}", dependencies=tuple(dependencies))
+            self._view_adapter(adapter_binding)
+            await self._audit(owner, chat, "view_capture", extra={
+                "view_digest": _digest(captured.reference), "bytes": captured.size_bytes,
+                "source_count": len(dependencies),
+            })
+            self._view_adapter(adapter_binding)
+            await self._owner(websocket, owner, chat)
+            self._view_adapter(adapter_binding)
+            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
+            self.views.inspect(captured.reference, owner_id=owner, conversation_id=chat,
+                               audience_id=f"user:{owner}", dependencies=tuple(dependencies))
+            return captured.reference
+        except BaseException as exc:
+            if captured is not None:
+                try:
+                    self.views.delete(captured.reference, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
+                except Exception as cleanup_error:
+                    logger.warning("Temporary context view cleanup refused: %s", type(cleanup_error).__name__)
+            if not isinstance(exc, Exception):
+                raise
+            logger.warning("Temporary context view refused: %s", type(exc).__name__)
+            return None
+
+    async def _view_content(self, view_id, *, websocket, owner, chat, parent=None, initiator=None, adapter_binding=None):
+        adapter_binding = self._view_adapter(adapter_binding)
+        await self._owner(websocket, owner, chat)
+        self._view_adapter(adapter_binding)
+        view = self.views.inspect(view_id, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
+        if not view.dependencies:
+            raise EvidenceDenied()
+        stamps = {}
+        try:
+            for dependency in view.dependencies:
+                observation = self.archive.inspect(dependency.reference, owner_id=owner,
+                    conversation_id=chat, audience_id=f"user:{owner}")
+                if self._dependency(observation) != dependency:
+                    raise EvidenceDenied()
+                await self._source_authorized(websocket, owner, chat, observation, parent=parent, initiator=initiator)
+                self._view_adapter(adapter_binding)
+                stamps[dependency.reference] = self._source_stamp(websocket, owner, chat, observation, parent)
+            content = self.views.read(view_id, owner_id=owner, conversation_id=chat,
+                                     audience_id=f"user:{owner}", dependencies=view.dependencies)
+            if await self._permitted_text(content.text) != content.text:
+                raise EvidenceDenied()
+            self._view_adapter(adapter_binding)
+            await self._owner(websocket, owner, chat)
+            self._view_adapter(adapter_binding)
+            self._view_sources_current(view.dependencies, websocket=websocket, owner=owner, chat=chat,
+                                       parent=parent, stamps=stamps)
+            content = self.views.read(view_id, owner_id=owner, conversation_id=chat,
+                                     audience_id=f"user:{owner}", dependencies=view.dependencies)
+            return {"view": "generated_summary", "view_id": view_id, "text": content.text,
+                    "source_refs": [dependency.reference for dependency in view.dependencies],
+                    "expires_at": content.expires_at.isoformat(), "untrusted": True}
+        except Exception:
+            self.views.delete(view_id, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
+            raise
+
+    def _delivery_state(self, result, *, websocket, owner, chat, parent, adapter_binding=None):
+        data = result.result
+        read_tool = _literal_read_tool(result)
+        adapter_stamp = None
+        if read_tool is not None:
+            adapter_binding = self._view_adapter(adapter_binding, tool=read_tool)
+            adapter_stamp = (tuple(id(value) for value in adapter_binding[:3]), adapter_binding[3])
+        if data.get("view") == "generated_summary":
+            view = self.views.inspect(data.get("view_id"), owner_id=owner,
+                                      conversation_id=chat, audience_id=f"user:{owner}")
+            content = self.views.read(view.reference, owner_id=owner, conversation_id=chat,
+                                     audience_id=f"user:{owner}", dependencies=view.dependencies)
+            if content.text != data.get("text"):
+                raise EvidenceDenied()
+            return {"view": view.integrity_identity,
+                    "adapter": adapter_stamp,
+                    "sources": self._view_sources_current(view.dependencies, websocket=websocket,
+                                                           owner=owner, chat=chat, parent=parent)}
+        reference = data.get("reference") or getattr(result, "_evidence_unavailable_reference", None)
+        if reference is None:
+            return {}
+        observation = self._sources.get(reference)
+        if observation is None or (observation.owner_id, observation.conversation_id,
+                                   observation.audience_id) != (owner, chat, f"user:{owner}"):
+            raise EvidenceDenied()
+        if data.get("status") == "unavailable":
+            matching = [grant for grant in load_grants(os.getenv("ASTRAL_OBSERVATION_POLICY", ""))
+                        if grant.fingerprint == observation.grant_fingerprint]
+            if len(matching) != 1:
+                raise EvidenceDenied()
+            try:
+                self.archive.inspect(reference, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
+            except EvidenceUnavailable as unavailable:
+                if unavailable.reason != data.get("reason") or unavailable.reason == "revoked":
+                    raise EvidenceDenied() from None
+            else:
+                raise EvidenceDenied()
+            return {"state": data, "source": self._source_stamp(websocket, owner, chat, observation, parent)}
+        return {"adapter": adapter_stamp, "sources": self._view_sources_current(
+            (self._dependency(observation),), websocket=websocket, owner=owner, chat=chat, parent=parent)}
+
+    def _seal_delivery(self, result, *, websocket, owner, chat, parent):
+        from orchestrator.context_authority import current_context_authority
+
+        authority = current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+        authority.assert_current(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+        if authority.owner_id != owner:
+            raise EvidenceDenied()
+        read_tool = _literal_read_tool(result)
+        adapter_binding = (self._view_adapter(getattr(result, "_evidence_view_adapter", None), tool=read_tool)
+                           if read_tool is not None else None)
+        result._evidence_delivery_proof = _EvidenceDelivery(
+            _DELIVERY_TOKEN, authority, owner, chat, websocket, _digest(result.result), _digest(result.ui_components),
+            _digest(self._delivery_state(result, websocket=websocket, owner=owner, chat=chat,
+                                        parent=parent, adapter_binding=adapter_binding)), adapter_binding,
+        )
+
+    def assert_delivery_current(self, result, *, websocket, owner, chat):
+        from orchestrator.context_authority import current_context_authority
+
+        proof = getattr(result, "_evidence_delivery_proof", None)
+        scope = getattr(result, "_evidence_delivery_scope", None)
+        authority = current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+        if (type(proof) is not _EvidenceDelivery or proof.token is not _DELIVERY_TOKEN
+                or proof.authority is not authority or (proof.owner, proof.chat) != (owner, chat)
+                or proof.websocket is not websocket or type(scope) is not tuple or len(scope) != 5
+                or scope[:2] != (owner, chat) or scope[2] is not websocket or result.error
+                or proof.result_digest != _digest(result.result) or proof.component_digest != _digest(result.ui_components)):
+            raise EvidenceDenied()
+        authority.assert_current(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+        if _literal_read_tool(result) is not None and type(proof.adapter_binding) is not tuple:
+            raise EvidenceDenied()
+        if proof.state_digest != _digest(self._delivery_state(result, websocket=websocket, owner=owner, chat=chat,
+                                                             parent=scope[3], adapter_binding=proof.adapter_binding)):
+            raise EvidenceDenied()
 
     async def budget(self, owner, capture=None):
         capture = capture or await self.orchestrator._llm_store.capture_user(owner)
@@ -993,9 +1299,12 @@ class EvidenceContext:
             self._sweep_task = asyncio.create_task(self._sweep(), name="evidence-retention-sweep")
 
     async def sweep(self):
+        self.views.cleanup()
         expired = self.archive.cleanup()
         for observation in expired:
             self._sources.pop(observation.reference, None)
+            self.views.revoke(owner_id=observation.owner_id, conversation_id=observation.conversation_id,
+                              source_reference=observation.reference)
         receipts = [("expiry_cleanup", observation) for observation in expired]
         for reference, observation in tuple(self._sources.items()):
             try:
@@ -1020,6 +1329,8 @@ class EvidenceContext:
                     conversation_id=observation.conversation_id, grant_fingerprint=observation.grant_fingerprint)
                 for item in removed:
                     self._sources.pop(item.reference, None)
+                    self.views.revoke(owner_id=item.owner_id, conversation_id=item.conversation_id,
+                                      source_reference=item.reference)
                 receipts.extend(("revocation_cleanup", item) for item in removed)
         for action, observation in receipts:
             await self._audit(observation.owner_id, observation.conversation_id, action, observation=observation)
@@ -1045,6 +1356,7 @@ class EvidenceContext:
             except (EvidenceDenied, EvidenceUnavailable):
                 pass
         self._sources.clear()
+        self.views.clear()
         await self.usage.drain()
         for observation in removed:
             await self._audit(observation.owner_id, observation.conversation_id, "shutdown_cleanup", observation=observation)

@@ -4,12 +4,12 @@ Date: 2026-10-08. Full implementation remains on the authorized `codex/093-evide
 
 ## Implemented behavior
 
-- Separate default-off packing and safe-compaction controls. No new runtime dependency, database migration, component pin, primitive or protocol change.
+- Separate default-off packing and safe-compaction controls. No new runtime dependency, database migration, primitive, frame or action. Coordinated Projection evidence-modal contract and exact qualified pin adoption are in progress.
 - Explicit exact-scope, absolute-expiry retention grants; ephemeral integral UTF-8 archive, bounded pages/previews, no silent eviction or recovery after restart. The host privacy cap is stricter than archive capacity.
 - Original-task typed IAM/work-control lease and current source/delegation/permission/policy/confirmation/privacy checks through ordinary dispatch. Capture, source release and provider admission recheck after awaited audit or authority work. Revoked references and lost source-authority metadata cannot reveal prior existence.
 - Bounded owner/provider-qualified request windows, actual SDK message serialization, completion bounds and fresh encrypted USER provider capture. Full governing instructions/current request/tool groups/outcomes survive proposal failure, cancellation, stale state and irreducible limits. Auxiliary compaction has no system/provider fallback or persistent-reservation reuse.
 - Stable, deduplicated physical-attempt audit receipts account for direct/auxiliary/retry/cache/failure/cancelled/late work and recall bytes. Usage disclosure refreshes audit provenance; historical or unlinked calls preserve a partial-accounting label and known tracked totals. Missing provider usage/prices never establishes zero cost or savings.
-- Code-owned literal KeyValue/Badge/Alert/Button source presentation and supported watch handoff. Pages, previews, derived answers and reasoning stay transient; they cannot become workspace/chat/completion-summary copies, generated skills or action-shaped UI. Unavailable generated summaries render blocked rather than claiming completion.
+- Code-owned literal KeyValue/Badge/Alert/Button source presentation and explicit watch phone/desktop handoff. Strictly reconstructed bounded assistant metadata survives canonical snapshots. Pages, previews, source-dependent temporary generated views and reasoning stay transient; they cannot become workspace/chat/completion-summary copies, generated skills or action-shaped UI. Unavailable generated views commit honest metadata rather than claiming saved text.
 - Capture requires the exact currently registered host-owned recall adapter before admission and again before publishing a preview. Missing, disabled or replaced recall registration preserves the authorized complete source result. The evidence adapter never launches as a standalone process.
 - Evidence inspection commands take precedence over ordinary skill aliases and slash expansion. Captured auxiliary work cannot revert to an unaccounted legacy provider call after its host service disappears or flags change.
 - Frozen 24 independent synthetic documents/tasks, separate 12/12 development and held-out controls, actual corruption/cancellation diagnostics and candidate/workflow/scoring/provider/cost/formative bindings. Optional JSON consistency does not authenticate provider execution or human observations and never changes defaults.
@@ -35,9 +35,37 @@ These results precede the final clean-candidate whole-suite and hosted gates; th
 
 Detailed local coverage and source-identity reports are retained outside Git. Synthetic fixture DSNs, keys, tokens, user grants and source content are excluded from this record and commits.
 
+## Live defect and current repair
+
+Real signed-in web and macOS `/evidence usage` dispatch on published candidate `690097a34ee87eb136c1f5de776184aa2806e310` reaches ordinary IAM/delegation/audit successfully, but the assistant output does not display. The final conversation snapshot completes the generation and clears overlays; the later evidence frame is correctly rejected. Reordering cannot retain an overlay, and the ordinary transcript rail filters out reference primitives. These live results are defect evidence, not passing acceptance.
+
+The repair commits only strict code-owned assistant reference/usage metadata. Source/preview/generated text is inspected through a newly requested, authenticated, read-only evidence modal. Source-dependent generated views have a fixed maximum ten-minute lifetime, bounded memory, exact owner/chat/audience and original-source dependencies. Every read rechecks those dependencies through ordinary tools. The final host send follows refreshed human/session, live execution fence, navigation, adapter, privacy, source and exact-response checks. An actual cancellation held after the last source verification is denied; no completed-generation fence is weakened.
+
+The owning AstralProjection change defines versioned evidence inspection using existing frames/actions/primitives. Browser and native clients require exact current UUID4 correlation, never replay evidence after reconnect, and retire its temporary text on navigation, close, send, timeout or account/connection changes. Existing legacy settings behavior stays outside that evidence-specific change. Watch receives metadata and the explicit phone/desktop handoff. Component tests/CI and exact qualified revision/digest adoption remain pending.
+
+Repair-local checks, which overlap and do not qualify a final clean SHA:
+
+| Check | Observed result |
+| --- | --- |
+| Bounded immutable generated-view store | 132 passed; 315/315 executable statements and 70/70 branches covered. |
+| Real PostgreSQL evidence service/view integration | 237 passed in 133.68 seconds. |
+| Metadata presentation, ordinary entry/dispatch and actual public-Plane snapshots | 225 passed; presentation 184/184 executable statements and all five new history statements covered. |
+| Adjacent canonical history/snapshot/error paths | 49 passed. |
+| Fresh authenticated surface plus authority/chrome neighbors | 297 passed before the browser serializer change; new module 164/169 statements and 58/62 branches covered. |
+| Complete new browser/native surface and evidence serializer checks | 128 passed in 76.31 seconds; all 106 real surface cases and 22 serializer cases. |
+| Final integrated backend feature and adjacent authorization/history run | 1,995 passed in 430.36 seconds; all source anchors unchanged, 3,588/3,660 changed executable lines covered (98.03%), every measured source above 90%. |
+| Final current adapter, source, privacy, surface and serializer qualification | 582 passed; event-controlled cancellation and live-adapter/source replacement cases included. |
+| Owning Projection browser request/retirement checks | 43 passed, including a reproduced disconnected-close replay defect and its repair. A prior whole browser run stopped after this defect and is not full qualification. |
+| Owning Projection Python/protocol/provenance/architecture suite | 3,408 passed, four platform skips and 33 subtests passed; transformation ledger retains all 386 extracted-file records with current changed-file digests. |
+| Owning Projection native qualification | Swift Core 302 passed; isolated iOS app 65 passed; Android core 166/app 433 passed with lint, coverage and debug build gates; focused portable Qt evidence/renderer 52 passed with all 28 changed executable lines covered. |
+
+The broad portable Qt candidate run encountered a native segmentation fault in an existing settings test. That case passes alone, and the exact original-component adjacent baseline passes 235 cases; the fault remains unclassified rather than a demonstrated baseline failure. Its original log is retained, and no shutdown code, test or gate was weakened. The component's required Windows jobs and exact pinned Apple formatter remain hosted qualification obligations. Local Apple rendering tests exercise a full 16-KiB page and the actual hosted timeout; unsupported in-process accessibility inspection is not live accessibility evidence.
+
+Published candidate690097a3 passes all 17 required hosted checks in [run37838463827](https://github.com/AstralDeep/AstralDeep/actions/runs/37838463827), including the exact Plane/Linux suite, all three whole backend groups, strict changed Python coverage and `Deep owner CI aggregate`. Its fresh clean production image build passed. Its one-pass local backend run was killed in the root group with exit -9 after the other module/persistent groups passed; that invocation is not a passing complete local result. Final local qualification will run the separate whole-suite groups used by CI. Hosted green applies only to690097a3, not the current repair. Original PR232 remains draft.
+
 The initial clean candidate `3d11817207764168ce40d872132dbb81cfde8e71` passed production image build, development/fail-closed production boot smoke, voice-worker tests (372 passed, two skipped), UI contracts (340 passed), Gitleaks (zero leaks), composition and documentation checks. The local complete backend invocation collected 20,434 tests across 22 suites; 20 suites passed, but the root and LLM-configuration suites failed. Hosted run [37830594982](https://github.com/AstralDeep/AstralDeep/actions/runs/37830594982) likewise failed the root/modules groups, so its aggregate is not green and changed-coverage was skipped. Its exact Plane complete PostgreSQL suite passed on Linux; a separate macOS component run has 42 filesystem-capability failures and is not Plane qualification. The initial image and boot results do not prove real authentication or LETS enforcement.
 
-Corrections address the partial LLM fixture's absent real model-call helper, a flag-store failure affecting legacy built-in registration, host-only adapter startup, and the independently reproduced TypeSafe fixture race. Focused regressions pass. The revised clean candidate still requires a fresh complete local and hosted run; earlier failures and passing artifacts remain retained separately.
+Corrections in690097a3 address the partial LLM fixture's absent real model-call helper, a flag-store failure affecting legacy built-in registration, host-only adapter startup, and the independently reproduced TypeSafe fixture race. Its focused and hosted checks pass as recorded above. The current live-delivery repair requires a new clean candidate and fresh applicable local/hosted/live qualification; earlier failures and passing artifacts remain retained separately.
 
 ## Pending candidate and hosted qualification
 

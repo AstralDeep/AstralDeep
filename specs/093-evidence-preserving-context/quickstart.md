@@ -2,7 +2,7 @@
 
 Use Python 3.11, declared dependencies, exact initialized components and an isolated feature checkout. Both flags default off. Enable capture only with explicit exact-scope host retention grants.
 
-1. Focused tests: `PYTHONPATH=backend:components/AstralPlane/src python -m pytest backend/tests/test_evidence_*.py backend/tests/test_context_*.py backend/tests/test_safe_compaction.py backend/audit/tests -q`. Configure an isolated real PostgreSQL test DSN; a skipped database fixture is not a passed authorization test.
+1. Focused tests: `PYTHONPATH=backend:components/AstralPlane/src python -m pytest backend/tests/test_evidence_*.py backend/tests/test_context_*.py backend/tests/test_safe_compaction.py backend/audit/tests -q`. Configure an isolated real PostgreSQL test DSN; a skipped database fixture is not a passed authorization test. Include the fresh chrome surface, generated-view and actual durable-snapshot cases.
 2. Existing compaction/context/ordinary dispatch/audit suites, root `ruff check .`, changed-line coverage >=90%, complete backend/module CI groups with isolated real PostgreSQL.
 3. All four new control combinations plus legacy controls: off creates no capture/new auxiliary work; packing and compaction stay independent.
 4. Synthetic exact reconstruction including empty/Unicode/limits; owner/audience/scope/policy/integrity denials, deletion/revocation/expiry/restart; no repeated source operation or durable raw-page copy.
@@ -10,6 +10,8 @@ Use Python 3.11, declared dependencies, exact initialized components and an isol
 6. Reconcile known/unknown retry/cache/failure/cancelled/late/recall records once, with no evidence in diagnostics. Retain paired fixed-workflow failures and unknowns.
 7. Build the exact candidate image and exercise real configured IAM/database/workers and representative conversations. Verify labels/source capability on web, macOS, iOS and watchOS, including explicit supported handoff. User performs required sign-in. The owner explicitly omitted Android and Windows live verification on 2026-10-08; record both OS/live checks as untested, separately from portable Qt and Android lint/unit/build gates. These omissions do not supply release or default-promotion evidence.
 8. Record exact candidate/test/live/formative/provider evidence in verification.md. Missing merge gates keep PR draft; missing promotion evidence keeps defaults off.
+
+Qualify the coordinated Projection revision in its own repository before adopting its exact Git pin and canonical manifest digest in Deep. Its fixture and browser, Windows, Android and Apple drift guards exercise the additive `evidence_inspection` presentation contract. Component CI does not replace live acceptance against the Deep candidate.
 
 ## Operator configuration
 
@@ -39,7 +41,9 @@ This example is not a qualified production route. Set the actual context window 
 
 Source inspection uses ordinary authorized tools, or `/evidence recall <reference> <byte-offset>`, `/evidence delete <reference>` and `/evidence usage`. Inspection repeats no source operation. Live references stay subject to current source/delegation/privacy/consent checks after flags are disabled. Cleanup removes source text and source arguments; a lost authorization proof yields the same blocked response as an unknown reference. Explicit successful deletion renders source unavailable.
 
-Captured previews, pages and their generated answers remain transient. They are literal values, excluded from durable chat, completion-summary and workspace publication. Tool-step and usage receipts retain bounded metadata only. Historical or unlinked ordinary model receipts keep accounting partial; unknown usage or prices never establish a saving.
+Durable conversation cards retain bounded source identities, digests, byte positions, outcomes and usage. Their inspection buttons open a fresh authenticated `evidence` chrome read for the current conversation. Source and generated text are literal temporary modal values, excluded from durable chat, completion-summary and workspace publication. Every reply must match the current request; navigation, send, close, registration, disconnect or timeout retires it. Watch cards provide the explicit phone or desktop handoff without receiving source text.
+
+Generated answers can have an opaque `view_` handle read by the ordinary `inspect_context_view` tool. A view holds at most 16 KiB, expires at the earliest source deadline or ten minutes, and requires its exact owner, conversation, audience, source permissions, privacy approval and currently registered host read adapter. Reads never renew it. Missing, deleted, revoked, expired or restarted views cannot recover their text. Historical or unlinked ordinary model receipts keep accounting partial; unknown usage or prices never establish a saving.
 
 ## Paired diagnostic
 

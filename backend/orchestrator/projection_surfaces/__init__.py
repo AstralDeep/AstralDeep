@@ -11,6 +11,7 @@ import logging
 logger = logging.getLogger("Orchestrator.ProjectionSurfaces")
 
 SURFACE_MODULES = {
+    "evidence": "orchestrator.projection_surfaces.evidence",
     "work": "orchestrator.projection_surfaces.work",
     "agents": "orchestrator.projection_surfaces.agents",
     "agent_intro": "orchestrator.projection_surfaces.agent_intro",

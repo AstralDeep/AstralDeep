@@ -10,7 +10,7 @@ Deliver the full feature through the existing PR: authorized exact observation r
 
 **Language/Version**: Python 3.11; existing Projection-rendered web and native consumers.
 **Primary Dependencies**: existing FastAPI/Pydantic, astralprims, pinned Plane/Projection, Keycloak/delegation, audit, PHI screening and outbound HTTP. No new dependency.
-**Storage**: application-scoped bounded ephemeral archive; existing Plane-backed audit metadata for stable attempt accounting. No schema/component pin change.
+**Storage**: application-scoped bounded ephemeral archive and source-dependent generated views; existing Plane-backed audit metadata for stable attempt accounting. No schema change. Qualify the coordinated Projection evidence-modal contract in its owning repository before adopting its exact revision and manifest digest.
 **Testing**: pytest/cov, root Ruff, existing complete backend CI groups and >=90% changed-line coverage; deterministic fixed-response evaluation.
 **Target Platform**: Linux backend; web, Windows, Android, macOS, iOS, watchOS.
 **Project Type**: server-driven service.
@@ -21,7 +21,7 @@ Deliver the full feature through the existing PR: authorized exact observation r
 ## Constitution Check
 
 I/III/IV/VI: Python 3.11, tracked root Ruff, short source headers, behavior/denial/failure/concurrency tests and >=90% changed-line coverage.
-II/VIII/XII/XIV: installed primitive vocabulary only; no parallel renderer, protocol, component source or pin. Use KeyValue literal source values on all six clients and ordinary governed tool actions; watch receives the documented supported action handoff. Live acceptance on every target is required before complete qualification.
+II/VIII/XII/XIV: installed primitive vocabulary only; no parallel renderer or new primitive/frame/action. Projection owns the versioned evidence inspection contract, strict correlated browser/native modal handling, fixtures, all client drift guards and provenance. Deep adopts its exact qualified revision and manifest digest. Use literal KeyValue source values in transient modal viewers; watch receives content-free metadata and the explicit phone/desktop handoff. Live acceptance remains required on every owner-retained target.
 VII: bind authority from server dispatch context; ordinary permissions/delegation/security/confirmation and fresh source gates, PHI/egress validation and hash-chained audit. Evidence remains untrusted.
 IX: ephemeral archive; stable bounded usage metadata uses existing public Plane audit append identities, not borrowed SQL or a schema workaround.
 X/XI: current local configured IAM/PostgreSQL/worker topology is the candidate live target, with representative conversations and exact candidate identity. No topology/auth/schema change. PR remains draft until production-ready and applicable local/hosted/live gates pass. No platform exception, bootstrap, signing, deployment, release or default promotion is assumed. Hosted CI keeps current deterministic whole-suite <=30-minute jobs.
@@ -29,7 +29,7 @@ X/XIII: diagnostic evaluation preserves unknown pricing/usage and held-out failu
 
 Post-design: no architecture exception; qualification gates remain enforceable and missing platform access may block closure.
 
-Owner steering on 2026-10-08 explicitly omits Windows live testing and requires recording Windows as untested. Portable Qt checks on macOS remain separate evidence. Continue live acceptance on web, Android, macOS, iOS and watchOS; do not count this instruction as Windows release qualification or satisfied all-client default-promotion evidence. The owner will complete native sign-in.
+Owner steering on 2026-10-08 explicitly omits Windows and then Android live testing, and requires recording both as untested. Portable Qt checks on macOS and Android automated gates remain separate evidence. Continue live acceptance on web, macOS, iOS and watchOS; neither omission creates release qualification or satisfies all-client default-promotion evidence. The owner will complete native sign-in.
 
 ## Project Structure
 
@@ -39,7 +39,8 @@ specs/093-evidence-preserving-context/
   contracts/context.md verification.md
 backend/orchestrator/
   evidence_archive.py evidence_context.py safe_compaction.py context_usage.py
-  context_presentation.py orchestrator.py local_agents.py taint.py
+  context_presentation.py context_views.py orchestrator.py local_agents.py taint.py
+  projection_surfaces/evidence.py
 backend/agents/evidence/
   evidence_agent.py mcp_server.py
 backend/audit/
@@ -51,7 +52,7 @@ backend/tests/
   test_context_usage.py test_context_presentation.py test_context_evaluation.py
 ```
 
-**Structure Decision**: independent archive/compaction modules, one host authorization/accounting adapter and ordinary first-party evidence agent. Shared source presentation uses server-owned primitives; evidence pages are delivered transiently and excluded from durable workspace/chat snapshots. Durable labels/reference metadata carry no evidence bytes.
+**Structure Decision**: independent archive/compaction/view modules, one host authorization/accounting adapter and ordinary first-party evidence agent. Canonical assistant commits retain only strict code-owned metadata. Fresh authenticated evidence-modal reads expose source, preview and generated text through current source dependencies, unchanged IAM/work authority and final operation/navigation/source checks. Projection owns literal rendering and client request retirement; no raw evidence enters durable workspace/chat snapshots or cached chat overlays.
 
 The evidence control adapter is host-only because the archive and typed original-human lease belong to the application orchestrator. Startup excludes its directory from subprocess inventory and capacity under every flag posture. When in-process registration is disabled or its current matching recall adapter is missing, packing preserves the complete original result; inspection commands render unavailable through the ordinary guarded path. This does not alter other bundled agents' transport fallback.
 
@@ -61,4 +62,4 @@ Foundation -> independent US1 archive and US2 compaction -> US3 accounting/prese
 
 ## Complexity Tracking
 
-No constitution violation or component release is justified. Promotion requires all spec acceptance evidence; a diagnostic fixed-response result does not establish real-provider savings or formative usability.
+No constitution violation or published component release is justified. A coordinated Projection implementation PR and exact qualified pin adoption are necessary to retain strict request freshness without weakening completed-generation conversation fences. Promotion requires all spec acceptance evidence; a diagnostic fixed-response result does not establish real-provider savings or formative usability.

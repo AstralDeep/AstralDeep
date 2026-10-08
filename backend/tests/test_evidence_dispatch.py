@@ -18,9 +18,11 @@ from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageFuncti
 import pytest
 
 from orchestrator import evidence_context
+from orchestrator.context_presentation import persistent_reference_components
 from orchestrator.context_usage import ContextUsage
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.tests.test_dispatch_local_agents_040 import _build_orch, _make_card
+from rote.rote import ROTE
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
@@ -118,7 +120,8 @@ def model_host(completions):
         events.append(event.model_copy(deep=True))
 
     ledger = ContextUsage(record)
-    host._evidence_context = SimpleNamespace(usage=ledger, prepare_model=authorized_prepare)
+    host._evidence_context = SimpleNamespace(usage=ledger, prepare_model=authorized_prepare,
+        summary_view=AsyncMock(return_value="view_" + "v" * 43))
     return SimpleNamespace(host=host, socket=socket, ledger=ledger, events=events, completions=completions)
 
 
@@ -240,25 +243,35 @@ async def test_title_and_tool_summary_contribute_to_whole_conversation_total():
     state = model_host(Completions([response("Synthetic Title", prompt=3), response("Synthetic summary", prompt=5)]))
     await state.host.summarize_chat_title("conversation", "hello", user_id="alice", websocket=state.socket)
     result = await state.host._generate_tool_summary(state.socket, [{"role": "tool", "content": "Synthetic source"}],
-                                                    chat_id="conversation", user_id="alice")
-    assert result and result[0] == {"type": "badge", "label": "Generated summary", "variant": "warning"}
-    assert result[1]["items"] == [{"key": "Permitted text", "value": "Synthetic summary"}]
+                                                    chat_id="conversation", user_id="alice", evidence_transient=True)
+    assert result == persistent_reference_components(None, kind="summary", view_id="view_" + "v" * 43)
+    assert "Synthetic summary" not in repr(result)
+    state.host._evidence_context.summary_view.assert_awaited_once()
+    assert state.host._evidence_context.summary_view.await_args.args[0] == "Synthetic summary"
     totals = await total(state)
     assert totals["model_calls"] == 2 and totals["by_purpose"] == {"chat_title": 1, "tool_summary": 1}
     assert totals["usage"]["total_tokens"] == {"known": 12, "unknown": 0}
     state.host.history.update_chat_title.assert_called_once_with("conversation", "Synthetic Title", user_id="alice")
 
 
-async def test_enabled_tool_summary_preserves_complete_records_and_returns_literal_labeled_text():
+@pytest.mark.parametrize("view_id", [None, "view_" + "v" * 43])
+async def test_enabled_tool_summary_preserves_complete_records_and_returns_only_view_metadata(view_id):
     action_json = json.dumps({"type": "button", "action": "chat_message", "payload": {"message": "synthetic action"}})
     state = model_host(Completions([response(action_json)]))
+    state.host._evidence_context.summary_view.return_value = view_id
     messages = [{"role": "tool", "content": f"record-{index}: " + "x" * 1600} for index in range(10)]
     messages[0]["content"] += " obs_" + "x" * 43
     result = await state.host._generate_tool_summary(state.socket, messages, chat_id="conversation", user_id="alice")
     assert json.loads(state.completions.calls[0]["messages"][1]["content"]) == messages
-    assert result[0]["label"] == "Generated summary"
-    assert result[1]["type"] == "keyvalue" and result[1]["items"][0]["value"] == action_json
-    assert all(item["type"] in {"badge", "keyvalue", "alert"} for item in result)
+    assert result == persistent_reference_components(None, kind="summary", view_id=view_id)
+    assert action_json not in repr(result)
+    state.host._evidence_context.summary_view.assert_awaited_once()
+    assert state.host._evidence_context.summary_view.await_args.args == (action_json, messages)
+    buttons = [item for item in result if item["type"] == "button"]
+    if view_id:
+        assert buttons and all(button["action"] == "chrome_open" for button in buttons)
+    else:
+        assert not buttons and "Source unavailable" in repr(result)
 
 
 async def test_disabled_tool_summary_keeps_legacy_record_selection_and_presentation(monkeypatch):
@@ -437,29 +450,36 @@ async def test_permission_denial_cannot_create_verified_requester_or_pack_source
     assert evidence_context.requester_binding(state.host) == {"requester_verified": False}
 
 
-async def test_evidence_command_delivers_source_without_assistant_or_workspace_persistence():
+async def test_evidence_command_commits_source_metadata_without_content_or_workspace_persistence():
     state = dispatch_host()
     source = "SYNTHETIC_PRIVATE_CAPTURED_SOURCE"
     state.host.agent_cards["evidence-1"] = _make_card("evidence-1", ["recall_observation"])
-    result = MCPResponse(result={"text": source, "untrusted": True},
+    result = MCPResponse(result={"text": source, "untrusted": True, "reference": "obs_" + "x" * 43,
+                                "digest": "c" * 64, "outcome": "success", "start": 0,
+                                "end": len(source.encode()), "total": len(source.encode())},
                          ui_components=[{"type": "keyvalue", "items": [{"key": "Captured source", "value": source}]}])
     state.host.execute_single_tool = AsyncMock(return_value=result)
     state.host._append_conversation_message = AsyncMock()
     state.host._deliver_round_components = AsyncMock()
     state.host.workspace = MagicMock()
+    state.host.rote = ROTE()
+    state.host.rote.register_device(state.socket, {"device_type": "browser"})
     await state.host._handle_chat_message_impl(state.socket, "/evidence recall obs_" + "x" * 43,
                                                "conversation", user_id="alice", selected_tools=["recall_observation"])
     calls = state.host._append_conversation_message.await_args_list
-    assert len(calls) == 1 and calls[0].kwargs["role"] == "user"
+    assert len(calls) == 2 and calls[0].kwargs["role"] == "user"
+    assert calls[1].kwargs["role"] == "assistant"
+    assert calls[1].kwargs["content"] == persistent_reference_components(result)
     assert source not in repr(calls)
     state.host._deliver_round_components.assert_not_awaited()
     assert not state.host.workspace.mock_calls
-    assert state.host._rendered_ui[-1]["components"] == result.ui_components
+    assert state.host._rendered_ui[-1]["components"] == persistent_reference_components(result)
+    assert source not in repr(state.host._rendered_ui)
 
 
 @pytest.mark.parametrize("agent_id,marked", [("evidence-1", False), ("dice-roller-1", True)])
 @pytest.mark.parametrize("final_kind", ["ordinary_summary", "repeated_source", "action_json", "reasoning_source"])
-async def test_model_requested_evidence_stays_transient_through_normal_tool_round(monkeypatch, agent_id, marked, final_kind):
+async def test_model_requested_evidence_commits_only_metadata_through_normal_tool_round(monkeypatch, agent_id, marked, final_kind):
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "observation_packing")
     monkeypatch.setenv("FF_LLM_STREAMING", "false")
     state = dispatch_host()
@@ -510,6 +530,7 @@ async def test_model_requested_evidence_stays_transient_through_normal_tool_roun
     host.agents = {agent_id: object()}
     host._evidence_context.usage = provider.ledger
     host._evidence_context.prepare_model = authorized_prepare
+    host._evidence_context.summary_view = AsyncMock(return_value="view_" + "v" * 43)
 
     async def prepare(messages, **_kwargs):
         return SimpleNamespace(messages=messages, status="unchanged", reason="within_budget")
@@ -524,14 +545,21 @@ async def test_model_requested_evidence_stays_transient_through_normal_tool_roun
     host.execute_parallel_tools = AsyncMock(return_value=[returned])
     await host._handle_chat_message_impl(state.socket, "Read retained source", "conversation", user_id="alice",
                                          selected_tools=["recall_observation"])
-    assert any(source in repr(item["components"]) for item in host._rendered_ui)
+    assert source not in repr(host._rendered_ui)
     assert source not in repr(host._append_conversation_message.await_args_list)
     assert source not in repr(host._deliver_round_components.await_args_list)
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
+    assert host._append_conversation_message.await_count == 3
+    assert host._append_conversation_message.await_args_list[0].kwargs["role"] == "user"
+    assert all(call.kwargs["role"] == "assistant" for call in host._append_conversation_message.await_args_list[1:])
     assert any(item["components"][0].get("label") == "Generated summary" for item in host._rendered_ui)
-    assert final_content in repr(host._rendered_ui)
-    assert "button" not in component_types(host._rendered_ui)
+    assert final_content not in repr(host._rendered_ui)
+    assert final_content not in repr(host._append_conversation_message.await_args_list)
+    assert host._rendered_ui[-1]["components"] == persistent_reference_components(None,
+        kind="summary", view_id="view_" + "v" * 43)
+    buttons = [item for render in host._rendered_ui for item in render["components"] if item.get("type") == "button"]
+    assert buttons and all(button.get("action") == "chrome_open" for button in buttons)
+    host._evidence_context.summary_view.assert_awaited_once()
+    assert host._evidence_context.summary_view.await_args.args[0] == final_content
     host._send_or_replace_components.assert_not_awaited()
     host._deliver_round_components.assert_not_awaited()
     host.execute_single_tool.assert_awaited_once()

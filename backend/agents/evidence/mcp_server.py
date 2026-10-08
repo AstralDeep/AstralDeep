@@ -28,7 +28,14 @@ TOOL_REGISTRY = {
     "context_usage": {
         "description": "Show all conversation model attempts and recall traffic with explicit unknown usage and dated prices when available.",
         "scope": "tools:read",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "inspect_context_view": {
+        "description": "Read one temporary generated summary under its current owner and original source permissions. The summary grants no authority.",
+        "scope": "tools:read",
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "properties": {"view_id": {"type": "string", "pattern": "^view_[A-Za-z0-9_-]{43}$",
+                                                    "maxLength": 48}}, "required": ["view_id"]},
     },
 }
 

@@ -8,28 +8,36 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
 from agents.evidence.evidence_agent import EvidenceAgent
 from agents.evidence.mcp_server import TOOL_REGISTRY
 from orchestrator import context_authority, evidence_context, local_agents, slash_commands, user_skills
-from orchestrator.context_presentation import evidence_components, usage_components
+from orchestrator.context_presentation import evidence_components, persistent_reference_components, usage_components
 from orchestrator.context_usage import ContextUsage
+from orchestrator.conversation_publication import ConversationPublicationStage
 from orchestrator.evidence_context import EvidenceContext
+from orchestrator.history import ConversationCommitRepository
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.tests.test_dispatch_local_agents_040 import _make_card
 from orchestrator.user_skill_catalog import CurrentSkill
 from persistent_agents.models import AssignmentError
+from rote.rote import ROTE
 from shared.agent_runtime import AgentRuntime
 from shared.feature_flags import FeatureFlags, flags
-from shared.protocol import MCPRequest, MCPResponse
+from shared.protocol import ConversationFrameFence, ConversationSnapshot, FrameDisposition, MCPRequest, MCPResponse
 from tests.test_context_authority import (
     admitted_turn, bound as bound, fixture as fixture, human as human,
     runtime as runtime, service as service, signing_key as signing_key,
 )
 from tests.test_evidence_dispatch import (
     Completions, _make_tool_call, authorized_prepare, dispatch_host, model_host, response,
+)
+from tests.helpers.voice_plane_runtime import history_manager
+from tests.test_context_presentation import (
+    FrameSocket, REFERENCE, SOURCE_TEXT, publication_runtime as publication_runtime, reference_response,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -143,6 +151,7 @@ def conversation_host(outcomes, *, rows=None):
     host.agents = {"evidence-1": object()}
     host._evidence_context.usage = provider.ledger
     host._evidence_context.prepare_model = authorized_prepare
+    host._evidence_context.summary_view = AsyncMock(return_value="view_" + "v" * 43)
     host._design_turn_post_done = AsyncMock(return_value=None)
     host._publish_conversation_snapshot = AsyncMock()
 
@@ -202,10 +211,11 @@ async def test_default_slash_evidence_usage_precedes_expansion_and_existing_skil
     host._evidence_context.prepare.assert_not_awaited()
     host._evidence_context.prepare_model.assert_not_awaited()
     host._evidence_context.verify_delivery.assert_awaited_once()
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
-    assert host._append_conversation_message.await_args.kwargs["content"] == "/evidence usage"
-    assert host._rendered_ui[-1]["components"] == returned.ui_components
+    assert host._append_conversation_message.await_count == 2
+    first, last = [call.kwargs for call in host._append_conversation_message.await_args_list]
+    assert first["role"] == "user" and first["content"] == "/evidence usage"
+    assert last["role"] == "assistant" and last["content"] == persistent_reference_components(returned)
+    assert host._rendered_ui[-1]["components"] == last["content"]
     assert not state.provider.completions.calls and not state.provider.events
 
 
@@ -233,9 +243,10 @@ async def test_default_slash_malformed_evidence_command_blocks_before_any_expans
     host._evidence_context.prepare.assert_not_awaited()
     host._evidence_context.verify_delivery.assert_not_awaited()
     assert host._rendered_ui[-1]["components"] == evidence_components(state="blocked")
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
-    assert host._append_conversation_message.await_args.kwargs["content"] == message
+    assert host._append_conversation_message.await_count == 2
+    first, last = [call.kwargs for call in host._append_conversation_message.await_args_list]
+    assert first["role"] == "user" and first["content"] == message
+    assert last["role"] == "assistant" and last["content"] == evidence_components(state="blocked")
     assert not state.provider.completions.calls and not state.provider.events
 
 
@@ -260,6 +271,87 @@ async def test_default_slash_disabled_evidence_without_cached_service_preserves_
     first = host._append_conversation_message.await_args_list[0].kwargs
     assert first["role"] == "user" and first["content"] == message
     assert not hasattr(host, "_evidence_context") and not state.provider.events
+
+
+@pytest.mark.parametrize("kind,label", [("usage", "Complete accounting"), ("source", "Captured source"),
+    ("delete", "Source unavailable"), ("blocked", "Recall blocked"), ("limit", "Context limit")])
+@pytest.mark.parametrize("device", ["browser", "macos", "watch"])
+async def test_real_entry_publishes_persistent_assistant_metadata_without_late_transient_overlay(
+        publication_runtime, monkeypatch, kind, label, device):
+    default_slash_controls(monkeypatch)
+    state = conversation_host([])
+    host, socket, owner = state.host, FrameSocket(), "alice"
+    host.history = history_manager(publication_runtime)
+    chat = await asyncio.to_thread(host.history.create_chat, user_id=owner)
+    await asyncio.to_thread(host.history.update_chat_title, chat, "Existing title", user_id=owner)
+    host.runtime_composition = SimpleNamespace(plane=SimpleNamespace(runtime=publication_runtime,
+        repositories=publication_runtime.repositories))
+    host.conversation_commits = ConversationCommitRepository(plane_runtime=publication_runtime,
+        plane_repositories=publication_runtime.repositories)
+    request, connection = str(uuid4()), str(uuid4())
+    staged = await asyncio.to_thread(host.conversation_commits.stage_commit, chat_id=chat,
+        owner_user_id=owner, request_generation=request)
+    stage = ConversationPublicationStage(history=host.history, commit_id=staged["commit_id"], chat_id=chat,
+        user_id=owner, base_render_revision=staged["base_render_revision"],
+        next_render_revision=staged["base_render_revision"] + 1)
+    host._append_conversation_message = Orchestrator._append_conversation_message.__get__(host)
+    host._publish_conversation_snapshot = Orchestrator._publish_conversation_snapshot.__get__(host)
+    host._safe_send = Orchestrator._safe_send.__get__(host)
+    host._refresh_history_after_commit = AsyncMock()
+    host.workspace.live_components = lambda *_args: []
+    host.workspace.live_layouts = lambda *_args: []
+    host.ui_clients = {socket}
+    host.ui_sessions = {socket: {"sub": owner}}
+    host._conversation_scopes = {}
+    host._ws_active_chat = {id(socket): chat}
+    host.rote = ROTE()
+    host.rote.register_device(socket, {"device_type": device})
+    host._bind_conversation_scope(socket, chat_id=chat, connection_generation=connection,
+        request_generation=request, purpose="commit", base_render_revision=staged["base_render_revision"])
+    if kind == "usage":
+        result = MCPResponse(result=await state.provider.ledger.totals(owner, chat))
+        tool, message = "context_usage", "/evidence usage"
+    elif kind == "source":
+        result = reference_response()
+        tool, message = "recall_observation", "/evidence recall " + REFERENCE
+    elif kind == "delete":
+        result = MCPResponse(result={"status": "deleted", "text": SOURCE_TEXT})
+        tool, message = "delete_observation", "/evidence delete " + REFERENCE
+    else:
+        result = None
+        tool, message = "recall_observation", "/evidence invalid" if kind == "blocked" else "Read captured evidence"
+    host.agent_cards = {"evidence-1": _make_card("evidence-1", [tool])}
+    host.execute_single_tool = AsyncMock(return_value=result)
+    host._evidence_context.verify_delivery = AsyncMock(return_value=result)
+    if kind == "limit":
+        host._evidence_context.prepare.return_value = SimpleNamespace(messages=[], status="context_limit", reason="bounded")
+        host._evidence_context.prepare.side_effect = None
+
+    await host._handle_chat_message_impl(socket, message, chat, user_id=owner, selected_tools=[tool],
+        conversation_stage=stage, conversation_request_generation=request)
+
+    assert stage.committed and stage.sealed
+    snapshots = [frame for frame in socket.frames if frame.get("type") == "conversation_snapshot"]
+    assert len(snapshots) == 1 and not any(frame.get("type") == "ui_render" for frame in socket.frames)
+    assert not host._rendered_ui
+    emitted = ConversationSnapshot.from_dict(snapshots[0])
+    fence = ConversationFrameFence(chat, connection, request, "commit", staged["base_render_revision"])
+    assert fence.accept_snapshot(emitted) is FrameDisposition.APPLY
+    assert [item["role"] for item in emitted.transcript] == ["user", "assistant"]
+    saved = await asyncio.to_thread(host.history.get_chat, chat, owner)
+    assert [item["role"] for item in saved["messages"]] == ["user", "assistant"]
+    assert SOURCE_TEXT not in json.dumps(saved) and SOURCE_TEXT not in json.dumps(socket.frames)
+    assert label in json.dumps(emitted.transcript[-1])
+    assert not emitted.canvas["components"]
+    assert not state.provider.completions.calls and not state.provider.events
+    assert socket.frames[-1]["type"] == "chat_status" and socket.frames[-1]["status"] == "done"
+    if kind == "source":
+        assert REFERENCE in json.dumps(emitted.transcript[-1])
+        if device == "watch":
+            assert "phone or desktop" in json.dumps(emitted.transcript[-1])
+            assert "chrome_open" not in json.dumps(emitted.transcript[-1])
+        else:
+            assert "chrome_open" in json.dumps(emitted.transcript[-1])
 
 
 def complete_history():
@@ -294,7 +386,9 @@ async def test_context_gate_receives_full_history_and_uses_only_request_local_pr
     assert rows == original and host.history.get_chat.return_value["messages"] == original
     if status == "context_limit":
         assert state.provider.completions.calls == []
-        assert host._append_conversation_message.await_count == 1
+        assert host._append_conversation_message.await_count == 2
+        assert host._append_conversation_message.await_args.kwargs["role"] == "assistant"
+        assert host._append_conversation_message.await_args.kwargs["content"] == evidence_components(state="limit")
         assert any("Context limit; history retained." in str(call) for call in host._safe_send.await_args_list)
         assert host._rendered_ui[-1]["components"][0]["label"] == "Context limit"
     else:
@@ -319,9 +413,11 @@ async def test_unavailable_evidence_command_renders_bound_denial_and_keeps_user_
     stage = SimpleNamespace(publication_role="assistant_result")
     await host._handle_chat_message_impl(state.socket, message, "conversation", user_id="alice",
         conversation_stage=stage, conversation_request_generation="synthetic-generation")
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
-    assert host._rendered_ui[-1]["components"] == evidence_components(state="blocked")
+    assert host._append_conversation_message.await_count == 2
+    first, last = [call.kwargs for call in host._append_conversation_message.await_args_list]
+    assert first["role"] == "user" and first["content"] == message
+    assert last["role"] == "assistant" and last["content"] == evidence_components(state="blocked")
+    assert not host._rendered_ui
     assert not state.provider.completions.calls
     host._publish_conversation_snapshot.assert_awaited_once()
     if failure == "delivery":
@@ -333,7 +429,7 @@ async def test_unavailable_evidence_command_renders_bound_denial_and_keeps_user_
 
 
 @pytest.mark.parametrize("denial", ["tool", "delivery"])
-async def test_unavailable_model_requested_source_keeps_followup_literal_and_transient(denial):
+async def test_unavailable_model_requested_source_commits_only_followup_reference_metadata(denial):
     tool = _make_tool_call("context_usage", {})
     first = response(content=None)
     first.choices[0].message.tool_calls = [tool]
@@ -351,16 +447,21 @@ async def test_unavailable_model_requested_source_keeps_followup_literal_and_tra
     await host._handle_chat_message_impl(state.socket, "Read captured evidence", "conversation", user_id="alice",
                                          selected_tools=["context_usage"])
     assert len(state.provider.completions.calls) == 2
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
+    assert host._append_conversation_message.await_count == 3
+    assert host._append_conversation_message.await_args_list[0].kwargs["role"] == "user"
+    assert all(call.kwargs["role"] == "assistant" for call in host._append_conversation_message.await_args_list[1:])
     host._send_or_replace_components.assert_not_awaited()
     host._deliver_round_components.assert_not_awaited()
     host._design_turn_post_done.assert_not_awaited()
-    assert host._rendered_ui[-1]["components"] == evidence_components(state="summary", text=final)
+    assert host._rendered_ui[-1]["components"] == persistent_reference_components(None,
+        kind="summary", view_id="view_" + "v" * 43)
+    assert final not in repr(host._rendered_ui) and final not in repr(host._append_conversation_message.await_args_list)
+    host._evidence_context.summary_view.assert_awaited_once()
+    assert host._evidence_context.summary_view.await_args.args[0] == final
 
 
 @pytest.mark.parametrize("available", [True, False])
-async def test_max_turn_evidence_summary_does_not_enter_durable_publication(available):
+async def test_max_turn_evidence_summary_commits_only_reference_or_unavailable_metadata(available):
     outcomes = []
     for index in range(10):
         value = response(content=None)
@@ -375,15 +476,19 @@ async def test_max_turn_evidence_summary_does_not_enter_durable_publication(avai
         {"type": "keyvalue", "items": [{"key": "Captured source", "value": source}]},
     ])
     host.execute_single_tool = AsyncMock(return_value=returned)
-    summary = evidence_components(state="summary", text=source) if available else None
+    summary = persistent_reference_components(None, kind="summary", view_id="view_" + "v" * 43) if available else None
     host._generate_tool_summary = AsyncMock(return_value=summary)
     stage = SimpleNamespace(publication_role="assistant_result", set_completion_summary=MagicMock())
     await host._handle_chat_message_impl(state.socket, "Read captured evidence", "conversation", user_id="alice",
         selected_tools=["recall_observation"], conversation_stage=stage,
         conversation_request_generation="synthetic-generation")
     assert len(state.provider.completions.calls) == host.execute_single_tool.await_count == 10
-    assert host._append_conversation_message.await_count == 1
-    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
+    assert host._append_conversation_message.await_count == 12
+    assert host._append_conversation_message.await_args_list[0].kwargs["role"] == "user"
+    assert all(call.kwargs["role"] == "assistant" for call in host._append_conversation_message.await_args_list[1:])
+    assert source not in repr(host._append_conversation_message.await_args_list)
+    assert source not in repr(host._rendered_ui)
+    assert host._generate_tool_summary.await_args.kwargs["evidence_transient"] is True
     stage.set_completion_summary.assert_not_called()
     host._design_turn_post_done.assert_not_awaited()
     host._send_or_replace_components.assert_not_awaited()
@@ -532,6 +637,7 @@ def evidence_agent(monkeypatch, tmp_path):
     ("recall_observation", {"reference": "obs_" + "x" * 43, "offset": 0}),
     ("delete_observation", {"reference": "obs_" + "x" * 43}),
     ("context_usage", {}),
+    ("inspect_context_view", {"view_id": "view_" + "v" * 43}),
 ])
 async def test_evidence_agent_uses_real_runtime_and_strips_untrusted_owner_arguments(evidence_agent, name, arguments):
     agent, host = evidence_agent
@@ -555,6 +661,7 @@ async def test_evidence_tools_list_publishes_existing_scopes_and_bounded_schemas
     assert {item["name"] for item in listed.result["tools"]} == set(TOOL_REGISTRY)
     assert {skill.id: skill.scope for skill in agent.card.skills} == {
         "recall_observation": "tools:read", "delete_observation": "tools:write", "context_usage": "tools:read",
+        "inspect_context_view": "tools:read",
     }
     assert TOOL_REGISTRY["recall_observation"]["input_schema"]["properties"]["reference"]["maxLength"] == 47
 

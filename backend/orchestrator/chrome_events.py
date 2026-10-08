@@ -230,7 +230,7 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
         owner = payload.get("surface") if isinstance(payload, dict) else None
         if not isinstance(owner, str):
             return
-        if owner in {"work", "guidance", "agent_intro"}:
+        if owner in {"work", "guidance", "evidence", "agent_intro"}:
             clear_surface_request(orch, websocket)
             return
         if owner not in SURFACE_MODULES:
@@ -339,7 +339,7 @@ async def push_close(orch, websocket, *, surface_key=None, request_generation=No
 
 async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
                           params: dict, notice_html: str = ""):
-    if surface_key == "guidance":
+    if surface_key in {"guidance", "evidence"}:
         from persistent_agents.models import AssignmentError
         raise AssignmentError("explicit_note_navigation_unavailable", 503)
     response = _response_scope(orch, websocket, surface_key)
@@ -620,7 +620,7 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
         capture_surface_request(orch, websocket, action, payload, request_generation)
     private = (action.startswith("chrome_note_") or action == "chrome_turn_selection_set"
                or (action == "chrome_open" and isinstance(payload, dict)
-                   and payload.get("surface") in {"guidance", "work"}))
+                   and payload.get("surface") in {"guidance", "work", "evidence"}))
     owner = ""
     if _is_chrome_action(action) and not private:
         if request_generation is not None:
@@ -654,6 +654,9 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if action == "chrome_open" and isinstance(payload, dict) and payload.get("surface") == "evidence":
+        from orchestrator.projection_surfaces import get_surface
+        return await get_surface("evidence").deliver(orch, websocket, user_id, payload, request_generation)
     if (action.startswith("chrome_note_") or action == "chrome_turn_selection_set"
             or (action == "chrome_open"
                 and isinstance(payload, dict) and payload.get("surface") == "guidance")):

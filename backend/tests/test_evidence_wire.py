@@ -16,6 +16,7 @@ from orchestrator.evidence_archive import EvidenceDenied, EvidenceError
 from orchestrator.orchestrator import Orchestrator
 from personalization import phi_gate
 from personalization.phi_gate import PHIGate
+from rote.capabilities import DeviceProfile
 from shared.feature_flags import flags
 from tests.test_evidence_model import (
     MODEL, admitted_model, bound as bound, configured_model as configured_model,
@@ -256,6 +257,7 @@ async def test_summary_label_survives_control_disable_after_real_sdk_provider_re
         state.host._record_llm_call = AsyncMock()
         state.host._emit_llm_usage_report = AsyncMock()
         state.host._record_llm_unconfigured = AsyncMock()
+        state.host.rote = SimpleNamespace(get_profile=lambda _: DeviceProfile.default())
 
         components = await Orchestrator._generate_tool_summary(
             state.host, source.socket, messages, source.chat, state.owner,
@@ -268,6 +270,18 @@ async def test_summary_label_survives_control_disable_after_real_sdk_provider_re
         assert components[0]["type"] == "badge" and components[0]["label"] == "Generated summary"
         assert any(item["type"] == "keyvalue" for item in components)
         assert not any(item["type"] == "card" for item in components)
+        assert "Partial synthetic source account." not in json.dumps(components)
+        inspection = next(item for item in components if item["type"] == "button")
+        assert inspection["action"] == "chrome_open"
+        assert inspection["payload"]["surface"] == "evidence"
+        view_id = inspection["payload"]["params"]["view_id"]
+        assert len(view_id) == 48 and view_id.startswith("view_")
+        view = state.context.views.inspect(view_id, owner_id=state.owner, conversation_id=source.chat,
+            audience_id=f"user:{state.owner}")
+        assert tuple(value.reference for value in view.dependencies) == (captured.result["reference"],)
+        content = state.context.views.read(view_id, owner_id=state.owner, conversation_id=source.chat,
+            audience_id=f"user:{state.owner}", dependencies=view.dependencies)
+        assert content.text == "Partial synthetic source account."
         await state.ledger.drain()
         totals = await state.ledger.totals(state.owner, source.chat)
         assert totals["model_calls"] == totals["succeeded"] == 1

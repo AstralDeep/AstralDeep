@@ -45,7 +45,7 @@ Independent test: replay/late completion reconciles known synthetic charges once
 - [X] T018 [US3] Implement owner/conversation attempt ledger and stable bounded audit identities in backend/orchestrator/context_usage.py, backend/audit/schemas.py and backend/audit/repository.py (FR014-016; SC005,009).
 - [X] T019 [US3] Instrument direct/auxiliary/stream/title/tool-summary provider attempts and recall bytes in backend/orchestrator/orchestrator.py and backend/orchestrator/evidence_context.py (FR016; SC005).
 - [X] T020 [P] [US3] Add literal-source/status/unknown-cost/fallback tests in backend/tests/test_context_presentation.py.
-- [X] T021 [US3] Implement server-owned KeyValue/Badge/Card/Alert presentation in backend/orchestrator/context_presentation.py, with transient pages and explicit watch action handoff (FR013,017; SC004).
+- [ ] T021 [US3] Implement strict content-free assistant metadata commits, bounded source-dependent temporary views and fresh authenticated evidence inspection; qualify Projection's correlated browser/native modal contract, fixtures, dispositions, drift guards and exact pin adoption, with explicit watch phone/desktop handoff (FR013,017; SC004).
 - [ ] T022 [US3] Exercise full/preview/summary/missing/blocked/usage UI against candidate live backend on web/macOS/iOS/watchOS (owner omitted Android and Windows OS/live; record both untested) and retain evidence in specs/093-evidence-preserving-context/verification.md (SC004).
 
 ## Phase 6: US4 Evaluation and promotion (P2)
@@ -59,7 +59,7 @@ Independent test: fixed paired oracle/cost/unknown/failure cases prevent promoti
 
 ## Phase 7: Qualification
 
-- [X] T026 Review critical authorization/retention/accounting/concurrency seams and complete focused/legacy tests, root lint and >=90% changed-line coverage; record exact results in specs/093-evidence-preserving-context/verification.md.
+- [ ] T026 Review critical authorization/retention/accounting/concurrency seams and complete focused/legacy tests, root lint and >=90% changed-line coverage on the final integrated source; record exact results in specs/093-evidence-preserving-context/verification.md.
 - [ ] T027 Run complete backend/module/CI image/boot/secret/composition gates with existing <=30-minute deterministic job budgets and record in specs/093-evidence-preserving-context/verification.md.
 - [ ] T028 Update PR with concrete behavior/checks/limits, publish exact candidate and verify required hosted green CI before normal merge; update specs/093-evidence-preserving-context/verification.md and curated vault checkpoints.
 

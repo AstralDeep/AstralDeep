@@ -275,6 +275,7 @@ class _ConnectionIngressFrame:
     human_request: object = field(default=None, repr=False)
     guidance_origin: object = field(default=None, repr=False)
     guidance_navigation: object = field(default=None, repr=False)
+    evidence_navigation: object = field(default=None, repr=False)
 
     def close_work_read(self, *, preserve_guidance: bool = False) -> None:
         if self.work_read is not None:
@@ -286,6 +287,9 @@ class _ConnectionIngressFrame:
         if self.guidance_navigation is not None:
             self.guidance_navigation.close()
             self.guidance_navigation = None
+        if self.evidence_navigation is not None:
+            self.evidence_navigation.close()
+            self.evidence_navigation = None
         if self.guidance_origin is not None and not preserve_guidance:
             self.guidance_origin.close()
             self.guidance_origin = None
@@ -6754,6 +6758,14 @@ class Orchestrator:
         ):
             return None
         surface = surface_value
+        is_evidence_read = is_ui_event and action == "chrome_open" and surface == "evidence"
+        if is_evidence_read:
+            from orchestrator.projection_surfaces.evidence import validate_payload
+            from persistent_agents.models import AssignmentError
+            try:
+                validate_payload(payload)
+            except AssignmentError:
+                return None
         is_work_read = is_ui_event and action == "chrome_open" and surface == "work"
         if is_work_read:
             if payload.get("surface") != "work":
@@ -6802,6 +6814,12 @@ class Orchestrator:
             chat_value = self._ws_active_chat.get(id(context.websocket))
         if chat_value is not None and self._canonical_uuid4(chat_value) is None:
             return None
+        if is_evidence_read:
+            selected_chat = self._ws_active_chat.get(id(context.websocket))
+            if (self._canonical_uuid4(selected_chat) is None
+                    or chat_value is not None and chat_value != selected_chat):
+                return None
+            chat_value = selected_chat
         is_guidance = (action == "chrome_open" and surface == "guidance") or action in {
             "chrome_note_search", "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
             "chrome_turn_selection_set",
@@ -6871,7 +6889,7 @@ class Orchestrator:
             submission_id=submission_id,
             request_generation=request_generation,
             normalized_digest=hashlib.sha256(normalized).hexdigest(),
-            read_only=is_work_read or action in _READ_ONLY_UI_ACTIONS,
+            read_only=is_work_read or is_evidence_read or action in _READ_ONLY_UI_ACTIONS,
             operation_kind=(
                 "llm_credential_save"
                 if is_credential_save
@@ -6994,6 +7012,10 @@ class Orchestrator:
                              "skill_lookup" if frame.action == "chat_message" else "metadata"),
                 )
             if frame.human_request is not None:
+                if frame.action == "chrome_open" and frame.surface == "evidence":
+                    from orchestrator.projection_surfaces.evidence import capture_navigation as capture_evidence_navigation
+                    frame.evidence_navigation = capture_evidence_navigation(self,
+                        pending=frame.human_request, chat_id=frame.chat_id)
                 if ((frame.action == "chrome_open" and frame.surface == "guidance")
                         or frame.action in {"chrome_note_search", "chrome_note_save",
                                             "chrome_note_toggle", "chrome_note_forget",
@@ -8185,6 +8207,7 @@ class Orchestrator:
                 "human_request": work.frame.human_request,
                 "guidance_origin": work.frame.guidance_origin,
                 "guidance_navigation": work.frame.guidance_navigation,
+                "evidence_navigation": work.frame.evidence_navigation,
             }
             token = _CONNECTION_OPERATION_CONTEXT.set(
                 connection_operation_context
@@ -8536,6 +8559,8 @@ class Orchestrator:
                            "chrome_note_search", "chrome_note_save", "chrome_note_toggle",
                            "chrome_note_forget"}
         ):
+            from orchestrator.projection_surfaces.evidence import invalidate_navigation as invalidate_evidence_navigation
+            invalidate_evidence_navigation(self, context.websocket)
             from orchestrator.projection_surfaces.guidance import invalidate_navigation
 
             invalidate_navigation(self, context.websocket)
@@ -8726,9 +8751,11 @@ class Orchestrator:
         from orchestrator.chrome_events import _note_open_surface
         from orchestrator.work_surface_authority import invalidate
         from orchestrator.projection_surfaces.guidance import invalidate_navigation
+        from orchestrator.projection_surfaces.evidence import invalidate_navigation as invalidate_evidence_navigation
 
         invalidate(self, context.websocket)
         invalidate_navigation(self, context.websocket)
+        invalidate_evidence_navigation(self, context.websocket)
         _note_open_surface(self, context.websocket, "")
         context.preregistration.clear()
         for frame in context.ingress:
@@ -14083,17 +14110,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             else:
                 response = None
+            from orchestrator.context_presentation import persistent_reference_components
+            if response is not None:
+                response = await evidence_service.verify_delivery(response, websocket=websocket, owner=user_id, chat=chat_id)
+            profile = self.rote.get_profile(websocket)
+            device_type = getattr(profile, "device_type", None)
+            watch = getattr(device_type, "value", device_type) == "watch"
+            components = persistent_reference_components(response, watch=watch)
+            await self._append_conversation_message(
+                conversation_stage, chat_id=chat_id, user_id=user_id,
+                role="assistant", content=components,
+            )
             if conversation_stage is not None:
                 await self._publish_conversation_snapshot(
                     websocket, stage=conversation_stage,
                     request_generation=conversation_request_generation,
                     server_initiated=conversation_server_initiated,
                 )
-            from orchestrator.context_presentation import evidence_components
-            if response is not None:
-                response = await evidence_service.verify_delivery(response, websocket=websocket, owner=user_id, chat=chat_id)
-            components = response.ui_components if response and not response.error else evidence_components(state="blocked")
-            await self.send_ui_render(websocket, components, target="chat", speak=False)
+            else:
+                await self.send_ui_render(websocket, components, target="chat", speak=False)
             await self._safe_send(websocket, json.dumps({"type": "chat_status", "status": "done", "message": ""}))
             return
 
@@ -14738,7 +14773,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                     if context_result.status == "context_limit":
                         from orchestrator.context_presentation import evidence_components
-                        await self.send_ui_render(websocket, evidence_components(state="limit"), target="chat", speak=False)
+                        limit_components = evidence_components(state="limit")
+                        await self._append_conversation_message(conversation_stage, chat_id=chat_id, user_id=user_id,
+                                                                role="assistant", content=limit_components)
+                        if conversation_stage is not None:
+                            await self._publish_conversation_snapshot(websocket, stage=conversation_stage,
+                                request_generation=conversation_request_generation,
+                                server_initiated=conversation_server_initiated)
+                        else:
+                            await self.send_ui_render(websocket, limit_components, target="chat", speak=False)
                         await self._safe_send(websocket, json.dumps({"type": "chat_status", "status": "done", "message": "Context limit; history retained."}))
                         return
                     messages = context_result.messages
@@ -14881,7 +14924,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.info(f"LLM returned reasoning content ({len(reasoning)} chars)")
                     if _transient_evidence_turn:
                         from orchestrator.context_presentation import evidence_components
-                        reasoning_components = evidence_components(state="summary", text=reasoning)
+                        reasoning_components = evidence_components(state="summary")
                     else:
                         reasoning_components = [
                             Collapsible(title="Reasoning", content=[
@@ -14976,11 +15019,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             _transient_evidence_turn = True
                             res = await evidence_service.verify_delivery(res, websocket=websocket, owner=user_id, chat=chat_id)
                             tool_results[i_tc] = res
-                            if res is None or res.error:
-                                from orchestrator.context_presentation import evidence_components
-                                await self.send_ui_render(websocket, evidence_components(state="blocked"), target="chat", speak=False)
-                                continue
-                            await self.send_ui_render(websocket, res.ui_components, target="chat", speak=False)
+                            from orchestrator.context_presentation import persistent_reference_components
+                            profile = self.rote.get_profile(websocket)
+                            device_type = getattr(profile, "device_type", None)
+                            watch = getattr(device_type, "value", device_type) == "watch"
+                            reference_components = persistent_reference_components(res, watch=watch)
+                            await self._append_conversation_message(conversation_stage, chat_id=chat_id, user_id=user_id,
+                                                                    role="assistant", content=reference_components)
+                            await self.send_ui_render(websocket, reference_components, target="chat", speak=False)
                             continue
                         if res and res.ui_components and not res.error:
                             t_name = tc.function.name if tc else ""
@@ -15209,8 +15255,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
                     final_ops = []
                     if _transient_evidence_turn:
-                        from orchestrator.context_presentation import evidence_components
-                        response_components = evidence_components(state="summary", text=content)
+                        from orchestrator.context_presentation import persistent_reference_components
+                        view_id = await evidence_service.summary_view(content, messages, websocket=websocket,
+                                                                      owner=user_id, chat=chat_id)
+                        profile = self.rote.get_profile(websocket)
+                        device_type = getattr(profile, "device_type", None)
+                        watch = getattr(device_type, "value", device_type) == "watch"
+                        response_components = persistent_reference_components(None, kind="summary", view_id=view_id, watch=watch)
                         await self.send_ui_render(websocket, response_components, target="chat", speak=False)
                     elif parsed_components:
                         if self._is_text_only_components(parsed_components):
@@ -15257,15 +15308,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         if narrative_doc is not None:
                             response_components = [narrative_doc] + response_components
 
-                    final_message_id = turn_message_id
-                    if not _transient_evidence_turn:
-                        final_message_id = await self._append_conversation_message(
-                            conversation_stage,
-                            chat_id=chat_id,
-                            user_id=user_id,
-                            role="assistant",
-                            content=response_components,
-                        )
+                    final_message_id = await self._append_conversation_message(
+                        conversation_stage, chat_id=chat_id, user_id=user_id,
+                        role="assistant", content=response_components,
+                    )
 
                     if final_ops and chat_id:
                         def _snapshot_final_turn():
@@ -15337,9 +15383,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     "message": "Generating summary..."
                 }))
 
+                summary_arguments = {"evidence_transient": True} if _transient_evidence_turn else {}
                 summary_components = await self._generate_tool_summary(
-                    websocket, messages, chat_id, user_id=user_id
-                )
+                    websocket, messages, chat_id, user_id=user_id, **summary_arguments)
                 summary_message_id = turn_message_id
                 if summary_components:
                     if conversation_stage is not None and not _transient_evidence_turn:
@@ -15372,7 +15418,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 exc_info=True,
                             )
                     await self.send_ui_render(websocket, summary_components, target="chat")
-                    if chat_id and not _transient_evidence_turn:
+                    if chat_id:
                         summary_message_id = await self._append_conversation_message(
                             conversation_stage,
                             chat_id=chat_id,
@@ -15387,6 +15433,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         ]).to_dict()
                     ]
                     await self.send_ui_render(websocket, fallback, target="chat")
+                    if _transient_evidence_turn:
+                        summary_message_id = await self._append_conversation_message(conversation_stage,
+                            chat_id=chat_id, user_id=user_id, role="assistant", content=fallback)
 
                 if not _transient_evidence_turn:
                     designed_turn_marker = await self._design_turn_post_done(
@@ -16499,7 +16548,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception as exc:  # pragma: no cover
             logger.debug(f"llm_usage_report send failed (non-fatal): {exc}")
 
-    async def _generate_tool_summary(self, websocket, messages, chat_id=None, user_id=None):
+    async def _generate_tool_summary(self, websocket, messages, chat_id=None, user_id=None, *, evidence_transient=False):
         evidence_mode = evidence_context.enabled()
         if (not evidence_mode and evidence_context.get_context(self) is not None
                 and evidence_context.has_references(messages)):
@@ -16592,9 +16641,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 summary_text = _LEAK_FALLBACK_TEXT
 
             if summary_text:
-                if evidence_mode:
-                    from orchestrator.context_presentation import evidence_components
-                    return evidence_components(state="summary", text=summary_text)
+                if evidence_mode and (evidence_transient or evidence_context.has_references(messages)):
+                    from orchestrator.context_presentation import persistent_reference_components
+                    service = evidence_context.get_context(self)
+                    view_id = await service.summary_view(summary_text, messages, websocket=websocket,
+                                                         owner=user_id, chat=chat_id)
+                    profile = self.rote.get_profile(websocket)
+                    device_type = getattr(profile, "device_type", None)
+                    return persistent_reference_components(None, kind="summary", view_id=view_id,
+                                                          watch=getattr(device_type, "value", device_type) == "watch")
                 return [
                     Card(title=self._derive_chat_title(summary_text, default="Round results"),
                          content=[
