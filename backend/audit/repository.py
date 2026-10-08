@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -16,6 +17,7 @@ from astralplane.repositories.audit import (
     AuditEvent,
     AuditRecord,
 )
+from astralplane.errors import PlaneError
 from orchestrator.plane_repository_context import PlaneRepositoryContext, repository_from
 
 from .pii import AuditAnchorAuthenticator, chain_hmac, get_active_key_id
@@ -31,7 +33,7 @@ def _authenticate(key_id: str, payload: bytes) -> bytes:
 
 def _durable_event(event: AuditEventCreate) -> AuditEvent:
     return AuditEvent(
-        event_id=str(uuid.uuid4()),
+        event_id=event.event_id or str(uuid.uuid4()),
         chain_id=event.actor_user_id,
         auth_principal=event.auth_principal,
         agent_id=event.agent_id,
@@ -52,6 +54,19 @@ def _durable_event(event: AuditEventCreate) -> AuditEvent:
         key_id=get_active_key_id(),
         schema_version=2,
     )
+
+
+def _append_event(repository, transaction, event, *, stable_identity=False):
+    try:
+        if stable_identity:
+            previous = repository.get(transaction, chain_id=event.chain_id, event_id=event.event_id)
+            if previous is not None:
+                event = replace(event, key_id=previous.event.key_id)
+        return repository.append(transaction, event, _authenticate)
+    except Exception as exc:
+        if getattr(exc, "pgcode", None) == "23505":
+            raise PlaneError("audit event identity unavailable", code="audit_identity_unavailable") from None
+        raise
 
 
 def _record_to_dto(
@@ -139,11 +154,8 @@ class AuditRepository:
     def insert(self, event: AuditEventCreate) -> AuditEventDTO:
         durable_event = _durable_event(event)
         with self._audit.transaction() as transaction:
-            record = self._audit.repository.append(
-                transaction,
-                durable_event,
-                _authenticate,
-            )
+            record = _append_event(self._audit.repository, transaction, durable_event,
+                                   stable_identity=event.event_id is not None)
         return _record_to_dto(record)
 
     def insert_in_transaction(
@@ -152,9 +164,8 @@ class AuditRepository:
         if (plane_runtime is not self._audit.plane_runtime or transaction is None
                 or not isinstance(event, AuditEventCreate)):
             raise ValueError("audit transaction context unavailable")
-        record = self._audit.repository.append(
-            transaction, _durable_event(event), _authenticate,
-        )
+        record = _append_event(self._audit.repository, transaction, _durable_event(event),
+                               stable_identity=event.event_id is not None)
         return _record_to_dto(record)
 
     def list_for_user(

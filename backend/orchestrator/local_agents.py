@@ -51,6 +51,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "computer-use-1",
     "gaiakeep-1",
     "fhir-1",
+    "evidence-1",
 )
 
 
@@ -124,6 +125,9 @@ async def register_built_ins(orch) -> List[str]:
 
     registered: List[str] = []
     dirs = discover_built_in_agent_dirs()
+    from orchestrator.evidence_context import enabled
+    if enabled():
+        dirs.append("evidence")
     try:
         from shared.feature_flags import flags
         if flags.is_enabled("remote_compute"):

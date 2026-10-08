@@ -29,6 +29,8 @@ X/XIII: diagnostic evaluation preserves unknown pricing/usage and held-out failu
 
 Post-design: no architecture exception; qualification gates remain enforceable and missing platform access may block closure.
 
+Owner steering on 2026-10-08 explicitly omits Windows live testing and requires recording Windows as untested. Portable Qt checks on macOS remain separate evidence. Continue live acceptance on web, Android, macOS, iOS and watchOS; do not count this instruction as Windows release qualification or satisfied all-client default-promotion evidence. The owner will complete native sign-in.
+
 ## Project Structure
 
 ```text
