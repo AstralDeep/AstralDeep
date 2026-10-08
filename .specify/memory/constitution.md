@@ -490,6 +490,21 @@ and the happy path works."
   run approval remains manual. This controller does not qualify product
   changes or replace maintainer code review.
 
+- The separate `pr-triage.yml` metadata controller MAY use only `issues: write`
+  and `pull-requests: write` with the built-in short-lived token to request missing
+  issue context and apply explicit maintainer closure decisions. It MUST run only
+  on exact `refs/heads/main` through a reviewed, full-SHA-pinned community action,
+  serialize events and recovery, check out no repository code, execute no PR
+  input, download no artifacts, and use no secrets, OIDC, contents-write,
+  approval, rerun, merge, publishing, or release authority. Closure MUST verify
+  the deciding maintainer's immutable identity and current write permission,
+  concrete public rationale, and exact reviewed head; changed heads require
+  fresh review. Missing links only request context. No-op, unsupported completion,
+  duplicate, and superseded findings MUST be reviewed against useful independent
+  work before closure. Task issues, branches, and points remain unchanged.
+  Contract tests MUST preserve these boundaries; this controller neither qualifies
+  product changes nor replaces required review or release gates.
+
 **Rationale**: A change that is "almost done" is a future
 incident. Setting the merge bar at production-ready — not
 "works on my machine" — keeps the main branch continuously
@@ -830,4 +845,4 @@ guidance when conflicts arise.
   before merge, and known shortfalls are tracked as follow-up
   work until closed.
 
-**Version**: 6.1.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-10-01
+**Version**: 6.2.0 | **Ratified**: 2026-03-11 | **Last Amended**: 2026-10-05

@@ -4,7 +4,10 @@ chrome_theme_preset save handler.
 """
 
 import asyncio
-from types import SimpleNamespace
+
+import pytest
+
+from astralplane.repositories.preferences import ThemePreferenceRecord
 
 from orchestrator.projection_surfaces import theme as theme_surface
 
@@ -21,14 +24,14 @@ class FakeThemeRepository:
             raise RuntimeError("plane down")
         if self.theme is None:
             return None
-        return SimpleNamespace(owner_id=owner_id, theme=self.theme, updated_at=1)
+        return ThemePreferenceRecord(owner_id=owner_id, theme=self.theme, updated_at=1)
 
     def put(self, _transaction, *, owner_id, theme):
         if self.fail_on_put:
             raise RuntimeError("plane down")
         self.put_calls.append((owner_id, theme))
         self.theme = dict(theme)
-        return SimpleNamespace(owner_id=owner_id, theme=self.theme, updated_at=1)
+        return ThemePreferenceRecord(owner_id=owner_id, theme=self.theme, updated_at=1)
 
 
 class FakeThemeContext:
@@ -57,7 +60,44 @@ def handle(orch, payload):
 def test_module_contract():
     assert theme_surface.TITLE == "Theme"
     assert not getattr(theme_surface, "ADMIN_ONLY", False)
-    assert set(theme_surface.HANDLERS) == {"chrome_theme_preset"}
+    assert set(theme_surface.HANDLERS) == {"chrome_theme_preset", "save_theme"}
+
+
+@pytest.mark.parametrize("submitted", [
+    {"color_key": "accent", "color_value": "abcdef"},
+    {"colors": {"accent": "abcdef"}},
+    {"preset": "ocean"},
+])
+def test_custom_theme_handler_returns_the_accepted_complete_palette(submitted):
+    handler = theme_surface.HANDLERS.get("save_theme")
+    assert callable(handler)
+    orch = FakeOrch(prefs={"theme": {"colors": {"primary": "#123456"}}})
+    surface, params, notice = asyncio.run(handler(orch, None, "user-1", ["user"], {"theme": submitted}))
+    assert surface == "theme" and "astral-theme-apply" in notice
+    stored = orch.theme_preference_context.repository.theme
+    assert set(stored["colors"]) == {key for key, _ in theme_surface._COLOR_KEYS}
+    assert stored["colors"]["accent"] == ("#2DD4BF" if "preset" in submitted else "#ABCDEF")
+    if "preset" not in submitted:
+        assert stored["colors"]["primary"] == "#123456"
+    orch.theme_preference_context.repository.fail_on_get = True
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], params))
+    assert components[0]["type"] == "theme_apply" and components[0]["colors"] == stored["colors"]
+    html = asyncio.run(theme_surface.render(orch, "user-1", ["user"], params))
+    assert 'value="#123456"' in html or "#132038" in html
+
+
+def test_client_params_cannot_forge_an_accepted_palette_snapshot():
+    orch = FakeOrch(prefs={"theme": {"preset": "ocean"}})
+    forged = {"_accepted_theme": {"colors": {"accent": "#BADBAD"}}}
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], forged))
+    assert components[0]["colors"]["accent"] == "#2DD4BF"
+
+
+def test_server_palette_snapshot_cannot_be_used_for_another_owner():
+    orch = FakeOrch(prefs={"theme": {"preset": "ocean"}})
+    foreign = {"_accepted_theme": ThemePreferenceRecord(owner_id="foreign", theme={"colors": {"accent": "#BADBAD"}}, updated_at=1)}
+    components = asyncio.run(theme_surface.components(orch, "user-1", ["user"], foreign))
+    assert components[0]["colors"]["accent"] == "#2DD4BF"
 
 
 def test_render_has_all_preset_cards_with_action_and_swatches():

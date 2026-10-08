@@ -75,8 +75,10 @@ async def push_setup_dialog(orch, websocket, user_id: str, *,
             from rote.adapter import ComponentAdapter
             comps = ComponentAdapter.adapt(comps, orch.rote.get_profile(websocket))
         except Exception:
-            logger.debug("llm_gate: ROTE adapt failed; sending unadapted", exc_info=True)
-        await orch._safe_send(websocket, ChromeSurface(
+            from webrender.chrome.surfaces import _sdui
+            logger.exception("llm_gate: mandatory setup adaptation failed")
+            comps = [_sdui.alert("Provider setup could not be adapted for this device. Reconnect to retry.", "error")]
+        delivered = await orch._safe_send(websocket, ChromeSurface(
             region="modal",
             surface_key=SURFACE_KEY,
             title=llm_surface.FIRST_RUN_TITLE,
@@ -88,7 +90,7 @@ async def push_setup_dialog(orch, websocket, user_id: str, *,
         from shared.protocol import ChromeRender
         from webrender.chrome import render_modal_shell
         body = await llm_surface.render(orch, user_id, roles, params)
-        await orch._safe_send(websocket, ChromeRender(
+        delivered = await orch._safe_send(websocket, ChromeRender(
             region="modal",
             html=render_modal_shell(
                 llm_surface.FIRST_RUN_TITLE, body, SURFACE_KEY, mandatory=True,
@@ -96,18 +98,24 @@ async def push_setup_dialog(orch, websocket, user_id: str, *,
                 icon=getattr(llm_surface, "ICON", ""),
                 footer_html=llm_surface.footer_html()),
         ).to_json())
+    if delivered:
+        from orchestrator.chrome_events import _note_open_surface
+        _note_open_surface(orch, websocket, SURFACE_KEY)
     _gated_map(orch)[id(websocket)] = True
 
 
 async def _push_gate_close(orch, websocket) -> None:
     if _device_type(orch, websocket) in ("windows", "android", "ios", "macos"):
         from shared.protocol import ChromeSurface
-        await orch._safe_send(websocket, ChromeSurface(
+        delivered = await orch._safe_send(websocket, ChromeSurface(
             region="modal", surface_key="", title="", admin_only=False,
             components=[], mode="replace").to_json())
     else:
         from shared.protocol import ChromeRender
-        await orch._safe_send(websocket, ChromeRender(region="modal", html="").to_json())
+        delivered = await orch._safe_send(websocket, ChromeRender(region="modal", html="").to_json())
+    if delivered:
+        from orchestrator.chrome_events import _note_open_surface
+        _note_open_surface(orch, websocket, "")
 
 
 async def _send_welcome(orch, websocket, user_id: str) -> None:

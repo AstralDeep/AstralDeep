@@ -27,6 +27,13 @@ PUBLIC_ERRORS = {
     "UPSTREAM_UNAVAILABLE": "This page could not be retrieved. Try later or choose another source.",
     "ARXIV_UNAVAILABLE": "arXiv search is unavailable. Try again later.",
     "RESEARCH_SUMMARY_UNAVAILABLE": "The research summary could not be completed. Try again later.",
+    "FHIR_NOT_CONFIGURED": "The FHIR data source is not set up. Ask an administrator to configure its address and access token.",
+    "FHIR_AUTH_FAILED": "The FHIR data source rejected the configured access token. Ask an administrator to check it.",
+    "FHIR_BLOCKED": "The FHIR data source is blocked by network policy. Ask an administrator to check its address.",
+    "FHIR_UNAVAILABLE": "The FHIR data source is unavailable. Try again later.",
+    "FHIR_NOT_FOUND": "No matching record was found in the FHIR data source. Check the identifier and try again.",
+    "FHIR_BAD_REQUEST": "The FHIR data source did not accept this query. Adjust the request and try again.",
+    "FHIR_INVALID_RESPONSE": "The FHIR data source returned a response that could not be read. Try again later.",
 }
 _NOTICES: ContextVar[set[str] | None] = ContextVar("tool_failure_notices", default=None)
 _MAX_NOTICES = 64

@@ -118,7 +118,7 @@ async def _list_context(orch, user_id):
 
 def _agent_rows(orch, ownership_map, disabled_set):
     rows = []
-    for agent_id, card in orch.agent_cards.items():
+    for agent_id, card in list(orch.agent_cards.items()):
         if orch._is_draft_agent(agent_id):
             continue
         ownership = ownership_map.get(agent_id, {})

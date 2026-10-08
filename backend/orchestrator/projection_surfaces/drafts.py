@@ -1,7 +1,5 @@
-"""Renders the draft-agents surface: one unified list of chat-originated, manually
-created, and staged revision drafts sharing the same approve/refine/discard actions
-from orchestrator/agentic_creation.py. Manual creation runs the same pipeline as
-chat.
+"""Composes owner-scoped web and native draft lists, details and creation forms.
+Both channels retain the existing approval, refinement and revision handlers in agentic_creation.py.
 """
 
 import asyncio
@@ -10,6 +8,7 @@ import logging
 
 from webrender import esc
 from webrender.chrome import notice_block
+from webrender.chrome.surfaces import _sdui
 
 logger = logging.getLogger("Orchestrator.Chrome")
 
@@ -136,6 +135,96 @@ def _create_form():
         '<div class="text-xs text-astral-muted mt-1">Generation + self-test usually takes a couple '
         "of minutes; the draft appears below when staged.</div></div>"
     )
+
+
+def _self_test_components(draft):
+    try:
+        result = json.loads(draft.get("self_test") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    if not isinstance(result, dict) or not result:
+        return [_sdui.text("not self-tested yet", "caption")]
+    status = str(result.get("status") or "unknown")
+    return [_sdui.text(f"self-test {status} — {result.get('summary') or ''}", "caption")]
+
+
+def _detail_components(draft, show_refine):
+    status = str(draft.get("status") or "?")
+    origin = _ORIGIN_BADGES.get(draft.get("origin") or "manual", _ORIGIN_BADGES["manual"])[0]
+    body = [
+        _sdui.badge(origin),
+        _sdui.text(f"status: {status}", "caption"),
+        _sdui.text(str(draft.get("description") or "")),
+        *_self_test_components(draft),
+    ]
+    if note := _TERMINAL_NOTE.get(status):
+        body.append(_sdui.alert(note, "warning"))
+    if error := draft.get("error_message"):
+        body.append(_sdui.alert(str(error), "error"))
+    if revision := draft.get("revises_agent_id"):
+        body.append(_sdui.text(f"revises: {revision}", "caption"))
+    if status == "live":
+        body.append(_sdui.text("This draft was approved and is live — manage it under Agents & permissions."))
+    else:
+        payload = {"draft_id": draft["id"]}
+        body.extend([
+            _sdui.button("Apply to live agent" if revision else "Approve",
+                         "revision_apply" if revision else "draft_approve", payload, variant="primary"),
+            _sdui.button("Refine…", "chrome_open", {
+                "surface": "drafts", "params": {**payload, "refine": True},
+            }),
+            _sdui.button("Discard", "revision_discard" if revision else "draft_discard", payload, variant="danger"),
+        ])
+    out = [_sdui.button("All drafts", "chrome_open", {"surface": "drafts", "params": {}}),
+           _sdui.card(str(draft.get("agent_name") or ""), body)]
+    if show_refine:
+        out.append(_sdui.form([
+            _sdui.field("message", "Describe what to change or fix", "textarea", default=""),
+        ], submit_action="draft_refine", submit_label="Refine",
+            submit_payload={"draft_id": draft["id"]}, title="Refine this draft"))
+    out.append(_sdui.text("Test the draft from chat — its tools are available there while it runs. "
+                          "Approving runs the security gate; revisions re-pass the gate before the live agent changes.",
+                          "caption"))
+    return out
+
+
+async def components(orch, user_id, roles, params):
+    params = params if isinstance(params, dict) else {}
+    if draft_id := params.get("draft_id"):
+        lifecycle = getattr(orch, "lifecycle_manager", None)
+        store = vars(lifecycle).get("draft_store") if hasattr(lifecycle, "__dict__") else None
+        if store is None:
+            raise RuntimeError("Plane draft persistence is unavailable")
+        draft = await asyncio.to_thread(store.get_owned_draft_agent, user_id, str(draft_id))
+        if draft is None:
+            return [_sdui.alert("Draft not found (it may have been discarded).", "error")]
+        return _detail_components(draft, bool(params.get("refine")))
+    rows = await asyncio.to_thread(_user_drafts, orch, user_id)
+    out = []
+    if not rows:
+        out.append(_sdui.text("No drafts yet — create one below or ask for a missing capability in chat."))
+    for draft in rows:
+        origin = _ORIGIN_BADGES.get(draft.get("origin") or "manual", _ORIGIN_BADGES["manual"])[0]
+        out.append(_sdui.card(str(draft.get("agent_name") or ""), [
+            _sdui.badge(origin),
+            _sdui.text(str(draft.get("status") or ""), "caption"),
+            *_self_test_components(draft),
+            _sdui.button("Open", "chrome_open", {
+                "surface": "drafts", "params": {"draft_id": draft["id"]},
+            }),
+        ]))
+    out.append(_sdui.form([
+        _sdui.field("agent_name", "Agent name", default=""),
+        _sdui.field("description", "What should it do?", "textarea", default="",
+                    help="At least 10 characters."),
+        _sdui.field("tools", "Tools (optional)", "textarea", default="",
+                    help="One per line: name: what it does."),
+    ], submit_action="chrome_draft_create", submit_label="Generate & self-test",
+        title="Create a server-side agent (admin approval)",
+        description="Runs in the orchestrator for everyone an admin approves it for. "
+                    "For an agent that runs on your own PC, use Settings → My agents & skills. "
+                    "Generation + self-test usually takes a couple of minutes; the draft appears below when staged."))
+    return out
 
 
 async def render(orch, user_id, roles, params) -> str:

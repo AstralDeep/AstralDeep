@@ -1,5 +1,6 @@
 """Owns the lifecycle of every push-streaming subscription: state machine, retry
-backoff, and coalesced per-subscriber delivery of agent-emitted chunks to websockets.
+backoff, the deadline of a stream that declares its duration, and coalesced
+per-subscriber delivery of agent-emitted chunks to websockets.
 Instantiated by orchestrator.py; agent-side counterpart is shared/stream_sdk.py.
 """
 
@@ -44,6 +45,10 @@ MAX_PARAMS_BYTES = 16384
 SWEEP_INTERVAL_SECONDS = 60.0
 
 RETRY_BACKOFF_SECONDS: Tuple[float, ...] = (1.0, 5.0, 15.0)
+
+MAX_STREAM_LIFETIME_SECONDS = 3600.0
+
+LIFETIME_GRACE_SECONDS = 30.0
 
 MAX_RETRY_ATTEMPTS = len(RETRY_BACKOFF_SECONDS)
 
@@ -104,18 +109,72 @@ class StreamSubscription:
     max_seq_seen: int = 0
     seq_offset: int = 0
     persist_done: bool = False
+    progress_persisted_at: float = 0.0
+    progress_digest: str = ""
 
     max_chunk_bytes: int = DEFAULT_MAX_CHUNK_BYTES
     max_fps: int = DEFAULT_MAX_FPS
     min_fps: int = DEFAULT_MIN_FPS
 
+    expires_at: Optional[float] = None
+
     @property
     def key(self) -> StreamKey:
         return (self.user_id, self.chat_id, self.tool_name, self.params_hash)
 
+    def expired(self, now: float, grace: float = 0.0) -> bool:
+        return self.expires_at is not None and now >= self.expires_at + grace
+
     @property
     def bridged_component_id(self) -> Optional[str]:
         return self.component_id if self.component_id != self.stream_id else None
+
+
+@dataclass(frozen=True)
+class StreamLifetime:
+    argument: str
+    unit_s: float
+    default: float
+    minimum: float
+    maximum: float
+
+    def seconds(self, params: Dict[str, Any]) -> float:
+        try:
+            requested = float(params.get(self.argument))
+        except (TypeError, ValueError):
+            requested = self.default
+        return max(self.minimum, min(self.maximum, requested)) * self.unit_s
+
+
+def declared_lifetime(
+    metadata: Dict[str, Any], input_schema: Optional[Dict[str, Any]],
+) -> Optional[StreamLifetime]:
+    argument = metadata.get("duration_argument")
+    if argument is None:
+        return None
+    properties = (input_schema or {}).get("properties")
+    schema = properties.get(argument) if isinstance(properties, dict) and isinstance(argument, str) else None
+    if not isinstance(schema, dict):
+        raise ValueError(f"duration_argument {argument!r} is not a property of the tool's input schema")
+    numbers = [metadata.get("duration_unit_s", 1.0)]
+    numbers.extend(schema.get(name) for name in ("default", "minimum", "maximum"))
+    if any(isinstance(number, bool) or not isinstance(number, (int, float)) for number in numbers):
+        raise ValueError(
+            f"duration_argument {argument!r} needs a numeric default, minimum and maximum "
+            f"in the input schema and a numeric duration_unit_s"
+        )
+    unit, default, minimum, maximum = (float(number) for number in numbers)
+    if not (unit > 0 and 0 < minimum <= default <= maximum):
+        raise ValueError(
+            f"duration_argument {argument!r} must satisfy 0 < minimum <= default <= maximum "
+            f"with a positive duration_unit_s"
+        )
+    if maximum * unit > MAX_STREAM_LIFETIME_SECONDS:
+        raise ValueError(
+            f"a stream may declare at most {MAX_STREAM_LIFETIME_SECONDS:.0f} seconds, "
+            f"got {maximum * unit:.0f}"
+        )
+    return StreamLifetime(argument, unit, default, minimum, maximum)
 
 
 def params_hash(params: Dict[str, Any]) -> str:
@@ -320,11 +379,13 @@ class StreamManager:
             return existing.stream_id, True
 
         dormant_chat = self._dormant.get((user_id, chat_id), {})
-        dormant_existing = dormant_chat.get(ph)
+        dormant_existing = dormant_chat.pop(ph, None)
+        if dormant_existing is not None and not dormant_chat:
+            self._dormant.pop((user_id, chat_id), None)
+        if dormant_existing is not None and dormant_existing.expired(time.monotonic()):
+            await self._end_expired(dormant_existing)
+            dormant_existing = None
         if dormant_existing is not None:
-            dormant_chat.pop(ph, None)
-            if not dormant_chat:
-                self._dormant.pop((user_id, chat_id), None)
             dormant_existing.subscribers = [ws]
             dormant_existing.state = StreamState.STARTING
             dormant_existing.state_reason = "wake_on_attach"
@@ -354,6 +415,7 @@ class StreamManager:
         )
         max_fps = (tool_metadata or {}).get("max_fps", DEFAULT_MAX_FPS)
         min_fps = (tool_metadata or {}).get("min_fps", DEFAULT_MIN_FPS)
+        lifetime = (tool_metadata or {}).get("lifetime")
 
         sub = StreamSubscription(
             stream_id=stream_id,
@@ -372,6 +434,10 @@ class StreamManager:
             max_chunk_bytes=max_chunk_bytes,
             max_fps=max_fps,
             min_fps=min_fps,
+            expires_at=(
+                time.monotonic() + lifetime.seconds(params)
+                if isinstance(lifetime, StreamLifetime) else None
+            ),
         )
         self._active[key] = sub
 
@@ -559,6 +625,9 @@ class StreamManager:
         for params_hash_key, sub in list(dormant_dict.items()):
             try:
                 dormant_dict.pop(params_hash_key, None)
+                if sub.expired(time.monotonic()):
+                    await self._end_expired(sub)
+                    continue
                 sub.subscribers = [ws]
                 sub.state = StreamState.STARTING
                 sub.state_reason = "resumed"
@@ -685,6 +754,9 @@ class StreamManager:
                 f"handle_agent_chunk: subscription {key} not in _active"
             )
             return
+        if sub.expired(time.monotonic(), LIFETIME_GRACE_SECONDS):
+            await self._end_expired(sub)
+            return
 
         msg_error = getattr(msg, "error", None)
 
@@ -797,6 +869,9 @@ class StreamManager:
             return
         if not sub.subscribers:
             return
+        if sub.expired(time.monotonic()):
+            await self._end_expired(sub)
+            return
 
         sub.state = StreamState.STARTING
         sub.next_retry_at = None
@@ -847,6 +922,18 @@ class StreamManager:
         await self._cancel_on_agent(sub)
         self._teardown_subscription(sub, StreamState.FAILED, reason=error_code)
         await self._fire_terminal_hook(sub)
+
+    async def _end_expired(self, sub: StreamSubscription) -> None:
+        self._teardown_subscription(sub, StreamState.STOPPED, reason="duration_elapsed")
+        await self._send_chunk_to_subscribers(sub, StreamChunk(
+            stream_id=sub.stream_id,
+            seq=sub.max_seq_seen + 1,
+            components=[],
+            terminal=True,
+        ))
+        await self._fire_terminal_hook(sub)
+        # Cancelled last: an in-process agent delivers its chunk on the very task this cancels
+        await self._cancel_on_agent(sub)
 
     async def handle_agent_end(self, msg: Any) -> None:
         request_id = getattr(msg, "request_id", "")
@@ -1030,6 +1117,10 @@ class StreamManager:
                     await self._sweep_token_revocation()
                 except Exception as e:  # pragma: no cover
                     logger.error(f"sweep_token_revocation raised: {e}")
+                try:
+                    await self._sweep_lifetimes()
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"sweep_lifetimes raised: {e}")
         except asyncio.CancelledError:
             pass
 
@@ -1051,6 +1142,20 @@ class StreamManager:
                 self._dormant.pop(outer_key, None)
         if evicted > 0:
             logger.info(f"dormant TTL sweep evicted {evicted} entries")
+
+    async def _sweep_lifetimes(self) -> None:
+        now = time.monotonic()
+        for sub in list(self._active.values()):
+            if sub.expired(now, LIFETIME_GRACE_SECONDS):
+                await self._end_expired(sub)
+        for outer_key in list(self._dormant.keys()):
+            entries = self._dormant[outer_key]
+            for inner_key, sub in list(entries.items()):
+                if sub.expired(now):
+                    entries.pop(inner_key, None)
+                    await self._end_expired(sub)
+            if not entries and self._dormant.get(outer_key) is entries:
+                self._dormant.pop(outer_key, None)
 
     async def _sweep_token_revocation(self) -> None:
         now = int(time.time())

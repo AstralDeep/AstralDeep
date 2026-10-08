@@ -1300,7 +1300,7 @@ async def list_agents(
 
     ownership_map, disabled_set = await asyncio.to_thread(_read_agent_index)
     agents = []
-    for agent_id, card in orch.agent_cards.items():
+    for agent_id, card in list(orch.agent_cards.items()):
         if await asyncio.to_thread(orch._is_draft_agent, agent_id):
             continue
         ownership = ownership_map.get(agent_id)
@@ -2280,7 +2280,7 @@ async def get_dashboard(
     def _build_dashboard():
         agents = []
         total_tools = 0
-        for agent_id, card in orch.agent_cards.items():
+        for agent_id, card in list(orch.agent_cards.items()):
             available_tools = [s.id for s in card.skills]
             permissions = orch.tool_permissions.get_effective_permissions(
                 user_id, agent_id, available_tools

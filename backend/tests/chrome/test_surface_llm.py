@@ -238,9 +238,25 @@ def test_components_include_provider_select_with_full_catalog():
     provider = _field(picker, "provider")
     assert provider is not None
     assert provider["kind"] == "select"
-    assert provider["options"] == PRESET_KEYS
+    assert [option["value"] for option in provider["options"]] == PRESET_KEYS
+    assert {option["value"]: option["label"] for option in provider["options"]}[
+        "custom"] == "Custom OpenAI-compatible endpoint"
     actions = {a["action"] for a in picker["actions"]}
     assert {"chrome_llm_models", "chrome_llm_test", "chrome_llm_save"} <= actions
+
+
+def test_components_preserve_saved_nonfirst_provider_and_model_without_exposing_credentials():
+    orch = make_orch()
+    orch._llm_store.seed("u1", provider="custom", base_url="https://private.example/v1", model="saved-model")
+    picker = _param_picker(components(orch, params={"models": ["catalog-first"]}))
+    provider = _field(picker, "provider")
+    assert provider["default"] == "custom"
+    assert {option["value"]: option["label"] for option in provider["options"]}[
+        provider["default"]] == "Custom OpenAI-compatible endpoint"
+    assert _field(picker, "base_url")["default"] == "https://private.example/v1"
+    model = _field(picker, "model")
+    assert model["default"] == "saved-model" and model["options"] == ["saved-model", "catalog-first"]
+    assert SECRET not in json.dumps(picker)
 
 
 def test_components_first_run_carries_local_runtime_note():
@@ -297,8 +313,8 @@ def test_save_probes_persists_audits_and_acks(monkeypatch):
     assert cfg is not None and cfg.api_key == SECRET
     assert cfg.base_url == "https://api.example.com/v1"
     assert [e.action_type for e in orch.audit_recorder.events] == [
-        "llm_config.tested", "llm_config.created"]
-    assert orch.audit_recorder.events[-1].auth_principal == "u1@example"
+        "llm_config.created", "llm_config.tested"]
+    assert orch.audit_recorder.events[0].auth_principal == "u1@example"
     assert any("llm_config_ack" in text for sock, text in orch.sent if sock is ws)
     assert SECRET not in notice and SECRET not in str(params)
     assert "saved" in notice
@@ -340,7 +356,7 @@ def test_save_missing_fields_is_error_without_mutation(monkeypatch):
     assert params["base_url"] == "https://x.test/v1"
 
 
-def test_save_failed_probe_refuses_and_stores_nothing(monkeypatch):
+def test_save_failed_probe_keeps_the_saved_configuration_and_warns(monkeypatch):
     async def failing_probe(*, api_key, base_url, model, **kw):
         return False, "auth_failed", "401 unauthorized"
 
@@ -354,10 +370,12 @@ def test_save_failed_probe_refuses_and_stores_nothing(monkeypatch):
         _payload(provider="custom", base_url="https://x.test/v1",
                  api_key=SECRET, model="gpt-x"),
     ))
-    assert orch._llm_store.get_sync("u1") is None
-    assert "Save rejected" in notice
-    assert [e.action_type for e in orch.audit_recorder.events] == ["llm_config.tested"]
-    assert orch.audit_recorder.events[0].outcome == "failure"
+    assert orch._llm_store.get_sync("u1").api_key == SECRET
+    assert "saved" in notice and "Save rejected" not in notice
+    assert [e.action_type for e in orch.audit_recorder.events] == ["llm_config.created", "llm_config.tested"]
+    assert orch.audit_recorder.events[1].outcome == "failure"
+    ack, warning = [json.loads(text) for _, text in orch.sent]
+    assert ack["ok"] is True and warning["level"] == "warning"
 
 
 def test_save_blank_key_keeps_saved_key_at_same_endpoint(monkeypatch):
@@ -377,7 +395,7 @@ def test_save_blank_key_keeps_saved_key_at_same_endpoint(monkeypatch):
     assert cfg.api_key == SECRET and cfg.model == "new-model"
     assert calls["api_key"] == SECRET
     assert [e.action_type for e in orch.audit_recorder.events] == [
-        "llm_config.tested", "llm_config.updated"]
+        "llm_config.updated", "llm_config.tested"]
     assert "kept" in notice
 
 
@@ -697,23 +715,38 @@ def test_settings_path_save_closes_the_surface_on_native_clients(monkeypatch, de
 
 
 @pytest.mark.parametrize("device", ["macos", "android"])
-def test_rejected_save_keeps_the_native_surface_open_to_show_the_error(monkeypatch, device):
+def test_saved_native_settings_close_before_a_failed_probe_warning(monkeypatch, device):
     async def failing_probe(*, api_key, base_url, model, **kw):
         return False, "auth_failed", "401 unauthorized"
 
     monkeypatch.setattr("llm_config.ws_handlers.probe_chat_completion", failing_probe)
     orch, ws = _native_orch(device)
 
-    surface, _params, notice = run(llm_surface.HANDLERS["chrome_llm_save"](
+    result = run(llm_surface.HANDLERS["chrome_llm_save"](
         orch, ws, "u1", ["user"],
         _payload(provider="custom", base_url="https://x.test/v1",
                  api_key=SECRET, model="gpt-x"),
     ))
 
-    assert surface == "llm"
-    assert "Save rejected" in notice
-    assert _close_frames(orch) == []
-    assert orch._llm_store.get_sync("u1") is None
+    assert result is None
+    assert len(_close_frames(orch)) == 1
+    assert orch._llm_store.get_sync("u1").api_key == SECRET
+    frames = [json.loads(text) for _, text in orch.sent]
+    assert frames[0]["type"] == "llm_config_ack" and frames[0]["ok"] is True
+    assert frames[-1]["type"] == "notification" and frames[-1]["level"] == "warning"
+
+
+def test_native_unsaved_endpoint_does_not_keep_a_stale_automatic_header():
+    payload = json.dumps(components(make_orch(), params={"provider": "openai"}))
+    assert "Endpoint:" not in payload and "set automatically" not in payload
+
+
+def test_native_endpoint_header_labels_the_saved_value_even_when_editing_another_provider():
+    orch = make_orch()
+    orch._llm_store.seed("u1", provider="openai", base_url="https://api.openai.com/v1")
+    payload = json.dumps(components(orch, params={"provider": "custom", "base_url": "https://new.example/v1"}))
+    assert "Saved endpoint: https://api.openai.com/v1" in payload
+    assert "Endpoint:" not in payload and "set automatically" not in payload
 
 
 def test_settings_path_save_keeps_the_web_success_notice(monkeypatch):
