@@ -1,0 +1,15 @@
+# Context contracts
+
+Independent default-off `FF_OBSERVATION_PACKING` / `FF_SAFE_COMPACTION`. Both-off is baseline; enabled mechanisms suppress affected legacy loss. Compaction-only creates no archive, packing-only creates no automatic summary. Disable stops new mechanism work; retained references still enforce current grant and absolute expiry.
+
+Host retention grants bind owner/conversation/audience/source agent/tool/deadline exactly. Model/user tool arguments cannot mint grants. Missing/ambiguous/expired/changed policy refuses capture. Maximum 24-hour expiry never slides; restart is unavailable. Limits: 16 KiB pages, 8 MiB observations, 64 MiB/conversation, stricter supported privacy/global bounds.
+
+`evidence-1.recall_observation(reference, offset=0)` uses tools:read; `delete_observation(reference)` uses tools:write; `context_usage()` uses tools:read. Authority comes from trusted server dispatch context and fresh current original-source gates. Ordinary permission/delegation/confirmation/audit/governed path remains mandatory. Foreign/unauthorized/unknown refs receive uniform blocked response without extent/existence/content. Authorized unavailable/corrupt source gives honest recovery state. Recall never reexecutes source.
+
+Pages are exact permitted UTF-8, deterministic bounded byte slices with identity/digest/range/total/continuation/end. Preview/outcome/omission/recall instructions are code-owned. All evidence remains untrusted. Literal KeyValue source values and standard labels/actions serve every client; watch uses an explicit supported action handoff. Raw evidence is delivered transiently, excluded from durable chat/workspace copies.
+
+Compaction binds the exact owner provider/content route, complete eligible input and immutable protected snapshot. Summaries are assistant evidence. System/developer/current user/tool groups/actual outcomes stay verbatim. Errors/empty/malformed/cancelled/stale/oversized/invalid-source/ineffective results preserve history; irreducible context pauses explicitly before another dispatch. All attempts/rejections/calls are bounded and audited.
+
+Physical-attempt UUIDs and revisions deduplicate bounded usage metadata through existing Plane-backed audit. Direct/auxiliary/retry/cache/charged failure/cancellation/late/recall traffic count once. Missing usage/pricing is explicitly unknown; no verified savings from unknown totals. No raw evidence/credentials/endpoint/error bodies in metadata.
+
+Fixed paired baseline/packing/compaction/combined evaluation over 24 synthetic workflows (12 development/12 holdout), frozen candidate/source/provider/scoring identities. Deterministic/security/integrity/failure/accounting checks and normal live-client qualification plus actual cost/formative evidence precede promotion. Missing/failed evidence blocks promotion without changing rules.

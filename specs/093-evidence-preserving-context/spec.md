@@ -4,13 +4,21 @@
 
 **Created**: 2026-10-05
 
-**Status**: Draft; specification reviewed for completeness, ready for clarification and planning. No implementation, adoption decision, benchmark result, deployment, or release is implied.
+**Status**: Full implementation authorized 2026-10-08; qualification, release and default promotion remain evidence-gated.
 
 **Input**: User description: "Create a spec for paper #2, SoL-Pi, that improves the usability and functionality of the AstralDeep ecosystem."
 
 Give users and their agents a shorter working context without losing access to the evidence behind their answers. The initial feature provides exact recall of authorized observations, protects history when compaction fails, and measures complete cost and answer quality before any default changes.
 
 **Engineering mode**: Scale mode for authorization, auditability, privacy, retention, concurrency, recovery, and accounting; bounded initial product scope.
+
+## Clarifications
+
+### Session 2026-10-08
+
+- Q: Safe compaction first or the complete feature in the first implementation PR? → A: Complete feature 093 in one PR, including recall, accounting, evaluation and all-client qualification. Publish and merge when required CI is green; repository engineering gates remain applicable.
+
+No critical functional ambiguity remains. Engineering method choices are resolved in the plan. No retention or default-promotion entitlement is inferred from implementation authorization.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -136,7 +144,7 @@ As an operator, I want independent quality, safety, usability, and complete-cost
 
 ## Assumptions
 
-- This request authorizes specification of the first bounded adoption candidate. Implementation, provider selection, deployment, release, and default promotion require their subsequent governed phases and evidence.
+- The original request authorized specification; on 2026-10-08 the owner authorized full implementation, PR publication and normal green-CI merge. Provider selection, deployment, release and default promotion retain their governed phases and evidence.
 - The initial scope is textual tool observations, exact bounded recall, safe compaction, shared presentation, complete accounting, and comparative evaluation. Installing the Pi extension, general recursive execution, action fusion, learned context policies, and another-model evidence reducers are outside this feature.
 - Existing identity, delegation, authorization, privacy, outbound-content, confirmation, audit, governed persistence, and shared presentation remain authoritative. A future implementation that needs a durable contract or shared presentation change must qualify the owning component before adoption.
 - The proposed initial safety limits are 16 KiB of permitted text per recall page, 8 MiB per observation, and 64 MiB of retained observation text per conversation. Operational policy may lower these limits; increasing them needs a reviewed capacity and failure assessment. Required redaction takes precedence over exactness relative to an unrestricted source.
