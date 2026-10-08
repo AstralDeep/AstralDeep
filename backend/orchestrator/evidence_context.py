@@ -29,7 +29,7 @@ from orchestrator.evidence_archive import (
 )
 from orchestrator.safe_compaction import CompactionResult, compact_context, estimate_context_tokens
 from shared.feature_flags import flags
-from shared.protocol import MCPResponse
+from shared.protocol import AgentCard, MCPResponse
 
 _REQUESTER = ContextVar("evidence_host_requester", default=None)
 _REFERENCE = re.compile(r"obs_[A-Za-z0-9_-]{43}")
@@ -390,6 +390,35 @@ class EvidenceContext:
             raise EvidenceDenied()
         return grant
 
+    def _packing_adapter(self, expected=None):
+        from agents.evidence.evidence_agent import EvidenceAgent
+        from agents.evidence.mcp_server import MCPServer
+
+        local = getattr(self.orchestrator, "local_agents", None)
+        cards = getattr(self.orchestrator, "agent_cards", None)
+        adapter = local.get("evidence-1") if type(local) is dict else None
+        server = getattr(adapter, "mcp_server", None)
+        card = getattr(adapter, "card", None)
+        tools = getattr(server, "tools", None)
+        recall = tools.get("recall_observation") if type(tools) is dict else None
+        if (not flags.is_enabled("observation_packing") or not flags.is_enabled("inprocess_agents")
+                or getattr(self.orchestrator, "_evidence_context", None) is not self
+                or type(adapter) is not EvidenceAgent or type(server) is not MCPServer
+                or server._orchestrator is not self.orchestrator or type(card) is not AgentCard
+                or type(cards) is not dict or cards.get("evidence-1") is not card or card.agent_id != "evidence-1"
+                or type(recall) is not dict or recall.get("scope") != "tools:read"
+                or type(card.skills) is not list or not any(
+                    getattr(skill, "id", None) == "recall_observation" and getattr(skill, "scope", None) == "tools:read"
+                    for skill in card.skills)):
+            raise EvidenceCaptureError("evidence_recall_unavailable")
+        try:
+            identity = _digest({"card": card.to_dict(), "tools": tools})
+        except (AttributeError, TypeError, ValueError, UnicodeError):
+            raise EvidenceCaptureError("evidence_recall_unavailable") from None
+        if expected is not None and (adapter is not expected[0] or server is not expected[1] or identity != expected[2]):
+            raise EvidenceCaptureError("evidence_recall_unavailable")
+        return adapter, server, identity
+
     async def pack_result(self, result, *, websocket, owner, chat, agent, tool, args,
                           operation_id, parent=None, initiator=None):
         if (not flags.is_enabled("observation_packing") or result is None or result.error
@@ -405,6 +434,7 @@ class EvidenceContext:
         observations = []
         try:
             await self._owner(websocket, owner, chat)
+            adapter_binding = self._packing_adapter()
             grant = self._grant(owner, chat, agent, tool)
             permitted = await self._permitted_text(text)
             source_args = _public_arguments(args)
@@ -431,6 +461,7 @@ class EvidenceContext:
             grant = self._grant(owner, chat, agent, tool)
             page = self.archive.read(observation.reference, grant=grant, owner_id=owner,
                                      conversation_id=chat, audience_id=f"user:{owner}")
+            self._packing_adapter(adapter_binding)
             preview = page.text.encode("utf-8")[:_PREVIEW_BYTES].decode("utf-8", errors="ignore")
             view = {"view": "partial_preview", "untrusted": True,
                     "reference": observation.reference, "digest": observation.digest,

@@ -10,6 +10,8 @@ Date: 2026-10-08. Full implementation remains on the authorized `codex/093-evide
 - Bounded owner/provider-qualified request windows, actual SDK message serialization, completion bounds and fresh encrypted USER provider capture. Full governing instructions/current request/tool groups/outcomes survive proposal failure, cancellation, stale state and irreducible limits. Auxiliary compaction has no system/provider fallback or persistent-reservation reuse.
 - Stable, deduplicated physical-attempt audit receipts account for direct/auxiliary/retry/cache/failure/cancelled/late work and recall bytes. Usage disclosure refreshes audit provenance; historical or unlinked calls preserve a partial-accounting label and known tracked totals. Missing provider usage/prices never establishes zero cost or savings.
 - Code-owned literal KeyValue/Badge/Alert/Button source presentation and supported watch handoff. Pages, previews, derived answers and reasoning stay transient; they cannot become workspace/chat/completion-summary copies, generated skills or action-shaped UI. Unavailable generated summaries render blocked rather than claiming completion.
+- Capture requires the exact currently registered host-owned recall adapter before admission and again before publishing a preview. Missing, disabled or replaced recall registration preserves the authorized complete source result. The evidence adapter never launches as a standalone process.
+- Evidence inspection commands take precedence over ordinary skill aliases and slash expansion. Captured auxiliary work cannot revert to an unaccounted legacy provider call after its host service disappears or flags change.
 - Frozen 24 independent synthetic documents/tasks, separate 12/12 development and held-out controls, actual corruption/cancellation diagnostics and candidate/workflow/scoring/provider/cost/formative bindings. Optional JSON consistency does not authenticate provider execution or human observations and never changes defaults.
 
 ## Local evidence collected during implementation
@@ -18,7 +20,9 @@ These results precede the final clean-candidate whole-suite and hosted gates; th
 
 | Check | Observed result |
 | --- | --- |
-| Python 3.11 feature + adjacent authorization/dispatch/audit suites with isolated real PostgreSQL and signed synthetic IAM | 1,213 passed in 166.68 seconds at 19 unchanged source anchors; changed executable lines 2,632/2,685 (98.03%), orchestrator 203/210 (96.67%). Every affected source file exceeds 90%; the final summary flag-toggle and disabled-before-admission regressions pass. |
+| Python 3.11 feature + adjacent authorization/dispatch/audit suites with isolated real PostgreSQL and signed synthetic IAM | 1,323 passed in 136.03 seconds at 20 unchanged source anchors; changed executable lines 2,662/2,714 (98.08%), orchestrator 207/213 (97.18%). Every affected source file exceeds 90%; real-adapter lifecycle, command precedence, auxiliary flag-toggle and disabled-before-admission regressions pass. |
+| Actual adapter lifecycle tests | 44 passed; new lifecycle guard statements and branches covered completely, including registration removal/replacement during awaited capture. |
+| TypeSafe fixture and controlled PostgreSQL teardown probe | Whole module: 18 passed in 8.70 seconds. Controlled held-reader probe: three passed, no optional notice task and zero borrowed connections at every real pool close. The original optional PHI-awareness notification teardown race reproduces in both main `5c35bb38` and initial candidate `3d118172`; only the legacy fixture's optional notification is stubbed. Mandatory PHI, permissions, production shutdown and Plane remain unchanged. |
 | Authority + service source-release tests | 245 passed in 80.14 seconds at unchanged source anchors, including late-page PHI changes, actual post-hook revocation, and refreshed unavailable/accounting cases. The independent archive suite also passed 126 cases. |
 | Real SDK wire + model suite after SDK/disabled-reference guards | 74 passed in 18.54 seconds. |
 | Ledger refresh and atomic legacy-gap recovery | 98 passed; 402/415 module statements covered (96.87%). |
@@ -31,13 +35,19 @@ These results precede the final clean-candidate whole-suite and hosted gates; th
 
 Detailed local coverage and source-identity reports are retained outside Git. Synthetic fixture DSNs, keys, tokens, user grants and source content are excluded from this record and commits.
 
+The initial clean candidate `3d11817207764168ce40d872132dbb81cfde8e71` passed production image build, development/fail-closed production boot smoke, voice-worker tests (372 passed, two skipped), UI contracts (340 passed), Gitleaks (zero leaks), composition and documentation checks. The local complete backend invocation collected 20,434 tests across 22 suites; 20 suites passed, but the root and LLM-configuration suites failed. Hosted run [37830594982](https://github.com/AstralDeep/AstralDeep/actions/runs/37830594982) likewise failed the root/modules groups, so its aggregate is not green and changed-coverage was skipped. Its exact Plane complete PostgreSQL suite passed on Linux; a separate macOS component run has 42 filesystem-capability failures and is not Plane qualification. The initial image and boot results do not prove real authentication or LETS enforcement.
+
+Corrections address the partial LLM fixture's absent real model-call helper, a flag-store failure affecting legacy built-in registration, host-only adapter startup, and the independently reproduced TypeSafe fixture race. Focused regressions pass. The revised clean candidate still requires a fresh complete local and hosted run; earlier failures and passing artifacts remain retained separately.
+
 ## Pending candidate and hosted qualification
 
 Run the clean production image build, development/fail-closed production boot smoke, all three complete backend/module groups, strict changed-code coverage and remaining owner-CI gates on the final exact SHA. The required hosted aggregate is `Deep owner CI aggregate`; a portable native test result or production-configuration boot smoke does not prove real authentication or live UI acceptance.
 
-Exercise ordinary authenticated source capture, preview, exact paging, summary, missing, blocked and usage behavior on web, Android, macOS, iOS and watchOS against that candidate image and configured IAM/PostgreSQL/worker environment. The owner will complete native sign-in. These live checks are pending at this record's creation and are not claimed as passed.
+Exercise ordinary authenticated source capture, preview, exact paging, summary, missing, blocked and usage behavior on web, macOS, iOS and watchOS against that candidate image and configured IAM/PostgreSQL/worker environment. The owner completed macOS sign-in and will complete other required native sign-in. Source-state acceptance remains pending and is not claimed as passed.
 
 The owner explicitly directed on 2026-10-08: “Don’t worry about windows but record that windows is not tested.” Windows OS/live verification is therefore omitted and untested. Preserve that limitation in the PR and final handoff; the portable Qt suite cannot replace it. This instruction does not create Windows release qualification or satisfy all-client default-promotion inputs.
+
+The owner subsequently directed: “i dont really care about android at all for this, you can treat it the same as windows”. Android live verification is also omitted and untested, separately from its passing local lint/unit/coverage/build gates. Its local debug profile refused HTTP before secure sign-in; the HTTPS sandbox/release-profile preparation does not count as feature acceptance, and further Android sign-in work is stopped. No remote sandbox deployment was authorized or performed for this feature. Neither client omission supplies release/default-promotion evidence.
 
 ## Promotion evidence
 

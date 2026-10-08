@@ -8,12 +8,14 @@ Use Python 3.11, declared dependencies, exact initialized components and an isol
 4. Synthetic exact reconstruction including empty/Unicode/limits; owner/audience/scope/policy/integrity denials, deletion/revocation/expiry/restart; no repeated source operation or durable raw-page copy.
 5. Inject all compaction failure/cancellation/stale/reduction/provider/context-limit cases; history and protected host state remain unchanged.
 6. Reconcile known/unknown retry/cache/failure/cancelled/late/recall records once, with no evidence in diagnostics. Retain paired fixed-workflow failures and unknowns.
-7. Build the exact candidate image and exercise real configured IAM/database/workers and representative conversations. Verify labels/source capability on web, Android, macOS, iOS and watchOS, including explicit supported handoff. User performs required sign-in. The owner explicitly omitted Windows live verification on 2026-10-08; record Windows OS/live as untested, separately from portable Qt tests. This does not supply Windows release or default-promotion evidence.
+7. Build the exact candidate image and exercise real configured IAM/database/workers and representative conversations. Verify labels/source capability on web, macOS, iOS and watchOS, including explicit supported handoff. User performs required sign-in. The owner explicitly omitted Android and Windows live verification on 2026-10-08; record both OS/live checks as untested, separately from portable Qt and Android lint/unit/build gates. These omissions do not supply release or default-promotion evidence.
 8. Record exact candidate/test/live/formative/provider evidence in verification.md. Missing merge gates keep PR draft; missing promotion evidence keeps defaults off.
 
 ## Operator configuration
 
 The flags are `FF_OBSERVATION_PACKING=false` and `FF_SAFE_COMPACTION=false` by default. Their files contain operator policy, never provider keys; mount them read-only and keep owner identifiers and conversation grants outside Git.
+
+Capture also requires the current host-owned recall adapter with `FF_INPROCESS_AGENTS=true`. The adapter never launches as a standalone process. Disabled or unavailable registration preserves complete source results; it cannot produce a preview advertising unavailable recall.
 
 `ASTRAL_OBSERVATION_POLICY` names a bounded JSON array. Each entry has exact `owner_id`, `conversation_id`, `audience_id` (`user:` followed by that owner), `source_agent`, `source_tool`, and an absolute RFC 3339 `expires_at`. Optional `source_deadline` and `conversation_deadline` can only shorten retention. There are no wildcard grants, user/model-supplied grants or renewal on recall. The archive clamps capture to at most 24 hours and the earliest deadline. The host additionally limits privacy-screened text to 64 KiB; larger authorized results retain their original view when capture is refused. Pages remain at most 16 KiB and previews at most 1 KiB.
 

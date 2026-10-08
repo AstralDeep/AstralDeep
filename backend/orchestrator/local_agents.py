@@ -125,9 +125,12 @@ async def register_built_ins(orch) -> List[str]:
 
     registered: List[str] = []
     dirs = discover_built_in_agent_dirs()
-    from orchestrator.evidence_context import enabled
-    if enabled():
-        dirs.append("evidence")
+    try:
+        from orchestrator.evidence_context import enabled
+        if enabled():
+            dirs.append("evidence")
+    except Exception:
+        logger.debug("Evidence flag check failed; adapter remains disabled", exc_info=True)
     try:
         from shared.feature_flags import flags
         if flags.is_enabled("remote_compute"):

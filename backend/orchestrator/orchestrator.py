@@ -14066,6 +14066,37 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.warning("Empty message received")
             return
 
+        evidence_service = evidence_context.get_context(self)
+        evidence_command = evidence_context.command(message) if evidence_service is not None else None
+        if evidence_command is not None and not draft_agent_id:
+            if voice_acceptance is None:
+                await self._append_conversation_message(
+                    conversation_stage, chat_id=chat_id, user_id=user_id,
+                    role="user", content=display_message or message,
+                )
+            name, arguments = evidence_command
+            if name and "evidence-1" in self.agent_cards:
+                from types import SimpleNamespace
+                call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
+                response = await self.execute_single_tool(
+                    websocket, call, {name: "evidence-1"}, chat_id, user_id=user_id,
+                )
+            else:
+                response = None
+            if conversation_stage is not None:
+                await self._publish_conversation_snapshot(
+                    websocket, stage=conversation_stage,
+                    request_generation=conversation_request_generation,
+                    server_initiated=conversation_server_initiated,
+                )
+            from orchestrator.context_presentation import evidence_components
+            if response is not None:
+                response = await evidence_service.verify_delivery(response, websocket=websocket, owner=user_id, chat=chat_id)
+            components = response.ui_components if response and not response.error else evidence_components(state="blocked")
+            await self.send_ui_render(websocket, components, target="chat", speak=False)
+            await self._safe_send(websocket, json.dumps({"type": "chat_status", "status": "done", "message": ""}))
+            return
+
         from orchestrator import user_skills as _user_skills
         from orchestrator.user_skill_catalog import SkillCatalogError
         from persistent_agents.models import AssignmentError
@@ -14150,37 +14181,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         return
             except Exception:  # pragma: no cover
                 logger.warning("onboarding submit handling failed (non-fatal)", exc_info=True)
-
-        evidence_service = evidence_context.get_context(self)
-        evidence_command = evidence_context.command(message) if evidence_service is not None else None
-        if evidence_command is not None and not draft_agent_id:
-            if voice_acceptance is None:
-                await self._append_conversation_message(
-                    conversation_stage, chat_id=chat_id, user_id=user_id,
-                    role="user", content=display_message or message,
-                )
-            name, arguments = evidence_command
-            if name and "evidence-1" in self.agent_cards:
-                from types import SimpleNamespace
-                call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
-                response = await self.execute_single_tool(
-                    websocket, call, {name: "evidence-1"}, chat_id, user_id=user_id,
-                )
-            else:
-                response = None
-            if conversation_stage is not None:
-                await self._publish_conversation_snapshot(
-                    websocket, stage=conversation_stage,
-                    request_generation=conversation_request_generation,
-                    server_initiated=conversation_server_initiated,
-                )
-            from orchestrator.context_presentation import evidence_components
-            if response is not None:
-                response = await evidence_service.verify_delivery(response, websocket=websocket, owner=user_id, chat=chat_id)
-            components = response.ui_components if response and not response.error else evidence_components(state="blocked")
-            await self.send_ui_render(websocket, components, target="chat", speak=False)
-            await self._safe_send(websocket, json.dumps({"type": "chat_status", "status": "done", "message": ""}))
-            return
 
         try:
             if not llm_preflight_complete:
@@ -15691,6 +15691,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _context_model_call(self, websocket, chat_id, purpose, model, invoke, *, attempt_id=None, retry_of=None,
                                   request=None, base_url=None, provider_capture=None):
         service = evidence_context.get_context(self)
+        if service is None and provider_capture is not None:
+            from orchestrator.evidence_archive import EvidenceDenied
+            raise EvidenceDenied()
         if service is None or (not evidence_context.enabled() and provider_capture is None
                                and not evidence_context.has_references((request or {}).get("messages", []))):
             return await invoke()

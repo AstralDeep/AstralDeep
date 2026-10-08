@@ -46,7 +46,7 @@ Independent test: replay/late completion reconciles known synthetic charges once
 - [X] T019 [US3] Instrument direct/auxiliary/stream/title/tool-summary provider attempts and recall bytes in backend/orchestrator/orchestrator.py and backend/orchestrator/evidence_context.py (FR016; SC005).
 - [X] T020 [P] [US3] Add literal-source/status/unknown-cost/fallback tests in backend/tests/test_context_presentation.py.
 - [X] T021 [US3] Implement server-owned KeyValue/Badge/Card/Alert presentation in backend/orchestrator/context_presentation.py, with transient pages and explicit watch action handoff (FR013,017; SC004).
-- [ ] T022 [US3] Exercise full/preview/summary/missing/blocked/usage UI against candidate live backend on web/Android/macOS/iOS/watchOS (owner omitted Windows OS/live; record it untested) and retain evidence in specs/093-evidence-preserving-context/verification.md (SC004).
+- [ ] T022 [US3] Exercise full/preview/summary/missing/blocked/usage UI against candidate live backend on web/macOS/iOS/watchOS (owner omitted Android and Windows OS/live; record both untested) and retain evidence in specs/093-evidence-preserving-context/verification.md (SC004).
 
 ## Phase 6: US4 Evaluation and promotion (P2)
 

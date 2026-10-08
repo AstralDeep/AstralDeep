@@ -40,6 +40,8 @@ def _make_stub(store, recorder):
         Orchestrator._llm_context_user_id, stub)
     stub._resolve_llm_client_for = types.MethodType(
         Orchestrator._resolve_llm_client_for, stub)
+    stub._context_model_call = types.MethodType(
+        Orchestrator._context_model_call, stub)
     stub._drain_llm_discard_notes = types.MethodType(
         Orchestrator._drain_llm_discard_notes, stub)
     return stub

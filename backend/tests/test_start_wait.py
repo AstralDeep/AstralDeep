@@ -245,19 +245,44 @@ class _Supervisor:
         return ()
 
 
-def _run_main(monkeypatch, backend_dir, *, inprocess, remote_flag):
+def _run_main(monkeypatch, backend_dir, *, inprocess, remote_flag, evidence_flags=()):
     monkeypatch.setattr(start, "__file__", str(backend_dir / "start.py"))
     monkeypatch.setattr(start, "_wait_for_orchestrator", lambda *a, **k: True)
     monkeypatch.setattr(start.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setenv("FF_INPROCESS_AGENTS", "1" if inprocess else "0")
     from shared.feature_flags import flags
-    monkeypatch.setattr(
-        flags, "is_enabled", lambda name: remote_flag and name == "remote_compute")
+    monkeypatch.setattr(flags, "is_enabled", lambda name:
+        (remote_flag and name == "remote_compute") or name in evidence_flags)
     supervisor = _Supervisor()
     start.main(process_supervisor=supervisor)
     agents = [s["owner"].owner_id for s in supervisor.spawned
               if s["owner"].owner_kind == "server_agent"]
     return supervisor, agents
+
+
+@pytest.mark.parametrize("inprocess", [True, False])
+@pytest.mark.parametrize("evidence_flags", [(), ("observation_packing",),
+    ("safe_compaction",), ("observation_packing", "safe_compaction")])
+def test_host_evidence_directory_never_spawns_or_changes_transport_capacity(
+    monkeypatch, tmp_path, inprocess, evidence_flags
+):
+    backend_dir, agents_root = _agents_tree(tmp_path)
+    evidence = agents_root / "evidence"
+    evidence.mkdir()
+    (evidence / "evidence_agent.py").write_text("", encoding="utf-8")
+    supervisor, agents = _run_main(monkeypatch, backend_dir, inprocess=inprocess,
+        remote_flag=False, evidence_flags=evidence_flags)
+    assert start._agent_entrypoint(str(agents_root), "evidence") is None
+    assert "evidence" not in agents
+    assert supervisor.spawned[0]["env"]["MAX_AGENTS"] == "3"
+    assert set(agents) == ({"external_agent"} if inprocess else {"external_agent", "weather"})
+    assert supervisor.termination_reason.value == "quit"
+
+
+def test_host_evidence_module_is_excluded_from_real_transport_discovery():
+    root = BACKEND_DIR / "agents"
+    assert (root / "evidence" / "evidence_agent.py").is_file()
+    assert start._agent_entrypoint(str(root), "evidence") is None
 
 
 def test_main_never_spawns_the_tests_dir_or_misnamed_modules(monkeypatch, tmp_path):

@@ -53,6 +53,8 @@ backend/tests/
 
 **Structure Decision**: independent archive/compaction modules, one host authorization/accounting adapter and ordinary first-party evidence agent. Shared source presentation uses server-owned primitives; evidence pages are delivered transiently and excluded from durable workspace/chat snapshots. Durable labels/reference metadata carry no evidence bytes.
 
+The evidence control adapter is host-only because the archive and typed original-human lease belong to the application orchestrator. Startup excludes its directory from subprocess inventory and capacity under every flag posture. When in-process registration is disabled or its current matching recall adapter is missing, packing preserves the complete original result; inspection commands render unavailable through the ordinary guarded path. This does not alter other bundled agents' transport fallback.
+
 ## Execution
 
 Foundation -> independent US1 archive and US2 compaction -> US3 accounting/presentation -> US4 evaluation -> ordinary dispatch integration, complete checks, independent review, live qualification and merge. Every source group's exact outcome/arguments remains verbatim; only older plain dialogue is eligible for compaction. Pure working-view acceptance never mutates authoritative host records. Snapshot freshness/fences are checked immediately before installing the local replacement.

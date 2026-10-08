@@ -13,15 +13,16 @@ import pytest
 
 from agents.evidence.evidence_agent import EvidenceAgent
 from agents.evidence.mcp_server import TOOL_REGISTRY
-from orchestrator import context_authority, evidence_context, local_agents
-from orchestrator.context_presentation import evidence_components
+from orchestrator import context_authority, evidence_context, local_agents, slash_commands, user_skills
+from orchestrator.context_presentation import evidence_components, usage_components
 from orchestrator.context_usage import ContextUsage
 from orchestrator.evidence_context import EvidenceContext
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.tests.test_dispatch_local_agents_040 import _make_card
+from orchestrator.user_skill_catalog import CurrentSkill
 from persistent_agents.models import AssignmentError
 from shared.agent_runtime import AgentRuntime
-from shared.feature_flags import flags
+from shared.feature_flags import FeatureFlags, flags
 from shared.protocol import MCPRequest, MCPResponse
 from tests.test_context_authority import (
     admitted_turn, bound as bound, fixture as fixture, human as human,
@@ -151,6 +152,114 @@ def conversation_host(outcomes, *, rows=None):
     host._evidence_context.prepare = AsyncMock(side_effect=prepare)
     state.provider = provider
     return state
+
+
+def default_slash_controls(monkeypatch, *, evidence=True, skills=False):
+    monkeypatch.delenv("FF_SLASH_COMMANDS", raising=False)
+    defaults = FeatureFlags()
+    assert defaults.is_enabled("slash_commands")
+    active = dict.fromkeys(flags._flags, False)
+    active.update(observation_packing=evidence, slash_commands=defaults.is_enabled("slash_commands"),
+                  user_skills=skills)
+    monkeypatch.setattr(flags, "_flags", active)
+    monkeypatch.setattr(flags, "is_enabled", FeatureFlags.is_enabled.__get__(flags))
+
+
+@pytest.mark.parametrize("alias", [False, True])
+async def test_default_slash_evidence_usage_precedes_expansion_and_existing_skill_alias(monkeypatch, alias):
+    default_slash_controls(monkeypatch, skills=alias)
+    state = conversation_host([])
+    host = state.host
+    host.agent_cards = {"evidence-1": _make_card("evidence-1", ["context_usage"])}
+    totals = await state.provider.ledger.totals("alice", "conversation")
+    returned = MCPResponse(result=totals, ui_components=usage_components(totals))
+    host.execute_single_tool = AsyncMock(return_value=returned)
+    host._evidence_context.verify_delivery = AsyncMock(wraps=host._evidence_context.verify_delivery)
+    host._resolve_llm_client_for = AsyncMock(side_effect=AssertionError("unexpected model preflight"))
+    host._evidence_context.prepare = AsyncMock(side_effect=AssertionError("unexpected context budget"))
+    host._evidence_context.prepare_model = AsyncMock(side_effect=AssertionError("unexpected model admission"))
+    skill = CurrentSkill(slug="synthetic-evidence-alias", name="Synthetic command alias",
+        instructions="Run the synthetic alias instead of source inspection.", applies_to=("always",),
+        command="evidence", enabled=True, skill_id="synthetic-skill", revision=1)
+    assert "Synthetic command alias" in slash_commands.expand_message("/evidence usage", {"evidence": skill})
+    facade = SimpleNamespace(list=AsyncMock(return_value=[skill]))
+    catalog = MagicMock(return_value=facade if alias else None)
+    monkeypatch.setattr(user_skills, "store_for", catalog)
+    expand = MagicMock(wraps=slash_commands.expand_message)
+    monkeypatch.setattr(slash_commands, "expand_message", expand)
+
+    await host._handle_chat_message_impl(state.socket, "/evidence usage", "conversation", user_id="alice")
+
+    host.execute_single_tool.assert_awaited_once()
+    args, kwargs = host.execute_single_tool.await_args
+    assert args[0] is state.socket and args[2:] == ({"context_usage": "evidence-1"}, "conversation")
+    assert args[1].function.name == "context_usage" and json.loads(args[1].function.arguments) == {}
+    assert kwargs == {"user_id": "alice"}
+    expand.assert_not_called()
+    catalog.assert_not_called()
+    facade.list.assert_not_awaited()
+    host._resolve_llm_client_for.assert_not_awaited()
+    host._evidence_context.prepare.assert_not_awaited()
+    host._evidence_context.prepare_model.assert_not_awaited()
+    host._evidence_context.verify_delivery.assert_awaited_once()
+    assert host._append_conversation_message.await_count == 1
+    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
+    assert host._append_conversation_message.await_args.kwargs["content"] == "/evidence usage"
+    assert host._rendered_ui[-1]["components"] == returned.ui_components
+    assert not state.provider.completions.calls and not state.provider.events
+
+
+@pytest.mark.parametrize("message", ["/evidence", "/evidence invalid", "/evidence usage extra",
+                                      "/evidence recall obs_short", "/evidence delete obs_short"])
+async def test_default_slash_malformed_evidence_command_blocks_before_any_expansion(monkeypatch, message):
+    default_slash_controls(monkeypatch)
+    state = conversation_host([])
+    host = state.host
+    host.execute_single_tool = AsyncMock()
+    host._evidence_context.verify_delivery = AsyncMock(wraps=host._evidence_context.verify_delivery)
+    host._resolve_llm_client_for = AsyncMock(side_effect=AssertionError("unexpected model preflight"))
+    host._evidence_context.prepare = AsyncMock(side_effect=AssertionError("unexpected context budget"))
+    expand = MagicMock(wraps=slash_commands.expand_message)
+    catalog = MagicMock(return_value=None)
+    monkeypatch.setattr(slash_commands, "expand_message", expand)
+    monkeypatch.setattr(user_skills, "store_for", catalog)
+
+    await host._handle_chat_message_impl(state.socket, message, "conversation", user_id="alice")
+
+    expand.assert_not_called()
+    catalog.assert_not_called()
+    host.execute_single_tool.assert_not_awaited()
+    host._resolve_llm_client_for.assert_not_awaited()
+    host._evidence_context.prepare.assert_not_awaited()
+    host._evidence_context.verify_delivery.assert_not_awaited()
+    assert host._rendered_ui[-1]["components"] == evidence_components(state="blocked")
+    assert host._append_conversation_message.await_count == 1
+    assert host._append_conversation_message.await_args.kwargs["role"] == "user"
+    assert host._append_conversation_message.await_args.kwargs["content"] == message
+    assert not state.provider.completions.calls and not state.provider.events
+
+
+async def test_default_slash_disabled_evidence_without_cached_service_preserves_expansion(monkeypatch):
+    default_slash_controls(monkeypatch, evidence=False)
+    state = conversation_host([response("Synthetic ordinary command response")])
+    host = state.host
+    del host._evidence_context
+    message = "/evidence usage"
+    expanded = slash_commands.expand_message(message)
+    expand = MagicMock(wraps=slash_commands.expand_message)
+    monkeypatch.setattr(slash_commands, "expand_message", expand)
+    host.execute_single_tool = AsyncMock()
+
+    await host._handle_chat_message_impl(state.socket, message, "conversation", user_id="alice")
+
+    expand.assert_called_once_with(message, {})
+    host.execute_single_tool.assert_not_awaited()
+    assert len(state.provider.completions.calls) == 1
+    assert state.provider.completions.calls[0]["messages"][-1] == {"role": "user", "content": expanded}
+    assert host._append_conversation_message.await_count == 2
+    first = host._append_conversation_message.await_args_list[0].kwargs
+    assert first["role"] == "user" and first["content"] == message
+    assert not hasattr(host, "_evidence_context") and not state.provider.events
 
 
 def complete_history():

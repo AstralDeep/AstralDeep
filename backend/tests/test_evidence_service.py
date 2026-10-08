@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from agents.evidence.evidence_agent import EvidenceAgent
 from audit.schemas import AuditEventDTO
 from llm_config.audit_events import record_llm_call
 from llm_config.types import CredentialSource, ResolvedConfig
@@ -60,6 +61,8 @@ class Clock:
 async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
     monkeypatch.setitem(flags._flags, "observation_packing", True)
     monkeypatch.setitem(flags._flags, "safe_compaction", False)
+    monkeypatch.setitem(flags._flags, "inprocess_agents", True)
+    monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "evidence-agent.pem"))
     monkeypatch.setenv("FF_POLICY_ENGINE", "false")
     monkeypatch.setenv("POLICY_RULES", "[]")
     gate = PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: []))
@@ -73,6 +76,10 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         host.cancelled_sessions = {}
         host.agent_cards[AGENT] = AgentCard("Reader", "Reads authorized sources", AGENT,
             skills=[AgentSkill("Read source", "Reads one source", TOOL, scope="tools:read")])
+        adapter = EvidenceAgent(host, port=0)
+        host.local_agents = getattr(host, "local_agents", {})
+        host.local_agents[adapter.agent_id] = adapter
+        host.agent_cards[adapter.agent_id] = adapter.card
         host._policy_roles = lambda _: ["user"]
         host._hitl_pending_calls = {}
         host._dispatch_context = {}
@@ -100,10 +107,11 @@ async def evidence_turn(human, bound, fixture, tmp_path, monkeypatch):
         monkeypatch.setenv("ASTRAL_OBSERVATION_POLICY", str(policy_path))
         archive = EvidenceArchive(clock=clock, monotonic_clock=clock.monotonic)
         evidence = module.EvidenceContext(host, archive=archive, clock=clock)
+        host._evidence_context = evidence
         lease = await capture_context_authority(orchestrator=host, websocket=socket, chat_id=chat)
         state = SimpleNamespace(host=host, socket=socket, chat=chat, owner=fixture[1], binding=binding,
             evidence=evidence, archive=archive, clock=clock, policy=policy_path, calls=calls,
-            releases=releases, notices=notices, phi_gate=gate, lease=lease)
+            releases=releases, notices=notices, phi_gate=gate, lease=lease, adapter=adapter)
         try:
             with use_context_authority(lease):
                 yield state
