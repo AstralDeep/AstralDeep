@@ -241,6 +241,18 @@ class AstralClient:
     def get_artifact(self, operation_id: str) -> Artifact:
         return Artifact.from_dict(self._call_tool("astral_get_artifact", {"operation_id": operation_id}))
 
+    def emergency_status(self) -> dict[str, Any]:
+        return self._call_tool("astral_emergency_status", {})
+
+    def emergency_stop(self, *, reason: Optional[str] = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {}
+        if reason is not None:
+            arguments["reason"] = reason
+        return self._call_tool("astral_emergency_stop", arguments)
+
+    def emergency_resume(self, *, expected_revision: int) -> dict[str, Any]:
+        return self._call_tool("astral_emergency_resume", {"expected_revision": expected_revision})
+
     def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                           timeout_seconds: Optional[float] = None) -> Operation:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -365,6 +377,18 @@ class AsyncAstralClient:
     async def get_artifact(self, operation_id: str) -> Artifact:
         result = await self._call_tool("astral_get_artifact", {"operation_id": operation_id})
         return Artifact.from_dict(result)
+
+    async def emergency_status(self) -> dict[str, Any]:
+        return await self._call_tool("astral_emergency_status", {})
+
+    async def emergency_stop(self, *, reason: Optional[str] = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {}
+        if reason is not None:
+            arguments["reason"] = reason
+        return await self._call_tool("astral_emergency_stop", arguments)
+
+    async def emergency_resume(self, *, expected_revision: int) -> dict[str, Any]:
+        return await self._call_tool("astral_emergency_resume", {"expected_revision": expected_revision})
 
     async def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                                 timeout_seconds: Optional[float] = None) -> Operation:

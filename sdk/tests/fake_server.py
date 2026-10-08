@@ -21,6 +21,9 @@ _SCOPE_FOR_TOOL = {
     "astral_cancel_operation": "operations.control",
     "astral_pause_operation": "operations.control",
     "astral_get_artifact": "artifacts.read",
+    "astral_emergency_status": "operations.read",
+    "astral_emergency_stop": "operations.control",
+    "astral_emergency_resume": "operations.control",
 }
 
 
@@ -33,6 +36,8 @@ class FakeAstralState:
         self.by_key: dict[str, str] = {}
         self.fail_next_n: int = 0
         self.requests: list[dict[str, Any]] = []
+        self.stop_engaged: bool = False
+        self.stop_revision: int = 0
 
 
 def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
@@ -191,6 +196,38 @@ class _Handler(BaseHTTPRequestHandler):
     def _tool_astral_get_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         op = self._tool_astral_get_operation(arguments)
         return {"id": op["id"], "revision": op["revision"], "result": {"text": "synthetic result"}}
+
+    def _tool_astral_emergency_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            engaged = self.state.stop_engaged
+            revision = self.state.stop_revision
+        if not engaged:
+            return {"engaged": False, "state": "running", "revision": revision,
+                    "engaged_at": None, "engaged_by": None, "reason": None, "responders": []}
+        return {"engaged": True, "state": "stopped", "revision": revision,
+                "engaged_at": "2026-01-01T00:00:00+00:00", "engaged_by": "owner",
+                "reason": None,
+                "responders": [{"responder": "local.orchestrator", "kind": "local",
+                                "state": "acknowledged", "updated_at": 0}]}
+
+    def _tool_astral_emergency_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            if self.state.stop_engaged:
+                revision = self.state.stop_revision
+            else:
+                self.state.stop_engaged = True
+                self.state.stop_revision += 1
+                revision = self.state.stop_revision
+        return self._tool_astral_emergency_status({}) | {"revision": revision}
+
+    def _tool_astral_emergency_resume(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            if not self.state.stop_engaged:
+                raise _ToolError("emergency_stop_not_engaged")
+            if self.state.stop_revision != arguments["expected_revision"]:
+                raise _ToolError("emergency_stop_stale_revision")
+            self.state.stop_engaged = False
+        return self._tool_astral_emergency_status({})
 
 
 class _ToolError(Exception):

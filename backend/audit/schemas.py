@@ -44,6 +44,7 @@ EVENT_CLASSES = (
     "typesafe_credential",
     "typesafe",
     "llm_data_sharing",
+    "emergency_stop",
 )
 
 OUTCOMES = ("in_progress", "success", "failure", "interrupted")

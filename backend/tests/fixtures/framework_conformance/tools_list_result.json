@@ -1,20 +1,32 @@
 {
-  "cacheScope": "private",
-  "resultType": "complete",
   "tools": [
     {
-      "_meta": {
-        "astral/agentId": "__work__",
-        "astral/requiredScope": "operations.submit"
-      },
-      "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": false
-      },
+      "name": "astral_submit_operation",
       "description": "Submit one chat-kind Work operation for the credential's owner.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": [
+          "idempotency_key",
+          "name",
+          "instructions"
+        ],
         "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Client-chosen key; a repeat call with the SAME key and content returns the original operation unchanged."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "instructions": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
           "conversation_id": {
             "type": [
               "string",
@@ -22,216 +34,270 @@
             ]
           },
           "deadline_in_seconds": {
-            "maximum": 86400,
+            "type": "integer",
             "minimum": 1,
-            "type": "integer"
-          },
-          "idempotency_key": {
-            "description": "Client-chosen key; a repeat call with the SAME key and content returns the original operation unchanged.",
-            "maxLength": 256,
-            "minLength": 1,
-            "type": "string"
-          },
-          "instructions": {
-            "maxLength": 4096,
-            "minLength": 1,
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "type": "string"
+            "maximum": 86400
           }
         },
-        "required": [
-          "idempotency_key",
-          "name",
-          "instructions"
-        ],
-        "type": "object"
-      },
-      "name": "astral_submit_operation"
-    },
-    {
-      "_meta": {
-        "astral/agentId": "__work__",
-        "astral/requiredScope": "operations.read"
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
       "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": true
+        "readOnlyHint": false,
+        "destructiveHint": false
       },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.submit"
+      }
+    },
+    {
+      "name": "astral_get_operation",
       "description": "Read one Work operation's current status.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "operation_id": {
-            "description": "The operation id returned by astral_submit_operation.",
-            "type": "string"
-          }
-        },
+        "type": "object",
         "required": [
           "operation_id"
         ],
-        "type": "object"
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "description": "The operation id returned by astral_submit_operation."
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
-      "name": "astral_get_operation"
-    },
-    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "_meta": {
         "astral/agentId": "__work__",
         "astral/requiredScope": "operations.read"
-      },
-      "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": true
-      },
+      }
+    },
+    {
+      "name": "astral_list_operations",
       "description": "List the credential owner's recent Work operations.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
         "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
           "after_id": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "limit": {
-            "maximum": 100,
-            "minimum": 1,
-            "type": "integer"
           }
         },
-        "type": "object"
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
-      "name": "astral_list_operations"
-    },
-    {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
       "_meta": {
         "astral/agentId": "__work__",
         "astral/requiredScope": "operations.read"
-      },
-      "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": true
-      },
+      }
+    },
+    {
+      "name": "astral_get_operation_events",
       "description": "Poll one Work operation for a revision change.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": [
+          "operation_id"
+        ],
         "properties": {
+          "operation_id": {
+            "type": "string",
+            "description": "The operation id returned by astral_submit_operation."
+          },
           "after_revision": {
             "type": [
               "integer",
               "null"
             ]
-          },
-          "operation_id": {
-            "description": "The operation id returned by astral_submit_operation.",
-            "type": "string"
           }
         },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.read"
+      }
+    },
+    {
+      "name": "astral_cancel_operation",
+      "description": "Cancel one Work operation.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "description": "The operation id returned by astral_submit_operation."
+          },
+          "submission_id": {
+            "type": "string",
+            "description": "A fresh UUID4 per attempt."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.control"
+      }
+    },
+    {
+      "name": "astral_pause_operation",
+      "description": "Pause one Work operation.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "description": "The operation id returned by astral_submit_operation."
+          },
+          "submission_id": {
+            "type": "string",
+            "description": "A fresh UUID4 per attempt."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.control"
+      }
+    },
+    {
+      "name": "astral_get_artifact",
+      "description": "Read one Work operation's retained result.",
+      "inputSchema": {
+        "type": "object",
         "required": [
           "operation_id"
         ],
-        "type": "object"
-      },
-      "name": "astral_get_operation_events"
-    },
-    {
-      "_meta": {
-        "astral/agentId": "__work__",
-        "astral/requiredScope": "operations.control"
-      },
-      "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": false
-      },
-      "description": "Cancel one Work operation.",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
-          "expected_revision": {
-            "minimum": 1,
-            "type": "integer"
-          },
           "operation_id": {
-            "description": "The operation id returned by astral_submit_operation.",
-            "type": "string"
-          },
-          "submission_id": {
-            "description": "A fresh UUID4 per attempt.",
-            "type": "string"
+            "type": "string",
+            "description": "The operation id returned by astral_submit_operation."
           }
         },
-        "required": [
-          "operation_id",
-          "submission_id",
-          "expected_revision"
-        ],
-        "type": "object"
-      },
-      "name": "astral_cancel_operation"
-    },
-    {
-      "_meta": {
-        "astral/agentId": "__work__",
-        "astral/requiredScope": "operations.control"
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
       "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": false
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
-      "description": "Pause one Work operation.",
-      "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "properties": {
-          "expected_revision": {
-            "minimum": 1,
-            "type": "integer"
-          },
-          "operation_id": {
-            "description": "The operation id returned by astral_submit_operation.",
-            "type": "string"
-          },
-          "submission_id": {
-            "description": "A fresh UUID4 per attempt.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "operation_id",
-          "submission_id",
-          "expected_revision"
-        ],
-        "type": "object"
-      },
-      "name": "astral_pause_operation"
-    },
-    {
       "_meta": {
         "astral/agentId": "__work__",
         "astral/requiredScope": "artifacts.read"
+      }
+    },
+    {
+      "name": "astral_emergency_status",
+      "description": "Read the credential owner's emergency stop status: running, stopped, partially acknowledged, or unreachable responders.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
       "annotations": {
-        "destructiveHint": false,
-        "readOnlyHint": true
+        "readOnlyHint": true,
+        "destructiveHint": false
       },
-      "description": "Read one Work operation's retained result.",
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.read"
+      }
+    },
+    {
+      "name": "astral_emergency_stop",
+      "description": "Engage the owner's emergency stop: refuse new tool admission, agent dispatch, scheduled turns, and remote execution until an explicit resume.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
         "properties": {
-          "operation_id": {
-            "description": "The operation id returned by astral_submit_operation.",
-            "type": "string"
+          "reason": {
+            "type": "string",
+            "maxLength": 280
           }
         },
-        "required": [
-          "operation_id"
-        ],
-        "type": "object"
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
       },
-      "name": "astral_get_artifact"
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.control"
+      }
+    },
+    {
+      "name": "astral_emergency_resume",
+      "description": "Explicitly resume after an emergency stop; requires the current stop revision and the engaging owner's credential.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false
+      },
+      "_meta": {
+        "astral/agentId": "__work__",
+        "astral/requiredScope": "operations.control"
+      }
     }
   ],
+  "cacheScope": "private",
+  "resultType": "complete",
   "ttlMs": 60000
 }

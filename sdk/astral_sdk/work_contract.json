@@ -7,7 +7,10 @@
     "astral_get_operation_events",
     "astral_cancel_operation",
     "astral_pause_operation",
-    "astral_get_artifact"
+    "astral_get_artifact",
+    "astral_emergency_status",
+    "astral_emergency_stop",
+    "astral_emergency_resume"
   ],
   "framework_credential_scopes": [
     "agents.read",
@@ -119,6 +122,51 @@
           "submission_id",
           "expected_revision"
         ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
+    },
+    "astral_emergency_resume": {
+      "description": "Explicitly resume after an emergency stop; requires the current stop revision and the engaging owner's credential.",
+      "facade_method": "emergency_resume",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
+    },
+    "astral_emergency_status": {
+      "description": "Read the credential owner's emergency stop status: running, stopped, partially acknowledged, or unreachable responders.",
+      "facade_method": "emergency_status",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "operations.read"
+    },
+    "astral_emergency_stop": {
+      "description": "Engage the owner's emergency stop: refuse new tool admission, agent dispatch, scheduled turns, and remote execution until an explicit resume.",
+      "facade_method": "emergency_stop",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 280,
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "read_only": false,

@@ -84,6 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(result)
     result.add_argument("operation_id")
 
+    status = sub.add_parser("emergency-status", help="Read the emergency stop status")
+    _add_common(status)
+
+    stop = sub.add_parser("emergency-stop", help="Engage the owner emergency stop")
+    _add_common(stop)
+    stop.add_argument("--reason", default=None, help="Optional reason recorded in the audit log")
+
+    resume = sub.add_parser("emergency-resume", help="Explicitly resume after an emergency stop")
+    _add_common(resume)
+    resume.add_argument("--expected-revision", type=int, required=True,
+                        help="Current stop revision from emergency-status")
+
     return parser
 
 
@@ -112,6 +124,12 @@ def run(argv: Optional[list[str]] = None) -> int:
                                            expected_revision=args.expected_revision)
         elif args.command == "result":
             value = client.get_artifact(args.operation_id)
+        elif args.command == "emergency-status":
+            value = client.emergency_status()
+        elif args.command == "emergency-stop":
+            value = client.emergency_stop(reason=args.reason)
+        elif args.command == "emergency-resume":
+            value = client.emergency_resume(expected_revision=args.expected_revision)
         else:  # pragma: no cover
             raise SystemExit(f"unknown command: {args.command}")
     except AstralHTTPError as exc:

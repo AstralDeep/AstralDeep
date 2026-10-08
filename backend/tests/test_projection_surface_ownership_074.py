@@ -33,6 +33,7 @@ HOST_SURFACES = frozenset(
         "personalization",
         "pulse",
         "remote_machines",
+        "safety",
         "saved_results",
         "theme",
         "tour",

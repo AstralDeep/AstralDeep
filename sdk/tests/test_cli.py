@@ -68,3 +68,40 @@ def test_tools_command_lists_available_tools(fake_server):
     assert result.returncode == 0, result.stderr
     names = {tool["name"] for tool in json.loads(result.stdout)}
     assert "astral_submit_operation" in names
+
+
+def test_emergency_status_reports_running_before_a_stop(fake_server):
+    result = _run(fake_server, "emergency-status")
+    assert result.returncode == 0, result.stderr
+    status = json.loads(result.stdout)
+    assert status["engaged"] is False
+    assert status["state"] == "running"
+
+
+def test_emergency_stop_engages_and_status_shows_stopped(fake_server):
+    stopped = _run(fake_server, "emergency-stop", "--reason", "drill")
+    assert stopped.returncode == 0, stopped.stderr
+    engaged = json.loads(stopped.stdout)
+    assert engaged["engaged"] is True
+    assert engaged["state"] == "stopped"
+    revision = engaged["revision"]
+    status = json.loads(_run(fake_server, "emergency-status").stdout)
+    assert status["engaged"] is True and status["revision"] == revision
+
+
+def test_emergency_resume_rejects_a_stale_revision_then_accepts_the_current_one(fake_server):
+    engaged = json.loads(_run(fake_server, "emergency-stop").stdout)
+    stale = _run(fake_server, "emergency-resume", "--expected-revision", str(engaged["revision"] + 5))
+    assert stale.returncode == 1
+    assert json.loads(stale.stderr)["code"] == "emergency_stop_stale_revision"
+    still = json.loads(_run(fake_server, "emergency-status").stdout)
+    assert still["engaged"] is True
+    resumed = _run(fake_server, "emergency-resume", "--expected-revision", str(engaged["revision"]))
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout)["engaged"] is False
+
+
+def test_emergency_resume_without_a_stop_is_refused(fake_server):
+    result = _run(fake_server, "emergency-resume", "--expected-revision", "1")
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["code"] == "emergency_stop_not_engaged"
