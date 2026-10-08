@@ -44,7 +44,10 @@ def timestamp(value: Any) -> Optional[datetime]:
 
 
 def patient_label(record: Dict[str, Any]) -> str:
-    names = [item for item in record.get("name") or [] if isinstance(item, dict)]
+    names = record.get("name")
+    names = [] if names is None else names
+    if not isinstance(names, list) or any(not isinstance(item, dict) for item in names):
+        raise FhirError("FHIR_INVALID_RESPONSE", "The FHIR endpoint returned invalid patient names")
     chosen = next((item for item in names if item.get("use") == "official"), names[0] if names else {})
     given = chosen.get("given")
     parts = [value for value in given if isinstance(value, str)] if isinstance(given, list) else []
@@ -117,10 +120,14 @@ def measurement_values(observation: Dict[str, Any], measure: str) -> List[Dict[s
         if found is None or (measure == "a1c" and found[0] > 100):
             return []
         return [{"label": MEASURES[measure][0], "value": found[0], "unit": found[1]}]
+    component_records = observation.get("component")
+    if component_records is None:
+        return []
+    if not isinstance(component_records, list) or any(not isinstance(item, dict) for item in component_records):
+        raise FhirError("FHIR_INVALID_RESPONSE", "The FHIR endpoint returned invalid blood-pressure components")
     rows = []
     for code, label in (("8480-6", "Systolic blood pressure"), ("8462-4", "Diastolic blood pressure")):
-        components = [item for item in observation.get("component") or [] if isinstance(item, dict)
-                      and code in clinical.loinc_codes(item.get("code"))]
+        components = [item for item in component_records if code in clinical.loinc_codes(item.get("code"))]
         if len(components) != 1:
             return []
         found = quantity(components[0], ("mm[Hg]",))
@@ -219,6 +226,10 @@ def population_parameters(state: Any, counties: Any, pregnant: Any) -> Tuple[Lis
     return params, {"state": code, "counties": selected, "pregnant": pregnant}
 
 
+def county_key(value: str) -> str:
+    return re.sub(r" county$", "", value.strip(), flags=re.IGNORECASE).lower()
+
+
 def population_result(payload: Dict[str, Any], scope: Dict[str, Any]) -> Dict[str, Any]:
     entries = payload.get("parameter")
     if not isinstance(entries, list):
@@ -239,6 +250,7 @@ def population_result(payload: Dict[str, Any], scope: Dict[str, Any]) -> Dict[st
         or not isinstance(data.get("rows"), list) or len(data["rows"]) > ROW_LIMIT
     ):
         raise invalid_population()
+    selected_counties = {county_key(county) for county in scope["counties"]}
     rows, seen = [], set()
     for row in data["rows"]:
         if (
@@ -248,12 +260,13 @@ def population_result(payload: Dict[str, Any], scope: Dict[str, Any]) -> Dict[st
             raise invalid_population()
         county, patients, measured, average = row["county"], row.get("patient_count"), row.get("with_a1c_count"), row.get("average_a1c")
         if (
-            county.lower() in seen or type(patients) is not int or type(measured) is not int
+            county_key(county) in seen or (selected_counties and county_key(county) not in selected_counties)
+            or type(patients) is not int or type(measured) is not int
             or not 0 <= measured <= patients <= 1_000_000
             or (measured == 0 and average is not None)
             or (measured > 0 and (not finite_number(average) or not 0 <= average <= 100))
         ):
             raise invalid_population()
-        seen.add(county.lower())
+        seen.add(county_key(county))
         rows.append({"county": county, "patient_count": patients, "with_a1c_count": measured, "average_a1c": average})
     return {key: data[key] for key in ("query_id", "generated_at", "synthetic", "source", "definition", "scope")} | {"rows": rows}

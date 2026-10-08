@@ -218,6 +218,23 @@ def test_duplicate_blood_pressure_component_is_excluded(patient_fixture):
     assert mcp_tools.patient_measurements(patient="002-1", measure="blood_pressure")["_data"]["measurements"] == []
 
 
+@pytest.mark.parametrize("components", [1, True, "invalid", {}, [None]])
+def test_malformed_blood_pressure_collection_returns_controlled_failure(patient_fixture, components):
+    item = pressure("bp", "002-1", 10, 120, 80, 90)
+    item["component"] = components
+    patient_fixture.resources["Observation"] = [item]
+    response = MCPServer().process_request(MCPRequest(
+        request_id="bad-components", method="tools/call",
+        params={"name": "patient_measurements", "arguments": {"patient": "002-1", "measure": "blood_pressure"}},
+    ))
+    assert response.error["code"] == "FHIR_INVALID_RESPONSE" and response.ui_components is None
+
+
+def test_absent_blood_pressure_components_are_unusable():
+    assert reference.measurement_values({}, "blood_pressure") == []
+    assert reference.measurement_values({"component": []}, "blood_pressure") == []
+
+
 @pytest.mark.parametrize(("subject", "expected"), [
     (f"{BASE}/Patient/002-1", True), ("Patient/002-1", True),
     ("https://eicu-fhir:8080/fhir/Patient/002-1", False), ("//other/Patient/002-1", False),
@@ -280,6 +297,21 @@ def test_malformed_demographics_or_provenance_do_not_invent_labels():
     assert reference.provenance({"meta": {"tag": [{"system": reference.SYNTHETIC_TAG_SYSTEM, "code": {"bad": True}}]}}) == "unverified"
 
 
+@pytest.mark.parametrize("names", [1, True, "Jane", {}, [None]])
+@pytest.mark.parametrize("tool", ["patient_measurements", "query_fhir_records"])
+def test_malformed_patient_names_return_controlled_failure(patient_fixture, names, tool):
+    patient_fixture.resources["Patient"][0]["name"] = names
+    arguments = {"patient": "002-1"} if tool == "patient_measurements" else {"resource_type": "Patient"}
+    response = MCPServer().process_request(MCPRequest(
+        request_id="bad-names", method="tools/call", params={"name": tool, "arguments": arguments},
+    ))
+    assert response.error["code"] == "FHIR_INVALID_RESPONSE" and response.ui_components is None
+
+
+def test_absent_patient_names_fall_back_to_id():
+    assert reference.patient_label({"id": "patient", "name": None}) == "patient"
+
+
 def test_population_query_transports_separate_filters_and_renders_provenance(connected, population_data, monkeypatch):
     population_data["scope"] = {"state": "KY", "counties": ["Wolfe", "Casey"], "pregnant": True}
     serve_population(monkeypatch, connected, population_data)
@@ -300,6 +332,38 @@ def test_population_query_supports_empty_cohorts_and_not_pregnant_filter(connect
     assert result["_data"]["rows"] == []
     assert connected.calls[-1][2]["pregnant"] == ["false"]
     assert "Explicitly not pregnant" in of_type(card_of(result)[1], "hero")[0]["subtitle"]
+
+
+@pytest.mark.parametrize("county", ["Wolfe", "Wolfe County"])
+def test_population_rejects_rows_outside_requested_counties(connected, population_data, monkeypatch, county):
+    population_data["scope"]["counties"] = [county]
+    population_data["rows"] = [population_data["rows"][1]]
+    serve_population(monkeypatch, connected, population_data)
+    response = MCPServer().process_request(MCPRequest(
+        request_id="outside-cohort", method="tools/call",
+        params={"name": "aggregate_a1c", "arguments": {"counties": [county]}},
+    ))
+    assert response.error["code"] == "FHIR_INVALID_RESPONSE" and response.ui_components is None
+
+
+@pytest.mark.parametrize(("requested", "returned"), [
+    ("WOLFE County", "Wolfe"), ("wolfe", "Wolfe County"), (" WOLFE COUNTY ", "wolfe"),
+])
+def test_population_county_matching_uses_runner_normalization(connected, population_data, monkeypatch, requested, returned):
+    population_data["scope"]["counties"] = [requested.strip()]
+    population_data["rows"] = [population_data["rows"][0] | {"county": returned}]
+    serve_population(monkeypatch, connected, population_data)
+    output = mcp_tools.aggregate_a1c(counties=[requested])
+    assert output["_data"]["rows"][0]["county"] == returned
+    assert output["_data"]["scope"]["counties"] == [requested.strip()]
+
+
+def test_population_rejects_duplicate_county_aliases(population_data):
+    row = population_data["rows"][0]
+    population_data["rows"] = [row, row | {"county": "WOLFE County"}]
+    with pytest.raises(FhirError) as error:
+        reference.population_result(population_payload(population_data), EMPTY_SCOPE)
+    assert error.value.code == "FHIR_INVALID_RESPONSE"
 
 
 @pytest.mark.parametrize("arguments", [
