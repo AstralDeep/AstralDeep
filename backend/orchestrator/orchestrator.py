@@ -19121,9 +19121,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> Optional[MCPResponse]:
         import uuid
         import httpx
-        from google.protobuf.json_format import ParseDict, MessageToDict
-        from a2a.types import Message as A2AMessage, Role, Task, Message as A2AMsg
+        from a2a.types import Message as A2AMessage, Role
         from shared.a2a_bridge import make_data_part, a2a_response_to_mcp_response
+        from shared.a2a_codec import (
+            A2ANegotiationError,
+            build_send_message,
+            decode_send_message_result,
+            outbound_headers,
+            resolve_request_interface,
+            validate_jsonrpc_response,
+        )
+        from shared.external_http import DEFAULT_MAX_RESPONSE_BYTES, EgressBlockedError, validate_egress_url
+        from orchestrator.agent_peer_auth import agent_auth_headers, trusted_agent_destination
+        from urllib.parse import urlsplit
 
         request_id = f"a2a_{tool_name}_{_uuid.uuid4().hex}"
 
@@ -19133,7 +19143,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 request_id=request_id,
                 error={"message": f"No A2A endpoint registered for {agent_id}", "retryable": False},
             )
-        a2a_url = base_url if base_url.rstrip("/").endswith("/a2a") else f"{base_url.rstrip('/')}/a2a"
 
         clean_args = (
             dict(wire_arguments)
@@ -19153,26 +19162,41 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             })],
         )
 
-        headers = {"Content-Type": "application/json"}
-        from orchestrator.agent_peer_auth import agent_auth_headers
-        headers.update(agent_auth_headers(base_url))
+        card = (getattr(self, "a2a_agent_cards", None) or {}).get(agent_id)
+        try:
+            interface = resolve_request_interface(card, base_url)
+            allowed_hosts = [urlsplit(base_url).hostname] if trusted_agent_destination(base_url) else None
+            validate_egress_url(interface.url, allowed_private_hosts=allowed_hosts)
+            jsonrpc_payload = build_send_message(interface.version, msg, request_id, tenant=interface.tenant)
+        except (A2ANegotiationError, EgressBlockedError) as exc:
+            logger.error(f"A2A version negotiation failed for {agent_id}: {exc}")
+            return MCPResponse(
+                request_id=request_id,
+                error={"message": str(exc), "retryable": False},
+            )
+
+        headers = {"Content-Type": "application/json", **agent_auth_headers(interface.url)}
         delegation_token = args.get("_delegation_token")
         if delegation_token:
             headers["Authorization"] = f"Bearer {delegation_token}"
-
-        jsonrpc_payload = {
-            "jsonrpc": "2.0",
-            "method": "message/send",
-            "id": request_id,
-            "params": {"message": MessageToDict(msg, preserving_proto_field_name=True)},
-        }
+        headers.update(outbound_headers(interface.version))
 
         try:
             logger.info(f"Sent tool call (A2A): {tool_name} → {agent_id}")
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(a2a_url, json=jsonrpc_payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+                async with client.stream("POST", interface.url, json=jsonrpc_payload, headers=headers) as resp:
+                    resp.raise_for_status()
+                    content = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        if len(content) + len(chunk) > DEFAULT_MAX_RESPONSE_BYTES:
+                            raise A2ANegotiationError("A2A peer response exceeds the permitted size")
+                        content.extend(chunk)
+                    try:
+                        data = json.loads(content)
+                    except (ValueError, UnicodeError) as exc:
+                        raise A2ANegotiationError("A2A peer returned invalid JSON") from exc
+
+            validate_jsonrpc_response(data, request_id)
 
             if "error" in data:
                 err = data["error"] if isinstance(data["error"], dict) else {"message": str(data["error"])}
@@ -19182,28 +19206,30 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
             result = data.get("result")
-            if isinstance(result, dict):
-                try:
-                    return a2a_response_to_mcp_response(ParseDict(result, Task()), request_id)
-                except Exception:
-                    pass
-                try:
-                    return a2a_response_to_mcp_response(ParseDict(result, A2AMsg()), request_id)
-                except Exception:
-                    pass
-                return MCPResponse(request_id=request_id, result=result)
-
-            if result is None:
-                return MCPResponse(
-                    request_id=request_id,
-                    error={"message": "No response from A2A agent", "retryable": True},
-                )
-            return MCPResponse(request_id=request_id, result=str(result))
+            union = decode_send_message_result(interface.version, result)
+            branch = union.WhichOneof("payload")
+            if branch == "task":
+                return a2a_response_to_mcp_response(union.task, request_id)
+            if branch == "message":
+                return a2a_response_to_mcp_response(union.message, request_id)
+            return MCPResponse(
+                request_id=request_id,
+                error={"message": "A2A peer returned neither a task nor a message", "retryable": False},
+            )
 
         except httpx.TimeoutException:
             logger.error(f"A2A tool call timed out: {tool_name}")
             return MCPResponse(request_id=request_id,
                                error={"message": "A2A tool call timed out", "retryable": True})
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.error("A2A peer returned HTTP %s for %s", status, agent_id)
+            return MCPResponse(request_id=request_id,
+                               error={"message": f"A2A peer returned HTTP {status}", "retryable": status == 429 or status >= 500})
+        except A2ANegotiationError as exc:
+            logger.error(f"A2A response negotiation error for {agent_id}: {exc}")
+            return MCPResponse(request_id=request_id,
+                               error={"message": str(exc), "retryable": False})
         except Exception as e:
             logger.error(f"A2A tool execution error: {e}")
             return MCPResponse(request_id=request_id,

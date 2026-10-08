@@ -577,28 +577,15 @@ async def test_execute_via_a2a_carries_the_key_beside_the_delegation_token(monke
 
     captured = {}
 
-    class _Resp:
-        status_code = 200
+    def handler(request):
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"result": {}})
 
-        def json(self):
-            return {"result": {}}
+    real_async_client = httpx.AsyncClient
 
-        def raise_for_status(self):
-            return None
-
-    class _Client:
-        def __init__(self, *a, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            captured["headers"] = dict(headers or {})
-            return _Resp()
+    class _Client(real_async_client):
+        def __init__(self, **kwargs):
+            super().__init__(transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     o = _orch()
@@ -606,5 +593,5 @@ async def test_execute_via_a2a_carries_the_key_beside_the_delegation_token(monke
     await o._execute_via_a2a(
         "fake-agent-1", "do_thing", {"_delegation_token": "tok-123"}
     )
-    assert captured["headers"].get(AGENT_KEY_HEADER) == KEY
-    assert captured["headers"].get("Authorization") == "Bearer tok-123"
+    assert captured["headers"].get(AGENT_KEY_HEADER.lower()) == KEY
+    assert captured["headers"].get("authorization") == "Bearer tok-123"
