@@ -23,6 +23,7 @@ from shared.protocol import MCPRequest, MCPResponse, Message
 from shared.stream_sdk import is_streaming_tool
 
 EXPECTED_TOOLS = {
+    "patient_measurements", "aggregate_a1c",
     "icu_census", "patient_overview", "vital_sign_trends", "laboratory_results", "medication_review", "patient_timeline",
     "query_fhir_records", "fhir_source_status", "watch_icu_activity", "stream_patient_vitals",
 }
@@ -100,8 +101,8 @@ def test_card_describes_the_agent(agent):
     assert (card.agent_id, card.name) == ("fhir-1", "FHIR Clinical Data")
     assert {skill.name for skill in card.skills} == EXPECTED_TOOLS
     assert [example["title"] for example in card.metadata["examples"]] == [
-        "ICU census", "Patient overview", "Vital sign trends", "Live activity"]
-    assert "most concerning vital signs" in card.metadata["examples"][1]["prompt"]
+        "Patient A1C", "Population A1C", "ICU census", "Patient overview", "Vital sign trends", "Live activity"]
+    assert "most concerning vital signs" in card.metadata["examples"][3]["prompt"]
     assert all(example["prompt"] for example in card.metadata["examples"])
     feed = next(skill for skill in card.skills if skill.name == "watch_icu_activity")
     assert feed.metadata["streaming_kind"] == "push" and feed.scope == "tools:read"

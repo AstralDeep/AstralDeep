@@ -4,7 +4,8 @@ This guide covers the fail-closed `FF_FHIR` capability. The in-process agent `fh
 ("FHIR Clinical Data") reads one operator-configured HL7 FHIR R5 server and answers with
 clinical dashboards built from astralprims: an ICU census, patient overviews, vital sign
 trends, laboratory results, medication reviews, timelines, free-form record searches and
-a live activity feed. It never writes clinical data.
+a live activity feed. It also provides separate patient measurement and synthetic population
+query interfaces. It never writes clinical data.
 
 With the flag off (the default) the agent is not registered in-process, not spawned as a
 subprocess and not seeded with permissions; behavior is byte-identical to a build without
@@ -30,7 +31,7 @@ it.
    docker compose exec -T astraldeep python -c 'from shared.feature_flags import flags; print("fhir enabled:", flags.is_enabled("fhir"))'
    ```
 
-The agent then appears in the Agent Directory with four example prompts. Because it is
+The agent then appears in the Agent Directory with six example prompts. Because it is
 read-only it is seeded as a safe public agent while the flag is on, so users do not have
 to enable its tools one by one.
 
@@ -38,6 +39,8 @@ to enable its tools one by one.
 
 | Tool | Scope | What it returns |
 |---|---|---|
+| `patient_measurements` | `tools:read` | Latest usable A1C, glucose or complete blood-pressure panel for one patient, including collection time, source observation and provenance |
+| `aggregate_a1c` | `tools:search` | Synthetic population A1C by county through SQL on FHIR, with cohort and measured-patient counts and calculation provenance |
 | `icu_census` | `tools:read` | Current ICU census, census by unit type, admissions per hour, most recently admitted patients with latest vitals |
 | `patient_overview` | `tools:read` | Demographics, stay, latest vitals, APACHE risk, problems, allergies, key labs, active orders |
 | `vital_sign_trends` | `tools:read` | Heart rate, respiratory rate, SpO2, blood pressure and temperature over time |
@@ -57,6 +60,40 @@ Long windows stay bounded. Trends read at most the 6,000 most recent readings an
 medication review at most the 3,000 most recent charted doses; when the server holds more,
 the card says how many are shown. Charts are thinned to a few hundred points per series in
 a way that keeps each interval's highest and lowest value, so brief spikes stay visible.
+
+## Separate reference interfaces
+
+For patient questions, search `Patient` records using `query_fhir_records` with a `name`
+filter and select the correct FHIR id from the returned names. `patient_measurements`
+accepts that id or an exact MyHealthSafe `DEMO-1001` style identifier. Identifier lookup
+is scoped to `urn:myhealthsafe:demo`; multiple matches are refused. It reads at most 100
+observations using standard search, without depending on `$lastn` or a replay clock.
+Only final, amended or corrected results with valid units, numbers and collection times
+are used. New measurement values require the UCUM system and an accepted UCUM code.
+A1C uses LOINC `4548-4` or `17856-6` in percent; glucose uses `2345-7`, `2339-0` or
+`41653-7` and preserves `mg/dL` or `mmol/L`;
+blood pressure requires systolic and diastolic values from the same panel. Source records
+tagged `urn:astraldeep:sandbox` / `synthetic` are explicitly labeled synthetic; records
+tagged `public-deidentified` are labeled public de-identified, and missing or mixed tags
+are reported without inventing provenance.
+Effective dates are preferred; if only `issued` is present the returned date is explicitly
+labeled as the reporting date field. Timezone-free dates, foreign absolute patient
+references and duplicate blood-pressure components are excluded. Versioned subject
+references are currently excluded rather than inferred.
+
+For population questions, `aggregate_a1c` calls the same configured service's
+`GET /$aggregate-a1c` operation. Inputs are an optional two-letter state code, up to 20
+county names and an optional boolean pregnancy filter. No tool accepts SQL, a service
+URL or credentials. The service runs SQL over official SQL-on-FHIR ViewDefinitions and
+returns a FHIR `Parameters` resource whose single `result` parameter contains a JSON
+summary. The agent validates the query identity, exact scope, synthetic flag, source,
+definition, timestamp and at most 100 county rows before displaying results. The
+calculation uses each patient's latest valid percent A1C and latest explicit pregnancy
+status, excluding missing and incompatible values. Synthetic county results do not
+describe actual Kentucky residents or KHIE data.
+
+The patient card and population card remain separate, with distinct titles and source
+labels. These tools add no durable AstralDeep state, schema change or new dependency.
 
 ## Live streams
 
@@ -125,6 +162,10 @@ timeline and risk views use `Condition`, `Procedure`, `AllergyIntolerance`,
 `RiskAssessment` when present. The live feed needs R5 topic subscriptions with the
 `$events` operation and topics whose ids are `encounter` and `observation`. A
 `$replay-status` operation is optional; without it the agent uses the orchestrator's clock.
+The reference patient measurements need only standard Patient and Observation reads and
+searches. Population A1C additionally needs the bounded `$aggregate-a1c` adapter described
+above. The ICU subscription tool returns an explicit failure when the replacement server
+does not provide its required topics; a conventional reference server is not a replay feed.
 
 ## Rollback
 

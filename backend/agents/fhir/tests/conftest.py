@@ -24,6 +24,17 @@ CATEGORY = "http://terminology.hl7.org/CodeSystem/observation-category"
 TOPIC_BASE = "https://example.org/fhir/SubscriptionTopic"
 
 
+@pytest.fixture(autouse=True)
+def isolated_audit_queue(monkeypatch, tmp_path):
+    from audit import recorder
+
+    path = tmp_path / "pending.jsonl"
+    monkeypatch.setattr(recorder, "_retry_queue_path", lambda: path)
+    existing = recorder.get_recorder()
+    if existing is not None and hasattr(existing, "_retry_path"):
+        monkeypatch.setattr(existing, "_retry_path", path)
+
+
 def at(minutes_ago: float) -> str:
     return (NOW - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds")
 
