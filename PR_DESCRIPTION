@@ -1,0 +1,30 @@
+## Summary
+
+Reconcile and bound the general Cresco bridge contract per Spec 050.
+
+**Changes made:**
+
+1. **`specs/050-cresco-integration-decision/spec.md`** — Reconciled original intent with bounded reality. Explicitly declared T3 (generic bridge) and T4 (mesh admission) as unsupported. Only T1 (GaiaKeep archival) and T2 (bounded wsapi) are in scope.
+
+2. **`specs/050-cresco-integration-decision/tasks.md`** — Added conformance acceptance checks, unsupported-state declarations, and linkage to tracker #242, bounty child #279, and dependency AstralPlane #67.
+
+3. **`backend/shared/feature_flags.py`** — Added four Cresco-tier flags (`CRESO_ARCHIVAL_ENABLED=True`, `CRESO_WSAPI_BOUNDED=True`, `CRESO_BRIDGE_GENERIC=False`, `CRESO_MESH_ADMISSION=False`) plus helper functions `cresco_risk_tier_supported()` and `cresco_unsupported_states()`. All existing stable flags preserved unchanged.
+
+4. **`backend/cresco/contract.py`** (new) — Bounded Cresco bridge contract. Enumerates `CrescoTier` (T1–T4), enforces contract boundary via `reconcile()`, raises `CrescoContractError` for unsupported tiers, exposes `unsupported_states()`.
+
+5. **`backend/cresco/__init__.py`** (new) — Package init exporting the contract API.
+
+6. **`backend/cresco/tests/test_contract.py`** (new) — Full acceptance test suite covering all four conformance checks from issue #279: tier support constants, contract boundary enforcement, feature-flag integration, and deterministic conformance (no runtime activation for unsupported tiers).
+
+**Preserved:**
+- Keycloak/RFC 8693 authentication boundaries
+- Owner/tool/PHI/egress/confirmation and audit boundaries
+- Service keys remain operator-local, grant no mesh admission
+- Python 3.11 compatibility
+
+Closes #279
+/attempt
+/claim #279
+
+Bounty Reward Wallet: 0x96eE7904BdCd8a82c71B4FFc3362C96b1Aae03e0 (Base / EVM)
+<<<END_PR_DESCRIPTION>>>
