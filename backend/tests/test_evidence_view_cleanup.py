@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from orchestrator.context_views import ViewUnavailable
+from orchestrator.context_views import ContextViewStore, ViewDenied, ViewUnavailable
 from tests.test_evidence_service import (
     AGENT, TOOL, bound as bound, events, evidence_turn, fixture as fixture, human as human,
     invoke, pack, runtime as runtime, service as service, signing_key as signing_key,
@@ -149,6 +149,31 @@ async def test_shutdown_emits_once_and_preserves_the_ordinary_source_cleanup(hum
         assert sum(record.action_type == "evidence.shutdown_cleanup" for record in records) == 1
         identities = {record.event_id for record in view_receipts(records)}
         await state.evidence.close()
+        assert {record.event_id for record in view_receipts(await events(state))} == identities
+
+
+@pytest.mark.parametrize("mode", ["sweep", "close"])
+async def test_reset_views_remain_denied_and_emit_content_free_revocation_once(
+    human, bound, fixture, tmp_path, monkeypatch, mode,
+):
+    async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as state:
+        views, captures = await retained_views(state)
+        state.evidence.views = ContextViewStore(clock=state.clock)
+        for reference, _ in views:
+            with pytest.raises(ViewDenied):
+                state.evidence.views.inspect(reference, owner_id=state.owner,
+                    conversation_id=state.chat, audience_id=f"user:{state.owner}")
+            response = await invoke(state, "inspect_context_view", {"view_id": reference})
+            assert response.error["code"] == "evidence_unavailable_or_not_authorized"
+            assert response.result is None and not response.ui_components
+        assert view_receipts(await events(state)) == []
+        await getattr(state.evidence, mode)()
+        assert state.evidence.views.retained_bytes == 0 and state.evidence.views.view_count == 0
+        records = await events(state)
+        assert_content_free_receipts(state, records, views, captures, "view_revocation_cleanup", "unavailable")
+        assert (state.archive.retained_bytes > 0) is (mode == "sweep")
+        identities = {record.event_id for record in view_receipts(records)}
+        await getattr(state.evidence, mode)()
         assert {record.event_id for record in view_receipts(await events(state))} == identities
 
 

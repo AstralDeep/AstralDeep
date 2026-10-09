@@ -23,7 +23,7 @@ from audit.schemas import AuditEventCreate
 from orchestrator.context_presentation import evidence_components, usage_components
 from orchestrator.context_budget import load_budget
 from orchestrator.context_usage import ContextUsage
-from orchestrator.context_views import ContextViewStore, SourceDependency, ViewUnavailable
+from orchestrator.context_views import ContextViewStore, SourceDependency, ViewDenied, ViewUnavailable
 from orchestrator.evidence_archive import (
     EvidenceArchive, EvidenceCaptureError, EvidenceDenied, EvidenceError,
     EvidencePolicyError, EvidenceUnavailable, load_grants, match_grant,
@@ -1330,6 +1330,8 @@ class EvidenceContext:
                 action = "view_expiry_cleanup" if exc.reason == "expired" else "view_revocation_cleanup"
                 reason = "expiry" if exc.reason == "expired" else exc.reason
                 self._retained_views[reference] = (view, action, reason, audit)
+            except ViewDenied:
+                self._retained_views[reference] = (view, "view_revocation_cleanup", "unavailable", audit)
 
     async def _drain_view_cleanup(self):
         self._reconcile_view_cleanup()
