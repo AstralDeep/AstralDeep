@@ -210,6 +210,7 @@ async def test_real_ingress_uses_only_the_new_read_fence_and_requested_transient
     admitted = next(frame for frame in state.frames if str(frame.request_generation) == generation)
     assert admitted.read_only is True and admitted.chat_id == state.chat
     assert len(state.calls) == 1
+    assert "component_id" not in state.calls[0][1]
     with pytest.raises(AssignmentError):
         await state.calls[0][2].verify(orchestrator=state.orch, websocket=state.socket, chat_id=state.chat)
     assert not state.orch._chat_recorders and not state.orch._evidence_navigation
@@ -217,6 +218,24 @@ async def test_real_ingress_uses_only_the_new_read_fence_and_requested_transient
     receipts, _ = await asyncio.to_thread(state.orch.audit_repo.list_for_user, state.owner, limit=200)
     persisted = "".join(receipt.model_dump_json() for receipt in receipts)
     assert TEXT not in persisted and SUMMARY not in persisted
+
+
+@pytest.mark.parametrize("kind", ["source", "preview", "summary", "usage"])
+async def test_rendered_web_reference_accepts_bounded_component_routing(inspection, kind):
+    state = inspection
+    state.orch.rote.get_profile = lambda _: replace(DeviceProfile.default(), device_type=DeviceType.BROWSER)
+    await registered(state)
+    params = ({"view_id": state.view.reference} if kind == "summary" else {"kind": "usage"} if kind == "usage"
+        else {"kind": kind, "reference": state.reference, "offset": 0})
+    generation = request(state, params, payload={"surface": "evidence", "params": params,
+        "component_id": "cc_6edaf77e77716de1561213cd"})
+    result = await terminal(state, generation)
+    assert result["state"] == "completed"
+    assert surfaces(state)[-1]["request_generation"] == generation
+    admitted = next(frame for frame in state.frames if str(frame.request_generation) == generation)
+    assert admitted.read_only is True and admitted.chat_id == state.chat
+    assert len(state.calls) == 1
+    assert "component_id" not in state.calls[0][1]
 
 
 @pytest.mark.parametrize("kind", ["source", "preview", "summary", "usage"])
@@ -591,7 +610,10 @@ async def test_connection_close_scrubs_pending_navigation_without_source_deliver
     assert not surfaces(state)
 
 
-@pytest.mark.parametrize("payload", [None, [], {}, {"surface": "llm"}, {"surface": "evidence", "write": True}])
+@pytest.mark.parametrize("payload", [None, [], {}, {"surface": "llm"}, {"surface": "evidence", "write": True},
+    *({"surface": "evidence", "component_id": value} for value in [None, 1, "cc_short", "cc_" + "a" * 25,
+        "cc_" + "A" * 24, "cc_" + "g" * 24]),
+    {"surface": "evidence", "params": {"kind": "usage", "component_id": "cc_" + "a" * 24}}])
 async def test_surface_payload_has_no_unscoped_or_write_arity(payload):
     with pytest.raises(AssignmentError):
         evidence.validate_payload(payload)

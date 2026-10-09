@@ -27,6 +27,7 @@ HANDLERS = {}
 _REFERENCE = re.compile(r"obs_[A-Za-z0-9_-]{43}")
 _VIEW = re.compile(r"view_[A-Za-z0-9_-]{43}")
 _DIGEST = re.compile(r"[a-f0-9]{64}")
+_COMPONENT_ID = re.compile(r"cc_[a-f0-9]{24}")
 _IDENTITIES = {"submission_id", "request_generation", "connection_generation"}
 
 
@@ -64,7 +65,10 @@ def _params(value):
 
 def validate_payload(payload):
     if (type(payload) is not dict or payload.get("surface") != "evidence"
-            or set(payload) - ({"surface", "params"} | _IDENTITIES)):
+            or set(payload) - ({"surface", "params", "component_id"} | _IDENTITIES)):
+        _refuse()
+    if "component_id" in payload and (type(payload["component_id"]) is not str
+            or not _COMPONENT_ID.fullmatch(payload["component_id"])):
         _refuse()
     return _params(payload.get("params", {}))
 
