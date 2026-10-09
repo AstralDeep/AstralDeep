@@ -1,29 +1,35 @@
 """Fixtures mapping every A2A task state to an explicit MCPResponse outcome, where only a
-completed task reports success, refusals carry the peer's task identity, and a strict local
-peer drives the working-to-completed lifecycle over real HTTP without duplicate effects."""
+completed task reports success, refusals carry a bounded reason with the peer's task identity,
+and a protocol-shaped local peer drives the working-to-completed lifecycle without duplicate
+effects."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 
 from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
-from shared.a2a_bridge import a2a_response_to_mcp_response
+from shared.a2a_bridge import (
+    _A2A_MAX_REASON_CHARS,
+    a2a_response_to_mcp_response,
+    make_data_part,
+)
 
-_NON_COMPLETED_REASONS = {
-    "TASK_STATE_UNSPECIFIED": "Task state is unspecified",
-    "TASK_STATE_SUBMITTED": "Task is pending",
-    "TASK_STATE_WORKING": "Task is still working",
-    "TASK_STATE_INPUT_REQUIRED": "Task requires additional input",
-    "TASK_STATE_AUTH_REQUIRED": "Task requires authorization",
-    "TASK_STATE_CANCELED": "Task was canceled",
-    "TASK_STATE_FAILED": "Task failed",
-    "TASK_STATE_REJECTED": "Task was rejected",
+_NON_COMPLETED_STATES = {
+    "TASK_STATE_UNSPECIFIED": ("Task state is unspecified", False, "unsupported"),
+    "TASK_STATE_SUBMITTED": ("Task is pending", False, "unsupported"),
+    "TASK_STATE_WORKING": ("Task is still working", False, "unsupported"),
+    "TASK_STATE_INPUT_REQUIRED": ("Task requires additional input", False, "unsupported"),
+    "TASK_STATE_AUTH_REQUIRED": ("Task requires authorization", False, "unsupported"),
+    "TASK_STATE_CANCELED": ("Task was canceled", True, "not_applicable"),
+    "TASK_STATE_FAILED": ("Task failed", True, "not_applicable"),
+    "TASK_STATE_REJECTED": ("Task was rejected", True, "not_applicable"),
 }
 
 
@@ -40,23 +46,26 @@ def _task(state, *, status_text=None, artifact_text=None,
 
 
 @pytest.mark.parametrize(
-    ("state_name", "reason"),
-    [*_NON_COMPLETED_REASONS.items(), ("TASK_STATE_COMPLETED", None)],
+    ("state_name", "expected"),
+    [*_NON_COMPLETED_STATES.items(), ("TASK_STATE_COMPLETED", None)],
 )
-def test_every_task_state_maps_to_an_explicit_outcome(state_name, reason):
+def test_every_task_state_maps_to_an_explicit_outcome(state_name, expected):
     task = _task(TaskState.Value(state_name), artifact_text="payload")
     response = a2a_response_to_mcp_response(task, "req-1")
-    if reason is None:
+    if expected is None:
         assert response.error is None
         assert response.result == "payload"
         assert response.result_type == "complete"
         return
+    reason, terminal, continuation = expected
     assert response.result is None
     assert response.ui_components is None
     assert response.error["code"] == -32603
     assert response.error["message"] == reason
     assert response.error["retryable"] is False
     assert response.error["task_state"] == state_name
+    assert response.error["task_terminal"] is terminal
+    assert response.error["continuation"] == continuation
     assert response.error["task_id"] == "task-1"
     assert response.error["context_id"] == "context-1"
 
@@ -74,7 +83,43 @@ def test_peer_status_text_becomes_the_bounded_reason(state_name):
     assert response.result is None
 
 
-@pytest.mark.parametrize("state_name", ["TASK_STATE_CANCELED", "TASK_STATE_REJECTED", "TASK_STATE_WORKING"])
+def test_oversized_peer_status_text_is_truncated_to_the_reason_cap():
+    task = _task(TaskState.TASK_STATE_REJECTED, status_text="untrusted " + "A" * 100_000)
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    assert len(message) <= _A2A_MAX_REASON_CHARS
+    assert message.startswith("untrusted A")
+    assert message.endswith("...")
+
+
+@pytest.mark.parametrize("length", [_A2A_MAX_REASON_CHARS - 1, _A2A_MAX_REASON_CHARS,
+                                    _A2A_MAX_REASON_CHARS + 1])
+def test_reason_length_boundary_is_exact(length):
+    task = _task(TaskState.TASK_STATE_WORKING, status_text="x" * length)
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    if length <= _A2A_MAX_REASON_CHARS:
+        assert message == "x" * length
+        assert not message.endswith("...")
+        return
+    assert len(message) <= _A2A_MAX_REASON_CHARS
+    assert message.endswith("...")
+
+
+def test_control_characters_and_line_breaks_are_flattened_out_of_the_reason():
+    task = _task(TaskState.TASK_STATE_FAILED, status_text="header\r\nX-Injected: 1\x00\x1b[31m")
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    assert message == "header X-Injected: 1 [31m"
+    assert not any(character in message for character in ("\r", "\n", "\x00", "\x1b"))
+
+
+@pytest.mark.parametrize("status_text", ["", "   ", "\r\n\t", "\x00\x1b"])
+def test_blank_peer_status_text_falls_back_to_the_state_default(status_text):
+    task = _task(TaskState.TASK_STATE_INPUT_REQUIRED, status_text=status_text)
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    assert message == "Task requires additional input"
+
+
+@pytest.mark.parametrize("state_name", ["TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
+                                        "TASK_STATE_WORKING"])
 def test_refused_tasks_never_surface_partial_artifacts(state_name):
     task = _task(TaskState.Value(state_name), artifact_text="partial-side-effect")
     response = a2a_response_to_mcp_response(task, "req-1")
@@ -87,6 +132,25 @@ def test_completed_task_still_merges_its_status_message():
     response = a2a_response_to_mcp_response(task, "req-1")
     assert response.error is None
     assert response.result == "final answer"
+
+
+def test_completed_task_collects_data_artifacts_and_ui_components():
+    task = _task(TaskState.TASK_STATE_COMPLETED)
+    task.artifacts.append(Artifact(artifact_id="a-1", parts=[make_data_part({"first": 1})]))
+    task.artifacts.append(Artifact(artifact_id="a-2", parts=[
+        make_data_part({"_ui_components": [{"type": "card"}]})]))
+    response = a2a_response_to_mcp_response(task, "req-1")
+    assert response.error is None
+    assert response.result == {"first": 1}
+    assert response.ui_components == [{"type": "card"}]
+
+
+def test_completed_task_keeps_the_last_data_artifact_as_the_result():
+    task = _task(TaskState.TASK_STATE_COMPLETED)
+    task.artifacts.append(Artifact(artifact_id="a-1", parts=[make_data_part({"first": 1})]))
+    task.artifacts.append(Artifact(artifact_id="a-2", parts=[make_data_part({"second": 2})]))
+    response = a2a_response_to_mcp_response(task, "req-1")
+    assert response.result == {"second": 2}
 
 
 def test_failed_task_keeps_its_default_reason_without_status_text():
@@ -103,6 +167,8 @@ def test_task_without_status_fails_closed_before_completion():
     assert response.result is None
     assert response.error["task_state"] == "TASK_STATE_UNSPECIFIED"
     assert response.error["retryable"] is False
+    assert response.error["task_terminal"] is False
+    assert response.error["continuation"] == "unsupported"
 
 
 def test_unknown_numeric_state_fails_closed_with_the_raw_value():
@@ -112,6 +178,8 @@ def test_unknown_numeric_state_fails_closed_with_the_raw_value():
     assert response.error["task_state"] == "99"
     assert response.error["message"] == "Task did not complete"
     assert response.error["retryable"] is False
+    assert response.error["task_terminal"] is False
+    assert response.error["continuation"] == "unsupported"
 
 
 def test_refusals_omit_absent_identity_fields():
@@ -130,9 +198,13 @@ def test_message_response_still_maps_to_a_result():
 
 
 class _StrictTaskPeer:
-    def __init__(self):
+    def __init__(self, mode="complete"):
+        self.mode = mode
         self.executions = 0
-        self.requests = []
+        self.message_sends = 0
+        self.task_gets = 0
+        self.errors = []
+        self.completed = False
         self.output = None
         self.task_id = "peer-task-1"
         self.context_id = "peer-context-1"
@@ -142,14 +214,23 @@ class _StrictTaskPeer:
         class _Handler(BaseHTTPRequestHandler):
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
-                payload = json.loads(raw)
-                peer.requests.append(payload)
-                body = json.dumps(peer._task_response(payload)).encode()
+                try:
+                    payload = json.loads(raw)
+                    body = peer._dispatch(payload)
+                except Exception as exc:
+                    peer.errors.append(repr(exc))
+                    body = {"jsonrpc": "2.0", "id": None,
+                            "error": {"code": -32600, "message": "invalid request"}}
+                    self.send_response(400)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                encoded = json.dumps(body).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(len(encoded)))
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(encoded)
 
             def log_message(self, format, *args):
                 pass
@@ -159,62 +240,171 @@ class _StrictTaskPeer:
         self._thread.start()
         self.base_url = f"http://127.0.0.1:{self._server.server_port}"
 
-    def _task_response(self, payload):
-        assert payload["method"] == "message/send"
-        message = payload["params"]["message"]
-        data = next(part["data"] for part in message["parts"] if "data" in part)
-        assert data["method"] == "tools/call"
-        key = data["arguments"]["idempotency_key"]
-        if key not in self._executed_keys:
-            self._executed_keys.add(key)
-            self.executions += 1
-        if self.output is None:
-            result = {
-                "id": self.task_id,
-                "context_id": self.context_id,
-                "status": {"state": "TASK_STATE_WORKING"},
-                "artifacts": [{"artifact_id": "partial-1", "parts": [{"text": "partial output"}]}],
-            }
-        else:
-            result = {
-                "id": self.task_id,
-                "context_id": self.context_id,
-                "status": {"state": "TASK_STATE_COMPLETED"},
-                "artifacts": [{"artifact_id": "final-1", "parts": [{"text": self.output}]}],
-            }
-        return {"jsonrpc": "2.0", "id": payload["id"], "result": result}
+    def _task_payload(self, state, artifact_text=None):
+        payload = {"id": self.task_id, "context_id": self.context_id,
+                   "status": {"state": state}}
+        if artifact_text is not None:
+            payload["artifacts"] = [{"artifact_id": "final-1",
+                                     "parts": [{"text": artifact_text}]}]
+        return payload
+
+    def _dispatch(self, payload):
+        method = payload.get("method")
+        params = payload.get("params") or {}
+        if method == "message/send":
+            self.message_sends += 1
+            message = params["message"]
+            data = next(part["data"] for part in message["parts"] if "data" in part)
+            assert data["method"] == "tools/call"
+            key = data["arguments"]["idempotency_key"]
+            if key not in self._executed_keys:
+                self._executed_keys.add(key)
+                self.executions += 1
+            blocking = (params.get("configuration") or {}).get("blocking", True)
+            if not blocking:
+                result = self._task_payload("TASK_STATE_WORKING")
+            elif self.mode == "complete":
+                self.completed = True
+                self.output = "final output"
+                result = self._task_payload("TASK_STATE_COMPLETED", self.output)
+            else:
+                result = self._task_payload("TASK_STATE_INPUT_REQUIRED")
+                result["status"]["message"] = {
+                    "message_id": "peer-msg-1", "role": "ROLE_AGENT",
+                    "parts": [{"text": "provide a patient id"}]}
+            return {"jsonrpc": "2.0", "id": payload["id"], "result": result}
+        if method == "tasks/get":
+            self.task_gets += 1
+            queried = params["id"]
+            assert queried == self.task_id
+            if self.completed:
+                return {"jsonrpc": "2.0", "id": payload["id"],
+                        "result": self._task_payload("TASK_STATE_COMPLETED", self.output)}
+            return {"jsonrpc": "2.0", "id": payload["id"],
+                    "result": self._task_payload("TASK_STATE_WORKING")}
+        raise AssertionError(f"unsupported method: {method}")
+
+    def call(self, method, params):
+        body = json.dumps({"jsonrpc": "2.0", "id": "client-1", "method": method,
+                           "params": params}).encode()
+        request = urllib.request.Request(
+            f"{self.base_url}/a2a", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.load(response)["result"]
 
     def close(self):
         self._server.shutdown()
         self._server.server_close()
 
 
-def test_strict_peer_working_then_completed_drives_one_physical_effect(monkeypatch):
+def _orchestrator_toward(peer):
+    from orchestrator.orchestrator import Orchestrator
+
+    orchestrator = SimpleNamespace(a2a_clients={"remote-1": peer.base_url}, agent_urls={})
+    orchestrator._a2a_wire_arguments = Orchestrator._a2a_wire_arguments
+    return orchestrator
+
+
+def _tool_args():
+    return {"idempotency_key": "key-1", "name": "draft_report", "instructions": "write"}
+
+
+def test_strict_peer_completes_a_blocking_request_without_duplicate_effect(monkeypatch):
     from orchestrator.orchestrator import Orchestrator
 
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    peer = _StrictTaskPeer()
+    peer = _StrictTaskPeer(mode="complete")
     try:
-        orchestrator = SimpleNamespace(a2a_clients={"remote-1": peer.base_url}, agent_urls={})
-        orchestrator._a2a_wire_arguments = Orchestrator._a2a_wire_arguments
-        args = {"idempotency_key": "key-1", "name": "draft_report", "instructions": "write"}
-
-        first = asyncio.run(Orchestrator._execute_via_a2a(orchestrator, "remote-1", "draft_report", args))
-        assert first.result is None
-        assert first.ui_components is None
-        assert first.error["retryable"] is False
-        assert first.error["task_state"] == "TASK_STATE_WORKING"
-        assert first.error["message"] == "Task is still working"
-        assert first.error["task_id"] == peer.task_id
-        assert first.error["context_id"] == peer.context_id
+        orchestrator = _orchestrator_toward(peer)
+        response = asyncio.run(Orchestrator._execute_via_a2a(
+            orchestrator, "remote-1", "draft_report", _tool_args()))
+        assert response.error is None
+        assert response.result == "final output"
         assert peer.executions == 1
-        assert len(peer.requests) == 1
-
-        peer.output = "final report"
-        second = asyncio.run(Orchestrator._execute_via_a2a(orchestrator, "remote-1", "draft_report", args))
-        assert second.error is None
-        assert second.result == "final report"
-        assert peer.executions == 1
-        assert len(peer.requests) == 2
+        assert peer.message_sends == 1
+        assert peer.errors == []
     finally:
         peer.close()
+
+
+def test_strict_peer_interrupted_request_is_refused_as_unsupported_continuation(monkeypatch):
+    from orchestrator.orchestrator import Orchestrator
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    peer = _StrictTaskPeer(mode="interrupted")
+    try:
+        orchestrator = _orchestrator_toward(peer)
+        response = asyncio.run(Orchestrator._execute_via_a2a(
+            orchestrator, "remote-1", "draft_report", _tool_args()))
+        assert response.result is None
+        assert response.ui_components is None
+        assert response.error["task_state"] == "TASK_STATE_INPUT_REQUIRED"
+        assert response.error["task_terminal"] is False
+        assert response.error["continuation"] == "unsupported"
+        assert response.error["retryable"] is False
+        assert response.error["message"] == "provide a patient id"
+        assert response.error["task_id"] == peer.task_id
+        assert response.error["context_id"] == peer.context_id
+        assert peer.executions == 1
+        assert peer.message_sends == 1
+        assert peer.errors == []
+    finally:
+        peer.close()
+
+
+def test_non_blocking_lifecycle_observes_completion_without_a_second_execution():
+    peer = _StrictTaskPeer(mode="complete")
+    try:
+        started = peer.call("message/send", {
+            "message": {"message_id": "m-1", "role": "ROLE_USER",
+                        "parts": [{"data": {"method": "tools/call", "name": "draft_report",
+                                            "arguments": _tool_args()}}]},
+            "configuration": {"blocking": False}})
+        assert started["status"]["state"] == "TASK_STATE_WORKING"
+        assert started["id"] == peer.task_id
+        assert peer.executions == 1
+        assert peer.message_sends == 1
+
+        peer.completed = True
+        peer.output = "final output"
+        observed = peer.call("tasks/get", {"id": peer.task_id})
+        assert observed["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert observed["artifacts"][0]["parts"][0]["text"] == "final output"
+        assert peer.executions == 1
+        assert peer.message_sends == 1
+        assert peer.task_gets == 1
+        assert peer.errors == []
+    finally:
+        peer.close()
+
+
+def test_working_refusal_is_not_retried_by_the_dispatch_layer(monkeypatch):
+    from orchestrator import hitl_confirmation
+    from orchestrator.orchestrator import Orchestrator
+
+    monkeypatch.setattr(hitl_confirmation, "approved_call", lambda *args, **kwargs: False)
+    working = _task(TaskState.TASK_STATE_WORKING, artifact_text="partial output",
+                    task_id="peer-task-1", context_id="peer-context-1")
+    refusal = a2a_response_to_mcp_response(working, "req-1")
+    attempts = []
+
+    async def _execute_tool_and_wait(agent_id, tool_name, args, **kwargs):
+        attempts.append((agent_id, tool_name))
+        return refusal
+
+    orchestrator = SimpleNamespace(
+        MAX_RETRIES=3,
+        RETRY_BACKOFF=(0.01, 0.01),
+        execute_tool_and_wait=_execute_tool_and_wait,
+        _protected_dispatch_channel=lambda websocket, explicit=None: "dispatch",
+    )
+    result = asyncio.run(Orchestrator._execute_with_retry(
+        orchestrator, None, "remote-1", "draft_report", _tool_args(),
+        max_retries=3, user_id="owner"))
+    assert attempts == [("remote-1", "draft_report")]
+    assert result is refusal
+    assert result.error["retryable"] is False
+    assert result.error["continuation"] == "unsupported"
+    assert result.error["task_id"] == "peer-task-1"
+    assert result.error["context_id"] == "peer-context-1"

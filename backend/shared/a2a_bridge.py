@@ -269,6 +269,24 @@ _A2A_TASK_STATE_REASONS = {
     A2ATaskState.TASK_STATE_REJECTED: "Task was rejected",
 }
 _A2A_UNKNOWN_TASK_STATE_REASON = "Task did not complete"
+_A2A_TERMINAL_TASK_STATES = frozenset(
+    {
+        A2ATaskState.TASK_STATE_FAILED,
+        A2ATaskState.TASK_STATE_CANCELED,
+        A2ATaskState.TASK_STATE_REJECTED,
+    }
+)
+_A2A_MAX_REASON_CHARS = 400
+_A2A_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]+")
+_A2A_CONTINUATION_UNSUPPORTED = "unsupported"
+_A2A_CONTINUATION_NOT_APPLICABLE = "not_applicable"
+
+
+def _bounded_reason(text: str) -> str:
+    flattened = " ".join(_A2A_CONTROL_CHARACTERS.sub(" ", text).split())
+    if len(flattened) <= _A2A_MAX_REASON_CHARS:
+        return flattened
+    return flattened[: _A2A_MAX_REASON_CHARS - 3].rstrip() + "..."
 
 
 def _task_state(task: A2ATask) -> int:
@@ -287,16 +305,23 @@ def _task_state_reason(task: A2ATask, state: int) -> str:
         for p in task.status.message.parts:
             t = part_text(p)
             if t is not None:
-                return t
+                bounded = _bounded_reason(t)
+                if bounded:
+                    return bounded
     return _A2A_TASK_STATE_REASONS.get(state, _A2A_UNKNOWN_TASK_STATE_REASON)
 
 
 def _unfinished_task_response(task: A2ATask, request_id: str, state: int) -> MCPResponse:
+    terminal = state in _A2A_TERMINAL_TASK_STATES
     error: Dict[str, Any] = {
         "code": -32603,
         "message": _task_state_reason(task, state),
         "retryable": False,
         "task_state": _task_state_name(state),
+        "task_terminal": terminal,
+        "continuation": (
+            _A2A_CONTINUATION_NOT_APPLICABLE if terminal else _A2A_CONTINUATION_UNSUPPORTED
+        ),
     }
     if task.id:
         error["task_id"] = task.id
