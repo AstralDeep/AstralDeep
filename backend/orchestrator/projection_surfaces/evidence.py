@@ -230,40 +230,42 @@ async def deliver(orch, websocket, user_id, payload, request_generation):
                 service = get_context(orch)
                 if type(service) is not EvidenceContext:
                     _refuse()
-                call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
-                response = await orch.execute_single_tool(websocket, call, {name: "evidence-1"},
-                    token.chat_id, user_id=caller.owner_id)
-                token.assert_current(orch, websocket, caller, request_generation)
-                await lease.verify(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
-                await caller.verify_delivery()
-                token.assert_current(orch, websocket, caller, request_generation)
-                response = await service.verify_delivery(response, websocket=websocket,
-                    owner=caller.owner_id, chat=token.chat_id)
-                await lease.verify(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
-                token.assert_current(orch, websocket, caller, request_generation)
-                lease.assert_current(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
-                if getattr(orch, "_evidence_context", None) is not service:
-                    _refuse()
-                profile = orch.rote.get_profile(websocket)
-                device = getattr(profile.device_type, "value", str(profile.device_type))
-                components = (_watch_components(response, arguments, kind) if device == "watch"
-                    else _components(response, arguments, kind))
-                if device in {"browser", "mobile", "tablet"}:
-                    frame = ChromeRender(html=render_modal_shell(TITLE, render(components, profile), "evidence"),
-                        surface_key="evidence", request_generation=request_generation).to_json()
-                else:
-                    adapted = ComponentAdapter.adapt(components, profile)
-                    frame = ChromeSurface(surface_key="evidence", title=TITLE, components=adapted,
-                        request_generation=request_generation).to_json()
-                token.assert_current(orch, websocket, caller, request_generation)
-                lease.assert_current(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
-                if response is not None and not response.error:
-                    service.assert_delivery_current(response, websocket=websocket,
+                with service.privacy_delivery(websocket=websocket, owner=caller.owner_id,
+                                              chat=token.chat_id, request_generation=request_generation):
+                    call = SimpleNamespace(function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
+                    response = await orch.execute_single_tool(websocket, call, {name: "evidence-1"},
+                        token.chat_id, user_id=caller.owner_id)
+                    token.assert_current(orch, websocket, caller, request_generation)
+                    await lease.verify(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
+                    await caller.verify_delivery()
+                    token.assert_current(orch, websocket, caller, request_generation)
+                    response = await service.verify_delivery(response, websocket=websocket,
                         owner=caller.owner_id, chat=token.chat_id)
-                _note_open_surface(orch, websocket, "evidence")
-                if not await orch._safe_send(websocket, frame):
-                    _refuse()
-                return True
+                    await lease.verify(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
+                    token.assert_current(orch, websocket, caller, request_generation)
+                    lease.assert_current(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
+                    if getattr(orch, "_evidence_context", None) is not service:
+                        _refuse()
+                    profile = orch.rote.get_profile(websocket)
+                    device = getattr(profile.device_type, "value", str(profile.device_type))
+                    components = (_watch_components(response, arguments, kind) if device == "watch"
+                        else _components(response, arguments, kind))
+                    if device in {"browser", "mobile", "tablet"}:
+                        frame = ChromeRender(html=render_modal_shell(TITLE, render(components, profile), "evidence"),
+                            surface_key="evidence", request_generation=request_generation).to_json()
+                    else:
+                        adapted = ComponentAdapter.adapt(components, profile)
+                        frame = ChromeSurface(surface_key="evidence", title=TITLE, components=adapted,
+                            request_generation=request_generation).to_json()
+                    token.assert_current(orch, websocket, caller, request_generation)
+                    lease.assert_current(orchestrator=orch, websocket=websocket, chat_id=token.chat_id)
+                    if response is not None and not response.error:
+                        service.assert_delivery_current(response, websocket=websocket,
+                            owner=caller.owner_id, chat=token.chat_id)
+                    _note_open_surface(orch, websocket, "evidence")
+                    if not await orch._safe_send(websocket, frame):
+                        _refuse()
+                    return True
     finally:
         if origin is not None:
             origin.close()

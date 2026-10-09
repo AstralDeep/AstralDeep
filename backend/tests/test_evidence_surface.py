@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
+import re
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ from persistent_agents.models import AssignmentError
 from rote.capabilities import DeviceProfile, DeviceType
 from shared.feature_flags import flags
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
+from shared import phi_redactor
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_human_socket_authority_088 import socket_request as socket_request
 from tests.test_human_request_authority_088 import (
@@ -236,6 +238,191 @@ async def test_rendered_web_reference_accepts_bounded_component_routing(inspecti
     assert admitted.read_only is True and admitted.chat_id == state.chat
     assert len(state.calls) == 1
     assert "component_id" not in state.calls[0][1]
+
+
+@pytest.mark.parametrize("kind", ["source", "preview", "summary"])
+async def test_one_full_source_privacy_scan_per_fresh_evidence_request(inspection, monkeypatch, kind):
+    state = inspection
+    await registered(state)
+    scans, probes = [], []
+    redact = PHIGate.redact_for_storage
+    prepare = state.orch._authorize_and_prepare
+
+    def counted(gate, text):
+        if text == TEXT:
+            scans.append(True)
+        return redact(gate, text)
+
+    async def prepared(*args, **kwargs):
+        probes.append(True)
+        return await prepare(*args, **kwargs)
+
+    monkeypatch.setattr(PHIGate, "redact_for_storage", counted)
+    monkeypatch.setattr(state.orch, "_authorize_and_prepare", prepared)
+    params = {"view_id": state.view.reference} if kind == "summary" else {"kind": kind, "reference": state.reference}
+    for expected in (1, 2):
+        generation = request(state, params)
+        assert (await terminal(state, generation))["state"] == "completed"
+        assert len(scans) == expected
+        assert surfaces(state)[-1]["request_generation"] == generation
+    assert len(probes) >= 8
+
+
+@pytest.mark.parametrize("change", ["analyzer", "threshold", "entities", "patterns", "redactor"])
+async def test_current_privacy_changes_rescan_after_an_existing_request_proof(inspection, monkeypatch, change):
+    state = inspection
+    await registered(state)
+    gate = phi_gate.get_phi_gate()
+    scans = []
+    redact, audit = PHIGate.redact_for_storage, state.evidence._audit
+
+    def counted(current, text):
+        if text == TEXT:
+            scans.append(True)
+        return redact(current, text)
+
+    async def changed(owner, chat, action, **kwargs):
+        receipt = await audit(owner, chat, action, **kwargs)
+        if action == "recall":
+            assert scans == [True]
+            if change == "analyzer":
+                gate._analyzer = SimpleNamespace(analyze=lambda **_: [])
+            elif change == "threshold":
+                gate._score_threshold = 0.6
+            elif change == "entities":
+                monkeypatch.setattr(phi_gate, "PHI_ENTITIES", [*phi_gate.PHI_ENTITIES, "SYNTHETIC"])
+            elif change == "patterns":
+                monkeypatch.setattr(phi_redactor, "PHI_VALUE_PATTERNS", (
+                    *phi_redactor.PHI_VALUE_PATTERNS, (re.compile("Full permitted source"), "[REDACTED:synthetic]")))
+            else:
+                def replacement(current, text):
+                    return counted(current, text)
+                monkeypatch.setattr(PHIGate, "redact_for_storage", replacement)
+        return receipt
+
+    monkeypatch.setattr(PHIGate, "redact_for_storage", counted)
+    monkeypatch.setattr(state.evidence, "_audit", changed)
+    generation = request(state, {"kind": "source", "reference": state.reference})
+    assert (await terminal(state, generation))["state"] == "completed"
+    assert len(scans) == 2
+    rendered = json.dumps(surfaces(state)[-1])
+    if change == "patterns":
+        assert "Recall blocked" in rendered and TEXT not in rendered
+        assert state.evidence.archive.retained_bytes == 0
+    else:
+        assert "Captured source" in rendered
+
+
+async def test_privacy_proof_closes_for_an_inherited_late_child(inspection, monkeypatch):
+    state = inspection
+    await registered(state)
+    audit = state.evidence._audit
+    release = asyncio.Event()
+    children = []
+    observation = state.evidence._sources[state.reference]
+    grant = state.evidence._grant(state.owner, state.chat, observation.source_agent, observation.source_tool)
+
+    async def late():
+        await release.wait()
+        with pytest.raises(evidence_context.EvidenceDenied):
+            await state.evidence._verify_observation_text(observation, grant)
+
+    async def inherited(owner, chat, action, **kwargs):
+        receipt = await audit(owner, chat, action, **kwargs)
+        if action == "recall":
+            children.append(asyncio.create_task(late()))
+        return receipt
+
+    monkeypatch.setattr(state.evidence, "_audit", inherited)
+    generation = request(state, {"kind": "source", "reference": state.reference})
+    try:
+        assert (await terminal(state, generation))["state"] == "completed"
+    finally:
+        release.set()
+        await asyncio.gather(*children)
+
+
+async def test_privacy_policy_change_during_the_full_scan_cannot_create_a_proof(inspection, monkeypatch):
+    state = inspection
+    await registered(state)
+    redact = PHIGate.redact_for_storage
+
+    def changed(gate, text):
+        screened = redact(gate, text)
+        if text == TEXT:
+            gate._score_threshold = 0.6
+        return screened
+
+    monkeypatch.setattr(PHIGate, "redact_for_storage", changed)
+    generation = request(state, {"kind": "source", "reference": state.reference})
+    assert (await terminal(state, generation))["state"] == "completed"
+    rendered = json.dumps(surfaces(state)[-1])
+    assert "Recall blocked" in rendered and TEXT not in rendered
+    assert state.evidence.archive.retained_bytes == 0
+
+
+async def test_privacy_fingerprint_tracks_presidio_recognizer_and_model_configuration(monkeypatch):
+    pattern = SimpleNamespace(name="synthetic", regex="ORBIT", score=0.5)
+    recognizer = SimpleNamespace(patterns=[pattern], supported_entities=["PERSON"], supported_language="en")
+    model = SimpleNamespace(low_score_entity_names={"ORG", "CITY"})
+    analyzer = SimpleNamespace(analyze=lambda **_: [], registry=SimpleNamespace(recognizers=[recognizer]),
+        nlp_engine=SimpleNamespace(ner_model_configuration=model))
+    gate = PHIGate(analyzer=analyzer)
+    monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
+    initial = evidence_context._privacy_snapshot()[0]
+    model.low_score_entity_names = frozenset({"CITY", "ORG"})
+    assert evidence_context._privacy_snapshot()[0] == initial
+    pattern.score = 0.6
+    changed = evidence_context._privacy_snapshot()[0]
+    assert changed != initial
+    recognizer.supported_entities.append("SYNTHETIC")
+    assert evidence_context._privacy_snapshot()[0] != changed
+    analyzer.nlp_engine.nlp = {"en": object()}
+    loaded = evidence_context._privacy_snapshot()[0]
+    analyzer.nlp_engine.nlp["en"] = object()
+    assert evidence_context._privacy_snapshot()[0] != loaded
+
+
+@pytest.mark.parametrize("invalid", ["unavailable", "registry", "recognizers", "patterns", "set_size",
+    "set_type", "key", "list_size", "string", "object", "depth", "nodes", "bytes", "loaded"])
+async def test_uncanonical_or_over_budget_privacy_configuration_is_denied(monkeypatch, invalid):
+    recognizer = SimpleNamespace(patterns=[])
+    analyzer = SimpleNamespace(analyze=lambda **_: [], registry=SimpleNamespace(recognizers=[recognizer]))
+    gate = PHIGate(analyzer=analyzer)
+    if invalid == "unavailable":
+        gate._analyzer = None
+    elif invalid == "registry":
+        analyzer.registry.recognizers = {}
+    elif invalid == "recognizers":
+        analyzer.registry.recognizers = [recognizer] * 129
+    elif invalid == "patterns":
+        recognizer.patterns = {}
+    elif invalid == "set_size":
+        recognizer.supported_entities = {str(n) for n in range(257)}
+    elif invalid == "set_type":
+        recognizer.supported_entities = {1}
+    elif invalid == "key":
+        analyzer.nlp_engine = SimpleNamespace(models={1: "invalid"})
+    elif invalid == "list_size":
+        analyzer.nlp_engine = SimpleNamespace(models=["invalid"] * 257)
+    elif invalid == "string":
+        recognizer.name = "x" * 16385
+    elif invalid == "object":
+        recognizer.name = object()
+    elif invalid == "depth":
+        nested = "synthetic"
+        for _ in range(9):
+            nested = [nested]
+        analyzer.nlp_engine = SimpleNamespace(models=nested)
+    elif invalid == "nodes":
+        analyzer.nlp_engine = SimpleNamespace(models=[[0] * 256] * 33)
+    elif invalid == "loaded":
+        analyzer.nlp_engine = SimpleNamespace(nlp=[])
+    else:
+        analyzer.nlp_engine = SimpleNamespace(models=["x" * 4096] * 17)
+    monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
+    with pytest.raises(evidence_context.EvidenceDenied):
+        evidence_context._privacy_snapshot()
 
 
 @pytest.mark.parametrize("kind", ["source", "preview", "summary", "usage"])

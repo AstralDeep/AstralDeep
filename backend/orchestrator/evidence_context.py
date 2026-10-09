@@ -8,7 +8,7 @@ import asyncio
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 import hashlib
@@ -34,6 +34,7 @@ from shared.feature_flags import flags
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
 
 _REQUESTER = ContextVar("evidence_host_requester", default=None)
+_PRIVACY_PROOFS = ContextVar("evidence_delivery_privacy_proofs", default=None)
 _REFERENCE = re.compile(r"obs_[A-Za-z0-9_-]{43}")
 _REFERENCE_TOKENS = re.compile(r"(?<![A-Za-z0-9_])obs_[A-Za-z0-9_-]*")
 _SECRET = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~-]+|\b(?:api[_-]?key|password|access[_-]?token|secret)\s*[:=]\s*[^\s,;]{4,}", re.I)
@@ -56,6 +57,47 @@ class _EvidenceDelivery:
     component_digest: str
     state_digest: str
     adapter_binding: tuple | None = None
+
+
+@dataclass(slots=True, repr=False)
+class _PrivacyProofMemo:
+    service: object
+    archive: object
+    websocket: object
+    owner: str
+    chat: str
+    authority: object
+    request_generation: str
+    navigation: object
+    operation_context: dict
+    proofs: set = field(default_factory=set)
+    closed: bool = False
+
+    def current(self, service, observation=None):
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+        from orchestrator.context_authority import current_context_authority
+
+        context = _CONNECTION_OPERATION_CONTEXT.get()
+        if (self.closed or _PRIVACY_PROOFS.get() is not self or service is not self.service
+                or service.archive is not self.archive
+                or getattr(service.orchestrator, "_evidence_context", None) is not service
+                or context is not self.operation_context
+                or str(context.get("request_generation")) != self.request_generation
+                or context.get("evidence_navigation") is not self.navigation
+                or getattr(self.navigation, "closed", True)
+                or getattr(service.orchestrator, "_evidence_navigation", {}).get(id(self.websocket)) is not self.navigation
+                or current_context_authority(orchestrator=service.orchestrator, websocket=self.websocket,
+                                             chat_id=self.chat) is not self.authority
+                or self.authority.owner_id != self.owner):
+            raise EvidenceDenied()
+        self.authority.assert_current(orchestrator=service.orchestrator, websocket=self.websocket, chat_id=self.chat)
+        if observation is not None and (observation.owner_id, observation.conversation_id,
+                                       observation.audience_id) != (self.owner, self.chat, f"user:{self.owner}"):
+            raise EvidenceDenied()
+
+    def close(self):
+        self.closed = True
+        self.proofs.clear()
 
 
 def enabled() -> bool:
@@ -150,6 +192,93 @@ def _digest(value) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
+def _privacy_method(value):
+    return id(getattr(value, "__self__", None)), id(getattr(value, "__func__", value))
+
+
+def _privacy_fields(value, names):
+    fields = {}
+    for name in names:
+        item = getattr(value, name, None)
+        if isinstance(item, (set, frozenset)):
+            if len(item) > 256 or any(type(part) is not str for part in item):
+                raise EvidenceDenied()
+            item = sorted(item)
+        fields[name] = item
+    return fields
+
+
+def _privacy_snapshot():
+    from personalization import phi_gate
+    from shared.phi_redactor import PHI_VALUE_PATTERNS
+
+    gate = phi_gate.get_phi_gate()
+    analyzer, redact = getattr(gate, "_analyzer", None), getattr(gate, "redact_for_storage", None)
+    analyze = getattr(analyzer, "analyze", None)
+    if getattr(gate, "available", None) is not True or not callable(redact) or not callable(analyze):
+        raise EvidenceDenied()
+    registry = getattr(analyzer, "registry", None)
+    recognizers = getattr(registry, "recognizers", [])
+    if type(recognizers) not in (list, tuple) or len(recognizers) > 128:
+        raise EvidenceDenied()
+    records = []
+    for recognizer in recognizers:
+        patterns = getattr(recognizer, "patterns", [])
+        if type(patterns) not in (list, tuple) or len(patterns) > 256:
+            raise EvidenceDenied()
+        records.append({"identity": id(recognizer), "analyze": _privacy_method(getattr(recognizer, "analyze", None)),
+            "validate": _privacy_method(getattr(recognizer, "validate_result", None)),
+            "invalidate": _privacy_method(getattr(recognizer, "invalidate_result", None)),
+            "config": _privacy_fields(recognizer, ("name", "version", "supported_entities", "supported_language",
+                "context", "deny_list", "deny_list_score", "global_regex_flags", "score_thresholds", "_country_code")),
+            "patterns": [{"identity": id(pattern), **_privacy_fields(pattern, ("name", "regex", "score"))}
+                         for pattern in patterns]})
+    enhancer, engine = getattr(analyzer, "context_aware_enhancer", None), getattr(analyzer, "nlp_engine", None)
+    loaded = getattr(engine, "nlp", {})
+    if type(loaded) is not dict or len(loaded) > 128:
+        raise EvidenceDenied()
+    snapshot = {"gate": id(gate), "analyzer": id(analyzer), "available": gate.available,
+        "threshold": getattr(gate, "_score_threshold", None), "analyze": _privacy_method(analyze),
+        "redact": _privacy_method(redact), "contains": _privacy_method(getattr(gate, "contains_phi", None)),
+        "entities": phi_gate.PHI_ENTITIES,
+        "patterns": [(pattern.pattern, pattern.flags, replacement) for pattern, replacement in PHI_VALUE_PATTERNS],
+        "prefilter": [(pattern.pattern, pattern.flags) for pattern in phi_gate._PREFILTER_PATTERNS],
+        "registry": id(registry), "registry_config": _privacy_fields(registry, ("supported_languages", "global_regex_flags")),
+        "recognizers": records, "analyzer_config": _privacy_fields(analyzer, ("supported_languages", "default_score_threshold")),
+        "enhancer": id(enhancer), "enhance": _privacy_method(getattr(enhancer, "enhance_using_context", None)),
+        "enhancer_config": _privacy_fields(enhancer, ("context_similarity_factor", "min_score_with_context_similarity",
+                                                     "context_prefix_count", "context_suffix_count")),
+        "engine": id(engine), "process": _privacy_method(getattr(engine, "process_text", None)),
+        "engine_models": getattr(engine, "models", None),
+        "engine_loaded": {language: id(model) for language, model in loaded.items()},
+        "ner_config": _privacy_fields(getattr(engine, "ner_model_configuration", None),
+            ("labels_to_ignore", "aggregation_strategy", "alignment_mode", "model_to_presidio_entity_mapping",
+             "low_score_entity_names", "low_confidence_score_multiplier", "default_score"))}
+    pending, nodes = [(snapshot, 0)], 0
+    while pending:
+        value, depth = pending.pop()
+        nodes += 1
+        if nodes > 8192 or depth > 8:
+            raise EvidenceDenied()
+        if isinstance(value, dict):
+            if len(value) > 256 or any(type(key) is not str or len(key) > 256 for key in value):
+                raise EvidenceDenied()
+            pending.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, (list, tuple)):
+            if len(value) > 256:
+                raise EvidenceDenied()
+            pending.extend((item, depth + 1) for item in value)
+        elif isinstance(value, str):
+            if len(value) > 16384:
+                raise EvidenceDenied()
+        elif value is not None and not isinstance(value, (bool, int, float)):
+            raise EvidenceDenied()
+    serialized = _json(snapshot)
+    if len(serialized.encode("utf-8")) > 65536:
+        raise EvidenceDenied()
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest(), redact
+
+
 def _public_arguments(args) -> dict:
     return {key: copy.deepcopy(value) for key, value in args.items()
             if type(key) is str and not key.startswith("_") and key not in _SERVER_ARGUMENTS}
@@ -176,6 +305,25 @@ class EvidenceContext:
         self._sources = {}
         self._retained_views = {}
         self._sweep_task = None
+
+    @contextmanager
+    def privacy_delivery(self, *, websocket, owner, chat, request_generation):
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+        from orchestrator.context_authority import current_context_authority
+
+        context = _CONNECTION_OPERATION_CONTEXT.get()
+        if type(context) is not dict or type(request_generation) is not str:
+            raise EvidenceDenied()
+        authority = current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+        memo = _PrivacyProofMemo(self, self.archive, websocket, owner, chat, authority,
+                                request_generation, context.get("evidence_navigation"), context)
+        token = _PRIVACY_PROOFS.set(memo)
+        try:
+            memo.current(self)
+            yield
+        finally:
+            memo.close()
+            _PRIVACY_PROOFS.reset(token)
 
     def _source_states(self, owner, chat):
         states = {}
@@ -250,6 +398,10 @@ class EvidenceContext:
                    "analyzer": id(analyzer), "analyze": id(getattr(analyze, "__func__", analyze)),
                    "redact": id(getattr(redact, "__func__", redact)),
                    "threshold": getattr(privacy_gate, "_score_threshold", None)}
+        memo = _PRIVACY_PROOFS.get()
+        if memo is not None:
+            memo.current(self, observation)
+            privacy["delivery_policy"] = _privacy_snapshot()[0]
         return _digest({"card": card.to_dict(), "security": blocked, "policy": raw,
                         "pending": pending, "privacy": privacy,
                         "claims": {key: value for key, value in session.items() if not key.startswith("_")}})
@@ -341,9 +493,12 @@ class EvidenceContext:
     async def _permitted_text(self, text):
         from personalization.phi_gate import get_phi_gate
 
+        return await self._redact_text(text, get_phi_gate().redact_for_storage)
+
+    async def _redact_text(self, text, redact):
         if type(text) is not str or len(text.encode("utf-8")) > _PRIVACY_BYTES or _SECRET.search(text):
             raise EvidenceCaptureError("evidence_privacy_refused")
-        result = await asyncio.to_thread(get_phi_gate().redact_for_storage, text)
+        result = await asyncio.to_thread(redact, text)
         if (type(result) is not tuple or len(result) != 2 or type(result[0]) is not str
                 or type(result[1]) is not bool or _SECRET.search(result[0])):
             raise EvidenceCaptureError("evidence_privacy_refused")
@@ -351,8 +506,41 @@ class EvidenceContext:
 
     async def _verify_retained_text(self, text, observation):
         try:
-            if await self._permitted_text(text) != text:
+            memo = _PRIVACY_PROOFS.get()
+            if memo is None:
+                if await self._permitted_text(text) != text:
+                    raise EvidenceDenied()
+                return
+            memo.current(self, observation)
+            grant = self._grant(observation.owner_id, observation.conversation_id,
+                                observation.source_agent, observation.source_tool)
+            if self.archive.inspect(observation.reference, owner_id=observation.owner_id,
+                    conversation_id=observation.conversation_id, audience_id=observation.audience_id) != observation:
                 raise EvidenceDenied()
+            self.archive.read(observation.reference, grant=grant, owner_id=observation.owner_id,
+                              conversation_id=observation.conversation_id, audience_id=observation.audience_id)
+            content = text.encode("utf-8")
+            if len(content) != observation.size_bytes or hashlib.sha256(content).hexdigest() != observation.digest:
+                raise EvidenceDenied()
+            stamp, redact = _privacy_snapshot()
+            key = (observation.owner_id, observation.conversation_id, observation.audience_id,
+                   observation.reference, observation.digest, observation.size_bytes, observation.integrity_identity,
+                   observation.grant_fingerprint, grant.fingerprint, observation.expires_at.isoformat(), stamp)
+            if key in memo.proofs:
+                return
+            if len(memo.proofs) >= 32 or await self._redact_text(text, redact) != text:
+                raise EvidenceDenied()
+            memo.current(self, observation)
+            if _privacy_snapshot()[0] != stamp:
+                raise EvidenceDenied()
+            if self.archive.inspect(observation.reference, owner_id=observation.owner_id,
+                    conversation_id=observation.conversation_id, audience_id=observation.audience_id) != observation:
+                raise EvidenceDenied()
+            self.archive.read(observation.reference, grant=self._grant(observation.owner_id,
+                observation.conversation_id, observation.source_agent, observation.source_tool),
+                owner_id=observation.owner_id, conversation_id=observation.conversation_id,
+                audience_id=observation.audience_id)
+            memo.proofs.add(key)
         except Exception:
             removed = self.archive.revoke(owner_id=observation.owner_id, conversation_id=observation.conversation_id,
                                           grant_fingerprint=observation.grant_fingerprint)
