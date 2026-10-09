@@ -17,6 +17,7 @@ import logging
 import os
 import re
 from types import SimpleNamespace
+import traceback
 from uuid import uuid4
 
 from audit.schemas import AuditEventCreate
@@ -226,7 +227,7 @@ class EvidenceContext:
         card = self.orchestrator.agent_cards.get(observation.source_agent)
         if card is None:
             raise EvidenceDenied()
-        raw = os.getenv("POLICY_RULES", "[]") if policy.policy_enabled() else "[]"
+        raw = (os.getenv("POLICY_RULES") or "[]") if policy.policy_enabled() else "[]"
         try:
             rules = json.loads(raw)
             if type(rules) is not list or any(type(rule) is not dict or rule.get("effect") not in {
@@ -409,7 +410,7 @@ class EvidenceContext:
             raise EvidenceDenied()
         args = observation.source_args
         if policy.policy_enabled():
-            raw = os.getenv("POLICY_RULES", "[]")
+            raw = os.getenv("POLICY_RULES") or "[]"
             try:
                 rules = json.loads(raw)
                 if type(rules) is not list or any(type(rule) is not dict or rule.get("effect") not in {
@@ -574,6 +575,8 @@ class EvidenceContext:
             if not isinstance(exc, Exception):
                 raise
             code = exc.code if isinstance(exc, EvidenceError) else "evidence_capture_unavailable"
+            failure = traceback.extract_tb(exc.__traceback__)[-1]
+            logger.warning("Evidence capture refused: %s at %s:%d", code, failure.name, failure.lineno)
             try:
                 await self._audit(owner, chat, "capture_refused", outcome="failure", reason=code)
             except Exception as audit_error:

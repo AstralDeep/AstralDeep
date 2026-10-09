@@ -126,6 +126,33 @@ async def pack(state, value=TEXT, *, args=None, parent=None, initiator=None, age
         operation_id=str(state.binding.operations[0].record.operation_id), parent=parent, initiator=initiator)
 
 
+async def test_capture_refusal_logs_only_the_code_and_source_check(
+        human, bound, fixture, tmp_path, monkeypatch, caplog):
+    async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as state:
+        async def changed_arguments(*args, **kwargs):
+            return PreparedDispatch({"query": "private synthetic input"}, {}, None, None)
+        state.host._authorize_and_prepare = changed_arguments
+        result = await pack(state)
+        assert result.error is not None
+        assert "evidence_unavailable_or_not_authorized at _probe_source:" in caplog.text
+        assert "private synthetic input" not in caplog.text and TEXT not in caplog.text
+
+
+@pytest.mark.parametrize("rules,allowed", [("", True), ("[]", True), ("invalid", False), (" ", False), ("{}", False)])
+async def test_source_rechecks_accept_default_policy_and_deny_malformed_rules(
+        human, bound, fixture, tmp_path, monkeypatch, rules, allowed):
+    async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as state:
+        monkeypatch.setenv("FF_POLICY_ENGINE", "true")
+        monkeypatch.setenv("POLICY_RULES", rules)
+        result = await pack(state)
+        assert (result.error is None) is allowed
+        if allowed:
+            recalled = await invoke(state, arguments={"reference": result.result["reference"]})
+            assert recalled.error is None and recalled.result["text"] == TEXT
+        else:
+            assert result.error["code"] == "evidence_unavailable_or_not_authorized"
+
+
 async def invoke(state, name="recall_observation", arguments=None, *, parent=None, initiator=None, overrides=None):
     request = str(uuid4())
     with module.dispatch_requester(state.host, parent, initiator, state.owner, state.chat, state.socket):
