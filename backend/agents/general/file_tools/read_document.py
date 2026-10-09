@@ -1,6 +1,6 @@
 """read_document tool: extracts text from PDF/DOCX/RTF/ODT attachments; PDFs with too
 little embedded text are rasterized via ocr.py and handed to the vision model instead
-of running OCR.
+of running OCR. Supports opt-in structured parsing via docling_adapter.py.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 from agents.general.file_tools import read_attachment_bytes
 from agents.general.file_tools.ocr import pdf_to_vision_images
+from agents.general.file_tools.docling_adapter import parse_structured_document, is_docling_enabled
 
 logger = logging.getLogger("FileTools.read_document")
 
@@ -135,6 +136,17 @@ def read_document(
         "content_type": att.content_type,
     }
     try:
+        if att.extension in ("pdf", "docx") and is_docling_enabled():
+            docling_res = parse_structured_document(
+                payload=payload,
+                extension=att.extension,
+                page_range=page_range,
+                max_chars=max_chars,
+            )
+            if not docling_res.get("fallback_required"):
+                base.update(docling_res)
+                return base
+
         if att.extension == "pdf":
             base.update(_read_pdf(payload, page_range, max_chars))
         elif att.extension == "docx":
