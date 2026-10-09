@@ -391,11 +391,11 @@ async def test_full_serialized_model_request_fits_operator_budget(configured_mod
 
 
 @pytest.mark.parametrize("reason", ["secret", "phi", "size", "unavailable_analyzer", "invalid_analyzer"])
-async def test_model_envelope_privacy_is_fail_closed(configured_model, human, bound, fixture, monkeypatch, reason):
+async def test_evidence_retention_privacy_is_fail_closed(configured_model, human, bound, fixture, monkeypatch, reason):
     state = configured_model
     state.entry["context_tokens"] = 200_000
     state.policy.write_text(json.dumps([state.entry]))
-    async with admitted_model(state, human, bound, fixture) as turn:
+    async with admitted_model(state, human, bound, fixture):
         request = model_request()
         if reason == "secret":
             request["messages"][0]["content"] = "Bearer synthetic-private-token"
@@ -407,11 +407,14 @@ async def test_model_envelope_privacy_is_fail_closed(configured_model, human, bo
             gate = PHIGate(build_if_missing=False) if reason == "unavailable_analyzer" else PHIGate(
                 analyzer=SimpleNamespace(analyze=lambda **_kwargs: object()))
             monkeypatch.setattr(phi_gate, "get_phi_gate", lambda: gate)
-        physical = AsyncMock()
-        with pytest.raises((EvidenceError, ValueError)) as error:
-            await invoke(state, turn, request, physical)
-        physical.assert_not_awaited()
-        assert not state.events and "synthetic-private-token" not in str(error.value)
+        if reason == "phi":
+            permitted = await state.context._permitted_text(request["messages"][0]["content"])
+            assert "123-45-6789" not in permitted and "[REDACTED:ssn]" in permitted
+        else:
+            with pytest.raises((EvidenceError, ValueError)) as error:
+                await state.context._permitted_text(request["messages"][0]["content"])
+            assert "synthetic-private-token" not in str(error.value)
+        assert not state.events
 
 
 @pytest.mark.parametrize("loss", ["provider_key", "consent", "budget", "request", "origin"])

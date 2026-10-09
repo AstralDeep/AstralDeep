@@ -6,15 +6,23 @@ import asyncio
 from copy import deepcopy
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
 from agents.evidence.evidence_agent import EvidenceAgent
 from agents.evidence.mcp_server import MCPServer
+from orchestrator.conversation_publication import ConversationPublicationStage
+from orchestrator.history import ConversationCommitRepository
 from orchestrator.hooks import HookEvent, HookManager
 from orchestrator.orchestrator import Orchestrator
+from rote.rote import ROTE
 from shared.feature_flags import flags
-from shared.protocol import MCPResponse
+from shared.protocol import MCPResponse, ConversationSnapshot
+from tests.test_context_presentation import FrameSocket
+from tests.test_evidence_dispatch import _make_tool_call, response
+from tests.test_evidence_entry import conversation_host, default_slash_controls
 from tests.test_evidence_service import (
     AGENT, TEXT, TOOL, bound as bound, evidence_turn, events, fixture as fixture,
     human as human, invoke, pack, runtime as runtime, service as service,
@@ -118,7 +126,80 @@ async def test_unavailable_adapter_refuses_shortening_and_preserves_authorized_f
         assert not any(item.action_type == "evidence.capture" for item in records)
         rendered = [component for args, _kwargs in state.notices for component in args[1]]
         assert state.notices and "shortening was refused" in json.dumps(rendered)
+        assert "Observation shortening was refused" in json.dumps(returned.ui_components)
+        assert not getattr(returned, "_evidence_transient", False)
         assert "Beginning preserved evidence" not in "".join(item.model_dump_json() for item in records)
+
+
+async def test_capture_refusal_retention_notice_survives_real_ordinary_final_publication(
+    human, bound, fixture, tmp_path, monkeypatch,
+):
+    async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as source:
+        source.host.local_agents.pop("evidence-1")
+        existing = [{"type": "text", "content": "Authorized source result."}]
+        original = MCPResponse(request_id="source", result=TEXT, ui_components=deepcopy(existing))
+        returned = await pack(source, original)
+        assert returned is original and returned.result == TEXT and returned.ui_components[:1] == existing
+        assert not getattr(returned, "_evidence_transient", False) and source.archive.observation_count == 0
+        default_slash_controls(monkeypatch)
+        monkeypatch.setenv("FF_LLM_STREAMING", "false")
+        first = response()
+        first.choices[0].message.tool_calls = [_make_tool_call(TOOL, {"query": "synthetic"})]
+        state = conversation_host([first, response(content="Completed source request.")])
+        host, socket = state.host, FrameSocket()
+        host.history = source.host.history
+        await asyncio.to_thread(host.history.update_chat_title, source.chat, "Existing title", user_id=source.owner)
+        runtime = source.binding.origin.binding.runtime
+        host.runtime_composition = SimpleNamespace(plane=SimpleNamespace(runtime=runtime, repositories=runtime.repositories))
+        host.conversation_commits = ConversationCommitRepository(plane_runtime=runtime, plane_repositories=runtime.repositories)
+        request, connection = str(uuid4()), str(uuid4())
+        staged = await asyncio.to_thread(host.conversation_commits.stage_commit, chat_id=source.chat,
+            owner_user_id=source.owner, request_generation=request)
+        stage = ConversationPublicationStage(history=host.history, commit_id=staged["commit_id"],
+            chat_id=source.chat, user_id=source.owner, base_render_revision=staged["base_render_revision"],
+            next_render_revision=staged["base_render_revision"] + 1)
+        host._append_conversation_message = Orchestrator._append_conversation_message.__get__(host)
+        host._publish_conversation_snapshot = Orchestrator._publish_conversation_snapshot.__get__(host)
+        host._safe_send = Orchestrator._safe_send.__get__(host)
+        host._refresh_history_after_commit = AsyncMock()
+        host.workspace.live_components = lambda *_args: []
+        host.workspace.live_layouts = lambda *_args: []
+        host.ui_clients = {socket}
+        host.ui_sessions = {socket: {"sub": source.owner}}
+        host._conversation_scopes = {}
+        host._ws_active_chat = {id(socket): source.chat}
+        host.rote = ROTE()
+        host.rote.register_device(socket, {"device_type": "macos"})
+        host._bind_conversation_scope(socket, chat_id=source.chat, connection_generation=connection,
+            request_generation=request, purpose="commit", base_render_revision=staged["base_render_revision"])
+        host.agent_cards = {AGENT: deepcopy(source.host.agent_cards[AGENT])}
+        host.agents = {AGENT: object()}
+        host.execute_single_tool = AsyncMock(return_value=returned)
+
+        async def admit_model(**values):
+            assert values["owner"] == source.owner and values["chat"] == source.chat
+
+            async def current():
+                return None
+
+            return current
+
+        host._evidence_context.prepare_model = admit_model
+        await host._handle_chat_message_impl(socket, "Read my authorized source.", source.chat,
+            user_id=source.owner, selected_tools=[TOOL], conversation_stage=stage,
+            conversation_request_generation=request)
+        assert stage.committed and stage.sealed
+        snapshots = [frame for frame in socket.frames if frame.get("type") == "conversation_snapshot"]
+        assert len(snapshots) == 1
+        published = ConversationSnapshot.from_dict(snapshots[0])
+        saved = await asyncio.to_thread(host.history.get_chat, source.chat, source.owner)
+        for messages in (published.transcript, saved["messages"]):
+            assistant = [item for item in messages if item["role"] == "assistant"]
+            assert "Authorized source result." in json.dumps(assistant)
+            assert "Observation shortening was refused" in json.dumps(assistant)
+            assert "history remain intact" in json.dumps(assistant)
+            assert "Partial preview" not in json.dumps(assistant)
+        assert returned.result == TEXT
 
 
 @pytest.mark.parametrize("packing,compaction", [(False, False), (True, False), (False, True), (True, True)])

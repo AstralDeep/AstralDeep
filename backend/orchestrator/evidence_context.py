@@ -23,7 +23,7 @@ from audit.schemas import AuditEventCreate
 from orchestrator.context_presentation import evidence_components, usage_components
 from orchestrator.context_budget import load_budget
 from orchestrator.context_usage import ContextUsage
-from orchestrator.context_views import ContextViewStore, SourceDependency
+from orchestrator.context_views import ContextViewStore, SourceDependency, ViewUnavailable
 from orchestrator.evidence_archive import (
     EvidenceArchive, EvidenceCaptureError, EvidenceDenied, EvidenceError,
     EvidencePolicyError, EvidenceUnavailable, load_grants, match_grant,
@@ -173,6 +173,7 @@ class EvidenceContext:
         self.views = ContextViewStore(clock=self.clock, view_limit_bytes=16384)
         self.usage = usage or ContextUsage(self._persist, self._recover)
         self._sources = {}
+        self._retained_views = {}
         self._sweep_task = None
 
     def _source_states(self, owner, chat):
@@ -274,7 +275,9 @@ class EvidenceContext:
                 raise EvidenceDenied()
 
     async def _audit(self, owner, chat, action, *, principal=None, observation=None,
-                     outcome="success", reason=None, extra=None):
+                     outcome="success", reason=None, extra=None, retained=None):
+        if retained is not None and retained[0] is not None:
+            return await self._persist(retained[0])
         now = self.clock()
         meta = dict(extra or {})
         if observation is not None:
@@ -287,13 +290,16 @@ class EvidenceContext:
                         source_outcome=observation.outcome)
         if reason:
             meta["reason"] = reason
-        return await self._persist(AuditEventCreate(
+        event = AuditEventCreate(event_id=str(uuid4()) if retained is not None else None,
             actor_user_id=owner, auth_principal=principal or owner,
             event_class="agent_tool_call", action_type=f"evidence.{action}",
             description=f"Evidence {action}", conversation_id=chat,
             correlation_id=str(uuid4()), outcome=outcome,
             inputs_meta=meta, started_at=now, completed_at=now,
-        ))
+        )
+        if retained is not None:
+            retained[0] = event
+        return await self._persist(event)
 
     async def _owner(self, websocket, owner, chat):
         from orchestrator import auth
@@ -590,6 +596,10 @@ class EvidenceContext:
                     raise EvidenceDenied()
             except Exception:
                 return self._denied(result.request_id)
+            from astralprims import Text
+            result.ui_components = [*(result.ui_components or []), Text(content=(
+                "Observation shortening was refused; the authorized result and history remain intact."
+            )).to_dict()]
             return result
 
     async def tool(self, request_id, name, arguments):
@@ -892,8 +902,11 @@ class EvidenceContext:
             await self._owner(websocket, owner, chat)
             self._view_adapter(adapter_binding)
             self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
+            if len(self._retained_views) >= self.views.max_records:
+                raise EvidenceCaptureError("context_view_cleanup_limit")
             captured = self.views.capture(permitted, owner_id=owner, conversation_id=chat,
                                           audience_id=f"user:{owner}", dependencies=tuple(dependencies))
+            self._retained_views[captured.reference] = (copy.deepcopy(captured), None, None, [None])
             self._view_adapter(adapter_binding)
             await self._audit(owner, chat, "view_capture", extra={
                 "view_digest": _digest(captured.reference), "bytes": captured.size_bytes,
@@ -1048,6 +1061,8 @@ class EvidenceContext:
         elif (reservation.kind != "model" or reservation.owner_id != owner
               or reservation.conversation_id != chat or not reservation.consumed):
             raise EvidenceDenied()
+        adapter_binding = (self._view_adapter(tool="recall_observation")
+                           if type(request) is dict and has_references(request.get("messages", [])) else None)
         capture = await self.orchestrator._llm_store.capture_user(owner)
         budget = await self.budget(owner, capture)
         if (type(request) is not dict or request.get("model") != model or capture is None or provider_capture is None
@@ -1066,18 +1081,15 @@ class EvidenceContext:
                 + len(_json({key: value for key, value in request.items() if key != "messages"}).encode())
                 > budget.context_tokens):
             raise EvidenceDenied()
-        serialized = _json(request)
-        if await self._permitted_text(serialized) != serialized:
-            raise EvidenceDenied()
         request_identity = _digest(request)
 
         async def guard():
+            if adapter_binding is not None:
+                self._view_adapter(adapter_binding, tool="recall_observation")
             current = await self.orchestrator._llm_store.capture_user(owner)
             ack = await self.orchestrator._data_sharing_store.state(owner)
             if (current is None or not capture.matches(current._record) or not ack.acknowledged
                     or await self.budget(owner, current) != budget or _digest(request) != request_identity):
-                raise EvidenceDenied()
-            if await self._permitted_text(serialized) != serialized:
                 raise EvidenceDenied()
             source_stamps = []
             for reference in set(_REFERENCE_TOKENS.findall(_json(request.get("messages", [])))):
@@ -1121,6 +1133,8 @@ class EvidenceContext:
                 self.archive.read(observation.reference, grant=grant, owner_id=owner,
                                   conversation_id=chat, audience_id=f"user:{owner}")
             self._check_sources(request.get("messages", []), owner, chat)
+            if adapter_binding is not None:
+                self._view_adapter(adapter_binding, tool="recall_observation")
 
         return guard
 
@@ -1231,12 +1245,12 @@ class EvidenceContext:
             if (source != self.orchestrator._CredentialSource.USER
                     or resolved.model != record.model or resolved.base_url != record.base_url):
                 raise EvidenceDenied()
+            from llm_config.evidence_transport import guard_model_client
+            client = guard_model_client(client, base_url=record.base_url)
 
             async def propose(prompt):
                 await self._protected(websocket, owner, chat, capture)
-                whole_text = _json(prompt)
-                if (estimate_context_tokens(prompt) + budget.max_output_tokens > context_tokens
-                        or await self._permitted_text(whole_text) != whole_text):
+                if estimate_context_tokens(prompt) + budget.max_output_tokens > context_tokens:
                     raise EvidenceDenied()
 
                 async def physical():
@@ -1298,13 +1312,52 @@ class EvidenceContext:
         if self._sweep_task is None:
             self._sweep_task = asyncio.create_task(self._sweep(), name="evidence-retention-sweep")
 
+    def _queue_view_cleanup(self, removed, action, reason):
+        for view in removed:
+            retained = self._retained_views.get(view.reference)
+            if retained is not None and retained[1] is None:
+                self._retained_views[view.reference] = (retained[0], action, reason, retained[3])
+
+    def _reconcile_view_cleanup(self):
+        for reference, retained in tuple(self._retained_views.items()):
+            view, action, _reason, audit = retained
+            if action is not None:
+                continue
+            try:
+                self.views.inspect(reference, owner_id=view.owner_id,
+                    conversation_id=view.conversation_id, audience_id=view.audience_id)
+            except ViewUnavailable as exc:
+                action = "view_expiry_cleanup" if exc.reason == "expired" else "view_revocation_cleanup"
+                reason = "expiry" if exc.reason == "expired" else exc.reason
+                self._retained_views[reference] = (view, action, reason, audit)
+
+    async def _drain_view_cleanup(self):
+        self._reconcile_view_cleanup()
+        for reference, retained in tuple(self._retained_views.items()):
+            view, action, reason, audit = retained
+            if action is None:
+                continue
+            await self._audit(view.owner_id, view.conversation_id, action, reason=reason, retained=audit, extra={
+                "view_digest": _digest(view.reference), "size_bytes": view.size_bytes,
+                "integrity_identity": view.integrity_identity, "source_count": len(view.dependencies),
+            })
+            if self._retained_views.get(reference) is retained:
+                self._retained_views.pop(reference)
+
     async def sweep(self):
-        self.views.cleanup()
+        try:
+            removed_views = self.views.cleanup()
+        except ViewUnavailable as exc:
+            if exc.reason != "clock_unavailable":
+                raise
+            removed_views = ()
+        self._queue_view_cleanup(removed_views, "view_expiry_cleanup", "expiry")
         expired = self.archive.cleanup()
         for observation in expired:
             self._sources.pop(observation.reference, None)
-            self.views.revoke(owner_id=observation.owner_id, conversation_id=observation.conversation_id,
-                              source_reference=observation.reference)
+            self._queue_view_cleanup(self.views.revoke(
+                owner_id=observation.owner_id, conversation_id=observation.conversation_id,
+                source_reference=observation.reference), "view_revocation_cleanup", "source_expired")
         receipts = [("expiry_cleanup", observation) for observation in expired]
         for reference, observation in tuple(self._sources.items()):
             try:
@@ -1329,11 +1382,13 @@ class EvidenceContext:
                     conversation_id=observation.conversation_id, grant_fingerprint=observation.grant_fingerprint)
                 for item in removed:
                     self._sources.pop(item.reference, None)
-                    self.views.revoke(owner_id=item.owner_id, conversation_id=item.conversation_id,
-                                      source_reference=item.reference)
+                    self._queue_view_cleanup(self.views.revoke(owner_id=item.owner_id,
+                        conversation_id=item.conversation_id, source_reference=item.reference),
+                        "view_revocation_cleanup", "source_authority_revoked")
                 receipts.extend(("revocation_cleanup", item) for item in removed)
         for action, observation in receipts:
             await self._audit(observation.owner_id, observation.conversation_id, action, observation=observation)
+        await self._drain_view_cleanup()
 
     async def _sweep(self):
         while True:
@@ -1356,7 +1411,14 @@ class EvidenceContext:
             except (EvidenceDenied, EvidenceUnavailable):
                 pass
         self._sources.clear()
-        self.views.clear()
+        try:
+            self._reconcile_view_cleanup()
+        finally:
+            self.views.clear()
+            for reference, retained in tuple(self._retained_views.items()):
+                if retained[1] is None:
+                    self._retained_views[reference] = (retained[0], "view_shutdown_cleanup", "shutdown", retained[3])
         await self.usage.drain()
         for observation in removed:
             await self._audit(observation.owner_id, observation.conversation_id, "shutdown_cleanup", observation=observation)
+        await self._drain_view_cleanup()

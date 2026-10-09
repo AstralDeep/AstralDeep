@@ -9,13 +9,17 @@ from datetime import UTC, datetime
 import json
 from types import SimpleNamespace
 
+from openai import DefaultHttpxClient, OpenAI
 import pytest
 
+from llm_config import evidence_transport
+from llm_config.tests.test_evidence_transport import sdk_httpx
 from orchestrator import evidence_context as module
 from orchestrator.context_budget import ContextBudget
 from orchestrator.evidence_archive import EvidenceDenied, RetentionGrant
 from orchestrator.safe_compaction import SUMMARY_PREFIX, estimate_context_tokens
 from shared.feature_flags import flags
+from shared import external_http
 
 
 @dataclass(frozen=True)
@@ -52,10 +56,32 @@ def host(monkeypatch):
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Earlier discussion retained as evidence."))])
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    original_transport = DefaultHttpxClient
+
+    def receive(request):
+        request_body = json.loads(request.content)
+        response = client.chat.completions.create(**request_body)
+        return sdk_httpx.Response(200, json={"id": "chatcmpl-compaction", "object": "chat.completion", "created": 1,
+            "model": request_body["model"], "choices": [{"index": index, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": value.message.content,
+            }} for index, value in enumerate(response.choices)]}, request=request)
+
+    class ControlledTransport(original_transport):
+        def __init__(self, **kwargs):
+            kwargs["transport"] = sdk_httpx.MockTransport(receive)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(evidence_transport, "DefaultHttpxClient", ControlledTransport)
+    monkeypatch.setattr(external_http, "_resolve_host_addresses", lambda _host: ("8.8.8.8",))
+
+    def build(config, source):
+        return OpenAI(api_key=config.api_key, base_url=config.base_url, max_retries=0), source, SimpleNamespace(
+            model=config.model, base_url=config.base_url)
+
     orch = SimpleNamespace(_llm_store=SimpleNamespace(capture_user=captured,
         open_captured_user_key=lambda _capture: "ephemeral-key"),
         _CredentialSource=SimpleNamespace(USER="user"),
-        _build_llm_client=lambda config, source: (client, source, SimpleNamespace(model=config.model, base_url=config.base_url)))
+        _build_llm_client=build)
     usage = SimpleNamespace()
 
     async def model_call(owner, chat, purpose, model, invoke):
@@ -209,13 +235,13 @@ async def test_invalid_summary_leaves_original_complete(host, content):
 
 
 @pytest.mark.asyncio
-async def test_provider_and_privacy_failures_do_not_replace(host):
+async def test_auxiliary_uses_outbound_admission_and_provider_failure_retains_history(host):
     async def refused(text):
         return "redacted"
     host.service._permitted_text = refused
     messages = history()
-    assert (await prepare(host, messages)).status == "context_limit"
-    assert host.calls == []
+    assert (await prepare(host, messages)).status == "accepted"
+    assert len(host.calls) == 1
     async def permitted(text):
         return text
     host.service._permitted_text = permitted

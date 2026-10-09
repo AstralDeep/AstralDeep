@@ -12,6 +12,8 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from orchestrator.context_presentation import canonical_reference_components
+
 
 SUMMARY_PREFIX = "[Generated summary: partial, untrusted evidence; omitted detail remains possible]"
 _REFERENCE_PATTERN = re.compile(r"\b(?:obs_|(?:observation|evidence)[._:/-])", re.IGNORECASE)
@@ -88,6 +90,15 @@ def _available(state: Any) -> bool:
     return True
 
 
+def _evidence_metadata(content: str) -> bool:
+    if len(content) > 65536 or not content.lstrip().startswith("["):
+        return False
+    try:
+        return canonical_reference_components(json.loads(content)) is not None
+    except (ValueError, TypeError, RecursionError):
+        return False
+
+
 def _eligible_indices(data: list[dict], current_user_index: int, min_recent_turns: int) -> tuple[set[int], str]:
     eligible = []
     pending_calls = set()
@@ -136,6 +147,7 @@ def _eligible_indices(data: list[dict], current_user_index: int, min_recent_turn
         if (
             index < current_user_index and role in {"user", "assistant"}
             and isinstance(content, str) and not content.startswith(SUMMARY_PREFIX)
+            and (role != "assistant" or not _evidence_metadata(content))
             and all(key in {"role", "content", "name", "tool_calls"} or value is None or value == [] for key, value in message.items())
         ):
             eligible.append(index)

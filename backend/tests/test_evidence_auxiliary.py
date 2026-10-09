@@ -2,12 +2,13 @@
 Signed turn fixtures and public Plane captures isolate the missing-service boundary without external model traffic.
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from openai import OpenAI
 import pytest
 
 from llm_config import CredentialSource, ResolvedConfig
+from llm_config.tests.test_evidence_transport import wire as wire
 from orchestrator import context_authority, evidence_context
 from orchestrator.evidence_archive import EvidenceDenied
 from orchestrator.orchestrator import Orchestrator
@@ -29,7 +30,7 @@ def disable(monkeypatch):
 
 @pytest.mark.parametrize("auxiliary", ["summary", "title"])
 async def test_enabled_auxiliary_capture_without_service_refuses_after_flag_disable(
-    configured_model, human, bound, fixture, monkeypatch, auxiliary,
+    configured_model, human, bound, fixture, monkeypatch, auxiliary, wire,
 ):
     state = configured_model
     async with admitted_model(state, human, bound, fixture) as turn:
@@ -49,8 +50,7 @@ async def test_enabled_auxiliary_capture_without_service_refuses_after_flag_disa
             return current
 
         monkeypatch.setattr(state.store, "capture_user", capture_and_disable)
-        physical = MagicMock(return_value=response("Synthetic unqualified result"))
-        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=physical)))
+        client = OpenAI(api_key="synthetic-owner-key", base_url=turn.capture._record.base_url, max_retries=0)
 
         def build(config, source):
             assert source is CredentialSource.USER and config.model == MODEL
@@ -89,8 +89,8 @@ async def test_enabled_auxiliary_capture_without_service_refuses_after_flag_disa
             host.history.update_chat_title.assert_called_once_with(
                 turn.chat, "Synthetic user request", user_id=state.owner,
             )
-        assert len(captured) == 1 and client._evidence_provider_capture is captured[0]
-        physical.assert_not_called()
+        assert len(captured) == 1 and client.is_closed()
+        assert wire[0] == wire[1] == []
         assert not hasattr(host, "_evidence_context")
         assert state.events == [] and host.token_usage == {}
         totals = await state.ledger.totals(state.owner, turn.chat)

@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock
 from openai.types.chat import ChatCompletion, ChatCompletionMessage
 import pytest
 
-from llm_config.types import CredentialSource, ResolvedConfig
+from llm_config.tests.test_evidence_transport import wire as wire
+from llm_config.types import CredentialSource
 from orchestrator.context_usage import ContextUsage
 from orchestrator.evidence_archive import EvidenceDenied, EvidenceError
 from orchestrator.orchestrator import Orchestrator
@@ -98,10 +99,11 @@ async def test_sdk_tool_round_retains_exact_messages_and_charges_one_bounded_phy
 @pytest.mark.parametrize("location", ["arguments", "content", "refusal"])
 @pytest.mark.parametrize("flags_enabled", [True, False])
 async def test_malformed_reference_inside_sdk_message_never_reaches_physical_provider(
-    configured_model, human, bound, fixture, monkeypatch, location, flags_enabled,
+    configured_model, human, bound, fixture, tmp_path, monkeypatch, location, flags_enabled,
 ):
     state = configured_model
-    async with admitted_model(state, human, bound, fixture) as turn:
+    async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as source:
+        turn = await source_model(state, source)
         controls(monkeypatch, flags_enabled)
         request = wire_request(reference="obs_short") if location == "arguments" else wire_request()
         if location != "arguments":
@@ -220,7 +222,7 @@ async def test_captured_owner_request_disabled_before_admission_cannot_take_unch
 
 
 async def test_summary_label_survives_control_disable_after_real_sdk_provider_response(
-    configured_model, human, bound, fixture, tmp_path, monkeypatch,
+    configured_model, human, bound, fixture, tmp_path, monkeypatch, wire,
 ):
     state = configured_model
     async with evidence_turn(human, bound, fixture, tmp_path, monkeypatch) as source:
@@ -229,7 +231,7 @@ async def test_summary_label_survives_control_disable_after_real_sdk_provider_re
         assert captured.error is None and captured.result["view"] == "partial_preview"
         messages = wire_request(reference=captured.result["reference"], tool_result=json.dumps(captured.result))["messages"]
         original = deepcopy(messages)
-        observed = []
+        observed, _transports, _addresses, reply = wire
         returned = ChatCompletion.model_validate({
             "id": "chatcmpl_wire_summary", "object": "chat.completion", "created": 1, "model": MODEL,
             "choices": [{"index": 0, "finish_reason": "stop", "message": {
@@ -238,15 +240,9 @@ async def test_summary_label_survives_control_disable_after_real_sdk_provider_re
                            "prompt_tokens_details": {"cached_tokens": 0}},
         })
 
-        def physical(**request):
-            observed.append(deepcopy(request))
+        def physical(_request):
             controls(monkeypatch, False)
-            return returned
-
-        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=physical)))
-        state.host._build_llm_client = lambda config, credential_source: (
-            client, credential_source, ResolvedConfig(base_url=config.base_url, model=config.model),
-        )
+        reply.update(body=returned.model_dump(mode="json"), on_response=physical)
         state.host._llm_audit_principals = Orchestrator._llm_audit_principals.__get__(state.host)
         state.host._accumulate_usage = Orchestrator._accumulate_usage.__get__(state.host)
         state.host._derive_chat_title = Orchestrator._derive_chat_title
@@ -263,10 +259,11 @@ async def test_summary_label_survives_control_disable_after_real_sdk_provider_re
             state.host, source.socket, messages, source.chat, state.owner,
         )
         assert len(observed) == 1 and messages == original
-        retained = json.loads(observed[0]["messages"][1]["content"])
+        request = json.loads(observed[0].content)
+        retained = json.loads(request["messages"][1]["content"])
         assert retained == [item if isinstance(item, dict) else item.model_dump(mode="json") for item in original]
-        assert observed[0]["max_tokens"] == 128
-        assert client._evidence_provider_capture.owner_id == state.owner
+        assert request["max_tokens"] == 128
+        assert observed[0].headers["authorization"] == "Bearer synthetic-initial-key"
         assert components[0]["type"] == "badge" and components[0]["label"] == "Generated summary"
         assert any(item["type"] == "keyvalue" for item in components)
         assert not any(item["type"] == "card" for item in components)

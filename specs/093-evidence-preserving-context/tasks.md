@@ -45,7 +45,7 @@ Independent test: replay/late completion reconciles known synthetic charges once
 - [X] T018 [US3] Implement owner/conversation attempt ledger and stable bounded audit identities in backend/orchestrator/context_usage.py, backend/audit/schemas.py and backend/audit/repository.py (FR014-016; SC005,009).
 - [X] T019 [US3] Instrument direct/auxiliary/stream/title/tool-summary provider attempts and recall bytes in backend/orchestrator/orchestrator.py and backend/orchestrator/evidence_context.py (FR016; SC005).
 - [X] T020 [P] [US3] Add literal-source/status/unknown-cost/fallback tests in backend/tests/test_context_presentation.py.
-- [ ] T021 [US3] Implement strict content-free assistant metadata commits, bounded source-dependent temporary views and fresh authenticated evidence inspection; qualify Projection's correlated browser/native modal contract, fixtures, dispositions, drift guards and exact pin adoption, with explicit watch phone/desktop handoff (FR013,017; SC004).
+- [X] T021 [US3] Implement strict content-free assistant metadata commits, bounded source-dependent temporary views and fresh authenticated evidence inspection; qualify Projection's correlated browser/native modal contract, fixtures, dispositions, drift guards and exact pin adoption, with explicit watch phone/desktop handoff (FR013,017; SC004).
 - [ ] T022 [US3] Exercise full/preview/summary/missing/blocked/usage UI against candidate live backend on web/macOS/iOS/watchOS (owner omitted Android and Windows OS/live; record both untested) and retain evidence in specs/093-evidence-preserving-context/verification.md (SC004).
 
 ## Phase 6: US4 Evaluation and promotion (P2)

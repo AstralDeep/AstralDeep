@@ -15647,6 +15647,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             config = PersistedLLMConfig(record.provider, record.base_url, record.model,
                                        self._llm_store.open_captured_user_key(capture))
             client, source, resolved = self._build_llm_client(config, self._CredentialSource.USER)
+            from llm_config.evidence_transport import EvidenceTransportError, guard_model_client
+            try:
+                client = guard_model_client(client, base_url=record.base_url)
+            except EvidenceTransportError as exc:
+                raise self._LLMUnavailable(str(exc)) from None
             client._evidence_provider_capture = capture
             return client, source, resolved
         if user_id is None:
@@ -15740,7 +15745,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _context_model_call(self, websocket, chat_id, purpose, model, invoke, *, attempt_id=None, retry_of=None,
                                   request=None, base_url=None, provider_capture=None):
         service = evidence_context.get_context(self)
-        if service is None and provider_capture is not None:
+        if service is None and (provider_capture is not None
+                                or evidence_context.has_references((request or {}).get("messages", []))):
             from orchestrator.evidence_archive import EvidenceDenied
             raise EvidenceDenied()
         if service is None or (not evidence_context.enabled() and provider_capture is None
@@ -15776,7 +15782,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tools_desc=tools_desc, temperature=temperature, feature=feature,
                 response_format=response_format, reasoning_effort=reasoning_effort,
                 allow_stream=allow_stream, stream_chat_id=stream_chat_id)
-        evidence_bound = evidence_context.get_context(self) is not None and evidence_context.has_references(messages)
+        evidence_bound = evidence_context.has_references(messages)
         try:
             if evidence_bound:
                 client, source, resolved = await self._resolve_llm_client_for(websocket, evidence_bound=True)
