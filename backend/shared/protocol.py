@@ -1775,7 +1775,7 @@ class ChromeRender(Message):
     def to_json(self) -> str:
         data = asdict(self)
         if self.surface_key is not None or self.request_generation is not None:
-            if self.surface_key not in {"work", "guidance"} or self.region != "modal":
+            if self.surface_key not in {"work", "guidance", "evidence"} or self.region != "modal":
                 raise ProtocolValidationError("correlated chrome render must be an owner modal")
             _require_uuid4(self.request_generation, "request_generation")
         else:

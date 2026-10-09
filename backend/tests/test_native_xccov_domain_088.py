@@ -1,12 +1,12 @@
-"""Tests for scripts/native_xccov_domain.py: Mach-O header and LLVM coverage-region
-metadata parsing using synthetic fixtures only, covering domain union, geometry
-bounds, and witness/mapping validation.
+"""Verifies native header, coverage geometry, and witness validation through Deep's qualification helper.
+Synthetic fixtures also bind composed Apple source paths to the pinned Projection boundary.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
 import struct
 
 import pytest
@@ -280,6 +280,19 @@ def test_exact_source_bytes_and_prefix_are_kept_without_lexical_tail_guesses(pre
     assert domain.source_facts(b"last line without newline")["physical_lines"] == 1
     with pytest.raises(domain.DomainError):
         domain.source_facts(b"")
+
+
+def test_composed_native_coverage_uses_the_projection_source_boundary():
+    root = Path(__file__).resolve().parents[2]
+    composition = json.loads((root / "config/astral-composition.json").read_text())
+    prefix = composition["components"]["astral-projection"]["path"] + "/"
+    assert prefix == "components/AstralProjection/"
+    path = prefix + CORE
+    witness = _witness("core", prefix=prefix)
+    assert domain.validate_domain(witness)["source_prefix"] == prefix
+    assert witness["sources"][path]["source_sha256"] == domain.sha256(SOURCE)
+    with pytest.raises(domain.DomainError):
+        _geometry(_mapping((CORE,)), paths=(CORE,), prefix=prefix, lane="core")
 
 
 @pytest.mark.parametrize(
