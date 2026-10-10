@@ -59,13 +59,7 @@ def _native_statement(statement: str) -> str:
 
 class VoicePlaneTestRuntime:
     def __init__(self, database_url: str) -> None:
-        # Pool margin above the 15-contender capacity test's peak
-        self._driver_pool = ThreadedConnectionPool(1, 20, database_url)
-        self._pool = ConnectionPool(self._driver_pool)
-        self._database = PlaneDatabase(self._pool)
-        self.repositories = create_repository_catalog()
-        self.plane_runtime = self
-        self.plane_repositories = self.repositories
+        self._connect(database_url)
         try:
             BaselineMigrationRunner(
                 self._database,
@@ -78,6 +72,15 @@ class VoicePlaneTestRuntime:
         except BaseException:
             self._pool.close()
             raise
+
+    def _connect(self, database_url: str) -> None:
+        # Pool margin above the 15-contender capacity test's peak
+        self._driver_pool = ThreadedConnectionPool(1, 20, database_url)
+        self._pool = ConnectionPool(self._driver_pool)
+        self._database = PlaneDatabase(self._pool)
+        self.repositories = create_repository_catalog()
+        self.plane_runtime = self
+        self.plane_repositories = self.repositories
 
     @contextmanager
     def transaction(self, *, isolation: Any = None) -> Iterator[Any]:
@@ -116,6 +119,18 @@ def _migrate_template(template: TemplateDatabase) -> None:
     VoicePlaneTestRuntime(database_dsn(template.server_dsn, template.name)).close()
 
 
+@contextmanager
+def _clone_runtime(template: TemplateDatabase, prefix: str) -> Iterator[VoicePlaneTestRuntime]:
+    with cloned_database(template, prefix=prefix) as database:
+        # Only a new byte copy of the sealed, verified template skips migration verification.
+        runtime = VoicePlaneTestRuntime.__new__(VoicePlaneTestRuntime)
+        runtime._connect(database_dsn(template.server_dsn, database))
+        try:
+            yield runtime
+        finally:
+            runtime.close()
+
+
 def voice_plane_template() -> TemplateDatabase:
     admin_params = psycopg2.extensions.parse_dsn(build_test_database_url())
     admin_params["dbname"] = "postgres"
@@ -144,11 +159,9 @@ def isolated_voice_plane_runtime(prefix: str) -> Iterator[VoicePlaneTestRuntime]
     with ExitStack() as cleanup:
         template = voice_plane_template_or_skip()
         try:
-            database = cleanup.enter_context(cloned_database(template, prefix=prefix))
+            runtime = cleanup.enter_context(_clone_runtime(template, prefix))
         except DatabaseCreationError as exc:  # pragma: no cover
             pytest.skip(f"cannot create isolated PostgreSQL database: {exc}")
-        runtime = VoicePlaneTestRuntime(database_dsn(template.server_dsn, database))
-        cleanup.callback(runtime.close)
         yield runtime
 
 
