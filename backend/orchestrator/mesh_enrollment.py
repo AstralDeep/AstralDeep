@@ -83,6 +83,11 @@ class MemberUnauthorized(MeshEnrollmentError):
     code = "member_unauthorized"
 
 
+class IdentityAmbiguous(MeshEnrollmentError):
+    status = 409
+    code = "mesh_identity_ambiguous"
+
+
 class ConfirmForbidden(MeshEnrollmentError):
     status = 403
     code = "confirm_forbidden"
@@ -378,18 +383,35 @@ class MeshEnrollmentStore:
         except Exception:
             raise AuditUnavailable("durable mesh audit unavailable") from None
 
-    def record_redemption_denial(
-        self, owner_id: str, invite_id: str, reason: str
+    def record_denial(
+        self,
+        owner_id: str,
+        action: str,
+        *,
+        actor_kind: str,
+        actor_id: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         with self._transaction() as transaction:
             self._audit_transition(
                 transaction,
                 owner_id,
-                "mesh.member.redeem",
-                actor_kind="anonymous",
-                meta={"invite_id": invite_id, "reason": reason},
+                action,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+                meta=meta or {},
                 outcome="failure",
             )
+
+    def record_redemption_denial(
+        self, owner_id: str, invite_id: str, reason: str
+    ) -> None:
+        self.record_denial(
+            owner_id,
+            "mesh.member.redeem",
+            actor_kind="anonymous",
+            meta={"invite_id": invite_id, "reason": reason},
+        )
 
     def _get_in_transaction(self, transaction, owner_id, namespace, key):
         row = self._credentials.repository.get_credential(
@@ -404,6 +426,24 @@ class MeshEnrollmentStore:
         ):
             raise MemberUnauthorized("credential revision is invalid")
         return record
+
+    def _list_in_transaction(self, transaction, owner_id, namespace):
+        rows = self._credentials.repository.list_credentials(
+            transaction, owner_id=owner_id, agent_id=namespace, limit=1000
+        )
+        return [_decode_record(row.encrypted_value) for row in rows]
+
+    def _active_key_holder(
+        self, transaction, owner_id, fingerprint, *, exclude_member_id=None
+    ):
+        for record in self._list_in_transaction(transaction, owner_id, MEMBER_NAMESPACE):
+            if (
+                record.get("status") == MEMBER_ACTIVE_STATUS
+                and record.get("device_key_fingerprint") == fingerprint
+                and record.get("member_id") != exclude_member_id
+            ):
+                return record
+        return None
 
     def _ensure_mesh(self, transaction, owner_id):
         try:
@@ -702,6 +742,23 @@ class MeshEnrollmentStore:
             else:
                 self._ensure_mesh(current, owner_id)
                 self._lock_mesh(current, owner_id)
+            holder = self._active_key_holder(
+                current, owner_id, record["device_key_fingerprint"]
+            )
+            if holder is not None:
+                self.record_denial(
+                    owner_id,
+                    "mesh.invitation.create",
+                    actor_kind=creator_kind,
+                    actor_id=creator_id,
+                    meta={
+                        "invite_id": invite_id,
+                        "reason": "device_key_already_active",
+                        "fingerprint": record["device_key_fingerprint"],
+                        "holder": holder["member_id"],
+                    },
+                )
+                raise IdentityAmbiguous(holder["member_id"])
             if _now_ms() >= record["expires_at"]:
                 raise InvitationExpired(invite_id)
             self._membership.issue_invitation(
@@ -1061,6 +1118,15 @@ class MeshEnrollmentStore:
                     )
                 else:
                     raise ConfirmForbidden("confirmation identity is invalid")
+                holder = self._active_key_holder(
+                    current, owner_id, record["device_key_fingerprint"]
+                )
+                if holder is not None:
+                    if holder.get("invite_id") == invite_id:
+                        raise InvitationStateInvalid(
+                            "invitation was redeemed or changed concurrently"
+                        )
+                    raise IdentityAmbiguous(holder["member_id"])
                 if _now_ms() >= record["expires_at"]:
                     raise InvitationExpired(invite_id)
                 proven = self._membership.prove_enrollment_challenge(

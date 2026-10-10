@@ -713,6 +713,152 @@ def test_two_threads_race_redeem_exactly_one_wins(store):
     assert len(store.list_members("owner-threads")) == 1
 
 
+def test_duplicate_active_device_key_invitation_is_refused_and_audited(
+    store, audit_events
+):
+    owner = "owner-duplicate-key"
+    jwk, private_key = _device()
+    result = store.create_invitation(
+        owner,
+        label="First device",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    fields = _payload_fields(result["payload"])
+    _confirm_and_redeem(store, result["invitation"], fields, private_key)
+    assert [event for event in audit_events if event.outcome == "failure"] == []
+    with pytest.raises(me.IdentityAmbiguous) as ambiguous:
+        store.create_invitation(
+            owner,
+            label="Duplicate clone",
+            device_key=jwk,
+            scopes=["tools:read"],
+            creator_kind="owner",
+            creator_id=owner,
+        )
+    assert ambiguous.value.status == 409
+    assert ambiguous.value.code == "mesh_identity_ambiguous"
+    denials = [event for event in audit_events if event.outcome == "failure"]
+    assert len(denials) == 1
+    assert denials[0].action_type == "mesh.invitation.create"
+    assert denials[0].inputs_meta["reason"] == "device_key_already_active"
+    assert denials[0].inputs_meta["fingerprint"] == result["invitation"][
+        "device_key_fingerprint"
+    ]
+    members = store.list_members(owner)
+    assert len(members) == 1
+    assert members[0]["status"] == "active"
+
+
+def test_second_confirmed_invitation_with_same_key_redeems_only_after_revocation(
+    store, audit_events
+):
+    owner = "owner-key-race"
+    jwk, private_key = _device()
+    first = store.create_invitation(
+        owner,
+        label="First",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    second = store.create_invitation(
+        owner,
+        label="Second",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    first_fields = _payload_fields(first["payload"])
+    second_fields = _payload_fields(second["payload"])
+    _confirm(store, first_fields)
+    _confirm(store, second_fields)
+    activated = store.redeem_invitation(
+        owner_id=owner,
+        invite_id=first_fields["i"],
+        token=first_fields["t"],
+        challenge=first_fields["c"],
+        signature=_signature_b64(private_key, first_fields["c"]),
+    )
+    with pytest.raises(me.IdentityAmbiguous):
+        store.redeem_invitation(
+            owner_id=owner,
+            invite_id=second_fields["i"],
+            token=second_fields["t"],
+            challenge=second_fields["c"],
+            signature=_signature_b64(private_key, second_fields["c"]),
+        )
+    assert store.get_invitation(owner, second_fields["i"])["status"] == "confirmed"
+    assert (
+        store.get_member(owner, activated["member"]["member_id"])["status"]
+        == "active"
+    )
+    assert [
+        event
+        for event in audit_events
+        if event.outcome == "failure" and event.action_type == "mesh.invitation.create"
+    ] == []
+    store.revoke_member(owner, activated["member"]["member_id"])
+    recovered = store.redeem_invitation(
+        owner_id=owner,
+        invite_id=second_fields["i"],
+        token=second_fields["t"],
+        challenge=second_fields["c"],
+        signature=_signature_b64(private_key, second_fields["c"]),
+    )
+    assert recovered["member"]["status"] == "active"
+    assert recovered["member"]["member_id"] != activated["member"]["member_id"]
+    with store._transaction() as transaction:
+        mesh, member, _ = store._current_member(
+            transaction, owner, recovered["member"]["member_id"]
+        )
+    assert member.member_status == "active"
+
+
+def test_revoked_member_key_can_be_reenrolled(store):
+    owner = "owner-reenroll"
+    result, fields, private_key = _make_invitation(store, owner)
+    outcome = _confirm_and_redeem(store, result["invitation"], fields, private_key)
+    member_id = outcome["member"]["member_id"]
+    store.revoke_member(owner, member_id)
+    reactivation = store.create_invitation(
+        owner,
+        label="Re-enrolled device",
+        device_key=outcome["member"]["device_key"],
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    reactivated_fields = _payload_fields(reactivation["payload"])
+    reactivated = _confirm_and_redeem(
+        store, reactivation["invitation"], reactivated_fields, private_key
+    )
+    assert reactivated["member"]["status"] == "active"
+    assert reactivated["member"]["member_id"] != member_id
+    with store._transaction() as transaction:
+        store._current_member(transaction, owner, reactivated["member"]["member_id"])
+
+
+def test_member_creator_cannot_duplicate_an_active_device_key(store):
+    owner = "owner-member-duplicate"
+    fields, key, member = _confirmed_by_member(store, owner)
+    with pytest.raises(me.IdentityAmbiguous) as ambiguous:
+        store.create_invitation(
+            owner,
+            label="Self clone",
+            device_key=member["device_key"],
+            scopes=[],
+            creator_kind="member",
+            creator_id=member["member_id"],
+        )
+    assert ambiguous.value.code == "mesh_identity_ambiguous"
+    assert store.get_member(owner, member["member_id"])["status"] == "active"
+
+
 def test_revoked_member_loses_authority(store):
     result, fields, private_key = _make_invitation(store, "owner-revoke")
     outcome = _confirm_and_redeem(store, result["invitation"], fields, private_key)
