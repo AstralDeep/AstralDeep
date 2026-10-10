@@ -385,7 +385,7 @@ def test_strict_peer_interrupted_request_is_refused_as_unsupported_continuation(
         peer.close()
 
 
-def test_non_blocking_lifecycle_observes_completion_without_a_second_execution(monkeypatch):
+def test_new_dispatch_after_peer_completion_returns_the_completed_output(monkeypatch):
     from orchestrator.orchestrator import Orchestrator
 
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
