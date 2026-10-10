@@ -119,6 +119,35 @@ def _artifact_path_for_tool(agent_id: str, tool_name: str) -> str:
     return f"techniques/{slug}__{tool_name}.md"
 
 
+# PostgreSQL text values reject NUL (0x00) and the code points it cannot store in
+# a text column. Untrusted feedback comments, on-disk knowledge artifacts and
+# LLM-refined text all reach `_proposed_content`/`insert_proposal`, so strip those
+# characters at entry rather than letting the insert raise and drop the proposal.
+_POSTGRES_UNSTORABLE = frozenset({
+    "\x00",      # NUL — the reported failure
+    "\u2028",    # LINE SEPARATOR
+    "\u2029",    # PARAGRAPH SEPARATOR
+    "\ufffe",    # noncharacter
+    "\uffff",    # noncharacter
+})
+_SURROGATE_RANGE = range(0xD800, 0xE000)
+
+
+def _sanitize_for_postgres(value: Optional[str]) -> str:
+    """Drop characters a PostgreSQL text value cannot hold.
+
+    Everything else is preserved unchanged, including the newlines and tabs the
+    proposal body relies on and valid multi-byte Unicode.
+    """
+    if not isinstance(value, str):
+        return ""
+    return "".join(
+        ch
+        for ch in value
+        if ch not in _POSTGRES_UNSTORABLE and ord(ch) not in _SURROGATE_RANGE
+    )
+
+
 def _proposed_content(
     *,
     existing_content: str,
@@ -155,7 +184,7 @@ def _proposed_content(
         samples = ["## Recent user-feedback excerpts (untrusted; for context only)\n"]
         for s in sample_comments:
             cat = s.get("category", "unspecified")
-            text = (s.get("comment") or "").replace("\n", " ").strip()
+            text = _sanitize_for_postgres(s.get("comment") or "").replace("\n", " ").strip()
             if len(text) > 280:
                 text = text[:280] + "…"
             samples.append(f"- *(category: {cat})* {text}")
@@ -178,6 +207,7 @@ async def generate_for_underperforming(
             artifact_abs = _ensure_within_knowledge_root(artifact_rel)
             artifact_abs.parent.mkdir(parents=True, exist_ok=True)
             existing_content = artifact_abs.read_text(encoding="utf-8") if artifact_abs.exists() else ""
+            existing_content = _sanitize_for_postgres(existing_content)
             sha_at_gen = _sha256_of_path(artifact_abs)
 
             cb = repo.category_breakdown(snap.agent_id, snap.tool_name,
@@ -207,7 +237,7 @@ async def generate_for_underperforming(
                 try:
                     refined = await refine_with_llm(proposed)
                     if refined and isinstance(refined, str) and refined.strip():
-                        proposed = refined
+                        proposed = _sanitize_for_postgres(refined)
                 except Exception as exc:
                     logger.warning("synth LLM refinement failed for %s/%s: %s",
                                     snap.agent_id, snap.tool_name, exc)
