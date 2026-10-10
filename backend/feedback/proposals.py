@@ -55,14 +55,25 @@ def _sha256_of_path(p: Path) -> str:
     return h.hexdigest()
 
 
-def _make_unified_diff(old: str, new: str, artifact_path: str) -> str:
-    diff = difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
+def _make_unified_diff(old: str, new: str, artifact_path: str) -> tuple[str, str]:
+    """Build a unified diff between old and new, with NUL characters replaced
+    by U+FFFD REPLACEMENT CHARACTER so the diff is valid UTF-8 and
+    PostgreSQL can store it.
+
+    Returns ``(sanitized_old, diff)``. The caller MUST use the returned
+    ``sanitized_old`` (and not the original) when later applying the diff
+    via :func:`_apply_unified_diff`, otherwise the ``-`` / context lines
+    won't match the on-disk file (which may still contain the NUL).
+    """
+    sanitized_old = old.replace("\x00", "\ufffd")
+    sanitized_new = new.replace("\x00", "\ufffd")
+    diff = "".join(difflib.unified_diff(
+        sanitized_old.splitlines(keepends=True),
+        sanitized_new.splitlines(keepends=True),
         fromfile=f"a/{artifact_path}",
         tofile=f"b/{artifact_path}",
-    )
-    return "".join(diff)
+    ))
+    return sanitized_old, diff
 
 
 # Must parse exactly what _make_unified_diff produces
@@ -212,7 +223,13 @@ async def generate_for_underperforming(
                     logger.warning("synth LLM refinement failed for %s/%s: %s",
                                     snap.agent_id, snap.tool_name, exc)
 
-            diff = _make_unified_diff(existing_content, proposed, artifact_rel)
+            # PostgreSQL text values cannot hold NUL (\x00). Any of the three
+            # inputs (existing artifact, LLM-proposed, LLM-refined) may carry
+            # a NUL — sanitize inside _make_unified_diff so the diff is
+            # well-formed AND the same sanitized existing_content reaches
+            # _apply_unified_diff later (so '-' and ' ' lines match the
+            # on-disk file byte-for-byte after the fix lands).
+            existing_content, diff = _make_unified_diff(existing_content, proposed, artifact_rel)
             if not diff.strip():
                 continue
 
