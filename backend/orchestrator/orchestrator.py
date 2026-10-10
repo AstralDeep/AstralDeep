@@ -11018,7 +11018,9 @@ class Orchestrator:
                             "connection_generation": msg.connection_generation or msg.payload.get("connection_generation"),
                             "request_generation": msg.request_generation or msg.payload.get("request_generation"),
                         })
-                    await self._safe_send(websocket, json.dumps(device_ack))
+                    registration_context = getattr(self, "_connection_contexts", {}).get(id(websocket))
+                    if not getattr(registration_context, "work_registrations_pending", 0):
+                        await self._safe_send(websocket, json.dumps(device_ack))
                     if (self.ui_sessions.get(websocket) is not registration
                             or self._get_user_id(websocket) != user_id):
                         return
