@@ -206,8 +206,9 @@ def test_message_response_still_maps_to_a_result():
 
 
 class _StrictTaskPeer:
-    def __init__(self, mode="complete"):
+    def __init__(self, mode="complete", dedupe=True):
         self.mode = mode
+        self.dedupe = dedupe
         self.executions = 0
         self.message_sends = 0
         self.task_gets = 0
@@ -264,19 +265,26 @@ class _StrictTaskPeer:
         method = payload.get("method")
         params = payload.get("params") or {}
         if method in ("SendMessage", "message/send"):
+            message = params["message"]
+            if method == "SendMessage":
+                assert message.get("messageId"), "Message.messageId is required"
+                assert message.get("role"), "Message.role is required"
+            else:
+                assert message.get("message_id"), "Message.message_id is required"
+                assert message.get("role"), "Message.role is required"
+            assert isinstance(message.get("parts"), list) and message["parts"], \
+                "Message.parts is required"
             self.message_sends += 1
             if method == "SendMessage":
                 self.v1_sends += 1
-            message = params["message"]
             data = next(part["data"] for part in message["parts"] if "data" in part)
             assert data["method"] == "tools/call"
             key = data["arguments"]["idempotency_key"]
-            if key not in self._executed_keys:
+            if not self.dedupe or key not in self._executed_keys:
                 self._executed_keys.add(key)
                 self.executions += 1
             configuration = params.get("configuration") or {}
-            if "returnImmediately" in configuration:
-                assert configuration["returnImmediately"] is True
+            if configuration.get("returnImmediately") is True:
                 result = self._task_payload("TASK_STATE_WORKING")
             elif self.mode == "complete":
                 self.completed = True
@@ -381,7 +389,7 @@ def test_non_blocking_lifecycle_observes_completion_without_a_second_execution(m
     from orchestrator.orchestrator import Orchestrator
 
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
-    peer = _StrictTaskPeer(mode="interrupted")
+    peer = _StrictTaskPeer(mode="interrupted", dedupe=False)
     try:
         orchestrator = _orchestrator_toward(peer)
         refusal = asyncio.run(Orchestrator._execute_via_a2a(
@@ -394,8 +402,8 @@ def test_non_blocking_lifecycle_observes_completion_without_a_second_execution(m
         assert refusal.error["message"] == "provide a patient id"
         assert refusal.error["task_id"] == peer.task_id
         assert refusal.error["context_id"] == peer.context_id
-        assert peer.executions == 1
         assert peer.message_sends == 1
+        assert peer.executions == 1
 
         client_view = peer.call("GetTask", {"id": peer.task_id})
         assert client_view["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
@@ -408,9 +416,94 @@ def test_non_blocking_lifecycle_observes_completion_without_a_second_execution(m
             orchestrator, "remote-1", "draft_report", _tool_args()))
         assert resolved.error is None
         assert resolved.result == "final output"
-        assert peer.executions == 1
         assert peer.message_sends == 2
+        assert peer.executions == 2
         assert peer.task_gets == 1
+        assert peer.errors == []
+    finally:
+        peer.close()
+
+
+def test_repeated_dispatch_of_an_unfinished_task_does_not_resend(monkeypatch):
+    from orchestrator import hitl_confirmation
+    from orchestrator.orchestrator import Orchestrator
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setattr(hitl_confirmation, "approved_call", lambda *args, **kwargs: False)
+    peer = _StrictTaskPeer(mode="interrupted", dedupe=False)
+    try:
+        orchestrator = _orchestrator_toward(peer)
+        attempts = []
+        refusal = asyncio.run(Orchestrator._execute_via_a2a(
+            orchestrator, "remote-1", "draft_report", _tool_args()))
+        assert refusal.error["continuation"] == "unsupported"
+        assert peer.executions == 1
+        assert peer.message_sends == 1
+
+        async def _execute_tool_and_wait(agent_id, tool_name, args, **kwargs):
+            attempts.append((agent_id, tool_name))
+            return refusal
+
+        orchestrator.MAX_RETRIES = 3
+        orchestrator.RETRY_BACKOFF = (0.01, 0.01)
+        orchestrator.execute_tool_and_wait = _execute_tool_and_wait
+        orchestrator._protected_dispatch_channel = (
+            lambda websocket, explicit=None: "dispatch")
+        result = asyncio.run(Orchestrator._execute_with_retry(
+            orchestrator, None, "remote-1", "draft_report", _tool_args(),
+            max_retries=3, user_id="owner"))
+        assert attempts == [("remote-1", "draft_report")]
+        assert result is refusal
+        assert peer.message_sends == 1
+        assert peer.executions == 1
+        assert peer.errors == []
+    finally:
+        peer.close()
+
+
+def test_strict_peer_rejects_messages_missing_required_fields():
+    peer = _StrictTaskPeer(mode="complete")
+    try:
+        for broken in (
+                {"role": "ROLE_USER", "parts": [{"text": "x"}]},
+                {"messageId": "m-1", "parts": [{"text": "x"}]},
+                {"messageId": "m-1", "role": "ROLE_USER"}):
+            with pytest.raises(Exception):
+                peer.call("SendMessage", {"message": broken})
+        assert peer.message_sends == 0
+        assert len(peer.errors) == 3
+        assert peer.executions == 0
+    finally:
+        peer.close()
+
+
+def test_strict_peer_rejects_v03_messages_missing_required_fields():
+    peer = _StrictTaskPeer(mode="complete")
+    try:
+        for broken in (
+                {"role": "ROLE_USER", "parts": [{"text": "x"}]},
+                {"message_id": "m-1", "parts": [{"text": "x"}]},
+                {"message_id": "m-1", "role": "ROLE_USER"}):
+            with pytest.raises(Exception):
+                peer.call("message/send", {"message": broken})
+        assert peer.message_sends == 0
+        assert len(peer.errors) == 3
+        assert peer.executions == 0
+    finally:
+        peer.close()
+
+
+def test_explicit_return_immediately_false_uses_blocking_semantics():
+    peer = _StrictTaskPeer(mode="complete")
+    try:
+        response = peer.call("SendMessage", {
+            "message": {"messageId": "m-1", "role": "ROLE_USER",
+                        "parts": [{"data": {"method": "tools/call", "name": "draft_report",
+                                            "arguments": _tool_args()}}]},
+            "configuration": {"returnImmediately": False}})
+        assert response["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+        assert peer.executions == 1
+        assert peer.v1_sends == 1
         assert peer.errors == []
     finally:
         peer.close()
