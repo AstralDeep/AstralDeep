@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 
 def qualification_pilot_enabled() -> bool:
@@ -28,7 +29,7 @@ class SemanticScoringWeights:
     w_pagerank: float = 0.10
     w_salience: float = 0.05
 
-    def normalized(self) -> Dict[str, float]:
+    def normalized(self) -> dict[str, float]:
         total = (
             self.w_lexical
             + self.w_semantic
@@ -72,14 +73,14 @@ def compute_lexical_similarity(query: str, target: str) -> float:
 def compute_semantic_embedding_similarity(
     query_text: str,
     target_text: str,
-    embedder: Optional[Callable[[str], Sequence[float]]] = None,
+    embedder: Callable[[str], Sequence[float]] | None = None,
 ) -> float:
     """Compute cosine similarity between query and memory item."""
     if not query_text or not target_text:
         return 0.0
     if embedder is None:
         # High-signal char n-gram cosine fallback for offline qualification
-        def ngrams(text: str, n: int = 3) -> Dict[str, int]:
+        def ngrams(text: str, n: int = 3) -> dict[str, int]:
             clean = re.sub(r"\s+", " ", text.lower().strip())
             return {clean[i:i+n]: clean.count(clean[i:i+n]) for i in range(max(0, len(clean) - n + 1))}
         
@@ -115,7 +116,7 @@ class ScoredCandidate:
     recency_score: float
     pagerank_score: float
     salience_score: float
-    item: Dict[str, Any]
+    item: dict[str, Any]
 
 
 class OwnerScopedSemanticReranker:
@@ -127,9 +128,9 @@ class OwnerScopedSemanticReranker:
 
     def __init__(
         self,
-        weights: Optional[SemanticScoringWeights] = None,
-        embedder: Optional[Callable[[str], Sequence[float]]] = None,
-        thresholds: Optional[QualificationThresholds] = None,
+        weights: SemanticScoringWeights | None = None,
+        embedder: Callable[[str], Sequence[float]] | None = None,
+        thresholds: QualificationThresholds | None = None,
     ):
         self.weights = weights or SemanticScoringWeights()
         self.embedder = embedder
@@ -139,10 +140,10 @@ class OwnerScopedSemanticReranker:
         self,
         owner_id: str,
         query: str,
-        items: Sequence[Dict[str, Any]],
+        items: Sequence[dict[str, Any]],
         limit: int = 10,
         enforce_owner_isolation: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Filter by owner and rank items using composite multi-signal weights."""
         if not items:
             return []
@@ -161,7 +162,7 @@ class OwnerScopedSemanticReranker:
 
         total_count = len(scoped_items)
         w = self.weights.normalized()
-        scored: List[ScoredCandidate] = []
+        scored: list[ScoredCandidate] = []
 
         for idx, item in enumerate(scoped_items):
             item_text = str(item.get("value") or item.get("content") or item.get("text") or "")
@@ -212,7 +213,7 @@ class OwnerScopedSemanticReranker:
     @staticmethod
     def evaluate_ndcg_at_k(
         ranked_ids: Sequence[str],
-        ground_truth_relevance: Dict[str, float],
+        ground_truth_relevance: dict[str, float],
         k: int = 5,
     ) -> float:
         """Compute Normalized Discounted Cumulative Gain at K."""
@@ -246,7 +247,7 @@ class OwnerScopedSemanticReranker:
     @staticmethod
     def verify_isolation(
         owner_id: str,
-        returned_items: Sequence[Dict[str, Any]],
+        returned_items: Sequence[dict[str, Any]],
     ) -> float:
         """Calculate owner leakage rate (must be 0.0)."""
         if not returned_items:
