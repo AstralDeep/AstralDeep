@@ -157,6 +157,35 @@ _VOICE_REQUEST_PROCESSING_MESSAGE = (
 )
 
 
+_MAX_TOOL_EXTRA_CONTENT_BYTES = 8192
+
+
+def _bounded_extra_content(tool_call: Any) -> Optional[Dict[str, Any]]:
+    """Return allowlisted, bounded Gemini continuation metadata from a streamed
+    tool-call delta, or None.
+
+    Only ``extra_content.google.thought_signature`` (a string) is kept. Unknown
+    provider fields are dropped and oversized or malformed values are ignored.
+    The value is opaque: it is never parsed, merged or fabricated.
+    """
+    extra = getattr(tool_call, "extra_content", None)
+    if extra is None:
+        model_extra = getattr(tool_call, "model_extra", None)
+        if isinstance(model_extra, dict):
+            extra = model_extra.get("extra_content")
+    if not isinstance(extra, dict):
+        return None
+    google = extra.get("google")
+    if not isinstance(google, dict):
+        return None
+    signature = google.get("thought_signature")
+    if not isinstance(signature, str) or not signature:
+        return None
+    if len(signature.encode("utf-8")) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
+        return None
+    return {"google": {"thought_signature": signature}}
+
+
 class _SafeLLMErrorMetadata(NamedTuple):
     exception_class: str
     status_code: Optional[int]
@@ -16225,6 +16254,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             idx, {"id": None, "name": "", "arguments": ""})
                         if getattr(tc, "id", None):
                             acc["id"] = tc.id
+                        extra = _bounded_extra_content(tc)
+                        if extra is not None:
+                            acc["extra_content"] = extra
                         fn = getattr(tc, "function", None)
                         if fn is not None:
                             if getattr(fn, "name", None):
@@ -16294,18 +16326,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             try:
                 from openai.types.chat.chat_completion_message_tool_call import (
                     ChatCompletionMessageToolCall, Function)
-                tool_calls = [
-                    ChatCompletionMessageToolCall(
+                tool_calls = []
+                for i, acc in enumerate(ordered):
+                    extras = ({"extra_content": acc["extra_content"]}
+                              if acc.get("extra_content") else {})
+                    tool_calls.append(ChatCompletionMessageToolCall(
                         id=acc["id"] or f"call_{i}", type="function",
-                        function=Function(name=acc["name"], arguments=acc["arguments"]))
-                    for i, acc in enumerate(ordered)
-                ]
+                        function=Function(name=acc["name"], arguments=acc["arguments"]),
+                        **extras))
             except Exception:
                 tool_calls = [
                     SimpleNamespace(
                         id=acc["id"] or f"call_{i}", type="function",
                         function=SimpleNamespace(name=acc["name"],
-                                                 arguments=acc["arguments"]))
+                                                 arguments=acc["arguments"]),
+                        **({"extra_content": acc["extra_content"]}
+                           if acc.get("extra_content") else {}))
                     for i, acc in enumerate(ordered)
                 ]
         try:
