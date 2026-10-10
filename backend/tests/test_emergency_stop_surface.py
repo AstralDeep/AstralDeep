@@ -1,7 +1,5 @@
-"""Coverage for the emergency-stop shared UI: the Work-surface status mirror with its
-entry button, and the dedicated Safety surface's truthful status and resume guidance
-across the HTML and native SDUI dispositions. Mutations flow through the owner REST
-API and the astral_sdk CLI; both surfaces are read-only by the UI contract.
+"""Exercise shared emergency stop presentation and current-owner action controls.
+Work mirrors stop status; Safety uses the same durable coordinator as owner REST.
 """
 
 from __future__ import annotations
@@ -34,12 +32,12 @@ def _work_params():
     return {"mode": "list", "status": "ready"}
 
 
-def test_surfaces_register_no_unmanifested_dispatch_actions():
+def test_safety_actions_are_registered_under_their_own_surface():
     from orchestrator.projection_surfaces import collect_handlers
 
     handlers = collect_handlers()
-    assert not {"chrome_safety_stop", "chrome_safety_resume",
-                "chrome_safety_verify"}.intersection(handlers)
+    for action in ("chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify"):
+        assert handlers[action][0] == "safety"
 
 
 def test_work_mirror_omits_the_card_without_a_coordinator():
@@ -86,23 +84,26 @@ def test_work_mirror_shows_unreachable_responder_truth():
     assert "remote:machine-9: unreachable" in html
 
 
-def test_safety_surface_shows_running_guidance_and_the_revision_when_stopped():
+def test_safety_surface_shows_actionable_owner_controls_and_current_resume_revision():
     orch = _orch(EmergencyStopCoordinator())
     html = asyncio.run(safety_surface.render(orch, OWNER, [], {}))
     assert "Emergency stop" in html
     assert "Running" in html
-    assert "/api/emergency-stop/stop" in html
-    assert "astral_sdk" in html
+    assert "Stop everything now" in html and "chrome_safety_stop" in html
     components = asyncio.run(safety_surface.components(orch, OWNER, [], {}))
     card = next(item for item in components if item["type"] == "card"
                 and item["title"].startswith("Emergency stop"))
-    assert not [child for child in card["content"] if child["type"] == "button"]
+    buttons = [child for child in card["content"] if child["type"] == "button"]
+    assert len(buttons) == 2 and all(button["variant"] == "primary" for button in buttons)
+    assert all(button["disabled"] is False and button["local"] is False for button in buttons)
+    assert buttons[0]["action"] == "chrome_safety_stop"
 
     asyncio.run(orch.emergency_stop.engage(OWNER, reason="drill", sweep=False))
     stopped = asyncio.run(safety_surface.render(orch, OWNER, [], {}))
     assert "Stopped" in stopped
     assert "Current revision for resume: 1" in stopped
     assert "drill" in stopped
+    assert "chrome_safety_resume" in stopped and "chrome_safety_stop" not in stopped
 
 
 def test_safety_surface_reports_unavailability_without_a_coordinator():
@@ -118,3 +119,9 @@ def test_safety_surface_is_registered_for_chrome_open():
 
     assert SURFACE_MODULES.get("safety") == "orchestrator.projection_surfaces.safety"
     assert get_surface("safety") is safety_surface
+
+
+def test_nonportable_resume_revision_suppresses_control_and_explains_unavailability():
+    value = {"state": "stopped", "engaged": True, "revision": 9007199254740992}
+    assert [row["action"] for row in safety_surface._controls(value)] == ["chrome_safety_verify"]
+    assert "Resume is unavailable" in " ".join(safety_surface._rows(value))

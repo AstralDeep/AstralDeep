@@ -835,6 +835,19 @@ class JobRunner:
         *,
         claim_lost: asyncio.Event,
     ) -> OccurrenceRunResult:
+        from orchestrator.emergency_stop import EmergencyStopRefused
+
+        stop = getattr(self.orch, "emergency_stop", None)
+        if stop is not None:
+            try:
+                async with stop.effect(str(attempt.job["user_id"])):
+                    return await self._run_occurrence(attempt, claim_lost=claim_lost)
+            except EmergencyStopRefused:
+                return OccurrenceRunResult("failure", "Owner emergency stop is active",
+                    str(attempt.operation_id), False, "emergency_stop_active")
+        return await self._run_occurrence(attempt, claim_lost=claim_lost)
+
+    async def _run_occurrence(self, attempt: ScheduledAttempt, *, claim_lost: asyncio.Event) -> OccurrenceRunResult:
         decision = self.assess_job(attempt.job)
         if not decision.eligible:
             self._observe_scheduler(
@@ -1052,6 +1065,13 @@ class JobRunner:
         )
 
     async def run_job(self, job: Dict[str, Any]) -> str:
+        stop = getattr(self.orch, "emergency_stop", None)
+        if stop is not None:
+            async with stop.effect(str(job["user_id"])):
+                return await self._run_job(job)
+        return await self._run_job(job)
+
+    async def _run_job(self, job: Dict[str, Any]) -> str:
         user_id = job["user_id"]
         job_id = job["id"]
         correlation_id = str(uuid.uuid4())

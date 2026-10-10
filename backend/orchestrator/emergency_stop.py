@@ -10,7 +10,9 @@ import logging
 import math
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -32,6 +34,12 @@ REMOTE_PREFIX = "remote:"
 _MAX_RESPONDERS = 64
 _MAX_REASON = 280
 _MAX_METAS = 32
+_INTERRUPTION_TIMEOUT_SECONDS = 6.0
+_effect_epochs = ContextVar("emergency_stop_effect_epochs", default=None)
+
+
+def current_effect_epoch(owner_id: str) -> int | None:
+    return (_effect_epochs.get() or {}).get(owner_id)
 
 
 class EmergencyStopRefused(Exception):
@@ -39,6 +47,14 @@ class EmergencyStopRefused(Exception):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+
+
+async def await_interruption(tasks) -> None:
+    pending = {task for task in tasks if task is not asyncio.current_task() and not task.done()}
+    if pending:
+        _, unfinished = await asyncio.wait(pending, timeout=_INTERRUPTION_TIMEOUT_SECONDS)
+        if unfinished:
+            raise EmergencyStopRefused("emergency_stop_unavailable", 503)
 
 
 @dataclass(frozen=True)
@@ -64,6 +80,7 @@ class _StopState:
     reason: str
     revision: int
     audit_durable: bool = True
+    epoch: int = 1
     responders: dict[str, ResponderRow] = field(default_factory=dict)
 
     def overall(self) -> str:
@@ -91,6 +108,7 @@ class _StopState:
             "engaged": True,
             "state": self.overall(),
             "revision": self.revision,
+            "epoch": self.epoch,
             "engaged_at": self.engaged_at,
             "engaged_by": self.engaged_by,
             "reason": self.reason,
@@ -125,12 +143,18 @@ class EmergencyStopCoordinator:
         remote_responders: Callable[[str], list[str]] | None = None,
         probe_responder: Callable[[str, str], Awaitable[str]] | None = None,
         rearm_loader: Callable[[str], dict[str, Any] | None] | None = None,
+        fresh_rearm: bool = False,
+        interrupt: Callable[[str, asyncio.Task], Awaitable[None]] | None = None,
     ) -> None:
         self._clock = clock or time.time
         self._audit = audit
         self._remote_responders = remote_responders
         self._probe_responder = probe_responder
         self._rearm_loader = rearm_loader
+        self._fresh_rearm = fresh_rearm
+        self._interrupt = interrupt
+        self._effects: dict[str, dict[asyncio.Task, int]] = {}
+        self._epochs: dict[str, int] = {}
         self._lock = threading.RLock()
         self._states: dict[str, _StopState] = {}
         self._revisions: dict[str, int] = {}
@@ -140,13 +164,15 @@ class EmergencyStopCoordinator:
 
     async def _record(self, action: str, outcome: str, *, owner_id: str,
                       claims: dict | None = None, detail: dict[str, Any] | None = None,
-                      committed: Callable[[], None] | None = None) -> None:
+                      committed: Callable[[Any], None] | None = None, caller=None) -> None:
         if self._audit is None:
             if committed is not None:
-                committed()
+                committed(None)
             return
-        task = asyncio.create_task(self._audit(
-            action, outcome, owner_id=owner_id, claims=claims, detail=detail or {}))
+        kwargs = {"owner_id": owner_id, "claims": claims, "detail": detail or {}}
+        if caller is not None:
+            kwargs["caller"] = caller
+        task = asyncio.create_task(self._audit(action, outcome, **kwargs))
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -158,18 +184,20 @@ class EmergencyStopCoordinator:
                 except Exception:
                     break
             try:
-                task.result()
+                receipt = task.result()
             except (asyncio.CancelledError, Exception):
                 logger.warning("emergency_stop cancelled audit failed", exc_info=True)
             else:
                 if committed is not None:
-                    committed()
+                    committed(receipt)
+            raise
+        except EmergencyStopRefused:
             raise
         except Exception:
             logger.warning("emergency_stop audit transition failed", exc_info=True)
             raise EmergencyStopRefused("emergency_stop_unavailable", 503) from None
         if committed is not None:
-            committed()
+            committed(task.result())
 
     def _transition_lock(self, owner_id: str) -> asyncio.Lock:
         with self._lock:
@@ -204,7 +232,10 @@ class EmergencyStopCoordinator:
 
     def _load_rearm(self, owner_id: str) -> _StopState | None:
         with self._lock:
-            if owner_id in self._states or owner_id in self._rearm_checked:
+            existing = self._states.get(owner_id)
+            if existing is not None and not existing.audit_durable:
+                return existing
+            if not self._fresh_rearm and (owner_id in self._states or owner_id in self._rearm_checked):
                 return self._states.get(owner_id)
         if self._rearm_loader is None:
             with self._lock:
@@ -217,9 +248,12 @@ class EmergencyStopCoordinator:
                            owner_id, exc_info=True)
             raise EmergencyStopRefused("emergency_stop_unavailable", 503) from None
         with self._lock:
-            if owner_id in self._states:
+            if not self._fresh_rearm and owner_id in self._states:
                 return self._states[owner_id]
             if durable is None:
+                self._states.pop(owner_id, None)
+                self._revisions[owner_id] = 0
+                self._epochs[owner_id] = 0
                 self._rearm_checked.add(owner_id)
                 return None
             if (not isinstance(durable, dict) or not isinstance(durable.get("engaged"), bool)
@@ -228,7 +262,12 @@ class EmergencyStopCoordinator:
                     or not 1 <= durable["revision"] <= 2**63 - 1):
                 raise EmergencyStopRefused("emergency_stop_unavailable", 503)
             self._revisions[owner_id] = durable["revision"]
+            epoch = durable.get("epoch", durable["revision"])
+            if type(epoch) is not int or not 0 <= epoch <= 2**63 - 1:
+                raise EmergencyStopRefused("emergency_stop_unavailable", 503)
+            self._epochs[owner_id] = epoch
             if not durable["engaged"]:
+                self._states.pop(owner_id, None)
                 self._rearm_checked.add(owner_id)
                 return None
             engaged_at = durable.get("engaged_at")
@@ -237,10 +276,15 @@ class EmergencyStopCoordinator:
                     or durable.get("engaged_by") != owner_id
                     or not isinstance(durable.get("reason"), str)):
                 raise EmergencyStopRefused("emergency_stop_unavailable", 503)
+            existing = self._states.get(owner_id)
+            if (self._fresh_rearm and existing is not None and existing.revision == durable["revision"]
+                    and existing.epoch == epoch):
+                return existing
             now = self._clock()
             state = _StopState(
                 engaged_at=float(engaged_at), engaged_by=owner_id,
                 reason=_clean_reason(durable["reason"]), revision=durable["revision"],
+                epoch=self._epochs[owner_id],
             )
             self._register_responders(state, owner_id, now)
             self._states[owner_id] = state
@@ -252,6 +296,7 @@ class EmergencyStopCoordinator:
         if state is None:
             return {"engaged": False, "state": STATE_RUNNING,
                     "revision": self._revisions.get(owner_id, 0),
+                    "epoch": self._epochs.get(owner_id, 0),
                     "engaged_at": None, "engaged_by": None, "reason": None, "responders": []}
         return state.status()
 
@@ -277,7 +322,7 @@ class EmergencyStopCoordinator:
         return state is None
 
     async def engage(self, owner_id: str, *, reason: Any = None, claims: dict | None = None,
-                     sweep: bool = True) -> dict[str, Any]:
+                     sweep: bool = True, caller=None) -> dict[str, Any]:
         reason = _clean_reason(reason)
         async with self._transition_lock(owner_id):
             self._load_rearm(owner_id)
@@ -289,17 +334,66 @@ class EmergencyStopCoordinator:
                 if state is None:
                     revision = self._next_revision_locked(owner_id)
                     state = _StopState(now, owner_id, reason, revision, audit_durable=False)
+                    state.epoch = self._epochs.get(owner_id, 0) + 1
                     self._states[owner_id] = state
                     self._revisions[owner_id] = revision
                     self._register_responders(state, owner_id, now)
                 self._rearm_checked.add(owner_id)
-            def persisted() -> None:
+            def persisted(receipt) -> None:
                 with self._lock:
+                    if isinstance(receipt, dict):
+                        state.revision = receipt["revision"]
+                        state.epoch = receipt["epoch"]
+                        state.engaged_at = receipt["engaged_at"]
+                        state.engaged_by = receipt["engaged_by"]
+                        state.reason = receipt["reason"]
+                        self._revisions[owner_id] = state.revision
+                    self._epochs[owner_id] = state.epoch
                     state.audit_durable = True
 
-            await self._record("emergency_stop.engage", "success", owner_id=owner_id, claims=claims,
-                               detail={"revision": state.revision, "engaged_at": state.engaged_at,
-                                       "reason": state.reason}, committed=persisted)
+            with self._lock:
+                control_task = asyncio.current_task()
+                tasks = tuple(task for task in self._effects.get(owner_id, ())
+                              if task is not control_task and not task.done())
+                if self._interrupt is not None or tasks:
+                    state.responders[LOCAL_RESPONDER] = ResponderRow(
+                        LOCAL_RESPONDER, "local", RESPONDER_PENDING, now)
+            for task in tasks:
+                task.cancel()
+
+            async def interrupt() -> None:
+                if self._interrupt is not None:
+                    await self._interrupt(owner_id, control_task)
+                await await_interruption(tasks)
+
+            interruption = (asyncio.create_task(interrupt())
+                            if self._interrupt is not None or tasks else None)
+            try:
+                await self._record("emergency_stop.engage", "success", owner_id=owner_id, claims=claims,
+                                   detail={"revision": state.revision, "engaged_at": state.engaged_at,
+                                           "epoch": state.epoch, "reason": state.reason},
+                                   committed=persisted, caller=caller)
+            finally:
+                if interruption is not None:
+                    cancelled = False
+                    while not interruption.done():
+                        try:
+                            await asyncio.shield(interruption)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                            continue
+                        except Exception:
+                            break
+                    try:
+                        interruption.result()
+                    except (asyncio.CancelledError, Exception):
+                        self._set_responder(owner_id, LOCAL_RESPONDER, RESPONDER_UNREACHABLE,
+                                            expected_revision=state.revision)
+                        raise EmergencyStopRefused("emergency_stop_unavailable", 503) from None
+                    self._set_responder(owner_id, LOCAL_RESPONDER, RESPONDER_ACKNOWLEDGED,
+                                        expected_revision=state.revision)
+                    if cancelled:
+                        raise asyncio.CancelledError
             with self._lock:
                 status = state.status()
             if sweep:
@@ -313,7 +407,7 @@ class EmergencyStopCoordinator:
         return base + 1
 
     async def resume(self, owner_id: str, *, expected_revision: Any, actor_id: str | None = None,
-                     claims: dict | None = None) -> dict[str, Any]:
+                     claims: dict | None = None, caller=None) -> dict[str, Any]:
         expected_revision = _revision_value(expected_revision)
         async with self._transition_lock(owner_id):
             self._load_rearm(owner_id)
@@ -330,21 +424,60 @@ class EmergencyStopCoordinator:
                     denial = "emergency_stop_resume_denied"
                 else:
                     denial = None
-            def persisted() -> None:
+            def persisted(receipt) -> None:
                 with self._lock:
-                    del self._states[owner_id]
+                    if self._states.get(owner_id) is state:
+                        self._states.pop(owner_id, None)
+                    if isinstance(receipt, dict):
+                        self._revisions[owner_id] = max(self._revisions.get(owner_id, 0), receipt["revision"])
 
             await self._record("emergency_stop.resume",
                                "success" if denial is None else "failure",
                                owner_id=owner_id, claims=claims,
                                detail={"expected_revision": expected_revision,
                                        "current_revision": revision, "denial": denial},
-                               committed=persisted if denial is None else None)
+                               committed=persisted if denial is None else None, caller=caller)
             if denial is not None:
                 raise EmergencyStopRefused(
                     denial, 403 if denial == "emergency_stop_resume_denied" else 409)
             with self._lock:
                 return self._status_locked(owner_id)
+
+    @asynccontextmanager
+    async def effect(self, owner_id: str):
+        if not self.admission_allowed(owner_id):
+            raise EmergencyStopRefused("emergency_stop_active", 423)
+        task = asyncio.current_task()
+        with self._lock:
+            if owner_id in self._states:
+                raise EmergencyStopRefused("emergency_stop_active", 423)
+            tasks = self._effects.setdefault(owner_id, {})
+            tasks[task] = tasks.get(task, 0) + 1
+            epoch = self._epochs.get(owner_id, 0)
+        previous = _effect_epochs.get() or {}
+        if owner_id in previous and previous[owner_id] != epoch:
+            with self._lock:
+                tasks[task] -= 1
+                if not tasks[task]:
+                    tasks.pop(task)
+                if not tasks:
+                    self._effects.pop(owner_id, None)
+            raise EmergencyStopRefused("emergency_stop_stale_epoch", 423)
+        token = _effect_epochs.set({**previous, owner_id: epoch})
+        try:
+            yield
+        finally:
+            _effect_epochs.reset(token)
+            with self._lock:
+                tasks = self._effects.get(owner_id)
+                if tasks is not None:
+                    count = tasks.get(task, 0)
+                    if count > 1:
+                        tasks[task] = count - 1
+                    else:
+                        tasks.pop(task, None)
+                    if not tasks:
+                        self._effects.pop(owner_id, None)
 
     def _set_responder(self, owner_id: str, responder: str, state_name: str,
                        *, expected_revision: int | None = None) -> bool:

@@ -265,17 +265,11 @@ class FrameworkWorkOperations:
     async def emergency_stop(self, caller: FrameworkCaller, *, reason: Optional[str] = None) -> dict:
         _require_scope(caller, "operations.control")
         return await self._translated(lambda: self._emergency().engage(
-            caller.owner_id, reason=reason, claims={"sub": caller.owner_id}))
+            caller.owner_id, reason=reason, caller=caller))
 
     async def emergency_resume(self, caller: FrameworkCaller, *, expected_revision) -> dict:
         _require_scope(caller, "operations.control")
-        try:
-            revision = _revision(expected_revision)
-        except AssignmentError:
-            raise AssignmentError("emergency_stop_invalid", 422) from None
-        return await self._translated(lambda: self._emergency().resume(
-            caller.owner_id, expected_revision=revision,
-            actor_id=caller.owner_id, claims={"sub": caller.owner_id}))
+        raise AssignmentError("emergency_stop_owner_authentication_required", 403)
 
 
 DISPATCHABLE_TOOL_NAMES = (

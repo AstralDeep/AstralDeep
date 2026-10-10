@@ -1860,6 +1860,12 @@ class BackgroundTaskManager:
         user_tasks.sort(key=lambda task: task.created_at, reverse=True)
         return user_tasks[:limit]
 
+    async def cancel_for_owner(self, owner_id: str) -> None:
+        async with self._lock:
+            identifiers = tuple(task.task_id for task in self._tasks.values() if task.user_id == owner_id)
+        for identifier in identifiers:
+            await self.cancel(identifier)
+
     async def get_active_for_chat(self, chat_id: str) -> Optional[BackgroundTask]:
         for task_id, task in tuple(self._tasks.items()):
             if task.chat_id != chat_id:

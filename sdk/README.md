@@ -115,3 +115,11 @@ python -m astral_sdk cancel <operation_id> --expected-revision 2
 `--base-url`/`--token` may also come from `$ASTRAL_BASE_URL`/`$ASTRAL_TOKEN`.
 Every command prints one JSON document to stdout on success, or a JSON error
 object to stderr with a non-zero exit code.
+
+`emergency-status` and `emergency-stop` accept a framework credential with the
+corresponding read or control scope. `emergency-resume --expected-revision N`
+requires a current owner Keycloak access token obtained through the existing
+product sign-in. Owner tokens use `/api/emergency-stop`; framework credentials
+use MCP for status and stop and are refused for resume. The SDK never retries
+owner control writes automatically after a transport failure: check status
+before making another explicit decision.

@@ -1,6 +1,5 @@
-"""Minimal real-socket fake implementing just the shape of Deep's MCP wire contract
-(JSON-RPC over POST /mcp) plus an in-memory Work-operation state machine, so
-sdk/tests can run offline without the real backend.
+"""Serve synthetic MCP and owner emergency REST wire shapes for SDK tests.
+The in-memory state complements backend authority and PostgreSQL qualification.
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ class FakeAstralState:
     def __init__(self, *, valid_token: str = "afk_test-token", scopes=frozenset(_SCOPE_FOR_TOOL.values())):
         self.lock = threading.Lock()
         self.valid_token = valid_token
+        self.owner_token = "synthetic-owner-access-token"
         self.scopes = frozenset(scopes)
         self.operations: dict[str, dict[str, Any]] = {}
         self.by_key: dict[str, str] = {}
@@ -70,6 +70,9 @@ class _Handler(BaseHTTPRequestHandler):
                         www_authenticate=challenge)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/emergency-stop/"):
+            self._owner_emergency()
+            return
         if self.path != "/mcp":
             self._error(None, 404, "not found")
             return
@@ -113,6 +116,28 @@ class _Handler(BaseHTTPRequestHandler):
             result = {"resultType": "complete", "content": [{"type": "text", "text": exc.code}],
                      "structuredContent": {}, "isError": True}
         self._send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._owner_emergency()
+
+    def _owner_emergency(self) -> None:
+        if self.headers.get("Authorization") != f"Bearer {self.state.owner_token}":
+            self._send_json(403, {"detail": "emergency_stop_owner_authentication_required"})
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        arguments = json.loads(self.rfile.read(length)) if length else {}
+        method = {"/api/emergency-stop": self._tool_astral_emergency_status,
+                  "/api/emergency-stop/stop": self._tool_astral_emergency_stop,
+                  "/api/emergency-stop/resume": self._tool_astral_emergency_resume}.get(self.path)
+        if method is None:
+            self._send_json(404, {"detail": "not found"})
+            return
+        try:
+            result = method(arguments)
+        except _ToolError as exc:
+            self._send_json(409, {"detail": exc.code})
+            return
+        self._send_json(200, result)
 
     def _call_tool(self, name: Optional[str], arguments: dict[str, Any]) -> dict[str, Any]:
         scope = _SCOPE_FOR_TOOL.get(name or "")

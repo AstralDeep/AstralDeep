@@ -188,15 +188,57 @@ def _meta_time(value: Any) -> float:
 
 def mount(orch):
     from orchestrator.emergency_stop import EmergencyStopCoordinator
+    from orchestrator.emergency_stop_store import EmergencyStopStore
+
+    store = EmergencyStopStore(orch)
+    orch.emergency_stop_store = store
 
     coordinator = EmergencyStopCoordinator(
-        audit=build_audit_hook(orch),
+        audit=store.transition,
         remote_responders=build_remote_responders(orch),
         probe_responder=lambda owner_id, responder: probe_responder(orch, owner_id, responder),
-        rearm_loader=build_rearm_loader(orch),
+        rearm_loader=store.load,
+        fresh_rearm=True,
+        interrupt=lambda owner_id, task: interrupt_owner(orch, owner_id, task),
     )
     orch.emergency_stop = coordinator
     return coordinator
+
+
+async def interrupt_owner(orch, owner_id, control_task=None):
+    from orchestrator.emergency_stop import await_interruption
+
+    current = asyncio.current_task()
+    tasks = set()
+    for context in tuple((getattr(orch, "_connection_contexts", None) or {}).values()):
+        claims = (getattr(orch, "ui_sessions", None) or {}).get(context.websocket)
+        if not isinstance(claims, dict) or claims.get("sub") != owner_id:
+            continue
+        for task in tuple(context.operation_tasks):
+            if task is not current and task is not control_task and not task.done():
+                tasks.add(task)
+                task.cancel()
+    managers = []
+    for manager_name in ("async_task_manager", "stream_manager"):
+        manager = getattr(orch, manager_name, None)
+        if manager is not None:
+            managers.append(asyncio.create_task(manager.cancel_for_owner(owner_id)))
+    try:
+        await await_interruption(tasks | set(managers))
+        for task in managers:
+            task.result()
+    finally:
+        for task in managers:
+            if not task.done():
+                task.cancel()
+                task.add_done_callback(_consume_interruption)
+
+
+def _consume_interruption(task):
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
 
 
 def submission_gate(orch):
@@ -208,7 +250,7 @@ def submission_gate(orch):
 
     def gate(request) -> str | None:
         owner = getattr(request, "owner", None)
-        if owner is None or owner.owner_scope is not OwnerScope.USER or not owner.owner_user_id:
+        if owner is None or owner.owner_scope not in {OwnerScope.USER, OwnerScope.SCHEDULE} or not owner.owner_user_id:
             return None
         return None if stop.admission_allowed(owner.owner_user_id) else "emergency_stop_active"
     return gate

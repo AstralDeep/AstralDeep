@@ -66,15 +66,15 @@ def test_emergency_operations_require_their_scopes():
     assert denied_resume.value.code == "framework_scope_required"
 
 
-def test_emergency_stop_and_resume_through_the_framework_facade():
+def test_framework_stop_cannot_invent_current_owner_resume_authority():
     coordinator = EmergencyStopCoordinator()
     ops, caller = _ops(coordinator)
     engaged = asyncio.run(ops.emergency_stop(caller, reason="drill"))
     assert engaged["engaged"] is True and engaged["state"] == "stopped"
     assert coordinator.admission_allowed(OWNER) is False
-    resumed = asyncio.run(ops.emergency_resume(caller, expected_revision=engaged["revision"]))
-    assert resumed["engaged"] is False
-    assert coordinator.admission_allowed(OWNER) is True
+    with pytest.raises(AssignmentError, match="emergency_stop_owner_authentication_required"):
+        asyncio.run(ops.emergency_resume(caller, expected_revision=engaged["revision"]))
+    assert coordinator.admission_allowed(OWNER) is False
 
 
 def test_emergency_operations_without_a_coordinator_fail_closed():
@@ -91,7 +91,7 @@ def test_emergency_resume_through_the_facade_rejects_bad_revisions():
     for bad in (None, "one", 0, True):
         with pytest.raises(AssignmentError) as invalid:
             asyncio.run(ops.emergency_resume(caller, expected_revision=bad))
-        assert invalid.value.code == "emergency_stop_invalid"
+        assert invalid.value.code == "emergency_stop_owner_authentication_required"
 
 
 def test_emergency_facade_surfaces_coordinator_denials():
@@ -99,13 +99,13 @@ def test_emergency_facade_surfaces_coordinator_denials():
     ops, caller = _ops(coordinator)
     with pytest.raises(AssignmentError) as not_engaged:
         asyncio.run(ops.emergency_resume(caller, expected_revision=1))
-    assert not_engaged.value.code == "emergency_stop_not_engaged"
+    assert not_engaged.value.code == "emergency_stop_owner_authentication_required"
     engaged = asyncio.run(ops.emergency_stop(caller))
     stale = FrameworkCaller(owner_id=OWNER, credential_id="cred-2",
                             scopes=frozenset({"operations.control"}), _token_hash="h2")
     with pytest.raises(AssignmentError) as denied:
         asyncio.run(ops.emergency_resume(stale, expected_revision=engaged["revision"] + 9))
-    assert denied.value.code == "emergency_stop_stale_revision"
+    assert denied.value.code == "emergency_stop_owner_authentication_required"
 
 
 def _dispatch(orchestrator, tool_name, arguments, claims=None):
@@ -130,7 +130,8 @@ def test_dispatch_routes_emergency_tools_to_the_coordinator():
     assert status.result["engaged"] is True
     resumed = _dispatch(orchestrator, "astral_emergency_resume",
                         {"expected_revision": engaged.result["revision"]})
-    assert resumed.result["engaged"] is False
+    assert _mcp_error(resumed) == "emergency_stop_owner_authentication_required"
+    assert not coordinator.admission_allowed(OWNER)
 
 
 def test_dispatch_reports_coordinator_denials_as_tool_errors():
@@ -139,7 +140,7 @@ def test_dispatch_reports_coordinator_denials_as_tool_errors():
     orchestrator = SimpleNamespace(framework_work_operations=ops,
                                    emergency_stop=coordinator)
     stale = _dispatch(orchestrator, "astral_emergency_resume", {"expected_revision": 7})
-    assert _mcp_error(stale) == "emergency_stop_not_engaged"
+    assert _mcp_error(stale) == "emergency_stop_owner_authentication_required"
     broken = SimpleNamespace(framework_work_operations=ops, emergency_stop=None)
     assert _mcp_error(_dispatch(broken, "astral_emergency_stop", {})) == "emergency_stop_unavailable"
 
@@ -149,7 +150,7 @@ def test_dispatch_rejects_malformed_emergency_arguments():
     ops = FrameworkWorkOperations(assignments=MagicMock(), credentials=MagicMock())
     orchestrator = SimpleNamespace(framework_work_operations=ops,
                                    emergency_stop=coordinator)
-    assert _mcp_error(_dispatch(orchestrator, "astral_emergency_resume", {})) == "emergency_stop_invalid"
+    assert _mcp_error(_dispatch(orchestrator, "astral_emergency_resume", {})) == "emergency_stop_owner_authentication_required"
     non_dict = _dispatch(orchestrator, "astral_emergency_stop", ["not", "a", "dict"])
     assert non_dict.result["engaged"] is True
 

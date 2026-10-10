@@ -1,7 +1,6 @@
-"""Owner-authenticated REST surface for the emergency stop: read truthful status,
-engage one labeled local stop, re-verify responder acknowledgments, and resume
-only explicitly with the current revision and the engaging owner's identity.
-Mounted by orchestrator.py next to the other /api routers.
+"""Expose owner emergency stop controls behind the current human request boundary.
+The coordinator uses the captured caller for atomic Plane authority and audit
+transitions; orchestrator.py mounts this router with the other owner APIs.
 """
 
 from __future__ import annotations
@@ -24,7 +23,18 @@ class EmergencyStopRequest(BaseModel):
 
 
 class EmergencyResumeRequest(BaseModel):
-    expected_revision: int = Field(ge=1, le=2**63 - 1)
+    expected_revision: int = Field(ge=1, le=2**63 - 1, strict=True)
+
+
+async def _human(request: Request):
+    from orchestrator.human_request_authority import authenticate_current_human_request
+
+    orch = _orchestrator(request)
+    try:
+        return await authenticate_current_human_request(request,
+            boundary=getattr(orch, "human_request_boundary", None))
+    except AssignmentError as exc:
+        raise HTTPException(exc.status_code, exc.code) from None
 
 
 async def _owner(claims: dict = Depends(get_current_user_payload)) -> tuple[str, dict]:
@@ -37,12 +47,16 @@ async def _owner(claims: dict = Depends(get_current_user_payload)) -> tuple[str,
     return owner_id, claims
 
 
-def _coordinator(request: Request):
+def _orchestrator(request: Request):
     orch = getattr(request.app.state, "orchestrator", None)
     if orch is None:
         root_app = getattr(request.app, "_root_app", None) or request.app
         orch = getattr(root_app.state, "orchestrator", None)
-    coordinator = getattr(orch, "emergency_stop", None)
+    return orch
+
+
+def _coordinator(request: Request):
+    coordinator = getattr(_orchestrator(request), "emergency_stop", None)
     if coordinator is None:
         raise HTTPException(status_code=503, detail="Emergency stop is unavailable")
     return coordinator
@@ -54,6 +68,8 @@ def _json(value: Any, status: int = 200) -> JSONResponse:
 
 def _refused(exc: Exception) -> JSONResponse:
     code = getattr(exc, "code", "")
+    if isinstance(exc, AssignmentError) or code.startswith("human_") or code == "emergency_stop_owner_authentication_required":
+        return _json({"error": code}, exc.status_code)
     if code == "emergency_stop_active":
         return _json({"error": code}, 423)
     if code in {"emergency_stop_not_engaged", "emergency_stop_stale_revision"}:
@@ -66,40 +82,41 @@ def _refused(exc: Exception) -> JSONResponse:
 
 
 @emergency_stop_router.get("")
-async def read_status(request: Request, owner: tuple[str, dict] = Depends(_owner)):
-    owner_id, _claims = owner
+async def read_status(request: Request, caller=Depends(_human)):
     try:
-        return _json(_coordinator(request).status(owner_id))
+        return _json(_coordinator(request).status(caller.owner_id))
     except (AssignmentError, EmergencyStopRefused) as exc:
         return _refused(exc)
 
 
 @emergency_stop_router.post("/stop")
 async def engage_stop(body: EmergencyStopRequest, request: Request,
-                      owner: tuple[str, dict] = Depends(_owner)):
-    owner_id, claims = owner
+                      caller=Depends(_human)):
+    owner_id, claims = caller.owner_id, caller.claims
     try:
-        return _json(await _coordinator(request).engage(owner_id, reason=body.reason, claims=claims))
+        caller.require_write()
+        return _json(await _coordinator(request).engage(owner_id, reason=body.reason,
+            claims=claims, caller=caller))
     except (AssignmentError, EmergencyStopRefused) as exc:
         return _refused(exc)
 
 
 @emergency_stop_router.post("/resume")
 async def resume_stop(body: EmergencyResumeRequest, request: Request,
-                      owner: tuple[str, dict] = Depends(_owner)):
-    owner_id, claims = owner
+                      caller=Depends(_human)):
+    owner_id, claims = caller.owner_id, caller.claims
     try:
+        caller.require_write()
         return _json(await _coordinator(request).resume(
             owner_id, expected_revision=body.expected_revision,
-            actor_id=owner_id, claims=claims))
+            actor_id=owner_id, claims=claims, caller=caller))
     except (AssignmentError, EmergencyStopRefused) as exc:
         return _refused(exc)
 
 
 @emergency_stop_router.post("/verify")
-async def verify_stop(request: Request, owner: tuple[str, dict] = Depends(_owner)):
-    owner_id, _claims = owner
+async def verify_stop(request: Request, caller=Depends(_human)):
     try:
-        return _json(await _coordinator(request).verify(owner_id))
+        return _json(await _coordinator(request).verify(caller.owner_id))
     except (AssignmentError, EmergencyStopRefused) as exc:
         return _refused(exc)

@@ -553,6 +553,7 @@ def test_cancelled_failed_resume_retains_the_local_stop():
 @pytest.mark.parametrize("update", [{"revision": True}, {"revision": 0}, {"revision": "2"},
                                     {"engaged": "true"}, {"engaged_at": float("nan")},
                                     {"engaged_at": -1}, {"engaged_at": 10**400},
+                                    {"epoch": True}, {"epoch": -1}, {"epoch": 2**63},
                                     {"engaged_by": "foreign"},
                                     {"reason": None}])
 def test_corrupt_durable_state_never_reopens_admission(update):
@@ -580,3 +581,94 @@ def test_engage_launches_a_background_sweep_when_a_loop_is_running():
     status = asyncio.run(scenario())
     assert status["state"] == STATE_PARTIAL
     assert coordinator.status("owner-1")["state"] == STATE_STOPPED
+
+
+def test_owner_effect_cancellation_and_nested_registration_preserve_isolation():
+    async def scenario():
+        coordinator = make_coordinator()
+        entered = asyncio.Event()
+        other_entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def work(owner, ready):
+            async with coordinator.effect(owner):
+                async with coordinator.effect(owner):
+                    ready.set()
+                    await release.wait()
+
+        owned = asyncio.create_task(work("owner-1", entered))
+        other = asyncio.create_task(work("owner-2", other_entered))
+        await entered.wait()
+        await other_entered.wait()
+        await coordinator.engage("owner-1", sweep=False)
+        with pytest.raises(asyncio.CancelledError):
+            await owned
+        assert not other.done()
+        with pytest.raises(EmergencyStopRefused):
+            async with coordinator.effect("owner-1"):
+                raise AssertionError("stopped effect admitted")
+        release.set()
+        await other
+        assert coordinator._effects == {}
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_stop_waits_for_owned_interruption_and_persistence():
+    async def scenario():
+        audited, audit_release = asyncio.Event(), asyncio.Event()
+        interrupted, interrupt_release = asyncio.Event(), asyncio.Event()
+
+        async def audit(*args, **kwargs):
+            audited.set()
+            await audit_release.wait()
+
+        async def interrupt(owner, task):
+            interrupted.set()
+            await interrupt_release.wait()
+
+        coordinator = EmergencyStopCoordinator(audit=audit, interrupt=interrupt)
+        stopped = asyncio.create_task(coordinator.engage("owner-1", sweep=False))
+        await audited.wait()
+        await interrupted.wait()
+        stopped.cancel()
+        await asyncio.sleep(0)
+        stopped.cancel()
+        audit_release.set()
+        await asyncio.sleep(0)
+        assert not stopped.done()
+        assert not coordinator.admission_allowed("owner-1")
+        interrupt_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stopped
+        assert coordinator.status("owner-1")["state"] == STATE_STOPPED
+
+    asyncio.run(scenario())
+
+
+def test_nested_effect_cannot_continue_under_a_new_epoch_after_resume():
+    async def scenario():
+        durable = {"engaged": False, "revision": 2, "epoch": 1}
+        coordinator = EmergencyStopCoordinator(rearm_loader=lambda owner: durable, fresh_rearm=True)
+        async with coordinator.effect("owner-1"):
+            durable.update(revision=4, epoch=2)
+            with pytest.raises(EmergencyStopRefused, match="emergency_stop_stale_epoch"):
+                async with coordinator.effect("owner-1"):
+                    raise AssertionError("old effect revived")
+        assert coordinator._effects == {}
+
+    asyncio.run(scenario())
+
+
+def test_local_interruption_failure_never_claims_complete_acknowledgment():
+    async def scenario():
+        async def failed(owner, task):
+            raise RuntimeError("synthetic interrupted worker unavailable")
+
+        coordinator = EmergencyStopCoordinator(interrupt=failed)
+        with pytest.raises(EmergencyStopRefused, match="unavailable"):
+            await coordinator.engage("owner", sweep=False)
+        assert coordinator.status("owner")["state"] == STATE_UNREACHABLE
+        assert not coordinator.admission_allowed("owner")
+
+    asyncio.run(scenario())

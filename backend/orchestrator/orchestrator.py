@@ -1092,6 +1092,7 @@ class Orchestrator:
             plane_repositories=self.runtime_composition.plane.repositories,
             operation_retention=timedelta(seconds=operation_retention_seconds),
             submission_gate=emergency_submission_gate(self),
+            execution_gate=self.emergency_stop_store.assert_running,
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -13791,6 +13792,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from persistent_agents.models import AssignmentError
 
         async def execute():
+            if stop is not None and stop_owner and stop_owner != "legacy":
+                async with stop.effect(stop_owner):
+                    return await self._handle_chat_message_with_guidance(
+                        websocket, message, chat_id, display_message, user_id=user_id,
+                        draft_agent_id=draft_agent_id, selected_tools=selected_tools,
+                        attachments=attachments, operation_context=operation_context,
+                        voice_dispatch=voice_dispatch)
             return await self._handle_chat_message_with_guidance(
                 websocket, message, chat_id, display_message, user_id=user_id,
                 draft_agent_id=draft_agent_id, selected_tools=selected_tools,
@@ -18610,7 +18618,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         async def reviewed_invoke(capabilities):
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
-            return refusal or await invoke(capabilities)
+            if refusal is not None:
+                return refusal
+            stop = getattr(self, "emergency_stop", None)
+            if stop is not None and user_id and user_id != "legacy":
+                from orchestrator.emergency_stop import EmergencyStopRefused
+
+                try:
+                    async with stop.effect(user_id):
+                        return await invoke(capabilities)
+                except EmergencyStopRefused as exc:
+                    return MCPResponse(error={"message": exc.code, "retryable": False})
+            return await invoke(capabilities)
 
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
@@ -18836,8 +18855,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.agent_identity import required_identity_claims
 
         stop = getattr(self, "emergency_stop", None)
+        tool_owner = protected_owner_id
         if stop is not None:
-            tool_owner = protected_owner_id
             if not tool_owner and ui_websocket is not None:
                 tool_claims = (getattr(self, "ui_sessions", None) or {}).get(ui_websocket)
                 tool_owner = tool_claims.get("sub") if isinstance(tool_claims, dict) else None
@@ -18877,7 +18896,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id,
                 tool_name,
                 final_arguments,
-                user_id=protected_owner_id,
+                user_id=tool_owner,
                 channel=channel,
                 audit_correlation_id=protected_audit_correlation_id,
                 actor_user_id=protected_actor_user_id,
@@ -19781,7 +19800,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
 
-        async def _invoke(caller_capabilities: Dict[str, object]) -> str:
+        async def _physical_stream(caller_capabilities: Dict[str, object]) -> str:
             request = MCPRequest(
                 request_id=request_id,
                 method="tools/call",
@@ -19804,6 +19823,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 await self.agents[agent_id].send(request.to_json())
             return request_id
+
+        async def _invoke(caller_capabilities: Dict[str, object]) -> str:
+            stop = getattr(self, "emergency_stop", None)
+            if stop is not None and user_id and user_id != "legacy":
+                async with stop.effect(user_id):
+                    return await _physical_stream(caller_capabilities)
+            return await _physical_stream(caller_capabilities)
 
         from audit.hooks import ToolDispatchAudit
         from orchestrator.governed_dispatch import GovernedDispatchError

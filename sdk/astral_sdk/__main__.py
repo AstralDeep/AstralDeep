@@ -35,7 +35,7 @@ def _dump(value: Any) -> str:
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-url", default=None, help="Deep base URL (or $ASTRAL_BASE_URL)")
-    parser.add_argument("--token", default=None, help="Framework credential bearer (or $ASTRAL_TOKEN)")
+    parser.add_argument("--token", default=None, help="Bearer token (or $ASTRAL_TOKEN); emergency resume requires a current Keycloak owner access token")
     parser.add_argument("--timeout", type=float, default=30.0)
 
 

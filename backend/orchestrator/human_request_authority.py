@@ -42,10 +42,11 @@ from persistent_agents.models import AssignmentError
 
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
 _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
-                           "chrome_note_search", "chrome_turn_selection_set"})
+                           "chrome_note_search", "chrome_turn_selection_set", "chrome_safety_verify"})
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_user_skill_delete", "chrome_declarative_command",
-                           "chrome_note_save", "chrome_note_toggle", "chrome_note_forget"})
+                           "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
+                           "chrome_safety_stop", "chrome_safety_resume"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -62,7 +63,7 @@ def _socket_method(message):
     payload = message.get("payload")
     if (action == "chrome_open" and type(payload) is dict
             and type(payload.get("surface")) is str
-            and payload.get("surface") in {"agent_authoring", "guidance", "evidence"}):
+            and payload.get("surface") in {"agent_authoring", "guidance", "evidence", "safety"}):
         return "WS_READ"
     return None
 

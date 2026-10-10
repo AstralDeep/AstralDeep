@@ -166,10 +166,12 @@ def test_rearm_loader_handles_missing_or_malformed_events():
 
 def test_mount_attaches_one_coordinator(monkeypatch):
     monkeypatch.setattr(binding, "build_remote_responders", lambda orch: lambda owner: [])
-    orch = SimpleNamespace(audit_repo=SimpleNamespace(list_for_user=lambda *a, **kw: ([], None)))
+    runtime = SimpleNamespace(repositories=SimpleNamespace(stop_epochs=object()))
+    orch = SimpleNamespace(runtime_composition=SimpleNamespace(plane=SimpleNamespace(
+        runtime=runtime, repositories=runtime.repositories)))
     coordinator = binding.mount(orch)
     assert orch.emergency_stop is coordinator
-    assert coordinator.admission_allowed("owner-1") is True
+    assert coordinator.admission_allowed("owner-1") is False
 
 
 def test_probe_responder_treats_execution_scan_failures_as_unreachable(monkeypatch):

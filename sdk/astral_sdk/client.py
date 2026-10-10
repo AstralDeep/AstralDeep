@@ -101,6 +101,23 @@ def _unwrap_tool_result(result: dict[str, Any]) -> dict[str, Any]:
     return structured if isinstance(structured, dict) else {}
 
 
+def _owner_response(response: httpx.Response) -> dict[str, Any]:
+    try:
+        value = response.json()
+    except ValueError as exc:
+        raise AstralHTTPError("malformed emergency stop response",
+                              status_code=response.status_code) from exc
+    if response.is_error:
+        code = (value.get("error") or value.get("detail")) if isinstance(value, dict) else None
+        message = code if isinstance(code, str) else "emergency stop request refused"
+        error_type = (AstralAuthError if response.status_code in (401, 403) else
+                      AstralConflictError if response.status_code == 409 else AstralHTTPError)
+        raise error_type(message, status_code=response.status_code, code=message)
+    if not isinstance(value, dict) or not isinstance(value.get("engaged"), bool):
+        raise AstralHTTPError("malformed emergency stop response", status_code=response.status_code)
+    return value
+
+
 class _Attempt(Exception):
     def __init__(self, real_error: Exception, *, status_code: Optional[int], is_network_error: bool) -> None:
         super().__init__(str(real_error))
@@ -139,7 +156,7 @@ class AstralClient:
                  retry_policy: Optional[RetryPolicy] = None,
                  transport: Optional[httpx.BaseTransport] = None) -> None:
         if not token:
-            raise ValueError("a framework credential token is required")
+            raise ValueError("a bearer token is required")
         self._token = token
         self._retry = _RetryLoop(retry_policy or RetryPolicy())
         self._http = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, transport=transport)
@@ -242,16 +259,30 @@ class AstralClient:
         return Artifact.from_dict(self._call_tool("astral_get_artifact", {"operation_id": operation_id}))
 
     def emergency_status(self) -> dict[str, Any]:
-        return self._call_tool("astral_emergency_status", {})
+        if self._token.startswith("afk_"):
+            return self._call_tool("astral_emergency_status", {})
+        return self._owner_emergency("GET", "", None)
 
     def emergency_stop(self, *, reason: Optional[str] = None) -> dict[str, Any]:
         arguments: dict[str, Any] = {}
         if reason is not None:
             arguments["reason"] = reason
-        return self._call_tool("astral_emergency_stop", arguments)
+        if self._token.startswith("afk_"):
+            return self._call_tool("astral_emergency_stop", arguments)
+        return self._owner_emergency("POST", "/stop", arguments)
 
     def emergency_resume(self, *, expected_revision: int) -> dict[str, Any]:
-        return self._call_tool("astral_emergency_resume", {"expected_revision": expected_revision})
+        return self._owner_emergency("POST", "/resume", {"expected_revision": expected_revision})
+
+    def _owner_emergency(self, method: str, path: str, body: dict | None) -> dict[str, Any]:
+        try:
+            response = self._http.request(method, "/api/emergency-stop" + path, json=body,
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("emergency stop request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("emergency stop transport unavailable") from exc
+        return _owner_response(response)
 
     def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                           timeout_seconds: Optional[float] = None) -> Operation:
@@ -271,7 +302,7 @@ class AsyncAstralClient:
                  retry_policy: Optional[RetryPolicy] = None,
                  transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         if not token:
-            raise ValueError("a framework credential token is required")
+            raise ValueError("a bearer token is required")
         self._token = token
         self._retry = _RetryLoop(retry_policy or RetryPolicy())
         self._http = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout, transport=transport)
@@ -379,16 +410,30 @@ class AsyncAstralClient:
         return Artifact.from_dict(result)
 
     async def emergency_status(self) -> dict[str, Any]:
-        return await self._call_tool("astral_emergency_status", {})
+        if self._token.startswith("afk_"):
+            return await self._call_tool("astral_emergency_status", {})
+        return await self._owner_emergency("GET", "", None)
 
     async def emergency_stop(self, *, reason: Optional[str] = None) -> dict[str, Any]:
         arguments: dict[str, Any] = {}
         if reason is not None:
             arguments["reason"] = reason
-        return await self._call_tool("astral_emergency_stop", arguments)
+        if self._token.startswith("afk_"):
+            return await self._call_tool("astral_emergency_stop", arguments)
+        return await self._owner_emergency("POST", "/stop", arguments)
 
     async def emergency_resume(self, *, expected_revision: int) -> dict[str, Any]:
-        return await self._call_tool("astral_emergency_resume", {"expected_revision": expected_revision})
+        return await self._owner_emergency("POST", "/resume", {"expected_revision": expected_revision})
+
+    async def _owner_emergency(self, method: str, path: str, body: dict | None) -> dict[str, Any]:
+        try:
+            response = await self._http.request(method, "/api/emergency-stop" + path, json=body,
+                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
+        except httpx.TimeoutException as exc:
+            raise AstralTimeoutError("emergency stop request timed out") from exc
+        except httpx.HTTPError as exc:
+            raise AstralHTTPError("emergency stop transport unavailable") from exc
+        return _owner_response(response)
 
     async def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                                 timeout_seconds: Optional[float] = None) -> Operation:

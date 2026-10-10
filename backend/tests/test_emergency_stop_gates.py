@@ -20,6 +20,7 @@ if str(BACKEND_DIR) not in sys.path:
 os.environ["USE_MOCK_AUTH"] = "true"
 
 from fastapi import FastAPI  # noqa: E402
+from fastapi import Depends  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestrator.emergency_stop import (  # noqa: E402
@@ -145,9 +146,15 @@ def test_submission_gate_is_none_without_a_coordinator():
 
 
 def _client(coordinator) -> TestClient:
+    from orchestrator.emergency_stop_api import _human, _owner
+
     app = FastAPI()
     app.include_router(emergency_stop_router)
     app.state.orchestrator = SimpleNamespace(emergency_stop=coordinator)
+
+    async def human(owner=Depends(_owner)):
+        return SimpleNamespace(owner_id=owner[0], claims=owner[1], require_write=lambda: "POST")
+    app.dependency_overrides[_human] = human
     return TestClient(app)
 
 
