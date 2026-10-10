@@ -56,6 +56,8 @@ def _sha256_of_path(p: Path) -> str:
 
 
 def _make_unified_diff(old: str, new: str, artifact_path: str) -> str:
+    old = old.replace("\x00", "")
+    new = new.replace("\x00", "")
     diff = difflib.unified_diff(
         old.splitlines(keepends=True),
         new.splitlines(keepends=True),
@@ -155,7 +157,7 @@ def _proposed_content(
         samples = ["## Recent user-feedback excerpts (untrusted; for context only)\n"]
         for s in sample_comments:
             cat = s.get("category", "unspecified")
-            text = (s.get("comment") or "").replace("\n", " ").strip()
+            text = (s.get("comment") or "").replace("\x00", "").replace("\n", " ").strip()
             if len(text) > 280:
                 text = text[:280] + "…"
             samples.append(f"- *(category: {cat})* {text}")
@@ -213,6 +215,7 @@ async def generate_for_underperforming(
                                     snap.agent_id, snap.tool_name, exc)
 
             diff = _make_unified_diff(existing_content, proposed, artifact_rel)
+            diff = diff.replace("\x00", "")
             if not diff.strip():
                 continue
 
