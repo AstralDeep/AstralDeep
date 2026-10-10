@@ -22,7 +22,7 @@ _STATE_LINES = {
     "running": "Local effects are enabled. Stop blocks new local work and interrupts "
                "supported active work. Remote machines require a separate acknowledgment.",
     "stopped": "Local stop is durably active. Supported active work is interrupted; "
-               "effects already outside this process can remain uncertain. Resume admits new work.",
+               "effects already dispatched can remain uncertain. Resume admits new work.",
     "partial": "Partially acknowledged — the stop is active, and some responders have "
                "not acknowledged yet.",
     "unreachable": "Unreachable — new local work is blocked, but at least one responder "
