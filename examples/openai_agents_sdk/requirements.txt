@@ -1,0 +1,7 @@
+# Example isolated environment for OpenAI Agents SDK consumer
+# Pinning to a known good commit of the OpenAI Agents Python package
+openai-agents==0.2.1  # commit: 911f106d9987a61a59654b046b6e891b212b00e3
+requests==2.32.3
+# Pin OpenTelemetry to ensure tracing can be disabled deterministically
+opentelemetry-sdk==1.25.0
+opentelemetry-exporter-otlp==1.25.0
