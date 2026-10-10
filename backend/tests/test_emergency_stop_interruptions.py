@@ -214,10 +214,12 @@ async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypa
         return await kwargs["invoke"]({})
 
     adapter = SimpleNamespace(mode="off", execute=execute)
+    websocket = object()
     orch = SimpleNamespace(emergency_stop=stop, _governed_dispatch_adapter=lambda: adapter,
+                           ui_sessions={websocket: {"sub": "owner"}},
                            tool_permissions=SimpleNamespace(get_tool_scope=lambda *args: "tools:read"))
     monkeypatch.setattr(hitl_confirmation, "effect_refusal", lambda *args, **kwargs: None)
-    result = await Orchestrator._execute_governed_attempt(orch, object(), "agent", "tool", {},
+    result = await Orchestrator._execute_governed_attempt(orch, websocket, "agent", "tool", {},
         user_id="owner", channel="ui", audit_correlation_id=None, actor_user_id="owner",
         auth_principal="owner", conversation_id=None, invoke=invoke)
     assert result.error["message"] == "emergency_stop_active"
