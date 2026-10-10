@@ -277,6 +277,7 @@ _A2A_TERMINAL_TASK_STATES = frozenset(
     }
 )
 _A2A_MAX_REASON_CHARS = 400
+_A2A_REASON_INPUT_CHARS = 4096
 _A2A_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]+")
 _A2A_DIRECTION_CONTROLS = re.compile(
     "[\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c]+"
@@ -286,8 +287,11 @@ _A2A_CONTINUATION_NOT_APPLICABLE = "not_applicable"
 
 
 def _bounded_reason(text: str) -> str:
+    bounded_input = text[:_A2A_REASON_INPUT_CHARS]
     flattened = " ".join(
-        _A2A_DIRECTION_CONTROLS.sub("", _A2A_CONTROL_CHARACTERS.sub(" ", text)).split()
+        _A2A_DIRECTION_CONTROLS.sub(
+            "", _A2A_CONTROL_CHARACTERS.sub(" ", bounded_input)
+        ).split()
     )
     if len(flattened) <= _A2A_MAX_REASON_CHARS:
         return flattened

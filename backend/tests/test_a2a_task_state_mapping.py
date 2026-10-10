@@ -17,6 +17,7 @@ import pytest
 from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
 from shared.a2a_bridge import (
     _A2A_MAX_REASON_CHARS,
+    _A2A_REASON_INPUT_CHARS,
     a2a_response_to_mcp_response,
     make_data_part,
 )
@@ -31,6 +32,12 @@ _NON_COMPLETED_STATES = {
     "TASK_STATE_FAILED": ("Task failed", True, "not_applicable"),
     "TASK_STATE_REJECTED": ("Task was rejected", True, "not_applicable"),
 }
+
+_A2A_STATE_NAMES = {
+    value.name for value in TaskState.DESCRIPTOR.values
+}
+assert _A2A_STATE_NAMES == set(_NON_COMPLETED_STATES) | {"TASK_STATE_COMPLETED"}, \
+    "the A2A TaskState vocabulary grew; extend the mapping table"
 
 
 def _task(state, *, status_text=None, artifact_text=None,
@@ -88,6 +95,28 @@ def test_oversized_peer_status_text_is_truncated_to_the_reason_cap():
     message = a2a_response_to_mcp_response(task, "req-1").error["message"]
     assert len(message) <= _A2A_MAX_REASON_CHARS
     assert message.startswith("untrusted A")
+    assert message.endswith("...")
+
+
+def test_reason_input_is_bounded_before_normalisation(monkeypatch):
+    import shared.a2a_bridge as bridge
+
+    tail = "\r\n" + "\u202e" + "B" * (_A2A_REASON_INPUT_CHARS * 4)
+    task = _task(TaskState.TASK_STATE_REJECTED, status_text="head" + tail)
+    seen = []
+    original = bridge._A2A_CONTROL_CHARACTERS
+
+    class _Spy:
+        def sub(self, replacement, text):
+            seen.append(len(text))
+            return original.sub(replacement, text)
+
+    monkeypatch.setattr(bridge, "_A2A_CONTROL_CHARACTERS", _Spy())
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    assert seen, "the sanitiser never ran"
+    assert max(seen) <= _A2A_REASON_INPUT_CHARS
+    assert len(message) <= _A2A_MAX_REASON_CHARS
+    assert "\u202e" not in message
     assert message.endswith("...")
 
 
