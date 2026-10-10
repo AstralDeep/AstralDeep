@@ -928,6 +928,77 @@ class MeshEnrollmentStore:
             )
         return record
 
+    def rename_member(
+        self,
+        owner_id: str,
+        member_id: str,
+        *,
+        label: str,
+        transaction: Any = None,
+    ) -> dict[str, Any]:
+        normalized = _normalize_label(label)
+        record = self.get_member(owner_id, member_id, transaction=transaction)
+        if record["status"] != MEMBER_ACTIVE_STATUS:
+            raise MemberUnauthorized("only an active member can be renamed")
+        if record["label"] == normalized:
+            return record
+        with self._transaction(transaction) as current:
+            mesh, _, _ = self._current_member(current, owner_id, member_id, record=record)
+            record["label"] = normalized
+            self._transition(
+                owner_id,
+                MEMBER_NAMESPACE,
+                member_id,
+                expected_updated_at=record["updated_at"],
+                record=record,
+                transaction=current,
+            )
+            self._audit_transition(
+                current,
+                owner_id,
+                "mesh.member.rename",
+                meta={"member_id": member_id, "mesh_id": mesh.mesh_id},
+            )
+        return record
+
+    def remove_invitation(
+        self, owner_id: str, invite_id: str, *, transaction: Any = None
+    ) -> None:
+        record = self.get_invitation(owner_id, invite_id, transaction=transaction)
+        if record["status"] == "pending":
+            raise InvitationStateInvalid("reject a pending invitation instead")
+        live = (
+            record["status"] == "confirmed"
+            and record.get("redeemed_at") is None
+            and _now_ms() < record["expires_at"]
+        )
+        with self._transaction(transaction) as current:
+            self._lock_mesh(current, owner_id)
+            if live:
+                self._membership.revoke_invitation(
+                    current, owner_id=owner_id, invitation_id=invite_id
+                )
+                self._membership.cancel_enrollment_challenge(
+                    current, owner_id=owner_id, challenge_id=invite_id
+                )
+            if not self._credentials.repository.delete_credential(
+                current,
+                owner_id=owner_id,
+                agent_id=INVITATION_NAMESPACE,
+                credential_key=invite_id,
+            ):
+                raise InvitationNotFound(invite_id)
+            self._audit_transition(
+                current,
+                owner_id,
+                "mesh.invitation.remove",
+                meta={
+                    "invite_id": invite_id,
+                    "status": record["status"],
+                    **({"cancelled": True} if live else {}),
+                },
+            )
+
     def prepare_redemption(
         self,
         *,
