@@ -23080,6 +23080,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
+        from orchestrator.mesh_api import mesh_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -23107,6 +23108,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
+        app.include_router(mesh_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router
