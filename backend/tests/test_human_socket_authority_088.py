@@ -134,6 +134,8 @@ async def test_socket_lifetime_changes_refuse_before_callback(human, socket_requ
 @pytest.mark.parametrize("action,surface", [
     ("chrome_open", "agent_authoring"), ("chrome_user_skill_save", "agent_authoring"),
     ("chrome_note_search", "guidance"), ("chrome_note_save", "guidance"),
+    ("chrome_open", "safety"), ("chrome_safety_stop", "safety"),
+    ("chrome_safety_verify", "safety"), ("chrome_safety_resume", "safety"),
 ])
 async def test_pending_registration_never_yields_current_human_authority(human, socket_request, action, surface):
     _socket, context, message = socket_request
