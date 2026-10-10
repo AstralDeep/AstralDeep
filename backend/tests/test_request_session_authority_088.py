@@ -38,14 +38,11 @@ def runtime():
 @pytest.fixture(scope="module")
 def signing_key():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private = key.private_bytes(serialization.Encoding.PEM,
-                               serialization.PrivateFormat.PKCS8,
-                               serialization.NoEncryption())
     public = key.public_key().public_bytes(serialization.Encoding.PEM,
                                           serialization.PublicFormat.SubjectPublicKeyInfo)
     public_jwk = jwk.construct(public, algorithm="RS256").to_dict()
     public_jwk["kid"] = "synthetic-request-authority"
-    return private, {"keys": [public_jwk]}
+    return key, {"keys": [public_jwk]}
 
 
 @pytest.fixture
@@ -106,6 +103,23 @@ def unavailable(call):
     with pytest.raises(sa.SessionAuthorityUnavailable) as caught:
         call()
     assert str(caught.value) == "session_authority_unavailable"
+
+
+def test_synthetic_signing_reuses_key_without_reloading_private_pem(fixture, signing_key, monkeypatch):
+    from jose.backends import cryptography_backend
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("Synthetic token signing must reuse the generated private key")
+
+    monkeypatch.setattr(cryptography_backend, "load_pem_private_key", unexpected_load)
+    tokens = [fixture[3](jti=uuid.uuid4().hex) for _ in range(2)]
+    claims = [jwt.decode(value, signing_key[1], algorithms=["RS256"], audience="account",
+                         issuer="https://request-authority.invalid/realm") for value in tokens]
+    assert claims[0]["jti"] != claims[1]["jti"]
+    assert all(value["sub"] == fixture[1] for value in claims)
+    observation = run(fixture)
+    assert observation.credential.owner_id == fixture[1]
+    assert len(fixture[4]) == 1
 
 
 def test_valid_refresh_persists_then_verifies_exact_generation(fixture, runtime):

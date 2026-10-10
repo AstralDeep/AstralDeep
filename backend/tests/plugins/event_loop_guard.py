@@ -55,14 +55,17 @@ def _flag_blocking_call(method_name: str) -> None:
     site = _caller_site()
     if site in allowed_sites():
         return
+    enforce = os.getenv("LOOP_GUARD_ENFORCE") == "1"
+    key = f"{method_name}@{site}"
+    if not enforce and key in _reported_sites:
+        return
     stack = "".join(traceback.format_stack(limit=30))
-    if os.getenv("LOOP_GUARD_ENFORCE") == "1":
+    if enforce:
         raise BlockingDBOnEventLoop(
             f"synchronous PlaneRuntime.{method_name} called on the event-loop thread "
             f"at {site} (add to tests/loop_guard_allowlist.py only as a "
             f"transitional exemption)\n{stack}"
         )
-    key = f"{method_name}@{site}"
     if key not in _reported_sites:
         _reported_sites.add(key)
         OFFENDERS.append({"method": method_name, "site": site, "stack": stack})

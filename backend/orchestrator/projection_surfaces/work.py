@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 import time
@@ -16,6 +17,8 @@ from uuid import uuid4
 from fastapi import HTTPException
 from starlette.requests import HTTPConnection
 
+from webrender.chrome import esc, notice_block
+
 from orchestrator.work_service import _identity
 from orchestrator.work_surface_authority import WorkSurfaceRead
 from persistent_agents.models import AssignmentError
@@ -23,6 +26,30 @@ from shared.protocol import ChromeRender, ChromeSurface
 
 TITLE = "Recent work"
 logger = logging.getLogger("Orchestrator.WorkSurface")
+
+_EMERGENCY_STATE_LINES = {
+    "running": "Local effects are enabled. Stop blocks new local work and interrupts "
+               "supported active work. Remote machines require a separate acknowledgment.",
+    "stopped": "Local stop is durably active. Supported active work is interrupted; "
+               "effects already dispatched can remain uncertain. Resume admits new work.",
+    "partial": "Partially acknowledged — the stop is active, and some responders have "
+               "not acknowledged yet.",
+    "unreachable": "Unreachable — new local work is blocked, but at least one responder "
+                   "could not confirm interruption. Unfinished or remote effects remain "
+                   "uncertain until verified.",
+}
+_EMERGENCY_BADGES = {
+    "running": ("Running", "default"),
+    "stopped": ("Stopped", "success"),
+    "partial": ("Partially acknowledged", "warning"),
+    "unreachable": ("Unreachable responders", "error"),
+}
+_EMERGENCY_BADGE_CLASSES = {
+    "default": "border-white/10 bg-white/5 text-astral-muted",
+    "success": "border-green-500/20 bg-green-500/10 text-green-400",
+    "warning": "border-yellow-500/20 bg-yellow-500/10 text-yellow-400",
+    "error": "border-red-500/20 bg-red-500/10 text-red-400",
+}
 
 
 def _params(value):
@@ -101,6 +128,78 @@ async def _state(read, params):
                                          read.owner_id, read.captured, params["operation_id"])
 
 
+def _emergency_status(orch, user_id):
+    coordinator = getattr(orch, "emergency_stop", None)
+    if coordinator is None:
+        return None
+    try:
+        status = coordinator.status(user_id)
+    except Exception:
+        logger.debug("emergency stop status unavailable", exc_info=True)
+        return None
+    return status if isinstance(status, dict) and status.get("state") else None
+
+
+def _emergency_badge_html(state):
+    label, variant = _EMERGENCY_BADGES.get(state, _EMERGENCY_BADGES["running"])
+    cls = _EMERGENCY_BADGE_CLASSES.get(variant, _EMERGENCY_BADGE_CLASSES["default"])
+    return (f'<span class="inline-block px-2 py-0.5 rounded-full border text-[10px] '
+            f'font-medium uppercase tracking-wide {cls}">{esc(label)}</span>')
+
+
+def _emergency_rows(status):
+    state = status["state"]
+    rows = [_EMERGENCY_STATE_LINES.get(state, _EMERGENCY_STATE_LINES["running"])]
+    if status.get("engaged"):
+        engaged_at = status.get("engaged_at")
+        if isinstance(engaged_at, (int, float)):
+            rows.append("Engaged " + datetime.fromtimestamp(
+                engaged_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+        if status.get("reason"):
+            rows.append("Reason: " + str(status["reason"]))
+        for responder in status.get("responders") or []:
+            rows.append(f"{responder.get('responder')}: {responder.get('state')}")
+    return rows
+
+
+def _emergency_open_button_html():
+    payload = esc(json.dumps({"surface": "safety", "params": {}}))
+    return (f'<button type="button" data-ui-action="chrome_open" data-ui-payload=\'{payload}\' '
+            'class="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-600/90 hover:bg-red-600 '
+            'text-white border border-red-500/40">Open emergency stop controls</button>')
+
+
+def _emergency_html(orch, user_id):
+    status = _emergency_status(orch, user_id)
+    if status is None:
+        return ""
+    state = status["state"]
+    body = "".join(
+        f'<p class="text-sm text-astral-muted">{esc(row)}</p>'
+        for row in _emergency_rows(status))
+    return (
+        '<section class="space-y-2 rounded-lg border border-red-500/20 bg-red-500/5 p-4" '
+        'aria-label="Emergency stop">'
+        f'<div class="flex items-center gap-2"><h2 class="text-sm font-semibold '
+        f'text-astral-text">Emergency stop</h2>{_emergency_badge_html(state)}</div>'
+        + body
+        + '<div class="flex flex-wrap items-center gap-2">' + _emergency_open_button_html() + '</div>'
+        + '</section>'
+    )
+
+
+def _emergency_components(orch, user_id):
+    from webrender.chrome.surfaces import _sdui
+
+    status = _emergency_status(orch, user_id)
+    if status is None:
+        return []
+    state = status["state"]
+    label, _variant = _EMERGENCY_BADGES.get(state, _EMERGENCY_BADGES["running"])
+    content = [_sdui.text(row, "caption") for row in _emergency_rows(status)]
+    return [_sdui.card(f"Emergency stop — {label}", content, variant="default")]
+
+
 async def deliver(orch, websocket, user_id, params, request_generation, *, work_read=None):
     from astralprojection.chrome import render_html
     from astralprojection.chrome.work import build_work_view
@@ -131,11 +230,13 @@ async def deliver(orch, websocket, user_id, params, request_generation, *, work_
             read.assert_current()
             view = build_work_view(state, layout=LayoutView(mode="watch" if device == "watch" else "standard"))
             if device == "browser":
-                frame = ChromeRender(html=render_modal_shell(view.title, render_html(view), "work"),
+                frame = ChromeRender(html=render_modal_shell(view.title,
+                    _emergency_html(orch, user_id) + render_html(view), "work"),
                     surface_key="work", request_generation=request_generation).to_json()
             else:
                 components = ComponentAdapter.adapt_work_surface(
-                    [item.to_dict() for item in view.components], orch.rote.get_profile(websocket))
+                    _emergency_components(orch, user_id)
+                    + [item.to_dict() for item in view.components], orch.rote.get_profile(websocket))
                 frame = ChromeSurface(surface_key="work", title=view.title, components=components,
                                       request_generation=request_generation).to_json()
             await read.verify()
@@ -234,19 +335,19 @@ async def render(orch, user_id, roles, params) -> str:
     from astralprojection.chrome.work import build_work_view
 
     state = params if isinstance(params, dict) else {"mode": "list", "status": "unavailable"}
-    return render_html(build_work_view(state))
+    return _emergency_html(orch, user_id) + render_html(build_work_view(state))
 
 
 async def components(orch, user_id, roles, params):
     from astralprojection.chrome.work import build_work_view
 
     state = params if isinstance(params, dict) else {"mode": "list", "status": "unavailable"}
-    return [item.to_dict() for item in build_work_view(state).components]
+    return _emergency_components(orch, user_id) + [
+        item.to_dict() for item in build_work_view(state).components]
 
 
 async def _handle_result_save(orch, websocket, user_id, roles, payload):
     from rote.work import validate_work_save_command
-    from webrender.chrome import notice_block
 
     from orchestrator.work_publication import (
         WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,

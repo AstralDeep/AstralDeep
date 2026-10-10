@@ -504,6 +504,24 @@ class StreamManager:
                 if not sub.subscribers:
                     await self._move_to_dormant(sub, reason="ws_disconnect")
 
+    async def cancel_for_owner(self, owner_id: str) -> None:
+        from orchestrator.emergency_stop import await_interruption
+
+        subscriptions = {sub.stream_id: sub for sub in self._active.values() if sub.user_id == owner_id}
+        for key, entries in tuple(self._dormant.items()):
+            if key[0] == owner_id:
+                subscriptions.update((sub.stream_id, sub) for sub in entries.values())
+                self._dormant.pop(key, None)
+        tasks = tuple(sub.task for sub in subscriptions.values() if sub.task is not None)
+        for sub in subscriptions.values():
+            self._teardown_subscription(sub, StreamState.STOPPED, reason="emergency_stop")
+            await self._cancel_on_agent(sub)
+            terminal = StreamChunk(stream_id=sub.stream_id, seq=sub.max_seq_seen + 1,
+                components=[], error={"code": "emergency_stop_active"}, terminal=True)
+            await self._send_chunk_to_subscribers(sub, terminal)
+            await self._fire_terminal_hook(sub)
+        await await_interruption(tasks)
+
     async def pause_chat(self, ws: "WebSocket", old_chat_id: str) -> None:
         for sub in list(self._active.values()):
             if sub.chat_id != old_chat_id:

@@ -91,6 +91,32 @@ _WORK_TOOL_SPECS: dict[str, dict[str, Any]] = {
         "input_schema": {"type": "object", "required": ["operation_id"],
                          "properties": {"operation_id": _OPERATION_ID}},
     },
+    "astral_emergency_status": {
+        "scope": "operations.read",
+        "description": "Read the credential owner's emergency stop status: running, "
+                       "stopped, partially acknowledged, or unreachable responders.",
+        "readOnly": True,
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    "astral_emergency_stop": {
+        "scope": "operations.control",
+        "description": "Engage the owner's emergency stop: refuse new tool admission, "
+                       "agent dispatch, scheduled turns, and remote execution until an "
+                       "explicit resume.",
+        "readOnly": False,
+        "input_schema": {"type": "object",
+                         "properties": {"reason": {"type": "string", "maxLength": 280}},
+                         "additionalProperties": False},
+    },
+    "astral_emergency_resume": {
+        "scope": "operations.control",
+        "description": "Explicitly resume after an emergency stop; requires the current "
+                       "stop revision and the engaging owner's credential.",
+        "readOnly": False,
+        "input_schema": {"type": "object", "required": ["expected_revision"],
+                         "properties": {"expected_revision": {"type": "integer", "minimum": 1}},
+                         "additionalProperties": False},
+    },
 }
 
 

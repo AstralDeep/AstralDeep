@@ -60,6 +60,82 @@ def test_report_mode_records_each_site_once(monkeypatch):
     assert offender["site"].startswith(f"{__name__}:")
 
 
+def test_report_mode_formats_only_new_method_and_site_pairs(monkeypatch, caplog):
+    monkeypatch.delenv("LOOP_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr(guard, "allowed_sites", lambda: set())
+    monkeypatch.setattr(guard, "OFFENDERS", [])
+    monkeypatch.setattr(guard, "_reported_sites", set())
+    site = ["caller:first"]
+    stacks = []
+    monkeypatch.setattr(guard, "_caller_site", lambda: site[0])
+
+    def capture_stack(*, limit):
+        assert limit == 30
+        stacks.append(f"stack-{len(stacks)}")
+        return [stacks[-1]]
+
+    monkeypatch.setattr(guard.traceback, "format_stack", capture_stack)
+    guard._flag_blocking_call("transaction")
+    guard._flag_blocking_call("transaction")
+    guard._flag_blocking_call("other_boundary")
+    site[0] = "caller:second"
+    guard._flag_blocking_call("transaction")
+    guard._flag_blocking_call("transaction")
+
+    assert len(stacks) == 3
+    assert guard.OFFENDERS == [
+        {"method": "transaction", "site": "caller:first", "stack": "stack-0"},
+        {"method": "other_boundary", "site": "caller:first", "stack": "stack-1"},
+        {"method": "transaction", "site": "caller:second", "stack": "stack-2"},
+    ]
+    assert len([record for record in caplog.records if record.name == guard.logger.name]) == 3
+
+
+def test_reported_site_still_formats_and_raises_on_every_enforced_call(monkeypatch):
+    monkeypatch.delenv("LOOP_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr(guard, "allowed_sites", lambda: set())
+    monkeypatch.setattr(guard, "OFFENDERS", [])
+    monkeypatch.setattr(guard, "_reported_sites", set())
+    monkeypatch.setattr(guard, "_caller_site", lambda: "caller:shared")
+    stacks = []
+
+    def capture_stack(*, limit):
+        assert limit == 30
+        stacks.append(f"stack-{len(stacks)}")
+        return [stacks[-1]]
+
+    monkeypatch.setattr(guard.traceback, "format_stack", capture_stack)
+    guard._flag_blocking_call("transaction")
+    monkeypatch.setenv("LOOP_GUARD_ENFORCE", "1")
+    for index in (1, 2):
+        with pytest.raises(guard.BlockingDBOnEventLoop, match=f"stack-{index}"):
+            guard._flag_blocking_call("transaction")
+    monkeypatch.delenv("LOOP_GUARD_ENFORCE", raising=False)
+    guard._flag_blocking_call("transaction")
+
+    assert len(stacks) == 3
+    assert guard.OFFENDERS == [
+        {"method": "transaction", "site": "caller:shared", "stack": "stack-0"},
+    ]
+
+
+@pytest.mark.parametrize("enforce", ["0", "1"])
+def test_allowlisted_site_never_formats_a_stack(monkeypatch, enforce):
+    monkeypatch.setenv("LOOP_GUARD_ENFORCE", enforce)
+    monkeypatch.setattr(guard, "_caller_site", lambda: "caller:allowed")
+    monkeypatch.setattr(guard, "allowed_sites", lambda: {"caller:allowed"})
+    monkeypatch.setattr(guard, "OFFENDERS", [])
+    monkeypatch.setattr(guard, "_reported_sites", set())
+
+    def forbidden_stack(*args, **kwargs):
+        raise AssertionError("allowlisted site must not capture a stack")
+
+    monkeypatch.setattr(guard.traceback, "format_stack", forbidden_stack)
+    guard._flag_blocking_call("transaction")
+    assert guard.OFFENDERS == []
+    assert guard._reported_sites == set()
+
+
 def test_caller_site_falls_back_when_stack_is_all_db_frames(monkeypatch):
     frame = SimpleNamespace(
         f_globals={"__name__": "astralplane.database"},

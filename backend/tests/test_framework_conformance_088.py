@@ -324,7 +324,8 @@ def test_sdk_cli_only_projects_tools_the_credentials_scopes_admit(live_server, c
     token = _issue_token(credentials, store, owner, sid, scopes=("operations.read",))
     tools = json.loads(_run_sdk(live_server, token, "tools").stdout)
     names = {tool["name"] for tool in tools}
-    assert names == {"astral_get_operation", "astral_list_operations", "astral_get_operation_events"}
+    assert names == {"astral_get_operation", "astral_list_operations",
+                     "astral_get_operation_events", "astral_emergency_status"}
 
 
 def test_sdk_cli_poll_ends_with_a_bounded_auth_error_after_revocation(live_server, credentials, session):

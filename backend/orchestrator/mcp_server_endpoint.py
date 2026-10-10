@@ -508,6 +508,8 @@ async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, a
             or not isinstance(caller, FrameworkCaller)):
         return MCPResponse(result_type="complete",
                            error={"message": "Tool is unavailable or not authorized"})
+    if method_name.startswith("emergency_"):
+        ops.emergency = getattr(orchestrator, "emergency_stop", None)
     args = arguments if isinstance(arguments, dict) else {}
     try:
         if method_name == "submit":
@@ -528,6 +530,12 @@ async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, a
                 expected_revision=args.get("expected_revision"))
         elif method_name == "result":
             result = await ops.result(caller, args.get("operation_id"))
+        elif method_name == "emergency_status":
+            result = await ops.emergency_status(caller)
+        elif method_name == "emergency_stop":
+            result = await ops.emergency_stop(caller, reason=args.get("reason"))
+        elif method_name == "emergency_resume":
+            result = await ops.emergency_resume(caller, expected_revision=args.get("expected_revision"))
         else:  # pragma: no cover
             return MCPResponse(result_type="complete",
                                error={"message": "Tool is unavailable or not authorized"})
