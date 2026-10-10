@@ -6,18 +6,18 @@ router's truthful status, denial, and recovery responses.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import asyncio
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
-
-os.environ["USE_MOCK_AUTH"] = "true"
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi import Depends  # noqa: E402
@@ -39,6 +39,28 @@ from orchestrator.work_admission import (  # noqa: E402
 
 
 OWNER = "11111111-1111-1111-1111-111111111111"
+
+
+@pytest.fixture(autouse=True)
+def mock_auth(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+
+
+@pytest.mark.parametrize("auth_mode", [None, "false"])
+def test_module_import_preserves_caller_auth_mode(auth_mode):
+    environment = os.environ.copy()
+    environment.pop("USE_MOCK_AUTH", None)
+    if auth_mode is not None:
+        environment["USE_MOCK_AUTH"] = auth_mode
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import os, runpy, sys; before = os.environ.get('USE_MOCK_AUTH'); "
+         "runpy.run_path(sys.argv[1], run_name='emergency_stop_gates_import_probe'); "
+         "assert os.environ.get('USE_MOCK_AUTH') == before",
+         str(Path(__file__).resolve())],
+        env=environment, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _token(sub: str) -> str:
