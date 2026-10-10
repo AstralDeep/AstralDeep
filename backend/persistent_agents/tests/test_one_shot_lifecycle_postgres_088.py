@@ -852,9 +852,12 @@ async def test_tick_runs_actual_governed_reader_then_yields_without_claiming_res
         await runner.stop()
 
 
+@pytest.mark.parametrize("rotate_custody", [False, True])
 async def test_cancelled_actual_reader_settles_without_checkpoint_or_unbind_leak(
-    operation,
+    operation, fixture, rotate_custody,
 ):
+    from orchestrator.session_authority import refresh_operation_execution_authority
+
     op = operation
     entered = asyncio.Event()
 
@@ -865,6 +868,21 @@ async def test_cancelled_actual_reader_settles_without_checkpoint_or_unbind_leak
     op.hooks.before = held
 
     async def handler(executor):
+        if rotate_custody:
+            other = await asyncio.to_thread(create_operation, fixture, op.runtime)
+            transaction = executor._reader_policy_transaction
+
+            async def rotate_before_guard(authority, action_id, callback):
+                if callback.__name__ == "retain":
+                    await refresh_operation_execution_authority(
+                        owner_id=op.owner,
+                        assignment_id=other.assignment_id,
+                        sessions=op.sessions,
+                        plane_runtime=op.runtime,
+                    )
+                return await transaction(authority, action_id, callback)
+
+            executor._reader_policy_transaction = rotate_before_guard
         await executor.action("cancelled-source-observation", REQUEST)
         pytest.fail("cancelled read must not complete handler")
 
