@@ -16,6 +16,7 @@ from . import living_memory as lm
 from . import memory_guard
 from . import project_scope as ps
 from .phi_gate import PHIGate, get_phi_gate
+from .qualification_pilot import OwnerScopedSemanticReranker, qualification_pilot_enabled
 from .repository import MEMORY_CATEGORIES
 from .retrieval_scoring import multisignal_enabled, score_memory_row
 
@@ -449,6 +450,21 @@ class MemoryTools:
                     return ranked
             except Exception:
                 logger.debug("memory_search: pagerank failed — falling back", exc_info=True)
+        if qualification_pilot_enabled():
+            try:
+                reranker = OwnerScopedSemanticReranker()
+                qualified = reranker.rank_memories(
+                    owner_id=user_id,
+                    query=query,
+                    items=items,
+                    limit=limit,
+                )
+                if qualified:
+                    self._reinforce(user_id, qualified)
+                    return qualified
+            except Exception:
+                logger.debug("memory_search: qualification pilot reranking failed — falling back", exc_info=True)
+
         scored.sort(key=lambda t: (-t[0], t[1]))
         results = [it for _, _, it in scored[:limit]]
         if linking_enabled() and results and len(results) < limit:
