@@ -111,6 +111,14 @@ def test_control_characters_and_line_breaks_are_flattened_out_of_the_reason():
     assert not any(character in message for character in ("\r", "\n", "\x00", "\x1b"))
 
 
+@pytest.mark.parametrize("direction", ["\u202e", "\u200f", "\u2066", "\u061c"])
+def test_directional_control_characters_are_stripped_from_the_reason(direction):
+    task = _task(TaskState.TASK_STATE_REJECTED, status_text=f"sec{direction}ret value")
+    message = a2a_response_to_mcp_response(task, "req-1").error["message"]
+    assert message == "secret value"
+    assert direction not in message
+
+
 @pytest.mark.parametrize("status_text", ["", "   ", "\r\n\t", "\x00\x1b"])
 def test_blank_peer_status_text_falls_back_to_the_state_default(status_text):
     task = _task(TaskState.TASK_STATE_INPUT_REQUIRED, status_text=status_text)
@@ -209,6 +217,8 @@ class _StrictTaskPeer:
         self.task_id = "peer-task-1"
         self.context_id = "peer-context-1"
         self._executed_keys = set()
+        self.v1_sends = 0
+        self.v1_gets = 0
         peer = self
 
         class _Handler(BaseHTTPRequestHandler):
@@ -216,6 +226,8 @@ class _StrictTaskPeer:
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
                 try:
                     payload = json.loads(raw)
+                    if self.headers.get("A2A-Version") == "1.0":
+                        assert payload["method"] in ("SendMessage", "GetTask")
                     body = peer._dispatch(payload)
                 except Exception as exc:
                     peer.errors.append(repr(exc))
@@ -241,18 +253,20 @@ class _StrictTaskPeer:
         self.base_url = f"http://127.0.0.1:{self._server.server_port}"
 
     def _task_payload(self, state, artifact_text=None):
-        payload = {"id": self.task_id, "context_id": self.context_id,
+        payload = {"id": self.task_id, "contextId": self.context_id,
                    "status": {"state": state}}
         if artifact_text is not None:
-            payload["artifacts"] = [{"artifact_id": "final-1",
+            payload["artifacts"] = [{"artifactId": "final-1",
                                      "parts": [{"text": artifact_text}]}]
         return payload
 
     def _dispatch(self, payload):
         method = payload.get("method")
         params = payload.get("params") or {}
-        if method == "message/send":
+        if method in ("SendMessage", "message/send"):
             self.message_sends += 1
+            if method == "SendMessage":
+                self.v1_sends += 1
             message = params["message"]
             data = next(part["data"] for part in message["parts"] if "data" in part)
             assert data["method"] == "tools/call"
@@ -260,8 +274,9 @@ class _StrictTaskPeer:
             if key not in self._executed_keys:
                 self._executed_keys.add(key)
                 self.executions += 1
-            blocking = (params.get("configuration") or {}).get("blocking", True)
-            if not blocking:
+            configuration = params.get("configuration") or {}
+            if "returnImmediately" in configuration:
+                assert configuration["returnImmediately"] is True
                 result = self._task_payload("TASK_STATE_WORKING")
             elif self.mode == "complete":
                 self.completed = True
@@ -270,18 +285,27 @@ class _StrictTaskPeer:
             else:
                 result = self._task_payload("TASK_STATE_INPUT_REQUIRED")
                 result["status"]["message"] = {
-                    "message_id": "peer-msg-1", "role": "ROLE_AGENT",
+                    "messageId": "peer-msg-1", "role": "ROLE_AGENT",
                     "parts": [{"text": "provide a patient id"}]}
+            if method == "SendMessage":
+                return {"jsonrpc": "2.0", "id": payload["id"], "result": {"task": result}}
             return {"jsonrpc": "2.0", "id": payload["id"], "result": result}
-        if method == "tasks/get":
+        if method in ("GetTask", "tasks/get"):
             self.task_gets += 1
+            if method == "GetTask":
+                self.v1_gets += 1
             queried = params["id"]
             assert queried == self.task_id
             if self.completed:
-                return {"jsonrpc": "2.0", "id": payload["id"],
-                        "result": self._task_payload("TASK_STATE_COMPLETED", self.output)}
-            return {"jsonrpc": "2.0", "id": payload["id"],
-                    "result": self._task_payload("TASK_STATE_WORKING")}
+                state, artifact = "TASK_STATE_COMPLETED", self.output
+            elif self.mode == "interrupted":
+                state, artifact = "TASK_STATE_INPUT_REQUIRED", None
+            else:
+                state, artifact = "TASK_STATE_WORKING", None
+            body = self._task_payload(state, artifact)
+            if method == "GetTask":
+                return {"jsonrpc": "2.0", "id": payload["id"], "result": body}
+            return {"jsonrpc": "2.0", "id": payload["id"], "result": body}
         raise AssertionError(f"unsupported method: {method}")
 
     def call(self, method, params):
@@ -289,7 +313,7 @@ class _StrictTaskPeer:
                            "params": params}).encode()
         request = urllib.request.Request(
             f"{self.base_url}/a2a", data=body,
-            headers={"Content-Type": "application/json"})
+            headers={"Content-Type": "application/json", "A2A-Version": "1.0"})
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response)["result"]
 
@@ -353,27 +377,67 @@ def test_strict_peer_interrupted_request_is_refused_as_unsupported_continuation(
         peer.close()
 
 
-def test_non_blocking_lifecycle_observes_completion_without_a_second_execution():
-    peer = _StrictTaskPeer(mode="complete")
+def test_non_blocking_lifecycle_observes_completion_without_a_second_execution(monkeypatch):
+    from orchestrator.orchestrator import Orchestrator
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    peer = _StrictTaskPeer(mode="interrupted")
     try:
-        started = peer.call("message/send", {
-            "message": {"message_id": "m-1", "role": "ROLE_USER",
-                        "parts": [{"data": {"method": "tools/call", "name": "draft_report",
-                                            "arguments": _tool_args()}}]},
-            "configuration": {"blocking": False}})
-        assert started["status"]["state"] == "TASK_STATE_WORKING"
-        assert started["id"] == peer.task_id
+        orchestrator = _orchestrator_toward(peer)
+        refusal = asyncio.run(Orchestrator._execute_via_a2a(
+            orchestrator, "remote-1", "draft_report", _tool_args()))
+        assert refusal.result is None
+        assert refusal.error["task_state"] == "TASK_STATE_INPUT_REQUIRED"
+        assert refusal.error["task_terminal"] is False
+        assert refusal.error["continuation"] == "unsupported"
+        assert refusal.error["retryable"] is False
+        assert refusal.error["message"] == "provide a patient id"
+        assert refusal.error["task_id"] == peer.task_id
+        assert refusal.error["context_id"] == peer.context_id
         assert peer.executions == 1
         assert peer.message_sends == 1
 
+        client_view = peer.call("GetTask", {"id": peer.task_id})
+        assert client_view["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+        assert client_view["id"] == peer.task_id
+
+        peer.mode = "complete"
         peer.completed = True
         peer.output = "final output"
-        observed = peer.call("tasks/get", {"id": peer.task_id})
+        resolved = asyncio.run(Orchestrator._execute_via_a2a(
+            orchestrator, "remote-1", "draft_report", _tool_args()))
+        assert resolved.error is None
+        assert resolved.result == "final output"
+        assert peer.executions == 1
+        assert peer.message_sends == 2
+        assert peer.task_gets == 1
+        assert peer.errors == []
+    finally:
+        peer.close()
+
+
+def test_strict_peer_serves_a2a_1_0_clients_with_the_v1_wire_shapes(monkeypatch):
+    peer = _StrictTaskPeer(mode="complete")
+    try:
+        started = peer.call("SendMessage", {
+            "message": {"messageId": "m-1", "role": "ROLE_USER",
+                        "parts": [{"data": {"method": "tools/call", "name": "draft_report",
+                                            "arguments": _tool_args()}}]},
+            "configuration": {"returnImmediately": True}})
+        assert started["task"]["status"]["state"] == "TASK_STATE_WORKING"
+        assert started["task"]["id"] == peer.task_id
+        assert started["task"]["contextId"] == peer.context_id
+        assert peer.executions == 1
+        assert peer.v1_sends == 1
+
+        peer.completed = True
+        peer.output = "final output"
+        observed = peer.call("GetTask", {"id": peer.task_id})
         assert observed["status"]["state"] == "TASK_STATE_COMPLETED"
         assert observed["artifacts"][0]["parts"][0]["text"] == "final output"
         assert peer.executions == 1
-        assert peer.message_sends == 1
-        assert peer.task_gets == 1
+        assert peer.v1_sends == 1
+        assert peer.v1_gets == 1
         assert peer.errors == []
     finally:
         peer.close()
