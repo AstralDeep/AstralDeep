@@ -1,14 +1,14 @@
-"""Host wiring for emergency_stop.py: builds the audit recorder, enrolled remote
-responder discovery, probe-based acknowledgment with open-execution awareness,
-and the audit-backed durable re-arm loader, then mounts one
-EmergencyStopCoordinator on the orchestrator instance.
+"""Bind emergency-stop state to strict Plane-backed audit persistence and discovery.
+Reachability never substitutes for a remote stop receipt, and bounded audit reconstruction
+refuses unavailable or malformed transition history.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import math
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger("Orchestrator.EmergencyStopBinding")
@@ -18,25 +18,43 @@ RESUME_ACTION = "emergency_stop.resume"
 ACK_ACTION = "emergency_stop.acknowledgment"
 EVENT_CLASS = "emergency_stop"
 _SCAN_LIMIT = 25
+_SCAN_PAGES = 16
 _REMOTE_PREFIX = "remote:"
 _PROBE_TIMEOUT_SECONDS = 6.0
 _OPEN_EXECUTION_SCAN = 200
 
 
-def build_audit_hook():
+def build_audit_hook(orch):
     async def hook(action: str, outcome: str, *, owner_id: str,
                    claims: dict | None = None, detail: dict[str, Any] | None = None) -> None:
-        from audit.hooks import record_generic
+        from audit.hooks import actor_principal_from_claims
+        from audit.recorder import make_correlation_id, now_utc
+        from audit.schemas import AuditEventCreate, AuditEventDTO
 
-        await record_generic(
-            claims=claims or {"sub": owner_id},
+        repo = getattr(orch, "audit_repo", None)
+        if repo is None:
+            raise RuntimeError("emergency stop audit unavailable")
+        user, principal = actor_principal_from_claims(claims or {"sub": owner_id})
+        if user != owner_id:
+            raise RuntimeError("emergency stop audit owner mismatch")
+        event = AuditEventCreate(
+            actor_user_id=owner_id, auth_principal=principal,
             event_class=EVENT_CLASS,
             action_type=action,
             description=action.split(".", 1)[-1].replace("_", " "),
             inputs_meta=dict(detail or {}),
+            correlation_id=make_correlation_id(), started_at=now_utc(),
             outcome=outcome,
             outcome_detail=None if outcome == "success" else str((detail or {}).get("denial") or outcome),
         )
+        recorded = await asyncio.to_thread(repo.insert, event)
+        if (not isinstance(recorded, AuditEventDTO) or not recorded.event_id
+                or recorded.event_class != event.event_class
+                or recorded.action_type != event.action_type
+                or recorded.outcome != event.outcome
+                or recorded.correlation_id != event.correlation_id
+                or recorded.inputs_meta != event.inputs_meta):
+            raise RuntimeError("emergency stop durable audit receipt mismatch")
     return hook
 
 
@@ -45,8 +63,11 @@ def build_remote_responders(orch):
         from orchestrator import remote_machines
 
         rows = remote_machines.list_machines(plane_source(orch), owner_id)
-        return [row["machine_id"] for row in rows
-                if isinstance(row, dict) and row.get("machine_id")]
+        if (not isinstance(rows, list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("machine_id"), str)
+                       or not row["machine_id"] for row in rows)):
+            raise RuntimeError("emergency stop inventory unavailable")
+        return [row["machine_id"] for row in rows]
     return discover
 
 
@@ -93,7 +114,7 @@ async def probe_responder(orch, owner_id: str, responder: str) -> str:
             result = get_transport().probe(target, timeout=_PROBE_TIMEOUT_SECONDS)
         except Exception:
             return "unreachable"
-        return "acknowledged" if bool(getattr(result, "ok", False)) else "unreachable"
+        return "pending" if bool(getattr(result, "ok", False)) else "unreachable"
 
     return await asyncio.to_thread(reach)
 
@@ -102,59 +123,74 @@ def build_rearm_loader(orch):
     def load(owner_id: str) -> dict[str, Any] | None:
         repo = getattr(orch, "audit_repo", None)
         if repo is None:
-            return None
-        items, _cursor = repo.list_for_user(
-            owner_id, event_classes=[EVENT_CLASS], limit=_SCAN_LIMIT)
-        for event in items:
-            action = getattr(event, "action_type", "")
-            meta = getattr(event, "inputs_meta", None) or {}
-            if action == ENGAGE_ACTION:
-                engaged_at = _meta_time(meta.get("engaged_at")) or _event_time(event)
-                return {
-                    "engaged": True,
-                    "revision": _meta_int(meta.get("revision"), 1),
-                    "engaged_at": engaged_at,
-                    "engaged_by": str(getattr(event, "actor_user_id", "") or owner_id),
-                    "reason": str(meta.get("reason") or ""),
-                }
-            if action == RESUME_ACTION and not meta.get("denial"):
-                return {"engaged": False,
-                        "revision": _meta_int(meta.get("current_revision"), 0)}
-        return None
+            raise RuntimeError("emergency stop audit unavailable")
+        cursor = None
+        seen = set()
+        for _ in range(_SCAN_PAGES):
+            items, next_cursor = repo.list_for_user(
+                owner_id, event_classes=[EVENT_CLASS], limit=_SCAN_LIMIT, cursor=cursor)
+            if not isinstance(items, list) or len(items) > _SCAN_LIMIT:
+                raise RuntimeError("emergency stop audit page invalid")
+            for event in items:
+                action = getattr(event, "action_type", "")
+                if (getattr(event, "event_class", None) != EVENT_CLASS
+                        or getattr(event, "outcome", None) != "success"
+                        or action not in (ENGAGE_ACTION, RESUME_ACTION)):
+                    continue
+                meta = getattr(event, "inputs_meta", None)
+                if not isinstance(meta, dict):
+                    raise RuntimeError("emergency stop audit metadata invalid")
+                if action == ENGAGE_ACTION:
+                    return {
+                        "engaged": True, "revision": _meta_int(meta.get("revision")),
+                        "engaged_at": _meta_time(meta.get("engaged_at")),
+                        "engaged_by": owner_id, "reason": meta.get("reason"),
+                    }
+                if meta.get("denial"):
+                    raise RuntimeError("emergency stop successful denial invalid")
+                revision = _meta_int(meta.get("current_revision"))
+                if _meta_int(meta.get("expected_revision")) != revision:
+                    raise RuntimeError("emergency stop resume revision invalid")
+                return {"engaged": False, "revision": revision}
+            if next_cursor is None:
+                return None
+            if (not isinstance(next_cursor, str) or not next_cursor
+                    or next_cursor in seen or not items):
+                raise RuntimeError("emergency stop audit cursor invalid")
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise RuntimeError("emergency stop audit history incomplete")
     return load
 
 
-def _meta_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+def _meta_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2**63 - 1:
+        raise RuntimeError("emergency stop audit revision invalid")
+    return value
 
 
-def _meta_time(value: Any) -> float | None:
+def _meta_time(value: Any) -> float:
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        if 0 <= value <= 2**63 - 1 and math.isfinite(value):
+            return float(value)
+        raise RuntimeError("emergency stop audit time invalid")
     try:
-        parsed = datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(value)
     except (TypeError, ValueError):
-        return None
+        raise RuntimeError("emergency stop audit time invalid") from None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
-
-
-def _event_time(event: Any) -> float | None:
-    recorded = getattr(event, "recorded_at", None)
-    if isinstance(recorded, datetime):
-        if recorded.tzinfo is None:
-            recorded = recorded.replace(tzinfo=timezone.utc)
-        return recorded.timestamp()
-    return None
+        raise RuntimeError("emergency stop audit timezone missing")
+    timestamp = parsed.timestamp()
+    if not math.isfinite(timestamp) or timestamp < 0:
+        raise RuntimeError("emergency stop audit time invalid")
+    return timestamp
 
 
 def mount(orch):
     from orchestrator.emergency_stop import EmergencyStopCoordinator
 
     coordinator = EmergencyStopCoordinator(
-        audit=build_audit_hook(),
+        audit=build_audit_hook(orch),
         remote_responders=build_remote_responders(orch),
         probe_responder=lambda owner_id, responder: probe_responder(orch, owner_id, responder),
         rearm_loader=build_rearm_loader(orch),
