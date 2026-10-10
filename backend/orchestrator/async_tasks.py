@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from astralplane import AsyncPlaneRuntime
 from astralplane.repositories.background_tasks import (
@@ -419,6 +419,12 @@ class BackgroundTaskManager:
         self._drain_lock = asyncio.Lock()
         self._retention_task: asyncio.Task | None = None
         self._retention_stop: asyncio.Event | None = None
+        self._admission_guard: Callable[[str], Awaitable[str | None]] | None = None
+
+    def set_admission_guard(
+        self, guard: Callable[[str], Awaitable[str | None]] | None,
+    ) -> None:
+        self._admission_guard = guard
 
     def bind(
         self,
@@ -676,6 +682,19 @@ class BackgroundTaskManager:
             retry_after_ms=1000,
         )
 
+    async def _admission_refusal(self, bg_task: BackgroundTask) -> str | None:
+        guard = self._admission_guard
+        if guard is None:
+            return None
+        try:
+            return await guard(bg_task.user_id)
+        except Exception:
+            logger.exception(
+                "background admission guard failed for %s; failing closed",
+                bg_task.task_id,
+            )
+            return "emergency_stop_unavailable"
+
     def _require_coordinator(self) -> WorkAdmissionCoordinator:
         if self._coordinator is None:
             raise BackgroundTaskManagerNotBoundError(
@@ -905,7 +924,28 @@ class BackgroundTaskManager:
                     bg_task._apply_operation(operation, execution_fence=None)
                     accepted_while_draining = True
                 elif claim is not None:
-                    self._start_claimed_task_locked(bg_task, claim)
+                    refusal = await self._admission_refusal(bg_task)
+                    if refusal is not None:
+                        try:
+                            operation = await asyncio.to_thread(
+                                coordinator.terminalize,
+                                claim.fence,
+                                state=OperationState.CANCELLED,
+                                terminal_code=refusal,
+                                safe_summary="Refused by emergency stop",
+                                retry_after_ms=None,
+                            )
+                            bg_task._apply_operation(
+                                operation, execution_fence=None)
+                        except StaleExecutionFenceError:
+                            logger.info(
+                                "background operation %s fence went stale "
+                                "during emergency-stop refusal",
+                                bg_task.task_id,
+                            )
+                        self._pending_executions.pop(bg_task.task_id, None)
+                    else:
+                        self._start_claimed_task_locked(bg_task, claim)
                 else:
                     logger.warning(
                         "background operation %s was accepted but not selected locally",
@@ -990,6 +1030,29 @@ class BackgroundTaskManager:
                             break
 
                         if claim is not None:
+                            refusal = await self._admission_refusal(bg_task)
+                            if refusal is not None:
+                                self._pending_executions.pop(bg_task.task_id, None)
+                                self._tasks.pop(bg_task.task_id, None)
+                                try:
+                                    operation = await asyncio.to_thread(
+                                        coordinator.terminalize,
+                                        claim.fence,
+                                        state=OperationState.CANCELLED,
+                                        terminal_code=refusal,
+                                        safe_summary="Refused by emergency stop",
+                                        retry_after_ms=None,
+                                    )
+                                    bg_task._apply_operation(
+                                        operation, execution_fence=None)
+                                except StaleExecutionFenceError:
+                                    logger.info(
+                                        "background operation %s fence went stale "
+                                        "during emergency-stop refusal",
+                                        bg_task.task_id,
+                                    )
+                                notify.append(bg_task)
+                                continue
                             made_progress = (
                                 self._start_claimed_task_locked(bg_task, claim)
                                 or made_progress

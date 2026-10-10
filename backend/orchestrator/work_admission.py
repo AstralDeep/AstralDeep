@@ -492,6 +492,7 @@ class WorkAdmissionCoordinator:
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
+        submission_gate: Callable[[OperationRequest], str | None] | None = None,
         _configure_repository: bool = True,
     ) -> None:
         if repository is None:
@@ -506,6 +507,7 @@ class WorkAdmissionCoordinator:
         self._clock = clock
         self._operation_retention = operation_retention
         self._slot_lease = slot_lease
+        self._submission_gate = submission_gate
         if _configure_repository:
             self._repository.configure(configs)
         else:
@@ -527,6 +529,7 @@ class WorkAdmissionCoordinator:
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
+        submission_gate: Callable[[OperationRequest], str | None] | None = None,
     ) -> WorkAdmissionCoordinator:
         repository = PlaneWorkAdmissionRepository(
             plane_runtime=plane_runtime,
@@ -539,6 +542,7 @@ class WorkAdmissionCoordinator:
             clock=clock,
             operation_retention=operation_retention,
             slot_lease=slot_lease,
+            submission_gate=submission_gate,
             _configure_repository=False,
         )
 
@@ -552,6 +556,11 @@ class WorkAdmissionCoordinator:
         return datetime.now(UTC) if current is None else current
 
     def submit(self, request: OperationRequest) -> AdmissionResult:
+        if self._submission_gate is not None:
+            refusal = self._submission_gate(request)
+            if refusal:
+                return RefusedAdmission(accepted=False, code=refusal,
+                                        retryable=False, retry_after_ms=None)
         return self._repository.submit(
             request,
             now=self._now(),

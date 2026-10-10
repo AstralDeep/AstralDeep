@@ -1081,10 +1081,19 @@ class Orchestrator:
         )
         if operation_retention_seconds <= 0:
             raise ValueError("OPERATION_RETENTION_SECONDS must be positive")
+        from orchestrator.emergency_stop_binding import (
+            background_admission_guard,
+            mount as mount_emergency_stop,
+            submission_gate as emergency_submission_gate,
+        )
+
+        self.emergency_stop = mount_emergency_stop(self)
+        self.async_task_manager.set_admission_guard(background_admission_guard(self))
         self.work_admission = WorkAdmissionCoordinator.from_plane(
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
             operation_retention=timedelta(seconds=operation_retention_seconds),
+            submission_gate=emergency_submission_gate(self),
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -5089,8 +5098,23 @@ class Orchestrator:
             getattr(websocket, "is_fenced_user_agent_tunnel", False)
         )
         if is_tunnel:
+            from orchestrator.emergency_stop_binding import stop_denial
             from orchestrator.user_agents import authorize_registration
             owner_sub = getattr(websocket, "owner_sub", None)
+            if stop_denial(self, owner_sub) is not None:
+                logger.warning(
+                    "Refusing user-agent tunnel registration '%s' (owner=%s): "
+                    "emergency stop active", card.agent_id, owner_sub)
+                await self._audit_user_agent(
+                    owner_sub, "agent.registration_refused",
+                    "Refused user-agent tunnel registration: emergency stop active",
+                    card.agent_id, outcome="failure")
+                if websocket is not None:
+                    try:
+                        await websocket.close(code=1008, reason="emergency stop active")
+                    except Exception:
+                        logger.debug("close after refused user-agent registration failed", exc_info=True)
+                return
             reserved = frozenset(FIRST_PARTY_PUBLIC_AGENT_IDS)
             ok, reason = await asyncio.to_thread(
                 authorize_registration,
@@ -12667,6 +12691,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         effect_key: Optional[str] = None,
         payload_digest: Optional[str] = None,
     ) -> str:
+        from orchestrator.emergency_stop_binding import stop_denial
+        from persistent_agents.models import AssignmentError
+
+        if stop_denial(self, user_id) is not None:
+            raise AssignmentError("emergency_stop_active", 423)
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         from orchestrator.scheduled_publication import stage_scheduled_history
 
@@ -13761,6 +13790,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str = None, draft_agent_id: str = None, selected_tools=None,
         attachments=None, operation_context=None, voice_dispatch=None, selection=None,
     ):
+        from orchestrator.emergency_stop_binding import stop_denial
+        from persistent_agents.models import AssignmentError
+
+        stop_owner = user_id or self._get_user_id(websocket)
+        if stop_denial(self, stop_owner) is not None:
+            raise AssignmentError("emergency_stop_active", 423)
         from orchestrator import user_skills
         from orchestrator.human_request_authority import (
             current_socket_human_read, retire_socket_human_read,
@@ -18847,6 +18882,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         protected_auth_principal: Optional[str] = None,
         protected_conversation_id: Optional[str] = None,
     ) -> Optional[MCPResponse]:
+        from orchestrator.emergency_stop_binding import stop_denial
+
+        tool_owner = protected_owner_id
+        if not tool_owner and ui_websocket is not None:
+            tool_claims = (getattr(self, "ui_sessions", None) or {}).get(ui_websocket)
+            tool_owner = tool_claims.get("sub") if isinstance(tool_claims, dict) else None
+        if stop_denial(self, tool_owner) is not None:
+            return MCPResponse(
+                request_id=f"req_{tool_name}_{_uuid.uuid4().hex}",
+                error={"message": "emergency_stop_active", "retryable": False})
         from orchestrator.agent_identity import required_identity_claims
 
         channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
@@ -19579,6 +19624,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False
 
     async def _get_delegation_token(self, websocket, agent_id: str, user_id: str) -> Optional[str]:
+        from orchestrator.emergency_stop_binding import stop_denial
+
+        if stop_denial(self, user_id) is not None:
+            return None
         try:
             card = self.agent_cards.get(agent_id)
             if not card:
@@ -23159,6 +23208,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(async_task_router)
         app.include_router(operation_router)
         app.include_router(audit_router)
+        from orchestrator.emergency_stop_api import emergency_stop_router
+        app.include_router(emergency_stop_router)
         app.include_router(feedback_user_router)
         app.include_router(feedback_admin_router)
         app.include_router(onboarding_user_router)
