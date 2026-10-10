@@ -5,9 +5,12 @@ Work mirrors stop status; Safety uses the same durable coordinator as owner REST
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -82,6 +85,31 @@ def test_work_mirror_shows_unreachable_responder_truth():
     html = asyncio.run(work_surface.render(orch, OWNER, [], _work_params()))
     assert "Unreachable responders" in html
     assert "remote:machine-9: unreachable" in html
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("state,required", [
+    ("running", ("blocks new local work", "Remote machines require a separate acknowledgment")),
+    ("stopped", ("Local stop is durably active", "effects already dispatched can remain uncertain")),
+    ("partial", ("the stop is active", "some responders have not acknowledged yet")),
+    ("unreachable", ("new local work is blocked", "Unfinished or remote effects remain uncertain")),
+])
+def test_work_status_preserves_local_scope_and_unconfirmed_effects(native, state, required):
+    async def probe(owner_id, responder):
+        return "unreachable" if state == "unreachable" else "pending"
+
+    coordinator = EmergencyStopCoordinator(
+        remote_responders=lambda owner: ["machine-9"] if state in {"partial", "unreachable"} else [],
+        probe_responder=probe)
+    if state != "running":
+        asyncio.run(coordinator.engage(OWNER, sweep=False))
+        asyncio.run(coordinator.verify(OWNER))
+    assert coordinator.status(OWNER)["state"] == state
+    orch = _orch(coordinator)
+    visible = (json.dumps(asyncio.run(work_surface.components(orch, OWNER, [], _work_params())))
+               if native else asyncio.run(work_surface.render(orch, OWNER, [], _work_params())))
+    assert all(phrase in visible for phrase in required)
+    assert "halts every authorized effect" not in visible
 
 
 def test_safety_surface_shows_actionable_owner_controls_and_current_resume_revision():

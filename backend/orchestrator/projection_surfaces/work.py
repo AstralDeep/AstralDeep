@@ -28,16 +28,15 @@ TITLE = "Recent work"
 logger = logging.getLogger("Orchestrator.WorkSurface")
 
 _EMERGENCY_STATE_LINES = {
-    "running": "Everything is running. An emergency stop halts every authorized effect "
-               "for your account: tool admission, agents, schedules, shells, and "
-               "enrolled remote machines.",
-    "stopped": "Stopped — every responder acknowledged. Nothing new will be admitted "
-               "until you explicitly resume.",
+    "running": "Local effects are enabled. Stop blocks new local work and interrupts "
+               "supported active work. Remote machines require a separate acknowledgment.",
+    "stopped": "Local stop is durably active. Supported active work is interrupted; "
+               "effects already dispatched can remain uncertain. Resume admits new work.",
     "partial": "Partially acknowledged — the stop is active, and some responders have "
                "not acknowledged yet.",
-    "unreachable": "Unreachable — the stop is active locally, but at least one enrolled "
-                   "machine could not be reached. Its state stays unknown until it "
-                   "acknowledges.",
+    "unreachable": "Unreachable — new local work is blocked, but at least one responder "
+                   "could not confirm interruption. Unfinished or remote effects remain "
+                   "uncertain until verified.",
 }
 _EMERGENCY_BADGES = {
     "running": ("Running", "default"),
