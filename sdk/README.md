@@ -1,5 +1,8 @@
 # astral-sdk
 
+For personal-device enrollment, possession proofs, and encrypted signing-key
+custody, see [personal mesh enrollment](MESH.md) and install `astral-sdk[mesh]`.
+
 Python SDK for driving Astral's **Work** operations from your own external
 tooling — a script, an agent framework, an MCP-aware host — using an
 owner-issued **framework credential** rather than a live interactive session.

@@ -15,7 +15,7 @@ FINAL = "from typing import Final\n"
 def read(tmp_path: Path, source: str):
     path = tmp_path / "src/astralplane/database/declarative_agent_schema.py"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     tree = composition.ast.parse(IMPORT)
     return composition._plane_schema_literal_import(
         tmp_path, tree, stem="declarative_agent", symbol=SYMBOL,
