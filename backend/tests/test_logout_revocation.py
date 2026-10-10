@@ -4,8 +4,7 @@ user-switch revocation in /auth/callback.
 """
 
 import asyncio
-import base64
-import json
+import os
 import secrets
 import time
 from types import SimpleNamespace
@@ -13,6 +12,7 @@ import uuid
 
 import pytest
 from cryptography.fernet import Fernet
+from jose import jwt
 
 from orchestrator import web_auth
 from tests.helpers.session_plane_runtime import (
@@ -21,6 +21,7 @@ from tests.helpers.session_plane_runtime import (
     revocation_records,
     web_session_store,
 )
+from tests.test_request_session_authority_088 import signing_key as signing_key
 
 
 class _FakeRequest:
@@ -45,11 +46,17 @@ def store(plane_runtime, monkeypatch):
 
 
 @pytest.fixture()
-def real_auth_env(monkeypatch):
+def real_auth_env(monkeypatch, signing_key):
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
+
+    async def keys(*args, **kwargs):
+        return signing_key[1]
+
+    monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
+    return signing_key
 
 
 def _queue_rows(plane_runtime, user_id):
@@ -60,10 +67,11 @@ def _purge_queue(plane_runtime, *user_ids):
     purge_revocations(plane_runtime, user_ids)
 
 
-def _fake_jwt(payload: dict) -> str:
-    def enc(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    return f"{enc({'alg': 'none', 'typ': 'JWT'})}.{enc(payload)}.sig"
+def _signed_jwt(payload: dict, key) -> str:
+    claims = {"iss": os.environ["KEYCLOAK_AUTHORITY"],
+              "azp": os.environ["KEYCLOAK_CLIENT_ID"], **payload}
+    return jwt.encode(claims, key[0], algorithm="RS256",
+                      headers={"kid": "synthetic-request-authority"})
 
 
 def test_revoke_or_queue_success_queues_nothing(plane_runtime, store, monkeypatch):
@@ -269,8 +277,8 @@ def test_auth_callback_user_switch_revokes_prior_session(
     web_auth._PENDING[state] = {"code_verifier": "v" * 43, "created_at": time.time(), "next": "/"}
 
     token_response = {
-        "access_token": _fake_jwt({"sub": user_b, "exp": int(time.time()) + 300,
-                                   "realm_access": {"roles": ["user"]}}),
+        "access_token": _signed_jwt({"sub": user_b, "exp": int(time.time()) + 300,
+                                   "realm_access": {"roles": ["user"]}}, real_auth_env),
         "refresh_token": f"rtB-{uuid.uuid4()}",
     }
 

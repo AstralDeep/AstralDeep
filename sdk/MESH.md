@@ -29,6 +29,10 @@ member.close()
 `owner_http` uses normal Keycloak bearer or cookie authentication and contains
 the server-issued `astral_session` cookie. Bearer authentication alone cannot
 authorize durable owner confirmation without that matching session custody.
+The browser sign-in must have recorded the verified Keycloak issuer and client
+in durable session storage. If an older session lacks this binding, sign out and
+sign in again before confirming an invitation; token refresh alone does not
+upgrade that session, and confirmation remains refused until a new sign-in.
 The owner and member clients should use separate HTTP clients. Never copy an
 owner access token, refresh token, or cookie onto the enrolled device.
 
