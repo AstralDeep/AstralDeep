@@ -18,7 +18,7 @@ from astral_sdk.mcp_bridge import Bridge
 from astral_sdk.models import Artifact, ControlResult, Event, Operation, OperationList, RetryPolicy
 from astral_sdk.tools import ASTRAL_TOOLS, TOOL_NAMES
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",

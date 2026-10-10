@@ -131,6 +131,18 @@ async def test_socket_lifetime_changes_refuse_before_callback(human, socket_requ
         pending.close()
 
 
+@pytest.mark.parametrize("action,surface", [
+    ("chrome_open", "agent_authoring"), ("chrome_user_skill_save", "agent_authoring"),
+    ("chrome_note_search", "guidance"), ("chrome_note_save", "guidance"),
+])
+async def test_pending_registration_never_yields_current_human_authority(human, socket_request, action, surface):
+    _socket, context, message = socket_request
+    message.update(action=action, payload={"surface": surface})
+    context.work_registrations_pending = 1
+    with pytest.raises(AssignmentError, match="human_authentication_required"):
+        capture(human, socket_request)
+
+
 async def test_captured_issuance_is_not_replaced_during_normal_jwt_wait(
     human, socket_request, fixture, runtime, monkeypatch,
 ):

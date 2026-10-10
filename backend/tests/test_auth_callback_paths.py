@@ -4,8 +4,7 @@ pre-flight probe with its 60s cache.
 """
 
 import asyncio
-import base64
-import json
+import os
 import secrets
 import time
 import uuid
@@ -13,6 +12,7 @@ import uuid
 import pytest
 from cryptography.fernet import Fernet
 from fastapi.responses import HTMLResponse
+from jose import jwt
 
 from orchestrator import web_auth
 from tests.helpers.session_plane_runtime import (
@@ -20,6 +20,7 @@ from tests.helpers.session_plane_runtime import (
     purge_revocations,
     web_session_store,
 )
+from tests.test_request_session_authority_088 import signing_key as signing_key
 
 DEEP_LINK = "/?chat=abc"
 DEEP_LINK_ENC = "%2F%3Fchat%3Dabc"
@@ -32,10 +33,11 @@ class _FakeRequest:
         self.base_url = base_url
 
 
-def _fake_jwt(payload: dict) -> str:
-    def enc(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    return f"{enc({'alg': 'none', 'typ': 'JWT'})}.{enc(payload)}.sig"
+def _signed_jwt(payload: dict, key) -> str:
+    claims = {"iss": os.environ["KEYCLOAK_AUTHORITY"],
+              "azp": os.environ["KEYCLOAK_CLIENT_ID"], **payload}
+    return jwt.encode(claims, key[0], algorithm="RS256",
+                      headers={"kid": "synthetic-request-authority"})
 
 
 def _token_client(token_response: dict):
@@ -124,11 +126,17 @@ def store(plane_runtime, monkeypatch):
 
 
 @pytest.fixture()
-def real_auth_env(monkeypatch):
+def real_auth_env(monkeypatch, signing_key):
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
+
+    async def keys(*args, **kwargs):
+        return signing_key[1]
+
+    monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
+    return signing_key
 
 
 def _purge_queue(plane_runtime, *user_ids):
@@ -149,8 +157,8 @@ def test_callback_success_redirects_to_deep_link(store, monkeypatch, real_auth_e
     user_id = f"u-{uuid.uuid4()}"
     state = _seed_pending(DEEP_LINK)
     token_response = {
-        "access_token": _fake_jwt({"sub": user_id, "exp": int(time.time()) + 300,
-                                   "realm_access": {"roles": ["user"]}}),
+        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+                                   "realm_access": {"roles": ["user"]}}, real_auth_env),
         "refresh_token": f"rt-{uuid.uuid4()}",
     }
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _token_client(token_response))
@@ -248,9 +256,9 @@ def test_callback_no_access_role_refused(
     refresh = f"rt-{uuid.uuid4()}"
     state = _seed_pending(DEEP_LINK)
     token_response = {
-        "access_token": _fake_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
                                    "realm_access": {"roles": ["offline_access"]},
-                                   "resource_access": {"acct": {"roles": ["view-profile"]}}}),
+                                   "resource_access": {"acct": {"roles": ["view-profile"]}}}, real_auth_env),
         "refresh_token": refresh,
     }
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _token_client(token_response))
@@ -294,8 +302,8 @@ def test_callback_user_role_passes_gate(
     user_id = f"u-{uuid.uuid4()}"
     state = _seed_pending("/")
     token_response = {
-        "access_token": _fake_jwt({"sub": user_id, "exp": int(time.time()) + 300,
-                                   "realm_access": {"roles": ["user"]}}),
+        "access_token": _signed_jwt({"sub": user_id, "exp": int(time.time()) + 300,
+                                   "realm_access": {"roles": ["user"]}}, real_auth_env),
         "refresh_token": f"rt-{uuid.uuid4()}",
     }
     monkeypatch.setattr(web_auth.httpx, "AsyncClient", _token_client(token_response))
