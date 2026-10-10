@@ -137,7 +137,7 @@ def generate_materials(
     )
     save_cert(
         "livekit/turn",
-        certificate("ad-bwq-turn", iam_ca, ExtendedKeyUsageOID.SERVER_AUTH),
+        certificate("ad-bwq-turn.invalid", iam_ca, ExtendedKeyUsageOID.SERVER_AUTH),
     )
     save_cert(
         "warden/tls/server",
