@@ -1,0 +1,8 @@
+# AstralDeep Core Dependencies
+# ... (outras dependências existentes)
+
+# OpenAI MCP Tunnel Qualification (Pinned per issue requirements)
+# Note: These are for qualification/testing purposes only.
+# The tunnel is NOT enabled by default.
+tunnel-client==fda241e2343ddd49dd63a7da3e1afab2a6e91722
+mcp-sdk-go==[REDACTED_PIN_FROM_REVIEW]
