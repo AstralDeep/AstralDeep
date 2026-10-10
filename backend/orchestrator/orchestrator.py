@@ -840,6 +840,13 @@ class GateRefusal(NamedTuple):
     hop_audited: bool = False
 
 
+class _CardActionTerminalFailure(Exception):
+    def __init__(self, safe_summary: str, terminal_code: str = "card_action_refused") -> None:
+        self.safe_summary = safe_summary
+        self.terminal_code = terminal_code
+        super().__init__(safe_summary)
+
+
 def _unbind_orchestrator_process_consumers(orchestrator) -> None:
     from orchestrator.offline_grant import unbind_offline_grant_store
     from orchestrator.web_auth import (
@@ -8419,6 +8426,14 @@ class Orchestrator:
                 await self._send_operation_projection(
                     context, work.frame, work, projection
                 )
+        except _CardActionTerminalFailure as exc:
+            terminal_operation = await self._terminalize_connection_operation(
+                context,
+                work,
+                state=OperationState.FAILED,
+                terminal_code=exc.terminal_code,
+                safe_summary=exc.safe_summary,
+            )
         except Exception:
             if work.frame.human_request is not None:
                 logger.warning("Metadata request failed operation_id=%s",
@@ -21485,7 +21500,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return False, "Permission check failed."
         return True, ""
 
-    async def _handle_component_action(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_action(self, websocket, user_id: str, payload: dict[str, Any]):
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         target_id = payload.get("target_component_id") or component_id
@@ -21498,25 +21513,25 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message=f"Unsupported component action kind '{kind}'.",
                       variant="error").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure(f"unsupported_kind:{kind}")
         if not chat_id or not component_id:
             await self.send_ui_render(websocket, [
                 Alert(message="This action is missing its component context.", variant="error").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("missing_component_context")
         if self._ws_timeline_mode.get(id(websocket)):
             await self._audit_workspace_denial(user_id, chat_id, component_id, "timeline_readonly")
             await self.send_ui_render(websocket, [
                 Alert(message="You are viewing a past workspace state — return to live to interact.",
                       variant="warning").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("timeline_readonly")
         row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
         if row is None or not isinstance(row.get("component_data"), dict):
             await self.send_ui_render(websocket, [
                 Alert(message="This component is no longer available.", variant="warning").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("component_not_found")
         cd = row["component_data"]
         agent_id = cd.get("_source_agent", "")
         tool_name = cd.get("_source_tool", "")
@@ -21524,7 +21539,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, [
                 Alert(message="This component has no refreshable source.", variant="warning").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("no_refreshable_source")
         if agent_id in RETIRED_AGENT_IDS:
             await self._audit_workspace_denial(user_id, chat_id, component_id, "agent_retired")
             await self.send_ui_render(websocket, [
@@ -21535,7 +21550,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     variant="warning",
                 ).to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("agent_retired")
         agent_id, tool_name = remap_merged_source(agent_id, tool_name)
         allowed, deny_reason = await asyncio.to_thread(
             self._component_action_allowed, user_id, agent_id, tool_name)
@@ -21544,7 +21559,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self.send_ui_render(websocket, [
                 Alert(message=f"Action not permitted: {deny_reason}", variant="error").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure(
+                deny_reason[:200], terminal_code="permission_denied")
 
         params = dict(cd.get("_source_params") or {})
         if isinstance(params_patch, dict):
@@ -21555,15 +21571,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 auth = await self._authorize_and_prepare(
                     websocket, agent_id, tool_name, dict(params), chat_id, user_id)
                 if isinstance(auth, GateRefusal):
+                    deny_msg = (
+                        str((auth.response.error or {}).get("message"))[:200]
+                        if auth.response and auth.response.error else "gate_refused"
+                    )
                     await self._audit_workspace_denial(
-                        user_id, chat_id, component_id,
-                        (str((auth.response.error or {}).get("message"))[:200]
-                         if auth.response and auth.response.error else "gate_refused"))
+                        user_id, chat_id, component_id, deny_msg)
                     if auth.render_components:
                         await self.send_ui_render(
                             websocket, auth.render_components,
                             target=auth.render_target or "chat")
-                    return
+                    raise _CardActionTerminalFailure(
+                        deny_msg, terminal_code="gate_refused")
                 result = await self._execute_with_retry_audited(
                     websocket,
                     agent_id,
@@ -21589,22 +21608,28 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         except Exception:
                             logger.debug("workspace snapshot failed (component_action)", exc_info=True)
                 elif result and result.error:
+                    err_msg = result.error.get("message", "The action failed.")
                     await self.send_ui_render(websocket, [
-                        Alert(message=result.error.get("message", "The action failed."),
-                              variant="error").to_dict()
+                        Alert(message=err_msg, variant="error").to_dict()
                     ], target="chat")
+                    raise _CardActionTerminalFailure(
+                        err_msg[:200], terminal_code="tool_error")
+        except _CardActionTerminalFailure:
+            raise
         except Exception as e:
-            logger.error(f"component_action failed: {e}", exc_info=True)
+            logger.exception("component_action failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The action failed: {e}", variant="error").to_dict()
             ], target="chat")
+            raise _CardActionTerminalFailure(
+                str(e)[:200], terminal_code="tool_error")
         finally:
             await self._safe_send(websocket, json.dumps({
                 "type": "chat_status", "status": "done", "message": ""
             }))
 
     async def _refine_restore_gate(self, websocket, user_id: str,
-                                   payload: Dict[str, Any]):
+                                   payload: dict[str, Any]):
         chat_id = payload.get("chat_id") or self._ws_active_chat.get(id(websocket))
         component_id = payload.get("component_id")
         if not flags.is_enabled("component_refine"):
@@ -21614,7 +21639,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="Component refine is not enabled on this server.",
                       variant="error").to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("feature_disabled")
         profile = self.rote.get_profile(websocket)
         if getattr(profile.device_type, "value", str(profile.device_type)) == "watch":
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
@@ -21623,27 +21648,27 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="This action isn't available on the watch.",
                       variant="warning").to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("watch_unsupported")
         if not chat_id or not component_id:
             await self.send_ui_render(websocket, [
                 Alert(message="This action is missing its component context.",
                       variant="error").to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("missing_component_context")
         if self._ws_timeline_mode.get(id(websocket)):
             await self._audit_workspace_denial(user_id, chat_id, component_id, "timeline_readonly")
             await self.send_ui_render(websocket, [
                 Alert(message="You are viewing a past workspace state — return to live to interact.",
                       variant="warning").to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("timeline_readonly")
         row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
         if row is None or not isinstance(row.get("component_data"), dict):
             await self.send_ui_render(websocket, [
                 Alert(message="This component is no longer available.",
                       variant="warning").to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("component_not_found")
         cd = row["component_data"]
         agent_id = cd.get("_source_agent", "")
         tool_name = cd.get("_source_tool", "")
@@ -21657,7 +21682,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     variant="warning",
                 ).to_dict()
             ], target="chat")
-            return None
+            raise _CardActionTerminalFailure("agent_retired")
         if agent_id and tool_name:
             agent_id, tool_name = remap_merged_source(agent_id, tool_name)
             allowed, deny_reason = await asyncio.to_thread(
@@ -21668,13 +21693,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     Alert(message=f"Action not permitted: {deny_reason}",
                           variant="error").to_dict()
                 ], target="chat")
-                return None
+                raise _CardActionTerminalFailure(
+                    deny_reason[:200], terminal_code="permission_denied")
         return chat_id, component_id, row
 
-    async def _handle_component_refine(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_refine(self, websocket, user_id: str, payload: dict[str, Any]):
         gate = await self._refine_restore_gate(websocket, user_id, payload)
-        if gate is None:
-            return
         chat_id, component_id, _row = gate
         instruction = str(payload.get("instruction") or "").strip()
         if not instruction:
@@ -21682,7 +21706,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="Tell me how this component should change.",
                       variant="warning").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("empty_instruction")
         if not await self.llm_configured_for(user_id):
             actor_user_id, auth_principal = self._llm_audit_principals(websocket)
             await self._record_llm_unconfigured(
@@ -21695,7 +21719,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="Set up your AI provider to use this.",
                       variant="error").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure(
+                "provider_not_configured", terminal_code="provider_not_configured")
 
         from orchestrator import artifact_versions
         from orchestrator.plane_repository_context import (
@@ -21743,20 +21768,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 except Exception:
                     logger.debug("workspace audit failed (component_refined)", exc_info=True)
+        except _CardActionTerminalFailure:
+            raise
         except Exception as e:
-            logger.error(f"component_refine failed: {e}", exc_info=True)
+            logger.exception("component_refine failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The refine failed: {e}", variant="error").to_dict()
             ], target="chat")
+            raise _CardActionTerminalFailure(
+                str(e)[:200], terminal_code="tool_error")
         finally:
             await self._safe_send(websocket, json.dumps({
                 "type": "chat_status", "status": "done", "message": ""
             }))
 
-    async def _handle_component_restore(self, websocket, user_id: str, payload: Dict[str, Any]):
+    async def _handle_component_restore(self, websocket, user_id: str, payload: dict[str, Any]):
         gate = await self._refine_restore_gate(websocket, user_id, payload)
-        if gate is None:
-            return
         chat_id, component_id, _row = gate
         from orchestrator import artifact_versions
         from orchestrator.plane_repository_context import (
@@ -21771,7 +21798,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 Alert(message="That version is no longer available.",
                       variant="warning").to_dict()
             ], target="chat")
-            return
+            raise _CardActionTerminalFailure("version_not_found")
         try:
             async with Orchestrator._workspace_mutation_lock(self, chat_id):
                 row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
@@ -21780,7 +21807,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         Alert(message="This component is no longer available.",
                               variant="warning").to_dict()
                     ], target="chat")
-                    return
+                    raise _CardActionTerminalFailure("component_not_found")
                 current = row["component_data"]
                 restored = dict(version["component"])
                 restored["component_id"] = component_id
@@ -21805,18 +21832,22 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     )
                 except Exception:
                     logger.debug("workspace audit failed (component_restored)", exc_info=True)
+        except _CardActionTerminalFailure:
+            raise
         except Exception as e:
-            logger.error(f"component_restore failed: {e}", exc_info=True)
+            logger.exception("component_restore failed")
             await self.send_ui_render(websocket, [
                 Alert(message=f"The restore failed: {e}", variant="error").to_dict()
             ], target="chat")
+            raise _CardActionTerminalFailure(
+                str(e)[:200], terminal_code="tool_error")
         finally:
             await self._safe_send(websocket, json.dumps({
                 "type": "chat_status", "status": "done", "message": ""
             }))
 
-    async def _refine_component_llm(self, websocket, component: Dict[str, Any],
-                                    instruction: str) -> Optional[Dict[str, Any]]:
+    async def _refine_component_llm(self, websocket, component: dict[str, Any],
+                                    instruction: str) -> dict[str, Any] | None:
         from webrender import allowed_primitive_types
         valid_types = set(allowed_primitive_types()) | {"chart"}
         orig_type = str(component.get("type") or "").strip().lower()
