@@ -17076,6 +17076,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_target="chat")
 
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        from orchestrator import mesh_admission
+        if mesh_admission.MEMBER_CLAIM in _session_claims or (
+                isinstance(parent_token, dict) and mesh_admission.MEMBER_CLAIM in parent_token):
+            try:
+                if (mesh_admission.MEMBER_CLAIM not in _session_claims
+                        or _session_claims.get("sub") != user_id):
+                    raise mesh_admission.MeshAdmissionError()
+                scope = self.tool_permissions.get_tool_scope(agent_id, tool_name)
+                await asyncio.to_thread(mesh_admission.assert_dispatch_current, self,
+                                        _session_claims, agent_id, scope)
+            except Exception:
+                return GateRefusal(response=MCPResponse(error={
+                    "code": mesh_admission.MeshAdmissionError.code,
+                    "message": "Current member authority is unavailable", "retryable": False}))
         from orchestrator.chain_authority import machine_scope_ceiling
 
         machine_scopes = machine_scope_ceiling(_session_claims)
@@ -17385,7 +17399,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
             if delegation_token:
                 args["_delegation_token"] = delegation_token
-            elif self._delegation_required() or machine_scopes is not None:
+            elif (self._delegation_required() or machine_scopes is not None
+                  or mesh_admission.MEMBER_CLAIM in _session_claims):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
                 signing_key_fault = (
@@ -17809,6 +17824,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             parent_payload = _dg.decode_token_payload(token) if token else None
             if parent_payload is not None:
                 parent_payload = _dg.normalize_hop_parent(parent_payload, agent_id)
+                from orchestrator.mesh_admission import MEMBER_CLAIM
+                claims = self.ui_sessions.get(ui_websocket, {})
+                if MEMBER_CLAIM in claims:
+                    parent_payload[MEMBER_CLAIM] = dict(claims[MEMBER_CLAIM])
+                    parent_payload["cnf"] = dict(claims["cnf"])
             self._dispatch_context[request_id] = {
                 "agent_id": agent_id,
                 "user_id": args.get("user_id") if isinstance(args, dict) else None,
@@ -18589,6 +18609,17 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator import hitl_confirmation
 
         async def reviewed_invoke(capabilities):
+            from orchestrator import mesh_admission
+            claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+            if mesh_admission.MEMBER_CLAIM in claims:
+                try:
+                    if claims.get("sub") != user_id:
+                        raise mesh_admission.MeshAdmissionError()
+                    await asyncio.to_thread(mesh_admission.assert_dispatch_current, self, claims,
+                                            agent_id, self.tool_permissions.get_tool_scope(agent_id, tool_name))
+                except mesh_admission.MeshAdmissionError:
+                    return MCPResponse(error={"code": mesh_admission.MeshAdmissionError.code,
+                        "message": "Current member authority is unavailable", "retryable": False})
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
             return refusal or await invoke(capabilities)
@@ -19551,6 +19582,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not card:
                 return None
             session = self.ui_sessions.get(websocket, {})
+            from orchestrator import mesh_admission
+            if mesh_admission.MEMBER_CLAIM in session:
+                if session.get("sub") != user_id:
+                    return None
+                service = mesh_admission.admission_from_orchestrator(self)
+                return await asyncio.to_thread(service.delegation_token, session, agent_id)
             if session.get("_invocation_channel") == "mcp":
                 from orchestrator import delegation as _dg
                 try:

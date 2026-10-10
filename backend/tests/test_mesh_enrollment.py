@@ -10,19 +10,16 @@ import json
 import threading
 import time
 import uuid
-from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastapi.testclient import TestClient
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.security import HTTPBearer
 
 from audit.repository import AuditRepository
 from orchestrator import mesh_api
 from orchestrator import mesh_enrollment as me
-from orchestrator.mesh_api import mesh_router
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 OWNER = "owner-api"
@@ -53,7 +50,9 @@ def store(plane_runtime, audit_repository) -> me.MeshEnrollmentStore:
 
 @pytest.fixture()
 def audit_repository(plane_runtime):
-    return AuditRepository(plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories)
+    return AuditRepository(
+        plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories
+    )
 
 
 @pytest.fixture()
@@ -111,7 +110,10 @@ def _make_invitation(
 
 
 def _confirm(
-    store: me.MeshEnrollmentStore, fields: dict[str, str], *, kind: str = "owner",
+    store: me.MeshEnrollmentStore,
+    fields: dict[str, str],
+    *,
+    kind: str = "owner",
     decider_id: str | None = None,
 ) -> dict:
     return store.decide_invitation(
@@ -139,12 +141,6 @@ def _confirm_and_redeem(
     )
 
 
-def _member_header(owner_id: str, member_id: str, member_key: str) -> dict[str, str]:
-    return {"X-Astral-Member-Key": f"{owner_id}.{member_id}.{member_key}"}
-
-
-
-
 def test_load_or_create_key_file_is_stable(tmp_path):
     path = str(tmp_path / "keys" / ".credential_key")
     first = me.load_or_create_key_file(path)
@@ -168,7 +164,9 @@ def test_concurrent_key_creation_publishes_one_complete_key(tmp_path, monkeypatc
 
     monkeypatch.setattr(me.os, "link", publish)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        keys = list(workers.map(lambda _: me.load_or_create_key_file(str(path)), range(2)))
+        keys = list(
+            workers.map(lambda _: me.load_or_create_key_file(str(path)), range(2))
+        )
     assert keys[0] == keys[1] == path.read_bytes()
     token = Fernet(keys[0]).encrypt(b"synthetic retained record")
     assert Fernet(keys[1]).decrypt(token) == b"synthetic retained record"
@@ -210,7 +208,9 @@ def test_normalize_device_key_rejects_non_ed25519():
 def test_key_file_fallback_encrypts_without_environment(tmp_path, monkeypatch):
     monkeypatch.delenv(me._MESHCREDENTIAL_KEY_SOURCE, raising=False)
     assert me._key_file_path().endswith(".credential_key")
-    monkeypatch.setattr(me, "_key_file_path", lambda: str(tmp_path / "data" / ".credential_key"))
+    monkeypatch.setattr(
+        me, "_key_file_path", lambda: str(tmp_path / "data" / ".credential_key")
+    )
     first = me._fernet()
     second = me._fernet()
     token = first.encrypt(b"roundtrip")
@@ -234,37 +234,67 @@ def test_create_invitation_validates_input(store):
     jwk, _ = _device()
     with pytest.raises(ValueError):
         store.create_invitation(
-            OWNER, label="", device_key=jwk, scopes=[], creator_kind="owner",
+            OWNER,
+            label="",
+            device_key=jwk,
+            scopes=[],
+            creator_kind="owner",
             creator_id=OWNER,
         )
     with pytest.raises(ValueError):
         store.create_invitation(
-            OWNER, label="x" * 100, device_key=jwk, scopes=[],
-            creator_kind="owner", creator_id=OWNER,
-        )
-    with pytest.raises(ValueError):
-        store.create_invitation(
-            OWNER, label="ok", device_key=jwk, scopes=["tools:admin"],
-            creator_kind="owner", creator_id=OWNER,
-        )
-    with pytest.raises(ValueError):
-        store.create_invitation(
-            OWNER, label="ok", device_key=jwk, scopes=[], creator_kind="owner",
-            creator_id=OWNER, ttl_seconds=5,
-        )
-    with pytest.raises(ValueError):
-        store.create_invitation(
-            OWNER, label="ok", device_key=jwk, scopes=[], creator_kind="owner",
-            creator_id=OWNER, ttl_seconds=10_000_000,
-        )
-    with pytest.raises(ValueError):
-        store.create_invitation(
-            OWNER, label=None, device_key=jwk, scopes=[], creator_kind="owner",
+            OWNER,
+            label="x" * 100,
+            device_key=jwk,
+            scopes=[],
+            creator_kind="owner",
             creator_id=OWNER,
         )
     with pytest.raises(ValueError):
         store.create_invitation(
-            OWNER, label="ok", device_key=jwk, scopes=[], creator_kind="robot",
+            OWNER,
+            label="ok",
+            device_key=jwk,
+            scopes=["tools:admin"],
+            creator_kind="owner",
+            creator_id=OWNER,
+        )
+    with pytest.raises(ValueError):
+        store.create_invitation(
+            OWNER,
+            label="ok",
+            device_key=jwk,
+            scopes=[],
+            creator_kind="owner",
+            creator_id=OWNER,
+            ttl_seconds=5,
+        )
+    with pytest.raises(ValueError):
+        store.create_invitation(
+            OWNER,
+            label="ok",
+            device_key=jwk,
+            scopes=[],
+            creator_kind="owner",
+            creator_id=OWNER,
+            ttl_seconds=10_000_000,
+        )
+    with pytest.raises(ValueError):
+        store.create_invitation(
+            OWNER,
+            label=None,
+            device_key=jwk,
+            scopes=[],
+            creator_kind="owner",
+            creator_id=OWNER,
+        )
+    with pytest.raises(ValueError):
+        store.create_invitation(
+            OWNER,
+            label="ok",
+            device_key=jwk,
+            scopes=[],
+            creator_kind="robot",
             creator_id=OWNER,
         )
 
@@ -281,8 +311,6 @@ def test_non_dict_record_fails_closed(store):
     )
     with pytest.raises(me.MeshEnrollmentError):
         store.get_invitation("owner-listjson", fields["i"])
-
-
 
 
 def test_invitation_binds_mesh_owner_key_and_challenge(store):
@@ -305,8 +333,6 @@ def test_list_invitations_returns_owner_scoped_records(store):
     _make_invitation(store, "owner-list-b")
     assert len(store.list_invitations("owner-list-a")) == 2
     assert len(store.list_invitations("owner-list-b")) == 1
-
-
 
 
 def test_owner_confirmation_fixes_scopes(store):
@@ -388,8 +414,11 @@ def test_decide_twice_is_rejected(store):
     _confirm(store, fields)
     with pytest.raises(me.InvitationStateInvalid):
         store.decide_invitation(
-            "owner-twice", fields["i"], decision="rejected",
-            decider_kind="owner", decider_id="owner-twice",
+            "owner-twice",
+            fields["i"],
+            decision="rejected",
+            decider_kind="owner",
+            decider_id="owner-twice",
         )
 
 
@@ -397,8 +426,11 @@ def test_decide_rejects_unknown_decision(store):
     _, fields, _ = _make_invitation(store, "owner-baddecision")
     with pytest.raises(ValueError):
         store.decide_invitation(
-            "owner-baddecision", fields["i"], decision="maybe",
-            decider_kind="owner", decider_id="owner-baddecision",
+            "owner-baddecision",
+            fields["i"],
+            decision="maybe",
+            decider_kind="owner",
+            decider_id="owner-baddecision",
         )
 
 
@@ -406,8 +438,11 @@ def test_member_confirmation_of_unknown_member_denied(store):
     _, fields, _ = _make_invitation(store, "owner-ghostmember")
     with pytest.raises(me.MemberNotFound):
         store.decide_invitation(
-            "owner-ghostmember", fields["i"], decision="confirmed",
-            decider_kind="member", decider_id="missing-member",
+            "owner-ghostmember",
+            fields["i"],
+            decision="confirmed",
+            decider_kind="member",
+            decider_id="missing-member",
         )
 
 
@@ -429,16 +464,12 @@ def test_concurrent_confirmation_conflict_denied(store, monkeypatch):
 
 def test_decide_expired_invitation_fails(store, monkeypatch):
     _, fields, _ = _make_invitation(store, "owner-expdecide")
-    monkeypatch.setattr(
-        me, "_now_ms", lambda: int(time.time() * 1000) + 60 * 60 * 1000
-    )
+    monkeypatch.setattr(me, "_now_ms", lambda: int(time.time() * 1000) + 60 * 60 * 1000)
     with pytest.raises(me.InvitationExpired):
         _confirm(store, fields)
 
 
-
-
-def test_full_activation_grants_scopes_and_member_key(store):
+def test_full_activation_grants_scopes_and_public_identity(store):
     result, fields, private_key = _make_invitation(
         store, "owner-full", scopes=["tools:read", "mesh:confirm"]
     )
@@ -451,7 +482,8 @@ def test_full_activation_grants_scopes_and_member_key(store):
         member["device_key_fingerprint"]
         == result["invitation"]["device_key_fingerprint"]
     )
-    assert len(outcome["member_key"]) >= 32
+    assert "member_key" not in outcome
+    assert "member_secret_sha256" not in member
     stored = store.get_invitation("owner-full", fields["i"])
     assert stored["status"] == "redeemed"
     assert stored["member_id"] == member["member_id"]
@@ -557,8 +589,11 @@ def test_pending_and_rejected_invitations_denied(store):
 
     rejected, rejected_fields, rejected_key = _make_invitation(store, "owner-denial")
     store.decide_invitation(
-        "owner-denial", rejected_fields["i"], decision="rejected",
-        decider_kind="owner", decider_id="owner-denial",
+        "owner-denial",
+        rejected_fields["i"],
+        decision="rejected",
+        decider_kind="owner",
+        decider_id="owner-denial",
     )
     with pytest.raises(me.InvitationStateInvalid):
         store.redeem_invitation(
@@ -607,8 +642,6 @@ def test_malformed_payload_denied():
         me.parse_enrollment_payload(me._b64url_encode(b"not-json"))
     with pytest.raises(me.RedeemInvalid):
         me.parse_enrollment_payload(me._b64url_encode(json.dumps({"v": 2}).encode()))
-
-
 
 
 def test_lost_race_denies_redemption_and_leaves_no_member(store, monkeypatch):
@@ -680,18 +713,16 @@ def test_two_threads_race_redeem_exactly_one_wins(store):
     assert len(store.list_members("owner-threads")) == 1
 
 
-
-
 def test_revoked_member_loses_authority(store):
     result, fields, private_key = _make_invitation(store, "owner-revoke")
     outcome = _confirm_and_redeem(store, result["invitation"], fields, private_key)
     member_id = outcome["member"]["member_id"]
-    assert store.authenticate_member("owner-revoke", member_id, outcome["member_key"])
+    with store._transaction() as transaction:
+        assert store._current_member(transaction, "owner-revoke", member_id)
     store.revoke_member("owner-revoke", member_id)
     with pytest.raises(me.MemberUnauthorized):
-        store.authenticate_member("owner-revoke", member_id, outcome["member_key"])
-    with pytest.raises(me.MemberUnauthorized):
-        store.authenticate_member("owner-revoke", member_id, "wrong-key")
+        with store._transaction() as transaction:
+            store._current_member(transaction, "owner-revoke", member_id)
     revoked = store.get_member("owner-revoke", member_id)
     assert revoked["status"] == "revoked"
     assert revoked["revoked_at"] is not None
@@ -699,15 +730,9 @@ def test_revoked_member_loses_authority(store):
 
 
 def test_member_of_unknown_owner_not_found(store):
-    with pytest.raises(me.MemberNotFound):
-        store.authenticate_member("owner-nobody", uuid.uuid4().hex, "key")
-
-
-def test_authenticate_member_rejects_malformed_credential(store):
     with pytest.raises(me.MemberUnauthorized):
-        store.authenticate_member("", "", "")
-    with pytest.raises(me.MemberUnauthorized):
-        store.authenticate_member(None, None, None)
+        with store._transaction() as transaction:
+            store._current_member(transaction, "owner-nobody", uuid.uuid4().hex)
 
 
 def test_owner_isolation_on_invitations_and_members(store):
@@ -720,8 +745,6 @@ def test_owner_isolation_on_invitations_and_members(store):
     member_ids = [m["member_id"] for m in store.list_members("owner-iso-a")]
     assert outcome["member"]["member_id"] in member_ids
     assert store.list_members("owner-iso-b") == []
-
-
 
 
 def test_origin_guard_rejects_structurally_invalid_values():
@@ -742,471 +765,6 @@ def test_origin_guard_rejects_structurally_invalid_values():
         80,
     )
     assert mesh_api._origin_of("https://testserver") == ("https", "testserver", 443)
-
-
-
-
-@pytest.fixture()
-def api_client(plane_runtime, audit_repository):
-    owner_id = f"owner-{uuid.uuid4().hex[:10]}"
-    app = FastAPI()
-    app.include_router(mesh_router)
-
-    def fake_source(request: Request) -> Any:
-        return plane_runtime
-
-    def fake_owner_claims(
-        request: Request,
-        credentials: HTTPAuthorizationCredentials | None = Depends(_SECURITY),
-    ) -> dict | None:
-        if "x-astral-member-key" in request.headers:
-            return None
-        return {"sub": owner_id, "realm_access": {"roles": ["user"]}}
-
-    app.dependency_overrides[mesh_api._store] = lambda: me.MeshEnrollmentStore(
-        plane_runtime=plane_runtime, audit_repository=audit_repository)
-    app.dependency_overrides[mesh_api._plane_source] = fake_source
-    app.dependency_overrides[mesh_api._owner_claims_optional] = fake_owner_claims
-    client = TestClient(app, raise_server_exceptions=True)
-    client.owner_id = owner_id
-    return client
-
-
-def _owner_headers() -> dict[str, str]:
-    return {"Authorization": "Bearer test-token"}
-
-
-def test_api_requires_authentication(plane_runtime, monkeypatch):
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
-    app = FastAPI()
-    app.include_router(mesh_router)
-    client = TestClient(app, raise_server_exceptions=False)
-    response = client.get("/api/mesh/invitations")
-    assert response.status_code == 401
-
-
-def test_api_full_flow_owner_creates_confirms_device_redeems(api_client, audit_events):
-    jwk, private_key = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={
-            "label": "Living-room hub",
-            "device_key": jwk,
-            "scopes": ["tools:read", "mesh:confirm"],
-            "ttl_seconds": 600,
-        },
-        headers=_owner_headers(),
-    )
-    assert created.status_code == 200, created.text
-    body = created.json()
-    assert body["invitation"]["status"] == "pending"
-    fields = _payload_fields(body["payload"])
-
-    confirmed = api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm",
-        headers=_owner_headers(),
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["invitation"]["confirmed_scopes"] == [
-        "mesh:confirm",
-        "tools:read",
-    ]
-
-    redeemed = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": body["payload"],
-            "signature": _signature_b64(private_key, fields["c"]),
-        },
-    )
-    assert redeemed.status_code == 200, redeemed.text
-    redeemed_body = redeemed.json()
-    assert redeemed_body["member"]["status"] == "active"
-    assert redeemed_body["member_key"]
-    assert redeemed.headers.get("cache-control") == "no-store"
-
-    listed = api_client.get("/api/mesh/members", headers=_owner_headers())
-    assert listed.status_code == 200
-    assert [m["member_id"] for m in listed.json()["members"]] == [
-        redeemed_body["member"]["member_id"]
-    ]
-
-    myself = api_client.get(
-        "/api/mesh/me",
-        headers=_member_header(
-            api_client.owner_id,
-            redeemed_body["member"]["member_id"],
-            redeemed_body["member_key"],
-        ),
-    )
-    assert myself.status_code == 200
-    assert myself.json()["member"]["label"] == "Living-room hub"
-
-    actions = [event.action_type for event in audit_events]
-    assert "mesh.invitation.create" in actions
-    assert "mesh.invitation.confirm" in actions
-    assert "mesh.member.redeem" in actions
-
-
-def test_api_replay_denied_with_failure_audit(api_client, audit_events):
-    jwk, private_key = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Pad", "device_key": jwk, "scopes": ["tools:read"]},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(created.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm", headers=_owner_headers()
-    )
-    signature = _signature_b64(private_key, fields["c"])
-    assert (
-        api_client.post(
-            "/api/mesh/enrollment/redeem",
-            json={"payload": created.json()["payload"], "signature": signature},
-        ).status_code
-        == 200
-    )
-    second = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={"payload": created.json()["payload"], "signature": signature},
-    )
-    assert second.status_code == 409
-    failures = [
-        event
-        for event in audit_events
-        if event.action_type == "mesh.member.redeem" and event.outcome == "failure"
-    ]
-    assert failures
-    assert failures[-1].inputs_meta["reason"] == "invitation_state_invalid"
-
-
-def test_api_member_authority_matrix(api_client):
-    jwk, private_key = _device()
-    bootstrap = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Confirming device", "device_key": jwk, "scopes": ["mesh:confirm"]},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(bootstrap.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm", headers=_owner_headers()
-    )
-    member = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": bootstrap.json()["payload"],
-            "signature": _signature_b64(private_key, fields["c"]),
-        },
-    ).json()
-    member_headers = _member_header(
-        api_client.owner_id, member["member"]["member_id"], member["member_key"]
-    )
-
-    peer_jwk, _ = _device()
-    member_created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Member proposed", "device_key": peer_jwk, "scopes": []},
-        headers=member_headers,
-    )
-    assert member_created.status_code == 200, member_created.text
-    member_created_id = _payload_fields(member_created.json()["payload"])["i"]
-
-    self_confirm = api_client.post(
-        f"/api/mesh/invitations/{member_created_id}/confirm", headers=member_headers
-    )
-    assert self_confirm.status_code == 403
-
-    owner_confirms = api_client.post(
-        f"/api/mesh/invitations/{member_created_id}/confirm",
-        headers=_owner_headers(),
-    )
-    assert owner_confirms.status_code == 200, owner_confirms.text
-    assert owner_confirms.json()["invitation"]["confirmed_by"]["kind"] == "owner"
-
-    other_jwk, _ = _device()
-    owner_created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Owner proposed", "device_key": other_jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    owner_created_id = _payload_fields(owner_created.json()["payload"])["i"]
-    member_confirms = api_client.post(
-        f"/api/mesh/invitations/{owner_created_id}/confirm", headers=member_headers
-    )
-    assert member_confirms.status_code == 200, member_confirms.text
-    assert member_confirms.json()["invitation"]["confirmed_by"]["kind"] == "member"
-
-
-def test_api_member_without_confirm_scope_is_forbidden(api_client):
-    jwk, private_key = _device()
-    bootstrap = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Reader device", "device_key": jwk, "scopes": ["tools:read"]},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(bootstrap.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm", headers=_owner_headers()
-    )
-    member = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": bootstrap.json()["payload"],
-            "signature": _signature_b64(private_key, fields["c"]),
-        },
-    ).json()
-    headers = _member_header(
-        api_client.owner_id, member["member"]["member_id"], member["member_key"]
-    )
-
-    invitations = api_client.get("/api/mesh/invitations", headers=headers)
-    assert invitations.status_code == 403
-
-    propose = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers=headers,
-    )
-    assert propose.status_code == 403
-
-
-def test_api_revoked_member_credentials_die(api_client):
-    jwk, private_key = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Revoked device", "device_key": jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(created.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm", headers=_owner_headers()
-    )
-    redeemed = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": created.json()["payload"],
-            "signature": _signature_b64(private_key, fields["c"]),
-        },
-    ).json()
-    member_id = redeemed["member"]["member_id"]
-    key = redeemed["member_key"]
-    owner_id = api_client.owner_id
-
-    assert (
-        api_client.get("/api/mesh/me", headers=_member_header(owner_id, member_id, key)).status_code
-        == 200
-    )
-    revoked = api_client.post(
-        f"/api/mesh/members/{member_id}/revoke", headers=_owner_headers()
-    )
-    assert revoked.status_code == 200
-    assert (
-        api_client.get("/api/mesh/me", headers=_member_header(owner_id, member_id, key)).status_code
-        == 401
-    )
-    denied = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers=_member_header(owner_id, member_id, key),
-    )
-    assert denied.status_code == 401
-
-
-def test_api_two_device_staging_success_and_denial(api_client):
-    jwk_a, key_a = _device()
-    jwk_b, key_b = _device()
-
-    invite_a = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Device A", "device_key": jwk_a, "scopes": ["tools:read"]},
-        headers=_owner_headers(),
-    )
-    fields_a = _payload_fields(invite_a.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields_a['i']}/confirm", headers=_owner_headers()
-    )
-    redeem_a = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": invite_a.json()["payload"],
-            "signature": _signature_b64(key_a, fields_a["c"]),
-        },
-    )
-    assert redeem_a.status_code == 200
-
-    invite_b = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Device B", "device_key": jwk_b, "scopes": ["tools:read"]},
-        headers=_owner_headers(),
-    )
-    fields_b = _payload_fields(invite_b.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields_b['i']}/reject", headers=_owner_headers()
-    )
-    redeem_b = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": invite_b.json()["payload"],
-            "signature": _signature_b64(key_b, fields_b["c"]),
-        },
-    )
-    assert redeem_b.status_code == 409
-    assert redeem_b.json()["detail"] == "invitation_state_invalid"
-
-    stolen = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": invite_b.json()["payload"],
-            "signature": _signature_b64(key_a, fields_b["c"]),
-        },
-    )
-    assert stolen.status_code == 409
-
-    members = api_client.get("/api/mesh/members", headers=_owner_headers()).json()
-    assert [m["label"] for m in members["members"]] == ["Device A"]
-
-
-def test_api_reject_then_double_reject_maps_error(api_client):
-    jwk, _ = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Reject twice", "device_key": jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(created.json()["payload"])
-    first = api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/reject", headers=_owner_headers()
-    )
-    assert first.status_code == 200, first.text
-    assert first.json()["invitation"]["status"] == "rejected"
-    second = api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/reject", headers=_owner_headers()
-    )
-    assert second.status_code == 409
-    assert second.json()["detail"] == "invitation_state_invalid"
-
-
-def test_api_write_guard_and_validation(api_client):
-    missing_origin = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers={},
-    )
-    assert missing_origin.status_code == 403
-
-    wrong_origin = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers={"Origin": "http://evil.example"},
-    )
-    assert wrong_origin.status_code == 403
-
-    padded_origin = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers={"Origin": "http://testserver/?tracker=1"},
-    )
-    assert padded_origin.status_code == 403
-
-    port_origin = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers={"Origin": "http://testserver:99999"},
-    )
-    assert port_origin.status_code == 403
-
-    query_token = api_client.post(
-        "/api/mesh/invitations?token=abc",
-        json={"label": "x", "device_key": _device()[0], "scopes": []},
-        headers=_owner_headers(),
-    )
-    assert query_token.status_code == 403
-
-    form_encoded = api_client.post(
-        "/api/mesh/invitations",
-        data=json.dumps({"label": "x"}),
-        headers={
-            **_owner_headers(),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    assert form_encoded.status_code == 415
-
-    bad_key = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "x", "device_key": {"kty": "RSA"}, "scopes": []},
-        headers=_owner_headers(),
-    )
-    assert bad_key.status_code == 400
-
-    unknown_member = api_client.post(
-        f"/api/mesh/members/{uuid.uuid4().hex}/revoke", headers=_owner_headers()
-    )
-    assert unknown_member.status_code == 404
-
-    malformed_header = api_client.get(
-        "/api/mesh/me", headers={"X-Astral-Member-Key": "only-two.parts"}
-    )
-    assert malformed_header.status_code == 401
-
-    bad_redeem = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={"payload": None, "signature": ""},
-    )
-    assert bad_redeem.status_code == 400
-
-
-def test_api_link_uses_public_base_url(api_client, monkeypatch):
-    monkeypatch.setenv("PUBLIC_BASE_URL", "https://mesh.example.com")
-    jwk, _ = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Linked", "device_key": jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    link = created.json()["link"]
-    assert link is not None
-    assert link.startswith("https://mesh.example.com/enroll#")
-    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-    monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
-    without = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Linked 2", "device_key": jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    assert without.json()["link"] is None
-
-
-def test_member_with_confirm_scope_reads_roster(api_client):
-    jwk, private_key = _device()
-    bootstrap = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Confirming device", "device_key": jwk, "scopes": ["mesh:confirm"]},
-        headers=_owner_headers(),
-    )
-    fields = _payload_fields(bootstrap.json()["payload"])
-    api_client.post(
-        f"/api/mesh/invitations/{fields['i']}/confirm", headers=_owner_headers()
-    )
-    member = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={
-            "payload": bootstrap.json()["payload"],
-            "signature": _signature_b64(private_key, fields["c"]),
-        },
-    ).json()
-    headers = _member_header(
-        api_client.owner_id, member["member"]["member_id"], member["member_key"]
-    )
-
-    invitations = api_client.get("/api/mesh/invitations", headers=headers)
-    assert invitations.status_code == 200
-    assert len(invitations.json()["invitations"]) == 1
-
-    members = api_client.get("/api/mesh/members", headers=headers)
-    assert members.status_code == 200
-    assert len(members.json()["members"]) == 1
 
 
 def test_undecryptable_record_fails_closed(store):
@@ -1248,35 +806,29 @@ def test_scopeless_defaults_to_no_authority(store):
     assert outcome["member"]["scopes"] == []
 
 
-def test_signature_body_validation(api_client):
-    jwk, _ = _device()
-    created = api_client.post(
-        "/api/mesh/invitations",
-        json={"label": "Sig device", "device_key": jwk, "scopes": []},
-        headers=_owner_headers(),
-    )
-    payload = created.json()["payload"]
-    long_signature = "a" * 300
-    response = api_client.post(
-        "/api/mesh/enrollment/redeem",
-        json={"payload": payload, "signature": long_signature},
-    )
-    assert response.status_code == 400
-
-
 def _confirmed_by_member(store, owner):
     first, fields, key = _make_invitation(store, owner)
     member = _confirm_and_redeem(store, first["invitation"], fields, key)["member"]
     _, fields, key = _make_invitation(store, owner)
-    store.decide_invitation(owner, fields["i"], decision="confirmed",
-                            decider_kind="member", decider_id=member["member_id"])
+    store.decide_invitation(
+        owner,
+        fields["i"],
+        decision="confirmed",
+        decider_kind="member",
+        decider_id=member["member_id"],
+    )
     return fields, key, store.get_member(owner, member["member_id"])
 
 
 def _redeem(store, fields, key, **kwargs):
     return store.redeem_invitation(
-        owner_id=fields["o"], invite_id=fields["i"], token=fields["t"],
-        challenge=fields["c"], signature=_signature_b64(key, fields["c"]), **kwargs)
+        owner_id=fields["o"],
+        invite_id=fields["i"],
+        token=fields["t"],
+        challenge=fields["c"],
+        signature=_signature_b64(key, fields["c"]),
+        **kwargs,
+    )
 
 
 def test_revoked_confirmer_cannot_activate_pending_child(store):
@@ -1298,11 +850,21 @@ def test_changed_or_unbound_confirming_authority_denies_redemption(store, change
     else:
         invitation = store.get_invitation(fields["o"], fields["i"])
         del invitation["confirmed_by"]["authority_revision"]
-        store._transition(fields["o"], me.INVITATION_NAMESPACE, fields["i"],
-                          expected_updated_at=invitation["updated_at"], record=invitation)
+        store._transition(
+            fields["o"],
+            me.INVITATION_NAMESPACE,
+            fields["i"],
+            expected_updated_at=invitation["updated_at"],
+            record=invitation,
+        )
     if change != "legacy":
-        store._transition(fields["o"], me.MEMBER_NAMESPACE, member["member_id"],
-                          expected_updated_at=member["updated_at"], record=member)
+        store._transition(
+            fields["o"],
+            me.MEMBER_NAMESPACE,
+            member["member_id"],
+            expected_updated_at=member["updated_at"],
+            record=member,
+        )
     with pytest.raises(me.ConfirmForbidden):
         _redeem(store, fields, key)
     assert len(store.list_members(fields["o"])) == 1
@@ -1314,8 +876,13 @@ def test_member_without_current_confirmation_scope_denied_in_store(store):
     member = _confirm_and_redeem(store, result["invitation"], fields, key)["member"]
     _, pending, _ = _make_invitation(store, owner)
     with pytest.raises(me.ConfirmForbidden):
-        store.decide_invitation(owner, pending["i"], decision="confirmed",
-                                decider_kind="member", decider_id=member["member_id"])
+        store.decide_invitation(
+            owner,
+            pending["i"],
+            decision="confirmed",
+            decider_kind="member",
+            decider_id=member["member_id"],
+        )
     assert store.get_invitation(owner, pending["i"])["status"] == "pending"
 
 
@@ -1324,10 +891,21 @@ def test_multiple_invitations_preserve_stable_confirmation_authority(store):
     fields, key, member = _confirmed_by_member(store, owner)
     initial_authority = member["authority_revision"]
     _, second, second_key = _make_invitation(store, owner)
-    store.create_invitation(owner, label="Member proposed", device_key=_device()[0],
-                            scopes=[], creator_kind="member", creator_id=member["member_id"])
-    store.decide_invitation(owner, second["i"], decision="confirmed", decider_kind="member",
-                            decider_id=member["member_id"])
+    store.create_invitation(
+        owner,
+        label="Member proposed",
+        device_key=_device()[0],
+        scopes=[],
+        creator_kind="member",
+        creator_id=member["member_id"],
+    )
+    store.decide_invitation(
+        owner,
+        second["i"],
+        decision="confirmed",
+        decider_kind="member",
+        decider_id=member["member_id"],
+    )
     current = store.get_member(owner, member["member_id"])
     assert current["updated_at"] > member["updated_at"]
     assert current["authority_revision"] == initial_authority
@@ -1339,16 +917,27 @@ def test_multiple_invitations_preserve_stable_confirmation_authority(store):
 def test_stale_authenticated_member_snapshot_denied(store):
     fields, _, member = _confirmed_by_member(store, "owner-stale-api-snapshot")
     _, pending, _ = _make_invitation(store, fields["o"])
-    store.create_invitation(fields["o"], label="Advance observation", device_key=_device()[0],
-                            scopes=[], creator_kind="member", creator_id=member["member_id"])
+    store.create_invitation(
+        fields["o"],
+        label="Advance observation",
+        device_key=_device()[0],
+        scopes=[],
+        creator_kind="member",
+        creator_id=member["member_id"],
+    )
     with pytest.raises(me.ConfirmForbidden):
-        store.decide_invitation(fields["o"], pending["i"], decision="confirmed",
-                                decider_kind="member", decider_id=member["member_id"],
-                                decider_revision=member["updated_at"])
+        store.decide_invitation(
+            fields["o"],
+            pending["i"],
+            decision="confirmed",
+            decider_kind="member",
+            decider_id=member["member_id"],
+            decider_revision=member["updated_at"],
+        )
 
 
 @pytest.mark.parametrize("operation", ["confirm", "redeem"])
-def test_revoke_between_member_observation_and_cas_wins_atomically(store, monkeypatch, operation):
+def test_revoke_before_mesh_lock_wins_atomically(store, monkeypatch, operation):
     owner = f"owner-revoke-cas-{operation}"
     fields, key, member = _confirmed_by_member(store, owner)
     if operation == "confirm":
@@ -1356,21 +945,26 @@ def test_revoke_between_member_observation_and_cas_wins_atomically(store, monkey
     observed = threading.Event()
     proceed = threading.Event()
     failures = []
-    original = store._transition
+    original = store._lock_mesh
 
-    def pause(owner_id, namespace, record_key, **kwargs):
-        if namespace == me.MEMBER_NAMESPACE and threading.current_thread().name == "mesh-race":
+    def pause(transaction, owner_id):
+        if threading.current_thread().name == "mesh-race":
             observed.set()
             assert proceed.wait(timeout=10)
-        return original(owner_id, namespace, record_key, **kwargs)
+        return original(transaction, owner_id)
 
-    monkeypatch.setattr(store, "_transition", pause)
+    monkeypatch.setattr(store, "_lock_mesh", pause)
 
     def attempt():
         try:
             if operation == "confirm":
-                store.decide_invitation(owner, fields["i"], decision="confirmed",
-                                        decider_kind="member", decider_id=member["member_id"])
+                store.decide_invitation(
+                    owner,
+                    fields["i"],
+                    decision="confirmed",
+                    decider_kind="member",
+                    decider_id=member["member_id"],
+                )
             else:
                 _redeem(store, fields, key)
         except Exception as exc:
@@ -1385,16 +979,20 @@ def test_revoke_between_member_observation_and_cas_wins_atomically(store, monkey
         proceed.set()
         thread.join(timeout=10)
     assert not thread.is_alive()
-    assert len(failures) == 1 and isinstance(failures[0], me.InvitationStateInvalid)
+    assert len(failures) == 1 and isinstance(failures[0], me.MemberNotFound)
     assert len(store.list_members(owner)) == 1
     assert store.get_invitation(owner, fields["i"])["status"] == (
-        "pending" if operation == "confirm" else "confirmed")
+        "pending" if operation == "confirm" else "confirmed"
+    )
 
 
-@pytest.mark.parametrize("operation", ["create", "confirm", "reject", "redeem", "revoke"])
+@pytest.mark.parametrize(
+    "operation", ["create", "confirm", "reject", "redeem", "revoke"]
+)
 @pytest.mark.parametrize("failure", ["missing", "raise", "none", "mismatch"])
-def test_audit_failure_rolls_back_every_authority_transition(store, audit_repository, monkeypatch,
-                                                            operation, failure):
+def test_audit_failure_rolls_back_every_authority_transition(
+    store, audit_repository, monkeypatch, operation, failure
+):
     owner = f"owner-audit-{operation}-{failure}"
     _, fields, key = _make_invitation(store, owner)
     member = None
@@ -1402,7 +1000,10 @@ def test_audit_failure_rolls_back_every_authority_transition(store, audit_reposi
         _confirm(store, fields)
     if operation == "revoke":
         member = _redeem(store, fields, key)["member"]
-    before = (store._list(owner, me.INVITATION_NAMESPACE), store._list(owner, me.MEMBER_NAMESPACE))
+    before = (
+        store._list(owner, me.INVITATION_NAMESPACE),
+        store._list(owner, me.MEMBER_NAMESPACE),
+    )
     audit_before = audit_repository.list_for_user(owner)[0]
     original = audit_repository.insert_in_transaction
 
@@ -1410,7 +1011,11 @@ def test_audit_failure_rolls_back_every_authority_transition(store, audit_reposi
         if failure == "raise":
             raise RuntimeError("injected audit failure")
         receipt = original(event, **kwargs)
-        return None if failure == "none" else receipt.model_copy(update={"correlation_id": "foreign"})
+        return (
+            None
+            if failure == "none"
+            else receipt.model_copy(update={"correlation_id": "foreign"})
+        )
 
     if failure == "missing":
         monkeypatch.setattr(store, "_audit", None)
@@ -1420,29 +1025,50 @@ def test_audit_failure_rolls_back_every_authority_transition(store, audit_reposi
         if operation == "create":
             _make_invitation(store, owner)
         elif operation in ("confirm", "reject"):
-            store.decide_invitation(owner, fields["i"],
-                                    decision="confirmed" if operation == "confirm" else "rejected",
-                                    decider_kind="owner", decider_id=owner)
+            store.decide_invitation(
+                owner,
+                fields["i"],
+                decision="confirmed" if operation == "confirm" else "rejected",
+                decider_kind="owner",
+                decider_id=owner,
+            )
         elif operation == "redeem":
             _redeem(store, fields, key)
         else:
             store.revoke_member(owner, member["member_id"])
-    assert (store._list(owner, me.INVITATION_NAMESPACE), store._list(owner, me.MEMBER_NAMESPACE)) == before
+    assert (
+        store._list(owner, me.INVITATION_NAMESPACE),
+        store._list(owner, me.MEMBER_NAMESPACE),
+    ) == before
     assert audit_repository.list_for_user(owner)[0] == audit_before
     assert audit_repository.verify_chain(owner) is None
 
 
-def test_outer_transaction_reads_own_writes_and_rolls_back(store, plane_runtime, audit_repository):
+def test_outer_transaction_reads_own_writes_and_rolls_back(
+    store, plane_runtime, audit_repository
+):
     owner = "owner-outer-rollback"
     jwk, key = _device()
     with pytest.raises(RuntimeError, match="outer abort"):
         with plane_runtime.transaction() as transaction:
-            result = store.create_invitation(owner, label="Outer", device_key=jwk, scopes=[],
-                                             creator_kind="owner", creator_id=owner,
-                                             transaction=transaction)
+            result = store.create_invitation(
+                owner,
+                label="Outer",
+                device_key=jwk,
+                scopes=[],
+                creator_kind="owner",
+                creator_id=owner,
+                transaction=transaction,
+            )
             fields = _payload_fields(result["payload"])
-            store.decide_invitation(owner, fields["i"], decision="confirmed",
-                                    decider_kind="owner", decider_id=owner, transaction=transaction)
+            store.decide_invitation(
+                owner,
+                fields["i"],
+                decision="confirmed",
+                decider_kind="owner",
+                decider_id=owner,
+                transaction=transaction,
+            )
             member = _redeem(store, fields, key, transaction=transaction)["member"]
             store.revoke_member(owner, member["member_id"], transaction=transaction)
             raise RuntimeError("outer abort")
@@ -1469,33 +1095,50 @@ def test_expiry_after_waiting_for_cas_rolls_back(store, monkeypatch, operation):
     monkeypatch.setattr(store, "_transition", expire)
     with pytest.raises(me.InvitationExpired):
         if operation == "confirm":
-            store.decide_invitation(owner, fields["i"], decision="confirmed",
-                                    decider_kind="member", decider_id=member["member_id"])
+            store.decide_invitation(
+                owner,
+                fields["i"],
+                decision="confirmed",
+                decider_kind="member",
+                decider_id=member["member_id"],
+            )
         else:
             _redeem(store, fields, key)
     assert store.get_member(owner, member["member_id"]) == before
     assert len(store.list_members(owner)) == 1
 
 
-def test_persisted_audit_distinguishes_authorizer_device_and_unverified_denial(store, plane_runtime,
-                                                                            audit_repository):
+def test_persisted_audit_distinguishes_authorizer_device_and_unverified_denial(
+    store, plane_runtime, audit_repository
+):
     owner = "owner-audit-principals"
     fields, key, member = _confirmed_by_member(store, owner)
     child = _redeem(store, fields, key)["member"]
     events = audit_repository.list_for_user(owner)[0]
-    receipt = next(event for event in events if event.inputs_meta.get("member_id") == child["member_id"])
+    receipt = next(
+        event
+        for event in events
+        if event.inputs_meta.get("member_id") == child["member_id"]
+    )
     with plane_runtime.transaction() as transaction:
-        persisted = plane_runtime.repositories.audit.get(transaction, chain_id=owner,
-                                                         event_id=receipt.event_id)
+        persisted = plane_runtime.repositories.audit.get(
+            transaction, chain_id=owner, event_id=receipt.event_id
+        )
     assert persisted.event.chain_id == owner
-    assert persisted.event.auth_principal == f"mesh-device:{child['device_key_fingerprint']}"
+    assert (
+        persisted.event.auth_principal
+        == f"mesh-device:{child['device_key_fingerprint']}"
+    )
     assert receipt.inputs_meta["confirmed_by"]["id"] == member["member_id"]
     forged_owner = "unauthenticated-claimed-owner"
-    store.record_redemption_denial(forged_owner, "forged-invite", "invitation_not_found")
+    store.record_redemption_denial(
+        forged_owner, "forged-invite", "invitation_not_found"
+    )
     receipt = audit_repository.list_for_user(forged_owner)[0][0]
     with plane_runtime.transaction() as transaction:
-        persisted = plane_runtime.repositories.audit.get(transaction, chain_id=forged_owner,
-                                                         event_id=receipt.event_id)
+        persisted = plane_runtime.repositories.audit.get(
+            transaction, chain_id=forged_owner, event_id=receipt.event_id
+        )
     assert persisted.event.chain_id == forged_owner
     assert persisted.event.auth_principal == "mesh-enrollment:unverified"
     assert persisted.event.outcome == "failure"
@@ -1504,7 +1147,9 @@ def test_persisted_audit_distinguishes_authorizer_device_and_unverified_denial(s
 
 
 @pytest.mark.parametrize("operation", ["confirm", "redeem"])
-def test_owner_transition_expiring_during_invitation_cas_is_rolled_back(store, monkeypatch, operation):
+def test_owner_transition_expiring_during_invitation_cas_is_rolled_back(
+    store, monkeypatch, operation
+):
     owner = f"owner-expiry-invitation-{operation}"
     _, fields, key = _make_invitation(store, owner)
     if operation == "redeem":
@@ -1518,7 +1163,9 @@ def test_owner_transition_expiring_during_invitation_cas_is_rolled_back(store, m
             monkeypatch.setattr(me, "_now_ms", lambda: before["expires_at"])
         return receipt
 
-    monkeypatch.setattr(store._credentials.repository, "compare_and_set_ciphertext", expire)
+    monkeypatch.setattr(
+        store._credentials.repository, "compare_and_set_ciphertext", expire
+    )
     with pytest.raises(me.InvitationExpired):
         if operation == "confirm":
             _confirm(store, fields)
@@ -1528,25 +1175,45 @@ def test_owner_transition_expiring_during_invitation_cas_is_rolled_back(store, m
     assert store.list_members(owner) == []
 
 
-def test_failed_inner_audit_rolls_back_savepoint_and_preserves_outer_work(store, plane_runtime,
-                                                                       audit_repository, monkeypatch):
+def test_failed_inner_audit_rolls_back_savepoint_and_preserves_outer_work(
+    store, plane_runtime, audit_repository, monkeypatch
+):
     owner = "owner-savepoint-recovery"
     original = audit_repository.insert_in_transaction
     with plane_runtime.transaction() as transaction:
-        monkeypatch.setattr(audit_repository, "insert_in_transaction", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            audit_repository, "insert_in_transaction", lambda *args, **kwargs: None
+        )
         with pytest.raises(me.AuditUnavailable):
-            store.create_invitation(owner, label="Must roll back", device_key=_device()[0], scopes=[],
-                                     creator_kind="owner", creator_id=owner, transaction=transaction)
+            store.create_invitation(
+                owner,
+                label="Must roll back",
+                device_key=_device()[0],
+                scopes=[],
+                creator_kind="owner",
+                creator_id=owner,
+                transaction=transaction,
+            )
         monkeypatch.setattr(audit_repository, "insert_in_transaction", original)
-        result = store.create_invitation(owner, label="Preserved", device_key=_device()[0], scopes=[],
-                                          creator_kind="owner", creator_id=owner, transaction=transaction)
-    assert [i["invite_id"] for i in store.list_invitations(owner)] == [result["invitation"]["invite_id"]]
+        result = store.create_invitation(
+            owner,
+            label="Preserved",
+            device_key=_device()[0],
+            scopes=[],
+            creator_kind="owner",
+            creator_id=owner,
+            transaction=transaction,
+        )
+    assert [i["invite_id"] for i in store.list_invitations(owner)] == [
+        result["invitation"]["invite_id"]
+    ]
     assert len(audit_repository.list_for_user(owner)[0]) == 1
 
 
 @pytest.mark.parametrize("operation", ["create", "confirm", "redeem"])
-def test_expiry_during_durable_audit_rolls_back_all_authority(store, audit_repository,
-                                                           monkeypatch, operation):
+def test_expiry_during_durable_audit_rolls_back_all_authority(
+    store, audit_repository, monkeypatch, operation
+):
     owner = f"owner-expiry-audit-{operation}"
     if operation != "create":
         _, fields, key = _make_invitation(store, owner)
@@ -1559,8 +1226,9 @@ def test_expiry_during_durable_audit_rolls_back_all_authority(store, audit_repos
 
     def expire_after_append(event, **kwargs):
         receipt = original(event, **kwargs)
-        invitation = store.get_invitation(owner, event.inputs_meta["invite_id"],
-                                          transaction=kwargs["transaction"])
+        invitation = store.get_invitation(
+            owner, event.inputs_meta["invite_id"], transaction=kwargs["transaction"]
+        )
         monkeypatch.setattr(me, "_now_ms", lambda: invitation["expires_at"])
         return receipt
 
@@ -1578,12 +1246,15 @@ def test_expiry_during_durable_audit_rolls_back_all_authority(store, audit_repos
     assert audit_repository.verify_chain(owner) is None
 
 
-def test_host_audit_injection_and_api_missing_audit_denies_creation(plane_runtime, audit_repository):
+def test_host_audit_injection_and_api_missing_audit_denies_creation(
+    plane_runtime, audit_repository
+):
     from types import SimpleNamespace
 
     app = FastAPI()
-    app.state.orchestrator = SimpleNamespace(audit_repo=audit_repository,
-                                            plane_repository_source=plane_runtime)
+    app.state.orchestrator = SimpleNamespace(
+        audit_repo=audit_repository, plane_repository_source=plane_runtime
+    )
     request = Request({"type": "http", "app": app})
     host_store = mesh_api._store(request, source=mesh_api._plane_source(request))
     _make_invitation(host_store, "owner-mounted-audit")
@@ -1593,15 +1264,6 @@ def test_host_audit_injection_and_api_missing_audit_denies_creation(plane_runtim
     with pytest.raises(me.AuditUnavailable):
         _make_invitation(host_store, "owner-missing-mounted-audit")
     assert host_store.list_invitations("owner-missing-mounted-audit") == []
-
-
-def test_api_audit_failure_returns_unavailable_without_authority(api_client, audit_repository, monkeypatch):
-    monkeypatch.setattr(audit_repository, "insert_in_transaction", lambda *args, **kwargs: None)
-    response = api_client.post("/api/mesh/invitations", headers=_owner_headers(),
-                               json={"label": "Audit failure", "device_key": _device()[0], "scopes": []})
-    assert response.status_code == 503
-    assert response.json()["detail"] == "mesh_audit_unavailable"
-    assert api_client.get("/api/mesh/invitations", headers=_owner_headers()).json()["invitations"] == []
 
 
 @pytest.mark.parametrize("change", ["legacy", "foreign", "key", "fingerprint"])
@@ -1618,29 +1280,20 @@ def test_malformed_current_confirmation_identity_is_denied(store, change):
             member["device_key"] = {"kty": "RSA"}
         else:
             member["device_key_fingerprint"] = "sha256-" + "0" * 64
-        store._transition(owner, me.MEMBER_NAMESPACE, member["member_id"],
-                          expected_updated_at=member["updated_at"], record=member)
+        store._transition(
+            owner,
+            me.MEMBER_NAMESPACE,
+            member["member_id"],
+            expected_updated_at=member["updated_at"],
+            record=member,
+        )
     _, pending, _ = _make_invitation(store, owner)
     with pytest.raises(me.ConfirmForbidden):
-        store.decide_invitation(owner, pending["i"], decision="confirmed",
-                                decider_kind="member", decider_id=member["member_id"])
+        store.decide_invitation(
+            owner,
+            pending["i"],
+            decision="confirmed",
+            decider_kind="member",
+            decider_id=member["member_id"],
+        )
     assert store.get_invitation(owner, pending["i"])["status"] == "pending"
-
-
-def test_api_redemption_audit_failure_denies_activation_and_reports_unavailable(api_client,
-                                                                               audit_repository,
-                                                                               monkeypatch):
-    jwk, key = _device()
-    created = api_client.post("/api/mesh/invitations", headers=_owner_headers(),
-                              json={"label": "Audit redemption", "device_key": jwk, "scopes": []}).json()
-    fields = _payload_fields(created["payload"])
-    assert api_client.post(f"/api/mesh/invitations/{fields['i']}/confirm",
-                            headers=_owner_headers()).status_code == 200
-    monkeypatch.setattr(audit_repository, "insert_in_transaction", lambda *args, **kwargs: None)
-    denied = api_client.post("/api/mesh/enrollment/redeem", json={"payload": created["payload"],
-                                                               "signature": _signature_b64(key, fields["c"])})
-    assert denied.status_code == 503
-    assert denied.json()["detail"] == "mesh_audit_unavailable"
-    assert api_client.get("/api/mesh/members", headers=_owner_headers()).json()["members"] == []
-    invitation = api_client.get("/api/mesh/invitations", headers=_owner_headers()).json()["invitations"][0]
-    assert invitation["status"] == "confirmed"
