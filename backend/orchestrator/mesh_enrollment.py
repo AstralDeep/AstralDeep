@@ -10,16 +10,19 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
 import os
 import secrets
+import tempfile
 import time
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from astralplane.repositories import RepositoryConflictError
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from audit.schemas import AuditEventCreate, AuditEventDTO
 
 from orchestrator.delegation import attenuate_scopes
 from orchestrator.plane_repository_context import (
@@ -27,8 +30,6 @@ from orchestrator.plane_repository_context import (
     repository_from,
 )
 from orchestrator.tool_permissions import VALID_SCOPES
-
-logger = logging.getLogger("orchestrator.mesh_enrollment")
 
 INVITATION_NAMESPACE = "astral-mesh-invitation"
 MEMBER_NAMESPACE = "astral-mesh-member"
@@ -93,6 +94,11 @@ class RedeemInvalid(MeshEnrollmentError):
     code = "redeem_invalid"
 
 
+class AuditUnavailable(MeshEnrollmentError):
+    status = 503
+    code = "mesh_audit_unavailable"
+
+
 def mesh_id_for_owner(owner_id: str) -> str:
     digest = hashlib.sha256(f"astral-mesh/v1:{owner_id}".encode()).hexdigest()[:20]
     return f"mesh-{digest}"
@@ -122,16 +128,29 @@ def _key_file_path() -> str:
 
 
 def load_or_create_key_file(path: str) -> bytes:
-    if os.path.exists(path):
+    def read_key():
         with open(path, "rb") as file:
-            return file.read().strip()
-    key = Fernet.generate_key()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary_path = f"{path}.{uuid.uuid4().hex}.tmp"
-    with open(temporary_path, "wb") as file:
-        file.write(key)
-    os.replace(temporary_path, path)
-    return key
+            key = file.read().strip()
+        Fernet(key)
+        return key
+
+    if os.path.exists(path):
+        return read_key()
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary_path = tempfile.mkstemp(prefix=".credential-key-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            file.write(Fernet.generate_key())
+            file.flush()
+            os.fsync(file.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            pass
+        return read_key()
+    finally:
+        os.unlink(temporary_path)
 
 
 def _fernet() -> Fernet:
@@ -238,6 +257,14 @@ def public_member(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _authority_digest(member: dict[str, Any]) -> str:
+    authority = {name: member.get(name) for name in (
+        "owner_id", "mesh_id", "member_id", "device_key", "device_key_fingerprint",
+        "member_secret_sha256", "status", "scopes",
+    )}
+    return _sha256_hex(json.dumps(authority, sort_keys=True, separators=(",", ":")).encode())
+
+
 class MeshEnrollmentStore:
     def __init__(
         self,
@@ -245,6 +272,7 @@ class MeshEnrollmentStore:
         *,
         plane_runtime: Any = None,
         plane_repositories: Any = None,
+        audit_repository: Any = None,
     ) -> None:
         repository, runtime = repository_from(
             "credentials",
@@ -257,8 +285,89 @@ class MeshEnrollmentStore:
             plane_runtime=runtime,
             legacy_database=db,
         )
+        self._audit = audit_repository
 
-    def _get(self, owner_id: str, namespace: str, key: str) -> dict[str, Any] | None:
+    @contextmanager
+    def _transaction(self, transaction=None):
+        if transaction is not None:
+            with transaction.savepoint("mesh_authority"):
+                yield transaction
+            return
+        with self._credentials.transaction() as current:
+            with current.savepoint("mesh_authority"):
+                yield current
+
+    def _audit_transition(self, transaction, owner_id, action, *, actor_kind="owner",
+                          actor_id=None, meta=None, outcome="success") -> None:
+        event = AuditEventCreate(
+            event_id=str(uuid.uuid4()), actor_user_id=owner_id,
+            auth_principal=({"owner": owner_id, "member": f"mesh-member:{actor_id}",
+                             "device": f"mesh-device:{actor_id}",
+                             "anonymous": "mesh-enrollment:unverified"}[actor_kind]),
+            event_class="agent_lifecycle", action_type=action, description=action,
+            correlation_id=str(uuid.uuid4()), inputs_meta=meta or {}, outcome=outcome,
+            started_at=datetime.now(timezone.utc),
+        )
+        try:
+            if self._audit is None:
+                raise AuditUnavailable()
+            receipt = self._audit.insert_in_transaction(
+                event, transaction=transaction, plane_runtime=self._credentials.plane_runtime)
+            if (not isinstance(receipt, AuditEventDTO) or receipt.event_id != event.event_id
+                    or receipt.event_class != event.event_class or receipt.action_type != action
+                    or receipt.correlation_id != event.correlation_id or receipt.outcome != outcome
+                    or receipt.inputs_meta != event.inputs_meta):
+                raise AuditUnavailable()
+        except Exception:
+            raise AuditUnavailable("durable mesh audit unavailable") from None
+
+    def record_redemption_denial(self, owner_id: str, invite_id: str, reason: str) -> None:
+        with self._transaction() as transaction:
+            self._audit_transition(transaction, owner_id, "mesh.member.redeem",
+                                   actor_kind="anonymous",
+                                   meta={"invite_id": invite_id, "reason": reason}, outcome="failure")
+
+    def _get_in_transaction(self, transaction, owner_id, namespace, key):
+        row = self._credentials.repository.get_credential(
+            transaction, owner_id=owner_id, agent_id=namespace, credential_key=key)
+        if row is None:
+            return None
+        record = _decode_record(row.encrypted_value)
+        if type(record.get("updated_at")) is not int or record["updated_at"] != row.updated_at:
+            raise MemberUnauthorized("credential revision is invalid")
+        return record
+
+    def _fence_confirmer(self, transaction, owner_id, member_id, *, revision=None,
+                         fingerprint=None, scopes=(), authority_revision=None, authority_digest=None):
+        member = self._get_in_transaction(transaction, owner_id, MEMBER_NAMESPACE, member_id)
+        if member is None or member.get("status") != MEMBER_ACTIVE_STATUS:
+            raise MemberNotFound(member_id)
+        if (member.get("owner_id") != owner_id or member.get("member_id") != member_id
+                or member.get("mesh_id") != mesh_id_for_owner(owner_id)
+                or type(member.get("authority_revision")) is not int
+                or (authority_revision is not None and (type(authority_revision) is not int
+                    or member.get("authority_revision") != authority_revision))
+                or (authority_digest is not None and _authority_digest(member) != authority_digest)
+                or (revision is not None and (type(revision) is not int
+                                             or member["updated_at"] != revision))):
+            raise ConfirmForbidden("confirmation authority is stale or foreign")
+        try:
+            current_fingerprint = device_key_fingerprint(normalize_device_key(member.get("device_key")))
+            current_scopes = normalize_scopes(member.get("scopes"))
+        except ValueError:
+            raise ConfirmForbidden("confirmation identity is malformed") from None
+        if (current_fingerprint != member.get("device_key_fingerprint")
+                or (fingerprint is not None and fingerprint != current_fingerprint)
+                or CONFIRM_SCOPE not in current_scopes or not set(scopes).issubset(current_scopes)):
+            raise ConfirmForbidden("confirmation authority is unavailable")
+        self._transition(owner_id, MEMBER_NAMESPACE, member_id,
+                         expected_updated_at=member["updated_at"], record=member,
+                         transaction=transaction)
+        return member
+
+    def _get(self, owner_id: str, namespace: str, key: str, *, transaction=None) -> dict[str, Any] | None:
+        if transaction is not None:
+            return self._get_in_transaction(transaction, owner_id, namespace, key)
         record = self._credentials.call(
             self._credentials.repository.get_credential,
             owner_id=owner_id,
@@ -290,30 +399,33 @@ class MeshEnrollmentStore:
         return row.updated_at
 
     def _transition(
-        self,
-        owner_id: str,
-        namespace: str,
-        key: str,
-        *,
-        expected_updated_at: int,
-        record: dict[str, Any],
+        self, owner_id: str, namespace: str, key: str, *, expected_updated_at: int,
+        record: dict[str, Any], transaction: Any = None,
     ) -> None:
         updated_at = max(_now_ms(), expected_updated_at + 1)
         record["updated_at"] = updated_at
+
+        def advance(current):
+            if namespace == MEMBER_NAMESPACE:
+                previous = self._get_in_transaction(current, owner_id, namespace, key)
+                if previous is None:
+                    raise MemberNotFound(key)
+                record["authority_revision"] = (
+                    updated_at if _authority_digest(previous) != _authority_digest(record)
+                    else previous.get("authority_revision", previous["updated_at"]))
+            self._credentials.repository.compare_and_set_ciphertext(
+                current, owner_id=owner_id, agent_id=namespace, credential_key=key,
+                expected_updated_at=expected_updated_at, encrypted_value=_encode_record(record),
+                updated_at=updated_at)
+
         try:
-            self._credentials.call(
-                self._credentials.repository.compare_and_set_ciphertext,
-                owner_id=owner_id,
-                agent_id=namespace,
-                credential_key=key,
-                expected_updated_at=expected_updated_at,
-                encrypted_value=_encode_record(record),
-                updated_at=updated_at,
-            )
+            if transaction is None:
+                with self._credentials.transaction() as current:
+                    advance(current)
+            else:
+                advance(transaction)
         except RepositoryConflictError as exc:
-            raise InvitationStateInvalid(
-                "the invitation changed concurrently"
-            ) from exc
+            raise InvitationStateInvalid("credential changed concurrently") from exc
 
     def create_invitation(
         self,
@@ -325,12 +437,14 @@ class MeshEnrollmentStore:
         creator_kind: str,
         creator_id: str,
         ttl_seconds: int | None = None,
+        creator_revision: int | None = None,
+        transaction: Any = None,
     ) -> dict[str, Any]:
         normalized_label = _normalize_label(label)
         normalized_key = normalize_device_key(device_key)
         normalized_scopes = normalize_scopes(scopes)
-        ttl = DEFAULT_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
-        if ttl < MIN_TTL_SECONDS or ttl > MAX_TTL_SECONDS:
+        ttl = DEFAULT_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+        if type(ttl) is not int or ttl < MIN_TTL_SECONDS or ttl > MAX_TTL_SECONDS:
             raise ValueError(
                 f"ttl_seconds must be {MIN_TTL_SECONDS}-{MAX_TTL_SECONDS}"
             )
@@ -363,7 +477,22 @@ class MeshEnrollmentStore:
             "redeemed_at": None,
             "member_id": None,
         }
-        self._put(owner_id, INVITATION_NAMESPACE, invite_id, record)
+        with self._transaction(transaction) as current:
+            if creator_kind == "member":
+                self._fence_confirmer(current, owner_id, creator_id, revision=creator_revision)
+            elif creator_id != owner_id:
+                raise ConfirmForbidden("owner identity does not match")
+            if _now_ms() >= record["expires_at"]:
+                raise InvitationExpired(invite_id)
+            self._credentials.repository.upsert_credential(
+                current, owner_id=owner_id, agent_id=INVITATION_NAMESPACE,
+                credential_key=invite_id, encrypted_value=_encode_record(record), updated_at=now)
+            self._audit_transition(current, owner_id, "mesh.invitation.create",
+                                   actor_kind=creator_kind, actor_id=creator_id,
+                                   meta={"invite_id": invite_id,
+                                         "fingerprint": record["device_key_fingerprint"]})
+            if _now_ms() >= record["expires_at"]:
+                raise InvitationExpired(invite_id)
         payload = {
             "v": RECORD_VERSION,
             "o": owner_id,
@@ -383,92 +512,86 @@ class MeshEnrollmentStore:
         records.sort(key=lambda item: item["created_at"], reverse=True)
         return [public_invitation(record) for record in records]
 
-    def get_invitation(self, owner_id: str, invite_id: str) -> dict[str, Any]:
-        record = self._get(owner_id, INVITATION_NAMESPACE, invite_id)
+    def get_invitation(self, owner_id: str, invite_id: str, *, transaction=None) -> dict[str, Any]:
+        record = self._get(owner_id, INVITATION_NAMESPACE, invite_id, transaction=transaction)
         if record is None or record.get("owner_id") != owner_id:
             raise InvitationNotFound(invite_id)
         return record
 
     def decide_invitation(
-        self,
-        owner_id: str,
-        invite_id: str,
-        *,
-        decision: str,
-        decider_kind: str,
-        decider_id: str,
+        self, owner_id: str, invite_id: str, *, decision: str, decider_kind: str,
+        decider_id: str, decider_revision: int | None = None, transaction: Any = None,
     ) -> dict[str, Any]:
         if decision not in ("confirmed", "rejected"):
             raise ValueError("decision must be confirmed or rejected")
-        record = self.get_invitation(owner_id, invite_id)
+        if decider_kind not in ("owner", "member"):
+            raise ConfirmForbidden("confirmation identity is invalid")
+        record = self.get_invitation(owner_id, invite_id, transaction=transaction)
         if record["status"] != "pending":
-            raise InvitationStateInvalid(
-                f"invitation is {record['status']}, not pending"
-            )
+            raise InvitationStateInvalid("invitation is not pending")
         if _now_ms() >= record["expires_at"]:
             raise InvitationExpired(invite_id)
         creator = record.get("created_by") or {}
-        if (
-            decider_kind == "member"
-            and creator.get("kind") == "member"
-            and creator.get("id") == decider_id
-        ):
+        if (decider_kind == "member" and creator.get("kind") == "member"
+                and creator.get("id") == decider_id):
             raise ConfirmForbidden("a member cannot confirm its own invitation")
-
-        if decision == "confirmed":
-            confirmed_by = {"kind": decider_kind, "id": decider_id}
-            available = (
-                GRANTABLE_SCOPES if decider_kind == "owner" else self._member_scopes(
-                    owner_id, decider_id
-                )
-            )
-            record["confirmed_scopes"] = attenuate_scopes(
-                available, record["requested_scopes"]
-            )
-            record["confirmed_by"] = confirmed_by
-        else:
-            record["confirmed_by"] = None
-        record["status"] = decision
-        record["decided_at"] = _now_ms()
-        self._transition(
-            owner_id,
-            INVITATION_NAMESPACE,
-            invite_id,
-            expected_updated_at=int(record["updated_at"]),
-            record=record,
-        )
+        with self._transaction(transaction) as current:
+            if decider_kind == "owner":
+                if decider_id != owner_id:
+                    raise ConfirmForbidden("owner identity does not match")
+                available = GRANTABLE_SCOPES
+                confirmed_by = {"kind": "owner", "id": owner_id}
+            else:
+                member = self._fence_confirmer(current, owner_id, decider_id,
+                                               revision=decider_revision)
+                available = member["scopes"]
+                confirmed_by = {"kind": "member", "id": decider_id,
+                                "revision": member["updated_at"],
+                                "authority_revision": member["authority_revision"],
+                                "authority_digest": _authority_digest(member),
+                                "fingerprint": member["device_key_fingerprint"]}
+            if _now_ms() >= record["expires_at"]:
+                raise InvitationExpired(invite_id)
+            record["confirmed_scopes"] = (attenuate_scopes(available, record["requested_scopes"])
+                                          if decision == "confirmed" else None)
+            record["confirmed_by"] = confirmed_by if decision == "confirmed" else None
+            record["status"] = decision
+            record["decided_at"] = _now_ms()
+            self._transition(owner_id, INVITATION_NAMESPACE, invite_id,
+                             expected_updated_at=record["updated_at"], record=record,
+                             transaction=current)
+            if _now_ms() >= record["expires_at"]:
+                raise InvitationExpired(invite_id)
+            action = "mesh.invitation.confirm" if decision == "confirmed" else "mesh.invitation.reject"
+            self._audit_transition(current, owner_id, action, actor_kind=decider_kind,
+                                   actor_id=decider_id, meta={"invite_id": invite_id})
+            if _now_ms() >= record["expires_at"]:
+                raise InvitationExpired(invite_id)
         return record
-
-    def _member_scopes(self, owner_id: str, member_id: str) -> list[str]:
-        member = self._get(owner_id, MEMBER_NAMESPACE, member_id)
-        if member is None or member.get("status") != MEMBER_ACTIVE_STATUS:
-            raise MemberNotFound(member_id)
-        return list(member["scopes"])
 
     def list_members(self, owner_id: str) -> list[dict[str, Any]]:
         records = self._list(owner_id, MEMBER_NAMESPACE)
         records.sort(key=lambda item: item["enrolled_at"], reverse=True)
         return [public_member(record) for record in records]
 
-    def get_member(self, owner_id: str, member_id: str) -> dict[str, Any]:
-        record = self._get(owner_id, MEMBER_NAMESPACE, member_id)
+    def get_member(self, owner_id: str, member_id: str, *, transaction=None) -> dict[str, Any]:
+        record = self._get(owner_id, MEMBER_NAMESPACE, member_id, transaction=transaction)
         if record is None or record.get("owner_id") != owner_id:
             raise MemberNotFound(member_id)
         return record
 
-    def revoke_member(self, owner_id: str, member_id: str) -> dict[str, Any]:
-        record = self.get_member(owner_id, member_id)
+    def revoke_member(self, owner_id: str, member_id: str, *,
+                      transaction: Any = None) -> dict[str, Any]:
+        record = self.get_member(owner_id, member_id, transaction=transaction)
         if record["status"] == MEMBER_REVOKED_STATUS:
             return record
         record["status"] = MEMBER_REVOKED_STATUS
         record["revoked_at"] = _now_ms()
-        self._transition(
-            owner_id,
-            MEMBER_NAMESPACE,
-            member_id,
-            expected_updated_at=int(record["updated_at"]),
-            record=record,
-        )
+        with self._transaction(transaction) as current:
+            self._transition(owner_id, MEMBER_NAMESPACE, member_id,
+                             expected_updated_at=record["updated_at"], record=record,
+                             transaction=current)
+            self._audit_transition(current, owner_id, "mesh.member.revoke", meta={"member_id": member_id})
         return record
 
     def authenticate_member(
@@ -494,9 +617,13 @@ class MeshEnrollmentStore:
         token: str,
         challenge: str,
         signature: str,
+        transaction: Any = None,
     ) -> dict[str, Any]:
-        record = self._get(owner_id, INVITATION_NAMESPACE, invite_id)
-        if record is None or record.get("invite_id") != invite_id:
+        record = (self._get(owner_id, INVITATION_NAMESPACE, invite_id) if transaction is None
+                  else self._get(owner_id, INVITATION_NAMESPACE, invite_id, transaction=transaction))
+        if (record is None or record.get("invite_id") != invite_id
+                or record.get("owner_id") != owner_id
+                or record.get("mesh_id") != mesh_id_for_owner(owner_id)):
             raise InvitationNotFound(invite_id)
         try:
             token_bytes = _b64url_decode(token)
@@ -550,20 +677,41 @@ class MeshEnrollmentStore:
             "confirmed_by": record.get("confirmed_by"),
             "enrolled_at": now,
             "updated_at": now,
+            "authority_revision": now,
             "revoked_at": None,
         }
         record["status"] = "redeemed"
         record["redeemed_at"] = now
         record["member_id"] = member_id
 
-        # CAS on updated_at makes concurrent redemption single-winner; the member upsert shares the transaction, so a lost race leaves no orphan member
         expected_updated_at = int(record["updated_at"])
         updated_at = max(_now_ms(), expected_updated_at + 1)
         record["updated_at"] = updated_at
         try:
-            with self._credentials.transaction() as transaction:
+            with self._transaction(transaction) as current:
+                confirmer = record.get("confirmed_by")
+                if not isinstance(confirmer, dict):
+                    raise ConfirmForbidden("confirmation identity is unavailable")
+                if confirmer.get("kind") == "owner":
+                    if confirmer.get("id") != owner_id:
+                        raise ConfirmForbidden("owner confirmation is foreign")
+                elif confirmer.get("kind") == "member":
+                    if (type(confirmer.get("revision")) is not int
+                            or type(confirmer.get("authority_revision")) is not int
+                            or not isinstance(confirmer.get("authority_digest"), str)
+                            or not isinstance(confirmer.get("fingerprint"), str)):
+                        raise ConfirmForbidden("member confirmation is unbound")
+                    self._fence_confirmer(
+                        current, owner_id, confirmer.get("id"),
+                        authority_revision=confirmer["authority_revision"],
+                        authority_digest=confirmer["authority_digest"],
+                        fingerprint=confirmer["fingerprint"], scopes=confirmed_scopes)
+                else:
+                    raise ConfirmForbidden("confirmation identity is invalid")
+                if _now_ms() >= record["expires_at"]:
+                    raise InvitationExpired(invite_id)
                 self._credentials.repository.compare_and_set_ciphertext(
-                    transaction,
+                    current,
                     owner_id=owner_id,
                     agent_id=INVITATION_NAMESPACE,
                     credential_key=invite_id,
@@ -571,14 +719,23 @@ class MeshEnrollmentStore:
                     encrypted_value=_encode_record(record),
                     updated_at=updated_at,
                 )
+                if _now_ms() >= record["expires_at"]:
+                    raise InvitationExpired(invite_id)
                 self._credentials.repository.upsert_credential(
-                    transaction,
+                    current,
                     owner_id=owner_id,
                     agent_id=MEMBER_NAMESPACE,
                     credential_key=member_id,
                     encrypted_value=_encode_record(member),
                     updated_at=now,
                 )
+                self._audit_transition(current, owner_id, "mesh.member.redeem",
+                                       actor_kind="device", actor_id=member["device_key_fingerprint"],
+                                       meta={"confirmed_by": confirmer,
+                                             "invite_id": invite_id, "member_id": member_id,
+                                             "fingerprint": member["device_key_fingerprint"]})
+                if _now_ms() >= record["expires_at"]:
+                    raise InvitationExpired(invite_id)
         except RepositoryConflictError as exc:
             raise InvitationStateInvalid(
                 "invitation was redeemed or changed concurrently"
@@ -608,37 +765,3 @@ def parse_enrollment_payload(raw: Any) -> dict[str, str]:
         "token": parsed["t"],
         "challenge": parsed["c"],
     }
-
-
-def audit_mesh_event(
-    actor_id: str,
-    action_type: str,
-    description: str,
-    *,
-    outcome: str = "success",
-    meta: dict[str, Any] | None = None,
-) -> None:
-    try:
-        from datetime import datetime, timezone
-
-        from audit.recorder import get_recorder
-        from audit.schemas import AuditEventCreate
-
-        recorder = get_recorder()
-        if recorder is None:
-            return
-        recorder.record_blocking(
-            AuditEventCreate(
-                actor_user_id=actor_id or "unknown",
-                auth_principal=actor_id or "unknown",
-                event_class="agent_lifecycle",
-                action_type=action_type,
-                description=description[:1024],
-                correlation_id=str(meta.get("invite_id") or meta.get("member_id") or uuid.uuid4().hex),
-                outcome=outcome,
-                inputs_meta=meta or {},
-                started_at=datetime.now(timezone.utc),
-            )
-        )
-    except Exception:
-        logger.debug("mesh audit event failed (%s)", action_type, exc_info=True)

@@ -54,7 +54,8 @@ def _store(
     request: Request,
     source: Any = Depends(_plane_source),
 ) -> me.MeshEnrollmentStore:
-    return me.MeshEnrollmentStore(source)
+    return me.MeshEnrollmentStore(
+        source, audit_repository=getattr(_get_orchestrator(request), "audit_repo", None))
 
 
 def _parse_member_header(request: Request) -> tuple[str, str, str]:
@@ -170,22 +171,15 @@ async def create_invitation(
             creator_kind=actor["kind"],
             creator_id=actor["id"],
             ttl_seconds=body.get("ttl_seconds"),
+            creator_revision=(actor["member"]["updated_at"] if actor["kind"] == "member" else None),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
     payload = result["payload"]
     public_base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL") or ""
     link = f"{public_base.rstrip('/')}/enroll#{payload}" if public_base else None
-    me.audit_mesh_event(
-        owner_id,
-        "mesh.invitation.create",
-        f"mesh invitation created for {result['invitation']['label']}",
-        meta={
-            "invite_id": result["invitation"]["invite_id"],
-            "created_by": actor["kind"],
-            "fingerprint": result["invitation"]["device_key_fingerprint"],
-        },
-    )
     return {"invitation": result["invitation"], "payload": payload, "link": link}
 
 
@@ -221,19 +215,10 @@ async def confirm_invitation(
             decision="confirmed",
             decider_kind=actor["kind"],
             decider_id=actor["id"],
+            decider_revision=(actor["member"]["updated_at"] if actor["kind"] == "member" else None),
         )
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
-    me.audit_mesh_event(
-        owner_id,
-        "mesh.invitation.confirm",
-        f"mesh invitation {invite_id} confirmed by {actor['kind']}",
-        meta={
-            "invite_id": invite_id,
-            "confirmed_by": actor["kind"],
-            "member_id": actor["id"] if actor["kind"] == "member" else None,
-        },
-    )
     return {"invitation": me.public_invitation(record)}
 
 
@@ -256,15 +241,10 @@ async def reject_invitation(
             decision="rejected",
             decider_kind=actor["kind"],
             decider_id=actor["id"],
+            decider_revision=(actor["member"]["updated_at"] if actor["kind"] == "member" else None),
         )
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
-    me.audit_mesh_event(
-        owner_id,
-        "mesh.invitation.reject",
-        f"mesh invitation {invite_id} rejected by {actor['kind']}",
-        meta={"invite_id": invite_id},
-    )
     return {"invitation": me.public_invitation(record)}
 
 
@@ -292,12 +272,6 @@ async def revoke_member(
         record = store.revoke_member(owner_id, member_id)
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
-    me.audit_mesh_event(
-        owner_id,
-        "mesh.member.revoke",
-        f"mesh member {record['label']} revoked",
-        meta={"member_id": member_id},
-    )
     return {"member": me.public_member(record)}
 
 
@@ -338,25 +312,12 @@ async def redeem_enrollment(
             signature=signature,
         )
     except me.MeshEnrollmentError as exc:
-        me.audit_mesh_event(
-            parsed["owner_id"],
-            "mesh.member.redeem",
-            f"mesh redemption denied: {exc.code}",
-            outcome="failure",
-            meta={"invite_id": parsed["invite_id"], "reason": exc.code},
-        )
+        try:
+            store.record_redemption_denial(parsed["owner_id"], parsed["invite_id"], exc.code)
+        except me.MeshEnrollmentError as audit_exc:
+            raise HTTPException(audit_exc.status, audit_exc.code) from audit_exc
         raise HTTPException(exc.status, exc.code) from exc
     member = result["member"]
-    me.audit_mesh_event(
-        member["owner_id"],
-        "mesh.member.redeem",
-        f"mesh member {member['label']} activated",
-        meta={
-            "invite_id": parsed["invite_id"],
-            "member_id": member["member_id"],
-            "fingerprint": member["device_key_fingerprint"],
-        },
-    )
     return {
         "member": me.public_member(member),
         "member_key": result["member_key"],
