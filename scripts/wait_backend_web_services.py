@@ -16,8 +16,10 @@ import httpx
 
 
 def turn_tls(context: ssl.SSLContext) -> None:
-    with socket.create_connection(("ad-bwq-turn", 443), timeout=3) as connection:
-        with context.wrap_socket(connection, server_hostname="ad-bwq-turn"):
+    with socket.create_connection(
+        ("ad-bwq-turn.invalid", 443), timeout=3
+    ) as connection:
+        with context.wrap_socket(connection, server_hostname="ad-bwq-turn.invalid"):
             pass
 
 
