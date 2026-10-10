@@ -26,6 +26,7 @@ HOST_SURFACES = frozenset(
         "authoring",
         "connections",
         "drafts",
+        "evidence",
         "guidance",
         "llm",
         "llm_system",

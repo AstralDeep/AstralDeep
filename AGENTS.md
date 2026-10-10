@@ -20,6 +20,8 @@ The UI contract is:
 
 `AstralPrimitives defines -> AstralProjection renders and adapts -> AstralDeep orchestrates`
 
+The evidence control adapter depends on the orchestrator's private ephemeral archive and stays host-bound. It has no standalone transport process; disabling in-process registration preserves complete source responses and makes its inspection commands unavailable.
+
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
 - Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
 - Windows (PySide6), Android (Kotlin/Compose), and Apple (Swift/SwiftUI) are thin native consumers of server-owned structured UI and chrome contracts.

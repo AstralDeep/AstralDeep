@@ -462,7 +462,7 @@ def test_server_time_falls_back_when_the_clock_is_missing(connected, monkeypatch
 
 
 @pytest.mark.parametrize(("resource_type", "filters", "headers", "first"), [
-    ("patient", {"deceased": "true"}, ["Patient", "Sex", "Born", "Died"], ["002-2", "male", ""]),
+    ("patient", {"deceased": "true"}, ["Patient", "Name", "Sex", "Born", "Died"], ["002-2", "002-2", "male", ""]),
     ("Encounter", {"patient": "002-1"}, ["Encounter", "Patient", "Status", "Unit", "Start", "End"], ["icu-1", "002-1", "In progress", "Med-Surg ICU", "Oct 5, 15:30", ""]),
     ("Observation", {"patient": "002-1", "code": "8867-4"}, ["Time", "Patient", "Measurement", "Value"], ["Oct 5, 15:55", "002-1", "Heart rate", "148 /min"]),
     ("Condition", {"patient": "002-1"}, ["Recorded", "Patient", "Condition", "Status"], ["Oct 5, 15:35", "002-1", "Acute respiratory failure", "Active"]),

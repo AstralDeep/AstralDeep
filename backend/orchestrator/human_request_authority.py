@@ -62,7 +62,7 @@ def _socket_method(message):
     payload = message.get("payload")
     if (action == "chrome_open" and type(payload) is dict
             and type(payload.get("surface")) is str
-            and payload.get("surface") in {"agent_authoring", "guidance"}):
+            and payload.get("surface") in {"agent_authoring", "guidance", "evidence"}):
         return "WS_READ"
     return None
 

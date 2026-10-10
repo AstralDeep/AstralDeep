@@ -1,5 +1,5 @@
-"""A2A-compliant FHIR agent: read-only clinical dashboards over an operator-configured HL7
-FHIR R5 server, dispatched through mcp_server.py. Registered in-process by
+"""A2A-compliant FHIR agent provides patient measurements, population queries and clinical dashboards over an operator-configured server.
+Tools are dispatched through mcp_server.py and registered in-process by
 orchestrator/local_agents.py only when the fhir feature flag is on.
 """
 
@@ -25,11 +25,17 @@ class FhirAgent(BaseA2AAgent):
     agent_id = "fhir-1"
     service_name = "FHIR Clinical Data"
     description = (
-        "Reads a live HL7 FHIR R5 clinical feed: ICU census, patient overviews, "
+        "Separate patient-level FHIR REST measurements and synthetic population-level SQL on FHIR queries. "
+        "Also reads an HL7 FHIR R5 clinical feed: ICU census, patient overviews, "
         "vital sign trends, laboratory results, medications and timelines, plus "
         "live vital sign and activity streams. Read-only."
     )
     examples = [
+        {"title": "Patient A1C",
+         "prompt": "What is the latest A1C for MyHealthSafe demo patient DEMO-1001?"},
+        {"title": "Population A1C",
+         "prompt": "What is the average latest A1C among pregnant women in Wolfe County and Casey County, "
+                   "Kentucky, in the synthetic reference dataset?"},
         {"title": "ICU census",
          "prompt": "Show the current ICU census from the FHIR feed"},
         {"title": "Patient overview",
@@ -40,7 +46,7 @@ class FhirAgent(BaseA2AAgent):
         {"title": "Live activity",
          "prompt": "Watch the live ICU activity feed for five minutes"},
     ]
-    skill_tags = ["fhir", "hl7", "clinical", "icu"]
+    skill_tags = ["fhir", "hl7", "clinical", "icu", "sql-on-fhir"]
 
     def __init__(self, port: int = None):
         super().__init__(MCPServer(), port=port, port_env_var="FHIR_AGENT_PORT")

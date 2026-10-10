@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -123,6 +124,7 @@ def _validate_meta(value: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class AuditEventCreate(BaseModel):
+    event_id: Optional[str] = None
     actor_user_id: str = Field(min_length=1)
     auth_principal: str = Field(min_length=1)
     agent_id: Optional[str] = None
@@ -138,6 +140,18 @@ class AuditEventCreate(BaseModel):
     artifact_pointers: List[ArtifactPointer] = Field(default_factory=list)
     started_at: datetime
     completed_at: Optional[datetime] = None
+
+    @field_validator("event_id", mode="before")
+    @classmethod
+    def _check_event_id(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, (str, UUID)):
+            raise ValueError("event_id must be a UUID")
+        try:
+            return str(UUID(str(value)))
+        except ValueError as exc:
+            raise ValueError("event_id must be a UUID") from exc
 
     @field_validator("event_class")
     @classmethod
