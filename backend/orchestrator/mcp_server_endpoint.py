@@ -1,6 +1,7 @@
 """Flag-gated MCP Streamable HTTP resource server: parses and admits requests, discovers
-and dispatches tools through mcp_projection.py and mcp_authz.py, and routes
-framework-projected Work tools through work_operations.py. Installed by
+and dispatches tools through mcp_projection.py and mcp_authz.py, validates
+schema-declared Mcp-Param mirror headers against tool arguments before dispatch,
+and routes framework-projected Work tools through work_operations.py. Installed by
 orchestrator.py.
 """
 
@@ -29,6 +30,8 @@ from orchestrator.mcp_authz import (
 )
 from orchestrator.mcp_projection import (
     FRAMEWORK_WORK_AGENT_ID,
+    MirrorParam,
+    has_unsupported_mirrors,
     project_tools,
     resolve_projected_tool,
 )
@@ -107,22 +110,65 @@ def _json_error(
     )
 
 
-def _decode_name_header(value: str) -> str:
+def _decode_mirror_value(value: str, label: str) -> str:
     sentinel = _BASE64_SENTINEL.fullmatch(value)
     if sentinel:
         try:
             raw = base64.b64decode(sentinel.group(1), validate=True)
             decoded = raw.decode("utf-8")
         except (binascii.Error, UnicodeDecodeError) as exc:
-            raise ValueError("Mcp-Name Base64 sentinel is malformed") from exc
+            raise ValueError(f"{label} Base64 sentinel is malformed") from exc
         if not decoded:
-            raise ValueError("Mcp-Name must not be empty")
+            raise ValueError(f"{label} must not be empty")
         return decoded
     if not _SAFE_PLAIN_NAME.fullmatch(value) or value != value.strip():
-        raise ValueError("unsafe Mcp-Name must use the Base64 sentinel")
+        raise ValueError(f"unsafe {label} must use the Base64 sentinel")
     if value.startswith("=?base64?") or value.endswith("?="):
-        raise ValueError("sentinel-looking Mcp-Name must be encoded")
+        raise ValueError(f"sentinel-looking {label} must be encoded")
     return value
+
+
+def _decode_name_header(value: str) -> str:
+    return _decode_mirror_value(value, "Mcp-Name")
+
+
+def _canonical_argument(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    raise ValueError("annotated argument is not a mirrorable scalar")
+
+
+def _validate_mirror_arguments(
+    request: Request,
+    projected: Any,
+    arguments: dict[str, Any],
+) -> None:
+    mirrors: tuple[MirrorParam, ...] = getattr(projected, "mirror_params", ())
+    for mirror in mirrors:
+        header = request.headers.get(mirror.header)
+        argument = arguments.get(mirror.argument)
+        if argument is None:
+            if header is not None:
+                raise _RequestError(
+                    MCP_HEADER_MISMATCH,
+                    "mirror header must be omitted for an absent or null argument",
+                )
+            continue
+        if header is None:
+            raise _RequestError(MCP_HEADER_MISMATCH, "annotated mirror header is missing")
+        try:
+            expected = _canonical_argument(argument)
+            decoded = _decode_mirror_value(header, "Mcp-Param mirror")
+        except ValueError as exc:
+            raise _RequestError(MCP_HEADER_MISMATCH, str(exc)) from exc
+        if decoded != expected:
+            raise _RequestError(
+                MCP_HEADER_MISMATCH, "mirror header does not match the argument value"
+            )
 
 
 async def _read_body(request: Request) -> bytes:
@@ -419,6 +465,28 @@ def _with_origin(response: Response, origin: str | None, allowed_origin: str) ->
     return response
 
 
+_PREFLIGHT_ALLOW_HEADERS = (
+    "Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name"
+)
+_REFLECTED_MIRROR_HEADER = re.compile(r"^mcp-param-[!#$%&'*+\-.^_`|~0-9a-z]+$")
+
+
+def _preflight_allow_headers(requested: str | None) -> str:
+    if not requested:
+        return _PREFLIGHT_ALLOW_HEADERS
+    reflected = sorted(
+        {
+            name.strip()
+            for name in requested.split(",")
+            if len(name.strip()) <= 128
+            and _REFLECTED_MIRROR_HEADER.fullmatch(name.strip().lower())
+        }
+    )[:16]
+    if not reflected:
+        return _PREFLIGHT_ALLOW_HEADERS
+    return _PREFLIGHT_ALLOW_HEADERS + ", " + ", ".join(reflected)
+
+
 class MCPNoCredentialsCORSMiddleware:
     def __init__(self, app: Any, *, allowed_origin: str):
         self.app = app
@@ -447,9 +515,8 @@ class MCPNoCredentialsCORSMiddleware:
                 headers={
                     "Access-Control-Allow-Origin": self.allowed_origin,
                     "Access-Control-Allow-Methods": "POST",
-                    "Access-Control-Allow-Headers": (
-                        "Authorization, Content-Type, MCP-Protocol-Version, "
-                        "Mcp-Method, Mcp-Name"
+                    "Access-Control-Allow-Headers": _preflight_allow_headers(
+                        headers.get("access-control-request-headers")
                     ),
                     "Access-Control-Max-Age": "600",
                     "Vary": "Origin",
@@ -724,61 +791,103 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             claims,
                         )
                         if projected is None:
-                            result = {
-                                "resultType": "complete",
-                                "content": [{
-                                    "type": "text",
-                                    "text": "Tool is unavailable or no longer authorized",
-                                }],
-                                "structuredContent": {},
-                                "isError": True,
-                                "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
-                            }
-                        elif projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
-                            # Work tools skip the normal agent dispatch security stack
-                            try:
-                                tool_response = await _wait_for_disconnect(
-                                    request,
-                                    _dispatch_work_tool(
-                                        orchestrator, claims, projected.skill_id,
-                                        params.get("arguments", {}),
-                                    ),
-                                )
-                                result = _tool_result(tool_response)
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                logger.exception("mcp: framework work tool dispatch failed")
+                            if await asyncio.to_thread(
+                                has_unsupported_mirrors,
+                                orchestrator,
+                                user_id,
+                                params["name"],
+                                claims,
+                            ):
                                 result = {
                                     "resultType": "complete",
-                                    "content": [{"type": "text", "text": "Tool execution failed"}],
+                                    "content": [{
+                                        "type": "text",
+                                        "text": "Tool declares an unsupported x-mcp-header mirror contract",
+                                    }],
                                     "structuredContent": {},
                                     "isError": True,
-                                    "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                                    "_meta": {
+                                        "io.modelcontextprotocol/serverInfo": _server_info()
+                                    },
+                                }
+                            else:
+                                result = {
+                                    "resultType": "complete",
+                                    "content": [{
+                                        "type": "text",
+                                        "text": "Tool is unavailable or no longer authorized",
+                                    }],
+                                    "structuredContent": {},
+                                    "isError": True,
+                                    "_meta": {
+                                        "io.modelcontextprotocol/serverInfo": _server_info()
+                                    },
                                 }
                         else:
                             try:
-                                tool_response = await _wait_for_disconnect(
+                                _validate_mirror_arguments(
                                     request,
-                                    orchestrator.execute_mcp_tool(
-                                        claims=claims,
-                                        user_id=user_id,
-                                        agent_id=projected.agent_id,
-                                        tool_name=projected.skill_id,
-                                        arguments=params.get("arguments", {}),
-                                    ),
+                                    projected,
+                                    params.get("arguments", {}),
                                 )
-                                result = _tool_result(tool_response)
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                result = {
-                                    "resultType": "complete",
-                                    "content": [{"type": "text", "text": "Tool execution failed"}],
-                                    "structuredContent": {},
-                                    "isError": True,
-                                    "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
-                                }
+                            except _RequestError as exc:
+                                result_code = "protocol_refused"
+                                return _with_origin(
+                                    _json_error(
+                                        request_id,
+                                        exc.code,
+                                        str(exc),
+                                        400,
+                                        data=exc.data,
+                                    ),
+                                    origin,
+                                    base_url,
+                                )
+                            if projected.agent_id == FRAMEWORK_WORK_AGENT_ID:
+                                # Work tools skip the normal agent dispatch security stack
+                                try:
+                                    tool_response = await _wait_for_disconnect(
+                                        request,
+                                        _dispatch_work_tool(
+                                            orchestrator, claims, projected.skill_id,
+                                            params.get("arguments", {}),
+                                        ),
+                                    )
+                                    result = _tool_result(tool_response)
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    logger.exception("mcp: framework work tool dispatch failed")
+                                    result = {
+                                        "resultType": "complete",
+                                        "content": [{"type": "text", "text": "Tool execution failed"}],
+                                        "structuredContent": {},
+                                        "isError": True,
+                                        "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                                    }
+                            else:
+                                try:
+                                    tool_response = await _wait_for_disconnect(
+                                        request,
+                                        orchestrator.execute_mcp_tool(
+                                            claims=claims,
+                                            user_id=user_id,
+                                            agent_id=projected.agent_id,
+                                            tool_name=projected.skill_id,
+                                            arguments=params.get("arguments", {}),
+                                        ),
+                                    )
+                                    result = _tool_result(tool_response)
+                                except asyncio.CancelledError:
+                                    raise
+                                except Exception:
+                                    result = {
+                                        "resultType": "complete",
+                                        "content": [{"type": "text", "text": "Tool execution failed"}],
+                                        "structuredContent": {},
+                                        "isError": True,
+                                        "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                                    }
                         cache_control = "no-store"
             except _AdmissionRefused:
                 result_code = "capacity_refused"
