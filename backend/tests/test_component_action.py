@@ -114,6 +114,8 @@ def _make_fake(history, user_id, *, allowed=True, security_flags=None, exec_resu
                  "_handle_component_action", "_audit_workspace_denial",
                  "_component_action_allowed"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
+    fake._register_ui_operation_refusal = (
+        Orchestrator._register_ui_operation_refusal)
     fake._sent = sent
     fake._renders = renders
     fake._exec_calls = exec_calls
