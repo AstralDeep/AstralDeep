@@ -1,6 +1,8 @@
 import unittest
+from typing import Any
 
-def preserve_gemini_metadata(tool_calls):
+
+def preserve_gemini_metadata(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for call in tool_calls:
         if "extra_content" in call and "google" in call["extra_content"]:
             if call["extra_content"]["google"].get("thought_signature") is None:
@@ -8,6 +10,7 @@ def preserve_gemini_metadata(tool_calls):
             elif not isinstance(call["extra_content"]["google"]["thought_signature"], str):
                 call["extra_content"]["google"]["thought_signature"] = str(call["extra_content"]["google"]["thought_signature"])
     return tool_calls
+
 
 class TestPreserveGeminiMetadata(unittest.TestCase):
     def test_preserve_metadata_with_thought_signature(self):
@@ -105,6 +108,7 @@ class TestPreserveGeminiMetadata(unittest.TestCase):
             }
         ]
         self.assertEqual(preserve_gemini_metadata(tool_calls), expected_result)
+
 
 if __name__ == "__main__":
     unittest.main()

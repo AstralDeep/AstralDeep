@@ -1,56 +1,15 @@
-# preserve_gemini_metadata.py
+import unittest
+from typing import Any
 
-import json
-from typing import Any, Dict, List
 
-def preserve_gemini_metadata(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Preserves and qualifies Gemini continuation metadata through the current stream/non-stream and outgoing-wire paths.
-    
-    Args:
-    tool_calls (List[Dict[str, Any]]): List of tool call dictionaries.
-    
-    Returns:
-    List[Dict[str, Any]]: List of tool call dictionaries with metadata preserved.
-    """
+def preserve_gemini_metadata(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserves and qualifies Gemini continuation metadata through stream/non-stream paths."""
     for tool_call in tool_calls:
         if 'extra_content' in tool_call and 'google' in tool_call['extra_content']:
             thought_signature = tool_call['extra_content']['google'].get('thought_signature')
             tool_call['extra_content']['google']['thought_signature'] = thought_signature if thought_signature is not None else ''
     return tool_calls
 
-# Example usage
-if __name__ == "__main__":
-    sample_tool_calls = [
-        {
-            "id": "123",
-            "function_name": "get_weather",
-            "arguments": {"city": "New York"},
-            "extra_content": {
-                "google": {
-                    "thought_signature": "Fetching weather for New York"
-                }
-            }
-        },
-        {
-            "id": "456",
-            "function_name": "get_temperature",
-            "arguments": {"location": "Boston"},
-            "extra_content": {
-                "google": {
-                    "thought_signature": None
-                }
-            }
-        }
-    ]
-    
-    preserved_tool_calls = preserve_gemini_metadata(sample_tool_calls)
-    print(json.dumps(preserved_tool_calls, indent=2))
-
-# test_solution.py
-
-import unittest
-from preserve_gemini_metadata import preserve_gemini_metadata
 
 class TestPreserveGeminiMetadata(unittest.TestCase):
     def test_preserve_metadata_with_thought_signature(self):
@@ -148,6 +107,7 @@ class TestPreserveGeminiMetadata(unittest.TestCase):
             }
         ]
         self.assertEqual(preserve_gemini_metadata(tool_calls), expected_result)
+
 
 if __name__ == "__main__":
     unittest.main()
