@@ -753,6 +753,13 @@ class StreamManager:
                     return sub
         return None
 
+    def register_pending_request(self, stream_id: str, request_id: str) -> None:
+        # Called before the agent task can emit, so an immediately-emitted first chunk
+        # is routed instead of dropped as unknown.
+        sub = self.subscription_for_stream(stream_id)
+        if sub is not None and sub.state is not StreamState.DORMANT:
+            self._request_to_key[request_id] = sub.key
+
     def component_id_for(self, stream_id: str) -> Optional[str]:
         sub = self.subscription_for_stream(stream_id)
         return sub.bridged_component_id if sub is not None else None

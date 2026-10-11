@@ -19853,6 +19853,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 caller_capabilities=dict(caller_capabilities),
                 caller_info=caller_info,
             )
+            stream_manager = getattr(self, "stream_manager", None)
+            if stream_manager is not None:
+                stream_manager.register_pending_request(stream_id, request_id)
             if agent_id in self.local_agents:
                 from shared.local_transport import LoopbackSocket
 
