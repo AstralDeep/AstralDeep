@@ -3,11 +3,12 @@
 used by shared/a2a_executor.py and orchestrator/a2a_orchestrator_executor.py.
 """
 
+import json
 import os
 import re
 import uuid
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from google.protobuf.json_format import ParseDict, MessageToDict
 from google.protobuf.struct_pb2 import Value
@@ -55,6 +56,10 @@ _A2A_UNRESOLVED_STATES = {
 }
 _A2A_CONTINUATION_UNSUPPORTED_CODE = -32001
 _A2A_MAX_STATUS_MESSAGE_CHARS = 512
+_A2A_PROJECTION_MAX_ARTIFACTS = 32
+_A2A_PROJECTION_MAX_PARTS = 32
+_A2A_PROJECTION_MAX_TEXT_CHARS = 8_000
+_A2A_PROJECTION_MAX_UI_COMPONENTS = 32
 
 
 async def ensure_task_created(context, event_queue) -> None:
@@ -324,6 +329,127 @@ def _uncompleted_task_error(task: A2ATask, state) -> Dict[str, Any]:
     }
 
 
+def _with_media_type(record: Dict[str, Any], media_type: str) -> Dict[str, Any]:
+    if media_type:
+        record["media_type"] = media_type
+    return record
+
+
+def _bounded_text_record(text: str, media_type: str) -> Dict[str, Any]:
+    if len(text) <= _A2A_PROJECTION_MAX_TEXT_CHARS:
+        return _with_media_type({"text": text}, media_type)
+    return _with_media_type(
+        {
+            "text": text[:_A2A_PROJECTION_MAX_TEXT_CHARS],
+            "omitted_text_chars": len(text) - _A2A_PROJECTION_MAX_TEXT_CHARS,
+        },
+        media_type,
+    )
+
+
+def _bounded_json_preview(value: Any) -> Dict[str, Any]:
+    serialized = json.dumps(value)
+    summary: Dict[str, Any] = {"value_kind": type(value).__name__}
+    if len(serialized) <= _A2A_PROJECTION_MAX_TEXT_CHARS:
+        summary["value"] = value
+    else:
+        summary["value_prefix"] = serialized[:_A2A_PROJECTION_MAX_TEXT_CHARS]
+        summary["omitted_chars"] = len(serialized) - _A2A_PROJECTION_MAX_TEXT_CHARS
+    return summary
+
+
+def _unsupported_record(part: Part, kind: str) -> Dict[str, Any]:
+    detail: Dict[str, Any] = {"kind": kind}
+    if kind == "bytes":
+        detail["size_bytes"] = len(part.raw)
+    elif kind == "uri":
+        detail["uri"] = part.url[:_A2A_PROJECTION_MAX_TEXT_CHARS]
+    if part.filename:
+        detail["filename"] = part.filename
+    if part.media_type:
+        detail["media_type"] = part.media_type
+    return {"unsupported": detail}
+
+
+def _project_parts(
+    parts: List[Part],
+    ui_sink: List[Any],
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    records: List[Dict[str, Any]] = []
+    omitted_ui = 0
+    for part in list(parts)[:_A2A_PROJECTION_MAX_PARTS]:
+        media_type = part.media_type or ""
+        content = part.WhichOneof("content")
+        if content == "text":
+            records.append(_bounded_text_record(part.text, media_type))
+        elif content == "data":
+            value = MessageToDict(part.data)
+            if isinstance(value, dict) and "_ui_components" in value:
+                components = value["_ui_components"]
+                if isinstance(components, list):
+                    for component in components:
+                        if len(ui_sink) < _A2A_PROJECTION_MAX_UI_COMPONENTS:
+                            ui_sink.append(component)
+                        else:
+                            omitted_ui += 1
+                    remainder = {
+                        key: item for key, item in value.items() if key != "_ui_components"
+                    }
+                    if remainder:
+                        records.append(_with_media_type({"data": remainder}, media_type))
+                else:
+                    records.append(
+                        {"invalid_ui_components": _bounded_json_preview(components)}
+                    )
+            else:
+                records.append(_with_media_type({"data": value}, media_type))
+        elif content in ("raw", "url"):
+            records.append(_unsupported_record(part, "bytes" if content == "raw" else "uri"))
+        else:
+            records.append(_unsupported_record(part, "empty"))
+    omitted_parts = max(0, len(parts) - _A2A_PROJECTION_MAX_PARTS)
+    return records, omitted_ui, omitted_parts
+
+
+def _is_plain_value_record(record: Dict[str, Any]) -> bool:
+    if "text" in record:
+        return set(record) <= {"text", "media_type"}
+    if "data" in record:
+        return set(record) <= {"data", "media_type"}
+    return False
+
+
+def _project_artifacts(
+    task: A2ATask,
+) -> Tuple[List[Dict[str, Any]], Optional[List[Any]], Dict[str, int]]:
+    artifacts = list(task.artifacts)
+    projected: List[Dict[str, Any]] = []
+    ui_sink: List[Any] = []
+    omitted_ui = 0
+    omitted_parts = 0
+    for artifact in artifacts[:_A2A_PROJECTION_MAX_ARTIFACTS]:
+        records, part_omitted_ui, part_omitted_parts = _project_parts(
+            artifact.parts, ui_sink
+        )
+        omitted_ui += part_omitted_ui
+        omitted_parts += part_omitted_parts
+        projected.append(
+            {
+                "artifact_id": artifact.artifact_id or None,
+                "name": artifact.name or None,
+                "parts": records,
+            }
+        )
+    markers: Dict[str, int] = {}
+    if omitted_parts:
+        markers["omitted_parts"] = omitted_parts
+    if omitted_ui:
+        markers["omitted_ui_components"] = omitted_ui
+    if len(artifacts) > _A2A_PROJECTION_MAX_ARTIFACTS:
+        markers["omitted_artifacts"] = len(artifacts) - _A2A_PROJECTION_MAX_ARTIFACTS
+    return projected, (ui_sink or None), markers
+
+
 def a2a_response_to_mcp_response(
     task_or_message,
     request_id: str,
@@ -343,20 +469,22 @@ def a2a_response_to_mcp_response(
                 error=_uncompleted_task_error(task, state),
             )
 
-        result = None
-        ui_components = None
-        for artifact in task.artifacts:
-            for p in artifact.parts:
-                d = part_data(p)
-                if d is not None:
-                    if "_ui_components" in d:
-                        ui_components = d["_ui_components"]
-                    else:
-                        result = d
-                    continue
-                t = part_text(p)
-                if t is not None and result is None:
-                    result = t
+        projected_artifacts, ui_components, markers = _project_artifacts(task)
+        result: Optional[Any] = None
+        parts_count = sum(len(artifact["parts"]) for artifact in projected_artifacts)
+        if (
+            len(projected_artifacts) == 1
+            and parts_count == 1
+            and not markers
+            and _is_plain_value_record(projected_artifacts[0]["parts"][0])
+        ):
+            record = projected_artifacts[0]["parts"][0]
+            result = record["text"] if "text" in record else record["data"]
+        elif projected_artifacts or markers:
+            envelope: Dict[str, Any] = {"a2a_artifacts": projected_artifacts}
+            if markers:
+                envelope["a2a_projection"] = markers
+            result = envelope
 
         if task.HasField("status") and task.status.HasField("message"):
             msg_resp = _message_to_mcp_response(task.status.message, request_id)
@@ -379,23 +507,26 @@ def a2a_response_to_mcp_response(
 
 
 def _message_to_mcp_response(msg: A2AMessage, request_id: str) -> MCPResponse:
-    result = None
-    ui_components = None
+    ui_sink: List[Any] = []
+    records, omitted_ui, omitted_parts = _project_parts(msg.parts, ui_sink)
+    markers: Dict[str, int] = {}
+    if omitted_parts:
+        markers["omitted_parts"] = omitted_parts
+    if omitted_ui:
+        markers["omitted_ui_components"] = omitted_ui
 
-    for p in msg.parts:
-        d = part_data(p)
-        if d is not None:
-            if "_ui_components" in d:
-                ui_components = d["_ui_components"]
-            elif result is None:
-                result = d
-            continue
-        t = part_text(p)
-        if t is not None and result is None:
-            result = t
+    result: Optional[Any] = None
+    if len(records) == 1 and not markers and _is_plain_value_record(records[0]):
+        record = records[0]
+        result = record["text"] if "text" in record else record["data"]
+    elif records or markers:
+        envelope: Dict[str, Any] = {"a2a_parts": records}
+        if markers:
+            envelope["a2a_projection"] = markers
+        result = envelope
 
     return MCPResponse(
         request_id=request_id,
         result=result,
-        ui_components=ui_components,
+        ui_components=ui_sink or None,
     )
