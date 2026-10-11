@@ -175,6 +175,48 @@ async def test_device_custody_issues_cookie_without_refresh_token_release(client
 
 
 @pytest.mark.asyncio
+async def test_concurrent_custody_device_polls_reach_the_idp_once(client, fixture):
+    fixture[4].changes = {"azp": "astral-watch"}
+    started = await client.post("/api/auth/device/start", headers=HEADER,
+                               json={"client": "astral-watch", "session_custody": MODE})
+    assert started.status_code == 200
+    handle = started.json()["handle"]
+    state = device_login._POLL_STATE[device_login._handle_digest(handle)]
+    state["next_ok"] = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def held():
+        entered.set()
+        await release.wait()
+
+    fixture[4].hook = held
+    first = asyncio.create_task(client.post("/api/auth/device/poll", headers=HEADER,
+                                            json={"handle": handle, "session_custody": MODE}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        guarded = await client.post("/api/auth/device/poll", headers=HEADER,
+                                    json={"handle": handle, "session_custody": MODE})
+        assert guarded.status_code == 400
+        state["in_flight"] = False
+        state["next_ok"] = 0
+        raced = await client.post("/api/auth/device/poll", headers=HEADER,
+                                  json={"handle": handle, "session_custody": MODE})
+        assert raced.status_code == 200
+        assert raced.json() == {"status": "slow_down", "interval": 1}
+        assert len(fixture[4].requests) == 1
+    finally:
+        fixture[4].hook = None
+        release.set()
+    first_response = await first
+    assert first_response.status_code == 200
+    assert first_response.json()["status"] == "approved"
+    assert web_auth._unsign(first_response.cookies[web_auth.COOKIE_NAME])
+    replay = await client.post("/api/auth/device/poll", headers=HEADER,
+                               json={"handle": handle, "session_custody": MODE})
+    assert replay.status_code == 400 and len(fixture[4].requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_poll_cannot_downgrade_custody_handle(client, fixture):
     fixture[4].changes = {"azp": "astral-watch"}
     started = await client.post("/api/auth/device/start", headers=HEADER,

@@ -5,6 +5,7 @@ flag-off fail-closed behavior.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -259,6 +260,163 @@ async def test_poll_expired_at_idp_and_locally(env):
     res2 = await dl.poll(handle2, "1.2.3.4", http_post=FakePost(), http_get=fake_get())
     assert res2 == {"status": "expired"}
     assert env["audits"][-1]["action"] == "device_login_expired"
+
+
+async def _held_poll_task(handle, *, entered, release, response):
+    async def held(url, data):
+        entered.set()
+        await release.wait()
+        return response
+
+    return asyncio.create_task(
+        dl.poll(handle, "1.2.3.4", http_post=held, http_get=fake_get()))
+
+
+async def test_concurrent_polls_reach_the_idp_once(env):
+    out = await do_start()
+    handle = out["handle"]
+    dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+    finally:
+        release.set()
+    assert await first == {"status": "pending", "interval": 5}
+
+
+async def test_in_flight_claim_blocks_poll_beyond_pacing_window(env):
+    out = await do_start()
+    handle = out["handle"]
+    dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+        assert dl._POLL_STATE[dl._handle_digest(handle)]["used"] is False
+    finally:
+        release.set()
+    assert await first == {"status": "pending", "interval": 5}
+
+
+async def test_cancelled_poll_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_timed_out_poll_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await first
+    release.set()
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_terminal_success_permits_no_second_delivery(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release, response=(200, token_body()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        dl._POLL_STATE[digest]["next_ok"] = 0.0
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+    finally:
+        release.set()
+    assert (await first)["status"] == "approved"
+    assert [a["action"] for a in env["audits"]][-1] == "device_login_approved"
+    with pytest.raises(dl.InvalidHandle):
+        await dl.poll(handle, "1.2.3.4", http_post=FakePost(), http_get=fake_get())
+
+
+async def test_failed_upstream_poll_does_not_lock_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+
+    async def boom(url, data):
+        raise RuntimeError("connection refused")
+
+    with pytest.raises(dl.DeviceLoginUnavailable):
+        await dl.poll(handle, "1.2.3.4", http_post=boom, http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_poll_idp_device_error_passthrough_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+
+    async def refusing(url, data):
+        raise dl.RateLimited("synthetic idp rate limit")
+
+    with pytest.raises(dl.RateLimited):
+        await dl.poll(handle, "1.2.3.4", http_post=refusing, http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
+
+
+async def test_poll_unknown_idp_error_is_unavailable(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    with pytest.raises(dl.DeviceLoginUnavailable):
+        await dl.poll(handle, "1.2.3.4",
+                      http_post=FakePost((500, {"error": "server_exploded"})),
+                      http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
 
 
 async def test_poll_garbage_handle(env):
