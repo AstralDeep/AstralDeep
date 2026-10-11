@@ -611,6 +611,17 @@ class MeshAdmission:
             or prepared.expires_at <= int(time.time())
         ):
             _refuse()
+        key = me.normalize_device_key(current["device_key"])
+        if (
+            self.store._active_key_holder(
+                transaction,
+                prepared.owner_id,
+                me.device_key_fingerprint(key),
+                exclude_member_id=neutral.member_id,
+            )
+            is not None
+        ):
+            _refuse()
         payload = {
             "sub": prepared.owner_id,
             "act": {"sub": "mesh-member:" + neutral.member_id},
