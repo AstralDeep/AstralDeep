@@ -1,5 +1,7 @@
 import hashlib
 import os
+import unittest
+from unittest.mock import patch
 
 
 def hash_memory(memory):
@@ -79,9 +81,6 @@ def compare_frozen_memory(frozen_memory, memory):
             frozen_memory['digest'] == get_memory_digest(memory))
 
 # Test Suite:
-import unittest
-from unittest.mock import patch
-
 
 class TestMemoryFunctions(unittest.TestCase):
 
@@ -105,7 +104,7 @@ class TestMemoryFunctions(unittest.TestCase):
     def test_save_memory(self, mock_open):
         memory = 'test_memory'
         save_memory(memory, 'test_file.txt')
-        mock_open.return_value.__enter__.write.assert_called_once_with(memory)
+        mock_open.return_value.__enter__.return_value.write.assert_called_once_with(memory)
 
     def test_get_memory_digest(self):
         memory = 'test_memory'
@@ -131,9 +130,9 @@ class TestMemoryFunctions(unittest.TestCase):
         memory = 'test_memory'
         self.assertEqual(get_memory_paraphrases(memory), ['paraphrase1', 'paraphrase2'])
 
-    @patch('your_module.get_memory_label')
-    @patch('your_module.get_memory_rationale')
-    @patch('your_module.get_memory_digest')
+    @patch('main.get_memory_label')
+    @patch('main.get_memory_rationale')
+    @patch('main.get_memory_digest')
     def test_freeze_memory(self, mock_digest, mock_rationale, mock_label):
         memory = 'test_memory'
         mock_label.return_value = 'test_label'
