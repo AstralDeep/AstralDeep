@@ -1,6 +1,7 @@
 import hashlib
 import os
 
+
 def hash_memory(memory):
     """Generate a unique hash for a memory."""
     return hashlib.sha256(memory.encode('utf-8')).hexdigest()
@@ -79,10 +80,8 @@ def compare_frozen_memory(frozen_memory, memory):
 
 # Test Suite:
 import unittest
-from unittest.mock import patch, MagicMock
-from .your_module import (hash_memory, load_memory, save_memory, get_memory_digest,
-                          compare_memories, get_memory_label, get_memory_rationale,
-                          get_memory_paraphrases, freeze_memory)
+from unittest.mock import patch
+
 
 class TestMemoryFunctions(unittest.TestCase):
 

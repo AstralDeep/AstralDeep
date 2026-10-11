@@ -1,6 +1,7 @@
-import unittest
-from unittest.mock import patch, MagicMock
 import hashlib
+import unittest
+from unittest.mock import patch
+
 
 def load_memory(filename):
     with open(filename, 'r') as file:
