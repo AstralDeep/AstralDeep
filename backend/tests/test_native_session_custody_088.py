@@ -5,6 +5,7 @@ Work, and retirement revoking both custody and access.
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -12,7 +13,7 @@ from uuid import uuid4
 from cryptography.fernet import Fernet
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from audit.repository import AuditRepository
 from llm_config import research_profile as profile
@@ -362,6 +363,113 @@ async def test_device_attempt_lifetime_is_closed(client, fixture, monkeypatch, f
     assert refused.status_code in {400, 503}
     assert "set-cookie" not in refused.headers and "private-provider" not in refused.text
     assert not fixture[4].requests
+
+
+def _custody_poll_state(expires):
+    return {"next_ok": 0.0, "interval": 1, "used": False, "in_flight": False,
+            "custody": SimpleNamespace(expires=expires), "expires": expires}
+
+
+def test_device_start_admission_reclaims_expired_legacy_entries():
+    from orchestrator import native_session_custody as custody
+    device_login.reset_state()
+    now = time.time()
+    for i in range(custody.ATTEMPT_LIMIT):
+        device_login._POLL_STATE[f"legacy-{i}"] = {"used": False, "expires": now - 1}
+    custody._admit_device_start()
+    assert device_login._POLL_STATE == {}
+
+
+def test_device_start_admission_ignores_live_legacy_load():
+    from orchestrator import native_session_custody as custody
+    device_login.reset_state()
+    now = time.time()
+    for i in range(custody.ATTEMPT_LIMIT + 8):
+        device_login._POLL_STATE[f"legacy-{i}"] = {"used": False, "expires": now + 600}
+    custody._admit_device_start()
+    assert len(device_login._POLL_STATE) == custody.ATTEMPT_LIMIT + 8
+
+
+def test_device_start_admission_still_bounds_live_custody_attempts():
+    from orchestrator import native_session_custody as custody
+    device_login.reset_state()
+    now = time.time()
+    for i in range(custody.ATTEMPT_LIMIT):
+        device_login._POLL_STATE[f"custody-{i}"] = _custody_poll_state(now + 600)
+    with pytest.raises(HTTPException) as denied:
+        custody._admit_device_start()
+    assert denied.value.status_code == 429
+    del device_login._POLL_STATE["custody-0"]
+    custody._admit_device_start()
+
+
+def test_device_start_admission_counts_in_flight_starts(monkeypatch):
+    from orchestrator import native_session_custody as custody
+    device_login.reset_state()
+    now = time.time()
+    for i in range(custody.ATTEMPT_LIMIT - 1):
+        device_login._POLL_STATE[f"custody-{i}"] = _custody_poll_state(now + 600)
+    custody._admit_device_start()
+    monkeypatch.setattr(custody, "_STARTS_IN_FLIGHT", 1)
+    with pytest.raises(HTTPException) as denied:
+        custody._admit_device_start()
+    assert denied.value.status_code == 429
+
+
+def test_device_start_admission_reclaims_expired_custody_after_time_advances(monkeypatch):
+    from orchestrator import native_session_custody as custody
+
+    class _Clock:
+        def __init__(self):
+            self.now = time.time()
+
+        def time(self):
+            return self.now
+
+    clock = _Clock()
+    monkeypatch.setattr(custody, "time", clock)
+    device_login.reset_state()
+    for i in range(custody.ATTEMPT_LIMIT):
+        device_login._POLL_STATE[f"custody-{i}"] = _custody_poll_state(clock.now + 600)
+    with pytest.raises(HTTPException) as denied:
+        custody._admit_device_start()
+    assert denied.value.status_code == 429
+    clock.now += 601
+    custody._admit_device_start()
+    assert device_login._POLL_STATE == {}
+
+
+@pytest.mark.asyncio
+async def test_expired_legacy_attempts_no_longer_block_native_device_start(client, fixture):
+    from orchestrator import native_session_custody as custody
+    fixture[4].changes = {"azp": "astral-watch"}
+    now = time.time()
+    for i in range(custody.ATTEMPT_LIMIT):
+        device_login._POLL_STATE[f"legacy-{i}"] = {"used": False, "expires": now - 1}
+    response = await client.post("/api/auth/device/start", headers=HEADER,
+                                 json={"client": "astral-watch", "session_custody": MODE})
+    assert response.status_code == 200
+    assert not [key for key in device_login._POLL_STATE if key.startswith("legacy-")]
+    state = device_login._POLL_STATE[device_login._handle_digest(response.json()["handle"])]
+    assert state["expires"] == state["custody"].expires
+
+
+@pytest.mark.asyncio
+async def test_swept_stale_device_handle_cannot_poll(client, fixture):
+    fixture[4].changes = {"azp": "astral-watch"}
+    response = await client.post("/api/auth/device/start", headers=HEADER,
+                                 json={"client": "astral-watch", "session_custody": MODE})
+    handle = response.json()["handle"]
+    key = device_login._handle_digest(handle)
+    state = device_login._POLL_STATE[key]
+    assert state["expires"] == state["custody"].expires
+    state["custody"].expires = time.time() - 1
+    device_login._sweep_expired(time.time())
+    assert key not in device_login._POLL_STATE
+    refused = await client.post("/api/auth/device/poll", headers=HEADER,
+                                json={"handle": handle, "session_custody": MODE})
+    assert refused.status_code == 400
+    assert "set-cookie" not in refused.headers
 
 
 @pytest.mark.asyncio
