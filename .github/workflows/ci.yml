@@ -235,6 +235,7 @@ jobs:
             --env ASTRAL_ASSIGNMENT_FIXTURE_DIR=/workspace/build/079/browser-fixtures \
             --env ASTRAL_EXPORT_COVERAGE_OUTPUT=/workspace/build/backend-web/export-javascript.json \
             --env ASTRAL_ALL_CLIENT_COVERAGE_DIR=/workspace/build/backend-web/client-v8 \
+            --env ASTRAL_MESH_COVERAGE_OUTPUT=/workspace/build/backend-web/mesh-custody-browser-v8.json \
             --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
             /bin/bash -euc 'corepack npm run test:coverage-conversion:browser
               node --test tests/mesh-custody.browser.test.mjs
@@ -256,9 +257,10 @@ jobs:
           browser_inputs=()
           for suite in continuity-contract-060 first-task-088 \
               persistent-agents-079 selection-088 guidance-notes-088 \
-              work-reads-088 voice-conversation-065; do
+              work-reads-088 voice-conversation-065 mesh-enrollment; do
             browser_inputs+=(--input "build/backend-web/client-v8/$suite.json")
           done
+          browser_inputs+=(--input build/backend-web/mesh-custody-browser-v8.json)
           node tooling/web-ci/browser-v8-cli.mjs --repo-root "$PWD" "${browser_inputs[@]}" \
             --output build/backend-web/browser-javascript.json
           node tooling/web-ci/coverage-conversion-cli.mjs \
