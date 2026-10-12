@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import pytest
+
 from a2a.types import (
     Artifact,
     Message as A2AMessage,
@@ -419,6 +421,60 @@ def test_multi_part_status_message_is_preserved_in_full() -> None:
     status_message = _message([make_text_part("alpha"), make_text_part("beta")])
     response = a2a_response_to_mcp_response(_task([], status_message=status_message), "req-1")
     assert response.result == {"a2a_parts": [{"text": "alpha"}, {"text": "beta"}]}
+
+
+@pytest.mark.parametrize("artifact_kind", ["empty", "ui", "mixed_empty_ui", "ui_overflow"])
+@pytest.mark.parametrize("status_parts", [
+    [make_text_part("completed without data")],
+    [make_text_part("completed"), make_data_part({"outcome": "no results"})],
+])
+def test_empty_artifact_projection_keeps_status_fallback_and_identity(artifact_kind, status_parts):
+    components = [{"type": "text", "content": "Result view"}]
+    if artifact_kind == "ui_overflow":
+        components *= _A2A_PROJECTION_MAX_UI_COMPONENTS + 1
+    empty = Artifact(artifact_id="empty-artifact", name="empty result")
+    ui = Artifact(artifact_id="ui-artifact", name="view", parts=[
+        make_data_part({"_ui_components": components}),
+    ])
+    artifacts = ([empty] if artifact_kind == "empty" else
+                 [empty, ui] if artifact_kind == "mixed_empty_ui" else [ui])
+    message = _message(status_parts)
+    task = _task(artifacts, status_message=message)
+    original = task.SerializeToString()
+
+    response = a2a_response_to_mcp_response(task, "req-1")
+
+    assert response.result["a2a_artifacts"] == [
+        {"artifact_id": artifact.artifact_id, "name": artifact.name, "parts": []}
+        for artifact in artifacts
+    ]
+    assert response.result["a2a_status_message"] == a2a_response_to_mcp_response(message, "req-1").result
+    assert response.ui_components == (components[:_A2A_PROJECTION_MAX_UI_COMPONENTS]
+                                      if artifact_kind != "empty" else None)
+    if artifact_kind == "ui_overflow":
+        assert response.result["a2a_projection"] == {"omitted_ui_components": 1}
+    assert response.correlation_id == "task-abc" and response.error is None
+    assert task.SerializeToString() == original
+
+
+@pytest.mark.parametrize("message_parts", [[], [make_data_part({"_ui_components": []})]])
+def test_empty_status_message_does_not_add_a_fabricated_artifact_fallback(message_parts):
+    task = _task([Artifact(artifact_id="empty", name="empty")],
+                 status_message=_message(message_parts))
+    response = a2a_response_to_mcp_response(task, "req-1")
+    assert response.result == {
+        "a2a_artifacts": [{"artifact_id": "empty", "name": "empty", "parts": []}],
+    }
+
+
+def test_failed_task_with_empty_artifacts_keeps_the_failure_semantics():
+    task = _task([Artifact(artifact_id="empty", name="empty")],
+                 status_message=_message([make_text_part("remote task failed")]))
+    task.status.state = TaskState.TASK_STATE_FAILED
+    response = a2a_response_to_mcp_response(task, "req-1")
+    assert response.result is None and response.ui_components is None
+    assert response.error["message"] == "Task failed: remote task failed"
+    assert response.error["retryable"] is False
 
 
 def test_status_message_ui_components_are_still_extracted() -> None:

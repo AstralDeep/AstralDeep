@@ -490,6 +490,8 @@ def a2a_response_to_mcp_response(
             msg_resp = _message_to_mcp_response(task.status.message, request_id)
             if result is None:
                 result = msg_resp.result
+            elif not parts_count and msg_resp.result is not None:
+                result["a2a_status_message"] = msg_resp.result
             if ui_components is None:
                 ui_components = msg_resp.ui_components
 
