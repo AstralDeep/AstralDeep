@@ -282,6 +282,20 @@ def store_for(orch):
     return store
 
 
+TRUNCATION_NOTICE = ("[instructions truncated to fit this turn's guidance budget — load the "
+                     "complete revision with read_user_skill using this skill id]")
+OMISSION_NOTICE = ("[{count} of your applicable skills did not fit this turn's guidance budget; "
+                   "they stay omitted from this digest]")
+
+
+def selection_ref(skill: Any) -> str:
+    skill_id = getattr(skill, "skill_id", "")
+    revision = getattr(skill, "revision", 0)
+    if skill_id and revision:
+        return f" [skill {skill_id} rev {revision}]"
+    return ""
+
+
 def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
     skills = [skill for skill in skills if skill.enabled]
     in_play = set(agent_ids or ())
@@ -289,14 +303,20 @@ def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
         s for s in skills if not s.always and any(s.applies(a) for a in in_play)]
     out: List[str] = []
     total = 0
-    for skill in picked:
+    omitted = 0
+    for index, skill in enumerate(picked):
         body = skill.instructions.strip()
-        section = f"### Your skill: {skill.name}\n{body}"
-        if total + len(section) > max_chars:
-            remaining = max_chars - total
+        header = f"### Your skill: {skill.name}{selection_ref(skill)}"
+        if total + len(header) + len(body) + 2 <= max_chars:
+            section = f"{header}\n{body}"
+        else:
+            remaining = max_chars - total - len(header) - 3 - len(TRUNCATION_NOTICE)
             if remaining < 80:
+                omitted = len(picked) - index
                 break
-            section = section[:remaining]
+            section = f"{header}\n{body[:remaining].rstrip()}\n{TRUNCATION_NOTICE}"
         out.append(section)
-        total += len(section)
+        total += len(section) + 2
+    if omitted:
+        out.append(OMISSION_NOTICE.format(count=omitted))
     return out
