@@ -69,15 +69,49 @@ PHI_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bMRN[\s:#-]*\d{4,}\b", re.IGNORECASE), "[REDACTED:mrn]"),
 )
 
+SECRET_FIELD_PATTERNS: Tuple[str, ...] = (
+    "api_key",
+    "secret",
+    "token",
+    "password",
+    "private_key",
+    "access_token",
+    "bearer",
+)
+
+SECRET_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsk-[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED:api_key]"),
+    (
+        re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{50,90})\b"),
+        "[REDACTED:token]",
+    ),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws_key]"),
+    (
+        re.compile(r"\beyJ[a-zA-Z0-9_\-]{10,}\.eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\b"),
+        "[REDACTED:jwt]",
+    ),
+    (
+        re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+)?PRIVATE KEY-----"),
+        "[REDACTED:private_key]",
+    ),
+    (re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_\-\Root\.]{25,}\b"), "[REDACTED:bearer_token]"),
+)
+
+
 
 def _matches_phi_field_key(key: str) -> bool:
     lowered = key.lower()
     return any(p in lowered for p in PHI_FIELD_PATTERNS)
 
 
+def _matches_secret_field_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(p in lowered for p in SECRET_FIELD_PATTERNS)
+
+
 def _redact_string(s: str) -> Tuple[str, bool]:
     changed = False
-    for pattern, replacement in PHI_VALUE_PATTERNS:
+    for pattern, replacement in PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS:
         new_s = pattern.sub(replacement, s)
         if new_s != s:
             changed = True
@@ -85,14 +119,14 @@ def _redact_string(s: str) -> Tuple[str, bool]:
     return s, changed
 
 
-def _mask_value(value: Any) -> Any:
+def _mask_value(value: Any, marker: str = "[REDACTED:phi]") -> Any:
     if value is None:
         return None
     if isinstance(value, dict):
-        return {k: "[REDACTED:phi]" for k in value}
+        return {k: marker for k in value}
     if isinstance(value, list):
-        return ["[REDACTED:phi]" for _ in value]
-    return "[REDACTED:phi]"
+        return [marker for _ in value]
+    return marker
 
 
 def _redact_walk(value: Any, redacted: list) -> Any:
@@ -100,7 +134,10 @@ def _redact_walk(value: Any, redacted: list) -> Any:
         result = {}
         for k, v in value.items():
             if _matches_phi_field_key(k):
-                result[k] = _mask_value(v)
+                result[k] = _mask_value(v, "[REDACTED:phi]")
+                redacted[0] = True
+            elif _matches_secret_field_key(k):
+                result[k] = _mask_value(v, "[REDACTED:secret]")
                 redacted[0] = True
             else:
                 result[k] = _redact_walk(v, redacted)
