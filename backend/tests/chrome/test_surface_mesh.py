@@ -1,4 +1,4 @@
-"""Tests for orchestrator/projection_surfaces/mesh.py: read-only shared-UI
+"""Tests for orchestrator/projection_surfaces/mesh.py: shared-UI
 inventory, invitation/member state derivation, sanitized provenance, manifested
 component vocabulary, and the cross-client entry points that open the surface.
 """
@@ -110,11 +110,25 @@ def test_registry_resolves_surface():
     assert mod.TITLE == "Mesh devices"
 
 
-def test_surface_dispatches_no_new_actions(store):
-    assert not hasattr(mesh_surface, "HANDLERS")
+def test_surface_exposes_shared_enrollment_management_actions(store):
+    store._members = [_member()]
     html = run(mesh_surface.render(_orch(), "owner-1", ["user"], {}))
     actions = {part.split('"')[0] for part in html.split('data-ui-action="')[1:]}
-    assert actions == {"chrome_open"}
+    assert actions == {
+        "chrome_open",
+        "chrome_mesh_create",
+        "chrome_mesh_rename",
+        "chrome_mesh_revoke",
+    }
+    assert set(mesh_surface.HANDLERS) == {
+        "chrome_mesh_create",
+        "chrome_mesh_confirm",
+        "chrome_mesh_reject",
+        "chrome_mesh_rename",
+        "chrome_mesh_revoke",
+        "chrome_mesh_remove_invitation",
+    }
+
 
 def test_render_member_inventory_states_and_sanitized_provenance(store):
     store._members = [
@@ -134,7 +148,7 @@ def test_render_member_inventory_states_and_sanitized_provenance(store):
     assert "abababababab" + "…" in html
     assert "public-material" not in html and '"kty"' not in html
     assert "sha256-" not in html
-    assert "custody" not in html and "device_key" not in html
+    assert "custody" not in html
     confirmed = html.split("Old phone")[0]
     assert "owner" in confirmed
     revoked_section = html.split("Old phone", 1)[1]
@@ -161,7 +175,7 @@ def test_render_invitation_states(store):
         _invitation(
             invite_id="3" * 32,
             label="Enrolled",
-            status="confirmed",
+            status="redeemed",
             confirmed_by={"kind": "owner", "id": "owner-1"},
             redeemed_at=_NOW_MS - 500,
             member_id="a1b2c3d4" * 4,
@@ -173,7 +187,9 @@ def test_render_invitation_states(store):
             expires_at=_NOW_MS - 1_000,
         ),
     ]
-    html = run(mesh_surface.render(_orch(), "owner-1", ["user"], {"view": "invitations"}))
+    html = run(
+        mesh_surface.render(_orch(), "owner-1", ["user"], {"view": "invitations"})
+    )
     for label in (
         "Pending confirmation",
         "Expired",
@@ -184,7 +200,12 @@ def test_render_invitation_states(store):
         assert label in html, label
     assert "member a1b2c3d4…" in html
     assert "mesh:confirm" in html
-    assert "Confirm or reject this request through the mesh API" in html
+    assert 'data-ui-action="chrome_mesh_confirm"' in html
+    assert 'data-ui-action="chrome_mesh_reject"' in html
+    assert 'data-ui-action="chrome_mesh_remove_invitation"' in html
+    expired = html.split("Expired request", 1)[1].split("Waiting for device", 1)[0]
+    assert 'data-ui-action="chrome_mesh_confirm"' not in expired
+    assert 'data-ui-action="chrome_mesh_reject"' not in expired
 
 
 def test_render_inventory_failure_is_visible(store):
@@ -197,6 +218,16 @@ def test_render_inventory_failure_is_visible(store):
 
 
 def test_inventory_helper_edges(monkeypatch):
+    assert mesh_surface._invitation_state(_invitation(status="redeemed")) == (
+        "Enrolled",
+        "success",
+    )
+    assert mesh_surface._invitation_state(
+        _invitation(status="confirmed", redeemed_at=_NOW_MS)
+    ) == (
+        "Enrolled",
+        "success",
+    )
     assert mesh_surface._date("not-a-number") == "unknown"
     assert mesh_surface._date(None) == "unknown"
     assert mesh_surface._scopes_text(None) == "none"
@@ -204,7 +235,10 @@ def test_inventory_helper_edges(monkeypatch):
     assert mesh_surface._creator_text({"created_by": None}) == "—"
     assert mesh_surface._creator_text({"created_by": "junk"}) == "—"
     assert mesh_surface._creator_text({"created_by": {"kind": "member"}}) == "member"
-    assert mesh_surface._creator_text({"created_by": {"kind": "owner", "id": "o"}}) == "owner"
+    assert (
+        mesh_surface._creator_text({"created_by": {"kind": "owner", "id": "o"}})
+        == "owner"
+    )
     assert mesh_surface._confirmer_text({}) == "—"
     assert mesh_surface._invitation_state(_invitation(status="weird")) == (
         "Unknown",

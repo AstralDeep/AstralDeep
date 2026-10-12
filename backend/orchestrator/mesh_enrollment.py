@@ -45,6 +45,7 @@ MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_LABEL_CHARS = 64
 MAX_SCOPES = len(GRANTABLE_SCOPES)
+MAX_INVENTORY_ROWS = 1000
 _CHALLENGE_BYTES = 32
 _TOKEN_BYTES = 32
 _PAYLOAD_MAX_CHARS = 2048
@@ -101,6 +102,11 @@ class RedeemInvalid(MeshEnrollmentError):
 class AuditUnavailable(MeshEnrollmentError):
     status = 503
     code = "mesh_audit_unavailable"
+
+
+class MeshInventoryIncomplete(MeshEnrollmentError):
+    status = 503
+    code = "mesh_inventory_incomplete"
 
 
 def mesh_id_for_owner(owner_id: str) -> str:
@@ -412,8 +418,10 @@ class MeshEnrollmentStore:
 
     def _list_in_transaction(self, transaction, owner_id, namespace):
         rows = self._credentials.repository.list_credentials(
-            transaction, owner_id=owner_id, agent_id=namespace, limit=1000
+            transaction, owner_id=owner_id, agent_id=namespace, limit=MAX_INVENTORY_ROWS
         )
+        if len(rows) >= MAX_INVENTORY_ROWS:
+            raise MeshInventoryIncomplete("complete mesh inventory is required")
         return [_decode_record(row.encrypted_value) for row in rows]
 
     def _active_key_holder(
@@ -610,8 +618,10 @@ class MeshEnrollmentStore:
             self._credentials.repository.list_credentials,
             owner_id=owner_id,
             agent_id=namespace,
-            limit=1000,
+            limit=MAX_INVENTORY_ROWS,
         )
+        if len(rows) >= MAX_INVENTORY_ROWS:
+            raise MeshInventoryIncomplete("complete mesh inventory is required")
         return [_decode_record(row.encrypted_value) for row in rows]
 
     def _put(

@@ -6,8 +6,11 @@ orchestrator/mesh_api.py and orchestrator/mesh_enrollment.py.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import BytesIO
 
 from webrender.chrome import esc, notice_block
 
@@ -38,30 +41,136 @@ _MEMBER_BADGES = {
 _INTRO_TEXT = (
     "Your personal mesh gives each of your devices and agents its own identity "
     "with attenuated tool authority. A link or QR code alone never grants "
-    "authority: a request must be confirmed through the mesh API while your "
+    "authority: a request must be confirmed while your "
     "session is live, and a revoked member cannot act. Enrollment payloads are "
     "one-time secrets; never share them beyond the joining device."
 )
 
 _ENROLL_STEPS = (
-    "Generate a signing key on the joining device (astral-sdk mesh key-init).",
-    "Create an invitation for that device key through POST /api/mesh/invitations "
-    "with your owner session, or the astral-sdk owner client.",
-    "Confirm the request before it expires; the one-time payload link is shown "
-    "only at creation.",
+    "Start enrollment on the joining device and keep its private signing key on that device.",
+    "Create a request for the device's public identity and choose its allowed access.",
+    "Check the device fingerprint, then confirm the request before it expires. "
+    "The one-time enrollment secret is shown only at creation.",
     "The device redeems the payload and appears below as a member you can "
     "rename or revoke.",
 )
 
 
 def _store(orch) -> me.MeshEnrollmentStore:
-    return me.MeshEnrollmentStore(plane_source_from_orchestrator(orch))
+    return me.MeshEnrollmentStore(
+        plane_source_from_orchestrator(orch),
+        audit_repository=getattr(orch, "audit_repo", None),
+    )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _CreatedEnrollment:
+    owner_id: str
+    incarnation_id: str
+    payload: str
+    qr_image: str
+
+
+def _qr_image(payload):
+    import qrcode
+
+    image = qrcode.make(payload, box_size=4, border=4)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode(
+        "ascii"
+    )
+
+
+def _created_enrollment(orch, user_id, params):
+    from orchestrator.human_request_authority import current_human_caller
+
+    created = params.get("created")
+    if not isinstance(created, _CreatedEnrollment) or created.owner_id != user_id:
+        return None
+    caller = current_human_caller(expected_orchestrator=orch)
+    if caller is None or caller.owner_id != user_id:
+        return None
+    consent = caller.require_session()
+    return (
+        created if consent.credential.incarnation_id == created.incarnation_id else None
+    )
+
+
+def _button_html(label, action, payload, *, collect=False):
+    collection = ' data-ui-collect="true"' if collect else ""
+    return (
+        f'<button type="button" class="{_BTN_PRIMARY}" '
+        f"data-ui-action=\"{esc(action)}\" data-ui-payload='{esc(json.dumps(payload))}'"
+        f"{collection}>{esc(label)}</button>"
+    )
+
+
+def _field_html(name, label, value=""):
+    return (
+        f'<label class="flex flex-col gap-1 text-sm"><span>{esc(label)}</span>'
+        f'<input name="{esc(name)}" value="{esc(value)}" autocomplete="off" '
+        'class="rounded-lg bg-white/10 border border-white/10 px-3 py-2 text-astral-text"></label>'
+    )
+
+
+def _enrollment_fields():
+    from webrender.chrome.surfaces import _sdui
+
+    return [
+        _sdui.field("label", "Device name"),
+        _sdui.field(
+            "device_key",
+            "Joining device public key (JSON)",
+            "textarea",
+            help="Generate the private key on the joining device. Share only its public key.",
+        ),
+        _sdui.field("scopes", "Allowed access (comma separated)", default="tools:read"),
+        _sdui.field("ttl_seconds", "Expires after (seconds)", default="3600"),
+    ]
+
+
+def _enrollment_form_html():
+    fields = "".join(
+        _field_html(field["name"], field["label"], str(field.get("default", "")))
+        for field in _enrollment_fields()
+    )
+    return (
+        f'<div data-ui-form class="{_CARD_CLS} space-y-3">'
+        '<h3 class="text-sm font-semibold">Enroll a device</h3>'
+        '<p class="text-xs text-astral-muted">Generate a private signing key on the joining '
+        "device and paste only its public key. Creating a request grants no authority.</p>"
+        f"{fields}{_button_html('Create secure enrollment', 'chrome_mesh_create', {}, collect=True)}</div>"
+    )
+
+
+def _created_components(created):
+    from astralprims import CodeBlock, Image
+    from webrender.chrome.surfaces import _sdui
+
+    return [
+        _sdui.card(
+            "One-time enrollment",
+            [
+                _sdui.text(
+                    "Scan this QR or copy the one-time payload to the joining device. "
+                    "The request still requires confirmation before the device can redeem it. "
+                    "This secret is shown once and must not be shared with other devices.",
+                    "caption",
+                ),
+                Image(
+                    url=created.qr_image, alt="One-time mesh enrollment QR"
+                ).to_dict(),
+                CodeBlock(code=created.payload, language="text").to_dict(),
+            ],
+        )
+    ]
 
 
 def _short_fingerprint(value) -> str:
     raw = str(value or "")
     if raw.startswith("sha256-"):
-        raw = raw[len("sha256-"):]
+        raw = raw[len("sha256-") :]
     return raw[:12] + "…" if len(raw) > 12 else raw
 
 
@@ -108,12 +217,16 @@ def _creator_text(record) -> str:
 def _invitation_state(record) -> tuple[str, str]:
     status = str(record.get("status") or "")
     expired = _is_expired(record)
+    if status == "redeemed":
+        return ("Enrolled", "success")
     if status == "pending":
         return ("Expired", "error") if expired else ("Pending confirmation", "warning")
     if status == "confirmed":
         if record.get("redeemed_at") is not None:
             return ("Enrolled", "success")
-        return ("Expired", "error") if expired else ("Confirmed — awaiting device", "info")
+        return (
+            ("Expired", "error") if expired else ("Confirmed — awaiting device", "info")
+        )
     if status == "rejected":
         return ("Rejected", "default")
     return ("Unknown", "default")
@@ -206,7 +319,7 @@ def _guidance_html() -> str:
     )
     return (
         f'<div class="{_CARD_CLS}"><h3 class="text-sm font-semibold text-astral-text">'
-        "Enroll a device</h3><ol class=\"list-decimal ml-4 space-y-1 pt-2\">"
+        'Enroll a device</h3><ol class="list-decimal ml-4 space-y-1 pt-2">'
         f"{steps}</ol></div>"
     )
 
@@ -248,8 +361,20 @@ async def render(orch, user_id, roles, params) -> str:
     body = (
         f'<p class="text-sm {_MUTED}">{esc(_INTRO_TEXT)}</p>'
         f'<div class="space-y-2">{listing}</div>'
+        f"{_enrollment_form_html()}"
         f"{_guidance_html()}"
     )
+    created = _created_enrollment(orch, user_id, params)
+    if created is not None:
+        from webrender import render_component_fragment
+
+        body = (
+            "".join(
+                render_component_fragment(component)
+                for component in _created_components(created)
+            )
+            + body
+        )
     return f'<div class="space-y-4">{_view_tabs(view)}{body}</div>'
 
 
@@ -257,6 +382,15 @@ def _member_cards_html(members: list[dict]) -> list[str]:
     cards = []
     for member in members:
         label, variant = _member_badge(member)
+        controls = ""
+        if member.get("status") == "active":
+            identity = {"member_id": member["member_id"]}
+            controls = (
+                '<div data-ui-form class="space-y-2 pt-3">'
+                f"{_field_html('label', 'Device name', member.get('label') or '')}"
+                f"{_button_html('Rename', 'chrome_mesh_rename', identity, collect=True)} "
+                f"{_button_html('Revoke device', 'chrome_mesh_revoke', identity)}</div>"
+            )
         cards.append(
             f'<div class="{_CARD_CLS}">'
             f'<div class="flex items-center justify-between gap-3">'
@@ -265,6 +399,7 @@ def _member_cards_html(members: list[dict]) -> list[str]:
             f'px-2 py-0.5 rounded-full border text-xs font-medium">{esc(label)}</span>'
             f"</div>"
             f'<div class="pt-2">{_facts_html(_member_facts(member))}</div>'
+            f"{controls}"
             f"</div>"
         )
     return cards
@@ -275,9 +410,16 @@ def _invitation_cards_html(invitations: list[dict]) -> list[str]:
     for record in invitations:
         label, variant = _invitation_state(record)
         pending_note = (
-            '<p class="text-xs text-astral-muted pt-1">Confirm or reject this '
-            "request through the mesh API before it expires.</p>"
+            '<div class="flex gap-2 pt-3">'
+            f"{_button_html('Confirm enrollment', 'chrome_mesh_confirm', {'invite_id': record['invite_id']})}"
+            f"{_button_html('Reject', 'chrome_mesh_reject', {'invite_id': record['invite_id']})}</div>"
             if label == "Pending confirmation"
+            else _button_html(
+                "Remove request",
+                "chrome_mesh_remove_invitation",
+                {"invite_id": record["invite_id"]},
+            )
+            if record.get("status") != "pending"
             else ""
         )
         cards.append(
@@ -307,7 +449,10 @@ async def components(orch, user_id, roles, params):
                 {"surface": SURFACE_KEY, "params": {"view": key}},
                 variant="primary" if key == view else "secondary",
             )
-            for key, label in (("members", "Members"), ("invitations", "Enrollment requests"))
+            for key, label in (
+                ("members", "Members"),
+                ("invitations", "Enrollment requests"),
+            )
         ],
         direction="row",
     )
@@ -319,6 +464,9 @@ async def components(orch, user_id, roles, params):
         ]
     members, invitations = loaded
     out = [tab_bar, _sdui.text(_INTRO_TEXT, "caption")]
+    created = _created_enrollment(orch, user_id, params)
+    if created is not None:
+        out.extend(_created_components(created))
     if view == "invitations":
         records = invitations
         empty = "No enrollment requests yet."
@@ -332,7 +480,17 @@ async def components(orch, user_id, roles, params):
             out.extend(builders(record))
     else:
         out.append(_sdui.text(empty, "caption"))
-    out.append(_sdui.card("Enroll a device", [_sdui.bullet_list(list(_ENROLL_STEPS), True)]))
+    out.append(
+        _sdui.card("Enroll a device", [_sdui.bullet_list(list(_ENROLL_STEPS), True)])
+    )
+    out.append(
+        _sdui.form(
+            _enrollment_fields(),
+            "chrome_mesh_create",
+            "Create secure enrollment",
+            title="Enroll a device",
+        )
+    )
     return out
 
 
@@ -343,7 +501,28 @@ def _member_components(member: dict) -> list[dict]:
     facts = _sdui.key_value(
         [{"label": name, "value": value} for name, value in _member_facts(member)]
     )
-    return [_sdui.card(member.get("label") or "", [_sdui.badge(label, variant), facts])]
+    content = [_sdui.badge(label, variant), facts]
+    if member.get("status") == "active":
+        content.extend(
+            [
+                _sdui.form(
+                    [
+                        _sdui.field(
+                            "label", "Device name", default=member.get("label") or ""
+                        )
+                    ],
+                    "chrome_mesh_rename",
+                    "Rename",
+                    {"member_id": member["member_id"]},
+                ),
+                _sdui.button(
+                    "Revoke device",
+                    "chrome_mesh_revoke",
+                    {"member_id": member["member_id"]},
+                ),
+            ]
+        )
+    return [_sdui.card(member.get("label") or "", content)]
 
 
 def _invitation_components(record: dict) -> list[dict]:
@@ -355,11 +534,213 @@ def _invitation_components(record: dict) -> list[dict]:
     )
     content = [_sdui.badge(label, variant), facts]
     if label == "Pending confirmation":
+        content.extend(
+            [
+                _sdui.button(
+                    "Confirm enrollment",
+                    "chrome_mesh_confirm",
+                    {"invite_id": record["invite_id"]},
+                ),
+                _sdui.button(
+                    "Reject", "chrome_mesh_reject", {"invite_id": record["invite_id"]}
+                ),
+            ]
+        )
+    elif record.get("status") != "pending":
         content.append(
-            _sdui.text(
-                "Confirm or reject this request through the mesh API before it "
-                "expires.",
-                "caption",
+            _sdui.button(
+                "Remove request",
+                "chrome_mesh_remove_invitation",
+                {"invite_id": record["invite_id"]},
             )
         )
     return [_sdui.card(record.get("label") or "", content)]
+
+
+def _action_input(payload, action):
+    from persistent_agents.models import AssignmentError
+
+    top_level = {"surface"}
+    field_names = set()
+    if action == "create":
+        top_level.add("fields")
+        field_names = {"label", "device_key", "scopes", "ttl_seconds"}
+    elif action == "rename":
+        top_level.update({"fields", "member_id"})
+        field_names = {"label"}
+    elif action == "revoke":
+        top_level.add("member_id")
+    else:
+        top_level.add("invite_id")
+    if (
+        type(payload) is not dict
+        or set(payload) - top_level
+        or payload.get("surface", SURFACE_KEY) != SURFACE_KEY
+    ):
+        raise AssignmentError("mesh_control_invalid", 422)
+    fields = payload.get("fields", {})
+    if (
+        type(fields) is not dict
+        or set(fields) - field_names
+        or any(type(value) is not str or len(value) > 2048 for value in fields.values())
+    ):
+        raise AssignmentError("mesh_control_invalid", 422)
+    identifier = payload.get(
+        "member_id" if action in {"rename", "revoke"} else "invite_id"
+    )
+    if action != "create" and (
+        type(identifier) is not str
+        or not 1 <= len(identifier) <= 128
+        or not identifier.isalnum()
+    ):
+        raise AssignmentError("mesh_control_invalid", 422)
+    try:
+        if action == "create":
+            key = json.loads(fields.get("device_key", ""))
+            if type(key) is not dict or set(key) != {"kty", "crv", "x"}:
+                raise ValueError
+            return {
+                "label": fields.get("label"),
+                "device_key": me.normalize_device_key(key),
+                "scopes": [
+                    scope.strip()
+                    for scope in fields.get("scopes", "").split(",")
+                    if scope.strip()
+                ],
+                "ttl_seconds": int(fields.get("ttl_seconds", "3600")),
+            }
+        return {"identifier": identifier, "label": fields.get("label")}
+    except (ValueError, TypeError, RecursionError):
+        raise AssignmentError("mesh_control_invalid", 422) from None
+
+
+async def _control(orch, websocket, user_id, payload, action):
+    from orchestrator.chrome_events import open_surface_for
+    from orchestrator.human_request_authority import current_human_caller
+    from persistent_agents.models import AssignmentError
+
+    caller = current_human_caller(expected_orchestrator=orch)
+    if (
+        caller is None
+        or caller.owner_id != user_id
+        or caller._binding.socket_request is None
+        or caller._binding.socket_request.websocket is not websocket
+        or open_surface_for(orch, websocket) != SURFACE_KEY
+    ):
+        raise AssignmentError("human_authentication_required", 401)
+    caller.require_write()
+    consent = caller.require_session()
+    values = _action_input(payload, action)
+    store = _store(orch)
+    credential = consent.credential
+    custody = {
+        "incarnation_id": credential.incarnation_id,
+        "issuer": credential.issuing_issuer,
+        "client_id": credential.issuing_client_id,
+    }
+
+    def mutate(transaction, repositories):
+        try:
+            if action == "create":
+                result = store.create_invitation(
+                    user_id,
+                    creator_kind="owner",
+                    creator_id=user_id,
+                    transaction=transaction,
+                    **values,
+                )
+                created = _CreatedEnrollment(
+                    user_id,
+                    credential.incarnation_id,
+                    result["payload"],
+                    _qr_image(result["payload"]),
+                )
+                return created, None
+            if action in {"confirm", "reject"}:
+                store.decide_invitation(
+                    user_id,
+                    values["identifier"],
+                    decision="confirmed" if action == "confirm" else "rejected",
+                    decider_kind="owner",
+                    decider_id=user_id,
+                    custody=custody,
+                    consent_observation=consent,
+                    transaction=transaction,
+                )
+            elif action == "rename":
+                store.rename_member(
+                    user_id,
+                    values["identifier"],
+                    label=values["label"],
+                    transaction=transaction,
+                )
+            elif action == "revoke":
+                store.revoke_member(
+                    user_id, values["identifier"], transaction=transaction
+                )
+            else:
+                store.remove_invitation(
+                    user_id, values["identifier"], transaction=transaction
+                )
+            return None, None
+        except (me.MeshEnrollmentError, ValueError) as error:
+            code = (
+                error.code
+                if isinstance(error, me.MeshEnrollmentError)
+                else "mesh_control_invalid"
+            )
+            store._audit_transition(
+                transaction,
+                user_id,
+                "mesh.surface.denied",
+                outcome="failure",
+                meta={"action": action, "reason": code},
+            )
+            return None, code
+
+    created, refusal = await caller.transaction(mutate, expected_orchestrator=orch)
+    await caller.verify_delivery()
+    if refusal is not None:
+        return (
+            SURFACE_KEY,
+            {},
+            notice_block(
+                "error", "The mesh change was refused. Refresh the inventory and retry."
+            ),
+        )
+    params = {"created": created, "view": "invitations"} if created else {}
+    return SURFACE_KEY, params, notice_block("success", "Mesh inventory updated.")
+
+
+async def _create(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "create")
+
+
+async def _confirm(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "confirm")
+
+
+async def _reject(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "reject")
+
+
+async def _rename(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "rename")
+
+
+async def _revoke(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "revoke")
+
+
+async def _remove_invitation(orch, websocket, user_id, roles, payload):
+    return await _control(orch, websocket, user_id, payload, "remove_invitation")
+
+
+HANDLERS = {
+    "chrome_mesh_create": _create,
+    "chrome_mesh_confirm": _confirm,
+    "chrome_mesh_reject": _reject,
+    "chrome_mesh_rename": _rename,
+    "chrome_mesh_revoke": _revoke,
+    "chrome_mesh_remove_invitation": _remove_invitation,
+}

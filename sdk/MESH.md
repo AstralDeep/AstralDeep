@@ -166,3 +166,17 @@ Local deterministic tests use real PostgreSQL and signed synthetic Keycloak
 responses at only the external HTTP boundary. A local pass does not establish
 live Keycloak staging or exact-head hosted qualification; retain those receipts
 separately before merging.
+
+The shared Mesh devices surface composes owner management controls for creation,
+confirmation, rejection, rename, revocation, and invitation removal. These writes
+require a current selected server session and the ordinary authenticated socket
+dispatcher. A bare owner bearer does not invent session custody. The one-time
+creation payload and QR presentation are ephemeral and bound to that owner session.
+The joining device keeps its private key; the server accepts only its public JWK.
+
+The pinned Plane credential-list facade returns at most 1,000 rows. A saturated
+owner/namespace read therefore fails closed with `mesh_inventory_incomplete`
+(HTTP 503), before enrollment or session admission can conclude an identity is
+unused. Revoked history counts toward that bound. Inventory rendering also refuses
+partial results. A future complete owner-scoped facade is required to support
+larger histories; increasing this limit in Deep would not prove completeness.

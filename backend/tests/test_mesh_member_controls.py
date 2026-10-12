@@ -353,4 +353,4 @@ def test_shared_surface_renders_real_mesh_inventory(mesh):
     assert listed["device_key"]["kty"] not in html
     components = asyncio.run(mesh_surface.components(mesh.host, mesh.owner, ["user"], {}))
     assert any(c.get("type") == "card" for c in components)
-    assert not hasattr(mesh_surface, "HANDLERS")
+    assert "chrome_mesh_revoke" in mesh_surface.HANDLERS

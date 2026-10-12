@@ -545,6 +545,8 @@ async def _audit_admin_rejection(orch, websocket, user_id: str, what: str):
 _LLM_GATE_ALLOWED_ACTIONS = frozenset({
     "chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear",
     "save_theme", "chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify",
+    "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
+    "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation",
 })
 
 
@@ -578,7 +580,7 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, paylo
         return False
     if action in _LLM_GATE_ALLOWED_ACTIONS:
         return False
-    if action == "chrome_open" and type(payload) is dict and payload.get("surface") == "safety":
+    if action == "chrome_open" and type(payload) is dict and payload.get("surface") in {"safety", "mesh"}:
         return False
     if _assignment_control_without_llm(orch, websocket, action, payload, user_id):
         return False
