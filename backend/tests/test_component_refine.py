@@ -125,6 +125,8 @@ def _make_fake(history, user_id, *, allowed=True, security_flags=None,
                  "_validate_component_tree", "_component_action_allowed",
                  "_audit_workspace_denial", "send_ui_upsert"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
+    fake._register_ui_operation_refusal = (
+        Orchestrator._register_ui_operation_refusal)
     fake._sent = sent
     fake._renders = renders
     fake._llm_calls = llm_calls
