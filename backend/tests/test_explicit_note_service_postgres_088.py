@@ -285,16 +285,191 @@ async def test_changed_value_during_delivery_is_not_adopted(notes, monkeypatch, 
     assert refusal.value.code == "explicit_note_changed"
 
 
-async def test_search_cursor_advances_scanned_nonmatching_rows(notes):
-    identities = sorted(str(uuid4()) for _ in range(3))
+async def test_search_traverses_pages_and_continues_after_filled_results(notes):
+    identities = sorted(str(uuid4()) for _ in range(5))
     for index, identity in enumerate(identities):
-        await apply(notes, note_id=identity, value="Brief replies" if index == 2 else "Use paragraphs")
-    first = await notes.service.list(caller=await caller(notes, method="GET"), limit=2, search="BRIEF")
-    assert not first.notes and first.next_cursor == identities[1]
-    second = await notes.service.list(caller=await caller(notes, method="GET"), limit=2,
-                                     after_id=first.next_cursor, search="BRIEF")
-    assert len(second.notes) == 1 and second.notes[0].metadata.note_id == identities[2]
-    assert second.next_cursor is None
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index in (2, 4) else "Use paragraphs")
+    found = await notes.service.list(caller=await caller(notes, method="GET"), limit=1, search="BRIEF")
+    assert [note.metadata.note_id for note in found.notes] == [identities[2]]
+    assert found.next_cursor == identities[2]
+    rest = await notes.service.list(caller=await caller(notes, method="GET"), limit=1,
+                                    after_id=found.next_cursor, search="BRIEF")
+    assert [note.metadata.note_id for note in rest.notes] == [identities[4]]
+    assert rest.next_cursor == identities[4]
+    end = await notes.service.list(caller=await caller(notes, method="GET"), limit=1,
+                                   after_id=rest.next_cursor, search="BRIEF")
+    assert not end.notes and end.next_cursor is None
+
+
+async def test_search_finds_the_only_match_beyond_the_first_hundred_notes(notes):
+    identities = sorted(str(uuid4()) for _ in range(110))
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Needle in deep storage" if index == 109 else "Ordinary paragraph")
+    plain = await notes.service.list(caller=await caller(notes, method="GET"), limit=100)
+    assert len(plain.notes) == 100 and plain.next_cursor == identities[99]
+    tail = await notes.service.list(caller=await caller(notes, method="GET"), limit=100,
+                                    after_id=plain.next_cursor)
+    assert len(tail.notes) == 10 and tail.next_cursor is None
+    page = await notes.service.list(caller=await caller(notes, method="GET"), limit=100, search="needle")
+    assert [note.metadata.note_id for note in page.notes] == [identities[109]]
+    assert page.next_cursor is None
+
+
+async def test_search_scan_budget_stops_with_usable_continuation(notes, monkeypatch):
+    from personalization import explicit_note_service as module
+    identities = sorted(str(uuid4()) for _ in range(6))
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index == 5 else "Use paragraphs")
+    monkeypatch.setattr(module, "SEARCH_SCAN_LIMIT", 2)
+    partial = await notes.service.list(caller=await caller(notes, method="GET"), limit=2, search="brief")
+    assert not partial.notes and partial.next_cursor == identities[1]
+    monkeypatch.setattr(module, "SEARCH_SCAN_LIMIT", 1000)
+    rest = await notes.service.list(caller=await caller(notes, method="GET"), limit=2,
+                                    after_id=partial.next_cursor, search="brief")
+    assert [note.metadata.note_id for note in rest.notes] == [identities[5]]
+    assert rest.next_cursor is None
+
+
+@pytest.mark.parametrize(("scan_limit", "page_limit"), [(1000, 99), (7, 3), (7, 4), (7, 6), (7, 99)])
+async def test_search_nondivisible_scan_budget_caps_each_storage_page(notes, monkeypatch, scan_limit, page_limit):
+    from personalization import explicit_note_service as module
+
+    count = 1100 if scan_limit == 1000 else scan_limit + 2
+    identities = sorted(str(uuid4()) for _ in range(count))
+    for index, identity in enumerate(identities):
+        if index % 100 == 0:
+            writer = await caller(notes)
+        await notes.service.command(caller=writer, body=body(
+            note_id=identity, value="Unique needle" if index == count - 1 else "Ordinary paragraph"))
+    repository = notes.api.runtime.repositories.preferences.personalization
+    original = type(repository).list_explicit_notes
+    pages = []
+
+    def record_page(self, tx, **kwargs):
+        records = original(self, tx, **kwargs)
+        pages.append((kwargs["limit"], tuple(record.note_id for record in records)))
+        return records
+
+    monkeypatch.setattr(type(repository), "list_explicit_notes", record_page)
+    monkeypatch.setattr(module, "SEARCH_SCAN_LIMIT", scan_limit)
+    partial = await notes.service.list(caller=await caller(notes, method="GET"),
+                                       limit=page_limit, search="needle")
+
+    assert not partial.notes
+    assert partial.next_cursor == identities[scan_limit - 1]
+    scanned = 0
+    for requested, records in pages:
+        assert requested == min(page_limit, scan_limit - scanned)
+        scanned += len(records)
+    assert scanned == scan_limit
+    assert [identity for _, records in pages for identity in records] == identities[:scan_limit]
+
+    rest = await notes.service.list(caller=await caller(notes, method="GET"),
+                                    limit=page_limit, after_id=partial.next_cursor, search="needle")
+    assert [note.metadata.note_id for note in rest.notes] == [identities[-1]]
+    assert rest.next_cursor is None
+
+
+async def test_search_deadline_expiry_interrupts_traversal_without_partial_results(notes, monkeypatch):
+    from orchestrator.human_request_authority import CurrentHumanCaller
+    import time as time_module
+    identities = sorted(str(uuid4()) for _ in range(4))
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index == 3 else "Use paragraphs")
+    selected = await caller(notes, method="GET")
+    original = CurrentHumanCaller.verify_delivery
+
+    async def expire_on_second_page(self):
+        if self is selected:
+            object.__setattr__(self, "_deadline", time_module.monotonic() - 1)
+        await original(self)
+
+    monkeypatch.setattr(CurrentHumanCaller, "verify_delivery", expire_on_second_page)
+    with pytest.raises(AssignmentError) as interrupted:
+        await notes.service.list(caller=selected, limit=2, search="brief")
+    assert interrupted.value.status_code == 401
+
+
+async def test_search_revocation_mid_scan_refuses_later_pages(notes, monkeypatch):
+    from orchestrator.human_request_authority import CurrentHumanCaller
+    identities = sorted(str(uuid4()) for _ in range(4))
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index == 3 else "Use paragraphs")
+    selected = await caller(notes, method="GET")
+    original = CurrentHumanCaller.verify_delivery
+    deliveries = 0
+
+    async def revoke_on_second_page(self):
+        nonlocal deliveries
+        deliveries += 1
+        if self is selected and deliveries == 2:
+            notes.api.fixture[0].delete(notes.api.fixture[2])
+        await original(self)
+
+    monkeypatch.setattr(CurrentHumanCaller, "verify_delivery", revoke_on_second_page)
+    with pytest.raises(AssignmentError) as refused:
+        await notes.service.list(caller=selected, limit=2, search="brief")
+    assert refused.value.status_code == 401
+
+
+async def test_search_source_deletion_mid_scan_is_not_adopted(notes, monkeypatch):
+    from orchestrator.human_request_authority import CurrentHumanCaller
+    identities = sorted(str(uuid4()) for _ in range(4))
+    target = identities[3]
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index == 3 else "Use paragraphs")
+    selected = await caller(notes, method="GET")
+    original = CurrentHumanCaller.verify_delivery
+    deliveries = 0
+
+    async def forget_during_second_page(self):
+        nonlocal deliveries
+        deliveries += 1
+        if self is selected and deliveries == 2:
+            await apply(notes, ExplicitNoteCommand(command="forget", note_id=target,
+                                                   expected_revision=1))
+        await original(self)
+
+    monkeypatch.setattr(CurrentHumanCaller, "verify_delivery", forget_during_second_page)
+    with pytest.raises(AssignmentError) as changed:
+        await notes.service.list(caller=selected, limit=2, search="brief")
+    assert changed.value.code == "explicit_note_changed"
+
+
+async def test_search_cancellation_propagates_and_releases_the_owner_lock(notes, monkeypatch):
+    from orchestrator.human_request_authority import CurrentHumanCaller
+    identities = sorted(str(uuid4()) for _ in range(4))
+    for index, identity in enumerate(identities):
+        await apply(notes, note_id=identity,
+                    value="Brief replies" if index == 3 else "Use paragraphs")
+    selected = await caller(notes, method="GET")
+    original = CurrentHumanCaller.verify_delivery
+    deliveries = 0
+    held = asyncio.Event()
+
+    async def block_on_second_page(self):
+        nonlocal deliveries
+        deliveries += 1
+        if self is selected and deliveries == 2:
+            await held.wait()
+        await original(self)
+
+    monkeypatch.setattr(CurrentHumanCaller, "verify_delivery", block_on_second_page)
+    task = asyncio.create_task(notes.service.list(caller=selected, limit=2, search="brief"))
+    while deliveries < 2 and not task.done():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    after = await notes.service.list(caller=await caller(notes, method="GET"), limit=2, search="brief")
+    assert [note.metadata.note_id for note in after.notes] == [identities[3]]
+    assert after.next_cursor is None
 
 
 async def test_expiry_is_unavailable_before_physical_erasure(notes, note_clock):
