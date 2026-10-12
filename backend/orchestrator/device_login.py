@@ -80,6 +80,20 @@ def reset_state() -> None:
     _DISCOVERY["data"] = None
 
 
+def _sweep_expired(now: float) -> int:
+    stale = []
+    for digest, state in _POLL_STATE.items():
+        custody = state.get("custody")
+        expires = custody.expires if custody is not None else state.get("expires")
+        if expires is None or now >= expires:
+            stale.append(digest)
+    for digest in stale:
+        del _POLL_STATE[digest]
+    if stale:
+        logger.debug("device_login: reclaimed %d expired poll-state entries", len(stale))
+    return len(stale)
+
+
 def flag_on() -> bool:
     return os.getenv("FF_DEVICE_LOGIN", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -226,9 +240,14 @@ async def _revoke_refresh(refresh_token: str, client_id: str) -> None:
 
 def _check_start_rate(ip: str) -> None:
     now = time.time()
-    hits = [t for t in _START_HITS.get(ip, []) if now - t < _START_WINDOW_SECONDS]
+    for known in list(_START_HITS):
+        kept = [t for t in _START_HITS[known] if now - t < _START_WINDOW_SECONDS]
+        if kept:
+            _START_HITS[known] = kept
+        else:
+            del _START_HITS[known]
+    hits = _START_HITS.setdefault(ip, [])
     if len(hits) >= _START_MAX_PER_WINDOW:
-        _START_HITS[ip] = hits
         raise RateLimited("too many device-login starts; retry later")
     hits.append(now)
     _START_HITS[ip] = hits
@@ -313,9 +332,11 @@ async def start(
         "interval": interval,
         **extra,
     }).encode()).decode("ascii")
+    _sweep_expired(now)
     _POLL_STATE[_handle_digest(handle)] = {
         "next_ok": now + interval, "interval": interval, "used": False,
         "claim": None,
+        "expires": custody.expires if custody is not None else now + expires_in,
         **({"custody": custody, "in_flight": False} if custody is not None else {}),
     }
 
@@ -370,7 +391,7 @@ async def poll(
     now = time.time()
     state = _POLL_STATE.setdefault(digest, {
         "next_ok": 0.0, "interval": int(blob.get("interval", _DEFAULT_INTERVAL)),
-        "used": False, "claim": None,
+        "used": False, "claim": None, "expires": exp,
     })
     if state["used"]:
         raise InvalidHandle("poll handle already completed")

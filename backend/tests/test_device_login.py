@@ -12,6 +12,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +49,17 @@ class FakePost:
         if not self.responses:
             raise AssertionError("unexpected IdP call")
         return self.responses.pop(0)
+
+
+class FakeClock:
+    def __init__(self, start):
+        self.now = start
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 def start_body(**over):
@@ -483,3 +495,97 @@ async def test_flag_default_is_on(env, monkeypatch):
     assert dl.flag_on() is True
     monkeypatch.setenv("FF_DEVICE_LOGIN", "false")
     assert dl.flag_on() is False
+
+
+def test_sweep_reclaims_only_expired_entries(env):
+    dl._POLL_STATE["legacy-dead"] = {"used": True, "expires": 100.0}
+    dl._POLL_STATE["legacy-live"] = {"used": False, "expires": 100.5}
+    dl._POLL_STATE["custody-dead"] = {"used": True, "expires": 100.5,
+                                      "custody": SimpleNamespace(expires=100.0)}
+    dl._POLL_STATE["custody-live"] = {"used": False, "expires": 100.5,
+                                      "custody": SimpleNamespace(expires=100.5),
+                                      "in_flight": True}
+    assert dl._sweep_expired(99.999) == 0
+    assert set(dl._POLL_STATE) == {
+        "legacy-dead", "legacy-live", "custody-dead", "custody-live"}
+    assert dl._sweep_expired(100.0) == 2
+    assert set(dl._POLL_STATE) == {"legacy-live", "custody-live"}
+    assert dl._sweep_expired(100.5) == 2
+    assert dl._POLL_STATE == {}
+
+
+def test_sweep_reclaims_entries_without_an_expiry_fence(env):
+    dl._POLL_STATE["unfenced"] = {"used": False}
+    assert dl._sweep_expired(0.0) == 1
+    assert dl._POLL_STATE == {}
+
+
+async def test_expired_legacy_entry_reclaimed_by_next_start(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    first = await do_start()
+    digest = dl._handle_digest(first["handle"])
+    assert dl._POLL_STATE[digest]["expires"] == 1600.0
+    clock.advance(601)
+    await do_start(post=FakePost((200, start_body())))
+    assert digest not in dl._POLL_STATE
+    assert len(dl._POLL_STATE) == 1
+
+
+async def test_completed_unexpired_entry_keeps_replay_fence_then_is_reclaimed(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    res = await dl.poll(handle, "1.2.3.4",
+                        http_post=FakePost((200, token_body())), http_get=fake_get())
+    assert res["status"] == "approved"
+    clock.advance(599)
+    dl._sweep_expired(clock.time())
+    assert digest in dl._POLL_STATE
+    with pytest.raises(dl.InvalidHandle):
+        await dl.poll(handle, "1.2.3.4", http_post=FakePost(), http_get=fake_get())
+    clock.advance(1)
+    dl._sweep_expired(clock.time())
+    assert digest not in dl._POLL_STATE
+
+
+async def test_replayed_stale_handle_cannot_regain_authority(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    out = await do_start()
+    handle = out["handle"]
+    clock.advance(601)
+    assert dl._sweep_expired(clock.time()) == 1
+    post = FakePost()
+    res = await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get())
+    assert res == {"status": "expired"}
+    assert post.calls == []
+    assert dl._POLL_STATE[dl._handle_digest(handle)]["used"] is True
+
+
+def test_start_rate_prunes_inactive_addresses(env, monkeypatch):
+    clock = FakeClock(5000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    dl._START_HITS["stale-ip"] = [4940.0]
+    dl._START_HITS["edge-ip"] = [4941.0]
+    dl._START_HITS["fresh-ip"] = [4995.0]
+    dl._check_start_rate("new-ip")
+    assert "stale-ip" not in dl._START_HITS
+    assert dl._START_HITS["edge-ip"] == [4941.0]
+    assert dl._START_HITS["fresh-ip"] == [4995.0]
+    assert dl._START_HITS["new-ip"] == [5000.0]
+
+
+def test_start_rate_window_expiry_allows_same_address_again(env, monkeypatch):
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(dl, "time", clock)
+    for _ in range(dl._START_MAX_PER_WINDOW):
+        dl._check_start_rate("9.9.9.9")
+    with pytest.raises(dl.RateLimited):
+        dl._check_start_rate("9.9.9.9")
+    clock.advance(dl._START_WINDOW_SECONDS + 1)
+    dl._check_start_rate("9.9.9.9")
+    assert dl._START_HITS["9.9.9.9"] == [100.0 + dl._START_WINDOW_SECONDS + 1]
