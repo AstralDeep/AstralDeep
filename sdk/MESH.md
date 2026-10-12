@@ -68,6 +68,8 @@ or save them in reports. An Ed25519 public JWK has exactly `kty=OKP`,
 | `POST /api/mesh/invitations` | Owner IAM or proof-bound member with `mesh:confirm`; `label`, `device_key`, `scopes`, optional `ttl_seconds` | Public invitation and one-time payload |
 | `POST /api/mesh/invitations/{id}/confirm` | Owner IAM plus matching server custody, or another current confirming member | Confirmed, attenuated invitation |
 | `POST /api/mesh/invitations/{id}/reject` | Owner IAM or current confirming member | Rejected invitation and canceled challenge |
+| `POST /api/mesh/invitations/{id}/remove` | Owner IAM | Removed invitation; a live confirmed grant is canceled first; pending invitations must be rejected instead |
+| `POST /api/mesh/members/{id}/label` | Owner IAM; `label` (1-64 characters) | Renamed active member; revocation epochs and member tokens are unchanged |
 | `POST /api/mesh/enrollment/redeem` | `payload`, Ed25519 `signature` over the decoded invitation challenge, optional `agent_id` | `token_type=DPoP`, short-lived `access_token`, public member |
 | `POST /api/mesh/nonce` | `owner_id`, `member_id` | Single-use nonce, valid for 60 seconds; bounded issuance |
 | `POST /api/mesh/session` | `owner_id`, `member_id`, `nonce`, `proof`, optional `agent_id` | New proof-bound member token; the previous token is invalidated |

@@ -18,6 +18,7 @@ SURFACE_MODULES = {
     "agent_intro": "orchestrator.projection_surfaces.agent_intro",
     "drafts": "orchestrator.projection_surfaces.drafts",
     "llm": "orchestrator.projection_surfaces.llm",
+    "mesh": "orchestrator.projection_surfaces.mesh",
     "llm_system": "orchestrator.projection_surfaces.llm_system",
     "personalization": "orchestrator.projection_surfaces.personalization",
     "guidance": "orchestrator.projection_surfaces.guidance",
