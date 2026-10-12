@@ -23,6 +23,7 @@ from orchestrator.orchestrator import ConnectionContext
 from orchestrator.projection_surfaces import mesh as surface
 from orchestrator import mesh_enrollment as me
 from persistent_agents.models import AssignmentError
+from shared.protocol import ChromeRender, ProtocolValidationError
 from tests.test_mesh_admission import mesh as mesh, plane_runtime as plane_runtime
 
 
@@ -96,6 +97,9 @@ def registered(mesh):
         pending = human.capture_human_socket_request(
             boundary, websocket=socket, context=context, message=frame
         )
+        chrome_events.capture_surface_request(
+            host, socket, action, payload, frame["request_generation"]
+        )
         token = _CONNECTION_OPERATION_CONTEXT.set({"human_request": pending})
         try:
             if before is not None:
@@ -130,6 +134,74 @@ def creation(device, **overrides):
     }
     values.update(overrides)
     return {"fields": values}
+
+
+@pytest.mark.asyncio
+async def test_browser_open_and_create_deliver_correlated_current_mesh_frames(registered):
+    mesh, dispatch, socket, _ = registered
+    for action, payload in (
+        ("chrome_open", {"surface": "mesh", "params": {}}),
+        ("chrome_mesh_create", creation(mesh.sdk.MeshDevice.generate())),
+    ):
+        frames = await dispatch(action, payload)
+        assert frames[-1]["surface_key"] == "mesh"
+        assert frames[-1]["request_generation"] == mesh.host._ordinary_chrome_requests[id(socket)][2]
+
+
+@pytest.mark.asyncio
+async def test_browser_close_retires_a_mesh_render_before_delivery(registered, monkeypatch):
+    mesh, dispatch, socket, _ = registered
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed(*_):
+        started.set()
+        await release.wait()
+        return "Synthetic stale one-time enrollment"
+
+    monkeypatch.setattr(surface, "render", delayed)
+    task = asyncio.create_task(dispatch("chrome_open", {"surface": "mesh", "params": {}}))
+    await started.wait()
+    chrome_events.capture_surface_request(mesh.host, socket, "chrome_close", {}, str(uuid4()))
+    release.set()
+    assert await task == []
+    assert chrome_events.open_surface_for(mesh.host, socket) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("loss", ["owner", "connection", "surface"])
+async def test_browser_mesh_delivery_refuses_authority_or_navigation_loss(registered, monkeypatch, loss):
+    mesh, dispatch, socket, frames = registered
+    original = surface.render
+
+    async def retired(*args):
+        result = await original(*args)
+        if loss == "owner":
+            mesh.host.ui_sessions[socket]["sub"] = "foreign-owner"
+        elif loss == "connection":
+            mesh.host._connection_contexts[id(socket)].connection_generation = uuid4()
+        else:
+            chrome_events.capture_surface_request(
+                mesh.host, socket, "chrome_open", {"surface": "llm"}, str(uuid4())
+            )
+        return result
+
+    monkeypatch.setattr(surface, "render", retired)
+    if loss == "surface":
+        assert await dispatch("chrome_open", {"surface": "mesh", "params": {}}) == []
+    else:
+        with pytest.raises(AssignmentError):
+            await dispatch("chrome_open", {"surface": "mesh", "params": {}})
+    assert frames == []
+
+
+@pytest.mark.parametrize("changes", [
+    {"request_generation": None}, {"request_generation": "stale"}, {"request_generation": True},
+    {"region": "topbar"},
+])
+def test_mesh_html_frame_refuses_invalid_correlation_and_regions(changes):
+    with pytest.raises(ProtocolValidationError):
+        ChromeRender(surface_key="mesh", **{"request_generation": str(uuid4()), **changes}).to_json()
 
 
 @pytest.mark.asyncio
