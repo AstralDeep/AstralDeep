@@ -109,6 +109,11 @@ class MeshInventoryIncomplete(MeshEnrollmentError):
     code = "mesh_inventory_incomplete"
 
 
+class MeshInventoryCapacity(MeshEnrollmentError):
+    status = 503
+    code = "mesh_inventory_capacity"
+
+
 def mesh_id_for_owner(owner_id: str) -> str:
     digest = hashlib.sha256(f"astral-mesh/v1:{owner_id}".encode()).hexdigest()[:20]
     return f"mesh-{digest}"
@@ -424,6 +429,10 @@ class MeshEnrollmentStore:
             raise MeshInventoryIncomplete("complete mesh inventory is required")
         return [_decode_record(row.encrypted_value) for row in rows]
 
+    def _reserve_inventory_slot(self, transaction, owner_id, namespace):
+        if len(self._list_in_transaction(transaction, owner_id, namespace)) >= MAX_INVENTORY_ROWS - 1:
+            raise MeshInventoryCapacity("mesh inventory capacity is unavailable")
+
     def _active_key_holder(
         self, transaction, owner_id, fingerprint, *, exclude_member_id=None
     ):
@@ -738,6 +747,7 @@ class MeshEnrollmentStore:
             else:
                 self._ensure_mesh(current, owner_id)
                 self._lock_mesh(current, owner_id)
+            self._reserve_inventory_slot(current, owner_id, INVITATION_NAMESPACE)
             holder = self._active_key_holder(
                 current, owner_id, record["device_key_fingerprint"]
             )
@@ -1165,6 +1175,7 @@ class MeshEnrollmentStore:
         try:
             with self._transaction(transaction) as current:
                 self._lock_mesh(current, owner_id)
+                self._reserve_inventory_slot(current, owner_id, MEMBER_NAMESPACE)
                 confirmer = record.get("confirmed_by")
                 if not isinstance(confirmer, dict):
                     raise ConfirmForbidden("confirmation identity is unavailable")

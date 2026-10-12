@@ -1443,3 +1443,111 @@ def test_malformed_current_confirmation_identity_is_denied(store, change):
             decider_id=member["member_id"],
         )
     assert store.get_invitation(owner, pending["i"])["status"] == "pending"
+
+
+def _fill_namespace(store, owner, namespace, template, count):
+    existing = len(store._list(owner, namespace))
+    with store._transaction() as transaction:
+        store._lock_mesh(transaction, owner)
+        for index in range(count - existing):
+            identifier = f"synthetic-history-{index}"
+            record = dict(template)
+            record["member_id" if namespace == me.MEMBER_NAMESPACE else "invite_id"] = identifier
+            record["status"] = "revoked" if namespace == me.MEMBER_NAMESPACE else "rejected"
+            store._credentials.repository.upsert_credential(
+                transaction,
+                owner_id=owner,
+                agent_id=namespace,
+                credential_key=identifier,
+                encrypted_value=me._encode_record(record),
+                updated_at=record["updated_at"],
+            )
+
+
+@pytest.mark.parametrize("count", [998, 999])
+def test_invitation_creation_preserves_readable_capacity(store, audit_repository, count):
+    owner = f"owner-invitation-capacity-{count}"
+    _, fields, _ = _make_invitation(store, owner)
+    template = store._get(owner, me.INVITATION_NAMESPACE, fields["i"])
+    _fill_namespace(store, owner, me.INVITATION_NAMESPACE, template, count)
+    before = store.list_invitations(owner)
+    before_audit = audit_repository.list_for_user(owner)[0]
+    if count == 998:
+        _make_invitation(store, owner)
+        assert len(store.list_invitations(owner)) == 999
+    else:
+        with pytest.raises(me.MeshEnrollmentError) as refusal:
+            _make_invitation(store, owner)
+        assert refusal.value.status == 503
+        assert refusal.value.code == "mesh_inventory_capacity"
+        assert store.list_invitations(owner) == before
+        assert audit_repository.list_for_user(owner)[0] == before_audit
+
+
+@pytest.mark.parametrize("count", [998, 999])
+def test_redemption_preserves_readable_capacity(store, audit_repository, count):
+    owner = f"owner-member-capacity-{count}"
+    invitation, fields, key = _make_invitation(store, owner)
+    member = _confirm_and_redeem(store, invitation, fields, key)["member"]
+    _fill_namespace(store, owner, me.MEMBER_NAMESPACE, member, count)
+    _, pending, pending_key = _make_invitation(store, owner)
+    _confirm(store, pending)
+    before = store.list_members(owner)
+    before_invitation = store.get_invitation(owner, pending["i"])
+    before_audit = audit_repository.list_for_user(owner)[0]
+    with store._transaction() as transaction:
+        before_mesh = store._membership.get_mesh(
+            transaction, owner_id=owner, mesh_id=me.mesh_id_for_owner(owner)
+        )
+    if count == 998:
+        _redeem(store, pending, pending_key)
+        assert len(store.list_members(owner)) == 999
+    else:
+        with pytest.raises(me.MeshEnrollmentError) as refusal:
+            _redeem(store, pending, pending_key)
+        assert refusal.value.status == 503
+        assert refusal.value.code == "mesh_inventory_capacity"
+        assert store.list_members(owner) == before
+        assert store.get_invitation(owner, pending["i"]) == before_invitation
+        assert audit_repository.list_for_user(owner)[0] == before_audit
+        with store._transaction() as transaction:
+            assert store._membership.get_mesh(
+                transaction, owner_id=owner, mesh_id=me.mesh_id_for_owner(owner)
+            ) == before_mesh
+
+
+@pytest.mark.parametrize("operation", ["create", "redeem"])
+def test_concurrent_insertions_share_last_readable_slot(store, audit_repository, operation):
+    from concurrent.futures import ThreadPoolExecutor
+
+    owner = f"owner-capacity-concurrent-{operation}"
+    invitation, fields, key = _make_invitation(store, owner)
+    namespace = me.INVITATION_NAMESPACE
+    template = store._get(owner, namespace, fields["i"])
+    pending = []
+    if operation == "redeem":
+        namespace = me.MEMBER_NAMESPACE
+        template = _confirm_and_redeem(store, invitation, fields, key)["member"]
+        for _ in range(2):
+            _, candidate, candidate_key = _make_invitation(store, owner)
+            _confirm(store, candidate)
+            pending.append((candidate, candidate_key))
+    _fill_namespace(store, owner, namespace, template, 998)
+    before_audit = len(audit_repository.list_for_user(owner)[0])
+    barrier = threading.Barrier(2)
+
+    def insert(index):
+        barrier.wait(timeout=10)
+        try:
+            if operation == "create":
+                _make_invitation(store, owner)
+            else:
+                _redeem(store, *pending[index])
+            return "inserted"
+        except me.MeshEnrollmentError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        assert sorted(workers.map(insert, range(2))) == ["inserted", "mesh_inventory_capacity"]
+    assert len(store._list(owner, namespace)) == 999
+    assert len(audit_repository.list_for_user(owner)[0]) == before_audit + 1
