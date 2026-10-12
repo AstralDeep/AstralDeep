@@ -6,6 +6,7 @@ preservation, log redaction, and websockets version compatibility.
 from __future__ import annotations
 
 import os
+import socket
 import sys
 
 import pytest
@@ -27,6 +28,14 @@ def _key(monkeypatch):
     monkeypatch.setenv("AGENT_API_KEY", KEY)
     monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
     monkeypatch.delenv("AGENT_KEY_TRUSTED_HOSTS", raising=False)
+    getaddrinfo = socket.getaddrinfo
+
+    def resolve_fixture(host, *args, **kwargs):
+        if host == "evil.localtest.me":
+            host = "127.0.0.1"
+        return getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_fixture)
 
 
 @pytest.mark.parametrize(
@@ -215,6 +224,7 @@ async def test_card_fetch_withholds_the_key_from_an_undeclared_destination():
 
     async def card(request):
         seen["key"] = request.headers.get(AGENT_KEY_HEADER)
+        seen["host"] = request.host
         return web.json_response(CARD)
 
     runner = await _serve([web.get("/.well-known/agent-card.json", card)], 9172)
@@ -224,6 +234,7 @@ async def test_card_fetch_withholds_the_key_from_an_undeclared_destination():
         await runner.cleanup()
     assert "key" in seen, "the request never arrived — test is not proving anything"
     assert seen["key"] is None
+    assert seen["host"] == "evil.localtest.me:9172"
 
 
 async def test_a_redirect_cannot_carry_the_key_onward(caplog):
