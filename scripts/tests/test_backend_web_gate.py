@@ -391,6 +391,11 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
         return
     assert completed.returncode == 0, completed.stderr
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    database = next(call for call in calls if call[:1] == ["run"]
+                    and any(argument.endswith("-pg") for argument in call))
+    assert database[database.index("--tmpfs") + 1] == "/var/lib/postgresql/data:rw,nosuid,nodev,size=1g"
+    assert "--memory=2g" in database
+    assert database[database.index("POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal") - 1] == "--env"
     runner = next(call for call in calls if call[:1] == ["run"]
                   and any(argument.endswith("-test") for argument in call))
     assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"
