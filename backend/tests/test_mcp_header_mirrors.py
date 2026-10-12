@@ -453,6 +453,37 @@ def test_matching_mirror_header_dispatches(endpoint):
     assert orchestrator.calls[0]["arguments"] == {"region": "eu-west"}
 
 
+@pytest.mark.parametrize("other", ["eu-west", "us-east"])
+def test_duplicate_mirror_headers_are_refused_before_dispatch(endpoint, other):
+    client, orchestrator = endpoint
+    body, headers = _request("tools/call", {"name": "geo", "arguments": {"region": "eu-west"}})
+    response = client.post(
+        "/mcp", json=body,
+        headers=[*headers.items(), ("Mcp-Name", "geo"),
+                 ("Mcp-Param-Region", "eu-west"), ("mcp-param-region", other)],
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32020
+    assert orchestrator.calls == []
+
+
+@pytest.mark.parametrize("count,advertised", [(16, True), (17, False)])
+def test_projection_rejects_mirror_counts_beyond_browser_preflight_capacity(count, advertised):
+    schema = {"type": "object", "properties": {
+        f"arg{index}": {"type": "string", "x-mcp-header": f"Mcp-Param-{index}"}
+        for index in range(count)
+    }}
+    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    assert bool(project_tools(orchestrator, "u1")) is advertised
+
+
+@pytest.mark.parametrize("length,advertised", [(128, True), (129, False)])
+def test_projection_rejects_header_names_beyond_browser_preflight_capacity(length, advertised):
+    schema = _annotated_schema(annotation="Mcp-Param-" + "a" * (length - 10))
+    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    assert bool(project_tools(orchestrator, "u1")) is advertised
+
+
 def test_missing_mirror_header_is_refused_before_dispatch(endpoint):
     client, orchestrator = endpoint
     response = _call(client, "geo", {"region": "eu-west"})

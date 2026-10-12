@@ -22,6 +22,8 @@ logger = logging.getLogger("MCPProjection")
 
 MIRROR_ANNOTATION = "x-mcp-header"
 MIRROR_HEADER_PREFIX = "mcp-param-"
+MIRROR_HEADER_NAME_LIMIT = 128
+MIRROR_PARAM_LIMIT = 16
 _HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
@@ -163,6 +165,8 @@ def _header_mirror_params(schema: Any) -> tuple[MirrorParam, ...] | None:
     occurrences = _annotation_paths(schema)
     if not occurrences:
         return ()
+    if len(occurrences) > MIRROR_PARAM_LIMIT:
+        return None
     properties = schema.get("properties") if isinstance(schema, dict) else None
     params: list[MirrorParam] = []
     for path in occurrences:
@@ -177,6 +181,8 @@ def _header_mirror_params(schema: Any) -> tuple[MirrorParam, ...] | None:
         if not _scalar_annotation(property_schema):
             return None
         if not isinstance(header, str) or not _HEADER_NAME.fullmatch(header):
+            return None
+        if len(header) > MIRROR_HEADER_NAME_LIMIT:
             return None
         if not header.lower().startswith(MIRROR_HEADER_PREFIX):
             return None

@@ -30,6 +30,8 @@ from orchestrator.mcp_authz import (
 )
 from orchestrator.mcp_projection import (
     FRAMEWORK_WORK_AGENT_ID,
+    MIRROR_HEADER_NAME_LIMIT,
+    MIRROR_PARAM_LIMIT,
     MirrorParam,
     has_unsupported_mirrors,
     project_tools,
@@ -149,7 +151,10 @@ def _validate_mirror_arguments(
 ) -> None:
     mirrors: tuple[MirrorParam, ...] = getattr(projected, "mirror_params", ())
     for mirror in mirrors:
-        header = request.headers.get(mirror.header)
+        values = request.headers.getlist(mirror.header)
+        if len(values) > 1:
+            raise _RequestError(MCP_HEADER_MISMATCH, "mirror header must occur only once")
+        header = values[0] if values else None
         argument = arguments.get(mirror.argument)
         if argument is None:
             if header is not None:
@@ -478,10 +483,10 @@ def _preflight_allow_headers(requested: str | None) -> str:
         {
             name.strip()
             for name in requested.split(",")
-            if len(name.strip()) <= 128
+            if len(name.strip()) <= MIRROR_HEADER_NAME_LIMIT
             and _REFLECTED_MIRROR_HEADER.fullmatch(name.strip().lower())
         }
-    )[:16]
+    )[:MIRROR_PARAM_LIMIT]
     if not reflected:
         return _PREFLIGHT_ALLOW_HEADERS
     return _PREFLIGHT_ALLOW_HEADERS + ", " + ", ".join(reflected)
