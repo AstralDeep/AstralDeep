@@ -1,17 +1,31 @@
 """Projects the caller's live tool catalog into MCP tool definitions, gating each by the
 normal chat visibility and permission checks, or, for a resolved framework
-credential, by that credential's own scopes alone. Used by mcp_server_endpoint.py.
+credential, by that credential's own scopes alone. Tools whose schemas carry an
+x-mcp-header annotation outside the bounded supported form are withheld, and
+supported annotations are returned as validated mirror parameters for
+mcp_server_endpoint.py to match against Mcp-Param mirror headers before dispatch.
 """
 
 from __future__ import annotations
 
 import copy
+import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from shared.schema_validation import JSON_SCHEMA_2020_12
 
 from orchestrator.tool_visibility import eligible_tool_pairs
+
+logger = logging.getLogger("MCPProjection")
+
+MIRROR_ANNOTATION = "x-mcp-header"
+MIRROR_HEADER_PREFIX = "mcp-param-"
+MIRROR_HEADER_NAME_LIMIT = 128
+MIRROR_PARAM_LIMIT = 16
+_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 
 FRAMEWORK_WORK_AGENT_ID = "__work__"
 
@@ -120,6 +134,66 @@ _WORK_TOOL_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
+def _annotation_paths(value: Any, path: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    found: list[tuple[Any, ...]] = []
+    if isinstance(value, dict):
+        for key, member in value.items():
+            if key == MIRROR_ANNOTATION:
+                found.append((*path, key))
+            found.extend(_annotation_paths(member, (*path, key)))
+    elif isinstance(value, list):
+        for index, member in enumerate(value):
+            found.extend(_annotation_paths(member, (*path, index)))
+    return found
+
+
+def _scalar_annotation(property_schema: Any) -> bool:
+    declared = property_schema.get("type") if isinstance(property_schema, dict) else None
+    if isinstance(declared, str):
+        return declared in _SCALAR_TYPES
+    if isinstance(declared, list) and declared:
+        members = [member for member in declared if isinstance(member, str)]
+        return (
+            len(members) == len(declared)
+            and any(member in _SCALAR_TYPES for member in members)
+            and all(member in _SCALAR_TYPES or member == "null" for member in members)
+        )
+    return False
+
+
+def _header_mirror_params(schema: Any) -> tuple[MirrorParam, ...] | None:
+    occurrences = _annotation_paths(schema)
+    if not occurrences:
+        return ()
+    if len(occurrences) > MIRROR_PARAM_LIMIT:
+        return None
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    params: list[MirrorParam] = []
+    for path in occurrences:
+        if len(path) != 3 or path[0] != "properties" or not isinstance(path[1], str):
+            return None
+        property_schema = properties.get(path[1]) if isinstance(properties, dict) else None
+        header = (
+            property_schema.get(MIRROR_ANNOTATION)
+            if isinstance(property_schema, dict)
+            else None
+        )
+        if not _scalar_annotation(property_schema):
+            return None
+        if not isinstance(header, str) or not _HEADER_NAME.fullmatch(header):
+            return None
+        if len(header) > MIRROR_HEADER_NAME_LIMIT:
+            return None
+        if not header.lower().startswith(MIRROR_HEADER_PREFIX):
+            return None
+        if len(header) == len(MIRROR_HEADER_PREFIX):
+            return None
+        params.append(MirrorParam(argument=path[1], header=header))
+    if len({param.header.lower() for param in params}) != len(params):
+        return None
+    return tuple(params)
+
+
 def _framework_tools(claims: dict[str, Any] | None) -> tuple["ProjectedTool", ...]:
     scopes = set((claims or {}).get("_framework_scopes") or ())
     if not scopes:
@@ -139,8 +213,15 @@ def _framework_tools(claims: dict[str, Any] | None) -> tuple["ProjectedTool", ..
             "_meta": {"astral/agentId": FRAMEWORK_WORK_AGENT_ID, "astral/requiredScope": spec["scope"]},
         }
         projected.append(ProjectedTool(name=name, agent_id=FRAMEWORK_WORK_AGENT_ID,
-                                       skill_id=name, descriptor=descriptor))
+                                       skill_id=name, descriptor=descriptor,
+                                       mirror_params=_header_mirror_params(spec["input_schema"]) or ()))
     return tuple(projected)
+
+
+@dataclass(frozen=True)
+class MirrorParam:
+    argument: str
+    header: str
 
 
 @dataclass(frozen=True)
@@ -149,6 +230,8 @@ class ProjectedTool:
     agent_id: str
     skill_id: str
     descriptor: dict[str, Any]
+    mirror_params: tuple[MirrorParam, ...] = ()
+    mirrors_supported: bool = True
 
 
 def _destructive_hint(agent_id: str, skill: Any) -> bool:
@@ -186,7 +269,7 @@ def _eligible_pairs(
     )
 
 
-def project_tools(
+def _projected_tools(
     orchestrator: Any,
     user_id: str,
     claims: dict[str, Any] | None = None,
@@ -205,6 +288,18 @@ def project_tools(
         description = str(skill.description or "")
         if collides:
             description = f"[Provider: {agent_id}] {description}"
+        mirror_params = _header_mirror_params(skill.input_schema)
+        output_annotated = isinstance(skill.output_schema, dict) and bool(
+            _annotation_paths(skill.output_schema)
+        )
+        mirrors_supported = mirror_params is not None and not output_annotated
+        if not mirrors_supported:
+            logger.warning(
+                "mcp projection withheld tool agent=%s skill=%s "
+                "reason=unsupported_x_mcp_header_annotation",
+                agent_id,
+                skill.id,
+            )
         descriptor: dict[str, Any] = {
             "name": name,
             "description": description,
@@ -226,9 +321,23 @@ def project_tools(
                 agent_id=agent_id,
                 skill_id=skill.id,
                 descriptor=descriptor,
+                mirror_params=mirror_params or (),
+                mirrors_supported=mirrors_supported,
             )
         )
     return tuple(sorted(projected, key=lambda item: (item.name, item.agent_id)))
+
+
+def project_tools(
+    orchestrator: Any,
+    user_id: str,
+    claims: dict[str, Any] | None = None,
+) -> tuple[ProjectedTool, ...]:
+    return tuple(
+        tool
+        for tool in _projected_tools(orchestrator, user_id, claims)
+        if tool.mirrors_supported
+    )
 
 
 def resolve_projected_tool(
@@ -243,4 +352,22 @@ def resolve_projected_tool(
     )
 
 
-__all__ = ["ProjectedTool", "project_tools", "resolve_projected_tool"]
+def has_unsupported_mirrors(
+    orchestrator: Any,
+    user_id: str,
+    name: str,
+    claims: dict[str, Any] | None = None,
+) -> bool:
+    return any(
+        tool.name == name and not tool.mirrors_supported
+        for tool in _projected_tools(orchestrator, user_id, claims)
+    )
+
+
+__all__ = [
+    "MirrorParam",
+    "ProjectedTool",
+    "has_unsupported_mirrors",
+    "project_tools",
+    "resolve_projected_tool",
+]
