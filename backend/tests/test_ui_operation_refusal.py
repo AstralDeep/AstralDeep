@@ -194,7 +194,7 @@ def test_component_action_permission_denial_registers_reason(chat_env, operation
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
     assert refusal.message == (
-        "Action not permitted: This tool is disabled in your permissions.")
+        "This action is not permitted. Check your tool permissions.")
 
 
 def test_component_action_tool_error_registers_reason(chat_env, operation_context):
@@ -211,7 +211,7 @@ def test_component_action_tool_error_registers_reason(chat_env, operation_contex
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message == "The tool exploded."
+    assert refusal.message == "The action failed. Try again."
 
 
 def test_component_action_missing_component_registers_reason(chat_env, operation_context):
@@ -239,7 +239,7 @@ def test_component_action_unsupported_kind_registers_reason(chat_env, operation_
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message == "Unsupported component action kind 'detonate'."
+    assert refusal.message == "This component action is not supported."
 
 
 def test_component_action_timeline_refusal_registers_reason(chat_env, operation_context):
@@ -307,7 +307,7 @@ def test_component_action_gate_refusal_registers_reason(chat_env, operation_cont
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message == "PHI gate refused the tool."
+    assert refusal.message == "This action was refused by a policy gate."
 
 
 def test_component_action_gate_refusal_without_message_registers_fallback(
@@ -346,7 +346,7 @@ def test_component_action_handler_exception_registers_reason(chat_env, operation
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message == "The action failed: backend socket closed"
+    assert refusal.message == "The action failed. Try again."
 
 
 def test_component_action_success_registers_no_refusal(chat_env, operation_context):
@@ -414,20 +414,32 @@ def test_component_action_refusal_without_operation_context_is_ignored(chat_env)
 
 def test_component_action_second_refusal_does_not_overwrite_first(chat_env, operation_context):
     operation_context["ui_refusal"] = _UiOperationRefusal(message="First reason.")
-    Orchestrator._register_ui_operation_refusal("Second reason.")
+    Orchestrator._register_ui_operation_refusal("action_failed")
     assert operation_context["ui_refusal"].message == "First reason."
 
 
-def test_refusal_registration_truncates_to_safe_summary_bound(operation_context):
+def test_refusal_registration_uses_fixed_fallback_for_unknown_code(operation_context):
     Orchestrator._register_ui_operation_refusal("x" * 600)
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert len(refusal.message) == 512
+    assert refusal.message == "The action could not be completed. Try again."
 
 
 def test_refusal_registration_ignores_blank_message(operation_context):
     Orchestrator._register_ui_operation_refusal("   ")
     assert "ui_refusal" not in operation_context
+
+
+@pytest.mark.parametrize("detail", [
+    "Bearer synthetic-secret-token",
+    "patient=synthetic-patient credential=synthetic-provider-key",
+    "https://synthetic-user:synthetic-password@provider.invalid/private",
+])
+def test_refusal_registration_never_accepts_untrusted_detail(operation_context, detail):
+    Orchestrator._register_ui_operation_refusal(detail)
+    refusal = operation_context["ui_refusal"]
+    assert refusal.message == "The action could not be completed. Try again."
+    assert detail not in refusal.message
 
 
 def test_refine_restore_gate_flag_off_registers_reason(chat_env, operation_context,
@@ -481,7 +493,7 @@ def test_refine_restore_gate_permission_denied_registers_reason(chat_env, operat
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
     assert refusal.message == (
-        "Action not permitted: This tool is disabled in your permissions.")
+        "This action is not permitted. Check your tool permissions.")
 
 
 def test_refine_restore_gate_success_registers_no_refusal(chat_env, operation_context,
@@ -592,8 +604,6 @@ def test_refine_component_vanishes_in_lock_registers_reason(chat_env, operation_
                                                             refine_enabled):
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id)
-    # Second read (inside the lock) finds the component gone; seeding through
-    # the wrapper also exercises its delegation
     fake.workspace = _vanishing_workspace(fake.workspace, vanish_on_call=2)
     cid = _seed_component(fake.workspace, chat_id, user_id)
 
@@ -609,15 +619,20 @@ def test_refine_exception_registers_reason(chat_env, operation_context, refine_e
     history, user_id, chat_id = chat_env
     fake = _make_fake(history, user_id)
     cid = _seed_component(fake.workspace, chat_id, user_id)
-    # _refine_component_llm is NOT bound on this fake: the attribute miss
-    # inside the lock exercises the refine exception path
+    sensitive = "patient=synthetic-patient credential=synthetic-provider-key"
+
+    async def fail_refine(*_args, **_kwargs):
+        raise RuntimeError(sensitive)
+
+    fake._refine_component_llm = fail_refine
 
     _run(fake._handle_component_refine(_FakeWS(), user_id, {
         "chat_id": chat_id, "component_id": cid, "instruction": "sort"}))
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message.startswith("The refine failed:")
+    assert refusal.message == "The component could not be refined. Try again."
+    assert sensitive not in json.dumps(fake._renders, default=str)
 
 
 async def _seed_one_version(fake, chat_id, user_id, cid):
@@ -657,8 +672,10 @@ def test_restore_exception_registers_reason(chat_env, operation_context, refine_
     cid = _seed_component(fake.workspace, chat_id, user_id)
     version_no = _run(_seed_one_version(fake, chat_id, user_id, cid))
 
+    sensitive = "patient=synthetic-patient credential=synthetic-provider-key"
+
     async def _explode(*_args, **_kwargs):
-        raise RuntimeError("version archive failed")
+        raise RuntimeError(sensitive)
 
     monkeypatch.setattr(artifact_versions, "aarchive", _explode)
     _run(fake._handle_component_restore(_FakeWS(), user_id, {
@@ -666,7 +683,8 @@ def test_restore_exception_registers_reason(chat_env, operation_context, refine_
 
     refusal = operation_context.get("ui_refusal")
     assert isinstance(refusal, _UiOperationRefusal)
-    assert refusal.message == "The restore failed: version archive failed"
+    assert refusal.message == "The component could not be restored. Try again."
+    assert sensitive not in json.dumps(fake._renders, default=str)
 
 
 def test_unconfigured_provider_component_action_registers_reason_via_dispatcher(
@@ -815,7 +833,7 @@ async def test_refused_component_action_fails_operation_with_reason_in_terminal_
     assert terminal["retryable"] is False
     assert terminal["error"]["code"] == "operation_failed"
     assert terminal["error"]["message"] == (
-        "Action not permitted: This tool is disabled in your permissions.")
+        "This action is not permitted. Check your tool permissions.")
     assert terminal["chat_id"] == chat
     assert terminal["connection_generation"] == str(context.connection_generation)
     assert terminal["request_generation"] == str(operation.frame.request_generation)
@@ -828,7 +846,7 @@ async def test_refused_component_action_fails_operation_with_reason_in_terminal_
     assert record.state is OperationState.FAILED
     assert record.terminal_code == "ui_action_refused"
     assert record.safe_summary == (
-        "Action not permitted: This tool is disabled in your permissions.")
+        "This action is not permitted. Check your tool permissions.")
 
     alerts = [f for f in socket.frames if f.get("type") == "ui_render"]
     assert alerts and all(
@@ -948,3 +966,111 @@ async def test_successful_component_action_still_completes(database):
         operation_id=operation.operation_id)
     from orchestrator.work_admission import OperationState
     assert record.state is OperationState.COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure,expected", [
+    ("tool_error", "The action failed. Try again."),
+    ("handler_exception", "The action failed. Try again."),
+    ("gate_refusal", "This action was refused by a policy gate."),
+    ("unsupported_kind", "This component action is not supported."),
+    ("missing_context", "This action is missing its component context."),
+    ("missing_component", "This component is no longer available."),
+    ("unconfigured_provider", "Set up your AI provider to use this."),
+])
+async def test_dispatch_refusal_persists_only_safe_text_and_replays_once(
+        database, monkeypatch, failure, expected):
+    import audit.hooks
+    from orchestrator.history import HistoryManager
+    from orchestrator.work_admission import OperationState
+
+    sensitive = "patient=synthetic-patient Bearer synthetic-secret credential=synthetic-key"
+    monkeypatch.setattr(audit.hooks, "record_ws_action", AsyncMock())
+    host, socket, context = _integration_runtime()
+    host.history = HistoryManager(plane_runtime=database,
+                                  plane_repositories=database.repositories)
+    host.workspace = _workspace_manager(host.history, database)
+    host.work_admission = _coordinator(database)
+    host.conversation_commits = _repository(database, host.work_admission)
+    host.tool_permissions = types.SimpleNamespace(is_tool_allowed=lambda *_args: True)
+    host.security_flags = {}
+    host.audit_recorder = None
+    host.llm_configured_for = AsyncMock(return_value=failure != "unconfigured_provider")
+    host._record_llm_unconfigured = AsyncMock()
+
+    async def authorize(_socket, _agent, _tool, args, *_rest, **_kwargs):
+        if failure == "gate_refusal":
+            return GateRefusal(response=types.SimpleNamespace(error={"message": sensitive}),
+                               render_components=None)
+        return PreparedDispatch(args=args, stream_params=dict(args), cap_job_id=None,
+                                delegation_token=None)
+
+    async def execute(*_args, **_kwargs):
+        if failure == "handler_exception":
+            raise RuntimeError(sensitive)
+        return types.SimpleNamespace(ui_components=[], error={"message": sensitive})
+
+    async def renew(_context, _work, stop, _worker):
+        await stop.wait()
+
+    host._authorize_and_prepare = authorize
+    host._execute_with_retry_audited = execute
+    host._renew_connection_lease = renew
+    chat = await asyncio.to_thread(host.history.create_chat, user_id=OWNER)
+    component_id = await asyncio.to_thread(_seed_component, host.workspace, chat, OWNER)
+    if failure == "missing_component":
+        component_id = "wc_deadbeefdeadbeef"
+    payload = {"component_id": component_id,
+               "kind": sensitive if failure == "unsupported_kind" else "refresh"}
+    if failure == "missing_context":
+        payload = {"kind": "refresh"}
+    ingress = _integration_frame(host, context, chat_id=chat, **payload)
+    work, _operation_id = await _integration_admitted(host, context, ingress)
+
+    foreign = _Socket()
+    other_chat = _Socket()
+    host.ui_clients.extend([foreign, other_chat])
+    host.ui_sessions.update({foreign: {"sub": FOREIGN}, other_chat: {"sub": OWNER}})
+    host._ws_active_chat[id(other_chat)] = str(uuid.uuid4())
+    await host._run_connection_operation(context, work)
+
+    terminals = [frame for frame in socket.frames if frame.get("type") == "operation_status"]
+    assert len(terminals) == 1
+    assert terminals[0]["state"] == "failed"
+    assert terminals[0]["terminal"] is True
+    assert terminals[0]["error"] == {"code": "operation_failed", "message": expected}
+    assert sensitive not in json.dumps(socket.frames)
+    assert foreign.frames == [] and other_chat.frames == []
+    assert not any(frame.get("type") in {"conversation_commit_ready", "conversation_snapshot"}
+                   for frame in socket.frames)
+    record = await asyncio.to_thread(
+        host.work_admission.query_operation, owner=work.owner, operation_id=work.operation_id)
+    assert record.state is OperationState.FAILED
+    assert record.safe_summary == expected
+
+    replay = _Socket()
+    replay_context = types.SimpleNamespace(
+        websocket=replay, terminal_emitted=set(),
+        connection_generation=context.connection_generation)
+    await host._send_operation_terminal_to_context(replay_context, work.frame, work, record)
+    await host._send_operation_terminal_to_context(replay_context, work.frame, work, record)
+    assert len(replay.frames) == 1
+    assert replay.frames[0]["error"]["message"] == expected
+    assert sensitive not in json.dumps(replay.frames)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summary", [None, "", "Bearer synthetic-secret", "x" * 600])
+async def test_terminal_replay_rejects_untrusted_retained_summary(summary):
+    from orchestrator.work_admission import OperationState
+
+    host, socket, context = _integration_runtime()
+    ingress = _integration_frame(host, context, chat_id=str(uuid.uuid4()), kind="refresh")
+    work = types.SimpleNamespace(frame=ingress)
+    record = types.SimpleNamespace(
+        operation_id=uuid.uuid4(), state=OperationState.FAILED,
+        state_revision=2, terminal_code="ui_action_refused", safe_summary=summary)
+    await host._send_operation_terminal_to_context(context, ingress, work, record)
+    assert len(socket.frames) == 1
+    assert socket.frames[0]["error"]["message"] == (
+        "The action could not be completed. Try again.")
