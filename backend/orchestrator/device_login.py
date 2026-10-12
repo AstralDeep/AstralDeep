@@ -80,6 +80,20 @@ def reset_state() -> None:
     _DISCOVERY["data"] = None
 
 
+def _sweep_expired(now: float) -> int:
+    stale = []
+    for digest, state in _POLL_STATE.items():
+        custody = state.get("custody")
+        expires = custody.expires if custody is not None else state.get("expires")
+        if expires is None or now >= expires:
+            stale.append(digest)
+    for digest in stale:
+        del _POLL_STATE[digest]
+    if stale:
+        logger.debug("device_login: reclaimed %d expired poll-state entries", len(stale))
+    return len(stale)
+
+
 def flag_on() -> bool:
     return os.getenv("FF_DEVICE_LOGIN", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -226,9 +240,14 @@ async def _revoke_refresh(refresh_token: str, client_id: str) -> None:
 
 def _check_start_rate(ip: str) -> None:
     now = time.time()
-    hits = [t for t in _START_HITS.get(ip, []) if now - t < _START_WINDOW_SECONDS]
+    for known in list(_START_HITS):
+        kept = [t for t in _START_HITS[known] if now - t < _START_WINDOW_SECONDS]
+        if kept:
+            _START_HITS[known] = kept
+        else:
+            del _START_HITS[known]
+    hits = _START_HITS.setdefault(ip, [])
     if len(hits) >= _START_MAX_PER_WINDOW:
-        _START_HITS[ip] = hits
         raise RateLimited("too many device-login starts; retry later")
     hits.append(now)
     _START_HITS[ip] = hits
@@ -313,8 +332,11 @@ async def start(
         "interval": interval,
         **extra,
     }).encode()).decode("ascii")
+    _sweep_expired(now)
     _POLL_STATE[_handle_digest(handle)] = {
         "next_ok": now + interval, "interval": interval, "used": False,
+        "claim": None,
+        "expires": custody.expires if custody is not None else now + expires_in,
         **({"custody": custody, "in_flight": False} if custody is not None else {}),
     }
 
@@ -369,7 +391,7 @@ async def poll(
     now = time.time()
     state = _POLL_STATE.setdefault(digest, {
         "next_ok": 0.0, "interval": int(blob.get("interval", _DEFAULT_INTERVAL)),
-        "used": False,
+        "used": False, "claim": None, "expires": exp,
     })
     if state["used"]:
         raise InvalidHandle("poll handle already completed")
@@ -380,65 +402,74 @@ async def poll(
         return {"status": "expired"}
     if now < state["next_ok"]:
         return {"status": "slow_down", "interval": state["interval"]}
-
-    disco = await _discover(http_get)
-    if custody is not None:
-        from orchestrator.native_session_custody import assert_discovery
-        await custody[0].current()
-        assert_discovery(custody[0], disco)
-    poster = http_post or _default_post_form
-    try:
-        token_request = {
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "device_code": device_code,
-            "client_id": client,
-        }
-        if code_verifier:
-            token_request["code_verifier"] = code_verifier
-        status, body = await poster(disco["token_endpoint"], token_request)
-    except DeviceLoginError:
-        raise
-    except Exception as exc:
-        raise DeviceLoginUnavailable(f"IdP token poll failed: {exc}") from None
-
-    if status == 200 and body.get("access_token"):
-        if custody is not None:
-            state["used"] = True
-            return await custody[1](body)
-        claims = _jwt_claims(str(body["access_token"]))
-        sub = str(claims.get("sub", "") or "anonymous")
-        state["used"] = True
-        if not _has_entry_role(claims):
-            await _revoke_refresh(str(body.get("refresh_token", "")), client)
-            await _audit("device_login_denied", sub,
-                         f"Device sign-in refused for {client}: token has no "
-                         "user/admin role", outcome="failure")
-            return {"status": "denied", "reason": "denied_no_access"}
-        await _audit("device_login_approved", sub,
-                     f"Device sign-in approved for {client}")
-        return {"status": "approved",
-                "tokens": {k: body[k] for k in _TOKEN_KEYS if k in body}}
-
-    error = str(body.get("error", "") or "")
-    if error == "authorization_pending":
-        state["next_ok"] = now + state["interval"]
-        return {"status": "pending", "interval": state["interval"]}
-    if error == "slow_down":
-        state["interval"] += _SLOW_DOWN_BUMP
-        state["next_ok"] = now + state["interval"]
+    claim = object()
+    if state["claim"] is not None:
         return {"status": "slow_down", "interval": state["interval"]}
-    if error in ("expired_token", "invalid_grant"):
-        state["used"] = True
-        await _audit("device_login_expired", "anonymous",
-                     f"Device sign-in expired for {client}", outcome="failure")
-        return {"status": "expired"}
-    if error == "access_denied":
-        state["used"] = True
-        await _audit("device_login_denied", "anonymous",
-                     f"Device sign-in denied by the user for {client}",
-                     outcome="failure")
-        return {"status": "denied", "reason": "access_denied"}
-    raise DeviceLoginUnavailable(f"IdP token poll failed (HTTP {status}, {error or 'no error code'})")
+    # Claim and pacing ownership precede suspension to serialize concurrent polls.
+    state["claim"] = claim
+    state["next_ok"] = now + state["interval"]
+    try:
+        disco = await _discover(http_get)
+        if custody is not None:
+            from orchestrator.native_session_custody import assert_discovery
+            await custody[0].current()
+            assert_discovery(custody[0], disco)
+        poster = http_post or _default_post_form
+        try:
+            token_request = {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": client,
+            }
+            if code_verifier:
+                token_request["code_verifier"] = code_verifier
+            status, body = await poster(disco["token_endpoint"], token_request)
+        except DeviceLoginError:
+            raise
+        except Exception as exc:
+            raise DeviceLoginUnavailable(f"IdP token poll failed: {exc}") from None
+
+        if status == 200 and body.get("access_token"):
+            if custody is not None:
+                state["used"] = True
+                return await custody[1](body)
+            claims = _jwt_claims(str(body["access_token"]))
+            sub = str(claims.get("sub", "") or "anonymous")
+            state["used"] = True
+            if not _has_entry_role(claims):
+                await _revoke_refresh(str(body.get("refresh_token", "")), client)
+                await _audit("device_login_denied", sub,
+                             f"Device sign-in refused for {client}: token has no "
+                             "user/admin role", outcome="failure")
+                return {"status": "denied", "reason": "denied_no_access"}
+            await _audit("device_login_approved", sub,
+                         f"Device sign-in approved for {client}")
+            return {"status": "approved",
+                    "tokens": {k: body[k] for k in _TOKEN_KEYS if k in body}}
+
+        error = str(body.get("error", "") or "")
+        if error == "authorization_pending":
+            return {"status": "pending", "interval": state["interval"]}
+        if error == "slow_down":
+            state["interval"] += _SLOW_DOWN_BUMP
+            state["next_ok"] = now + state["interval"]
+            return {"status": "slow_down", "interval": state["interval"]}
+        if error in ("expired_token", "invalid_grant"):
+            state["used"] = True
+            await _audit("device_login_expired", "anonymous",
+                         f"Device sign-in expired for {client}", outcome="failure")
+            return {"status": "expired"}
+        if error == "access_denied":
+            state["used"] = True
+            await _audit("device_login_denied", "anonymous",
+                         f"Device sign-in denied by the user for {client}",
+                         outcome="failure")
+            return {"status": "denied", "reason": "access_denied"}
+        raise DeviceLoginUnavailable(
+            f"IdP token poll failed (HTTP {status}, {error or 'no error code'})")
+    finally:
+        if state["claim"] is claim:
+            state["claim"] = None
 
 
 async def refresh(

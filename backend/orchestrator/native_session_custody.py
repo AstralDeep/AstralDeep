@@ -329,6 +329,14 @@ async def token(request):
         _deny(503)
 
 
+def _admit_device_start() -> None:
+    device_login._sweep_expired(time.time())
+    live = sum(1 for state in device_login._POLL_STATE.values()
+               if state.get("custody") is not None)
+    if live + _STARTS_IN_FLIGHT >= ATTEMPT_LIMIT:
+        _deny(429)
+
+
 def assert_discovery(binding, discovery):
     binding.local()
     if discovery != {
@@ -348,12 +356,7 @@ async def device_start(request):
             body = await _body(request, {"session_custody", "client"})
             binding.client = _client(body["client"], device=True)
             await binding.current()
-            now = time.time()
-            for key, state in tuple(device_login._POLL_STATE.items()):
-                if state.get("custody") is not None and state["custody"].expires <= now:
-                    del device_login._POLL_STATE[key]
-            if len(device_login._POLL_STATE) + _STARTS_IN_FLIGHT >= ATTEMPT_LIMIT:
-                _deny(429)
+            _admit_device_start()
             _STARTS_IN_FLIGHT += 1
             try:
                 result = await device_login.start(binding.client,

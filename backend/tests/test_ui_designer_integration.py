@@ -297,6 +297,8 @@ def _make_action_fake(history, user_id):
     for name in ("_handle_component_action", "_component_action_allowed",
                  "_audit_workspace_denial"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
+    fake._register_ui_operation_refusal = (
+        Orchestrator._register_ui_operation_refusal)
     fake._permission_calls = permission_calls
     return fake
 
