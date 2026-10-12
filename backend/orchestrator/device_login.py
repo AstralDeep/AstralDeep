@@ -405,8 +405,7 @@ async def poll(
     claim = object()
     if state["claim"] is not None:
         return {"status": "slow_down", "interval": state["interval"]}
-    # The pacing slot and claim are taken before any await so concurrent polls
-    # cannot both reach the IdP; the claim is released even on cancellation.
+    # Claim and pacing ownership precede suspension to serialize concurrent polls.
     state["claim"] = claim
     state["next_ok"] = now + state["interval"]
     try:
