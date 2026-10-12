@@ -1015,3 +1015,46 @@ async def test_physical_and_delegation_owner_fence_survives_direct_internal_call
     )
     assert result.error["code"] == ma.MeshAdmissionError.code
     invoke.assert_not_awaited()
+
+
+def test_missing_production_signing_key_refuses_audits_and_rolls_back_redemption(mesh, monkeypatch):
+    device, invitation = mesh.invitation(scopes=["tools:read"])
+    invite_id = invitation["invitation"]["invite_id"]
+    confirmed = mesh.client.post(
+        f"/api/mesh/invitations/{invite_id}/confirm", headers=mesh.owner_headers
+    )
+    assert confirmed.status_code == 200
+    before = mesh.store._get(mesh.owner, me.INVITATION_NAMESPACE, invite_id)
+    with mesh.runtime.transaction() as transaction:
+        neutral_before = mesh.runtime.repositories.mesh_enrollment.list_members(
+            transaction, owner_id=mesh.owner, mesh_id=me.mesh_id_for_owner(mesh.owner)
+        )
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY")
+    monkeypatch.delenv("MEMORY_HMAC_KEY")
+    response = mesh.client.post(
+        "/api/mesh/enrollment/redeem",
+        json=device.redemption(invitation["payload"], agent_id="reader"),
+    )
+    assert response.status_code == 503
+    assert response.json() == {"detail": ma.MeshIAMUnavailable.code}
+    assert mesh.store.list_members(mesh.owner) == []
+    assert mesh.store._list(mesh.owner, ma.SESSION_NAMESPACE) == []
+    assert mesh.store._get(mesh.owner, me.INVITATION_NAMESPACE, invite_id) == before
+    with mesh.runtime.transaction() as transaction:
+        assert mesh.runtime.repositories.mesh_enrollment.list_members(
+            transaction, owner_id=mesh.owner, mesh_id=me.mesh_id_for_owner(mesh.owner)
+        ) == neutral_before
+    events = mesh.audit.list_for_user(mesh.owner, limit=50)[0]
+    redemption = [event for event in events if event.action_type == "mesh.member.redeem"]
+    assert len(redemption) == 1
+    assert redemption[0].outcome == "failure"
+    assert redemption[0].inputs_meta["reason"] == ma.MeshIAMUnavailable.code
+    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", uuid.uuid4().hex)
+    recovered = mesh.client.post(
+        "/api/mesh/enrollment/redeem",
+        json=device.redemption(invitation["payload"], agent_id="reader"),
+    )
+    assert recovered.status_code == 200
+    assert recovered.json()["member"]["status"] == "active"
+    assert ma.verify_member_token(recovered.json()["access_token"])["sub"] == mesh.owner

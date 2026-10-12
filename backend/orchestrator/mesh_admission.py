@@ -644,7 +644,10 @@ class MeshAdmission:
                 "session_incarnation": prepared.custody["incarnation_id"],
             },
         }
-        token = delegation.encode_delegation_payload(payload)
+        try:
+            token = delegation.encode_delegation_payload(payload)
+        except delegation.DelegationConfigError:
+            raise MeshIAMUnavailable() from None
         now = me._now_ms()
         self.store._credentials.repository.upsert_credential(
             transaction,
