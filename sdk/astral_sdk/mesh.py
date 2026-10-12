@@ -231,6 +231,31 @@ class MeshClient:
             raise ValueError("invalid invitation identifier")
         return self._request("POST", f"/api/mesh/invitations/{invite_id}/confirm")
 
+    def reject(self, invite_id):
+        if not isinstance(invite_id, str) or not invite_id.isalnum():
+            raise ValueError("invalid invitation identifier")
+        return self._request("POST", f"/api/mesh/invitations/{invite_id}/reject")
+
+    def remove_invitation(self, invite_id):
+        if not isinstance(invite_id, str) or not invite_id.isalnum():
+            raise ValueError("invalid invitation identifier")
+        return self._request("POST", f"/api/mesh/invitations/{invite_id}/remove")
+
+    def rename_member(self, member_id, label):
+        if not isinstance(member_id, str) or not member_id.isalnum():
+            raise ValueError("invalid member identifier")
+        if not isinstance(label, str) or not label.strip() or len(label.strip()) > 64:
+            raise ValueError("label must be 1-64 characters")
+        return self._request(
+            "POST", f"/api/mesh/members/{member_id}/label", json={"label": label}
+        )
+
+    def members(self):
+        return self._request("GET", "/api/mesh/members")["members"]
+
+    def invitations(self):
+        return self._request("GET", "/api/mesh/invitations")["invitations"]
+
     def redeem(self, payload, *, agent_id=None):
         response = self._request(
             "POST",

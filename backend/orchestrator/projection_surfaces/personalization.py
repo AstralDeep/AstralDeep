@@ -184,6 +184,12 @@ def _tab_bar(active: str) -> str:
             f"data-ui-action=\"chrome_open\" data-ui-payload='{payload}'>"
             f"{esc(label)}</button>"
         )
+    mesh_payload = _payload_attr({"surface": "mesh", "params": {}})
+    parts.append(
+        f'<button type="button" role="tab" aria-selected="false" class="{_BTN_GHOST}" '
+        f'data-ui-action="chrome_open" data-ui-payload=\'{mesh_payload}\'>'
+        "Mesh devices</button>"
+    )
     inner = "".join(parts)
     return (
         f'<div class="flex flex-wrap gap-1 border-b border-white/10 pb-2" '
@@ -581,7 +587,9 @@ async def components(orch, user_id, roles, params):
         [_sdui.button(label, "chrome_open",
                       {"surface": "personalization", "params": {"tab": key}},
                       variant="primary" if key == tab else "secondary")
-         for key, label in _TABS],
+         for key, label in _TABS]
+        + [_sdui.button("Mesh devices", "chrome_open",
+                        {"surface": "mesh", "params": {}}, variant="secondary")],
         direction="row",
     )
     if tab == "soul":

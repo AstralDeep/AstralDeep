@@ -185,14 +185,21 @@ def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/DeviceLogin.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/TokenStore.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/ServerSession.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/MeshEnrollment.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Transport/WSClient.swift",
-        "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift",
         "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift",
     )
     for relative in paths:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert "URLSession.shared" not in source, relative
         assert "NoStoreHTTP" in source, relative
+    app_model = (
+        REPO_ROOT / "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
+    ).read_text(encoding="utf-8")
+    assert "URLSession" not in app_model
+    assert "ServerSessionHTTP.request($0)" in app_model
+    assert "MeshEnrollmentHTTP.request" in app_model
 
 
 def _materialized(vector_id: str) -> dict[str, Any]:
