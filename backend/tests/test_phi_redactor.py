@@ -244,3 +244,44 @@ class TestSafeHarborCoverage:
             assert any(label in p for p in PHI_FIELD_PATTERNS), (
                 f"PHI_FIELD_PATTERNS missing coverage for Safe Harbor label {label!r}"
             )
+
+
+class TestSecretPatternMasking:
+    def test_openai_api_key_masked(self):
+        out, _ = redact("Used sk-proj-1234567890abcdef1234567890 in request.")
+        assert "[REDACTED:api_key]" in out
+        assert "sk-proj-1234567890abcdef1234567890" not in out
+
+    def test_github_token_masked(self):
+        out, _ = redact("Export GITHUB_TOKEN=ghp_123456789012345678901234567890123456 now.")
+        assert "[REDACTED:token]" in out
+        assert "ghp_123456789012345678901234567890123456" not in out
+
+    def test_aws_access_key_masked(self):
+        out, _ = redact("AWS key AKIAIOSFODNN7EXAMPLE detected.")
+        assert "[REDACTED:aws_key]" in out
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_jwt_token_masked(self):
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        out, _ = redact(f"Authorization: {token}")
+        assert "[REDACTED:jwt]" in out
+        assert token not in out
+
+    def test_private_key_block_masked(self):
+        pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+        out, _ = redact(f"Key data:\n{pem}")
+        assert "[REDACTED:private_key]" in out
+        assert "-----BEGIN RSA PRIVATE KEY-----" not in out
+
+    def test_secret_field_key_masked(self):
+        out, _ = redact({"api_key": "raw-key-value-999"})
+        parsed = json.loads(out)
+        assert parsed["api_key"] == "[REDACTED:secret]"
+
+    def test_secret_redaction_never_logs_secret_content(self, caplog):
+        caplog.set_level(logging.INFO, logger="PHIRedactor")
+        raw_secret = "sk-proj-secretcontentthatmustnotleak123456789"
+        redact(f"Test call with {raw_secret}")
+        for record in caplog.records:
+            assert raw_secret not in record.getMessage()
