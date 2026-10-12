@@ -22879,6 +22879,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
+                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):
