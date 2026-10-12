@@ -333,6 +333,46 @@ async def test_search_scan_budget_stops_with_usable_continuation(notes, monkeypa
     assert rest.next_cursor is None
 
 
+@pytest.mark.parametrize(("scan_limit", "page_limit"), [(1000, 99), (7, 3), (7, 4), (7, 6), (7, 99)])
+async def test_search_nondivisible_scan_budget_caps_each_storage_page(notes, monkeypatch, scan_limit, page_limit):
+    from personalization import explicit_note_service as module
+
+    count = 1100 if scan_limit == 1000 else scan_limit + 2
+    identities = sorted(str(uuid4()) for _ in range(count))
+    for index, identity in enumerate(identities):
+        if index % 100 == 0:
+            writer = await caller(notes)
+        await notes.service.command(caller=writer, body=body(
+            note_id=identity, value="Unique needle" if index == count - 1 else "Ordinary paragraph"))
+    repository = notes.api.runtime.repositories.preferences.personalization
+    original = type(repository).list_explicit_notes
+    pages = []
+
+    def record_page(self, tx, **kwargs):
+        records = original(self, tx, **kwargs)
+        pages.append((kwargs["limit"], tuple(record.note_id for record in records)))
+        return records
+
+    monkeypatch.setattr(type(repository), "list_explicit_notes", record_page)
+    monkeypatch.setattr(module, "SEARCH_SCAN_LIMIT", scan_limit)
+    partial = await notes.service.list(caller=await caller(notes, method="GET"),
+                                       limit=page_limit, search="needle")
+
+    assert not partial.notes
+    assert partial.next_cursor == identities[scan_limit - 1]
+    scanned = 0
+    for requested, records in pages:
+        assert requested == min(page_limit, scan_limit - scanned)
+        scanned += len(records)
+    assert scanned == scan_limit
+    assert [identity for _, records in pages for identity in records] == identities[:scan_limit]
+
+    rest = await notes.service.list(caller=await caller(notes, method="GET"),
+                                    limit=page_limit, after_id=partial.next_cursor, search="needle")
+    assert [note.metadata.note_id for note in rest.notes] == [identities[-1]]
+    assert rest.next_cursor is None
+
+
 async def test_search_deadline_expiry_interrupts_traversal_without_partial_results(notes, monkeypatch):
     from orchestrator.human_request_authority import CurrentHumanCaller
     import time as time_module

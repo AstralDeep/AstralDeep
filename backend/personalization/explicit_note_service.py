@@ -340,9 +340,9 @@ class ExplicitNoteService:
             search = normalize_note_value(search).casefold() if search.strip() else ""
         except (ValueError, TypeError, AttributeError):
             raise AssignmentError("explicit_note_query_invalid", 422) from None
-        page_size = min(limit, 100)
         cursor, matches, scanned = after_id, [], 0
         while len(matches) < limit and scanned < SEARCH_SCAN_LIMIT:
+            page_size = min(limit, SEARCH_SCAN_LIMIT - scanned)
             position = cursor
             records = await self._transaction(caller, lambda tx, repository:
                 repository.list_explicit_notes(tx, owner_id=caller.owner_id,
@@ -353,7 +353,7 @@ class ExplicitNoteService:
                 break
             opened = await self._deliver(caller, records)
             matches.extend(note for note in opened if not search or search in note.value.casefold())
-            scanned += page_size
+            scanned += len(records)
             if len(matches) >= limit:
                 cursor = matches[limit - 1].metadata.note_id
                 break
