@@ -96,6 +96,73 @@ def form(**changes):
     return result
 
 
+@pytest.mark.parametrize("redirect", [
+    "http://127.0.0.1:1024/callback", "http://127.0.0.1:49152/callback",
+    "http://127.0.0.1:65535/callback", REDIRECT,
+])
+def test_desktop_redirect_preserves_the_exact_pkce_destination(redirect):
+    from orchestrator.native_session_custody import _redirect_uri
+    assert _redirect_uri("astral-desktop", redirect) == redirect
+
+
+@pytest.mark.parametrize("redirect", [
+    None, 1, "http://127.0.0.1:0/callback", "http://127.0.0.1:1023/callback",
+    "http://127.0.0.1:65536/callback", "http://127.0.0.1:049152/callback",
+    "http://localhost:49152/callback", "http://[::1]:49152/callback",
+    "http://127.0.0.2:49152/callback", "https://127.0.0.1:49152/callback",
+    "http://user@127.0.0.1:49152/callback", "http://127.0.0.1:49152/callback?next=/",
+    "http://127.0.0.1:49152/callback#fragment", "http://127.0.0.1:49152/callback/",
+    "http://127.0.0.1:49152/%63allback", "http://127.0.0.1:49152/other",
+    "http://127.0.0.1:49152/callback\n",
+])
+def test_desktop_loopback_redirect_is_closed(redirect):
+    from fastapi import HTTPException
+    from orchestrator.native_session_custody import _redirect_uri
+    with pytest.raises(HTTPException):
+        _redirect_uri("astral-desktop", redirect)
+
+
+def test_loopback_redirect_does_not_expand_mobile_authority():
+    from fastapi import HTTPException
+    from orchestrator.native_session_custody import _redirect_uri
+    with pytest.raises(HTTPException):
+        _redirect_uri("astral-mobile", "http://127.0.0.1:49152/callback")
+
+
+@pytest.mark.asyncio
+async def test_desktop_loopback_code_exchange_keeps_exact_redirect(client, fixture, monkeypatch):
+    monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-native,astral-mobile,astral-desktop,astral-watch")
+    fixture[4].changes = {"azp": "astral-desktop"}
+    redirect = "http://127.0.0.1:49152/callback"
+    response = await client.post("/auth/token", data=form(client_id="astral-desktop", redirect_uri=redirect), headers=HEADER)
+    assert response.status_code == 200
+    assert fixture[4].requests[-1][1]["redirect_uri"] == [redirect]
+    assert "refresh_token" not in response.text
+    assert response.cookies.get(web_auth.COOKIE_NAME)
+
+
+def test_unknown_client_cannot_match_a_missing_redirect():
+    from fastapi import HTTPException
+    from orchestrator.native_session_custody import _redirect_uri
+    with pytest.raises(HTTPException):
+        _redirect_uri("unknown", None)
+
+
+@pytest.mark.asyncio
+async def test_pkce_destination_cannot_change_during_exchange(client, fixture, monkeypatch):
+    original = device_login._default_post_form
+
+    async def changed_destination(url, fields):
+        result = await original(url, fields)
+        fields["redirect_uri"] = "http://127.0.0.1:49153/callback"
+        return result
+
+    monkeypatch.setattr(device_login, "_default_post_form", changed_destination)
+    response = await client.post("/auth/token", data=form(), headers=HEADER)
+    assert response.status_code == 503
+    assert "set-cookie" not in response.headers
+
+
 @pytest.mark.asyncio
 async def test_fresh_public_code_issues_only_the_actual_stored_session(client, fixture, runtime):
     response = await client.post("/auth/token", data=form(), headers=HEADER)
