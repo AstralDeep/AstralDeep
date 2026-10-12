@@ -338,3 +338,15 @@ async def test_native_created_components_preserve_one_time_presentation(
     assert "opaque-one-time" in serialized
     assert "data:image/png;base64," in serialized
     assert "chrome_mesh_create" in serialized
+
+
+@pytest.mark.asyncio
+async def test_control_refuses_divergent_repository_binding(registered, monkeypatch):
+    mesh, dispatch, _, _ = registered
+    store = surface._store(mesh.host)
+    store._membership = object()
+    monkeypatch.setattr(surface, "_store", lambda _: store)
+    with pytest.raises(AssignmentError) as error:
+        await dispatch("chrome_mesh_create", creation(mesh.sdk.MeshDevice.generate()))
+    assert error.value.code == "human_request_unavailable"
+    assert not mesh.store.list_invitations(mesh.owner)

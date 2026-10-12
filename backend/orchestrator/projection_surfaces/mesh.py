@@ -632,6 +632,13 @@ async def _control(orch, websocket, user_id, payload, action):
     consent = caller.require_session()
     values = _action_input(payload, action)
     store = _store(orch)
+    if (
+        store._credentials.plane_runtime is not caller.runtime
+        or store._credentials.repository is not caller.repositories.credentials
+        or store._membership is not caller.repositories.mesh_enrollment
+        or store._audit is not caller.audit_repo
+    ):
+        raise AssignmentError("human_request_unavailable", 503)
     credential = consent.credential
     custody = {
         "incarnation_id": credential.incarnation_id,
