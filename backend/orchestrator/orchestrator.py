@@ -23205,7 +23205,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
+        from orchestrator.mesh_web import mesh_web_router
         app.include_router(mesh_router)
+        app.include_router(mesh_web_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router

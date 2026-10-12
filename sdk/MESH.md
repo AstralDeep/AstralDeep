@@ -130,8 +130,9 @@ its key. Revoked devices cannot refresh. Owner logout, replacement of the
 custodied session, hard expiry, or an unavailable IAM refresh refuses new
 sessions; current dispatch also refuses dead custody. There is no offline IAM
 fallback or durable owner bearer on a device. Existing web/native human clients
-retain their ordinary owner IAM flows; this API contribution adds no shared UI
-or primitive contract.
+retain their ordinary owner IAM flows. Their Mesh devices surface manages
+invitations and member access; SDK member tool transport remains separate from
+native owner management.
 
 The nonce and proof construction follows [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html).
 User authority uses the existing [Keycloak RFC 8693 token exchange](https://www.keycloak.org/securing-apps/token-exchange).
@@ -173,6 +174,27 @@ require a current selected server session and the ordinary authenticated socket
 dispatcher. A bare owner bearer does not invent session custody. The one-time
 creation payload and QR presentation are ephemeral and bound to that owner session.
 The joining device keeps its private key; the server accepts only its public JWK.
+
+To join through the shared clients, sign in on the new device and open Mesh
+devices. Leave the optional other-device public identity empty when creating
+the request on that device. It generates and retains its own Ed25519 key before
+submitting only the public identity. Confirm the displayed fingerprint and
+request on another signed-in owner device, then return the one-time link to the
+original joining device and choose Complete enrollment. Alternatively, the
+joining device can copy its public identity for another owner device to create
+the request. Copying an owner device's private key is never part of enrollment.
+
+The server serves `/enroll` and scrubs the one-time URL fragment before loading
+the enrollment controls. The link is valid only for the configured server and
+original key. Browser custody uses an account-scoped nonextractable WebCrypto
+key in IndexedDB. Windows custody uses current-user DPAPI; Apple and Android use
+their platform-protected local stores. Clients prove the exact decoded challenge
+and verify the returned active member through a separate cookie-free DPoP `/me`
+request before saving its public member ID. Member access tokens remain in memory
+and are discarded after verification. Account changes, connection retirement,
+wrong keys, missing custody, rejected grants and verification failures refuse
+success. A consumed grant whose final verification cannot finish must be checked
+in Mesh devices and revoked/reissued when necessary; do not report it as enrolled.
 
 The pinned Plane credential-list facade returns at most 1,000 rows. A saturated
 owner/namespace read therefore fails closed with `mesh_inventory_incomplete`

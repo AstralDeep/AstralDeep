@@ -119,6 +119,8 @@ def test_surface_exposes_shared_enrollment_management_actions(store):
         "chrome_mesh_create",
         "chrome_mesh_rename",
         "chrome_mesh_revoke",
+        "chrome_mesh_identity",
+        "chrome_mesh_redeem",
     }
     assert set(mesh_surface.HANDLERS) == {
         "chrome_mesh_create",

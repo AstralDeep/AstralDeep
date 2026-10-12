@@ -227,7 +227,10 @@ async def create_invitation(
 ):
     _require_confirm_authority(actor)
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
+    from orchestrator.mesh_links import enrollment_link
+
     try:
+        enrollment_link("x")
         result = await asyncio.to_thread(
             store.create_invitation,
             owner_id,
@@ -246,8 +249,10 @@ async def create_invitation(
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
     payload = result["payload"]
-    public_base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL") or ""
-    link = f"{public_base.rstrip('/')}/enroll#{payload}" if public_base else None
+    try:
+        link = enrollment_link(payload)
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
     return {"invitation": result["invitation"], "payload": payload, "link": link}
 
 

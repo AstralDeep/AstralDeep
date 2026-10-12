@@ -140,7 +140,7 @@ async def test_dispatcher_create_confirm_redeem_rename_revoke_and_remove(registe
     html = frames[-1]["html"]
     assert "One-time enrollment" in html
     assert "data:image/png;base64," in html
-    payload = re.search(r"<code[^>]*>([A-Za-z0-9_-]+)</code>", html).group(1)
+    payload = re.search(r"/enroll#([A-Za-z0-9_-]+)</code>", html).group(1)
     png = re.search(r'data:image/png;base64,([^"\s]+)', html).group(1)
     assert Image.open(BytesIO(base64.b64decode(png))).format == "PNG"
     invitation = mesh.store.list_invitations(mesh.owner)[0]

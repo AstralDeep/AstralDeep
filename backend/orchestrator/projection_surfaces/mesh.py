@@ -47,12 +47,10 @@ _INTRO_TEXT = (
 )
 
 _ENROLL_STEPS = (
-    "Start enrollment on the joining device and keep its private signing key on that device.",
-    "Create a request for the device's public identity and choose its allowed access.",
-    "Check the device fingerprint, then confirm the request before it expires. "
-    "The one-time enrollment secret is shown only at creation.",
-    "The device redeems the payload and appears below as a member you can "
-    "rename or revoke.",
+    "On the joining device, leave public identity blank and create a request. Its private key stays on that device.",
+    "To create the request elsewhere, share the joining device's public identity and paste it on your owner device.",
+    "From another device signed in to your account, check the fingerprint and confirm the pending request before it expires.",
+    "Copy the one-time secure link back to the original joining device and complete enrollment. You can then rename or revoke it.",
 )
 
 
@@ -69,6 +67,7 @@ class _CreatedEnrollment:
     incarnation_id: str
     payload: str
     qr_image: str
+    link: str | None = None
 
 
 def _qr_image(payload):
@@ -121,9 +120,9 @@ def _enrollment_fields():
         _sdui.field("label", "Device name"),
         _sdui.field(
             "device_key",
-            "Joining device public key (JSON)",
+            "Other device public identity (optional JSON)",
             "textarea",
-            help="Generate the private key on the joining device. Share only its public key.",
+            help="Leave blank to enroll this device. To enroll another device, paste its shared public identity.",
         ),
         _sdui.field("scopes", "Allowed access (comma separated)", default="tools:read"),
         _sdui.field("ttl_seconds", "Expires after (seconds)", default="3600"),
@@ -138,9 +137,14 @@ def _enrollment_form_html():
     return (
         f'<div data-ui-form class="{_CARD_CLS} space-y-3">'
         '<h3 class="text-sm font-semibold">Enroll a device</h3>'
-        '<p class="text-xs text-astral-muted">Generate a private signing key on the joining '
-        "device and paste only its public key. Creating a request grants no authority.</p>"
+        '<p class="text-xs text-astral-muted">Leave public identity blank to enroll this '
+        "device. To enroll another device, paste only its shared public identity. "
+        "Confirm the request from another owner device before completing enrollment.</p>"
         f"{fields}{_button_html('Create secure enrollment', 'chrome_mesh_create', {}, collect=True)}</div>"
+        f"{_button_html('Share this device public identity', 'chrome_mesh_identity', {})}"
+        f'<div data-ui-form class="{_CARD_CLS} space-y-3">'
+        f"{_field_html('link', 'Secure enrollment link')}"
+        f"{_button_html('Complete enrollment on this device', 'chrome_mesh_redeem', {}, collect=True)}</div>"
     )
 
 
@@ -153,7 +157,7 @@ def _created_components(created):
             "One-time enrollment",
             [
                 _sdui.text(
-                    "Scan this QR or copy the one-time payload to the joining device. "
+                    "Scan this QR or copy the secure link to the original joining device. "
                     "The request still requires confirmation before the device can redeem it. "
                     "This secret is shown once and must not be shared with other devices.",
                     "caption",
@@ -161,7 +165,9 @@ def _created_components(created):
                 Image(
                     url=created.qr_image, alt="One-time mesh enrollment QR"
                 ).to_dict(),
-                CodeBlock(code=created.payload, language="text").to_dict(),
+                CodeBlock(
+                    code=created.link or created.payload, language="text"
+                ).to_dict(),
             ],
         )
     ]
@@ -491,6 +497,17 @@ async def components(orch, user_id, roles, params):
             title="Enroll a device",
         )
     )
+    out.append(
+        _sdui.button("Share this device public identity", "chrome_mesh_identity")
+    )
+    out.append(
+        _sdui.form(
+            [_sdui.field("link", "Secure enrollment link")],
+            "chrome_mesh_redeem",
+            "Complete enrollment on this device",
+            title="Complete enrollment",
+        )
+    )
     return out
 
 
@@ -639,6 +656,10 @@ async def _control(orch, websocket, user_id, payload, action):
         or store._audit is not caller.audit_repo
     ):
         raise AssignmentError("human_request_unavailable", 503)
+    from orchestrator.mesh_links import enrollment_link
+
+    if action == "create":
+        enrollment_link("x")
     credential = consent.credential
     custody = {
         "incarnation_id": credential.incarnation_id,
@@ -660,7 +681,8 @@ async def _control(orch, websocket, user_id, payload, action):
                     user_id,
                     credential.incarnation_id,
                     result["payload"],
-                    _qr_image(result["payload"]),
+                    _qr_image(enrollment_link(result["payload"])),
+                    enrollment_link(result["payload"]),
                 )
                 return created, None
             if action in {"confirm", "reject"}:

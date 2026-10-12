@@ -192,7 +192,7 @@ def _decode_record(ciphertext: str) -> dict[str, Any]:
 
 
 def normalize_device_key(raw: Any) -> dict[str, str]:
-    if not isinstance(raw, dict):
+    if type(raw) is not dict or set(raw) != {"kty", "crv", "x"}:
         raise ValueError("device_key must be an Ed25519 public JWK object")
     if raw.get("kty") != "OKP" or raw.get("crv") != "Ed25519":
         raise ValueError("device_key must be an Ed25519 OKP JWK")
@@ -203,7 +203,7 @@ def normalize_device_key(raw: Any) -> dict[str, str]:
         public_bytes = _b64url_decode(x)
     except ValueError as exc:
         raise ValueError("device_key.x is not valid base64url") from exc
-    if len(public_bytes) != 32:
+    if len(public_bytes) != 32 or _b64url_encode(public_bytes) != x:
         raise ValueError("device_key.x must decode to 32 bytes")
     try:
         Ed25519PublicKey.from_public_bytes(public_bytes)
