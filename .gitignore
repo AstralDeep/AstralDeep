@@ -131,3 +131,6 @@ backend/verification/.runs/
 
 # Host-local Compose override (LETS warden wiring, feature 074 Phase B) -- never commit; template lives in deploy/lets/
 docker-compose.override.yml
+
+# Local qualification-run evidence written by controller/tooling gates -- generated, never committed.
+.pi-evidence/
