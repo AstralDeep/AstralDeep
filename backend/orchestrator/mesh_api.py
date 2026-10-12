@@ -264,7 +264,10 @@ async def list_invitations(
 ):
     _require_confirm_authority(actor)
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
-    return {"invitations": await asyncio.to_thread(store.list_invitations, owner_id)}
+    try:
+        return {"invitations": await asyncio.to_thread(store.list_invitations, owner_id)}
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
 
 
 @mesh_router.post("/invitations/{invite_id}/confirm")
@@ -335,7 +338,10 @@ async def list_members(
     store: me.MeshEnrollmentStore = Depends(_store),
 ):
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
-    return {"members": await asyncio.to_thread(store.list_members, owner_id)}
+    try:
+        return {"members": await asyncio.to_thread(store.list_members, owner_id)}
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
 
 
 @mesh_router.post("/members/{member_id}/revoke")

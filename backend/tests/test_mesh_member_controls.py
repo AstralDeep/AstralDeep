@@ -94,6 +94,18 @@ def test_owner_renames_active_member(mesh, audit_events):
     assert client.request("GET", "/api/mesh/me")["member"]["label"] == "Renamed tablet"
 
 
+@pytest.mark.parametrize("route,method", [("members", "list_members"), ("invitations", "list_invitations")])
+def test_inventory_refusal_returns_non_sensitive_typed_response(mesh, monkeypatch, route, method):
+    def refuse(store, owner):
+        assert owner == mesh.owner
+        raise me.MeshInventoryIncomplete("synthetic private record must not be exposed")
+
+    monkeypatch.setattr(me.MeshEnrollmentStore, method, refuse)
+    response = mesh.client.get(f"/api/mesh/{route}", headers=mesh.owner_headers)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "mesh_inventory_incomplete"}
+
+
 def test_rename_preserves_authority_revision_and_token(mesh):
     client, _ = mesh.enroll()
     member_id = _member_id(mesh)
