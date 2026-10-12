@@ -94,7 +94,7 @@ SECRET_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
         re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+)?PRIVATE KEY-----"),
         "[REDACTED:private_key]",
     ),
-    (re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_\-\Root\.]{25,}\b"), "[REDACTED:bearer_token]"),
+    (re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_.\-]{25,}\b"), "[REDACTED:bearer_token]"),
 )
 
 
