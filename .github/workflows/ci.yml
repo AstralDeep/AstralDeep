@@ -165,11 +165,12 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json
-      - name: Install isolated Python tooling and the exact composed Primitives source
+      - name: Install isolated Python tooling and exact composed Python packages
         run: |
           set -euo pipefail
           python -m pip install --require-hashes -r components/AstralProjection/tooling/python-ci/requirements.lock.txt
           python -m pip install --no-deps components/AstralPrimitives
+          python -m pip install --no-deps --no-build-isolation components/AstralProjection
       - name: Lint and test all Projection backend Python
         working-directory: components/AstralProjection
         run: |
@@ -236,7 +237,8 @@ jobs:
             --env ASTRAL_ALL_CLIENT_COVERAGE_DIR=/workspace/build/backend-web/client-v8 \
             --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
             /bin/bash -euc 'corepack npm run test:coverage-conversion:browser
-              corepack npm exec -- playwright test tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
+              node --test tests/mesh-custody.browser.test.mjs
+              corepack npm exec -- playwright test tests/mesh-enrollment.spec.js tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
       - name: Verify responsive and enlarged-text interactions in all three browser engines
         working-directory: components/AstralProjection
         run: |
