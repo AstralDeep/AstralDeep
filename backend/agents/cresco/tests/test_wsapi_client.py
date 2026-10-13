@@ -361,3 +361,35 @@ def test_multi_value_reply_expansion_is_bounded(gateway, monkeypatch):
     gateway.state["mode"] = "twocompressed"
     with pytest.raises(CrescoProtocolError):
         _client().call("listregions")
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_failed_open_closes_owned_socket(monkeypatch, pinned):
+    import socket
+    import ssl
+
+    raw, peer = socket.socketpair()
+    upgraded = None
+    try:
+        client = WsapiClient(FabricConfig(
+            url="wss://gateway.test", service_key="synthetic",
+            fingerprint=BAD_FINGERPRINT if pinned else "",
+        ))
+        monkeypatch.setattr(client, "_dial", lambda *_: raw)
+        if pinned:
+            upgraded = raw.dup()
+            raw.close()
+            monkeypatch.setattr(client, "_pin_wrap", lambda *_: upgraded)
+
+        def refuse_open(*args, **kwargs):
+            raise ssl.SSLError("synthetic opening refusal")
+
+        monkeypatch.setattr("websockets.sync.client.connect", refuse_open)
+        with pytest.raises(CrescoTLSError):
+            client._open("gateway.test", 8282)
+        assert (upgraded if pinned else raw).fileno() == -1
+    finally:
+        raw.close()
+        peer.close()
+        if upgraded is not None:
+            upgraded.close()

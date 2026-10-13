@@ -38,20 +38,6 @@ def _strip_ambient_flags() -> None:
 _strip_ambient_flags()
 
 
-class _CleanAnalyzer:
-    def analyze(self, text, language, entities, score_threshold):
-        return []
-
-
-@pytest.fixture(autouse=True)
-def _hermetic_phi_gate():
-    from personalization.phi_gate import PHIGate, set_phi_gate
-
-    set_phi_gate(PHIGate(analyzer=_CleanAnalyzer(), build_if_missing=False))
-    yield
-    set_phi_gate(None)
-
-
 @pytest.fixture
 async def orchestrator_factory():
     instances = []

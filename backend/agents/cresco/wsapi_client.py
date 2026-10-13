@@ -239,9 +239,11 @@ class WsapiClient:
         from websockets.sync.client import connect
 
         raw = self._dial(host, port)
+        owned = raw
         try:
             if self.config.fingerprint:
                 upgraded = self._pin_wrap(raw, host)
+                owned = upgraded
                 return connect(
                     f"ws://{host}:{port}{WSAPI_PATH}",
                     sock=upgraded,
@@ -267,8 +269,10 @@ class WsapiClient:
                 additional_headers={"cresco_service_key": self.config.service_key},
             )
         except CrescoError:
+            owned.close()
             raise
         except Exception as exc:
+            owned.close()
             raise _typed_failure(exc) from exc
 
     @staticmethod
