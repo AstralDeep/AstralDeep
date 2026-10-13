@@ -370,6 +370,13 @@ class AssignmentRunner:
             episode.cancel()
 
     async def run_claim(self, claim):
+        stop = getattr(self.orch, "emergency_stop", None)
+        if stop is not None:
+            async with stop.effect(claim.assignment.owner_id):
+                return await self._run_claim(claim)
+        return await self._run_claim(claim)
+
+    async def _run_claim(self, claim):
         if claim.assignment.execution_profile == "one_shot":
             if self.one_shot is None:
                 raise DispatchDenied("assignment_authorization_unavailable")

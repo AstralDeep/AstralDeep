@@ -6,13 +6,16 @@ reads, replacement isolation, and refresh/claim races over real Plane.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi import Response
+from jose import jwt
 
 from orchestrator import web_auth
+from tests.test_request_session_authority_088 import signing_key as signing_key
 
 A = "11111111-1111-4111-8111-111111111111"
 B = "22222222-2222-4222-8222-222222222222"
@@ -307,7 +310,7 @@ def test_stale_logout_does_not_revoke_replacement_or_owner_credentials(issued, r
 
 
 @pytest.mark.parametrize("flow", ["callback", "kiosk"])
-def test_user_switch_retains_prior_incarnation_across_identity_provider_wait(issued, runtime, monkeypatch, flow):
+def test_user_switch_retains_prior_incarnation_across_identity_provider_wait(issued, runtime, monkeypatch, flow, signing_key):
     from orchestrator import device_login
     from tests.helpers.session_plane_runtime import get_session_record
     _, sid, _, _ = issued
@@ -319,7 +322,13 @@ def test_user_switch_retains_prior_incarnation_across_identity_provider_wait(iss
     async def finish_remote(*args, **kwargs):
         current.append(await asyncio.to_thread(replacement, runtime, sid))
         await asyncio.to_thread(web_auth._session_by_sid, sid)
-        return {"access_token": "new-owner-access", "refresh_token": "new-owner-refresh"}
+        token = jwt.encode({"sub": "new-owner", "iss": "https://issuer.invalid", "azp": "web",
+                            "exp": int(time.time()) + 300, "realm_access": {"roles": ["user"]}},
+                           signing_key[0], algorithm="RS256", headers={"kid": "synthetic-request-authority"})
+        return {"access_token": token, "refresh_token": "new-owner-refresh"}
+
+    async def keys(*args, **kwargs):
+        return signing_key[1]
 
     async def no_audit(*args, **kwargs):
         pass
@@ -328,6 +337,7 @@ def test_user_switch_retains_prior_incarnation_across_identity_provider_wait(iss
         revoked.append(args)
 
     monkeypatch.setattr(web_auth, "_sub_from_jwt", lambda token: "new-owner")
+    monkeypatch.setattr("shared.jwks_cache.get_jwks", keys)
     monkeypatch.setattr(web_auth, "_audit", no_audit)
     monkeypatch.setattr(web_auth, "_end_voice_session", revoke)
     monkeypatch.setattr(web_auth, "_revoke_or_queue", revoke)

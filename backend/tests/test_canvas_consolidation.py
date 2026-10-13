@@ -310,6 +310,35 @@ def test_snapshot_adapter_preserves_raw_identity_and_consolidates_presentation()
     assert originals == before
 
 
+@pytest.mark.parametrize("device", ["browser", "ios"])
+@pytest.mark.parametrize("restriction", ["budget", "read_only"])
+def test_consolidated_snapshot_enforces_host_actions_and_keeps_canonical_components(monkeypatch, device, restriction):
+    import json
+
+    from rote.rote import ROTE
+
+    limits = {"max_actions": 1} if restriction == "budget" else {"supports_interactivity": False}
+    monkeypatch.setenv("ROTE_HOST_CONFIG", json.dumps({device: limits}))
+    fake, socket = SimpleNamespace(rote=ROTE()), object()
+    fake.rote.register_device(socket, {"device_type": device, "viewport_width": 1440})
+    originals = [table(component_id="source"), table(component_id="result"),
+                 {"type": "param_picker", "component_id": "first", "title": "First form", "fields": [],
+                  "submit_message_template": "Allowed {value}"},
+                 {"type": "param_picker", "component_id": "second", "title": "Second form", "fields": [],
+                  "submit_message_template": "Forbidden {value}"}]
+    before = copy.deepcopy(originals)
+    result = Orchestrator._adapt_conversation_snapshot(
+        fake, socket, {"transcript": [], "canvas": {"components": originals}})
+    rendered = result["canvas"]["components"]
+    assert len([node for node in walk(rendered) if node.get("type") == "table"]) == 1
+    forms = [node for node in walk(rendered) if node.get("type") == "param_picker"]
+    assert len(forms) == (1 if restriction == "budget" else 0)
+    assert all(node.get("submit_message_template") != "Forbidden {value}" for node in walk(rendered))
+    assert any(node.get("content") == "Second form is unavailable on this device." for node in walk(rendered))
+    assert fake.rote.get_cached_components(socket) == before
+    assert originals == before
+
+
 @pytest.mark.parametrize("nested", [False, True])
 def test_retained_source_and_final_title_pass_real_rote_snapshot_rendering(nested):
     from rote.rote import ROTE

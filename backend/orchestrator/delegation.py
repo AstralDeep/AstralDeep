@@ -382,6 +382,11 @@ def mint_child_delegation(parent: dict, child_agent_id: str,
         DELEGATION_DEPTH_CLAIM: child_depth,
         MAX_DEPTH_CLAIM: max_depth,
     }
+    if "astral_mesh" in parent:
+        if type(parent["astral_mesh"]) is not dict or type(parent.get("cnf")) is not dict:
+            raise RecursiveDelegationError("mesh parent identity is incomplete")
+        child["astral_mesh"] = dict(parent["astral_mesh"])
+        child["cnf"] = dict(parent["cnf"])
     return child
 
 

@@ -1,6 +1,5 @@
-"""Minimal real-socket fake implementing just the shape of Deep's MCP wire contract
-(JSON-RPC over POST /mcp) plus an in-memory Work-operation state machine, so
-sdk/tests can run offline without the real backend.
+"""Serve synthetic MCP and owner emergency REST wire shapes for SDK tests.
+The in-memory state complements backend authority and PostgreSQL qualification.
 """
 
 from __future__ import annotations
@@ -21,6 +20,9 @@ _SCOPE_FOR_TOOL = {
     "astral_cancel_operation": "operations.control",
     "astral_pause_operation": "operations.control",
     "astral_get_artifact": "artifacts.read",
+    "astral_emergency_status": "operations.read",
+    "astral_emergency_stop": "operations.control",
+    "astral_emergency_resume": "operations.control",
 }
 
 
@@ -28,11 +30,14 @@ class FakeAstralState:
     def __init__(self, *, valid_token: str = "afk_test-token", scopes=frozenset(_SCOPE_FOR_TOOL.values())):
         self.lock = threading.Lock()
         self.valid_token = valid_token
+        self.owner_token = "synthetic-owner-access-token"
         self.scopes = frozenset(scopes)
         self.operations: dict[str, dict[str, Any]] = {}
         self.by_key: dict[str, str] = {}
         self.fail_next_n: int = 0
         self.requests: list[dict[str, Any]] = []
+        self.stop_engaged: bool = False
+        self.stop_revision: int = 0
 
 
 def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
@@ -65,6 +70,9 @@ class _Handler(BaseHTTPRequestHandler):
                         www_authenticate=challenge)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/api/emergency-stop/"):
+            self._owner_emergency()
+            return
         if self.path != "/mcp":
             self._error(None, 404, "not found")
             return
@@ -108,6 +116,28 @@ class _Handler(BaseHTTPRequestHandler):
             result = {"resultType": "complete", "content": [{"type": "text", "text": exc.code}],
                      "structuredContent": {}, "isError": True}
         self._send_json(200, {"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._owner_emergency()
+
+    def _owner_emergency(self) -> None:
+        if self.headers.get("Authorization") != f"Bearer {self.state.owner_token}":
+            self._send_json(403, {"detail": "emergency_stop_owner_authentication_required"})
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        arguments = json.loads(self.rfile.read(length)) if length else {}
+        method = {"/api/emergency-stop": self._tool_astral_emergency_status,
+                  "/api/emergency-stop/stop": self._tool_astral_emergency_stop,
+                  "/api/emergency-stop/resume": self._tool_astral_emergency_resume}.get(self.path)
+        if method is None:
+            self._send_json(404, {"detail": "not found"})
+            return
+        try:
+            result = method(arguments)
+        except _ToolError as exc:
+            self._send_json(409, {"detail": exc.code})
+            return
+        self._send_json(200, result)
 
     def _call_tool(self, name: Optional[str], arguments: dict[str, Any]) -> dict[str, Any]:
         scope = _SCOPE_FOR_TOOL.get(name or "")
@@ -191,6 +221,38 @@ class _Handler(BaseHTTPRequestHandler):
     def _tool_astral_get_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         op = self._tool_astral_get_operation(arguments)
         return {"id": op["id"], "revision": op["revision"], "result": {"text": "synthetic result"}}
+
+    def _tool_astral_emergency_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            engaged = self.state.stop_engaged
+            revision = self.state.stop_revision
+        if not engaged:
+            return {"engaged": False, "state": "running", "revision": revision,
+                    "engaged_at": None, "engaged_by": None, "reason": None, "responders": []}
+        return {"engaged": True, "state": "stopped", "revision": revision,
+                "engaged_at": "2026-01-01T00:00:00+00:00", "engaged_by": "owner",
+                "reason": None,
+                "responders": [{"responder": "local.orchestrator", "kind": "local",
+                                "state": "acknowledged", "updated_at": 0}]}
+
+    def _tool_astral_emergency_stop(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            if self.state.stop_engaged:
+                revision = self.state.stop_revision
+            else:
+                self.state.stop_engaged = True
+                self.state.stop_revision += 1
+                revision = self.state.stop_revision
+        return self._tool_astral_emergency_status({}) | {"revision": revision}
+
+    def _tool_astral_emergency_resume(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            if not self.state.stop_engaged:
+                raise _ToolError("emergency_stop_not_engaged")
+            if self.state.stop_revision != arguments["expected_revision"]:
+                raise _ToolError("emergency_stop_stale_revision")
+            self.state.stop_engaged = False
+        return self._tool_astral_emergency_status({})
 
 
 class _ToolError(Exception):

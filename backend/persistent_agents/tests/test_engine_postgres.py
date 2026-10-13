@@ -126,7 +126,7 @@ def _engine(plane, monkeypatch, *, seed_prior):
     monkeypatch.setattr(runner_module, "safe_text", AsyncMock())
     host = _Host(plane)
     store = AssignmentStore(plane_runtime=plane)
-    service = AssignmentService(host, store=store, enabled=True, phi_gate=SimpleNamespace())
+    service = AssignmentService(host, store=store, enabled=True)
     service.validate_execution = AsyncMock(return_value={"permission_digest": digest("permission"), "precondition_digest": digest("precondition")})
     runner = AssignmentRunner(host, service, config=RunnerConfig(lease_seconds=5))
     grant = str(uuid4())

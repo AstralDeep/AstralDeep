@@ -137,7 +137,7 @@ def livekit_profile(address: str) -> dict:
         },
         "turn": {
             "enabled": True,
-            "domain": "ad-bwq-turn",
+            "domain": "ad-bwq-turn.invalid",
             "udp_port": 3478,
             "tls_port": 443,
             "external_tls": False,
@@ -554,7 +554,7 @@ def initialize(
         [
             *start("livekit", "ad-bwq-livekit-node"),
             "--network-alias",
-            "ad-bwq-turn",
+            "ad-bwq-turn.invalid",
             "--ip",
             address,
             "--read-only",
@@ -680,7 +680,7 @@ def initialize(
             "image": LIVEKIT_IMAGE,
             "status": "started-media-acceptance-pending",
             "signaling_url": "wss://ad-bwq-livekit:9444",
-            "turn_tls": "ad-bwq-turn:443",
+            "turn_tls": "ad-bwq-turn.invalid:443",
             "turn_udp": address + ":3478",
             "node_ipv4": address,
             "profile_sha256": hashlib.sha256(profile_path.read_bytes()).hexdigest(),

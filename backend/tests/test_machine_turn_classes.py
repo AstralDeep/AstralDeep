@@ -171,8 +171,9 @@ def test_all_three_classes_use_the_same_derivation():
 
     autoparse_src = inspect.getsource(attachment_autoparse)
     creation_src = inspect.getsource(agentic_creation._self_test_draft)
-    runner_src = inspect.getsource(runner.JobRunner.run_job)
+    runner_src = inspect.getsource(runner.JobRunner._run_job)
 
+    assert "self._run_job(job)" in inspect.getsource(runner.JobRunner.run_job)
     assert 'turn_class="parser_replay"' in autoparse_src
     assert 'turn_class="draft_self_test"' in creation_src
     assert 'turn_class="scheduled_job"' in runner_src

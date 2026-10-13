@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -20,6 +24,7 @@ from cryptography.hazmat.primitives import serialization
 
 from scripts import backend_web_service_materials as materials
 from scripts import initialize_backend_web_services as services
+from scripts import wait_backend_web_services as readiness
 
 ROOT = Path(__file__).resolve().parents[2]
 QID = "a" * 32
@@ -53,7 +58,7 @@ def generated(tmp_path, ownership):
         'identity = "https://identity.production-acceptance"\n'
         'name = "lets-production-acceptance"\n'
         'command = ["lets-provider", "--production"]\n'
-        'def configure():\n    staged = _object(CONFIG)\n',
+        "def configure():\n    staged = _object(CONFIG)\n",
         encoding="utf-8",
     )
     result = materials.generate_materials(
@@ -150,7 +155,7 @@ def test_materials_bind_real_tls_owner_subjects_scopes_and_fresh_keys(generated)
     assert key.public_key().public_numbers() == cert.public_key().public_numbers()
     for path, hostname in (
         ("proxy/livekit-cert.pem", "ad-bwq-livekit"),
-        ("livekit/turn-cert.pem", "ad-bwq-turn"),
+        ("livekit/turn-cert.pem", "ad-bwq-turn.invalid"),
     ):
         media_cert = x509.load_pem_x509_certificate((root / path).read_bytes())
         media_cert.verify_directly_issued_by(ca)
@@ -328,8 +333,9 @@ def test_initializer_uses_only_new_labelled_private_resources_and_never_claims_a
     assert not any("astraldeep-postgres" in value for call in calls for value in call)
     media = running[-1]
     assert services.LIVEKIT_IMAGE in media and "--ip" in media and "--cap-drop" in media
-    assert "--network-alias" in media and "ad-bwq-turn" in media
+    assert "--network-alias" in media and "ad-bwq-turn.invalid" in media
     assert report["livekit"]["node_ipv4"] == "172.30.0.254"
+    assert report["livekit"]["turn_tls"] == "ad-bwq-turn.invalid:443"
     assert report["infrastructure"]["application_acceptance"] is False
 
 
@@ -642,12 +648,69 @@ def test_livekit_profile_keeps_production_room_authority_and_narrow_turn():
     assert profile["turn"]["allow_restricted_peer_cidrs"] == [address + "/32"]
     assert profile["turn"]["enabled"] and profile["turn"]["tls_port"] == 443
     assert profile["turn"]["external_tls"] is False
+    assert profile["turn"]["domain"] == "ad-bwq-turn.invalid"
+    assert re.fullmatch(r"(?i)[a-z0-9-]+(\.[a-z0-9-]+)+\.?", profile["turn"]["domain"])
     assert (
         profile["logging"]["level"] == "warn"
         and profile["logging"]["pion_level"] == "error"
     )
     with pytest.raises(ValueError, match="private IPv4"):
         services.livekit_profile("8.8.8.8")
+
+
+@pytest.mark.parametrize("certificate_case", ["valid", "foreign-host", "untrusted"])
+def test_turn_readiness_requires_verified_dotted_dns_and_real_tls(
+    generated, monkeypatch, certificate_case
+):
+    root, _, _ = generated
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    prefix = "proxy/livekit" if certificate_case == "foreign-host" else "livekit/turn"
+    server.load_cert_chain(
+        str(root / (prefix + "-cert.pem")), str(root / (prefix + "-key.pem"))
+    )
+    ca = "app/lets-ca.pem" if certificate_case == "untrusted" else "app/iam-ca.pem"
+    client = ssl.create_default_context(cafile=str(root / ca))
+    assert client.check_hostname and client.verify_mode == ssl.CERT_REQUIRED
+    observed_sni, server_errors = [], []
+    server.set_servername_callback(
+        lambda connection, name, context: observed_sni.append(name)
+    )
+    original_connect = socket.create_connection
+    calls = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(5)
+        address = listener.getsockname()
+
+        def handshake():
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    with server.wrap_socket(connection, server_side=True):
+                        pass
+            except ssl.SSLError as exc:
+                server_errors.append(type(exc).__name__)
+
+        def connect(target, *, timeout):
+            calls.append(target)
+            return original_connect(address, timeout=timeout)
+
+        monkeypatch.setattr(readiness.socket, "create_connection", connect)
+        thread = threading.Thread(target=handshake, daemon=True)
+        thread.start()
+        try:
+            if certificate_case == "valid":
+                readiness.turn_tls(client)
+            else:
+                with pytest.raises(ssl.SSLCertVerificationError):
+                    readiness.turn_tls(client)
+        finally:
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert calls == [("ad-bwq-turn.invalid", 443)]
+    assert observed_sni == [services.livekit_profile("172.30.0.254")["turn"]["domain"]]
+    assert bool(server_errors) is (certificate_case != "valid")
 
 
 def test_postgres_wait_is_bounded_and_does_not_leak_output(monkeypatch):

@@ -374,6 +374,43 @@ class _VoiceOperationRejection:
 
 
 @dataclass(frozen=True)
+class _UiOperationRefusal:
+    message: str
+
+
+_UI_OPERATION_REFUSAL_MESSAGES = {
+    "provider_unconfigured": "Set up your AI provider to use this.",
+    "unsupported_action": "This component action is not supported.",
+    "component_context_missing": "This action is missing its component context.",
+    "timeline_readonly": "You are viewing a past workspace state — return to live to interact.",
+    "component_unavailable": "This component is no longer available.",
+    "source_missing": "This component has no refreshable source.",
+    "agent_retired_refresh": (
+        "This component came from an agent that has been retired; "
+        "it can still be viewed but no longer refreshed."
+    ),
+    "permission_denied": "This action is not permitted. Check your tool permissions.",
+    "policy_refused": "This action was refused by a policy gate.",
+    "action_failed": "The action failed. Try again.",
+    "refine_disabled": "Component refine is not enabled on this server.",
+    "watch_unsupported": "This action isn't available on the watch.",
+    "agent_retired_change": (
+        "This component came from an agent that has been retired; "
+        "it can still be viewed but no longer changed."
+    ),
+    "instruction_missing": "Tell me how this component should change.",
+    "refine_invalid": (
+        "The AI couldn't produce a valid same-type edit "
+        "for this component, so it was left unchanged."
+    ),
+    "refine_failed": "The component could not be refined. Try again.",
+    "version_unavailable": "That version is no longer available.",
+    "restore_failed": "The component could not be restored. Try again.",
+    "action_incomplete": "The action could not be completed. Try again.",
+}
+
+
+@dataclass(frozen=True)
 class _PendingVoiceFinalization:
     voice_dispatch: _VoiceDispatchContext
     user_id: str
@@ -1110,10 +1147,18 @@ class Orchestrator:
         )
         if operation_retention_seconds <= 0:
             raise ValueError("OPERATION_RETENTION_SECONDS must be positive")
+        from orchestrator.emergency_stop_binding import (
+            mount as mount_emergency_stop,
+            submission_gate as emergency_submission_gate,
+        )
+
+        self.emergency_stop = mount_emergency_stop(self)
         self.work_admission = WorkAdmissionCoordinator.from_plane(
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
             operation_retention=timedelta(seconds=operation_retention_seconds),
+            submission_gate=emergency_submission_gate(self),
+            execution_gate=self.emergency_stop_store.assert_running,
         )
         from orchestrator.agent_generator import (
             BYO_RUNTIME_CONTRACT_VERSION,
@@ -6614,6 +6659,12 @@ class Orchestrator:
                 # Only this fixed message may cross the replay boundary
                 if getattr(operation, "safe_summary", None) == SavedKeyEndpointChanged.MESSAGE:
                     error["message"] = SavedKeyEndpointChanged.MESSAGE
+            elif getattr(operation, "terminal_code", None) == "ui_action_refused":
+                summary = getattr(operation, "safe_summary", None)
+                error["message"] = (
+                    summary if summary in _UI_OPERATION_REFUSAL_MESSAGES.values()
+                    else _UI_OPERATION_REFUSAL_MESSAGES["action_incomplete"]
+                )
         from orchestrator.chrome_events import emit_operation_status
 
         await emit_operation_status(
@@ -8348,6 +8399,7 @@ class Orchestrator:
             voice_terminal_intent = connection_operation_context.get(
                 "voice_terminal_intent"
             )
+            ui_refusal = connection_operation_context.get("ui_refusal")
             if isinstance(voice_rejection, _VoiceOperationRejection):
                 terminal_operation = await self._terminalize_connection_operation(
                     context,
@@ -8367,6 +8419,14 @@ class Orchestrator:
                     terminal_code=voice_terminal_intent.terminal_code,
                     safe_summary=voice_terminal_intent.safe_summary,
                     retry_after_ms=voice_terminal_intent.retry_after_ms,
+                )
+            elif isinstance(ui_refusal, _UiOperationRefusal):
+                terminal_operation = await self._terminalize_connection_operation(
+                    context,
+                    work,
+                    state=OperationState.FAILED,
+                    terminal_code="ui_action_refused",
+                    safe_summary=ui_refusal.message,
                 )
             else:
                 terminal_operation = await self._complete_connection_operation(
@@ -10719,6 +10779,7 @@ class Orchestrator:
                         auth_principal=auth_principal,
                         feature=f"ui_event:{msg.action}",
                     )
+                    self._register_ui_operation_refusal("provider_unconfigured")
                     await self.send_ui_render(websocket, [
                         Alert(message="Set up your AI provider to use this.",
                               variant="error").to_dict()
@@ -11039,7 +11100,9 @@ class Orchestrator:
                             "connection_generation": msg.connection_generation or msg.payload.get("connection_generation"),
                             "request_generation": msg.request_generation or msg.payload.get("request_generation"),
                         })
-                    await self._safe_send(websocket, json.dumps(device_ack))
+                    registration_context = getattr(self, "_connection_contexts", {}).get(id(websocket))
+                    if not getattr(registration_context, "work_registrations_pending", 0):
+                        await self._safe_send(websocket, json.dumps(device_ack))
                     if (self.ui_sessions.get(websocket) is not registration
                             or self._get_user_id(websocket) != user_id):
                         return
@@ -12186,8 +12249,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _adapt_conversation_snapshot(self, websocket, snapshot: Dict[str, Any], *, cache: bool = True):
         from orchestrator.canvas_consolidation import consolidate_canvas
-        from rote.adapter import ComponentAdapter
-        from rote.capabilities import DeviceType
 
         canonical_canvas = snapshot["canvas"]["components"]
         presentation_canvas = consolidate_canvas(canonical_canvas)
@@ -12200,8 +12261,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         adapted_canvas = self.rote.adapt(websocket, canonical_canvas, cache=cache)
         profile = self.rote.get_profile(websocket)
         if presentation_canvas != canonical_canvas:
-            adapted_canvas = (presentation_canvas if profile.device_type == DeviceType.BROWSER
-                              else ComponentAdapter.adapt(presentation_canvas, profile))
+            adapted_canvas = self.rote.adapt(websocket, presentation_canvas, cache=False)
         snapshot["canvas"]["components"] = adapted_canvas
         target = "native" if _is_native_device(profile) else "web"
         return augment_conversation_snapshot_for_target(
@@ -12696,6 +12756,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> str:
         from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
         from orchestrator.scheduled_publication import stage_scheduled_history
+        from persistent_agents.models import AssignmentError
+
+        stop = getattr(self, "emergency_stop", None)
+        if stop is not None and user_id and not stop.admission_allowed(user_id):
+            raise AssignmentError("emergency_stop_active", 423)
 
         atomic_inputs = (
             scheduled_attempt,
@@ -13788,6 +13853,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         user_id: str = None, draft_agent_id: str = None, selected_tools=None,
         attachments=None, operation_context=None, voice_dispatch=None, selection=None,
     ):
+        from persistent_agents.models import AssignmentError
+
+        stop = getattr(self, "emergency_stop", None)
+        stop_owner = user_id or self._get_user_id(websocket)
+        if (stop is not None and stop_owner and stop_owner != "legacy"
+                and not stop.admission_allowed(stop_owner)):
+            raise AssignmentError("emergency_stop_active", 423)
         from orchestrator import user_skills
         from orchestrator.human_request_authority import (
             current_socket_human_read, retire_socket_human_read,
@@ -13801,6 +13873,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from persistent_agents.models import AssignmentError
 
         async def execute():
+            if stop is not None and stop_owner and stop_owner != "legacy":
+                async with stop.effect(stop_owner):
+                    return await self._handle_chat_message_with_guidance(
+                        websocket, message, chat_id, display_message, user_id=user_id,
+                        draft_agent_id=draft_agent_id, selected_tools=selected_tools,
+                        attachments=attachments, operation_context=operation_context,
+                        voice_dispatch=voice_dispatch)
             return await self._handle_chat_message_with_guidance(
                 websocket, message, chat_id, display_message, user_id=user_id,
                 draft_agent_id=draft_agent_id, selected_tools=selected_tools,
@@ -17112,6 +17191,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_target="chat")
 
         _session_claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+        from orchestrator import mesh_admission
+        if mesh_admission.MEMBER_CLAIM in _session_claims or (
+                isinstance(parent_token, dict) and mesh_admission.MEMBER_CLAIM in parent_token):
+            try:
+                if (mesh_admission.MEMBER_CLAIM not in _session_claims
+                        or _session_claims.get("sub") != user_id):
+                    raise mesh_admission.MeshAdmissionError()
+                scope = self.tool_permissions.get_tool_scope(agent_id, tool_name)
+                await asyncio.to_thread(mesh_admission.assert_dispatch_current, self,
+                                        _session_claims, agent_id, scope)
+            except Exception:
+                return GateRefusal(response=MCPResponse(error={
+                    "code": mesh_admission.MeshAdmissionError.code,
+                    "message": "Current member authority is unavailable", "retryable": False}))
         from orchestrator.chain_authority import machine_scope_ceiling
 
         machine_scopes = machine_scope_ceiling(_session_claims)
@@ -17421,7 +17514,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             delegation_token = await self._get_delegation_token(websocket, agent_id, user_id)
             if delegation_token:
                 args["_delegation_token"] = delegation_token
-            elif self._delegation_required() or machine_scopes is not None:
+            elif (self._delegation_required() or machine_scopes is not None
+                  or mesh_admission.MEMBER_CLAIM in _session_claims):
                 permissions_fault = await self._delegation_denied_for_permissions(
                     websocket, agent_id, user_id)
                 signing_key_fault = (
@@ -17845,6 +17939,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             parent_payload = _dg.decode_token_payload(token) if token else None
             if parent_payload is not None:
                 parent_payload = _dg.normalize_hop_parent(parent_payload, agent_id)
+                from orchestrator.mesh_admission import MEMBER_CLAIM
+                claims = self.ui_sessions.get(ui_websocket, {})
+                if MEMBER_CLAIM in claims:
+                    parent_payload[MEMBER_CLAIM] = dict(claims[MEMBER_CLAIM])
+                    parent_payload["cnf"] = dict(claims["cnf"])
             self._dispatch_context[request_id] = {
                 "agent_id": agent_id,
                 "user_id": args.get("user_id") if isinstance(args, dict) else None,
@@ -18625,9 +18724,31 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator import hitl_confirmation
 
         async def reviewed_invoke(capabilities):
+            from orchestrator import mesh_admission
+            claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
+            if mesh_admission.MEMBER_CLAIM in claims:
+                try:
+                    if claims.get("sub") != user_id:
+                        raise mesh_admission.MeshAdmissionError()
+                    await asyncio.to_thread(mesh_admission.assert_dispatch_current, self, claims,
+                                            agent_id, self.tool_permissions.get_tool_scope(agent_id, tool_name))
+                except mesh_admission.MeshAdmissionError:
+                    return MCPResponse(error={"code": mesh_admission.MeshAdmissionError.code,
+                        "message": "Current member authority is unavailable", "retryable": False})
             refusal = hitl_confirmation.effect_refusal(
                 self, websocket, user_id, conversation_id, agent_id, tool_name, args, start=True)
-            return refusal or await invoke(capabilities)
+            if refusal is not None:
+                return refusal
+            stop = getattr(self, "emergency_stop", None)
+            if stop is not None and user_id and user_id != "legacy":
+                from orchestrator.emergency_stop import EmergencyStopRefused
+
+                try:
+                    async with stop.effect(user_id):
+                        return await invoke(capabilities)
+                except EmergencyStopRefused as exc:
+                    return MCPResponse(error={"message": exc.code, "retryable": False})
+            return await invoke(capabilities)
 
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
@@ -18852,6 +18973,18 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     ) -> Optional[MCPResponse]:
         from orchestrator.agent_identity import required_identity_claims
 
+        stop = getattr(self, "emergency_stop", None)
+        tool_owner = protected_owner_id
+        if stop is not None:
+            if not tool_owner and ui_websocket is not None:
+                tool_claims = (getattr(self, "ui_sessions", None) or {}).get(ui_websocket)
+                tool_owner = tool_claims.get("sub") if isinstance(tool_claims, dict) else None
+            if (tool_owner and tool_owner != "legacy"
+                    and not stop.admission_allowed(tool_owner)):
+                return MCPResponse(
+                    request_id=f"req_{tool_name}_{_uuid.uuid4().hex}",
+                    error={"message": "emergency_stop_active", "retryable": False})
+
         channel = protected_channel or self._protected_dispatch_channel(ui_websocket)
 
         async def guarded(final_arguments, physical_invoke):
@@ -18882,7 +19015,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 agent_id,
                 tool_name,
                 final_arguments,
-                user_id=protected_owner_id,
+                user_id=tool_owner,
                 channel=channel,
                 audit_correlation_id=protected_audit_correlation_id,
                 actor_user_id=protected_actor_user_id,
@@ -19587,6 +19720,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not card:
                 return None
             session = self.ui_sessions.get(websocket, {})
+            from orchestrator import mesh_admission
+            if mesh_admission.MEMBER_CLAIM in session:
+                if session.get("sub") != user_id:
+                    return None
+                service = mesh_admission.admission_from_orchestrator(self)
+                return await asyncio.to_thread(service.delegation_token, session, agent_id)
             if session.get("_invocation_channel") == "mcp":
                 from orchestrator import delegation as _dg
                 try:
@@ -19786,7 +19925,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         adapter = self._governed_dispatch_adapter()
         scope = self.tool_permissions.get_tool_scope(agent_id, tool_name) or ""
 
-        async def _invoke(caller_capabilities: Dict[str, object]) -> str:
+        async def _physical_stream(caller_capabilities: Dict[str, object]) -> str:
             request = MCPRequest(
                 request_id=request_id,
                 method="tools/call",
@@ -19809,6 +19948,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             else:
                 await self.agents[agent_id].send(request.to_json())
             return request_id
+
+        async def _invoke(caller_capabilities: Dict[str, object]) -> str:
+            stop = getattr(self, "emergency_stop", None)
+            if stop is not None and user_id and user_id != "legacy":
+                async with stop.effect(user_id):
+                    return await _physical_stream(caller_capabilities)
+            return await _physical_stream(caller_capabilities)
 
         from audit.hooks import ToolDispatchAudit
         from orchestrator.governed_dispatch import GovernedDispatchError
@@ -21491,18 +21637,21 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if kind not in ("refresh", "invoke"):
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
                                                f"unsupported_kind:{kind}")
+            self._register_ui_operation_refusal("unsupported_action")
             await self.send_ui_render(websocket, [
-                Alert(message=f"Unsupported component action kind '{kind}'.",
+                Alert(message=_UI_OPERATION_REFUSAL_MESSAGES["unsupported_action"],
                       variant="error").to_dict()
             ], target="chat")
             return
         if not chat_id or not component_id:
+            self._register_ui_operation_refusal("component_context_missing")
             await self.send_ui_render(websocket, [
                 Alert(message="This action is missing its component context.", variant="error").to_dict()
             ], target="chat")
             return
         if self._ws_timeline_mode.get(id(websocket)):
             await self._audit_workspace_denial(user_id, chat_id, component_id, "timeline_readonly")
+            self._register_ui_operation_refusal("timeline_readonly")
             await self.send_ui_render(websocket, [
                 Alert(message="You are viewing a past workspace state — return to live to interact.",
                       variant="warning").to_dict()
@@ -21510,6 +21659,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return
         row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
         if row is None or not isinstance(row.get("component_data"), dict):
+            self._register_ui_operation_refusal("component_unavailable")
             await self.send_ui_render(websocket, [
                 Alert(message="This component is no longer available.", variant="warning").to_dict()
             ], target="chat")
@@ -21518,12 +21668,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         agent_id = cd.get("_source_agent", "")
         tool_name = cd.get("_source_tool", "")
         if not agent_id or not tool_name:
+            self._register_ui_operation_refusal("source_missing")
             await self.send_ui_render(websocket, [
                 Alert(message="This component has no refreshable source.", variant="warning").to_dict()
             ], target="chat")
             return
         if agent_id in RETIRED_AGENT_IDS:
             await self._audit_workspace_denial(user_id, chat_id, component_id, "agent_retired")
+            self._register_ui_operation_refusal("agent_retired_refresh")
             await self.send_ui_render(websocket, [
                 Alert(
                     title="Capability retired",
@@ -21538,6 +21690,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             self._component_action_allowed, user_id, agent_id, tool_name)
         if not allowed:
             await self._audit_workspace_denial(user_id, chat_id, component_id, deny_reason)
+            self._register_ui_operation_refusal("permission_denied")
             await self.send_ui_render(websocket, [
                 Alert(message=f"Action not permitted: {deny_reason}", variant="error").to_dict()
             ], target="chat")
@@ -21556,6 +21709,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         user_id, chat_id, component_id,
                         (str((auth.response.error or {}).get("message"))[:200]
                          if auth.response and auth.response.error else "gate_refused"))
+                    self._register_ui_operation_refusal("policy_refused")
                     if auth.render_components:
                         await self.send_ui_render(
                             websocket, auth.render_components,
@@ -21586,14 +21740,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         except Exception:
                             logger.debug("workspace snapshot failed (component_action)", exc_info=True)
                 elif result and result.error:
+                    self._register_ui_operation_refusal("action_failed")
                     await self.send_ui_render(websocket, [
-                        Alert(message=result.error.get("message", "The action failed."),
+                        Alert(message=_UI_OPERATION_REFUSAL_MESSAGES["action_failed"],
                               variant="error").to_dict()
                     ], target="chat")
         except Exception as e:
             logger.error(f"component_action failed: {e}", exc_info=True)
+            self._register_ui_operation_refusal("action_failed")
             await self.send_ui_render(websocket, [
-                Alert(message=f"The action failed: {e}", variant="error").to_dict()
+                Alert(message=_UI_OPERATION_REFUSAL_MESSAGES["action_failed"], variant="error").to_dict()
             ], target="chat")
         finally:
             await self._safe_send(websocket, json.dumps({
@@ -21607,6 +21763,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not flags.is_enabled("component_refine"):
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
                                                "feature_disabled")
+            self._register_ui_operation_refusal("refine_disabled")
             await self.send_ui_render(websocket, [
                 Alert(message="Component refine is not enabled on this server.",
                       variant="error").to_dict()
@@ -21616,12 +21773,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if getattr(profile.device_type, "value", str(profile.device_type)) == "watch":
             await self._audit_workspace_denial(user_id, chat_id or "", component_id or "",
                                                "watch_unsupported")
+            self._register_ui_operation_refusal("watch_unsupported")
             await self.send_ui_render(websocket, [
                 Alert(message="This action isn't available on the watch.",
                       variant="warning").to_dict()
             ], target="chat")
             return None
         if not chat_id or not component_id:
+            self._register_ui_operation_refusal("component_context_missing")
             await self.send_ui_render(websocket, [
                 Alert(message="This action is missing its component context.",
                       variant="error").to_dict()
@@ -21629,6 +21788,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
         if self._ws_timeline_mode.get(id(websocket)):
             await self._audit_workspace_denial(user_id, chat_id, component_id, "timeline_readonly")
+            self._register_ui_operation_refusal("timeline_readonly")
             await self.send_ui_render(websocket, [
                 Alert(message="You are viewing a past workspace state — return to live to interact.",
                       variant="warning").to_dict()
@@ -21636,6 +21796,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return None
         row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
         if row is None or not isinstance(row.get("component_data"), dict):
+            self._register_ui_operation_refusal("component_unavailable")
             await self.send_ui_render(websocket, [
                 Alert(message="This component is no longer available.",
                       variant="warning").to_dict()
@@ -21646,6 +21807,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         tool_name = cd.get("_source_tool", "")
         if agent_id in RETIRED_AGENT_IDS:
             await self._audit_workspace_denial(user_id, chat_id, component_id, "agent_retired")
+            self._register_ui_operation_refusal("agent_retired_change")
             await self.send_ui_render(websocket, [
                 Alert(
                     title="Capability retired",
@@ -21661,6 +21823,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 self._component_action_allowed, user_id, agent_id, tool_name)
             if not allowed:
                 await self._audit_workspace_denial(user_id, chat_id, component_id, deny_reason)
+                self._register_ui_operation_refusal("permission_denied")
                 await self.send_ui_render(websocket, [
                     Alert(message=f"Action not permitted: {deny_reason}",
                           variant="error").to_dict()
@@ -21675,6 +21838,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         chat_id, component_id, _row = gate
         instruction = str(payload.get("instruction") or "").strip()
         if not instruction:
+            self._register_ui_operation_refusal("instruction_missing")
             await self.send_ui_render(websocket, [
                 Alert(message="Tell me how this component should change.",
                       variant="warning").to_dict()
@@ -21688,6 +21852,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 auth_principal=auth_principal,
                 feature="ui_event:component_refine",
             )
+            self._register_ui_operation_refusal("provider_unconfigured")
             await self.send_ui_render(websocket, [
                 Alert(message="Set up your AI provider to use this.",
                       variant="error").to_dict()
@@ -21705,6 +21870,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # Re-read inside the lock; never archive a pre-lock snapshot
                 row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
                 if row is None or not isinstance(row.get("component_data"), dict):
+                    self._register_ui_operation_refusal("component_unavailable")
                     await self.send_ui_render(websocket, [
                         Alert(message="This component is no longer available.",
                               variant="warning").to_dict()
@@ -21714,6 +21880,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 refined = await self._refine_component_llm(
                     websocket, current, instruction[:4000])
                 if refined is None:
+                    self._register_ui_operation_refusal("refine_invalid")
                     await self.send_ui_render(websocket, [
                         Alert(message="The AI couldn't produce a valid same-type edit "
                                       "for this component, so it was left unchanged.",
@@ -21742,8 +21909,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("workspace audit failed (component_refined)", exc_info=True)
         except Exception as e:
             logger.error(f"component_refine failed: {e}", exc_info=True)
+            self._register_ui_operation_refusal("refine_failed")
             await self.send_ui_render(websocket, [
-                Alert(message=f"The refine failed: {e}", variant="error").to_dict()
+                Alert(message=_UI_OPERATION_REFUSAL_MESSAGES["refine_failed"], variant="error").to_dict()
             ], target="chat")
         finally:
             await self._safe_send(websocket, json.dumps({
@@ -21764,6 +21932,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         version = await artifact_versions.aget_version(
             plane_source, chat_id, user_id, component_id, payload.get("version_no"))
         if version is None or not isinstance(version.get("component"), dict):
+            self._register_ui_operation_refusal("version_unavailable")
             await self.send_ui_render(websocket, [
                 Alert(message="That version is no longer available.",
                       variant="warning").to_dict()
@@ -21773,6 +21942,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             async with Orchestrator._workspace_mutation_lock(self, chat_id):
                 row = await self.workspace.aget_by_component_id(chat_id, user_id, component_id)
                 if row is None or not isinstance(row.get("component_data"), dict):
+                    self._register_ui_operation_refusal("component_unavailable")
                     await self.send_ui_render(websocket, [
                         Alert(message="This component is no longer available.",
                               variant="warning").to_dict()
@@ -21804,8 +21974,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     logger.debug("workspace audit failed (component_restored)", exc_info=True)
         except Exception as e:
             logger.error(f"component_restore failed: {e}", exc_info=True)
+            self._register_ui_operation_refusal("restore_failed")
             await self.send_ui_render(websocket, [
-                Alert(message=f"The restore failed: {e}", variant="error").to_dict()
+                Alert(message=_UI_OPERATION_REFUSAL_MESSAGES["restore_failed"], variant="error").to_dict()
             ], target="chat")
         finally:
             await self._safe_send(websocket, json.dumps({
@@ -21873,6 +22044,20 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             refined["component_id"] = component["component_id"]
         _stamp_provenance(refined, kind="estimated")
         return refined
+
+    @staticmethod
+    def _register_ui_operation_refusal(reason: str) -> None:
+        context = _CONNECTION_OPERATION_CONTEXT.get()
+        if context is None or context.get("ui_refusal") is not None:
+            return
+        code = str(reason or "").strip()
+        if not code:
+            return
+        context["ui_refusal"] = _UiOperationRefusal(
+            message=_UI_OPERATION_REFUSAL_MESSAGES.get(
+                code, _UI_OPERATION_REFUSAL_MESSAGES["action_incomplete"]
+            )
+        )
 
     async def _audit_workspace_denial(self, user_id: str, chat_id: str,
                                       component_id: str, reason: str):
@@ -23116,6 +23301,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
+        from orchestrator.mesh_api import mesh_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
@@ -23130,6 +23316,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         )
         from scheduler.api import schedule_router
         from persistent_agents.api import assignment_router
+        from orchestrator.emergency_stop_api import emergency_stop_router
         from dreaming.api import dreaming_router
         app.include_router(chat_router)
         app.include_router(component_router)
@@ -23143,6 +23330,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(export_router)
         app.include_router(share_router)
         app.include_router(auth_router)
+        from orchestrator.mesh_web import mesh_web_router
+        app.include_router(mesh_router)
+        app.include_router(mesh_web_router)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router
@@ -23164,6 +23354,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(memory_router)
         app.include_router(schedule_router)
         app.include_router(assignment_router)
+        app.include_router(emergency_stop_router)
         app.include_router(dreaming_router)
 
         app.add_middleware(AuditHTTPMiddleware)

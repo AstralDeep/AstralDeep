@@ -656,7 +656,27 @@ async def auth_callback(request: Request):
         logger.exception("web_auth: token exchange failed")
         return _clear_state_cookie(
             _error_page(nxt, "The identity provider rejected the sign-in. Please try again."))
-    sub = _sub_from_jwt(tok.get("access_token", ""))
+    try:
+        from orchestrator import auth
+        from orchestrator.session_store import _valid_token
+
+        if (type(tok) is not dict or not _valid_token(tok.get("access_token"))
+                or not _valid_token(tok.get("refresh_token"))):
+            raise ValueError("interactive tokens unavailable")
+        claims = await auth.verify_production_token(tok["access_token"])
+        sub = claims.get("sub")
+        expires = claims.get("exp")
+        if (not isinstance(sub, str) or not 1 <= len(sub) <= 256
+                or claims.get("iss") != authority.rstrip("/")
+                or claims.get("azp") != client_id
+                or type(expires) not in (int, float) or not math.isfinite(expires)
+                or expires <= time.time()
+                or _keycloak_config() != (authority, client_id, client_secret)):
+            raise ValueError("interactive issuing identity unavailable")
+    except Exception:
+        logger.warning("web_auth: interactive token binding refused")
+        return _clear_state_cookie(_error_page(
+            nxt, "The identity provider returned an invalid sign-in. Please try again.", status=401))
 
     if prior and prior.get("sub") and prior["sub"] != sub:
         prior_sid = prior.get("sid", "")
@@ -676,13 +696,19 @@ async def auth_callback(request: Request):
                      outcome="failure")
         return _clear_state_cookie(_no_access_page())
 
+    try:
+        resp = await asyncio.to_thread(
+            _establish_session,
+            request,
+            {"access_token": tok["access_token"], "refresh_token": tok["refresh_token"],
+             "sub": sub, "issuing_issuer": authority.rstrip("/"), "issuing_client_id": client_id},
+            nxt,
+        )
+    except Exception:
+        logger.warning("web_auth: interactive session persistence refused")
+        return _clear_state_cookie(_error_page(
+            nxt, "Sign-in could not be saved. Please try again.", status=503))
     await _audit("login_interactive", sub, "Interactive login completed; new session established")
-    resp = await asyncio.to_thread(
-        _establish_session,
-        request,
-        {"access_token": tok.get("access_token", ""), "refresh_token": tok.get("refresh_token", ""), "sub": sub},
-        nxt,
-    )
     return _clear_state_cookie(resp)
 
 
@@ -927,19 +953,40 @@ async def _process_revocation_page(store, pending):
 
 
 def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -> str:
+    mock = _is_mock()
+    binding = {}
+    if "issuing_issuer" in payload or "issuing_client_id" in payload:
+        authority, client_id, _ = _keycloak_config()
+        if (mock or not authority or not client_id
+                or payload.get("issuing_issuer") != authority.rstrip("/")
+                or payload.get("issuing_client_id") != client_id):
+            raise ValueError("interactive issuing identity changed")
+        binding = {"issuing_issuer": payload["issuing_issuer"],
+                   "issuing_client_id": payload["issuing_client_id"]}
     sid = secrets.token_urlsafe(24)
     previous = _SESSIONS.get(sid)
     cached = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
-    if not _is_mock():
+    if not mock:
         store = _get_store()
+        if store is None and binding:
+            raise RuntimeError("durable interactive session required")
         if store is not None:
             try:
                 row = store.create(sid, user_id=payload.get("sub", "anonymous"),
                              access_token=payload.get("access_token", ""),
                              refresh_token=payload.get("refresh_token", ""),
-                             hard_max_seconds=HARD_MAX_SECONDS)
+                             hard_max_seconds=HARD_MAX_SECONDS, **binding)
+                if binding:
+                    current_authority, current_client, _ = _keycloak_config()
+                    if (_get_store() is not store or _is_mock()
+                            or current_authority.rstrip("/") != binding["issuing_issuer"]
+                            or current_client != binding["issuing_client_id"]):
+                        store.delete(sid, expected_incarnation_id=row["incarnation_id"])
+                        raise ValueError("interactive issuing identity changed")
                 cached = {**_session_from_row(row), "resumed": False}
             except Exception:
+                if binding:
+                    raise
                 logger.warning("web_auth: durable session persist failed — session is process-local",
                                exc_info=True)
     with _SESSION_CACHE_LOCK:

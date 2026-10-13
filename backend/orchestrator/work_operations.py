@@ -18,6 +18,7 @@ from astralplane.repositories.assignment_models import (
 )
 
 from orchestrator.framework_credentials import FrameworkCaller
+from orchestrator.emergency_stop import EmergencyStopRefused
 from orchestrator.work_service import WorkService, _identity, _public
 from orchestrator.work_submit import _invalid, _limits, _text
 from persistent_agents.models import AssignmentError, digest, validate_id
@@ -241,11 +242,41 @@ class FrameworkWorkOperations:
     async def delete(self, caller: FrameworkCaller, *_args, **_kwargs) -> dict:
         raise AssignmentError("assignment_human_required", 403)
 
+    def _emergency(self):
+        coordinator = getattr(self, "emergency", None)
+        if coordinator is None:
+            raise AssignmentError("emergency_stop_unavailable", 503)
+        return coordinator
+
+    @staticmethod
+    async def _translated(coordinator_call):
+        try:
+            outcome = coordinator_call()
+            if asyncio.iscoroutine(outcome):
+                outcome = await outcome
+            return outcome
+        except EmergencyStopRefused as exc:
+            raise AssignmentError(exc.code, exc.status_code) from None
+
+    async def emergency_status(self, caller: FrameworkCaller) -> dict:
+        _require_scope(caller, "operations.read")
+        return await self._translated(lambda: self._emergency().status(caller.owner_id))
+
+    async def emergency_stop(self, caller: FrameworkCaller, *, reason: Optional[str] = None) -> dict:
+        _require_scope(caller, "operations.control")
+        return await self._translated(lambda: self._emergency().engage(
+            caller.owner_id, reason=reason, caller=caller))
+
+    async def emergency_resume(self, caller: FrameworkCaller, *, expected_revision) -> dict:
+        _require_scope(caller, "operations.control")
+        raise AssignmentError("emergency_stop_owner_authentication_required", 403)
+
 
 DISPATCHABLE_TOOL_NAMES = (
     "astral_submit_operation", "astral_get_operation", "astral_list_operations",
     "astral_get_operation_events", "astral_cancel_operation", "astral_pause_operation",
-    "astral_get_artifact",
+    "astral_get_artifact", "astral_emergency_status", "astral_emergency_stop",
+    "astral_emergency_resume",
 )
 
 
@@ -258,6 +289,9 @@ def dispatch_name(tool_name: str) -> Optional[str]:
         "astral_cancel_operation": "cancel",
         "astral_pause_operation": "pause",
         "astral_get_artifact": "result",
+        "astral_emergency_status": "emergency_status",
+        "astral_emergency_stop": "emergency_stop",
+        "astral_emergency_resume": "emergency_resume",
     }.get(tool_name) if tool_name in DISPATCHABLE_TOOL_NAMES else None
 
 
