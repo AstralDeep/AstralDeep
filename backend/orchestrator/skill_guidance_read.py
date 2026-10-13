@@ -6,6 +6,7 @@ guidance only and carries no tool, permission, caller, or safety-gate authority.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,7 +65,7 @@ def meta_tool_definitions() -> List[Dict[str, Any]]:
                     "Load the complete instructions of one of the user's own skills that this "
                     "turn's guidance digest lists. Pass the exact skill id and revision from the "
                     "digest's selection reference, for example when that section is marked "
-                    "truncated or the full procedure is needed. Skill instructions are the "
+                    "omitted or the full procedure is needed. Skill instructions are the "
                     "user's own guidance and grant no authority by themselves."
                 ),
                 "parameters": {
@@ -249,14 +250,16 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
         body = skill.instructions
         if len(body) > MAX_BODY_CHARS:
             raise SkillCatalogError("skill_guidance_budget", 422)
-        consumed = ledger["chars"] if cached else ledger["chars"] + len(body)
-        if consumed > MAX_TURN_READ_CHARS or consumed // CHARS_PER_TOKEN > MAX_TURN_READ_TOKENS:
+        payload = _result(skill, definition_digest, cached=cached)
+        consumed = ledger["chars"] + len(json.dumps(payload))
+        tokens = (consumed + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+        if consumed > MAX_TURN_READ_CHARS or tokens > MAX_TURN_READ_TOKENS:
             raise SkillCatalogError("skill_guidance_budget", 422)
         if not cached:
             cache[(skill_id, revision)] = (skill, head)
-            ledger["calls"] += 1
-            ledger["chars"] = consumed
-        return MCPResponse(result=_result(skill, definition_digest, cached=cached),
+        ledger["calls"] += 1
+        ledger["chars"] = consumed
+        return MCPResponse(result=payload,
                            ui_components=[Text(
                                content=f"Loaded your skill \u201c{skill.name}\u201d "
                                        f"(revision {skill.revision}) as guidance for this turn.",

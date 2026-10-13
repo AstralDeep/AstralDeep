@@ -26,9 +26,6 @@ from tests.test_user_skill_facade_088 import (
     runtime as runtime, service as service, signing_key as signing_key,
 )
 
-pytestmark = pytest.mark.asyncio
-
-
 @contextmanager
 def turn(human, origin):
     chat = str(uuid4())
@@ -99,7 +96,7 @@ async def writer_and_skills(catalog, human, bound, fixture):
     return origin, skills
 
 
-async def test_digest_marks_truncation_and_read_returns_the_complete_revision(
+async def test_digest_omits_procedure_and_read_returns_the_complete_revision(
     catalog, human, bound, fixture, runtime,
 ):
     owner = fixture[1]
@@ -112,7 +109,8 @@ async def test_digest_marks_truncation_and_read_returns_the_complete_revision(
     digest = user_skills.digest_lines(skills, [], max_chars=1200)
     assert len(digest) == 1
     assert "FINAL DECISIVE STEP" not in digest[0]
-    assert user_skills.TRUNCATION_NOTICE in digest[0]
+    assert "Instructions omitted" in digest[0]
+    assert "Step 0:" not in digest[0]
     assert "[skill " in digest[0] and f"rev {skills[0].revision}" in digest[0]
     with turn(human, origin) as (binding, chat):
         record(human, binding, chat, owner, skills)
@@ -155,6 +153,44 @@ async def test_repeat_read_of_one_revision_revalidates_without_reloading(
     assert len(reads) == 1
     assert audit_count(runtime, owner, "user_skill_read") == 1
     assert not fixture[-1]
+
+
+async def test_cached_reads_count_each_emitted_response_and_exhaust_the_turn(
+    catalog, human, bound, fixture, writer_and_skills,
+):
+    from orchestrator.orchestrator import Orchestrator
+
+    owner = fixture[1]
+    origin, skills = writer_and_skills
+    emitted = 0
+    with turn(human, origin) as (binding, chat):
+        record(human, binding, chat, owner, skills)
+        for _ in range(8):
+            response = await load(human, binding, chat, owner,
+                                  skills[0].skill_id, skills[0].revision)
+            assert response.error is None
+            emitted += len(Orchestrator._tool_result_to_llm_content(response))
+        assert binding.skill_reads["calls"] == 8
+        assert binding.skill_reads["chars"] == emitted
+        refused = await load(human, binding, chat, owner,
+                             skills[0].skill_id, skills[0].revision)
+        assert error_code(refused) == "skill_guidance_skill_guidance_exhausted"
+        assert binding.skill_reads["chars"] == emitted
+
+
+async def test_response_metadata_is_charged_before_emitting_guidance(
+    catalog, human, bound, fixture, monkeypatch, writer_and_skills,
+):
+    owner = fixture[1]
+    origin, skills = writer_and_skills
+    monkeypatch.setattr(module, "MAX_TURN_READ_CHARS", len(skills[0].instructions) + 1)
+    with turn(human, origin) as (binding, chat):
+        record(human, binding, chat, owner, skills)
+        response = await load(human, binding, chat, owner,
+                              skills[0].skill_id, skills[0].revision)
+        assert error_code(response) == "skill_guidance_skill_guidance_budget"
+        assert binding.skill_reads["chars"] == binding.skill_reads["calls"] == 0
+        assert binding.skill_reads["loaded"] == {}
 
 
 async def test_deleted_skill_invalidates_the_cached_revision(
@@ -455,7 +491,7 @@ async def test_turn_call_bound_refuses_extra_distinct_guidance(
     for index in range(9):
         await catalog.save(caller=writer_caller, **skill(
             name=f"Bounded {index}", applies_to='always',
-            instructions=f"Body {index} " + "y" * 1900))
+            instructions=f"Body {index} " + "y" * 600))
     skills = await catalog.list(caller=await reader(human, bound, fixture))
     with turn(human, origin) as (binding, chat):
         record(human, binding, chat, fixture[1], skills)
@@ -480,12 +516,12 @@ async def test_turn_byte_budget_refuses_before_the_call_bound(
     skills = await catalog.list(caller=await reader(human, bound, fixture))
     with turn(human, origin) as (binding, chat):
         record(human, binding, chat, fixture[1], skills)
-        for item in skills[:5]:
+        for item in skills[:4]:
             response = await load(human, binding, chat, fixture[1], item.skill_id, item.revision)
             assert response.error is None, item.name
-        sixth = await load(human, binding, chat, fixture[1], skills[5].skill_id, skills[5].revision)
-        assert error_code(sixth) == "skill_guidance_skill_guidance_budget"
-        assert binding.skill_reads["calls"] == 5
+        fifth = await load(human, binding, chat, fixture[1], skills[4].skill_id, skills[4].revision)
+        assert error_code(fifth) == "skill_guidance_skill_guidance_budget"
+        assert binding.skill_reads["calls"] == 4
 
 
 async def test_benign_completion_with_malicious_guidance_stays_guidance_only(
@@ -524,9 +560,10 @@ async def test_digest_reports_omitted_applicable_skills_without_identity(
             instructions=f"Guidance {index}: " + "w" * 1100))
     skills = await catalog.list(caller=await reader(human, bound, fixture))
     digest = user_skills.digest_lines(skills, [], max_chars=1200)
-    assert sum("### Your skill: Long" in section for section in digest) == 1
-    assert any(user_skills.OMISSION_NOTICE.format(count=2) in section for section in digest)
-    assert len("\n\n".join(digest)) <= 1400
+    assert "Guidance 0:" not in "\n\n".join(digest)
+    assert "Guidance 1:" not in "\n\n".join(digest)
+    assert "Guidance 2:" not in "\n\n".join(digest)
+    assert len("\n\n".join(digest)) <= 1200
 
 
 def test_digest_keeps_complete_bodies_within_budget():
@@ -792,6 +829,7 @@ async def test_real_turn_injects_the_read_tool_and_serves_a_model_selection(
     orch.audit_recorder.record = AsyncMock()
     orch._record_llm_call = AsyncMock()
     orch._record_llm_unconfigured = AsyncMock()
+    orch.summarize_chat_title = AsyncMock()
     orch._start_heartbeat = AsyncMock(return_value=MagicMock(cancel=MagicMock()))
     orch._send_or_replace_components = AsyncMock(return_value=[])
     orch._emit_llm_usage_report = AsyncMock()
@@ -844,12 +882,13 @@ async def test_real_turn_injects_the_read_tool_and_serves_a_model_selection(
                                for definition in call[1]))
         tool_names = {definition["function"]["name"] for definition in dispatch[1]}
         assert "read_user_skill" in tool_names
-        system_text = json.dumps(dispatch[0], default=str, ensure_ascii=False)
-        section = system_text.split("### Your skill: Seal check", 1)
-        print("DIGEST-SECTION:", section[1][:400] if len(section) > 1 else "ABSENT")
-        assert "Seal check" in system_text and "read_user_skill" in system_text
-        assert user_skills.TRUNCATION_NOTICE in system_text
-        assert "FINAL STEP: report the measured pressure" in system_text
+        system_text = dispatch[0][0]["content"]
+        assert "Seal check" in system_text
+        assert "Instructions omitted" in system_text
+        assert "Stage 0:" not in system_text
+        assert "FINAL STEP: report the measured pressure" in json.dumps(
+            dispatch[0], default=str, ensure_ascii=False
+        )
         with orch.audit_repo._audit.plane_runtime.transaction() as tx:
             assert tx.fetch_one(
                 "SELECT count(*) AS n FROM audit_events WHERE actor_user_id=%s "

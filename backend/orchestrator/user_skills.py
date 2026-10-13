@@ -282,12 +282,6 @@ def store_for(orch):
     return store
 
 
-TRUNCATION_NOTICE = ("[instructions truncated to fit this turn's guidance budget — load the "
-                     "complete revision with read_user_skill using this skill id]")
-OMISSION_NOTICE = ("[{count} of your applicable skills did not fit this turn's guidance budget; "
-                   "they stay omitted from this digest]")
-
-
 def selection_ref(skill: Any) -> str:
     skill_id = getattr(skill, "skill_id", "")
     revision = getattr(skill, "revision", 0)
