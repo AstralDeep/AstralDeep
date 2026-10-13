@@ -22,9 +22,6 @@ pandas>=2.0.0
 openpyxl>=3.1.0
 xlrd>=2.0.0
 
-# Bounded YAML frontmatter parsing for the user skill import preview (installed
-# transitively today; declared explicitly because orchestrator/user_skill_import.py
-# imports it directly).
 PyYAML>=6.0.1
 
 # File-upload parsing (feature 002-file-uploads, lead-developer approved)

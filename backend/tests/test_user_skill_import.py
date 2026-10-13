@@ -20,9 +20,6 @@ from tests.test_work_control_authority_088 import (
     signing_key as signing_key,
 )
 
-pytestmark = pytest.mark.asyncio
-
-
 def skill_md(*, name="Weekly status format", license_line="license: MIT\n",
              extra="", body="Use the exact weekly outline: wins, risks, asks."):
     return (f"---\nname: {name}\n{license_line}{extra}---\n\n{body}\n")
@@ -201,6 +198,21 @@ def test_missing_or_restrictive_license_requires_confirmation_permissive_does_no
         preview = module.parse_skill_import(skill_md(license_line=license_line))
         assert preview.license_requires_confirmation is False
         assert preview.license == license_line.split(":")[1].strip()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Read [the guide][guide] before continuing.\n\n[guide]: references/guide.md",
+        "Read [the guide][] before continuing.\n\n[the guide]: scripts/check.py",
+        "Read [the guide](file:references/guide.md) before continuing.",
+    ],
+)
+def test_resource_links_cannot_bypass_the_instructions_only_boundary(body):
+    module = preview_module()
+    with pytest.raises(module.SkillImportError) as refused:
+        module.parse_skill_import(skill_md(body=body))
+    assert refused.value.code == "skill_import_unsupported"
 
 
 def test_malicious_instructions_and_role_claims_stay_inert_text():

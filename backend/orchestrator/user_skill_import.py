@@ -1,8 +1,6 @@
-"""Bounded parser for one explicitly supplied Agent Skills SKILL.md body: it maps the
-frontmatter name and instruction text onto the governed owner skill catalog and reports
-every unsupported field for the authoring surface's import preview. Parsing refuses any
-skill Astral cannot represent completely. It is pure and offline; saving happens only
-through the current-human facade in user_skill_catalog.py.
+"""Parses one bounded Agent Skills instruction body for the governed authoring preview.
+Unsupported resources are refused without fetching or executing content, and saving
+requires the current-human facade in user_skill_catalog.py.
 """
 
 from __future__ import annotations
@@ -45,6 +43,7 @@ _PERMISSIVE_LICENSES = frozenset({
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n)?(.*)\Z", re.DOTALL)
 _LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+_REFERENCE_RE = re.compile(r"^ {0,3}\[[^]\n]+\]:\s*<?([^\s>]+)>?", re.MULTILINE)
 _SCHEME_RE = re.compile(r"\A[A-Za-z][A-Za-z0-9+.\-]*:")
 
 
@@ -212,8 +211,9 @@ def _mapped_instructions(body):
 
 def _refuse_linked_resources(body):
     found = []
-    for target in _LINK_RE.findall(body):
-        if _SCHEME_RE.match(target) or target.startswith("#"):
+    for target in _LINK_RE.findall(body) + _REFERENCE_RE.findall(body):
+        scheme = _SCHEME_RE.match(target)
+        if (scheme and scheme.group().lower() in {"http:", "https:", "mailto:"}) or target.startswith("#"):
             continue
         path = target.split("#", 1)[0].split("?", 1)[0]
         if path:
