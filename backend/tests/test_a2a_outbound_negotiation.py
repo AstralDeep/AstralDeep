@@ -880,6 +880,301 @@ def test_completed_task_without_artifacts_remains_valid():
     assert decoded.task.id == "task-1"
 
 
+def _interface_card(interfaces) -> AgentCard:
+    return AgentCard(
+        name="Peer",
+        description="mixed transport peer",
+        version="1.0.0",
+        capabilities=AgentCapabilities(),
+        skills=[AgentSkill(id="echo", name="echo", description="echo", tags=["t"])],
+        default_input_modes=["application/json"],
+        default_output_modes=["application/json"],
+        supported_interfaces=interfaces,
+    )
+
+
+def _mixed_transport_card() -> AgentCard:
+    return _interface_card(
+        [
+            AgentInterface(
+                protocol_binding="GRPC",
+                url=f"{PEER_BASE}/grpc",
+                protocol_version="1.0",
+            ),
+            AgentInterface(
+                protocol_binding="JSONRPC",
+                url=f"{PEER_BASE}/custom/rpc",
+                protocol_version="1.0",
+                tenant="tenant-9",
+            ),
+        ]
+    )
+
+
+def test_select_request_interface_skips_unsupported_preferred_transports():
+    from shared.a2a_codec import resolve_request_interface
+
+    selected = resolve_request_interface(_mixed_transport_card(), PEER_BASE)
+    assert selected.url == f"{PEER_BASE}/custom/rpc"
+    assert selected.version == "1.0"
+    assert selected.tenant == "tenant-9"
+
+
+@pytest.mark.asyncio
+async def test_card_with_unsupported_preferred_transport_dispatches_to_the_jsonrpc_entry(
+    monkeypatch,
+):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["version"] = request.headers[VERSION_HEADER]
+        body = json.loads(request.content)
+        seen["tenant"] = body["params"].get("tenant")
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": _v1_union_task({"via": "jsonrpc"})},
+        )
+
+    _patch_transport(monkeypatch, _RecordingTransport(handler))
+    response = await _orchestrator(_mixed_transport_card())._execute_via_a2a(
+        "peer-1", "echo", {}
+    )
+
+    assert response.error is None
+    assert response.result == {"via": "jsonrpc"}
+    assert seen["url"] == f"{PEER_BASE}/custom/rpc"
+    assert seen["version"] == "1.0"
+    assert seen["tenant"] == "tenant-9"
+
+
+def test_bridge_identity_and_metadata_follow_the_jsonrpc_interface():
+    from shared.a2a_bridge import a2a_card_to_custom
+
+    converted = a2a_card_to_custom(_mixed_transport_card())
+    assert converted.metadata["a2a_url"] == f"{PEER_BASE}/custom/rpc"
+    assert converted.agent_id == "rpc"
+
+    grpc_only = a2a_card_to_custom(
+        _interface_card(
+            [
+                AgentInterface(
+                    protocol_binding="GRPC",
+                    url=f"{PEER_BASE}/grpc",
+                    protocol_version="1.0",
+                )
+            ]
+        )
+    )
+    assert grpc_only.metadata["a2a_url"] == f"{PEER_BASE}/grpc"
+
+    unsupported_only = a2a_card_to_custom(
+        _interface_card(
+            [
+                AgentInterface(
+                    protocol_binding="JSONRPC",
+                    url=f"{PEER_BASE}/rpc",
+                    protocol_version="2.0",
+                )
+            ]
+        )
+    )
+    assert unsupported_only.metadata["a2a_url"] == f"{PEER_BASE}/rpc"
+
+    bare = a2a_card_to_custom(_interface_card([]))
+    assert bare.metadata["a2a_url"] == ""
+
+
+def _discovery_orchestrator() -> Orchestrator:
+    from types import SimpleNamespace
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.agents = {}
+    orch.agent_urls = {}
+    orch.a2a_clients = {}
+    orch.a2a_agent_cards = {}
+    orch.agent_cards = {}
+    orch.agent_capabilities = {}
+    orch.security_flags = {}
+    orch.ui_clients = []
+    orch._is_draft_agent = lambda agent_id: False
+    orch.tool_permissions = SimpleNamespace(
+        register_tool_scopes=lambda *args, **kwargs: None,
+        cleanup_stale_tool_overrides=lambda *args, **kwargs: None,
+    )
+    return orch
+
+
+async def _card_server(holder: dict, path: str = "/.well-known/agent-card.json"):
+    from aiohttp import web
+
+    async def card(request):
+        return web.json_response(holder["card"])
+
+    app = web.Application()
+    app.add_routes([web.get(path, card)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    port = runner.addresses[0][1]
+    return runner, f"http://127.0.0.1:{port}"
+
+
+def _advertised_card_payload(base_url: str, interfaces) -> dict:
+    return {
+        "name": "Custom Path Peer",
+        "description": "peer advertising its own JSON-RPC endpoint",
+        "version": "1.0.0",
+        "capabilities": {"streaming": False},
+        "skills": [
+            {"id": "echo", "name": "echo", "description": "echo", "tags": ["t"]}
+        ],
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "supportedInterfaces": interfaces,
+    }
+
+
+@pytest.mark.asyncio
+async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    holder = {"card": {}}
+    runner, base_url = await _card_server(holder)
+    try:
+        custom_url = f"{base_url}/custom/rpc"
+        holder["card"] = _advertised_card_payload(
+            base_url,
+            [
+                {
+                    "url": custom_url,
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": "1.0",
+                    "tenant": "tenant-9",
+                }
+            ],
+        )
+        orch = _discovery_orchestrator()
+        await orch.discover_a2a_agent(base_url)
+
+        assert orch.a2a_clients["rpc"] == base_url
+        assert orch.agent_urls["rpc"] == base_url
+        assert orch.a2a_agent_cards["rpc"].supported_interfaces[0].url == custom_url
+        assert orch.agent_cards["rpc"].metadata["a2a_url"] == custom_url
+
+        seen = {}
+
+        def handler(request):
+            body = json.loads(request.content)
+            seen["url"] = str(request.url)
+            seen["version"] = request.headers[VERSION_HEADER]
+            seen["tenant"] = body["params"].get("tenant")
+            seen["agent_key"] = request.headers.get("x-astral-agent-key")
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": _v1_union_task({"ok": True}),
+                },
+            )
+
+        _patch_transport(monkeypatch, _RecordingTransport(handler))
+        response = await orch._execute_via_a2a("rpc", "echo", {})
+
+        assert response.error is None
+        assert response.result == {"ok": True}
+        assert seen["url"] == custom_url
+        assert seen["version"] == "1.0"
+        assert seen["tenant"] == "tenant-9"
+        assert seen["agent_key"] == "discovery-key-0123456789"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.parametrize(
+    "interfaces",
+    [
+        [{"url": "{base}/grpc", "protocolBinding": "GRPC", "protocolVersion": "1.0"}],
+        [{"url": "{base}/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "2.0"}],
+        [
+            {
+                "url": "{base}/rpc",
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "0.3",
+                "tenant": "tenant-1",
+            }
+        ],
+        [
+            {
+                "url": "http://untrusted.example/rpc",
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+    ],
+)
+@pytest.mark.asyncio
+async def test_discovery_refuses_cards_without_a_dispatchable_interface(
+    monkeypatch, interfaces
+):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    holder = {
+        "card": _advertised_card_payload(
+            "http://127.0.0.1:9",
+            [
+                {
+                    key: value.replace("{base}", "http://127.0.0.1:9")
+                    if isinstance(value, str)
+                    else value
+                    for key, value in interface.items()
+                }
+                for interface in interfaces
+            ],
+        )
+    }
+    runner, base_url = await _card_server(holder)
+    try:
+        orch = _discovery_orchestrator()
+        await orch.discover_a2a_agent(base_url)
+
+        assert orch.a2a_clients == {}
+        assert orch.a2a_agent_cards == {}
+        assert orch.agent_urls == {}
+        assert orch.agent_cards == {}
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_backup_client_setup_refuses_undispatchable_cards(monkeypatch):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    holder = {
+        "card": _advertised_card_payload(
+            "http://127.0.0.1:9",
+            [
+                {
+                    "url": "http://127.0.0.1:9/grpc",
+                    "protocolBinding": "GRPC",
+                    "protocolVersion": "1.0",
+                }
+            ],
+        )
+    }
+    runner, base_url = await _card_server(
+        holder, path="/a2a/.well-known/agent-card.json"
+    )
+    try:
+        orch = _discovery_orchestrator()
+        await orch._setup_a2a_client_for_agent(base_url, "peer-x")
+
+        assert orch.a2a_clients == {}
+        assert orch.a2a_agent_cards == {}
+    finally:
+        await runner.cleanup()
+
+
 def test_valid_agent_status_message_remains_projectable():
     result = _v1_union_task({})
     result["task"]["artifacts"] = []

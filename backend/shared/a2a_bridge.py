@@ -32,6 +32,7 @@ from a2a.types import (
 )
 from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
+from shared.a2a_codec import A2ANegotiationError, select_request_interface
 from shared.protocol import (
     AgentCard as CustomAgentCard,
     AgentSkill as CustomAgentSkill,
@@ -177,12 +178,22 @@ def _slugify_agent_id(name: str) -> str:
     return slug or "agent"
 
 
+def _advertised_interface_url(a2a_card: A2AAgentCard) -> str:
+    try:
+        selected = select_request_interface(a2a_card)
+    except A2ANegotiationError:
+        selected = None
+    if selected is not None:
+        return selected.url
+    interfaces = list(a2a_card.supported_interfaces or [])
+    # Unusable cards keep the legacy first-interface metadata; dispatch still fails closed
+    return str(interfaces[0].url or "") if interfaces else ""
+
+
 def a2a_card_to_custom(a2a_card: A2AAgentCard, agent_id: str = "") -> CustomAgentCard:
     skills = [a2a_skill_to_custom(s) for s in a2a_card.skills]
 
-    iface_url = ""
-    if a2a_card.supported_interfaces:
-        iface_url = a2a_card.supported_interfaces[0].url or ""
+    iface_url = _advertised_interface_url(a2a_card)
     if not agent_id:
         candidate = iface_url.rstrip("/").split("/")[-1] if iface_url else ""
         if re.fullmatch(r"[a-z0-9][a-z0-9-]*", candidate or ""):
