@@ -15,6 +15,7 @@ from io import BytesIO
 from webrender.chrome import esc, notice_block
 
 from orchestrator import mesh_enrollment as me
+from orchestrator import mesh_presence as mp
 from orchestrator.plane_repository_context import plane_source_from_orchestrator
 
 TITLE = "Mesh devices"
@@ -243,14 +244,54 @@ def _is_expired(record) -> bool:
     return isinstance(expires, int) and me._now_ms() >= expires
 
 
-def _member_badge(record) -> tuple[str, str]:
+_PRESENCE_BADGES = {
+    "online": ("Online", "success"),
+    "offline": ("Offline", "default"),
+    "unavailable": ("Unavailable", "warning"),
+}
+_PRESENCE_REASONS = {
+    "unpublished": "No presence reported",
+    "identity_replaced": "Replaced identity has not re-announced",
+    "membership_changed": "Presence predates the current membership",
+    "stale_observation": "Last observation expired",
+    "ambiguous_endpoint": "Endpoint claimed by multiple members",
+    "malformed": "Presence record is unusable",
+}
+
+
+def _target_for(member: dict, targets: dict | None) -> dict | None:
+    if targets is None or member.get("status") != "active":
+        return None
+    return targets.get(member.get("member_id"))
+
+
+def _member_badge(record, target: dict | None = None) -> tuple[str, str]:
+    if target is not None:
+        return _PRESENCE_BADGES.get(
+            str(target.get("presence")), ("Unknown", "default")
+        )
     return _MEMBER_BADGES.get(str(record.get("status")), ("Unknown", "default"))
 
 
-def _member_facts(member: dict) -> list[tuple[str, str]]:
-    facts = [("Status", _member_badge(member)[0])]
+def _member_facts(member: dict, target: dict | None = None) -> list[tuple[str, str]]:
+    facts = [("Status", _member_badge(member, target)[0])]
     if member.get("status") == "revoked":
         facts.append(("Revoked", _date(member.get("revoked_at"))))
+    if target is not None:
+        facts.append(("Last seen", _date(target.get("last_seen"))))
+        if target.get("presence") == "online":
+            facts.append(("Endpoint", str(target.get("endpoint") or "")))
+            capabilities = target.get("capabilities") or []
+            facts.append(("Capabilities", ", ".join(capabilities) or "None"))
+        else:
+            facts.append(
+                (
+                    "Presence",
+                    _PRESENCE_REASONS.get(
+                        str(target.get("reason")), "Unavailable"
+                    ),
+                )
+            )
     facts.extend(
         [
             ("Device key", _short_fingerprint(member.get("device_key_fingerprint"))),
@@ -330,8 +371,11 @@ def _guidance_html() -> str:
     )
 
 
-async def _load_inventory(orch, user_id) -> tuple[list[dict], list[dict]] | None:
+async def _load_inventory(
+    orch, user_id
+) -> tuple[list[dict], list[dict], list[dict] | None] | None:
     store = _store(orch)
+    presence = mp.MeshPresence(plane_source_from_orchestrator(orch), store=store)
     try:
         members, invitations = await asyncio.gather(
             asyncio.to_thread(store.list_members, user_id),
@@ -339,7 +383,11 @@ async def _load_inventory(orch, user_id) -> tuple[list[dict], list[dict]] | None
         )
     except Exception:
         return None
-    return members, invitations
+    try:
+        targets = await asyncio.to_thread(presence.resolve, user_id)
+    except Exception:
+        targets = None
+    return members, invitations, targets
 
 
 async def render(orch, user_id, roles, params) -> str:
@@ -349,7 +397,10 @@ async def render(orch, user_id, roles, params) -> str:
     if loaded is None:
         body = notice_block("error", "The mesh inventory is unavailable. Please retry.")
         return f'<div class="space-y-4">{_view_tabs(view)}{body}</div>'
-    members, invitations = loaded
+    members, invitations, targets = loaded
+    presence = None
+    if targets is not None:
+        presence = {target["member_id"]: target for target in targets}
     if view == "invitations":
         cards = _invitation_cards_html(invitations)
         empty = (
@@ -357,15 +408,23 @@ async def render(orch, user_id, roles, params) -> str:
             "invitation through the mesh API with its own new key."
         )
     else:
-        cards = _member_cards_html(members)
+        cards = _member_cards_html(members, presence)
         empty = "No devices are enrolled yet. Your mesh inventory starts empty."
     listing = (
         "".join(cards)
         if cards
         else f'<div class="text-sm {_MUTED} py-6 text-center">{esc(empty)}</div>'
     )
+    presence_note = (
+        notice_block(
+            "warning", "Presence is unavailable right now; endpoint states are stale."
+        )
+        if view == "members" and presence is None
+        else ""
+    )
     body = (
         f'<p class="text-sm {_MUTED}">{esc(_INTRO_TEXT)}</p>'
+        f'{presence_note}'
         f'<div class="space-y-2">{listing}</div>'
         f"{_enrollment_form_html()}"
         f"{_guidance_html()}"
@@ -384,10 +443,11 @@ async def render(orch, user_id, roles, params) -> str:
     return f'<div class="space-y-4">{_view_tabs(view)}{body}</div>'
 
 
-def _member_cards_html(members: list[dict]) -> list[str]:
+def _member_cards_html(members: list[dict], targets: dict | None) -> list[str]:
     cards = []
     for member in members:
-        label, variant = _member_badge(member)
+        target = _target_for(member, targets)
+        label, variant = _member_badge(member, target)
         controls = ""
         if member.get("status") == "active":
             identity = {"member_id": member["member_id"]}
@@ -404,7 +464,7 @@ def _member_cards_html(members: list[dict]) -> list[str]:
             f'<span class="astral-badge astral-badge--{variant} inline-flex items-center '
             f'px-2 py-0.5 rounded-full border text-xs font-medium">{esc(label)}</span>'
             f"</div>"
-            f'<div class="pt-2">{_facts_html(_member_facts(member))}</div>'
+            f'<div class="pt-2">{_facts_html(_member_facts(member, target))}</div>'
             f"{controls}"
             f"</div>"
         )
@@ -468,7 +528,10 @@ async def components(orch, user_id, roles, params):
             tab_bar,
             _sdui.alert("The mesh inventory is unavailable. Please retry.", "error"),
         ]
-    members, invitations = loaded
+    members, invitations, targets = loaded
+    presence = None
+    if targets is not None:
+        presence = {target["member_id"]: target for target in targets}
     out = [tab_bar, _sdui.text(_INTRO_TEXT, "caption")]
     created = _created_enrollment(orch, user_id, params)
     if created is not None:
@@ -476,14 +539,22 @@ async def components(orch, user_id, roles, params):
     if view == "invitations":
         records = invitations
         empty = "No enrollment requests yet."
-        builders = _invitation_components
     else:
         records = members
         empty = "No devices are enrolled yet. Your mesh inventory starts empty."
-        builders = _member_components
+        if presence is None:
+            out.append(
+                _sdui.alert(
+                    "Presence is unavailable right now; endpoint states are stale.",
+                    "warning",
+                )
+            )
     if records:
         for record in records:
-            out.extend(builders(record))
+            if view == "members":
+                out.extend(_member_components(record, _target_for(record, presence)))
+            else:
+                out.extend(_invitation_components(record))
     else:
         out.append(_sdui.text(empty, "caption"))
     out.append(
@@ -511,12 +582,15 @@ async def components(orch, user_id, roles, params):
     return out
 
 
-def _member_components(member: dict) -> list[dict]:
+def _member_components(member: dict, target: dict | None = None) -> list[dict]:
     from webrender.chrome.surfaces import _sdui
 
-    label, variant = _member_badge(member)
+    label, variant = _member_badge(member, target)
     facts = _sdui.key_value(
-        [{"label": name, "value": value} for name, value in _member_facts(member)]
+        [
+            {"label": name, "value": value}
+            for name, value in _member_facts(member, target)
+        ]
     )
     content = [_sdui.badge(label, variant), facts]
     if member.get("status") == "active":
