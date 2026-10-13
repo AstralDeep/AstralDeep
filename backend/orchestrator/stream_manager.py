@@ -402,10 +402,9 @@ class StreamManager:
                         dormant_existing.params, dormant_existing.stream_id, user_id,
                         ws, dormant_existing.chat_id,
                     )
-                    dormant_existing.request_id = request_id
-                    self._request_to_key[request_id] = key
+                    self._register_dispatched_request(dormant_existing, request_id)
                 except Exception as e:
-                    self._active.pop(key, None)
+                    self._teardown_subscription(dormant_existing, StreamState.FAILED, reason="agent_dispatch_failed")
                     raise ValueError(f"agent dispatch failed: {e}") from e
             return dormant_existing.stream_id, False
 
@@ -455,11 +454,10 @@ class StreamManager:
                 ws, chat_id,
             )
         except Exception as e:
-            self._active.pop(key, None)
+            self._teardown_subscription(sub, StreamState.FAILED, reason="agent_dispatch_failed")
             raise ValueError(f"agent dispatch failed: {e}") from e
 
-        sub.request_id = request_id
-        self._request_to_key[request_id] = key
+        self._register_dispatched_request(sub, request_id)
         logger.info(
             f"subscribe({stream_id}): dispatched to agent {agent_id} as "
             f"request {request_id}"
@@ -667,8 +665,7 @@ class StreamManager:
                             sub.stream_id, user_id,
                             ws, sub.chat_id,
                         )
-                        sub.request_id = request_id
-                        self._request_to_key[request_id] = sub.key
+                        self._register_dispatched_request(sub, request_id)
                     except Exception as e:
                         logger.warning(
                             f"resume dispatch failed for {sub.stream_id}: {e}"
@@ -757,6 +754,18 @@ class StreamManager:
         # An immediate local chunk would otherwise race request registration.
         sub = self.subscription_for_stream(stream_id)
         if sub is not None and sub.state is not StreamState.DORMANT:
+            if sub.request_id is not None and sub.request_id != request_id:
+                self._request_to_key.pop(sub.request_id, None)
+            sub.request_id = request_id
+            self._request_to_key[request_id] = sub.key
+
+    def _register_dispatched_request(self, sub: StreamSubscription, request_id: str) -> None:
+        if (
+            self._active.get(sub.key) is sub
+            and sub.state in (StreamState.STARTING, StreamState.ACTIVE)
+            and sub.request_id in (None, request_id)
+        ):
+            sub.request_id = request_id
             self._request_to_key[request_id] = sub.key
 
     def component_id_for(self, stream_id: str) -> Optional[str]:
@@ -910,8 +919,7 @@ class StreamManager:
                 sub.stream_id, sub.user_id,
                 sub.subscribers[0], sub.chat_id,
             )
-            sub.request_id = request_id
-            self._request_to_key[request_id] = sub.key
+            self._register_dispatched_request(sub, request_id)
             logger.info(
                 f"stream {sub.stream_id} retry attempt {sub.retry_attempt} "
                 f"dispatched as request {request_id}"

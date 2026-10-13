@@ -8,13 +8,13 @@ import sys
 import time
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from orchestrator.stream_manager import LIFETIME_GRACE_SECONDS, StreamLifetime, StreamState
+from orchestrator.stream_manager import LIFETIME_GRACE_SECONDS, StreamLifetime, StreamManager, StreamState
 from shared.base_agent import BaseA2AAgent
 from shared.feature_flags import flags
 from shared.stream_sdk import StreamComponents, streaming_tool
@@ -268,3 +268,97 @@ async def test_a_run_that_ignores_the_hint_is_still_ended_by_the_deadline(env):
     await _wait_for(lambda: all(task.done() for task in agent._stream_wrapper_tasks))
     cancelled = [f for f in _frames(ws, "ui_stream_data") if (f.get("error") or {}).get("code") == "cancelled"]
     assert not cancelled, "a cancelled error chunk must not reach the subscriber after teardown"
+
+
+@pytest.mark.parametrize("route", ["initial", "wake", "resume", "retry"])
+@pytest.mark.parametrize("finish", ["failure", "end", "error"])
+async def test_pending_routing_does_not_survive_dispatch_failure_or_immediate_end(route, finish):
+    control = {"finish": None, "request": 0, "failed_request": None}
+    manager = StreamManager(
+        rote=SimpleNamespace(adapt=lambda _ws, components: components),
+        send_to_ws=AsyncMock(),
+        get_user_session=lambda _ws: {"sub": "pending-routing-owner"},
+    )
+
+    async def dispatch(_agent, _tool, _args, stream_id, _owner, _ws, _chat):
+        control["request"] += 1
+        request_id = f"pending-routing-{control['request']}"
+        manager.register_pending_request(stream_id, request_id)
+        control["subscription"] = manager.subscription_for_stream(stream_id)
+        if control["finish"] is not None:
+            control["failed_request"] = request_id
+        if control["finish"] == "failure":
+            raise RuntimeError("synthetic transport unavailable")
+        if control["finish"] == "end":
+            await manager.handle_agent_end(SimpleNamespace(request_id=request_id))
+        if control["finish"] == "error":
+            await manager._handle_error(
+                manager.subscription_for_stream(stream_id), "upstream_unavailable", "synthetic outage",
+            )
+        return request_id
+
+    manager._agent_dispatcher = dispatch
+    ws = object()
+    arguments = dict(
+        ws=ws, user_id="pending-routing-owner", chat_id="pending-routing-chat",
+        tool_name="pending-routing-tool", agent_id="pending-routing-agent", params={},
+    )
+    try:
+        if route != "initial":
+            stream_id, _ = await manager.subscribe(**arguments)
+            sub = manager.subscription_for_stream(stream_id)
+            assert sub.request_id == "pending-routing-1"
+            assert manager._request_to_key[sub.request_id] == sub.key
+            if route == "retry":
+                await manager._enter_reconnecting(sub, "upstream_unavailable", "synthetic outage")
+            else:
+                await manager.detach(ws)
+                assert sub.state is StreamState.DORMANT
+        control["finish"] = finish
+        if route in ("initial", "wake"):
+            if finish == "failure":
+                with pytest.raises(ValueError, match="agent dispatch failed"):
+                    await manager.subscribe(**arguments)
+            else:
+                await manager.subscribe(**arguments)
+        elif route == "resume":
+            await manager.resume(ws, "pending-routing-owner", "pending-routing-chat")
+        else:
+            await manager._retry(sub)
+        assert control["failed_request"] is not None
+        assert control["failed_request"] not in manager._request_to_key
+        sub = control["subscription"]
+        if finish == "error" or (route == "retry" and finish == "failure"):
+            assert sub.state is StreamState.RECONNECTING
+            assert sub.request_id is None
+        else:
+            assert manager._active == {}
+    finally:
+        manager.shutdown()
+
+
+async def test_late_dispatch_return_preserves_current_request_routing():
+    manager = StreamManager(
+        rote=SimpleNamespace(adapt=lambda _ws, components: components),
+        send_to_ws=AsyncMock(),
+        get_user_session=lambda _ws: {"sub": "current-routing-owner"},
+    )
+
+    async def dispatch(_agent, _tool, _args, stream_id, _owner, _ws, _chat):
+        manager.register_pending_request(stream_id, "obsolete-request")
+        manager.register_pending_request(stream_id, "current-request")
+        return "obsolete-request"
+
+    manager._agent_dispatcher = dispatch
+    try:
+        stream_id, _ = await manager.subscribe(
+            ws=object(), user_id="current-routing-owner", chat_id="current-routing-chat",
+            tool_name="current-routing-tool", agent_id="current-routing-agent", params={},
+        )
+        sub = manager.subscription_for_stream(stream_id)
+        assert sub.request_id == "current-request"
+        await manager.handle_agent_end(SimpleNamespace(request_id="obsolete-request"))
+        assert manager.subscription_for_stream(stream_id) is sub
+        assert manager._request_to_key == {"current-request": sub.key}
+    finally:
+        manager.shutdown()
