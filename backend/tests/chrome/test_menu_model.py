@@ -59,6 +59,7 @@ def test_account_and_help_groups_exact_order_and_labels():
         ("personalization", "Personalization", "personalization"),
         ("audit", "Audit log", "audit"),
         ("theme", "Theme", "theme"),
+        ("mesh-devices", "Mesh devices", "mesh"),
     ]
     help_ = m.menu[1]
     assert help_.label == "Help"

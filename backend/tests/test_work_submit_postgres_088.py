@@ -23,7 +23,7 @@ from persistent_agents.runtime_values import thaw
 from persistent_agents.service import AssignmentService
 from persistent_agents.store import AssignmentStore
 from persistent_agents.tests.test_engine_postgres import plane as plane
-from tests.helpers.database_clock import expire_principal
+from tests.helpers.database_clock import advance_session_clock, expire_principal
 from tests.helpers.database_waits import unbounded_request_execution_waits
 from tests.helpers.session_plane_runtime import get_session_record, replace_session_record
 from tests.test_request_session_authority_088 import fixture as fixture
@@ -463,7 +463,8 @@ async def test_original_database_fifteen_second_window_cannot_be_renewed_by_poli
         result = await original(context, authority, body)
         observation = authority.observation
         window.append(observation.valid_until - observation.started_at)
-        await asyncio.sleep(max(0, observation.valid_until.timestamp() - time.time()) + .04)
+        advance_session_clock(monkeypatch, runtime.repositories.history.sessions,
+                              to=observation.valid_until, when=lambda: True)
         return result
     monkeypatch.setattr(service, "_definition", delayed)
     with pytest.raises(AssignmentError):

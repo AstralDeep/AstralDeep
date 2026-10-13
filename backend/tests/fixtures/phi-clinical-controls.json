@@ -1,0 +1,75 @@
+{
+  "schema": "astraldeep.phi-clinical-controls/v1",
+  "benign": [
+    {
+      "id": "tracheal-secretions",
+      "input": {
+        "secretions": "Clear tracheal secretions; continue suction."
+      },
+      "expected": "{\"secretions\": \"Clear tracheal secretions; continue suction.\"}",
+      "sha256": "545fa610e92e9ea8d6cec1efdc0eeaacebe00f3a2174171e7d3213efa4f729e0"
+    },
+    {
+      "id": "secretory-phase",
+      "input": {
+        "secretory_phase": "Luteal phase; progesterone effect."
+      },
+      "expected": "{\"secretory_phase\": \"Luteal phase; progesterone effect.\"}",
+      "sha256": "d43e7339704cacbd26d8ada6cd6089a67df3cfa917d95814d4a26ed677fadcaf"
+    },
+    {
+      "id": "prompt-token-count",
+      "input": {
+        "prompt_accounting": {
+          "token count": 73,
+          "output_tokens": 42
+        }
+      },
+      "expected": "{\"prompt_accounting\": {\"token count\": 73, \"output_tokens\": 42}}",
+      "sha256": "088b3eb305bcefe097e03cc726d34b2007a0e757c09efaf8ab190fbf60b3dc60"
+    },
+    {
+      "id": "prompt-token-budget",
+      "input": {
+        "token_budget": 128,
+        "remaining_tokens": 64
+      },
+      "expected": "{\"token_budget\": 128, \"remaining_tokens\": 64}",
+      "sha256": "3b87009bbd9b1353aff63a9152b5a6e38eefd30e73ed9efb2ddd0aceccdc8f51"
+    },
+    {
+      "id": "clinical-unicode",
+      "input": {
+        "secretions": "Mucoid secretions; café, é and 👩‍⚕️ observations."
+      },
+      "expected": "{\"secretions\": \"Mucoid secretions; café, é and 👩‍⚕️ observations.\"}",
+      "sha256": "1f84fe037701038dea130c892cce01015e27026d66639123737e626e46dfc689"
+    },
+    {
+      "id": "narrative",
+      "input": "Clear secretions with no blood. Prompt token count remains within budget.",
+      "expected": "Clear secretions with no blood. Prompt token count remains within budget.",
+      "sha256": "9e4c72f5cbea0676e65555b9eccb6a88adc616581e4a910d3b33718ff96fb344"
+    }
+  ],
+  "phi": [
+    {
+      "id": "synthetic-ssn",
+      "input": "Synthetic SSN 123-45-6789.",
+      "expected": "Synthetic SSN [REDACTED:ssn].",
+      "sensitive": "123-45-6789"
+    },
+    {
+      "id": "synthetic-email",
+      "input": "Contact fixture@example.invalid.",
+      "expected": "Contact [REDACTED:email].",
+      "sensitive": "fixture@example.invalid"
+    },
+    {
+      "id": "synthetic-mrn",
+      "input": "Synthetic MRN:987654.",
+      "expected": "Synthetic [REDACTED:mrn].",
+      "sensitive": "987654"
+    }
+  ]
+}
