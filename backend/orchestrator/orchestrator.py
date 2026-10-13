@@ -5536,6 +5536,7 @@ class Orchestrator:
             import httpx
             from a2a.client import A2ACardResolver
             from shared.a2a_bridge import a2a_card_to_custom
+            from shared.a2a_codec import A2ANegotiationError, resolve_request_interface
             from orchestrator.agent_peer_auth import agent_auth_headers
 
             # Timeout required: a hostile card endpoint could hang this
@@ -5545,6 +5546,15 @@ class Orchestrator:
                 resolver = A2ACardResolver(http_client, base_url)
                 a2a_card = await resolver.get_agent_card()
 
+            try:
+                resolve_request_interface(a2a_card, base_url)
+            except A2ANegotiationError as exc:
+                logger.warning(
+                    "A2A agent at %s advertises no dispatchable interface; "
+                    "refusing registration: %s", base_url, exc,
+                )
+                return
+
             custom_card = a2a_card_to_custom(a2a_card)
             agent_id = custom_card.agent_id
 
@@ -5552,13 +5562,15 @@ class Orchestrator:
                 logger.debug(f"A2A agent {agent_id} already connected")
                 return
 
-            self.a2a_clients[agent_id] = base_url
-            self.a2a_agent_cards[agent_id] = a2a_card
-            self.agent_urls[agent_id] = base_url
-
             register_msg = RegisterAgent(agent_card=custom_card,
                                          api_key=os.getenv("AGENT_API_KEY") or None)
             await self.register_agent(None, register_msg)
+            if self.agent_cards.get(agent_id) is not custom_card:
+                return
+
+            self.a2a_clients[agent_id] = base_url
+            self.a2a_agent_cards[agent_id] = a2a_card
+            self.agent_urls[agent_id] = base_url
 
             logger.info(f"External agent discovered via A2A (WebSocket unavailable): {agent_id} at {base_url}")
 
@@ -5569,6 +5581,7 @@ class Orchestrator:
         try:
             import httpx
             from a2a.client import A2ACardResolver
+            from shared.a2a_codec import A2ANegotiationError, resolve_request_interface
             from orchestrator.agent_peer_auth import agent_auth_headers
 
             a2a_url = f"{base_url}/a2a"
@@ -5577,6 +5590,13 @@ class Orchestrator:
                                          timeout=5.0) as http_client:
                 resolver = A2ACardResolver(http_client, a2a_url)
                 a2a_card = await resolver.get_agent_card()
+
+            try:
+                resolve_request_interface(a2a_card, base_url)
+            except A2ANegotiationError as exc:
+                logger.debug(
+                    "A2A backup client for %s skipped: %s", agent_id, exc)
+                return
 
             self.a2a_clients[agent_id] = base_url
             self.a2a_agent_cards[agent_id] = a2a_card
