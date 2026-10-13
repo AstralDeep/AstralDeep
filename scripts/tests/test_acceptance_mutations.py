@@ -99,6 +99,44 @@ def test_local_privacy_and_reader_mutations_detect_guard_removal(
     }
 
 
+@pytest.mark.parametrize(
+    ("patterns", "credential_output"),
+    [
+        (
+            "PHI_VALUE_PATTERNS",
+            "Credential ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ.",
+        ),
+        (
+            "PHI_VALUE_PATTERNS + SECRET_VALUE_PATTERNS",
+            "Credential [REDACTED:token].",
+        ),
+    ],
+)
+def test_phi_mutation_removes_masking_without_disabling_added_credentials(
+    patterns: str, credential_output: str
+) -> None:
+    mutation = next(
+        item for item in gate.MUTATIONS if item.name == "phi-value-masking-removed"
+    )
+    original = (gate.ROOT / "backend/shared/phi_redactor.py").read_text()
+    start = original.index("    for pattern, replacement in PHI_VALUE_PATTERNS")
+    end = original.index("\n", start)
+    source = (
+        original[:start]
+        + f"    for pattern, replacement in {patterns}:"
+        + original[end:]
+    )
+    namespace = {}
+    exec(compile(source.replace(mutation.before, mutation.after, 1), "mutant", "exec"), namespace)
+    assert namespace["redact"]("Synthetic SSN 123-45-6789.") == (
+        "Synthetic SSN 123-45-6789.",
+        False,
+    )
+    assert namespace["redact"](
+        "Credential ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ."
+    ) == (credential_output, False)
+
+
 def test_actual_proposal_collection_keeps_disposable_source_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
