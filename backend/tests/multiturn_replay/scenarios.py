@@ -1,6 +1,5 @@
-"""Frozen synthetic multi-turn scenario corpus: human-reviewed identities, scripted
-provider turns, expected authority transitions, attempted effects, and benign recovery
-twins, each bound by a canonical SHA-256 digest.
+"""Defines synthetic multi-turn fixtures and expected transitions for the replay diagnostic.
+Canonical SHA-256 digests bind scenario identities, provider turns, effects, and recovery twins.
 """
 
 from __future__ import annotations
@@ -67,8 +66,8 @@ REQUIRED_CATEGORIES = frozenset(
 )
 
 _PROVENANCE = (
-    "human-reviewed synthetic fixture; no production, clinical, or live-model data; "
-    "identities are development/held-out test namespaces only"
+    "synthetic fixture; no production, clinical, or live-model data; "
+    "identities are development/held-out test namespaces only; human corpus review pending"
 )
 
 

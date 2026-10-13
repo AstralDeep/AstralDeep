@@ -1,6 +1,5 @@
-"""Strict single-scenario entrypoint for the multi-turn replay diagnostic: one bounded
-JSON request on stdin drives one frozen scenario through the real gates and prints one
-result JSON; any refusal exits nonzero without emitting a result.
+"""Runs one bounded replay fixture from stdin through the diagnostic harness.
+ReplayEngine produces the result JSON; invalid input exits without a result.
 """
 
 from __future__ import annotations

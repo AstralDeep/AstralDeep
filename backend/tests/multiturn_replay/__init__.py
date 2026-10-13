@@ -1,6 +1,5 @@
-"""Bounded multi-turn replay diagnostic: frozen synthetic scenarios replayed through
-Astral's real governed dispatch, policy/PHI/egress/confirmation/delegation gates, and
-an independent test-owned effect oracle; consumed by tests and the module entrypoint.
+"""Exports the synthetic multi-turn replay diagnostic used by tests and its entrypoint.
+Selected production checks run with fixture-owned services and an independent effect oracle.
 """
 
 from __future__ import annotations

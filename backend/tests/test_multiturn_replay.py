@@ -354,6 +354,9 @@ def test_run_record_declares_gates_doubles_and_limits(corpus_results) -> None:
         assert result["scenario_id"] in encoded
     record = build_run_record(results)
     assert record["format"] == RUN_RECORD_FORMAT
+    assert record.get("scope") == "test_only_diagnostic"
+    assert record.get("corpus_review_status") == "pending"
+    assert record.get("ordinary_dispatch_qualified") is False
     assert record["clean_security_pass"] is False
     assert len(record["gates_real"]) >= 10
     assert set(record["doubled"]) == {
@@ -778,6 +781,9 @@ def test_entrypoint_main_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdout", types.SimpleNamespace(buffer=stdout))
     assert entry.main() == 0
     result = json.loads(stdout.getvalue().decode("ascii"))
+    assert result.get("scope") == "test_only_diagnostic"
+    assert result.get("corpus_review_status") == "pending"
+    assert result.get("ordinary_dispatch_qualified") is False
     assert result["status"] == "passed"
     assert result["scenario_id"] == "mr-heldout-allowed-recovery"
 

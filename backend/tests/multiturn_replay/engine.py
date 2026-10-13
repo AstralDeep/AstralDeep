@@ -1,7 +1,6 @@
-"""Replays one frozen scenario turn-by-turn through Astral's real gates: the policy
-engine, PHI redaction, egress validation, RFC 8693 delegation, the governed dispatch
-seam with a signing warden and receipt-verifying executor, and a test-owned effect
-oracle that is the only writer of benign local effects.
+"""Runs synthetic scenarios through selected production dispatch and authorization checks.
+Fixture-owned services and an independent effect oracle provide bounded diagnostic observations.
+Run records identify doubled boundaries and outstanding acceptance evidence.
 """
 
 from __future__ import annotations
@@ -866,6 +865,9 @@ class ReplayEngine:
         attempts = [attempt.as_dict() for turn in self.turns for attempt in turn.attempts]
         return {
             "format": RESULT_FORMAT,
+            "scope": "test_only_diagnostic",
+            "corpus_review_status": "pending",
+            "ordinary_dispatch_qualified": False,
             "scenario_id": self.scenario.scenario_id,
             "split": self.scenario.split,
             "category": self.scenario.category,
@@ -963,6 +965,9 @@ def build_run_record(results: list[dict[str, object]]) -> dict[str, object]:
     clean_pass = bool(results) and all(status == STATUS_PASSED for status in statuses)
     return {
         "format": RUN_RECORD_FORMAT,
+        "scope": "test_only_diagnostic",
+        "corpus_review_status": "pending",
+        "ordinary_dispatch_qualified": False,
         "candidate_commit": _candidate_commit(),
         "driver_sha256": _driver_sha256(),
         "corpus_digest": corpus_digest(),
@@ -978,15 +983,15 @@ def build_run_record(results: list[dict[str, object]]) -> dict[str, object]:
         "clean_security_pass": clean_pass,
         "gates_real": {
             "policy_engine": "orchestrator.policy.evaluate_policy over scenario-owned rules",
-            "phi_redaction_boundary": "shared.phi_redactor.redact on final arguments",
+            "phi_redaction_boundary": "shared.phi_redactor.redact probe; ordinary PHI admission is not exercised",
             "egress_validation": "shared.external_http.validate_egress_url on IP-literal fixtures",
             "rfc8693_delegation": "orchestrator.delegation mint/verify/authorize with attenuation",
-            "confirmation_decision": "policy CONFIRM effect plus per-turn approval register",
+            "confirmation_decision": "policy CONFIRM effect plus fixture approval register; ordinary HITL is not exercised",
             "owner_isolation": "governed dispatch runtime/owner and audit-actor validation",
             "governed_dispatch": "orchestrator.governed_dispatch.GovernedFinalDispatch in enforce mode",
             "lets_warden_signature": "Ed25519-signed receipts over a real key registry",
             "lets_receipt_replay": "lets.executor ReceiptVerifier with a SQLite replay store",
-            "lets_budget_and_sequence": "warden budget accounting with per-dimension costs",
+            "lets_budget_and_sequence": "synthetic warden budget accounting and production receipt sequence validation",
             "audit_event_production": "orchestrator.lets_audit.LetsAuditObserver with schema validation",
         },
         "doubled": {
@@ -1004,8 +1009,9 @@ def build_run_record(results: list[dict[str, object]]) -> dict[str, object]:
             "production staging qualification of the selected dispatch route",
         ],
         "limits": (
-            "scripted regression results are not live-model attack rates or proof of "
-            "clinical safety; unknown, truncated, and infrastructure outcomes never "
+            "test-only scripted regression results are not ordinary-dispatch qualification, "
+            "not live-model attack rates or proof of clinical safety; human corpus review "
+            "remains pending, and unknown, truncated, and infrastructure outcomes never "
             "count as a clean security pass"
         ),
     }
