@@ -113,6 +113,16 @@ MUTATIONS = (
             "test_close_failure_settles_reader_with_truthful_bounded_metadata[False-partial-True]",
         ),
     ),
+    Mutation(
+        "private-read-exception-filter-restored",
+        "shared/process_supervision.py",
+        "        except Exception as exc:\n            with self._condition:\n",
+        "        except (OSError, ValueError) as exc:\n            with self._condition:\n",
+        (
+            "backend/tests/test_reader_acceptance.py::"
+            "test_unknown_read_errors_settle_without_private_thread_diagnostics[RuntimeError-True]",
+        ),
+    ),
 )
 
 

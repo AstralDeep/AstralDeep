@@ -241,8 +241,8 @@ class BoundedStreamReader:
             else:
                 host.write(chunk.decode("utf-8", errors="replace"))
             host.flush()
-        except (OSError, ValueError, AttributeError):
-            pass  # Swallowed: a broken host stream must not kill the reader
+        except Exception:
+            pass
 
     def run(self) -> None:
         try:
@@ -258,7 +258,7 @@ class BoundedStreamReader:
                     self._forward_chunk(chunk)
                     with self._condition:
                         self._consume(chunk)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
             with self._condition:
                 if not self._pipe_closed:
                     self._read_error = (

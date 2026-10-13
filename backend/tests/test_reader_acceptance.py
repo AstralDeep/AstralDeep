@@ -155,6 +155,69 @@ def test_failed_forwarding_does_not_repeat_or_abandon_reads(monkeypatch):
     assert snapshot.read_error is None and snapshot.reader_done and snapshot.pipe_closed
 
 
+@pytest.mark.parametrize("private", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError])
+def test_unknown_read_errors_settle_without_private_thread_diagnostics(
+    monkeypatch, private, error_type
+):
+    class BrokenPipe(CountedPipe):
+        def read(self, size):
+            self.requested.append(size)
+            raise error_type("SYNTHETIC_PRIVATE_READ_DIAGNOSTIC" * 64)
+
+    pipe = BrokenPipe(b"")
+    failures = []
+    monkeypatch.setattr(
+        threading, "excepthook", lambda event: failures.append(event.exc_value)
+    )
+    reader = BoundedStreamReader(
+        stream=OutputStream.STDOUT,
+        pipe=pipe,
+        limits=LIMITS,
+        private_output=private,
+    )
+    thread = threading.Thread(target=reader.run)
+    thread.start()
+    thread.join()
+    snapshot = reader.snapshot()
+    assert failures == [], "private reader exception escaped to threading.excepthook"
+    assert snapshot.reader_done and snapshot.pipe_closed and pipe.close_count == 1
+    assert pipe.requested == [LIMITS.read_chunk_bytes]
+    if private:
+        assert snapshot.read_error == "private output read failed"
+        assert "SYNTHETIC_PRIVATE" not in repr(snapshot)
+    else:
+        assert snapshot.read_error.startswith(error_type.__name__)
+        assert len(snapshot.read_error.encode()) <= LIMITS.maximum_logical_line_bytes
+
+
+def test_unknown_forwarding_error_keeps_read_work_and_retention_bounded(monkeypatch):
+    class BrokenHost(CountedHost):
+        def write(self, content):
+            self.write_count += 1
+            raise RuntimeError("SYNTHETIC_HOST_WRITE_DIAGNOSTIC")
+
+    content = b"complete line\n" * 4
+    pipe = CountedPipe(content)
+    host = BrokenHost()
+    monkeypatch.setattr(sys, "stdout", host)
+    reader = BoundedStreamReader(stream=OutputStream.STDOUT, pipe=pipe, limits=LIMITS)
+    error = None
+    try:
+        reader.run()
+    except Exception as caught:
+        error = caught
+    snapshot = reader.snapshot()
+    assert error is None, "forwarding failure abandoned the reader"
+    assert len(pipe.requested) == math.ceil(len(content) / LIMITS.read_chunk_bytes) + 1
+    assert host.write_count == len(pipe.requested) - 1
+    assert snapshot.lines == (b"complete line",) * 4
+    assert snapshot.total_bytes == len(content) and snapshot.retained_bytes == len(
+        content
+    )
+    assert snapshot.read_error is None and snapshot.reader_done and snapshot.pipe_closed
+
+
 class CloseFailurePipe(CountedPipe):
     def __init__(self, content, *, close_before_failure):
         super().__init__(content)

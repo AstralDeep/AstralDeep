@@ -92,7 +92,7 @@ def test_local_privacy_and_reader_mutations_detect_guard_removal(
     receipt = gate.qualify(tmp_path / "receipt.json")
     assert receipt["status"] == "passed"
     assert receipt["baseline"]["status"] == "passed"
-    assert len(receipt["mutations"]) == 5
+    assert len(receipt["mutations"]) == 6
     assert all(row["status"] == "killed" for row in receipt["mutations"])
     assert before == {
         path: (gate.ROOT / "backend" / path).read_bytes() for path in sources
