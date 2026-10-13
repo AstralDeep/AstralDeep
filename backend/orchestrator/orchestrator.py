@@ -1023,6 +1023,8 @@ class Orchestrator:
         from orchestrator.computer_sessions import ComputerSessionManager
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
+        from orchestrator.terminal_sessions import TerminalSessionManager
+        self.terminal_sessions = TerminalSessionManager()
         self._job_context: Dict[str, Dict[str, Any]] = {}
         self.cancelled_sessions: Dict[str, bool] = {}
         self._chat_locks: Dict[tuple, asyncio.Lock] = {}
@@ -23327,6 +23329,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(task_router)
         app.include_router(async_task_router)
         app.include_router(operation_router)
+        from orchestrator.terminal_api import terminal_router
+        app.include_router(terminal_router)
         app.include_router(audit_router)
         app.include_router(feedback_user_router)
         app.include_router(feedback_admin_router)
