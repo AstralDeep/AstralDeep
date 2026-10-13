@@ -184,11 +184,16 @@ class PersistentDispatchContext:
             else:
                 async with asyncio.timeout(self.timeout_seconds):
                     result = await invoke()
-        except BaseException:
-            if self.research_input is not None:
-                await self._observe_research_once(permit, "uncertain", None)
-            else:
-                await asyncio.shield(self.observe(permit, "uncertain", None))
+        except BaseException as error:
+            try:
+                if self.research_input is not None:
+                    await self._observe_research_once(permit, "uncertain", None)
+                else:
+                    await asyncio.shield(self.observe(permit, "uncertain", None))
+            except Exception:
+                if isinstance(error, asyncio.CancelledError):
+                    raise error
+                raise
             raise
         if self.research_input is not None:
             await self._observe_research_once(permit, "succeeded", result)

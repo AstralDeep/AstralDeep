@@ -1,5 +1,4 @@
-"""Builds the astralprims cards the FHIR agent returns: census, patient overview, vital
-trends, laboratory results, medication review, timeline, source status and record tables.
+"""Builds the astralprims cards for patient measurements, population queries and FHIR clinical dashboards.
 mcp_tools.py passes in view models from clinical.py and returns each card's dict.
 """
 
@@ -39,7 +38,7 @@ VITAL_TILES = (
     "systolic", "diastolic", "temperature", "glasgow_coma_score",
 )
 DISCLAIMER = (
-    "De-identified demonstration data replayed from the eICU Collaborative Research Database demo. "
+    "Synthetic and public de-identified reference demonstration data. "
     "Flags use fixed display thresholds and are not clinical advice."
 )
 
@@ -485,6 +484,61 @@ def records_card(resource_type: str, headers: List[str], rows: List[List[str]], 
         content.append(Alert(message="No records matched this search.", variant="info"))
     content.append(Text(content=DISCLAIMER, variant="caption"))
     return Card(title=f"FHIR search: {resource_type}", id=f"fhir-records-{resource_type.lower()}", content=content)
+
+
+def measurements_card(data: Dict[str, Any]) -> Card:
+    origin = {"synthetic": "Synthetic demonstration data", "public-deidentified": "Public de-identified demonstration data"}.get(
+        data["data_origin"], "Data provenance is not fully established",
+    )
+    content: List[Any] = [Hero(
+        eyebrow="Patient-level FHIR REST", title=data["patient_label"], subtitle=f"Patient {data['patient']}",
+        variant="subtle", badges=[origin],
+    )]
+    if data["measurements"]:
+        content.append(Table(
+            headers=["Measurement", "Value", "Unit", "Observation date", "Date field", "Source"],
+            rows=[[row["label"], clinical.format_number(row["value"]), row["unit"], row["measured_at"], row["date_basis"], row["source"]]
+                  for row in data["measurements"]],
+            attributes={"title": "Latest usable measurement"},
+        ))
+    else:
+        content.append(Alert(message="No usable measurement was found in the returned records.", variant="info"))
+    if data["limited"]:
+        content.append(Text(content=f"This search inspected at most {data['observation_limit']} observations; additional records may exist.", variant="caption"))
+    content.append(Text(
+        content=f"{data['definition']}. {origin}. This reference result is not clinical advice or evidence about the Kentucky population.",
+        variant="caption",
+    ))
+    content.append(ActionGroup(buttons=[refresh()], label="Patient measurement"))
+    return Card(title="Patient measurements", id=f"fhir-patient-measurements-{data['patient']}-{data['measure']}", content=content)
+
+
+def population_card(data: Dict[str, Any]) -> Card:
+    scope = data["scope"]
+    filters = [scope["state"] or "All states", ", ".join(scope["counties"]) or "All counties"]
+    if scope["pregnant"] is not None:
+        filters.append("Explicitly pregnant" if scope["pregnant"] else "Explicitly not pregnant")
+    content: List[Any] = [
+        Hero(eyebrow="Population-level SQL on FHIR", title="Average latest A1C by county", subtitle=" · ".join(filters),
+             variant="subtle", badges=["Synthetic demonstration data"]),
+    ]
+    if data["rows"]:
+        content.append(Table(
+            headers=["County", "Cohort patients", "Patients with A1C", "Average latest A1C (%)"],
+            rows=[[row["county"], str(row["patient_count"]), str(row["with_a1c_count"]),
+                   clinical.format_number(row["average_a1c"]) if row["average_a1c"] is not None else "Not recorded"]
+                  for row in data["rows"]],
+            attributes={"title": "Synthetic population results"},
+        ))
+    else:
+        content.append(Alert(message="No synthetic patients matched this cohort.", variant="info"))
+    content.append(KeyValue(title="Calculation provenance", items=[
+        {"label": "Source", "value": data["source"]}, {"label": "Generated", "value": data["generated_at"]},
+        {"label": "Definition", "value": data["definition"]},
+    ], columns=1))
+    content.append(Text(content="Synthetic demo records only; these results do not describe actual Kentucky residents or KHIE data.", variant="caption"))
+    content.append(ActionGroup(buttons=[refresh()], label="Population query"))
+    return Card(title="Population A1C", id="fhir-population-a1c", content=content)
 
 
 def feed_card(

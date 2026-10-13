@@ -18,6 +18,7 @@ from astralplane.repositories import (
     RepositoryConflictError as PlaneRepositoryConflictError,
 )
 from astralplane.repositories import work_admission as plane_admission
+from orchestrator.emergency_stop import EmergencyStopRefused
 
 
 _OPERATION_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -492,6 +493,7 @@ class WorkAdmissionCoordinator:
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
+        submission_gate: Callable[[OperationRequest], str | None] | None = None,
         _configure_repository: bool = True,
     ) -> None:
         if repository is None:
@@ -506,6 +508,7 @@ class WorkAdmissionCoordinator:
         self._clock = clock
         self._operation_retention = operation_retention
         self._slot_lease = slot_lease
+        self._submission_gate = submission_gate
         if _configure_repository:
             self._repository.configure(configs)
         else:
@@ -527,10 +530,13 @@ class WorkAdmissionCoordinator:
         clock: Callable[[], datetime] | None = None,
         operation_retention: timedelta = timedelta(hours=24),
         slot_lease: timedelta = timedelta(seconds=30),
+        submission_gate: Callable[[OperationRequest], str | None] | None = None,
+        execution_gate: Callable[..., None] | None = None,
     ) -> WorkAdmissionCoordinator:
         repository = PlaneWorkAdmissionRepository(
             plane_runtime=plane_runtime,
             plane_repositories=plane_repositories,
+            execution_gate=execution_gate,
         )
         configs = repository.load_existing_configs()
         return cls(
@@ -539,6 +545,7 @@ class WorkAdmissionCoordinator:
             clock=clock,
             operation_retention=operation_retention,
             slot_lease=slot_lease,
+            submission_gate=submission_gate,
             _configure_repository=False,
         )
 
@@ -552,6 +559,11 @@ class WorkAdmissionCoordinator:
         return datetime.now(UTC) if current is None else current
 
     def submit(self, request: OperationRequest) -> AdmissionResult:
+        if self._submission_gate is not None:
+            refusal = self._submission_gate(request)
+            if refusal:
+                return RefusedAdmission(accepted=False, code=refusal,
+                                        retryable=False, retry_after_ms=None)
         return self._repository.submit(
             request,
             now=self._now(),
@@ -2172,6 +2184,7 @@ class PlaneWorkAdmissionRepository:
         *,
         plane_runtime: Any,
         plane_repositories: Any | None = None,
+        execution_gate: Callable[..., None] | None = None,
     ) -> None:
         if plane_runtime is None or not callable(
             getattr(plane_runtime, "transaction", None)
@@ -2183,6 +2196,7 @@ class PlaneWorkAdmissionRepository:
             raise TypeError("Plane repository catalog is missing work_admission")
         self._runtime = plane_runtime
         self._plane_repository = repository
+        self._execution_gate = execution_gate
         self._configuration_lock = threading.RLock()
         self._configs: dict[AdmissionClass, AdmissionClassConfig] = {}
 
@@ -2200,11 +2214,39 @@ class PlaneWorkAdmissionRepository:
         /,
         *args: object,
         transaction: Any | None = None,
+        admission_owner: OperationOwner | None = None,
+        execution_fence: ExecutionFence | None = None,
+        guard_claim: bool = False,
+        bind_admission: bool = False,
         **kwargs: object,
     ) -> Any:
         with self._transaction(transaction) as active_transaction:
             with _translate_plane_errors():
-                return operation(active_transaction, *args, **kwargs)
+                if admission_owner is not None and self._execution_gate is not None:
+                    self._execution_gate(active_transaction, admission_owner)
+                if execution_fence is not None:
+                    self._gate_execution(active_transaction, execution_fence)
+                result = operation(active_transaction, *args, **kwargs)
+                if bind_admission and isinstance(result, plane_admission.AcceptedAdmission) and self._execution_gate is not None:
+                    self._execution_gate(active_transaction, admission_owner, result.operation_id,
+                                         bind=result.created)
+                if guard_claim and result is not None and self._execution_gate is not None:
+                    self._execution_gate(active_transaction, self._record_owner(result.operation),
+                                         result.operation.operation_id)
+                return result
+
+    def _gate_execution(self, transaction, fence):
+        if self._execution_gate is None:
+            return
+        record = self._plane_repository.get_operation_for_administration(
+            transaction, operation_id=fence.operation_id, for_update=False)
+        if record is not None:
+            self._execution_gate(transaction, self._record_owner(record), record.operation_id)
+
+    @staticmethod
+    def _record_owner(record):
+        return OperationOwner(OwnerScope(record.owner_scope.value), record.owner_user_id,
+                              record.connection_scope_id)
 
     def load_existing_configs(self) -> tuple[AdmissionClassConfig, ...]:
         plane_configs = tuple(
@@ -2237,13 +2279,12 @@ class PlaneWorkAdmissionRepository:
         retention: timedelta,
         slot_lease: timedelta,
     ) -> AdmissionResult:
-        result = self._invoke(
-            self._plane_repository.submit,
-            _to_plane_request(request),
-            now=now,
-            retention=retention,
-            slot_lease=slot_lease,
-        )
+        try:
+            result = self._invoke(self._plane_repository.submit, _to_plane_request(request),
+                now=now, retention=retention, slot_lease=slot_lease, admission_owner=request.owner,
+                bind_admission=True)
+        except EmergencyStopRefused as exc:
+            return RefusedAdmission(False, exc.code, False, None)
         if isinstance(result, plane_admission.AcceptedAdmission):
             return AcceptedAdmission(
                 accepted=result.accepted,
@@ -2279,15 +2320,28 @@ class PlaneWorkAdmissionRepository:
         slot_lease: timedelta,
         retention: timedelta,
     ) -> OperationClaim | None:
-        return self._claim(
-            self._invoke(
-                self._plane_repository.claim_next,
-                _to_plane_class(class_name),
-                now=now,
-                slot_lease=slot_lease,
-                retention=retention,
-            )
-        )
+        if self._execution_gate is None:
+            return self._claim(self._invoke(self._plane_repository.claim_next,
+                _to_plane_class(class_name), now=now, slot_lease=slot_lease, retention=retention))
+        for _ in range(64):
+            with self._runtime.transaction() as tx:
+                candidate = self._plane_repository.peek_next(tx, _to_plane_class(class_name))
+                if candidate is None:
+                    return None
+                owner = self._record_owner(candidate)
+                try:
+                    self._execution_gate(tx, owner, candidate.operation_id)
+                except EmergencyStopRefused as exc:
+                    if exc.code not in {"emergency_stop_active", "emergency_stop_stale_epoch"}:
+                        raise
+                    self._plane_repository.cancel(tx, _to_plane_owner(owner), candidate.operation_id,
+                        terminal_code="emergency_stop_active", now=now, retention=retention,
+                        request_running=True)
+                    continue
+                return self._claim(self._invoke(self._plane_repository.claim_operation,
+                    _to_plane_class(class_name), candidate.operation_id, now=now, slot_lease=slot_lease,
+                    retention=retention, guard_claim=True, transaction=tx))
+        return None
 
     def claim_operation(
         self,
@@ -2298,16 +2352,14 @@ class PlaneWorkAdmissionRepository:
         slot_lease: timedelta,
         retention: timedelta,
     ) -> OperationClaim | None:
-        return self._claim(
-            self._invoke(
-                self._plane_repository.claim_operation,
-                _to_plane_class(class_name),
-                operation_id,
-                now=now,
-                slot_lease=slot_lease,
-                retention=retention,
-            )
-        )
+        with self._runtime.transaction() as tx:
+            candidate = self._plane_repository.get_operation_for_administration(
+                tx, operation_id=operation_id, for_update=False)
+            if candidate is not None and self._execution_gate is not None:
+                self._execution_gate(tx, self._record_owner(candidate), candidate.operation_id)
+            return self._claim(self._invoke(self._plane_repository.claim_operation,
+                _to_plane_class(class_name), operation_id, now=now, slot_lease=slot_lease,
+                retention=retention, guard_claim=True, transaction=tx))
 
     def inspect_admission_class(
         self, class_name: AdmissionClass, *, now: datetime | None
@@ -2498,6 +2550,7 @@ class PlaneWorkAdmissionRepository:
                 self._plane_repository.assert_current_execution,
                 _to_plane_fence(fence),
                 transaction=transaction,
+                execution_fence=fence,
             )
         )
 
@@ -2508,7 +2561,7 @@ class PlaneWorkAdmissionRepository:
             raise StaleExecutionFenceError("durable execution lease observation unavailable")
         return _from_plane_record(self._invoke(
             self._plane_repository.assert_current_execution_lease,
-            _to_plane_fence(fence), transaction=transaction))
+            _to_plane_fence(fence), transaction=transaction, execution_fence=fence))
 
     def reselect_execution(
         self,
@@ -2523,6 +2576,7 @@ class PlaneWorkAdmissionRepository:
                 _to_plane_fence(fence),
                 now=now,
                 slot_lease=slot_lease,
+                execution_fence=fence,
             )
         )
 
@@ -2609,6 +2663,7 @@ class PlaneWorkAdmissionRepository:
     def fenced_transaction(self, fence: ExecutionFence) -> Iterator[Any]:
         with self._runtime.transaction() as transaction:
             with _translate_plane_errors():
+                self._gate_execution(transaction, fence)
                 self._plane_repository.assert_current_execution(
                     transaction, _to_plane_fence(fence)
                 )

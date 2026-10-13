@@ -42,10 +42,13 @@ from persistent_agents.models import AssignmentError
 
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
 _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
-                           "chrome_note_search", "chrome_turn_selection_set"})
+                           "chrome_note_search", "chrome_turn_selection_set", "chrome_safety_verify"})
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_user_skill_delete", "chrome_declarative_command",
-                           "chrome_note_save", "chrome_note_toggle", "chrome_note_forget"})
+                           "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
+                           "chrome_safety_stop", "chrome_safety_resume",
+                           "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
+                           "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -62,7 +65,7 @@ def _socket_method(message):
     payload = message.get("payload")
     if (action == "chrome_open" and type(payload) is dict
             and type(payload.get("surface")) is str
-            and payload.get("surface") in {"agent_authoring", "guidance"}):
+            and payload.get("surface") in {"agent_authoring", "guidance", "evidence", "safety", "mesh"}):
         return "WS_READ"
     return None
 
@@ -634,7 +637,7 @@ def _voice_guidance_message(message):
 
 async def current_socket_human_read(*, expected_orchestrator, websocket,
                                     operation_context=None):
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
     context = operation_context
     if not isinstance(context, dict):
         context = _CONNECTION_OPERATION_CONTEXT.get() or {}

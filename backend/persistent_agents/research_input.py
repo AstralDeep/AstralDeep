@@ -656,6 +656,7 @@ async def invoke_fixed_user_model(
     stream_chat_id,
 ):
     from llm_config.types import CredentialSource, ResolvedConfig
+    from orchestrator.evidence_context import enabled
     from shared import isolated_http
 
     selected = context.research_input
@@ -699,8 +700,27 @@ async def invoke_fixed_user_model(
             return unsent
         return response
 
+    async def tracked():
+        from types import SimpleNamespace
+
+        async def receipt():
+            await physical()
+            reported_usage = None
+            if response is not None:
+                try:
+                    payload = json.loads(response.body)
+                    if isinstance(payload, dict):
+                        reported_usage = payload.get("usage")
+                except (TypeError, ValueError, UnicodeError):
+                    pass
+            return SimpleNamespace(usage=reported_usage)
+
+        await orch._context_model_call(websocket, context.conversation_id, feature, profile.MODEL, receipt,
+                                       request=body, base_url=profile.BASE_URL, provider_capture=selected._config)
+        return unsent if unsent is not None else response
+
     try:
-        await context.invoke_model(physical, body)
+        await context.invoke_model(tracked if enabled() else physical, body)
         if unsent is not None:
             raise DispatchDenied(PRE_SEND_FAILURE)
         parsed = selected.parse(response.body, status_code=response.status_code)

@@ -88,10 +88,12 @@ def runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(transport, 'VerifiedLoopbackTransport', Loopback, raising=False)
     monkeypatch.setattr(ssl, 'create_default_context', lambda **kwargs: SimpleNamespace(
         verify_mode=ssl.CERT_REQUIRED, check_hostname=True, cadata=kwargs.get('cadata')))
+    profiles = SimpleNamespace(Profile=lambda *args: profile,
+                               resolve_path=lambda: str(Path.home() / '.gaiakeep' / 'gaiakeep-profile.json'))
     monkeypatch.setattr(remote_runtime, '_validated_sdk', lambda: (
         Core, lambda **kwargs: kwargs, Exception, lambda action, reply: reply,
-        SimpleNamespace(Profile=lambda *args: profile), SimpleNamespace(parse_private=lambda data: key)))
-    return SimpleNamespace(trust=trust, records=records, Core=Core, profile=profile, key=key, pem=pem,
+        profiles, SimpleNamespace(parse_private=lambda data: key)))
+    return SimpleNamespace(trust=trust, records=records, Core=Core, profile=profile, profiles=profiles, key=key, pem=pem,
                            request=lambda **change: dict(tool='gaiakeep_core_whoami',
                                arguments={'machine_id': 'mine', 'params': {}}, trust=dict(trust), **change))
 
@@ -238,6 +240,18 @@ def test_profile_replacement_is_never_reread(runtime, monkeypatch, tmp_path):
     assert len(reads) == 2 and reads[0].endswith('gaiakeep-profile.json') and reads[1].endswith('owner.key')
     assert runtime.records['constructed'][0][0] == 'r:a:p'
     assert runtime.records['closed'] == ['core', 'transport']
+
+
+def test_selected_account_profile_retains_private_bounded_reads(runtime, monkeypatch, tmp_path):
+    selected = tmp_path / 'project profile' / 'gaiakeep-profile.json'
+    runtime.profiles.resolve_path = lambda: str(selected)
+    original, reads = remote_runtime._private_bytes, []
+    def recorded(path, limit):
+        reads.append((str(path), limit))
+        return original(path, limit)
+    monkeypatch.setattr(remote_runtime, '_private_bytes', recorded)
+    assert remote_runtime.run(runtime.request())['ok']
+    assert reads == [(str(selected), 65536), (runtime.profile.key_file, 16384)]
 
 
 @pytest.mark.parametrize('exc,verdict', [(FileNotFoundError(), 'not_configured'),

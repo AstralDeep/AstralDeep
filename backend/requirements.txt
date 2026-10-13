@@ -29,6 +29,7 @@ python-pptx>=0.6.23
 odfpy>=1.4.1
 striprtf>=0.0.26
 Pillow>=10.0.0
+qrcode==8.2
 pdf2image>=1.17.0
 defusedxml>=0.7.1
 python-magic>=0.4.27; sys_platform != "win32"
@@ -58,8 +59,8 @@ spacy>=3.7.0
 tzdata>=2024.1
 
 # A2A + MCP
-a2a-sdk[sqlite]>=1.0.2,<2.0
-a2a-sdk[http-server]>=1.0.2,<2.0
+a2a-sdk[sqlite]>=1.1.5,<2.0
+a2a-sdk[http-server]>=1.1.5,<2.0
 httpx>=0.28.1
 
 # Conversational voice control plane (feature 065; lead-developer approved 2026-07-31).

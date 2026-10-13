@@ -1,49 +1,43 @@
 """Bridge exposes Astral's Work tools to a local MCP host over stdio JSON-RPC through
 one AstralClient; serve_stdio() needs only httpx, while serve_with_official_sdk()
-lazily imports the optional mcp package.
+lazily imports the optional mcp package. Both serving paths speak the declared
+MCP 2026-07-28 wire shape through astral_sdk.mcp_protocol.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import queue
 import sys
 import threading
 from typing import IO, Any, Optional
 
 from astral_sdk.client import AstralClient
-from astral_sdk.errors import AstralHTTPError, AstralTimeoutError, RetryExhaustedError
-from astral_sdk.tools import (
-    ASTRAL_TOOLS,
-    SUPPORTED_PROTOCOL_VERSIONS,
-    TOOL_NAMES,
+from astral_sdk.errors import AstralError, AstralHTTPError
+from astral_sdk.mcp_protocol import (
+    INTERNAL_ERROR,
+    INVALID_REQUEST,
+    METHOD_NOT_FOUND,
+    PARSE_ERROR,
+    SERVER_INSTRUCTIONS,
+    SERVER_NAME,
+    SERVER_VERSION,
+    ProtocolError,
+    discover_result,
+    error_response,
+    negotiated_call_arguments,
+    require_request_envelope,
+    tool_error_result,
+    tool_success_result,
+    tools_list_result,
+    valid_request_id,
 )
 
-_PARSE_ERROR = -32700
-_INVALID_REQUEST = -32600
-_METHOD_NOT_FOUND = -32601
-_INVALID_PARAMS = -32602
-_INTERNAL_ERROR = -32603
-_UNSUPPORTED_PROTOCOL_VERSION = -32022
-_META_PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
-_META_CAPABILITIES_KEY = "io.modelcontextprotocol/clientCapabilities"
-_META_SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
-_SERVER_INFO = {"name": "astral-sdk-bridge", "version": "0.1.0"}
+logger = logging.getLogger("astral_sdk.mcp_bridge")
+
 _MAX_PENDING_REQUESTS = 256
 _MAX_LINE_CHARS = 1048576
-
-
-class _InvalidToolCall(Exception):
-    pass
-
-
-class _ToolInputError(Exception):
-    def __init__(self, missing: list[str]) -> None:
-        super().__init__(f"missing required argument(s): {', '.join(missing)}")
-        self.missing = missing
-
-
-def _is_valid_id(value: Any) -> bool:
-    return isinstance(value, (str, int)) and not isinstance(value, bool)
 
 
 class _RequestTracker:
@@ -87,75 +81,10 @@ class _IntakeGate:
             self._pending -= 1
 
 
-def _error_response(request_id: Any, code: int, message: str, *, data: Any = None) -> dict[str, Any]:
-    error: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        error["data"] = data
-    return {"jsonrpc": "2.0", "id": request_id, "error": error}
-
-
-def _success_result(payload: dict[str, Any]) -> dict[str, Any]:
-    return {"resultType": "complete", "content": [{"type": "text", "text": json.dumps(payload)}],
-            "structuredContent": payload, "isError": False}
-
-
-def _execution_failure_result(exc: Exception) -> dict[str, Any]:
-    result: dict[str, Any] = {"resultType": "complete", "content": [{"type": "text", "text": str(exc)}],
-                              "isError": True}
-    code = getattr(exc, "code", None)
-    if code is not None:
-        result["structuredContent"] = {"code": code}
-    return result
-
-
-def _input_validation_failure_result(exc: "_ToolInputError") -> dict[str, Any]:
-    return {"resultType": "complete", "content": [{"type": "text", "text": str(exc)}],
-            "structuredContent": {"code": "invalid_arguments", "missing": list(exc.missing)}, "isError": True}
-
-
-def _mcp_tool_descriptors() -> list[dict[str, Any]]:
-    return [{"name": name, "description": ASTRAL_TOOLS[name]["description"],
-             "inputSchema": ASTRAL_TOOLS[name]["input_schema"]} for name in TOOL_NAMES]
-
-
-def _official_handlers(bridge: "Bridge") -> tuple[Any, Any]:
-    from mcp import types
-    from mcp.shared.exceptions import MCPError
-
-    async def list_tools(context: Any, params: Any) -> types.ListToolsResult:
-        return types.ListToolsResult(tools=[
-            types.Tool(name=descriptor["name"], description=descriptor["description"],
-                       input_schema=descriptor["inputSchema"])
-            for descriptor in _mcp_tool_descriptors()])
-
-    async def call_tool(context: Any, params: Any) -> types.CallToolResult:
-        try:
-            payload = bridge._dispatch(params.name, dict(params.arguments or {}))
-        except _InvalidToolCall as exc:
-            raise MCPError(code=_INVALID_PARAMS, message=str(exc)) from exc
-        except _ToolInputError as exc:
-            failure = _input_validation_failure_result(exc)
-            return types.CallToolResult(
-                content=[types.TextContent(type="text", text=failure["content"][0]["text"])],
-                structured_content=failure["structuredContent"], is_error=True)
-        except (AstralHTTPError, AstralTimeoutError, RetryExhaustedError) as exc:
-            failure = _execution_failure_result(exc)
-            kwargs: dict[str, Any] = {
-                "content": [types.TextContent(type="text", text=failure["content"][0]["text"])],
-                "is_error": True}
-            if "structuredContent" in failure:
-                kwargs["structured_content"] = failure["structuredContent"]
-            return types.CallToolResult(**kwargs)
-        return types.CallToolResult(
-            content=[types.TextContent(type="text", text=json.dumps(payload))],
-            structured_content=payload, is_error=False)
-
-    return list_tools, call_tool
-
-
 class Bridge:
     def __init__(self, client: AstralClient) -> None:
         self._client = client
+        self._stdio_queue: Optional[queue.Queue[Any]] = None
 
     @classmethod
     def connect(cls, base_url: str, token: str, **client_kwargs: Any) -> "Bridge":
@@ -165,81 +94,54 @@ class Bridge:
         self._client.close()
 
     def handle(self, request: Any) -> Optional[dict[str, Any]]:
-        if not isinstance(request, dict) or request.get("jsonrpc") != "2.0" or "method" not in request:
-            return _error_response(None, _INVALID_REQUEST, "request must be a JSON-RPC 2.0 object with a method")
-        method = request["method"]
-        if not isinstance(method, str):
-            return _error_response(None, _INVALID_REQUEST, "method must be a string")
+        if not isinstance(request, dict):
+            return error_response(
+                None, ProtocolError(INVALID_REQUEST, "request must be a JSON object"))
         if "id" not in request:
             return None
-        request_id = request["id"]
-        if not isinstance(request_id, (str, int)) or isinstance(request_id, bool):
-            return _error_response(None, _INVALID_REQUEST, "request id must be a string or integer")
+        request_id = request.get("id")
+        if not valid_request_id(request_id):
+            return error_response(
+                None, ProtocolError(INVALID_REQUEST, "id must be a string or integer"))
+        if request.get("jsonrpc") != "2.0":
+            return error_response(
+                request_id, ProtocolError(INVALID_REQUEST, 'jsonrpc must be "2.0"'))
+        method = request.get("method")
+        if not isinstance(method, str) or not method:
+            return error_response(
+                request_id, ProtocolError(INVALID_REQUEST, "method must be a non-empty string"))
         params = request.get("params")
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            return _error_response(request_id, _INVALID_REQUEST, "params must be an object")
-        meta_failure = self._meta_failure(method, params, request_id)
-        if meta_failure is not None:
-            return meta_failure
         try:
-            if method == "server/discover":
-                result: Any = self._discover_result()
+            if method == "tools/call":
+                require_request_envelope(params)
+                name, arguments = negotiated_call_arguments(params)
+                result: Any = self._tool_call_outcome(name, arguments)
             elif method == "tools/list":
-                result = {"resultType": "complete", "tools": _mcp_tool_descriptors()}
-            elif method == "tools/call":
-                result = self._tool_call_result(params)
+                require_request_envelope(params)
+                result = tools_list_result()
+            elif method == "server/discover":
+                require_request_envelope(params)
+                result = discover_result()
             else:
-                return _error_response(request_id, _METHOD_NOT_FOUND, f"unknown method: {method}")
-        except _InvalidToolCall as exc:
-            return _error_response(request_id, _INVALID_PARAMS, str(exc))
-        except _ToolInputError as exc:
-            result = _input_validation_failure_result(exc)
-        except (AstralHTTPError, AstralTimeoutError, RetryExhaustedError) as exc:
-            result = _execution_failure_result(exc)
-        except Exception as exc:
-            return _error_response(request_id, _INTERNAL_ERROR, f"tool dispatch failed: {type(exc).__name__}")
+                return error_response(
+                    request_id, ProtocolError(METHOD_NOT_FOUND, "Method not found"))
+        except ProtocolError as exc:
+            return error_response(request_id, exc)
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-    def _meta_failure(self, method: str, params: dict[str, Any], request_id: Any) -> Optional[dict[str, Any]]:
-        meta = params.get("_meta")
-        if not isinstance(meta, dict):
-            return self._invalid_params(method, request_id, "params._meta must be an object")
-        requested = meta.get(_META_PROTOCOL_KEY)
-        if not isinstance(requested, str) or not requested:
-            return self._invalid_params(method, request_id,
-                                        f"params._meta.{_META_PROTOCOL_KEY} must be a non-empty string")
-        capabilities = meta.get(_META_CAPABILITIES_KEY)
-        if not isinstance(capabilities, dict):
-            return self._invalid_params(method, request_id,
-                                        f"params._meta.{_META_CAPABILITIES_KEY} must be an object")
-        if requested not in SUPPORTED_PROTOCOL_VERSIONS:
-            return _error_response(request_id, _UNSUPPORTED_PROTOCOL_VERSION,
-                                   f"unsupported protocol version: {requested}",
-                                   data={"supported": list(SUPPORTED_PROTOCOL_VERSIONS), "requested": requested})
-        return None
+    def _tool_call_outcome(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            structured = self._dispatch(name, arguments)
+        except AstralError as exc:
+            return tool_error_result(str(exc))
+        except (KeyError, TypeError) as exc:
+            return tool_error_result(f"invalid arguments for tool {name}: {exc}")
+        except Exception:
+            logger.exception("astral tool dispatch failed unexpectedly")
+            return tool_error_result("tool execution failed")
+        return tool_success_result(structured)
 
-    def _invalid_params(self, method: str, request_id: Any, message: str) -> dict[str, Any]:
-        data = {"supported": list(SUPPORTED_PROTOCOL_VERSIONS)} if method == "initialize" else None
-        return _error_response(request_id, _INVALID_PARAMS, message, data=data)
-
-    def _discover_result(self) -> dict[str, Any]:
-        return {"resultType": "complete", "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
-                "capabilities": {"tools": {}}, "_meta": {_META_SERVER_INFO_KEY: dict(_SERVER_INFO)}}
-
-    def _tool_call_result(self, params: dict[str, Any]) -> dict[str, Any]:
-        name = params.get("name")
-        arguments = params.get("arguments")
-        if arguments is None:
-            arguments = {}
-        if not isinstance(name, str) or not name:
-            raise _InvalidToolCall("params.name must be a non-empty tool name string")
-        if not isinstance(arguments, dict):
-            raise _InvalidToolCall("params.arguments must be an object")
-        return _success_result(self._dispatch(name, arguments))
-
-    def _dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _dispatch(self, name: Optional[str], arguments: dict[str, Any]) -> dict[str, Any]:
         from dataclasses import asdict
 
         method_for_tool = {
@@ -257,20 +159,36 @@ class Bridge:
                 expected_revision=arguments["expected_revision"]),
             "astral_get_artifact": lambda: self._client.get_artifact(arguments["operation_id"]),
         }
-        factory = method_for_tool.get(name)
+        factory = method_for_tool.get(name or "")
         if factory is None:
-            raise _InvalidToolCall(f"unknown tool: {name}")
-        schema = ASTRAL_TOOLS[name].get("input_schema", {})
-        missing = [field for field in schema.get("required", ()) if field not in arguments]
-        if missing:
-            raise _ToolInputError(missing)
+            raise AstralHTTPError(f"unknown Astral tool: {name}", code="unknown_tool")
+        from astral_sdk.tools import ASTRAL_TOOLS
+
+        spec = ASTRAL_TOOLS.get(name or "")
+        if spec:
+            required = spec.get("input_schema", {}).get("required", ())
+            missing = [f for f in required if f not in arguments]
+            if missing:
+                raise TypeError(f"missing required argument(s): {', '.join(missing)}")
         value = factory()
         return asdict(value)
 
-    def serve_stdio(self, in_stream: IO[str] = sys.stdin, out_stream: IO[str] = sys.stdout) -> None:
-        import queue
+    def serve_stdio(self, in_stream: Optional[IO[str]] = None,
+                    out_stream: Optional[IO[str]] = None) -> None:
+        if in_stream is None:
+            in_stream = sys.stdin
+        if out_stream is None:
+            out_stream = sys.stdout
 
-        lines: "queue.Queue[Any]" = queue.Queue()
+        write_lock = threading.Lock()
+
+        def _write(message: dict[str, Any]) -> None:
+            with write_lock:
+                out_stream.write(json.dumps(message) + "\n")
+                out_stream.flush()
+
+        lines: queue.Queue[Any] = queue.Queue(maxsize=_MAX_PENDING_REQUESTS + 1)
+        self._stdio_queue = lines
         gate = _IntakeGate(_MAX_PENDING_REQUESTS)
         tracker = _RequestTracker()
 
@@ -281,82 +199,145 @@ class Bridge:
                     if not line:
                         continue
                     if len(line) > _MAX_LINE_CHARS:
-                        lines.put(("OVERSIZE", None))
+                        if gate.admit():
+                            lines.put(("OVERSIZE", None))
+                        else:
+                            _write(error_response(
+                                None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
                         continue
                     try:
                         message = json.loads(line)
                     except json.JSONDecodeError:
-                        message = None
+                        if gate.admit():
+                            lines.put(("PARSE_ERROR", None))
+                        else:
+                            _write(error_response(
+                                None, ProtocolError(PARSE_ERROR, "invalid JSON")))
+                        continue
                     if isinstance(message, dict) and "id" not in message:
                         params = message.get("params")
                         request_id = params.get("requestId") if isinstance(params, dict) else None
-                        if message.get("method") == "notifications/cancelled" and _is_valid_id(request_id):
+                        if message.get("method") == "notifications/cancelled" and valid_request_id(request_id):
                             tracker.cancel(request_id)
                         continue
                     request_id = message.get("id") if isinstance(message, dict) else None
                     if gate.admit():
-                        if _is_valid_id(request_id):
+                        if valid_request_id(request_id):
                             tracker.register(request_id)
-                        lines.put(("REQ", line))
+                        lines.put(("REQ", message))
                     else:
-                        lines.put(("OVERLOAD", request_id if _is_valid_id(request_id) else None))
+                        _write(error_response(
+                            request_id if valid_request_id(request_id) else None,
+                            ProtocolError(INTERNAL_ERROR, "too many pending requests; retry after earlier requests complete"),
+                        ))
             finally:
                 lines.put(None)
 
         reader = threading.Thread(target=_read_lines, daemon=True)
         reader.start()
+
         while True:
             item = lines.get()
             if item is None:
                 break
             kind, payload = item
-            if kind == "OVERSIZE":
-                self._write_message(out_stream, _error_response(
-                    None, _INVALID_REQUEST, "frame exceeds the maximum line size"))
-                continue
-            if kind == "OVERLOAD":
-                self._write_message(out_stream, _error_response(
-                    payload, _INTERNAL_ERROR, "too many pending requests; retry after earlier requests complete"))
-                continue
             gate.release()
-            try:
-                request = json.loads(payload)
-            except json.JSONDecodeError:
-                self._write_message(out_stream, {"jsonrpc": "2.0", "id": None,
-                                                 "error": {"code": _PARSE_ERROR, "message": "invalid JSON"}})
+            if kind == "OVERSIZE":
+                _write(error_response(
+                    None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
                 continue
+            if kind == "PARSE_ERROR":
+                _write(error_response(
+                    None, ProtocolError(PARSE_ERROR, "invalid JSON")))
+                continue
+            request = payload
             request_id = request.get("id") if isinstance(request, dict) else None
             response = self.handle(request)
-            if _is_valid_id(request_id) and tracker.finish(request_id):
+            if valid_request_id(request_id) and tracker.finish(request_id):
                 continue
             if response is not None:
-                self._write_message(out_stream, response)
+                _write(response)
 
-    def _write_message(self, out_stream: IO[str], message: dict[str, Any]) -> None:
-        out_stream.write(json.dumps(message) + "\n")
-        out_stream.flush()
+        reader.join(timeout=5.0)
+
+    def _official_server(self) -> Any:
+        import mcp_types as types
+        from mcp.server import Server
+
+        server = Server(
+            SERVER_NAME,
+            version=SERVER_VERSION,
+            instructions=SERVER_INSTRUCTIONS,
+            on_list_tools=self._official_list_tools,
+            on_call_tool=self._official_call_tool,
+        )
+        server.add_request_handler(
+            "server/discover", types.RequestParams, self._official_discover)
+        return server
 
     def serve_with_official_sdk(self) -> None:
         try:
-            from mcp.server import Server
-            from mcp.server.stdio import stdio_server
+            import mcp.server.stdio  # noqa: F401
+            from mcp.server import Server  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "the official MCP SDK is required for serve_with_official_sdk(); "
                 "install it with: pip install astral-sdk[mcp]"
             ) from exc
 
+        server = self._official_server()
+
         import asyncio
 
-        list_tools, call_tool = _official_handlers(self)
-        server = Server("astral-sdk-bridge", version=_SERVER_INFO["version"],
-                        on_list_tools=list_tools, on_call_tool=call_tool)
-
-        async def _run():
-            async with stdio_server() as (read_stream, write_stream):
+        async def _run():  # pragma: no cover
+            async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                 await server.run(read_stream, write_stream, server.create_initialization_options())
 
         asyncio.run(_run())
+
+    async def _official_discover(self, ctx: Any, params: Any) -> Any:
+        import mcp_types as types
+
+        return types.DiscoverResult.model_validate(discover_result())
+
+    async def _official_list_tools(self, ctx: Any, params: Any) -> Any:
+        import mcp_types as types
+
+        return types.ListToolsResult.model_validate(tools_list_result())
+
+    async def _official_call_tool(self, ctx: Any, params: Any) -> Any:
+        import mcp_types as types
+
+        arguments = params.arguments if isinstance(params.arguments, dict) else {}
+        try:
+            structured = self._dispatch(params.name, arguments)
+        except AstralError as exc:
+            return types.CallToolResult.model_validate(tool_error_result(str(exc)))
+        except (KeyError, TypeError) as exc:
+            return types.CallToolResult.model_validate(
+                tool_error_result(f"invalid arguments for tool {params.name}: {exc}"))
+        return types.CallToolResult.model_validate(tool_success_result(structured))
+
+
+def _main() -> int:
+    import os
+
+    base_url = os.environ.get("ASTRAL_BASE_URL")
+    token = os.environ.get("ASTRAL_TOKEN")
+    if not base_url or not token:
+        sys.stderr.write(json.dumps(
+            {"error": "ASTRAL_BASE_URL and ASTRAL_TOKEN are required"}) + "\n")
+        return 1
+    bridge = Bridge.connect(base_url, token)
+    try:
+        bridge.serve_stdio()
+    finally:
+        bridge.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
 
 
 __all__ = ["Bridge"]

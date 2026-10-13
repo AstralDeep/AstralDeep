@@ -5,6 +5,7 @@ CI workflows gate the right voice/coverage suites without duplication.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,98 @@ def test_deep_ci_does_not_duplicate_projection_voice_or_client_jobs() -> None:
     assert not (DEEP_WORKFLOWS / "apple-ci.yml").exists()
 
 
+def _assert_android_instrumented_route(instrumented: str, launcher: str) -> None:
+    assert instrumented.count("python3 ../scripts/run_android_emulator.py") == 1
+    invocation = instrumented.split("python3 ../scripts/run_android_emulator.py", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    assert '--root "$GITHUB_WORKSPACE" --sdk "$ANDROID_HOME"' in invocation
+    assert '--output "$GITHUB_WORKSPACE/build/088/android-coverage"' in invocation
+    tree = ast.parse(launcher)
+    expected_bindings = {
+        "coverage": '[sys.executable, str(root / "scripts/android_coverage.py")]',
+        "common": '["--root", str(root), "--output", str(output)]',
+        "SERIAL": '"emulator-5554"',
+    }
+    for name, expression in expected_bindings.items():
+        values = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+        ]
+        assert len(values) == 1
+        assert ast.dump(values[0]) == ast.dump(ast.parse(expression, mode="eval").body)
+    commands = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or ast.unparse(node.func) != "subprocess.run":
+            continue
+        if not node.args or not isinstance(node.args[0], ast.List):
+            continue
+        elements = node.args[0].elts
+        if not elements or ast.unparse(elements[0]) != "*coverage":
+            continue
+        keywords = {keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords}
+        assert keywords == {"cwd": "root / 'android-client'", "check": "True", "env": "environment"}
+        commands.append(ast.dump(node.args[0]))
+    expected_commands = (
+        '[*coverage, "device", *common, "--serial", SERIAL, "--lane", "fixtures"]',
+        '[*coverage, "report", *common, "--lanes", "fixtures"]',
+    )
+    assert commands == [ast.dump(ast.parse(command, mode="eval").body) for command in expected_commands]
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        ('"--lane", "fixtures"', '"--lane", "omitted"'),
+        ('"--lanes", "fixtures"', '"--lanes", "omitted"'),
+        ('SERIAL = "emulator-5554"', 'SERIAL = "emulator-5556"'),
+        ('"report", *common', '"device", *common'),
+        ('check=True,', 'check=False,'),
+        ('str(root / "scripts/android_coverage.py")', 'str(root / "scripts/other.py")'),
+    ),
+)
+def test_android_instrumented_route_refuses_incomplete_producers(old: str, new: str) -> None:
+    workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
+    instrumented = workflow.split("  instrumented:", 1)[1].split("  android-required:", 1)[0]
+    launcher = (WORKFLOW_ROOT.parent.parent / "scripts/run_android_emulator.py").read_text(
+        encoding="utf-8"
+    )
+    assert old in launcher
+    with pytest.raises(AssertionError):
+        _assert_android_instrumented_route(instrumented, launcher.replace(old, new))
+
+
+def test_android_instrumented_route_requires_the_workflow_launcher() -> None:
+    launcher = (WORKFLOW_ROOT.parent.parent / "scripts/run_android_emulator.py").read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(AssertionError):
+        _assert_android_instrumented_route("", launcher)
+
+
+
+@pytest.mark.parametrize(
+    "argument",
+    (
+        '--root "$GITHUB_WORKSPACE"',
+        '--output "$GITHUB_WORKSPACE/build/088/android-coverage"',
+    ),
+)
+def test_android_instrumented_route_requires_bound_launcher_arguments(argument: str) -> None:
+    workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
+    instrumented = workflow.split("  instrumented:", 1)[1].split("  android-required:", 1)[0]
+    prefix, invocation = instrumented.split("python3 ../scripts/run_android_emulator.py", 1)
+    launcher = (WORKFLOW_ROOT.parent.parent / "scripts/run_android_emulator.py").read_text(
+        encoding="utf-8"
+    )
+    assert argument in invocation
+    altered = prefix + "python3 ../scripts/run_android_emulator.py" + invocation.replace(argument, "", 1)
+    with pytest.raises(AssertionError):
+        _assert_android_instrumented_route(altered, launcher)
+
+
 def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     workflow = (WORKFLOW_ROOT / "android-ci.yml").read_text(encoding="utf-8")
 
@@ -159,10 +252,10 @@ def test_android_ci_gates_all_voice_suites_and_kover_inputs() -> None:
     )[0]
     assert "-PastralCoverage=true :app:prepareCoverageInputs" in instrumented
     assert "../scripts/android_coverage.py prepare" in instrumented
-    assert "../scripts/android_coverage.py device" in instrumented
-    assert "--serial emulator-5554 --lane fixtures" in instrumented
-    assert "../scripts/android_coverage.py report" in instrumented
-    assert "--lanes fixtures" in instrumented
+    launcher = (WORKFLOW_ROOT.parent.parent / "scripts/run_android_emulator.py").read_text(
+        encoding="utf-8"
+    )
+    _assert_android_instrumented_route(instrumented, launcher)
     assert "android-app-device-and-unit-coverage" in instrumented
     assert "path: build/088/android-coverage/" in instrumented
     assert "github.event_name == 'schedule'" not in instrumented

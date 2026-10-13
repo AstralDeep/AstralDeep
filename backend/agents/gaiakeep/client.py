@@ -54,6 +54,9 @@ __all__ = [
     'upload',
 ]
 
+STAGE_MESSAGE = ('This version requires tape recall. Request gaiakeep_core_stage for the version, '
+                 'await its job, then retry the same read. Staging requires human approval.')
+
 
 class AgentError(Exception):
     def __init__(self, verdict, message, detail=None, reconciliation=None):
@@ -338,6 +341,10 @@ def failure(exc, mutation):
         return 'integrity_error', 'GaiaKeep data or identity verification failed.'
     if name == 'CommitPending':
         return 'pending', 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.'
+    if name == 'StageRequired':
+        return 'stage_required', STAGE_MESSAGE
+    if name == 'CommitFailed' and type(exc).__module__ == 'gaiakeep.errors':
+        return 'upstream_denied', 'GaiaKeep reported a failed commit. Inspect the retained request and native upload state before retrying.'
     if name in {'Forbidden', 'PolicyRefused', 'NotFound', 'BadRequest', 'Failed', 'StaleHead', 'RetryAfter'}:
         return 'upstream_denied', 'GaiaKeep refused the operation; inspect the native state before retrying.'
     if isinstance(exc, ValueError) and not mutation:

@@ -71,6 +71,18 @@ async def test_cancelled_external_work_retains_uncertainty():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+@pytest.mark.parametrize("denied", [False, True])
+async def test_settlement_failure_preserves_cancellation_without_hiding_other_errors(cancelled, denied):
+    settlement_error = DispatchDenied("assignment_result_unavailable") if denied else RuntimeError("settlement failed")
+    ctx = context(observe=AsyncMock(side_effect=settlement_error))
+    interruption = asyncio.CancelledError() if cancelled else TimeoutError()
+    with pytest.raises(asyncio.CancelledError if cancelled else type(settlement_error)):
+        await ctx.invoke_tool(AsyncMock(side_effect=interruption))
+    ctx.observe.assert_awaited_once_with("permit", "uncertain", None)
+
+
+@pytest.mark.asyncio
 async def test_model_caps_and_nested_spend():
     ctx = context(kind="model")
     send = AsyncMock(return_value="response")

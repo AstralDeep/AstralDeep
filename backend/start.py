@@ -25,10 +25,12 @@ except ImportError:
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 
 _NON_AGENT_DIRS = frozenset({"tests", "__pycache__"})
+_HOST_ONLY_AGENT_DIRS = frozenset({"evidence"})
 
 
 def _agent_entrypoint(agents_dir: str, item: str):
-    if item.startswith("__") or item.startswith("test_") or item in _NON_AGENT_DIRS:
+    if (item.startswith("__") or item.startswith("test_")
+            or item in _NON_AGENT_DIRS or item in _HOST_ONLY_AGENT_DIRS):
         return None
     item_path = os.path.join(agents_dir, item)
     if not os.path.isdir(item_path):

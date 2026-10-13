@@ -5,12 +5,14 @@ flag-off fail-closed behavior.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +49,17 @@ class FakePost:
         if not self.responses:
             raise AssertionError("unexpected IdP call")
         return self.responses.pop(0)
+
+
+class FakeClock:
+    def __init__(self, start):
+        self.now = start
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 def start_body(**over):
@@ -261,6 +274,163 @@ async def test_poll_expired_at_idp_and_locally(env):
     assert env["audits"][-1]["action"] == "device_login_expired"
 
 
+async def _held_poll_task(handle, *, entered, release, response):
+    async def held(url, data):
+        entered.set()
+        await release.wait()
+        return response
+
+    return asyncio.create_task(
+        dl.poll(handle, "1.2.3.4", http_post=held, http_get=fake_get()))
+
+
+async def test_concurrent_polls_reach_the_idp_once(env):
+    out = await do_start()
+    handle = out["handle"]
+    dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+    finally:
+        release.set()
+    assert await first == {"status": "pending", "interval": 5}
+
+
+async def test_in_flight_claim_blocks_poll_beyond_pacing_window(env):
+    out = await do_start()
+    handle = out["handle"]
+    dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        dl._POLL_STATE[dl._handle_digest(handle)]["next_ok"] = 0.0
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+        assert dl._POLL_STATE[dl._handle_digest(handle)]["used"] is False
+    finally:
+        release.set()
+    assert await first == {"status": "pending", "interval": 5}
+
+
+async def test_cancelled_poll_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_timed_out_poll_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release,
+        response=(400, {"error": "authorization_pending"}))
+    await asyncio.wait_for(entered.wait(), 2)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await first
+    release.set()
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_terminal_success_permits_no_second_delivery(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    entered, release = asyncio.Event(), asyncio.Event()
+    first = await _held_poll_task(
+        handle, entered=entered, release=release, response=(200, token_body()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        dl._POLL_STATE[digest]["next_ok"] = 0.0
+        second = await dl.poll(handle, "1.2.3.4",
+                               http_post=FakePost(), http_get=fake_get())
+        assert second == {"status": "slow_down", "interval": 5}
+    finally:
+        release.set()
+    assert (await first)["status"] == "approved"
+    assert [a["action"] for a in env["audits"]][-1] == "device_login_approved"
+    with pytest.raises(dl.InvalidHandle):
+        await dl.poll(handle, "1.2.3.4", http_post=FakePost(), http_get=fake_get())
+
+
+async def test_failed_upstream_poll_does_not_lock_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+
+    async def boom(url, data):
+        raise RuntimeError("connection refused")
+
+    with pytest.raises(dl.DeviceLoginUnavailable):
+        await dl.poll(handle, "1.2.3.4", http_post=boom, http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    post = FakePost((400, {"error": "authorization_pending"}))
+    assert await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get()) \
+        == {"status": "pending", "interval": 5}
+    assert len(post.calls) == 1
+
+
+async def test_poll_idp_device_error_passthrough_releases_the_handle(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+
+    async def refusing(url, data):
+        raise dl.RateLimited("synthetic idp rate limit")
+
+    with pytest.raises(dl.RateLimited):
+        await dl.poll(handle, "1.2.3.4", http_post=refusing, http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
+
+
+async def test_poll_unknown_idp_error_is_unavailable(env):
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    with pytest.raises(dl.DeviceLoginUnavailable):
+        await dl.poll(handle, "1.2.3.4",
+                      http_post=FakePost((500, {"error": "server_exploded"})),
+                      http_get=fake_get())
+    assert dl._POLL_STATE[digest]["claim"] is None
+
+
 async def test_poll_garbage_handle(env):
     with pytest.raises(dl.InvalidHandle):
         await dl.poll("not-a-handle", "1.2.3.4",
@@ -325,3 +495,97 @@ async def test_flag_default_is_on(env, monkeypatch):
     assert dl.flag_on() is True
     monkeypatch.setenv("FF_DEVICE_LOGIN", "false")
     assert dl.flag_on() is False
+
+
+def test_sweep_reclaims_only_expired_entries(env):
+    dl._POLL_STATE["legacy-dead"] = {"used": True, "expires": 100.0}
+    dl._POLL_STATE["legacy-live"] = {"used": False, "expires": 100.5}
+    dl._POLL_STATE["custody-dead"] = {"used": True, "expires": 100.5,
+                                      "custody": SimpleNamespace(expires=100.0)}
+    dl._POLL_STATE["custody-live"] = {"used": False, "expires": 100.5,
+                                      "custody": SimpleNamespace(expires=100.5),
+                                      "in_flight": True}
+    assert dl._sweep_expired(99.999) == 0
+    assert set(dl._POLL_STATE) == {
+        "legacy-dead", "legacy-live", "custody-dead", "custody-live"}
+    assert dl._sweep_expired(100.0) == 2
+    assert set(dl._POLL_STATE) == {"legacy-live", "custody-live"}
+    assert dl._sweep_expired(100.5) == 2
+    assert dl._POLL_STATE == {}
+
+
+def test_sweep_reclaims_entries_without_an_expiry_fence(env):
+    dl._POLL_STATE["unfenced"] = {"used": False}
+    assert dl._sweep_expired(0.0) == 1
+    assert dl._POLL_STATE == {}
+
+
+async def test_expired_legacy_entry_reclaimed_by_next_start(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    first = await do_start()
+    digest = dl._handle_digest(first["handle"])
+    assert dl._POLL_STATE[digest]["expires"] == 1600.0
+    clock.advance(601)
+    await do_start(post=FakePost((200, start_body())))
+    assert digest not in dl._POLL_STATE
+    assert len(dl._POLL_STATE) == 1
+
+
+async def test_completed_unexpired_entry_keeps_replay_fence_then_is_reclaimed(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    out = await do_start()
+    handle = out["handle"]
+    digest = dl._handle_digest(handle)
+    dl._POLL_STATE[digest]["next_ok"] = 0.0
+    res = await dl.poll(handle, "1.2.3.4",
+                        http_post=FakePost((200, token_body())), http_get=fake_get())
+    assert res["status"] == "approved"
+    clock.advance(599)
+    dl._sweep_expired(clock.time())
+    assert digest in dl._POLL_STATE
+    with pytest.raises(dl.InvalidHandle):
+        await dl.poll(handle, "1.2.3.4", http_post=FakePost(), http_get=fake_get())
+    clock.advance(1)
+    dl._sweep_expired(clock.time())
+    assert digest not in dl._POLL_STATE
+
+
+async def test_replayed_stale_handle_cannot_regain_authority(env, monkeypatch):
+    clock = FakeClock(1000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    out = await do_start()
+    handle = out["handle"]
+    clock.advance(601)
+    assert dl._sweep_expired(clock.time()) == 1
+    post = FakePost()
+    res = await dl.poll(handle, "1.2.3.4", http_post=post, http_get=fake_get())
+    assert res == {"status": "expired"}
+    assert post.calls == []
+    assert dl._POLL_STATE[dl._handle_digest(handle)]["used"] is True
+
+
+def test_start_rate_prunes_inactive_addresses(env, monkeypatch):
+    clock = FakeClock(5000.0)
+    monkeypatch.setattr(dl, "time", clock)
+    dl._START_HITS["stale-ip"] = [4940.0]
+    dl._START_HITS["edge-ip"] = [4941.0]
+    dl._START_HITS["fresh-ip"] = [4995.0]
+    dl._check_start_rate("new-ip")
+    assert "stale-ip" not in dl._START_HITS
+    assert dl._START_HITS["edge-ip"] == [4941.0]
+    assert dl._START_HITS["fresh-ip"] == [4995.0]
+    assert dl._START_HITS["new-ip"] == [5000.0]
+
+
+def test_start_rate_window_expiry_allows_same_address_again(env, monkeypatch):
+    clock = FakeClock(100.0)
+    monkeypatch.setattr(dl, "time", clock)
+    for _ in range(dl._START_MAX_PER_WINDOW):
+        dl._check_start_rate("9.9.9.9")
+    with pytest.raises(dl.RateLimited):
+        dl._check_start_rate("9.9.9.9")
+    clock.advance(dl._START_WINDOW_SECONDS + 1)
+    dl._check_start_rate("9.9.9.9")
+    assert dl._START_HITS["9.9.9.9"] == [100.0 + dl._START_WINDOW_SECONDS + 1]

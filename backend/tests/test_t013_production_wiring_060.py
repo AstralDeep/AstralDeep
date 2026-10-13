@@ -609,12 +609,30 @@ def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() 
             for call in ast.walk(wrapper)
             if isinstance(call, ast.Call) and _dotted_name(call.func) == inner
         ]
-        assert len(delegates) == 1
-        forwarded = {
-            keyword.arg: _dotted_name(keyword.value)
-            for keyword in delegates[0].keywords
-        }
-        assert forwarded["operation_context"] == "operation_context"
+        if outer is Orchestrator.handle_chat_message:
+            execute = next(
+                node for node in wrapper.body
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute"
+            )
+            guarded, fallback = execute.body
+            assert isinstance(guarded, ast.If) and not guarded.orelse
+            effect, = guarded.body
+            assert isinstance(effect, ast.AsyncWith)
+            assert _dotted_name(effect.items[0].context_expr.func) == "stop.effect"
+            guarded_return, = effect.body
+            for returned in (guarded_return, fallback):
+                assert isinstance(returned, ast.Return)
+                assert isinstance(returned.value, ast.Await)
+                assert returned.value.value in delegates
+            assert len(delegates) == 2
+        else:
+            assert len(delegates) == 1
+        for delegate in delegates:
+            forwarded = {
+                keyword.arg: _dotted_name(keyword.value)
+                for keyword in delegate.keywords
+            }
+            assert forwarded["operation_context"] == "operation_context"
 
     source = textwrap.dedent(
         inspect.getsource(Orchestrator._handle_chat_message_impl)

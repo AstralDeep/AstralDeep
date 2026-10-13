@@ -65,8 +65,8 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
     "Dockerfile": "46737b00d717721adfe0fc2a0ff6f2e0ac26e08ec8a7310b4246f48c81c482c3",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "7e85de45ea6ee8ed55259369330fb129b2fcb3e123414533b55f7fb610081e5d",
-    "backend/requirements-gaiakeep.txt": "9b41e731bfe515f888417c0325413c2b0e1c81364b97ec6f7c0456dfcb5b88b2",
+    "backend/requirements.txt": "2cd81402303f1094dbbb56c3d32b60e843963b495b3344bfbcfa533062047985",
+    "backend/requirements-gaiakeep.txt": "792217f0bb4578aea343743a1d5b8943357e577cfe7dba8af724ab9dc3ff20d7",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
         "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
     ),
@@ -75,8 +75,8 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "tooling/backend-ci/requirements.lock.txt": "57378601b70a65fd6db1bca2ebcd452c3dfa85b1edffac3137f609a9b796b860",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
-    "tooling/ui-ci/requirements.in": "3ee1b297769b512c1f2c85e78a7a668e5c85ce9028712deb6347d78b9326d580",
-    "tooling/ui-ci/requirements.lock.txt": "b4666ccb42ee8f1de8d5cf0b6adbc1e0182c79e2dfc4d7297111a32384f301b0",
+    "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",
+    "tooling/ui-ci/requirements.lock.txt": "4a975d1c0adf7dcbd389cf4829513501780ee58af545a229a921ed8e66985570",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {

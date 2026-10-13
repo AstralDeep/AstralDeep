@@ -119,8 +119,20 @@ def _roles(orch, websocket) -> list:
 
 async def _push_modal(orch, websocket, html: str):
     from shared.protocol import ChromeRender
+    response = (_response_scope(orch, websocket, "safety")
+                or _response_scope(orch, websocket, "mesh"))
+    surface = response.surface_key if response is not None else None
+    generation = response.request_generation if response is not None else None
+    def current():
+        return response is None or (response.current() and open_surface_for(orch, websocket) == surface
+            and surface_request_current(orch, websocket, surface, generation))
+    if not current():
+        return False
     await _verify_human_delivery(orch, websocket)
-    return await orch._safe_send(websocket, ChromeRender(region="modal", html=html).to_json())
+    if not current():
+        return False
+    return await orch._safe_send(websocket, ChromeRender(region="modal", html=html,
+        surface_key=surface, request_generation=generation).to_json())
 
 
 async def _verify_human_delivery(orch, websocket):
@@ -219,7 +231,17 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
     from orchestrator.projection_surfaces import SURFACE_MODULES
     from shared.protocol import _require_uuid4
 
-    if not isinstance(action, str) or not is_native_sdui(orch, websocket):
+    if not isinstance(action, str):
+        return
+    if (not is_native_sdui(orch, websocket)
+            and action not in {"chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify"}
+            and not action.startswith("chrome_mesh_")
+            and not (action == "chrome_open" and isinstance(payload, dict)
+                     and payload.get("surface") in {"safety", "mesh"})):
+        if open_surface_for(orch, websocket) in {"safety", "mesh"}:
+            _note_open_surface(orch, websocket, "")
+        else:
+            clear_surface_request(orch, websocket)
         return
     if request_generation is not None:
         _require_uuid4(request_generation, "request_generation")
@@ -230,7 +252,7 @@ def capture_surface_request(orch, websocket, action, payload, request_generation
         owner = payload.get("surface") if isinstance(payload, dict) else None
         if not isinstance(owner, str):
             return
-        if owner in {"work", "guidance", "agent_intro"}:
+        if owner in {"work", "guidance", "evidence", "agent_intro"}:
             clear_surface_request(orch, websocket)
             return
         if owner not in SURFACE_MODULES:
@@ -260,7 +282,8 @@ async def claim_current_action_surface(orch, websocket, surface_key, request_gen
     from orchestrator.projection_surfaces import SURFACE_MODULES
 
     if (request_generation is None or surface_key not in SURFACE_MODULES
-            or surface_key in {"work", "guidance", "agent_intro"} or not is_native_sdui(orch, websocket)):
+            or surface_key in {"work", "guidance", "agent_intro"}
+            or (surface_key not in {"safety", "mesh"} and not is_native_sdui(orch, websocket))):
         return None
     context = (getattr(orch, "_connection_contexts", None) or {}).get(id(websocket))
     registration = (getattr(orch, "ui_sessions", None) or {}).get(websocket)
@@ -339,7 +362,7 @@ async def push_close(orch, websocket, *, surface_key=None, request_generation=No
 
 async def _render_surface(orch, websocket, user_id, roles, surface_key: str,
                           params: dict, notice_html: str = ""):
-    if surface_key == "guidance":
+    if surface_key in {"guidance", "evidence"}:
         from persistent_agents.models import AssignmentError
         raise AssignmentError("explicit_note_navigation_unavailable", 503)
     response = _response_scope(orch, websocket, surface_key)
@@ -525,7 +548,9 @@ async def _audit_admin_rejection(orch, websocket, user_id: str, what: str):
 
 _LLM_GATE_ALLOWED_ACTIONS = frozenset({
     "chrome_llm_models", "chrome_llm_test", "chrome_llm_save", "chrome_llm_clear",
-    "save_theme",
+    "save_theme", "chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify",
+    "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
+    "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation",
 })
 
 
@@ -558,6 +583,8 @@ async def _llm_gate_refusal(orch, websocket, action: str, user_id: str, *, paylo
         logger.exception("chrome: llm gate predicate failed (failing open)")
         return False
     if action in _LLM_GATE_ALLOWED_ACTIONS:
+        return False
+    if action == "chrome_open" and type(payload) is dict and payload.get("surface") in {"safety", "mesh"}:
         return False
     if _assignment_control_without_llm(orch, websocket, action, payload, user_id):
         return False
@@ -593,7 +620,7 @@ async def handle_chrome_event(orch, websocket, action: str, payload: dict,
     import sys
     context_var = getattr(sys.modules.get(type(orch).__module__), "_CONNECTION_OPERATION_CONTEXT", None)
     if context_var is None:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT as context_var
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT as context_var
     pending = (context_var.get() or {}).get("human_request")
     if (pending is None or pending.websocket is not websocket or pending.boundary.orchestrator is not orch
             or pending.purpose != "metadata" or pending.method != method or pending.message.get("action") != action
@@ -613,14 +640,14 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
                               user_id: str, *, request_generation=None, work_read=None,
                               guidance_navigation=None) -> bool:
     from orchestrator.projection_surfaces import SURFACE_MODULES
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
     from shared.protocol import _require_uuid4
     payload = payload or {}
     if _CONNECTION_OPERATION_CONTEXT.get() is None:
         capture_surface_request(orch, websocket, action, payload, request_generation)
     private = (action.startswith("chrome_note_") or action == "chrome_turn_selection_set"
                or (action == "chrome_open" and isinstance(payload, dict)
-                   and payload.get("surface") in {"guidance", "work"}))
+                   and payload.get("surface") in {"guidance", "work", "evidence"}))
     owner = ""
     if _is_chrome_action(action) and not private:
         if request_generation is not None:
@@ -633,7 +660,7 @@ async def _handle_chrome_event(orch, websocket, action: str, payload: dict,
             owner = (_handlers().get(action) or ("", None))[0]
     response = (_OrdinarySurfaceResponse(orch, websocket, owner, request_generation)
                 if (owner or action == "chrome_close") and request_generation is not None
-                and is_native_sdui(orch, websocket) else None)
+                and (owner in {"safety", "mesh"} or is_native_sdui(orch, websocket)) else None)
     token = _ordinary_surface_response.set(response)
     try:
         if response is not None and action == "chrome_open":
@@ -654,6 +681,9 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
     if not _is_chrome_action(action):
         return False
     payload = payload or {}
+    if action == "chrome_open" and isinstance(payload, dict) and payload.get("surface") == "evidence":
+        from orchestrator.projection_surfaces import get_surface
+        return await get_surface("evidence").deliver(orch, websocket, user_id, payload, request_generation)
     if (action.startswith("chrome_note_") or action == "chrome_turn_selection_set"
             or (action == "chrome_open"
                 and isinstance(payload, dict) and payload.get("surface") == "guidance")):
@@ -733,7 +763,7 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
                                      surface_key)
             return True
 
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
         response = _response_scope(orch, websocket, surface_key)
         claim_required = response is not None and _CONNECTION_OPERATION_CONTEXT.get() is not None
         current = await claim_current_action_surface(orch, websocket, surface_key, request_generation, user_id)

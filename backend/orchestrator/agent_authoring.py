@@ -99,7 +99,7 @@ class DraftCASResult:
 
 def _current_execution_fence():
     try:
-        from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
 
         context = _CONNECTION_OPERATION_CONTEXT.get() or {}
         return context.get("execution_fence")

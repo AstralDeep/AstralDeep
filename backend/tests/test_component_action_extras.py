@@ -83,8 +83,8 @@ def test_component_action_unsupported_kind_refused(chat_env, audit_events):
 
     alerts = _alerts(fake)
     assert alerts and alerts[0]["variant"] == "error"
-    assert "Unsupported component action kind" in alerts[0]["message"]
-    assert "delete-everything" in alerts[0]["message"]
+    assert alerts[0]["message"] == "This component action is not supported."
+    assert "delete-everything" not in alerts[0]["message"]
 
     denials = [e for e in audit_events if e.get("action") == "action_denied"]
     assert len(denials) == 1

@@ -198,6 +198,37 @@ def test_successful_pending_publication_is_publishable_with_safe_job_identity(se
     assert server.invoke('gaiakeep_upload_file', **args)['_data']['verdict'] == 'unconfirmed'
 
 
+@pytest.mark.parametrize('publication,verdict', [
+    ({'vid': 'v', 'commit_job': None, 'pending': False}, 'ok'),
+    ({'vid': 'v', 'commit_job': None, 'pending': 'false'}, 'ok'),
+    ({'vid': 'v', 'commit_job': 'durable-job', 'pending': True}, 'pending'),
+    ({'vid': 'v', 'commit_job': 'durable-job', 'pending': False}, 'pending'),
+    ({'vid': 'v', 'commit_job': None, 'pending': True}, 'unconfirmed'),
+    ({'vid': 'v', 'commit_job': '', 'pending': False}, 'unconfirmed'),
+])
+def test_sdk_publication_state_never_confuses_null_job_with_pending(server, monkeypatch, publication, verdict):
+    calls = []
+    monkeypatch.setattr(client, 'upload', lambda *args: calls.append(args) or publication)
+    out = server.invoke('gaiakeep_upload_file', machine_id='mine', collection_id='runs', path='p',
+                        data_base64='aA==', request_id='retained_request_identity', user_id='owner')
+    assert out['_data']['verdict'] == verdict
+    assert len(calls) == 1
+    assert out['_data']['reconciliation']['request_id'] == 'retained_request_identity'
+
+
+def test_stage_required_read_reports_recall_without_dispatching_a_stage(server, monkeypatch):
+    calls = []
+    def offline(core, action, params, *args):
+        calls.append(action)
+        raise client.AgentError('stage_required', client.STAGE_MESSAGE)
+    monkeypatch.setattr(client, 'execute', offline)
+    out = server.process_request(request('gaiakeep_core_list', {'vid': 'archived-version'}))
+    assert out.error['data']['verdict'] == 'stage_required'
+    assert 'gaiakeep_core_stage' in out.error['message']
+    assert calls == ['core.list'] and out.error['retryable'] is False
+    assert catalog.is_mutation('gaiakeep_core_stage')
+
+
 def test_pending_read_failure_preserves_job_and_explicit_wait_message(server, monkeypatch):
     def waiting(*args):
         raise client.AgentError('pending', 'This version is awaiting durable copies; check its commit job.',

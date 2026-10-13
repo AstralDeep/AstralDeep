@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -166,6 +167,31 @@ def test_bootstrap_deadline_unwinds_uploaded_bytes_and_bundle(tmp_path):
     assert all(not Path(path).exists() for path in json.loads(marker.read_text()))
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='The DGX SSH launcher requires a POSIX shell.')
+@pytest.mark.parametrize('mode', ['default', 'home', 'venv'])
+def test_launcher_uses_account_installation_paths_and_quotes_spaces(tmp_path, mode):
+    installation = tmp_path / 'account with spaces'
+    environment = dict(os.environ, HOME=str(installation))
+    environment.pop('GAIAKEEP_HOME', None)
+    environment.pop('GAIAKEEP_VENV', None)
+    if mode == 'home':
+        environment['GAIAKEEP_HOME'] = str(installation / 'custom home')
+        venv = installation / 'custom home' / 'venv'
+    elif mode == 'venv':
+        environment['GAIAKEEP_VENV'] = str(installation / 'custom venv')
+        environment['GAIAKEEP_HOME'] = str(installation / 'unused home')
+        venv = installation / 'custom venv'
+    else:
+        venv = installation / '.gaiakeep' / 'venv'
+    interpreter = venv / 'bin' / 'python'
+    interpreter.parent.mkdir(parents=True)
+    interpreter.symlink_to(sys.executable)
+    bundle = {'remote_runtime.py': 'def run(request):\n return {"ok":True,"result":{}}\n'}
+    result = subprocess.run(['sh', '-c', remote._command(bundle)], env=environment,
+                            input=json.dumps({'bundle': bundle}).encode(), capture_output=True, timeout=10)
+    assert result.returncode == 0 and json.loads(result.stdout)['ok'] is True
+
+
 @pytest.fixture
 def trusted(monkeypatch, tmp_path):
     path = tmp_path / 'ca.pem'
@@ -244,7 +270,7 @@ def test_malformed_result(reply, monkeypatch):
 
 
 @pytest.mark.parametrize('verdict', ['not_configured', 'auth_failed', 'integrity_error', 'upstream_denied',
-    'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable', 'pending'])
+    'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable', 'pending', 'stage_required'])
 def test_failure_envelope_never_echoes_remote_message(verdict, monkeypatch):
     core = remote_reply(monkeypatch, {'ok': False, 'verdict': verdict, 'message': 'secret traceback'})
     with pytest.raises(client.AgentError) as error:
@@ -259,6 +285,17 @@ def test_pending_envelope_retains_only_closed_native_reconciliation(monkeypatch)
         core.perform('core.list', {'params': {'vid': 'version-42'}})
     assert error.value.reconciliation == {'commit_job': 'durable-42', 'vid': 'version-42'}
     assert 'private' not in str(error.value)
+
+
+def test_stage_required_envelope_preserves_guidance_and_native_status(monkeypatch):
+    detail = {'native_phase': 'sdk_read', 'failure_kind': 'native', 'native_status': 15}
+    core = remote_reply(monkeypatch, {'ok': False, 'verdict': 'stage_required', 'message': 'secret traceback',
+                                     'failure_detail': detail})
+    with pytest.raises(client.AgentError) as error:
+        core.perform('read', {'vid': 'v', 'path': 'p'})
+    assert error.value.verdict == 'stage_required'
+    assert 'gaiakeep_core_stage' in str(error.value) and 'secret' not in str(error.value)
+    assert error.value._gaiakeep_failure_detail == detail
 
 
 def test_rpc_result_bound(monkeypatch):

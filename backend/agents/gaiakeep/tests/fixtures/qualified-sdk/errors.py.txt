@@ -65,18 +65,28 @@ class InternalError(GaiaKeepError):
 
 
 class Failed(GaiaKeepError):
-    """Status 6: the core refused or failed the request (generic)."""
+    """Status 6: the core refused or failed the request (generic). A current core names its native failure
+    `code` (e.g. "stale-head", "incomplete") and may attach recovery fields: `head` (the branch's current
+    head vid), `reupload` (the staged upload's bytes must be sent again) and `retryable`."""
+
+    def __init__(self, message, code=None, head=None, reupload=None, **kw):
+        super().__init__(message, **kw)
+        self.code = code
+        self.head = head
+        self.reupload = reupload
 
 
 class StaleHead(Failed):
-    """Status 6 "StaleHead": the branch moved. `head` (the current head vid) and `upload_kept` (whether the
-    staged upload was kept for a retry) are filled only by a core that sends them (opmodel §1a); the wave-1
-    core sends only the status and its text, so they are None and False there: read core.head yourself."""
+    """Status 6 "stale-head": the branch moved. Recognizes the current core's shape (code "stale-head",
+    description prefixed "commit failed: stale-head") and the older "StaleHead:"-prefixed text. `head` is
+    the branch's current head vid, `upload_kept` whether the core kept the staged upload for a retry, and
+    `reupload` whether its bytes must be sent again (a kept upload still needs its bytes re-proven)."""
 
-    def __init__(self, message, head=None, upload_kept=False, **kw):
-        super().__init__(message, **kw)
+    def __init__(self, message, head=None, upload_kept=False, reupload=None, **kw):
+        super().__init__(message, head=head, reupload=reupload, **kw)
         self.head = head
         self.upload_kept = upload_kept
+        self.reupload = reupload
 
 
 class PolicyRefused(GaiaKeepError):
@@ -106,11 +116,16 @@ class RetryAfter(GaiaKeepError):
 
 class Deferred(RetryAfter):
     """Status 13: the work goes on; poll for its outcome (core.job job_id, or the verb's own status such as
-    core.putstatus commit_state). `est_ms` is the estimate when the core gives one."""
+    core.putstatus commit_state). `est_ms` is the estimate when the core gives one; `state`, `upload_id` and
+    `job_id` carry the reply's operation identity when the core names them (a bounded publication answers
+    state=committing with the upload it is still publishing: reconcile that upload, never resend it)."""
 
-    def __init__(self, message, est_ms=None, **kw):
+    def __init__(self, message, est_ms=None, upload_id=None, job_id=None, state=None, **kw):
         super().__init__(message, **kw)
         self.est_ms = est_ms
+        self.upload_id = upload_id
+        self.job_id = job_id
+        self.state = state
 
 
 class StageRequired(RetryAfter):
@@ -175,7 +190,15 @@ class JobTimeout(GaiaKeepError):
 
 
 class CommitFailed(GaiaKeepError):
-    """An ingest commit ended failed (after `committing`)."""
+    """An ingest commit ended failed (after `committing`). Carries the native failure when the core named
+    one: `code` ("stale-head", "incomplete", ...), `retryable` and `reupload` (the staged bytes must be
+    sent again), `job_id` (the async commit job), plus the operation identities in `detail`."""
+
+    def __init__(self, message, code=None, retryable=False, reupload=False, job_id=None, **kw):
+        super().__init__(message, retryable=retryable, **kw)
+        self.code = code
+        self.reupload = reupload
+        self.job_id = job_id
 
 
 class CommitPending(GaiaKeepError):
@@ -207,6 +230,69 @@ def redact(text, values):
     return text
 
 
+def _commit_failure_fields(reply):
+    """The native commit-failure recovery fields a current core sends on status 6: (code, head, retryable,
+    reupload). Older cores send none (None, None, None, None)."""
+    code = reply.get("code") or None
+    desc = str(reply.get("status_desc") or "")
+    if not code and desc.startswith("commit failed: "):
+        code = desc[len("commit failed: "):].split(":", 1)[0].strip() or None
+    retryable = reply.get("retryable")
+    reupload = reply.get("reupload")
+    f = {"code": code, "head": reply.get("head") or None}
+    if retryable is not None:
+        f["retryable"] = str(retryable).lower() == "true"
+    if reupload is not None:
+        f["reupload"] = str(reupload).lower() == "true"
+    return f
+
+
+def is_stale_head(status, reply):
+    """True when a failed reply is the native stale-head failure, in its current shape (code "stale-head",
+    description prefixed "commit failed: stale-head") or the older "StaleHead:"-prefixed text."""
+    if str(status) != "6":
+        return False
+    if str(reply.get("code") or "") == "stale-head":
+        return True
+    desc = str(reply.get("status_desc") or "")
+    return desc.startswith("StaleHead") or desc.startswith("commit failed: stale-head")
+
+
+def commit_failure_error(action, obj, status=None, detail_extra=None):
+    """The typed error for a commit that ended failed, from whichever shape carried the outcome: a core.reply
+    (status 6, native fields at the top level), a signed event (the error nested as text or a dict under
+    "error") or a core.putstatus poll (commit_state failed, the fields beside it). Stale-head becomes
+    StaleHead on every route; anything else is CommitFailed carrying the native code/retryable/reupload
+    and the operation identities (upload_id, request_id, job_id) so a caller can reconcile or rebase."""
+    src = obj if isinstance(obj, dict) else {}
+    err = src.get("error")
+    fields = {}
+    if isinstance(err, dict):
+        fields.update(_commit_failure_fields(err))
+        fields.setdefault("code", err.get("code") or None)
+        message = str(err.get("status_desc") or err.get("message") or err.get("error") or "commit failed")
+    else:
+        fields.update(_commit_failure_fields(src))
+        message = str(err or src.get("status_desc") or "commit failed")
+    for k in ("head", "job_id", "upload_id", "request_id"):
+        v = src.get(k)
+        if v is not None:
+            fields.setdefault(k, v)
+    detail = {k: v for k, v in fields.items() if v is not None}
+    if detail_extra:
+        detail.update({k: v for k, v in detail_extra.items() if v is not None})
+    msg = f"{action}: {message}"
+    code_l = str(fields.get("code") or "").lower()
+    stale = code_l == "stale-head" or str(err or "").startswith("StaleHead") \
+        or (status == "6" and is_stale_head(status, src))
+    if stale:
+        return StaleHead(msg, head=fields.get("head"), upload_kept=str(src.get("upload_kept")).lower() == "true",
+                         reupload=fields.get("reupload"), status=status, action=action, detail=detail)
+    return CommitFailed(msg, code=fields.get("code"), retryable=bool(fields.get("retryable")),
+                        reupload=bool(fields.get("reupload")), job_id=fields.get("job_id"),
+                        status=status, action=action, detail=detail)
+
+
 def from_reply(action, reply, redact_values=()):
     """The exception for a failed reply (a dict of reply params), or None if the reply is ok (status 10).
     redact_values: param values (paths) to replace by their digest in the message."""
@@ -228,11 +314,18 @@ def from_reply(action, reply, redact_values=()):
         return RpcTimeout(msg, **kw)
     if status == "12":
         return NotLeader(msg, leader=reply.get("core_leader") or "", **kw)
-    if status == "6" and desc.startswith("StaleHead"):
-        return StaleHead(msg, head=reply.get("head"), upload_kept=str(reply.get("upload_kept")).lower() == "true", **kw)
+    if status == "6" and is_stale_head(status, reply):
+        f = _commit_failure_fields(reply)
+        return StaleHead(msg, head=reply.get("head"), upload_kept=str(reply.get("upload_kept")).lower() == "true",
+                         reupload=f.get("reupload"), code=f.get("code") or "stale-head", **kw)
+    if status == "6" and (reply.get("code") or str(reply.get("status_desc") or "").startswith("commit failed:")):
+        f = _commit_failure_fields(reply)
+        return Failed(msg, code=f.get("code"), head=f.get("head"), reupload=f.get("reupload"),
+                      retryable=f.get("retryable"), **kw)
     if status == "13":
         ra = _int(reply.get("retry_after_ms"), 1000)
-        return Deferred(msg, est_ms=_int(reply.get("est_ms")), retry_after_ms=ra, **kw)
+        return Deferred(msg, est_ms=_int(reply.get("est_ms")), retry_after_ms=ra,
+                        upload_id=reply.get("upload_id"), job_id=reply.get("job_id"), state=reply.get("state"), **kw)
     if status == "15":
         ra = _int(reply.get("retry_after_ms"), 1000)
         return StageRequired(msg, est_ms=_int(reply.get("est_ms")), bytes_needed=_int(reply.get("bytes_needed")),

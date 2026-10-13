@@ -76,6 +76,7 @@ def orch(orchestrator_factory):
     o._send_or_replace_components = AsyncMock()
     o._emit_llm_usage_report = AsyncMock()
     o._deliver_round_components = AsyncMock(return_value=[])
+    o._notify_phi_if_detected = AsyncMock()
     # Durable store; a leftover key would break other tests
     o._typesafe_store.clear_sync(USER)
     o._typesafe_store.invalidate(USER)

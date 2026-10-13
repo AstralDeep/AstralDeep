@@ -21,6 +21,7 @@ from llm_config.providers import (
     resolve_base_url,
 )
 from webrender.chrome import esc, notice_block
+from webrender.renderer import render_children
 
 logger = logging.getLogger("Orchestrator.Chrome.LLM")
 
@@ -376,6 +377,12 @@ def _data_sharing_block(state: Any, error: Optional[str] = None) -> str:
     )
 
 
+def _safety_navigation():
+    from webrender.chrome.surfaces import _sdui
+
+    return _sdui.button("Open emergency stop controls", "chrome_open", {"surface": "safety"})
+
+
 async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
     _ = roles
     params = params if isinstance(params, dict) else {}
@@ -441,6 +448,7 @@ async def render(orch: Any, user_id: str, roles: Any, params: Any) -> str:
             f"{identity}"
             f'<p class="text-xs text-astral-muted">{esc(_LOCAL_RUNTIME_NOTE)}</p>'
         )
+        intro += render_children([_safety_navigation()])
     else:
         intro = (
             '<p class="text-xs text-astral-muted">Your provider configuration is stored '
@@ -558,6 +566,8 @@ async def components(orch: Any, user_id: str, roles: Any, params: Any):
         _sdui.badge("configured" if saved is not None else "not configured",
                     "success" if saved is not None else "default"),
     ]
+    if first_run:
+        out.insert(1, _safety_navigation())
     if saved is not None:
         out.append(_sdui.text(f"Saved endpoint: {saved.base_url}", "caption"))
     if provider in ("ollama", "lmstudio") or first_run:

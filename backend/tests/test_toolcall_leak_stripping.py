@@ -140,6 +140,7 @@ def _summary_orch(llm_text):
     orch._accumulate_usage = lambda chat_id, usage: None
     orch._record_llm_call = AsyncMock()
     client = MagicMock()
+    client._evidence_provider_capture = None
     client.chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=llm_text))],
     )

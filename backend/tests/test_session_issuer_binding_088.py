@@ -831,7 +831,7 @@ async def test_callback_retirement_preserves_legacy_default_and_exact_bound_clie
     if not bound:
         replace_session_record(runtime, replace(get_session_record(runtime, sid),
                                issuing_issuer=None, issuing_client_id=None))
-    wire.changes = {"sub": str(uuid4())}
+    wire.changes = {"sub": str(uuid4()), "azp": "astral-web"}
     logout_audits(monkeypatch, runtime)
     monkeypatch.setattr(web_auth, "_establish_session", lambda *args: RedirectResponse("/", status_code=303))
     state = uuid4().hex

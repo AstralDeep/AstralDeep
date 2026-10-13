@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="astral-gaia-") as root:
  sys.stdout.buffer.write(encoded)
  sys.stdout.buffer.flush()
 '''
-    return 'exec "$HOME/.gaiakeep/venv/bin/python" -I -c ' + shlex.quote(bootstrap)
+    return 'exec "${GAIAKEEP_VENV:-${GAIAKEEP_HOME:-$HOME/.gaiakeep}/venv}/bin/python" -I -c ' + shlex.quote(bootstrap)
 
 
 def _trust():
@@ -146,7 +146,7 @@ class RemoteCore:
         self.target, self.trust = target, trust
 
     def perform(self, action, arguments, request_id=None):
-        from agents.gaiakeep.client import AgentError
+        from agents.gaiakeep.client import STAGE_MESSAGE, AgentError
 
         tool = ('gaiakeep_read_file' if action == 'read' else 'gaiakeep_upload_file' if action == 'upload'
                 else 'gaiakeep_' + action.replace('.', '_'))
@@ -165,7 +165,8 @@ class RemoteCore:
             if not reply['ok']:
                 verdict = reply.get('verdict')
                 if verdict not in {'not_configured', 'auth_failed', 'integrity_error', 'upstream_denied',
-                                   'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable', 'pending'}:
+                                   'invalid_argument', 'protocol_error', 'unsupported', 'unconfirmed', 'unavailable',
+                                   'pending', 'stage_required'}:
                     raise ValueError
                 messages = {'not_configured': 'The DGX Gaia client or trust configuration needs attention.',
                             'auth_failed': 'GaiaKeep authentication failed.',
@@ -176,6 +177,7 @@ class RemoteCore:
                             'unsupported': 'This Gaia operation is not enabled or supported.',
                             'unconfirmed': 'The operation may have taken effect. Check native state before retrying.',
                             'pending': 'This version is awaiting verified durable copies. Check its commit job before reading; do not republish it.',
+                            'stage_required': STAGE_MESSAGE,
                             'unavailable': 'GaiaKeep is currently unavailable.'}
                 raise AgentError(verdict, messages[verdict], validate_failure_detail(reply.get('failure_detail')),
                                  reply.get('reconciliation') if verdict == 'pending' else None)

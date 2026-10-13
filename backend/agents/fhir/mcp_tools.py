@@ -1,6 +1,5 @@
-"""Read-only tools of the FHIR agent: ICU census, patient overview, vital trends, laboratory
-results, medication review, timeline, record search, source status and a live activity feed.
-Each tool queries the configured server through client.py, shapes the data with clinical.py
+"""Read-only FHIR tools provide separate patient measurements and population summaries alongside clinical dashboards.
+Each tool queries the configured server through client.py, validates data with clinical.py or reference.py,
 and returns one presentation.py card plus a compact summary for the model.
 """
 
@@ -16,7 +15,7 @@ from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tu
 from shared.feature_flags import flags
 from shared.stream_sdk import StreamComponents, get_stream_metadata, streaming_tool
 
-from agents.fhir import clinical, presentation
+from agents.fhir import clinical, presentation, reference
 from agents.fhir.client import RESOURCE_TYPES, FhirClient, FhirError, bundle_resources, load_settings
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9\-.]{1,64}$")
@@ -482,8 +481,8 @@ def record_row(resource: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     kind = resource.get("resourceType")
     patient = clinical.reference_id(resource.get("subject") or resource.get("patient"))
     if kind == "Patient":
-        return ["Patient", "Sex", "Born", "Died"], [
-            str(resource.get("id", "")), str(resource.get("gender", "")), str(resource.get("birthDate", "")),
+        return ["Patient", "Name", "Sex", "Born", "Died"], [
+            str(resource.get("id", "")), reference.patient_label(resource), str(resource.get("gender", "")), str(resource.get("birthDate", "")),
             clinical.format_time(clinical.parse_time(resource.get("deceasedDateTime"))) if resource.get("deceasedDateTime") else "",
         ]
     if kind == "Encounter":
@@ -563,6 +562,23 @@ def query_fhir_records(resource_type: str = "", filters: Optional[Dict[str, Any]
     })
 
 
+@tool_guard
+def patient_measurements(patient: str = "", measure: str = "a1c", **_: Any) -> Dict[str, Any]:
+    if not isinstance(patient, str) or not isinstance(measure, str) or measure not in reference.MEASURES:
+        raise FhirError("FHIR_BAD_REQUEST", "Select a patient id and a measure: a1c, glucose or blood_pressure")
+    identifier = patient_identifier(patient)
+    data = reference.measurements(connect(), identifier, measure)
+    return result(presentation.measurements_card(data), data)
+
+
+@tool_guard
+def aggregate_a1c(state: Optional[str] = None, counties: Optional[List[str]] = None, pregnant: Optional[bool] = None, **_: Any) -> Dict[str, Any]:
+    parameters, scope = reference.population_parameters(state, counties, pregnant)
+    response = connect().get("$aggregate-a1c", parameters, expected="Parameters")
+    data = reference.population_result(response, scope)
+    return result(presentation.population_card(data), data)
+
+
 class FeedState:
     def __init__(self) -> None:
         self.counters: Dict[str, int] = {"events": 0, "admissions": 0, "discharges": 0, "observations": 0, "flagged": 0}
@@ -622,7 +638,12 @@ class FeedState:
 
 
 def open_subscriptions(client: FhirClient) -> List[str]:
-    topics = {str(topic.get("id")): str(topic.get("url")) for topic in bundle_resources(client.bundle("SubscriptionTopic"))}
+    try:
+        topics = {str(topic.get("id")): str(topic.get("url")) for topic in bundle_resources(client.bundle("SubscriptionTopic"))}
+    except FhirError as error:
+        if error.code in ("FHIR_NOT_FOUND", "FHIR_BAD_REQUEST"):
+            raise FhirError("FHIR_BAD_REQUEST", "This FHIR server does not support the ICU topic subscription feed") from error
+        raise
     identifiers = []
     for name in ("encounter", "observation"):
         if name not in topics:
@@ -798,6 +819,39 @@ def hours_property(default: int, maximum: int) -> Dict[str, Any]:
 
 
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "patient_measurements": {
+        "function": patient_measurements,
+        "scope": "tools:read",
+        "description": (
+            "Patient-level FHIR REST interface: get one patient's latest usable A1C, glucose or blood pressure, "
+            "with value, unit, collection date and source observation. Accepts a FHIR patient id or an exact "
+            "MyHealthSafe demo identifier such as DEMO-1001. For an ambiguous person, first search Patient records "
+            "with query_fhir_records and select the correct id. This is separate from population aggregation."
+        ),
+        "input_schema": {
+            "type": "object", "properties": {
+                "patient": {"type": "string", "description": "FHIR patient id or exact MyHealthSafe demo identifier, such as DEMO-1001"},
+                "measure": {"type": "string", "enum": list(reference.MEASURES), "default": "a1c"},
+            }, "required": ["patient"],
+        },
+    },
+    "aggregate_a1c": {
+        "function": aggregate_a1c,
+        "scope": "tools:search",
+        "description": (
+            "Population-level SQL on FHIR interface: average the latest usable percent A1C once per patient "
+            "in the synthetic reference dataset, grouped by county, with optional state, county and explicit "
+            "pregnancy-status filters. Returns cohort size, measured-patient count and calculation provenance. "
+            "Synthetic results describe demo records, not actual Kentucky residents."
+        ),
+        "input_schema": {
+            "type": "object", "properties": {
+                "state": {"type": "string", "pattern": "^[A-Za-z]{2}$", "description": "Optional two-letter state code, for example KY"},
+                "counties": {"type": "array", "maxItems": reference.COUNTY_LIMIT, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+                "pregnant": {"type": "boolean", "description": "Optional explicit pregnancy status; omit for all patients"},
+            },
+        },
+    },
     "icu_census": {
         "function": icu_census,
         "scope": "tools:read",
