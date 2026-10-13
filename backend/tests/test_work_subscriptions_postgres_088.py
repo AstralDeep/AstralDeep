@@ -283,6 +283,109 @@ async def test_subscribe_refuses_expired_and_revoked_credentials(work):
 
 
 @pytest.mark.asyncio
+async def test_completion_after_registered_wait_wakes_the_target(work):
+    caller, control_caller = _issue(work), _issue(work)
+    source = await work.ops.submit(caller, idempotency_key=str(uuid4()),
+                                   name="Completion control", instructions="Read public data.")
+    target = _operation(work)
+    assert (await _subscribe(work, caller, source["id"], target))["applied"] is True
+    cancelled = await work.ops.cancel(control_caller, operation_id=source["id"],
+                                      expected_revision=source["revision"], submission_id=str(uuid4()))
+    assert cancelled["applied"] is True
+    assert (await _read(work, source["id"])).assignment.operation["terminal_outcome"] == "cancelled"
+    current = (await _read(work, target)).assignment
+    assert current.phase == "waiting"
+    assert current.operation["control"]["wait"] is None
+    assert current.operation["control"]["watermarks"][completion_event_key(source["id"])] >= 1
+    assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_between_source_read_and_wait_registration_is_not_lost(work, monkeypatch):
+    import threading
+    from contextvars import ContextVar
+
+    from orchestrator import work_subscriptions
+
+    caller, control_caller = _issue(work), _issue(work)
+    source = await work.ops.submit(caller, idempotency_key=str(uuid4()),
+                                   name="Concurrent completion", instructions="Read public data.")
+    source_id = source["id"]
+    target = _operation(work)
+    observed, attempting, release = threading.Event(), threading.Event(), threading.Event()
+    control_transaction = ContextVar("completion_control_transaction", default=False)
+    backend_ids = {}
+    original_read = work_subscriptions._owned_operation
+    original_transaction = work.service.store.transaction
+
+    def hold_source(tx, repository, owner, identity, **options):
+        result = original_read(tx, repository, owner, identity, **options)
+        if identity == source_id and not observed.is_set():
+            assert result.assignment.operation.get("terminal_outcome") is None
+            backend_ids["subscriber"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+            observed.set()
+            assert release.wait(timeout=10), "source-read barrier did not settle"
+        return result
+
+    async def observe_transaction(callback, **options):
+        is_control = control_transaction.get()
+
+        def transaction(tx, repository):
+            if is_control:
+                backend_ids["completion"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+                attempting.set()
+            return callback(tx, repository)
+
+        return await original_transaction(transaction, **options)
+
+    async def cancel_source():
+        token = control_transaction.set(True)
+        try:
+            return await work.ops.cancel(control_caller, operation_id=source_id,
+                                          expected_revision=source["revision"], submission_id=str(uuid4()))
+        finally:
+            control_transaction.reset(token)
+
+    def subscriber_blocks_completion():
+        with work.runtime.transaction() as tx:
+            return tx.fetch_one("SELECT %s=ANY(pg_blocking_pids(%s)) AS blocked",
+                                (backend_ids["subscriber"], backend_ids["completion"]))["blocked"]
+
+    monkeypatch.setattr(work_subscriptions, "_owned_operation", hold_source)
+    monkeypatch.setattr(work.service.store, "transaction", observe_transaction)
+    subscription = asyncio.create_task(_subscribe(work, caller, source_id, target))
+    completion = None
+    try:
+        assert await asyncio.to_thread(observed.wait, 10), "source read was not reached"
+        completion = asyncio.create_task(cancel_source())
+        assert await asyncio.to_thread(attempting.wait, 10), "completion transaction was not reached"
+        assert backend_ids["subscriber"] != backend_ids["completion"]
+        async with asyncio.timeout(10):
+            while not completion.done():
+                if await asyncio.to_thread(subscriber_blocks_completion):
+                    break
+                await asyncio.sleep(0)
+        release.set()
+        subscribed, cancelled = await asyncio.gather(subscription, completion, return_exceptions=True)
+        assert isinstance(cancelled, dict) and cancelled["applied"] is True
+        assert (await _read(work, source_id)).assignment.operation["terminal_outcome"] == "cancelled"
+        current = (await _read(work, target)).assignment
+        assert current.operation["control"]["wait"] is None
+        if isinstance(subscribed, AssignmentError):
+            assert (subscribed.code, subscribed.status_code) == ("assignment_not_waiting", 409)
+            assert current.phase == "queued"
+        else:
+            assert isinstance(subscribed, dict) and subscribed["applied"] is True
+            assert current.phase == "waiting"
+            assert current.operation["control"]["watermarks"][completion_event_key(source_id)] >= 1
+            assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
+    finally:
+        release.set()
+        async with asyncio.timeout(10):
+            await asyncio.gather(subscription, *([completion] if completion else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_cancel_releases_the_wait_and_repeat_cancel_is_not_found(work):
     caller = _issue(work)
     source, target = _operation(work), _operation(work)
