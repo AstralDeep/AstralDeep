@@ -75,7 +75,12 @@ def credentials(runtime, audit):
 
 
 @pytest.fixture
-def work(runtime, fixture, audit, credentials):
+def work(runtime, fixture, audit, credentials, monkeypatch):
+    def credential_clock():
+        with runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", credential_clock)
     _, owner, sid, _, _ = fixture
     orch = SimpleNamespace(history=SimpleNamespace(get_chat=lambda *args, **kwargs: None),
                            audit_repo=audit)
