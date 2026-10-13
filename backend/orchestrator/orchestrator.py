@@ -161,13 +161,6 @@ _MAX_TOOL_EXTRA_CONTENT_BYTES = 8192
 
 
 def _bounded_extra_content(tool_call: Any) -> Optional[Dict[str, Any]]:
-    """Return allowlisted, bounded Gemini continuation metadata from a streamed
-    tool-call delta, or None.
-
-    Only ``extra_content.google.thought_signature`` (a string) is kept. Unknown
-    provider fields are dropped and oversized or malformed values are ignored.
-    The value is opaque: it is never parsed, merged or fabricated.
-    """
     extra = getattr(tool_call, "extra_content", None)
     if extra is None:
         model_extra = getattr(tool_call, "model_extra", None)
@@ -179,9 +172,13 @@ def _bounded_extra_content(tool_call: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(google, dict):
         return None
     signature = google.get("thought_signature")
-    if not isinstance(signature, str) or not signature:
+    if not isinstance(signature, str) or not signature or len(signature) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
         return None
-    if len(signature.encode("utf-8")) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
+    try:
+        encoded = signature.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if len(encoded) > _MAX_TOOL_EXTRA_CONTENT_BYTES:
         return None
     return {"google": {"thought_signature": signature}}
 
