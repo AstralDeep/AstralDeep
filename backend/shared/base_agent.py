@@ -415,8 +415,7 @@ class BaseA2AAgent:
         if len(self._stream_first_seen) > _STREAM_FIRST_SEEN_LIMIT:
             oldest = min(self._stream_first_seen, key=self._stream_first_seen.get)
             self._stream_first_seen.pop(oldest, None)
-        # Lets a re-dispatched stream (resume/wake/retry) last only the rest of its
-        # original duration; the orchestrator's deadline stays authoritative.
+        # Resume, wake and retry must share the original tool duration.
         arguments["_stream_elapsed_s"] = max(0.0, now - first_seen)
         meta = get_stream_metadata(tool_fn) or {}
         max_chunk_bytes = (

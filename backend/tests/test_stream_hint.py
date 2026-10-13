@@ -1,8 +1,5 @@
-"""Tests for the agent-side stream elapsed hint in shared/base_agent.py and
-shared/stream_sdk.py: the first dispatch of a stream id reports zero elapsed time, a
-re-dispatch of the same id reports the time since that first sight, finished streams
-release the bookkeeping, cancelled runs keep it, and the hint never reaches the
-protected wire snapshot.
+"""Checks stream elapsed bookkeeping in shared/base_agent.py and shared/stream_sdk.py.
+Test agents exercise replay, cancellation, bounds, and protected-wire isolation.
 """
 
 import asyncio

@@ -1,7 +1,5 @@
-"""End-to-end proof that a resumed push stream ends at its original deadline with its
-closing card: resume, a wake by asking again, and a retry after a transient error all
-re-dispatch the same stream id, the real agent runner reports the elapsed time to the
-tool, and the tool's closing chunk becomes the state the orchestrator saves.
+"""Exercises resumed stream closing cards through the orchestrator and agent runner.
+A synthetic tool and client fixture check replay and PostgreSQL-backed canvas persistence.
 """
 
 import asyncio
