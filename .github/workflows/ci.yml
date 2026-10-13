@@ -337,10 +337,24 @@ jobs:
         with:
           version: "0.11.26"
           python-version: "3.11"
+      - name: Bind Plane upgrade source to the previous immutable consumer pin
+        env:
+          MANUAL_BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          revision_args=()
+          if [[ -n "$MANUAL_BASE_SHA" ]]; then
+            revision_args+=(--base-sha "$MANUAL_BASE_SHA")
+          fi
+          python -m scripts.prepare_plane_upgrade_baseline "${revision_args[@]}" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
+            --github-env "$GITHUB_ENV" \
+            --output components/AstralPlane/build/backend-web/consumer-baseline.json
       - working-directory: components/AstralPlane
         run: |
           set -euo pipefail
-          git fetch origin +refs/heads/main:refs/remotes/origin/main
           uv lock --check
           uv sync --frozen --group ci
           uv run --frozen --group ci ruff check .
@@ -352,12 +366,9 @@ jobs:
             --cov-report=xml:build/backend-web/plane-python.xml \
             --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
       - name: Enforce changed Plane Python against the baseline component
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
         run: |
           set -euo pipefail
-          [[ "$BASE_SHA" =~ ^[a-f0-9]{40}$ ]]
-          base_component="$(git ls-tree "$BASE_SHA" components/AstralPlane | awk '{print $3}')"
+          base_component="$PLANE_BASE_COMPONENT_SHA"
           [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
           candidate_component="$(git -C components/AstralPlane rev-parse HEAD)"
           if [[ "$base_component" == "$candidate_component" ]]; then
@@ -366,7 +377,6 @@ jobs:
               > components/AstralPlane/build/backend-web/changed-coverage.json
             exit 0
           fi
-          git -C components/AstralPlane fetch origin "$base_component"
           cd components/AstralPlane
           uv run --frozen --group ci diff-cover build/backend-web/plane-python.xml \
             --compare-branch "$base_component" --diff-range-notation '..' --fail-under=90
@@ -613,6 +623,7 @@ jobs:
             scripts/tests/test_ci_review_diagnostics.py
             scripts/tests/test_acceptance_mutations.py
             scripts/tests/test_acceptance_ci_contract.py
+            scripts/tests/test_prepare_plane_upgrade_baseline.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
