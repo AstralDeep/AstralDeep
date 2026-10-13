@@ -40,9 +40,11 @@ class WorkControlAudit:
             raise AssignmentError("work_control_unavailable", 503)
 
     def append(self, transaction, *, owner_id, command, record,
-               submission_id=None, action_id=None, decision=None):
+               submission_id=None, action_id=None, decision=None,
+               source_id=None, target_id=None):
         self.assert_current()
-        if (command not in {"pause", "stop", "delete", "resume", "wake", "wait", "reconcile"}
+        if (command not in {"pause", "stop", "delete", "resume", "wake", "wait", "reconcile",
+                            "subscribe", "unsubscribe"}
                 or type(record) is not AssignmentRecord or record.owner_id != owner_id):
             raise AssignmentError("work_control_unavailable", 503)
         metadata = {}
@@ -56,6 +58,12 @@ class WorkControlAudit:
                     metadata["decision"] = decision
                 elif action_id is not None or decision is not None:
                     raise ValueError
+            elif command in {"subscribe", "unsubscribe"}:
+                metadata["submission_id"] = validate_id(submission_id)
+                metadata["source_operation_id"] = validate_id(source_id)
+                metadata["target_operation_id"] = validate_id(target_id)
+                if action_id is not None or decision is not None:
+                    raise ValueError
             elif any(value is not None for value in (submission_id, action_id, decision)):
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
@@ -63,6 +71,23 @@ class WorkControlAudit:
         self._insert(transaction, owner_id=owner_id, record=record,
                      action_type="assignment_" + command, description="Work owner command",
                      metadata=metadata)
+
+    def append_completion_wake(self, transaction, *, owner_id, record, source_id, revision,
+                               outcome):
+        self.assert_current()
+        if (type(record) is not AssignmentRecord or record.owner_id != owner_id
+                or type(revision) is not int or not 1 <= revision <= 2**63 - 1
+                or outcome not in {"completed", "failed", "cancelled"}):
+            raise AssignmentError("work_control_unavailable", 503)
+        try:
+            metadata = {"source_operation_id": validate_id(source_id),
+                        "target_operation_id": validate_id(record.assignment_id),
+                        "event_revision": revision, "outcome": outcome}
+        except (ValueError, TypeError, AttributeError):
+            raise AssignmentError("work_control_unavailable", 503) from None
+        self._insert(transaction, owner_id=owner_id, record=record,
+                     action_type="work.completion_wake",
+                     description="Work completion subscription wake", metadata=metadata)
 
     def append_publication(self, transaction, *, owner_id, command, record, action_id,
                            publication_id, conversation_id, submission_id=None):

@@ -30,9 +30,11 @@ def test_module_imports_without_the_optional_framework(module_name):
 
 def test_generic_schemas_need_nothing_extra():
     from astral_sdk.integrations import generic
+    from astral_sdk.tools import TOOL_NAMES
 
-    assert len(generic.FUNCTION_SCHEMAS) == 10
+    assert len(generic.FUNCTION_SCHEMAS) == len(TOOL_NAMES)
     names = {schema["name"] for schema in generic.FUNCTION_SCHEMAS}
+    assert names == set(TOOL_NAMES)
     assert "astral_submit_operation" in names
     assert "astral_get_artifact" in names
 

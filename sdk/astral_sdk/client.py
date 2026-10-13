@@ -20,7 +20,10 @@ from astral_sdk.errors import (
     AstralTimeoutError,
     RetryExhaustedError,
 )
-from astral_sdk.models import Artifact, ControlResult, Event, Operation, OperationList, RetryPolicy
+from astral_sdk.models import (
+    Artifact, CompletionSubscriptionList, ControlResult, Event, Operation, OperationList,
+    RetryPolicy,
+)
 from astral_sdk.tools import MCP_PROTOCOL_VERSION
 
 _CLIENT_INFO = {"name": "astral-sdk-python", "version": "0.1.0"}
@@ -31,6 +34,7 @@ _META = {
 }
 _CONFLICT_CODES = frozenset({
     "assignment_revision_conflict", "assignment_idempotency_conflict",
+    "assignment_event_key_conflict", "assignment_not_waiting",
     "credential_allowance_exhausted", "framework_credential_authority_unavailable",
 })
 _AUTH_CODES = frozenset({
@@ -258,6 +262,38 @@ class AstralClient:
     def get_artifact(self, operation_id: str) -> Artifact:
         return Artifact.from_dict(self._call_tool("astral_get_artifact", {"operation_id": operation_id}))
 
+    def subscribe_operation_completion(self, *, source_operation_id: str, target_operation_id: str,
+                                       expected_revision: int,
+                                       submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            self._call_tool("astral_subscribe_operation_completion", arguments))
+
+    def list_completion_subscriptions(self, *, limit: int = 50,
+                                      after_id: Optional[str] = None) -> CompletionSubscriptionList:
+        arguments: dict[str, Any] = {"limit": limit}
+        if after_id is not None:
+            arguments["after_id"] = after_id
+        return CompletionSubscriptionList.from_dict(
+            self._call_tool("astral_list_operation_completion_subscriptions", arguments))
+
+    def cancel_operation_completion_subscription(self, *, source_operation_id: str,
+                                                target_operation_id: str, expected_revision: int,
+                                                submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            self._call_tool("astral_cancel_operation_completion_subscription", arguments))
+
     def emergency_status(self) -> dict[str, Any]:
         if self._token.startswith("afk_"):
             return self._call_tool("astral_emergency_status", {})
@@ -408,6 +444,39 @@ class AsyncAstralClient:
     async def get_artifact(self, operation_id: str) -> Artifact:
         result = await self._call_tool("astral_get_artifact", {"operation_id": operation_id})
         return Artifact.from_dict(result)
+
+    async def subscribe_operation_completion(self, *, source_operation_id: str,
+                                             target_operation_id: str, expected_revision: int,
+                                             submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            await self._call_tool("astral_subscribe_operation_completion", arguments))
+
+    async def list_completion_subscriptions(self, *, limit: int = 50,
+                                            after_id: Optional[str] = None) -> CompletionSubscriptionList:
+        arguments: dict[str, Any] = {"limit": limit}
+        if after_id is not None:
+            arguments["after_id"] = after_id
+        return CompletionSubscriptionList.from_dict(
+            await self._call_tool("astral_list_operation_completion_subscriptions", arguments))
+
+    async def cancel_operation_completion_subscription(self, *, source_operation_id: str,
+                                                      target_operation_id: str,
+                                                      expected_revision: int,
+                                                      submission_id: Optional[str] = None) -> ControlResult:
+        arguments = {
+            "source_operation_id": source_operation_id,
+            "target_operation_id": target_operation_id,
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "expected_revision": expected_revision,
+        }
+        return ControlResult.from_dict(
+            await self._call_tool("astral_cancel_operation_completion_subscription", arguments))
 
     async def emergency_status(self) -> dict[str, Any]:
         if self._token.startswith("afk_"):

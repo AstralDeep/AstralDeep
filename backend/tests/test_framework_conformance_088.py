@@ -146,7 +146,8 @@ def credentials(runtime):
 
 @pytest.fixture
 def assignments(runtime):
-    orch = SimpleNamespace(history=SimpleNamespace(get_chat=lambda *args, **kwargs: None))
+    orch = SimpleNamespace(history=SimpleNamespace(get_chat=lambda *args, **kwargs: None),
+                           audit_repo=AuditRepository(plane_runtime=runtime))
     return AssignmentService(orch, AssignmentStore(plane_runtime=runtime), enabled=True,
                              phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
 
@@ -303,6 +304,64 @@ def test_sdk_cli_cancel_at_a_stale_revision_conflicts_with_no_further_mutation(l
     assert unchanged["revision"] == json.loads(first.stdout)["operation"]["revision"]
 
 
+def test_sdk_cli_completion_subscription_round_trip(live_server, credentials, session, runtime):
+    from astralplane.repositories.assignment_models import (
+        AssignmentDefinition, AssignmentOperationAuthority, AssignmentOperationSpec,
+    )
+    from astralplane.repositories.history import SessionExecutionObservation
+    from persistent_agents.runtime_values import digest
+
+    store, owner, sid = session
+    token = _issue_token(credentials, store, owner, sid)
+    state = store.capture_execution_reference(owner_id=owner, session_id=sid).state
+    hard_expiry = datetime.fromtimestamp(state.credential.hard_expires_at, UTC)
+    observation = SessionExecutionObservation(
+        credential=state.credential, started_at=state.observed_at,
+        valid_until=min(state.observed_at + timedelta(seconds=15), hard_expiry))
+    target_id = str(uuid.uuid4())
+    with runtime.transaction() as tx:
+        runtime.repositories.history.sessions.bound_request_execution_waits(tx)
+        runtime.repositories.assignments.create_operation(
+            tx, owner_id=owner, assignment_id=target_id, origin_namespace="fixture",
+            caller_key=target_id, command_digest=digest(target_id), authority=observation,
+            definition=AssignmentDefinition(
+                name="Conformance target", instructions="Read one public source.", source={},
+                allowed_tools=(), consented_scopes=(), offline_grant_id=None,
+                limits={"max_retries": 1, "max_concurrent_tasks": 1, "max_depth": 1,
+                        "max_tasks": 2, "model_calls": 2, "tool_calls": 2, "tokens": 100,
+                        "elapsed_ms": 1000}),
+            operation=AssignmentOperationSpec(
+                "chat", AssignmentOperationAuthority(
+                    owner, "interactive", "session_incarnation", state.credential.incarnation_id,
+                    min(state.observed_at + timedelta(seconds=3600), hard_expiry)),
+                state.observed_at + timedelta(seconds=3600), "none"))
+
+    source = json.loads(_run_sdk(live_server, token, "submit", "--idempotency-key",
+                                 str(uuid.uuid4()), "--name", "S", "--instructions", "B").stdout)
+    armed = _run_sdk(live_server, token, "subscribe-completion", source["id"], target_id,
+                     "--expected-revision", "1")
+    assert armed.returncode == 0, armed.stderr
+    armed_payload = json.loads(armed.stdout)
+    assert armed_payload["applied"] is True
+    assert armed_payload["operation"]["phase"] == "awaiting_event"
+
+    listed = _run_sdk(live_server, token, "subscriptions")
+    assert listed.returncode == 0, listed.stderr
+    subscriptions = json.loads(listed.stdout)["subscriptions"]
+    assert [entry["target_operation_id"] for entry in subscriptions] == [target_id]
+    assert subscriptions[0]["source_operation_id"] == source["id"]
+
+    released = _run_sdk(live_server, token, "cancel-completion", source["id"], target_id,
+                        "--expected-revision", str(armed_payload["operation"]["revision"]))
+    assert released.returncode == 0, released.stderr
+    released_payload = json.loads(released.stdout)
+    assert released_payload["applied"] is True
+    assert released_payload["operation"]["phase"] == "waiting"
+
+    empty = _run_sdk(live_server, token, "subscriptions")
+    assert json.loads(empty.stdout)["subscriptions"] == []
+
+
 def test_sdk_cli_denies_a_missing_submit_scope_before_any_mutation(live_server, credentials, session):
     store, owner, sid = session
     token = _issue_token(credentials, store, owner, sid, scopes=("operations.read",))
@@ -325,7 +384,8 @@ def test_sdk_cli_only_projects_tools_the_credentials_scopes_admit(live_server, c
     tools = json.loads(_run_sdk(live_server, token, "tools").stdout)
     names = {tool["name"] for tool in tools}
     assert names == {"astral_get_operation", "astral_list_operations",
-                     "astral_get_operation_events", "astral_emergency_status"}
+                     "astral_get_operation_events", "astral_emergency_status",
+                     "astral_list_operation_completion_subscriptions"}
 
 
 def test_sdk_cli_poll_ends_with_a_bounded_auth_error_after_revocation(live_server, credentials, session):

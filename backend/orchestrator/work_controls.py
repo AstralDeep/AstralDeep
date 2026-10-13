@@ -100,6 +100,13 @@ class WorkControlService:
             if result.applied:
                 self.audit.append(tx, owner_id=owner_id, command=plane_command,
                                   record=updated.assignment)
+                if plane_command == "stop":
+                    from orchestrator.work_subscriptions import fire_completions
+
+                    fire_completions(self.assignments, tx, repository, owner_id=owner_id,
+                                     source_id=identity,
+                                     source_revision=updated.assignment.state_version,
+                                     outcome="cancelled")
             return {"operation": _public(updated, owner_id), "applied": result.applied}, updated.assignment
 
         result, _record = await self._transaction(transaction, caller)
@@ -120,6 +127,12 @@ class WorkControlService:
             if deleted is not True:
                 raise AssignmentError("work_not_found", 404)
             self.audit.append(tx, owner_id=owner_id, command="delete", record=read.assignment)
+            from orchestrator.work_subscriptions import fire_completions
+
+            fire_completions(self.assignments, tx, repository, owner_id=owner_id,
+                             source_id=identity,
+                             source_revision=read.assignment.state_version,
+                             outcome="cancelled")
             return read.assignment
 
         await self._transaction(transaction, caller)
