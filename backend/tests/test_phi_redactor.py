@@ -285,3 +285,33 @@ class TestSecretPatternMasking:
         redact(f"Test call with {raw_secret}")
         for record in caplog.records:
             assert raw_secret not in record.getMessage()
+
+    def test_clinical_and_metadata_negative_cases_not_masked(self):
+        payload = {
+            "token_count": 123,
+            "secretion": "normal",
+            "secretions": "clear",
+            "tokens_used": 45,
+            "prompt_tokens": 10,
+            "completion_tokens": 35,
+        }
+        out, _ = redact(payload)
+        parsed = json.loads(out)
+        assert parsed["token_count"] == 123
+        assert parsed["secretion"] == "normal"
+        assert parsed["secretions"] == "clear"
+        assert parsed["tokens_used"] == 45
+        assert parsed["prompt_tokens"] == 10
+        assert parsed["completion_tokens"] == 35
+
+    def test_exception_handler_does_not_leak_secret_in_log(self, caplog):
+        caplog.set_level(logging.ERROR, logger="PHIRedactor")
+
+        class FaultyWithSecret:
+            def __repr__(self):
+                raise ValueError("synthetic_secret_xyz123_leaked_in_exception")
+
+        out, _ = redact(FaultyWithSecret())
+        assert out == "[redaction failed]"
+        assert "synthetic_secret_xyz123_leaked_in_exception" not in caplog.text
+        assert "ValueError" in caplog.text

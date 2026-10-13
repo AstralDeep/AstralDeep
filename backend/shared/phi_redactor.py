@@ -79,6 +79,30 @@ SECRET_FIELD_PATTERNS: Tuple[str, ...] = (
     "bearer",
 )
 
+SECRET_FIELD_REGEX: re.Pattern[str] = re.compile(
+    r"(?:^|[_.-])(?:api[_.-]?key|password|passwd|pwd|private[_.-]?key|access[_.-]?token|refresh[_.-]?token|auth[_.-]?token|client[_.-]?secret|app[_.-]?secret|bearer(?:[_.-]?token)?)(?:$|[_.-])"
+    r"|^(?:secret|token|api_key|apikey|password|passwd|pwd)$",
+    re.IGNORECASE,
+)
+
+SECRET_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    "token_count",
+    "tokens_count",
+    "token_counts",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "tokens_used",
+    "token_usage",
+    "max_tokens",
+    "secretion",
+    "secretions",
+    "secretin",
+    "secretase",
+    "secreting",
+    "secretory",
+})
+
 SECRET_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bsk-[a-zA-Z0-9_\-]{20,}\b"), "[REDACTED:api_key]"),
     (
@@ -105,8 +129,14 @@ def _matches_phi_field_key(key: str) -> bool:
 
 
 def _matches_secret_field_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(p in lowered for p in SECRET_FIELD_PATTERNS)
+    lowered = key.strip().lower()
+    if lowered in SECRET_EXCLUDED_KEYS:
+        return False
+    if any(suffix in lowered for suffix in ("_count", "tokens_used", "token_usage", "prompt_tokens", "completion_tokens")):
+        return False
+    if "secretion" in lowered or "secretin" in lowered or "secretase" in lowered:
+        return False
+    return bool(SECRET_FIELD_REGEX.search(lowered))
 
 
 def _redact_string(s: str) -> Tuple[str, bool]:
@@ -183,6 +213,6 @@ def redact(value: Any, *, kind: str = "args") -> Tuple[Optional[str], bool]:
     except Exception as exc:  # pragma: no cover
         logger.error(
             "phi_redactor.redaction_failed",
-            extra={"kind": kind, "error": str(exc)},
+            extra={"kind": kind, "error": type(exc).__name__},
         )
         return "[redaction failed]", False
