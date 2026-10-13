@@ -289,14 +289,32 @@ def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
         s for s in skills if not s.always and any(s.applies(a) for a in in_play)]
     out: List[str] = []
     total = 0
-    for skill in picked:
+    for index, skill in enumerate(picked):
         body = skill.instructions.strip()
         section = f"### Your skill: {skill.name}\n{body}"
-        if total + len(section) > max_chars:
-            remaining = max_chars - total
-            if remaining < 80:
-                break
-            section = section[:remaining]
+        separator = 2 if out else 0
+        if total + separator + len(section) > max_chars:
+            section = (
+                f"### Your skill: {skill.name}\n"
+                f"Instructions omitted ({len(body)} characters): the complete procedure "
+                "does not fit. Do not execute an incomplete procedure."
+            )
+            if skill.command:
+                section += f" Ask the user to invoke /{skill.command} for the full instructions."
+        if total + separator + len(section) > max_chars:
+            omitted = len(picked) - index
+            notice = f"Skill guidance omitted for {omitted} additional skill(s); do not assume it is complete."
+            while out and total + 2 + len(notice) > max_chars:
+                removed = out.pop()
+                total -= len(removed) + (2 if out else 0)
+                omitted += 1
+                notice = f"Skill guidance omitted for {omitted} additional skill(s); do not assume it is complete."
+            separator = 2 if out else 0
+            if total + separator + len(notice) <= max_chars:
+                out.append(notice)
+            elif len("Skills omitted.") <= max_chars:
+                out.append("Skills omitted.")
+            break
         out.append(section)
-        total += len(section)
+        total += separator + len(section)
     return out
