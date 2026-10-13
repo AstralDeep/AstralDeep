@@ -227,7 +227,10 @@ async def create_invitation(
 ):
     _require_confirm_authority(actor)
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
+    from orchestrator.mesh_links import enrollment_link
+
     try:
+        enrollment_link("x")
         result = await asyncio.to_thread(
             store.create_invitation,
             owner_id,
@@ -246,8 +249,10 @@ async def create_invitation(
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
     payload = result["payload"]
-    public_base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL") or ""
-    link = f"{public_base.rstrip('/')}/enroll#{payload}" if public_base else None
+    try:
+        link = enrollment_link(payload)
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
     return {"invitation": result["invitation"], "payload": payload, "link": link}
 
 
@@ -259,7 +264,10 @@ async def list_invitations(
 ):
     _require_confirm_authority(actor)
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
-    return {"invitations": await asyncio.to_thread(store.list_invitations, owner_id)}
+    try:
+        return {"invitations": await asyncio.to_thread(store.list_invitations, owner_id)}
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
 
 
 @mesh_router.post("/invitations/{invite_id}/confirm")
@@ -330,7 +338,10 @@ async def list_members(
     store: me.MeshEnrollmentStore = Depends(_store),
 ):
     owner_id = actor["member"]["owner_id"] if actor["kind"] == "member" else actor["id"]
-    return {"members": await asyncio.to_thread(store.list_members, owner_id)}
+    try:
+        return {"members": await asyncio.to_thread(store.list_members, owner_id)}
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
 
 
 @mesh_router.post("/members/{member_id}/revoke")
@@ -346,6 +357,44 @@ async def revoke_member(
     except me.MeshEnrollmentError as exc:
         raise HTTPException(exc.status, exc.code) from exc
     return {"member": me.public_member(record)}
+
+
+@mesh_router.post("/members/{member_id}/label")
+async def rename_member(
+    member_id: str,
+    request: Request,
+    body: dict[str, Any],
+    owner_id: str = Depends(_read_owner),
+    store: me.MeshEnrollmentStore = Depends(_store),
+    _guard: None = _WRITE_GUARD,
+):
+    label = body.get("label") if isinstance(body, dict) else None
+    if not isinstance(label, str):
+        raise HTTPException(400, "label is required")
+    try:
+        record = await asyncio.to_thread(
+            store.rename_member, owner_id, member_id, label=label
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
+    return {"member": me.public_member(record)}
+
+
+@mesh_router.post("/invitations/{invite_id}/remove")
+async def remove_invitation(
+    invite_id: str,
+    request: Request,
+    owner_id: str = Depends(_read_owner),
+    store: me.MeshEnrollmentStore = Depends(_store),
+    _guard: None = _WRITE_GUARD,
+):
+    try:
+        await asyncio.to_thread(store.remove_invitation, owner_id, invite_id)
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
+    return {"removed": invite_id}
 
 
 @mesh_router.get("/me")
