@@ -165,11 +165,12 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: components/AstralProjection/tooling/web-ci/package-lock.json
-      - name: Install isolated Python tooling and the exact composed Primitives source
+      - name: Install isolated Python tooling and exact composed Python packages
         run: |
           set -euo pipefail
           python -m pip install --require-hashes -r components/AstralProjection/tooling/python-ci/requirements.lock.txt
           python -m pip install --no-deps components/AstralPrimitives
+          python -m pip install --no-deps --no-build-isolation components/AstralProjection
       - name: Lint and test all Projection backend Python
         working-directory: components/AstralProjection
         run: |
@@ -234,9 +235,11 @@ jobs:
             --env ASTRAL_ASSIGNMENT_FIXTURE_DIR=/workspace/build/079/browser-fixtures \
             --env ASTRAL_EXPORT_COVERAGE_OUTPUT=/workspace/build/backend-web/export-javascript.json \
             --env ASTRAL_ALL_CLIENT_COVERAGE_DIR=/workspace/build/backend-web/client-v8 \
+            --env ASTRAL_MESH_COVERAGE_OUTPUT=/workspace/build/backend-web/mesh-custody-browser-v8.json \
             --volume "$PWD:/workspace" --workdir /workspace/tooling/web-ci "$image" \
             /bin/bash -euc 'corepack npm run test:coverage-conversion:browser
-              corepack npm exec -- playwright test tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
+              node --test tests/mesh-custody.browser.test.mjs
+              corepack npm exec -- playwright test tests/mesh-enrollment.spec.js tests/continuity-contract-060.spec.js tests/voice-conversation-065.spec.js tests/persistent-agents-079.spec.js tests/offline-worker-088.spec.js tests/canvas-review-088.spec.js tests/native-export-088.spec.js tests/work-reads-088.spec.js tests/guidance-notes-088.spec.js tests/workspace-topbar-088.spec.js tests/native-chart-088.spec.js tests/first-task-088.spec.js tests/selection-088.spec.js --browser=chromium --workers=1'
       - name: Verify responsive and enlarged-text interactions in all three browser engines
         working-directory: components/AstralProjection
         run: |
@@ -254,9 +257,10 @@ jobs:
           browser_inputs=()
           for suite in continuity-contract-060 first-task-088 \
               persistent-agents-079 selection-088 guidance-notes-088 \
-              work-reads-088 voice-conversation-065; do
+              work-reads-088 voice-conversation-065 mesh-enrollment; do
             browser_inputs+=(--input "build/backend-web/client-v8/$suite.json")
           done
+          browser_inputs+=(--input build/backend-web/mesh-custody-browser-v8.json)
           node tooling/web-ci/browser-v8-cli.mjs --repo-root "$PWD" "${browser_inputs[@]}" \
             --output build/backend-web/browser-javascript.json
           node tooling/web-ci/coverage-conversion-cli.mjs \
@@ -336,12 +340,15 @@ jobs:
       - working-directory: components/AstralPlane
         run: |
           set -euo pipefail
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
           uv lock --check
           uv sync --frozen --group ci
           uv run --frozen --group ci ruff check .
           uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
             --cov=astralplane --cov=scripts.import_staging_fixture \
-            --cov=scripts.migrate_qualification_database --cov-branch \
+            --cov=scripts.migrate_qualification_database \
+            --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
+            --cov=scripts.ci_review_diagnostics --cov=scripts.check_changed_coverage --cov-branch \
             --cov-report=xml:build/backend-web/plane-python.xml \
             --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
       - name: Enforce changed Plane Python against the baseline component
@@ -513,12 +520,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Dockerfile's COPY list is explicit and enumerated (never a broad
-          # `COPY . .`) — assert it names neither the sdk/ directory nor the
-          # astral-sdk/astral_sdk distribution, and that the product's own
-          # runtime manifest never depends on it (Constitution V).
-          ! grep -E "^\s*COPY\s+.*\bsdk/" Dockerfile
-          ! grep -Ei "astral[_-]sdk" backend/requirements.txt Dockerfile
+          if grep -E "^\s*COPY\s+.*\bsdk/" Dockerfile; then
+            echo '::error::SDK isolation violation'
+            exit 1
+          fi
+          if grep -Ei "astral[_-]sdk" backend/requirements.txt Dockerfile; then
+            echo '::error::SDK isolation violation'
+            exit 1
+          fi
       - name: Build the astral-sdk wheel
         run: |
           python -m pip install --upgrade build
@@ -548,6 +557,11 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: tooling/backend-ci/requirements.lock.txt
+      - name: Record immutable test and qualification-policy review diagnostics
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/ci_review_diagnostics.py --base "$BASE_SHA" --head "$HEAD_SHA" --output build/060/review-diagnostics.json
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: backend-image
@@ -596,6 +610,9 @@ jobs:
             scripts/tests/test_verify_primitive_coverage.py
             scripts/tests/test_verify_persistent_agents_079.py
             scripts/tests/test_csharp_native_coverage_079.py
+            scripts/tests/test_ci_review_diagnostics.py
+            scripts/tests/test_acceptance_mutations.py
+            scripts/tests/test_acceptance_ci_contract.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
@@ -620,9 +637,12 @@ jobs:
       - name: Check documentation links
         run: python scripts/check_doc_links.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
         with:
           name: tooling-python-coverage
-          path: build/060/coverage/tooling-python.xml
+          path: |
+            build/060/coverage/tooling-python.xml
+            build/060/review-diagnostics.json
           if-no-files-found: error
           retention-days: 14
 

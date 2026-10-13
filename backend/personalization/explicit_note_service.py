@@ -21,6 +21,8 @@ from personalization.explicit_notes import (
 
 logger = logging.getLogger("Orchestrator.ExplicitNotes")
 
+SEARCH_SCAN_LIMIT = 1000
+
 
 @dataclass(frozen=True, slots=True)
 class ExplicitNoteCommand:
@@ -338,12 +340,28 @@ class ExplicitNoteService:
             search = normalize_note_value(search).casefold() if search.strip() else ""
         except (ValueError, TypeError, AttributeError):
             raise AssignmentError("explicit_note_query_invalid", 422) from None
-        records = await self._transaction(caller, lambda tx, repository:
-            repository.list_explicit_notes(tx, owner_id=caller.owner_id,
-                                            after_id=after_id, limit=limit, include_disabled=True))
-        opened = await self._deliver(caller, records)
-        matches = tuple(note for note in opened if not search or search in note.value.casefold())
-        return ExplicitNotePage(matches, records[-1].note_id if len(records) == limit else None)
+        cursor, matches, scanned = after_id, [], 0
+        while len(matches) < limit and scanned < SEARCH_SCAN_LIMIT:
+            page_size = min(limit, SEARCH_SCAN_LIMIT - scanned)
+            position = cursor
+            records = await self._transaction(caller, lambda tx, repository:
+                repository.list_explicit_notes(tx, owner_id=caller.owner_id,
+                                                after_id=position, limit=page_size,
+                                                include_disabled=True))
+            if not records:
+                cursor = None
+                break
+            opened = await self._deliver(caller, records)
+            matches.extend(note for note in opened if not search or search in note.value.casefold())
+            scanned += len(records)
+            if len(matches) >= limit:
+                cursor = matches[limit - 1].metadata.note_id
+                break
+            if len(records) < page_size:
+                cursor = None
+                break
+            cursor = records[-1].note_id
+        return ExplicitNotePage(tuple(matches[:limit]), cursor)
 
     async def verify_snapshot(self, *, caller, notes):
         self._current(caller)
