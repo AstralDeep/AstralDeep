@@ -77,6 +77,7 @@ def test_diagnostic_receipts_and_script_coverage_preserve_owner_authority():
     assert "scripts/tests/test_ci_review_diagnostics.py" in tooling
     assert "scripts/tests/test_acceptance_mutations.py" in tooling
     assert "scripts/tests/test_acceptance_ci_contract.py" in tooling
+    assert "scripts/tests/test_prepare_plane_upgrade_baseline.py" in tooling
     assert "test_acceptance_mutations_postgres.py" not in tooling
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in tooling
     assert "if: always()" in tooling and "build/060/review-diagnostics.json" in tooling
@@ -91,7 +92,14 @@ def test_diagnostic_receipts_and_script_coverage_preserve_owner_authority():
 def test_embedded_plane_qualification_measures_owner_upgrade_and_integrity_tools():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     plane = job(workflow, "plane-postgres")
-    assert "git fetch origin +refs/heads/main:refs/remotes/origin/main" in plane
+    assert "git fetch origin +refs/heads/main:refs/remotes/origin/main" not in plane
+    assert "python -m scripts.prepare_plane_upgrade_baseline" in plane
+    assert '--candidate-sha "$CANDIDATE_SHA"' in plane
+    assert '--baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git"' in plane
+    assert '--github-env "$GITHUB_ENV"' in plane
+    assert "consumer-baseline.json" in plane
+    assert 'base_component="$PLANE_BASE_COMPONENT_SHA"' in plane
+    assert plane.index("scripts.prepare_plane_upgrade_baseline") < plane.index("pytest -q")
     for module in (
         "scripts.qualify_main_upgrade",
         "scripts.check_acceptance_faults",
