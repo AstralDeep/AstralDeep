@@ -996,8 +996,9 @@ def _skill_row(skill: us.Skill) -> str:
     )
 
 
-def _skill_form(skill: us.Skill | None) -> str:
+def _skill_form(skill: us.Skill | None, prefill: us.Skill | None = None) -> str:
     editing = skill is not None
+    shown = skill if editing else prefill
     title = "Edit skill" if editing else "Add a skill"
     metadata = {**_skill_identity(skill), "skill_slug": skill.slug if editing else "",
                 "skill_enabled": "true" if skill is None or skill.enabled else "false"}
@@ -1012,14 +1013,14 @@ def _skill_form(skill: us.Skill | None) -> str:
         f"chat (or only when the agents you name are in play), and a /command turns it into "
         f"a shortcut you can type.</p>{slug}"
         f'<input name="skill_name" type="text" placeholder="Name (e.g. Weekly status format)" '
-        f'value="{esc(skill.name) if editing else ""}" class="{_INPUT_CLS} mb-2">'
+        f'value="{esc(shown.name) if shown else ""}" class="{_INPUT_CLS} mb-2">'
         f'<div class="flex gap-2 mb-2">'
         f'<input name="skill_command" type="text" placeholder="/command (optional)" '
         f'value="{esc(skill.command) if editing else ""}" class="{_INPUT_CLS}">'
         f'<input name="skill_applies" type="text" placeholder="Applies to: every chat, or agent ids" '
         f'value="{esc(applies)}" class="{_INPUT_CLS}"></div>'
         f'<textarea name="skill_instructions" rows="5" placeholder="Instructions the assistant '
-        f'should follow" class="{_INPUT_CLS}">{esc(skill.instructions) if editing else ""}'
+        f'should follow" class="{_INPUT_CLS}">{esc(shown.instructions) if shown else ""}'
         f"</textarea>"
         f'<div class="flex gap-2 mt-2">'
         f'<button type="button" class="{_BTN_PRIMARY}" data-ui-action="chrome_user_skill_save" '
@@ -1030,7 +1031,29 @@ def _skill_form(skill: us.Skill | None) -> str:
     )
 
 
-async def _render_list(orch, user_id: str, edit_skill: str = "") -> str:
+def _skill_import_form() -> str:
+    metadata = {**_skill_identity(None), "skill_slug": "", "skill_enabled": "true"}
+    slug = "".join(f'<input type="hidden" name="{key}" value="{esc(str(value))}">'
+                   for key, value in metadata.items())
+    return (
+        '<details class="bg-white/5 border border-white/10 rounded-lg p-4">'
+        '<summary class="text-sm font-medium text-astral-text cursor-pointer">'
+        "Import a SKILL.md file</summary>"
+        '<p class="text-xs text-astral-muted mt-2">Paste the contents of one Agent Skills '
+        "SKILL.md file and press Preview import. Only plain instructions are imported: "
+        "scripts, references, tool grants and other metadata are refused and shown to you "
+        "before anything is saved. Files are never fetched from the network.</p>"
+        f'<div class="mt-2" data-ui-form>{slug}'
+        f'<textarea name="skill_instructions" rows="8" placeholder="---\nname: ...\n'
+        f'description: ...\n---\nInstructions..." class="{_INPUT_CLS}"></textarea>'
+        f'<button type="button" class="{_BTN} mt-2" data-ui-action="chrome_user_skill_save" '
+        f'data-ui-collect="true">Preview import</button>'
+        "</div></details>"
+    )
+
+
+async def _render_list(orch, user_id: str, edit_skill: str = "",
+                       import_prefill: us.Skill | None = None) -> str:
     ctx = await _list_context(orch, user_id)
     skills_enabled = us.enabled()
     byo = aa.byo_enabled()
@@ -1066,7 +1089,9 @@ async def _render_list(orch, user_id: str, edit_skill: str = "") -> str:
         parts.append(f'<div class="space-y-2">{rows}</div>' if rows else
                      '<div class="text-sm text-astral-muted italic">No skills yet — add one '
                      "below. They work in every client and need no desktop.</div>")
-        parts.append(_skill_form(editing))
+        parts.append(_skill_form(editing, prefill=import_prefill))
+        if us.import_enabled():
+            parts.append(_skill_import_form())
     parts.append("</div>")
     return "".join(parts)
 
@@ -1237,6 +1262,19 @@ async def _render_session(orch, user_id: str, draft_id: str) -> str:
     )
 
 
+def _import_prefill(params: Any) -> us.Skill | None:
+    raw = params.get("skill_import") if isinstance(params, dict) else None
+    if type(raw) is not dict:
+        return None
+    name, instructions = raw.get("name"), raw.get("instructions")
+    if type(name) is not str or type(instructions) is not str or not name or not instructions:
+        return None
+    if len(name) > us.MAX_NAME_CHARS or len(instructions) > us.MAX_INSTRUCTIONS_CHARS:
+        return None
+    return us.Skill(slug=us.slugify(name), name=name, instructions=instructions,
+                    applies_to=("always",))
+
+
 async def render(orch, user_id: str, roles: Any, params: Any) -> str:
     _ = roles
     params = params if isinstance(params, dict) else {}
@@ -1252,7 +1290,8 @@ async def render(orch, user_id: str, roles: Any, params: Any) -> str:
         if not aa.byo_enabled():
             return notice_block("info", _DISABLED)
         return await _render_session(orch, user_id, draft_id)
-    return await _render_list(orch, user_id, edit_skill=str(params.get("skill_slug") or ""))
+    return await _render_list(orch, user_id, edit_skill=str(params.get("skill_slug") or ""),
+                              import_prefill=_import_prefill(params))
 
 
 def _sdui_phase_fields(row: Dict[str, Any], phase: str, _sdui) -> List[Dict[str, Any]]:
@@ -1421,18 +1460,20 @@ def _skill_components(skill: us.Skill, _sdui) -> Dict[str, Any]:
     return _sdui.card(skill.name, content)
 
 
-def _skill_form_components(skill: us.Skill | None, _sdui) -> List[Dict[str, Any]]:
+def _skill_form_components(skill: us.Skill | None, _sdui,
+                           prefill: us.Skill | None = None) -> List[Dict[str, Any]]:
     editing = skill is not None
+    shown = skill if editing else prefill
     fields = []
     fields.extend([
-        _sdui.field("skill_name", "Name", "text", default=skill.name if editing else None),
+        _sdui.field("skill_name", "Name", "text", default=shown.name if shown else None),
         _sdui.field("skill_command", "/command (optional)", "text",
                     default=skill.command if editing else None),
         _sdui.field("skill_applies", "Applies to", "text",
-                    default=("" if (skill is None or skill.always) else ", ".join(skill.applies_to)) or None,
+                    default=("" if (shown is None or shown.always) else ", ".join(shown.applies_to)) or None,
                     help="Leave empty for every chat, or list agent ids."),
         _sdui.field("skill_instructions", "Instructions", "textarea",
-                    default=skill.instructions if editing else None),
+                    default=shown.instructions if shown else None),
     ])
     out = [_sdui.text("Edit skill" if editing else "Add a skill", "h3"),
            _sdui.text("Standing guidance in your own words — how you like things done, a "
@@ -1445,6 +1486,21 @@ def _skill_form_components(skill: us.Skill | None, _sdui) -> List[Dict[str, Any]
     if editing:
         out.append(_sdui.button("Cancel", "chrome_author_list"))
     return out
+
+
+def _skill_import_components(_sdui) -> List[Dict[str, Any]]:
+    return [
+        _sdui.text("Import a SKILL.md file", "h3"),
+        _sdui.text("Paste the contents of one Agent Skills SKILL.md file and press Preview "
+                   "import. Only plain instructions are imported: scripts, references, tool "
+                   "grants and other metadata are refused and shown to you before anything "
+                   "is saved. Files are never fetched from the network.", "caption"),
+        _sdui.form([
+            _sdui.field("skill_instructions", "SKILL.md contents", "textarea"),
+        ], submit_action="chrome_user_skill_save", submit_label="Preview import",
+           submit_payload={**_skill_identity(None), "skill_slug": "",
+                           "skill_enabled": "true"}),
+    ]
 
 
 async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) -> List[Dict[str, Any]]:
@@ -1507,7 +1563,9 @@ async def _home_components(orch, user_id: str, params: Dict[str, Any], _sdui) ->
             out.append(_skill_components(skill, _sdui))
         edit_slug = str(params.get("skill_slug") or "")
         editing = next((sk for sk in ctx["skills"] if sk.slug == edit_slug), None) if edit_slug else None
-        out.extend(_skill_form_components(editing, _sdui))
+        out.extend(_skill_form_components(editing, _sdui, prefill=_import_prefill(params)))
+        if us.import_enabled():
+            out.extend(_skill_import_components(_sdui))
     return out
 
 
@@ -1767,6 +1825,20 @@ def _skills_refused() -> Tuple[str, Dict[str, Any], str]:
     return (SURFACE_KEY, {}, notice_block("error", _SKILLS_DISABLED))
 
 
+def _import_notice(preview) -> str:
+    reports = list(preview.unsupported)
+    detail = (" Not imported: " + "; ".join(reports)) if reports else \
+        " Everything else in the file maps to nothing here."
+    license_text = f"license {preview.license}" if preview.license else "license not stated"
+    return (f"Import preview: “{preview.name}” ({license_text}, {preview.source_bytes} bytes)."
+            f"{detail} Nothing is saved yet — review the prefilled skill below, then choose "
+            "Add skill to save it.")
+
+
+def _is_import_source(name: str, instructions: str) -> bool:
+    return not name.strip() and instructions.lstrip().startswith("---")
+
+
 async def _h_skill_save(orch, websocket, user_id, roles, payload):
     store = us.store_for(orch)
     if store is None:
@@ -1778,8 +1850,19 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
     value = (payload or {}).get("skill_enabled", fields.get("skill_enabled"))
     if value not in ("true", "false"):
         raise AssignmentError("skill_invalid", 422)
-    await store.save(caller=caller, **identity, name=fields.get("skill_name", ""),
-        instructions=fields.get("skill_instructions", ""), applies_to=fields.get("skill_applies", ""),
+    name = fields.get("skill_name", "")
+    instructions = fields.get("skill_instructions", "")
+    if us.import_enabled() and _is_import_source(name, instructions):
+        from orchestrator.user_skill_import import SkillImportError
+        try:
+            preview = await store.preview_import(caller=caller, source=instructions)
+        except SkillImportError as error:
+            return (SURFACE_KEY, {}, notice_block("error", str(error)))
+        return (SURFACE_KEY, {"skill_import": {"name": preview.name,
+                                               "instructions": preview.instructions}},
+                notice_block("info", _import_notice(preview)))
+    await store.save(caller=caller, **identity, name=name,
+        instructions=instructions, applies_to=fields.get("skill_applies", ""),
         command=fields.get("skill_command", ""), enabled=value == "true", slug=slug)
     return (SURFACE_KEY, {}, notice_block("success", "Skill saved."))
 
