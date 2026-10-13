@@ -199,32 +199,30 @@ class Bridge:
                     if not line:
                         continue
                     if len(line) > _MAX_LINE_CHARS:
-                        if gate.admit():
-                            lines.put(("OVERSIZE", None))
-                        else:
-                            _write(error_response(
-                                None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
+                        _write(error_response(
+                            None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
                         continue
                     try:
                         message = json.loads(line)
                     except json.JSONDecodeError:
-                        if gate.admit():
-                            lines.put(("PARSE_ERROR", None))
-                        else:
-                            _write(error_response(
-                                None, ProtocolError(PARSE_ERROR, "invalid JSON")))
+                        _write(error_response(
+                            None, ProtocolError(PARSE_ERROR, "invalid JSON")))
                         continue
-                    if isinstance(message, dict) and "id" not in message:
+                    if not isinstance(message, dict):
+                        _write(error_response(
+                            None, ProtocolError(INVALID_REQUEST, "request must be a JSON object")))
+                        continue
+                    if "id" not in message:
                         params = message.get("params")
                         request_id = params.get("requestId") if isinstance(params, dict) else None
                         if message.get("method") == "notifications/cancelled" and valid_request_id(request_id):
                             tracker.cancel(request_id)
                         continue
-                    request_id = message.get("id") if isinstance(message, dict) else None
+                    request_id = message.get("id")
                     if gate.admit():
                         if valid_request_id(request_id):
                             tracker.register(request_id)
-                        lines.put(("REQ", message))
+                        lines.put(message)
                     else:
                         _write(error_response(
                             request_id if valid_request_id(request_id) else None,
@@ -240,17 +238,8 @@ class Bridge:
             item = lines.get()
             if item is None:
                 break
-            kind, payload = item
+            request = item
             gate.release()
-            if kind == "OVERSIZE":
-                _write(error_response(
-                    None, ProtocolError(INVALID_REQUEST, "frame exceeds the maximum line size")))
-                continue
-            if kind == "PARSE_ERROR":
-                _write(error_response(
-                    None, ProtocolError(PARSE_ERROR, "invalid JSON")))
-                continue
-            request = payload
             request_id = request.get("id") if isinstance(request, dict) else None
             response = self.handle(request)
             if valid_request_id(request_id) and tracker.finish(request_id):

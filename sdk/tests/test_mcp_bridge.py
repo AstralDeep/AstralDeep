@@ -461,6 +461,64 @@ def test_rejected_and_oversized_records_do_not_buffer_in_the_reader_queue(fake_s
         reader.close()
 
 
+def test_eof_never_blocks_when_queue_is_full(fake_server, monkeypatch):
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+    script = [("RAW", json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                 "params": {"_meta": META, "name": "astral_get_operation",
+                                            "arguments": {"operation_id": "op-1"}}})),
+              ("WAIT_DEQUEUED", None)]
+    script += [("RAW", json.dumps({"jsonrpc": "2.0", "id": index, "method": "tools/list",
+                                  "params": {"_meta": META}}))
+               for index in range(1, 257)]
+    responses = _feed_lines(bridge, script, release, dequeued)
+    answered = [r for r in responses if "result" in r]
+    assert len(answered) == 257
+
+
+def test_cancellation_latency_under_saturated_queue(fake_server, monkeypatch):
+    import os
+    import threading
+    import time
+
+    bridge, release, dequeued = _gated_bridge(fake_server, monkeypatch)
+
+    read_fd, write_fd = os.pipe()
+    reader = io.TextIOWrapper(os.fdopen(read_fd, "rb", buffering=0), encoding="utf-8")
+    writer = io.TextIOWrapper(os.fdopen(write_fd, "wb", buffering=0), encoding="utf-8")
+
+    def _feed():
+        writer.write(json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                                "params": {"_meta": META, "name": "astral_get_operation",
+                                           "arguments": {"operation_id": "op-1"}}}) + "\n")
+        writer.flush()
+        assert dequeued.wait(timeout=10)
+        for i in range(1, 257):
+            writer.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/list",
+                                     "params": {"_meta": META}}) + "\n")
+        writer.flush()
+        time.sleep(0.05)
+        writer.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                 "params": {"requestId": 0}}) + "\n")
+        writer.flush()
+        time.sleep(0.05)
+        release.set()
+        time.sleep(0.5)
+        writer.close()
+
+    feeder = threading.Thread(target=_feed, daemon=True)
+    feeder.start()
+    try:
+        out = io.StringIO()
+        bridge.serve_stdio(reader, out)
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        answered_ids = {r["id"] for r in responses if "result" in r}
+        assert 0 not in answered_ids
+        assert answered_ids == set(range(1, 257))
+    finally:
+        bridge.close()
+        reader.close()
+
+
 def test_missing_submit_fields_are_input_validation_errors(fake_server):
     bridge = Bridge.connect(fake_server.base_url, fake_server.state.valid_token)
     try:
