@@ -163,4 +163,8 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
     python -m venv --system-site-packages /tmp/ci
     /tmp/ci/bin/python -m pip install --require-hashes -r /qualification-policy/tooling/backend-ci/requirements.lock.txt
     /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web --group "$ASTRAL_GATE_GROUP"
+    if [[ "$ASTRAL_GATE_GROUP" == modules || "$ASTRAL_GATE_GROUP" == all ]]; then
+      /tmp/ci/bin/python /workspace/scripts/check_acceptance_mutations.py \
+        --output /workspace/build/backend-web/acceptance-mutations.json
+    fi
   '

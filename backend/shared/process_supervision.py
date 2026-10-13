@@ -67,6 +67,18 @@ class ProcessSupervisionLimits:
 
 
 DEFAULT_PROCESS_SUPERVISION_LIMITS = ProcessSupervisionLimits()
+_MAX_READER_DIAGNOSTIC_BYTES = 256
+
+
+def _bounded_error_message(
+    error: Exception, maximum_bytes: int, *, prefix: str = ""
+) -> str:
+    label = type(error).__name__[:64]
+    message = next((item for item in error.args[:2] if isinstance(item, str)), "")
+    value = f"{prefix}{label}: {message[:maximum_bytes]}".rstrip(": ")
+    return value.encode("utf-8", errors="replace")[:maximum_bytes].decode(
+        "utf-8", errors="ignore"
+    )
 
 
 @dataclass(frozen=True)
@@ -193,11 +205,32 @@ class BoundedStreamReader:
         with self._condition:
             if self._pipe_closed:
                 return
+            error = None
             try:
                 self._pipe.close()
-            finally:
-                self._pipe_closed = True
-                self._condition.notify_all()
+            except Exception as exc:
+                error = exc
+            try:
+                self._pipe_closed = self._pipe.closed is True
+            except Exception as exc:
+                self._pipe_closed = False
+                if error is None:
+                    error = exc
+            if error is not None or not self._pipe_closed:
+                if self._private_output:
+                    self._read_error = "private output close failed"
+                elif error is None:
+                    self._read_error = "output pipe did not close"
+                else:
+                    self._read_error = _bounded_error_message(
+                        error,
+                        min(
+                            _MAX_READER_DIAGNOSTIC_BYTES,
+                            self._limits.maximum_logical_line_bytes,
+                        ),
+                        prefix="pipe close failed: ",
+                    )
+            self._condition.notify_all()
 
     def _forward_chunk(self, chunk: bytes) -> None:
         try:
@@ -231,16 +264,24 @@ class BoundedStreamReader:
                     self._read_error = (
                         "private output read failed"
                         if self._private_output
-                        else f"{type(exc).__name__}: {exc}"
+                        else _bounded_error_message(
+                            exc,
+                            min(
+                                _MAX_READER_DIAGNOSTIC_BYTES,
+                                self._limits.maximum_logical_line_bytes,
+                            ),
+                        )
                     )
         finally:
             with self._condition:
                 if self._partial or self._partial_overlong:
                     self._finish_line(delimiter_bytes=0)
-            self.close_pipe()
-            with self._condition:
-                self._reader_done = True
-                self._condition.notify_all()
+            try:
+                self.close_pipe()
+            finally:
+                with self._condition:
+                    self._reader_done = True
+                    self._condition.notify_all()
 
     def wait_for_line(self, *, prefix: bytes, timeout: float) -> bytes:
         if self._private_output:
