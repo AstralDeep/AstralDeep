@@ -948,12 +948,12 @@ async def test_card_with_unsupported_preferred_transport_dispatches_to_the_jsonr
     assert seen["tenant"] == "tenant-9"
 
 
-def test_bridge_identity_and_metadata_follow_the_jsonrpc_interface():
+def test_bridge_preserves_identity_while_metadata_selects_the_jsonrpc_interface():
     from shared.a2a_bridge import a2a_card_to_custom
 
     converted = a2a_card_to_custom(_mixed_transport_card())
     assert converted.metadata["a2a_url"] == f"{PEER_BASE}/custom/rpc"
-    assert converted.agent_id == "rpc"
+    assert converted.agent_id == "grpc"
 
     grpc_only = a2a_card_to_custom(
         _interface_card(
@@ -990,6 +990,7 @@ def _discovery_orchestrator() -> Orchestrator:
 
     orch = Orchestrator.__new__(Orchestrator)
     orch.agents = {}
+    orch.local_agents = {}
     orch.agent_urls = {}
     orch.a2a_clients = {}
     orch.a2a_agent_cards = {}
@@ -998,10 +999,21 @@ def _discovery_orchestrator() -> Orchestrator:
     orch.security_flags = {}
     orch.ui_clients = []
     orch._is_draft_agent = lambda agent_id: False
+    orch.registration_events = []
     orch.tool_permissions = SimpleNamespace(
-        register_tool_scopes=lambda *args, **kwargs: None,
+        register_tool_scopes=lambda agent_id, scopes: orch.registration_events.append(("scopes", agent_id)),
         cleanup_stale_tool_overrides=lambda *args, **kwargs: None,
     )
+    def analyze(card):
+        orch.registration_events.append(("security", card.agent_id))
+        return {}
+
+    def ownership(agent_id):
+        orch.registration_events.append(("owner", agent_id))
+        return {"is_public": False}
+
+    orch.security_analyzer = SimpleNamespace(analyze_agent=analyze)
+    orch.user_agent_registry = SimpleNamespace(get_agent_ownership=ownership)
     return orch
 
 
@@ -1040,6 +1052,9 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
     monkeypatch,
 ):
     monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    from orchestrator.auth import validate_agent_api_key
+
+    assert validate_agent_api_key("discovery-key-0123456789") is True
     holder = {"card": {}}
     runner, base_url = await _card_server(holder)
     try:
@@ -1062,6 +1077,8 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
         assert orch.agent_urls["rpc"] == base_url
         assert orch.a2a_agent_cards["rpc"].supported_interfaces[0].url == custom_url
         assert orch.agent_cards["rpc"].metadata["a2a_url"] == custom_url
+        assert orch.registration_events == [("scopes", "rpc"), ("security", "rpc"), ("owner", "rpc")]
+        assert orch.security_flags["rpc"] == {}
 
         seen = {}
 
@@ -1089,6 +1106,127 @@ async def test_discovery_dispatches_to_the_advertised_custom_path_and_tenant(
         assert seen["version"] == "1.0"
         assert seen["tenant"] == "tenant-9"
         assert seen["agent_key"] == "discovery-key-0123456789"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mixed_transport_discovery_preserves_distinct_permission_identities(monkeypatch):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    runners = []
+    orch = _discovery_orchestrator()
+    expected = {}
+    try:
+        for agent_id in ("peer-alpha", "peer-beta"):
+            holder = {"card": {}}
+            runner, base_url = await _card_server(holder)
+            runners.append(runner)
+            holder["card"] = _advertised_card_payload(base_url, [
+                {"url": f"{base_url}/{agent_id}", "protocolBinding": "GRPC", "protocolVersion": "1.0"},
+                {"url": f"{base_url}/custom/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+            ])
+            await orch.discover_a2a_agent(base_url)
+            expected[agent_id] = base_url
+        assert orch.a2a_clients == expected
+        assert [agent_id for event, agent_id in orch.registration_events if event == "scopes"] == list(expected)
+        for agent_id, base_url in expected.items():
+            assert orch.agent_cards[agent_id].metadata["a2a_url"] == f"{base_url}/custom/rpc"
+    finally:
+        for runner in runners:
+            await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_selected_transport_does_not_replace_a_different_local_identity(monkeypatch):
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    holder = {"card": {}}
+    runner, base_url = await _card_server(holder)
+    try:
+        holder["card"] = _advertised_card_payload(base_url, [
+            {"url": f"{base_url}/peer-alpha", "protocolBinding": "GRPC", "protocolVersion": "1.0"},
+            {"url": f"{base_url}/custom/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        ])
+        orch = _discovery_orchestrator()
+        original = object()
+        orch.local_agents["rpc"] = object()
+        orch.agent_cards["rpc"] = original
+        await orch.discover_a2a_agent(base_url)
+        assert orch.agent_cards["rpc"] is original
+        assert orch.a2a_clients == {"peer-alpha": base_url}
+        assert orch.agent_cards["peer-alpha"].metadata["a2a_url"] == f"{base_url}/custom/rpc"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_discovery_retains_the_real_production_registration_refusal(monkeypatch):
+    from orchestrator.auth import validate_agent_api_key
+
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    assert validate_agent_api_key("") is False
+    holder = {"card": {}}
+    runner, base_url = await _card_server(holder)
+    try:
+        holder["card"] = _advertised_card_payload(base_url, [
+            {"url": f"{base_url}/peer-denied", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        ])
+        orch = _discovery_orchestrator()
+        await orch.discover_a2a_agent(base_url)
+        assert orch.agent_cards == {}
+        assert orch.agent_capabilities == {}
+        assert orch.registration_events == []
+        assert orch.a2a_clients == {}
+        assert orch.a2a_agent_cards == {}
+        assert orch.agent_urls == {}
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.parametrize("failure", ["invalid-key", "invalid-schema", "analyzer-error", "cancelled"])
+@pytest.mark.asyncio
+async def test_discovery_publishes_no_route_after_registration_refusal_or_failure(monkeypatch, failure):
+    import asyncio
+    from orchestrator.auth import validate_agent_api_key
+
+    monkeypatch.setenv("AGENT_API_KEY", "discovery-key-0123456789")
+    assert validate_agent_api_key("different-key") is False
+    holder = {"card": {}}
+    runner, base_url = await _card_server(holder)
+    try:
+        holder["card"] = _advertised_card_payload(base_url, [
+            {"url": f"{base_url}/peer-denied", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        ])
+        orch = _discovery_orchestrator()
+        original = orch.register_agent
+
+        async def register(websocket, message):
+            if failure == "invalid-key":
+                message.api_key = "different-key"
+            elif failure == "invalid-schema":
+                message.agent_card.skills[0].input_schema = {"type": "string"}
+            elif failure == "cancelled":
+                raise asyncio.CancelledError
+            return await original(websocket, message)
+
+        def failed_analysis(card):
+            raise RuntimeError("synthetic analyzer failure")
+
+        orch.register_agent = register
+        if failure == "analyzer-error":
+            orch.security_analyzer.analyze_agent = failed_analysis
+        if failure == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await orch.discover_a2a_agent(base_url)
+        else:
+            await orch.discover_a2a_agent(base_url)
+        assert orch.a2a_clients == {}
+        assert orch.a2a_agent_cards == {}
+        assert orch.agent_urls == {}
+        if failure in {"invalid-key", "invalid-schema"}:
+            assert orch.agent_cards == {}
+            assert orch.agent_capabilities == {}
+            assert orch.registration_events == []
     finally:
         await runner.cleanup()
 

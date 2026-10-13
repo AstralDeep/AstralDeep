@@ -186,7 +186,6 @@ def _advertised_interface_url(a2a_card: A2AAgentCard) -> str:
     if selected is not None:
         return selected.url
     interfaces = list(a2a_card.supported_interfaces or [])
-    # Unusable cards keep the legacy first-interface metadata; dispatch still fails closed
     return str(interfaces[0].url or "") if interfaces else ""
 
 
@@ -195,7 +194,8 @@ def a2a_card_to_custom(a2a_card: A2AAgentCard, agent_id: str = "") -> CustomAgen
 
     iface_url = _advertised_interface_url(a2a_card)
     if not agent_id:
-        candidate = iface_url.rstrip("/").split("/")[-1] if iface_url else ""
+        identity_url = str(a2a_card.supported_interfaces[0].url or "") if a2a_card.supported_interfaces else ""
+        candidate = identity_url.rstrip("/").split("/")[-1] if identity_url else ""
         if re.fullmatch(r"[a-z0-9][a-z0-9-]*", candidate or ""):
             agent_id = candidate
         else:

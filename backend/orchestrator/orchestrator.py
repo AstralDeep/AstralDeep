@@ -5562,13 +5562,15 @@ class Orchestrator:
                 logger.debug(f"A2A agent {agent_id} already connected")
                 return
 
-            self.a2a_clients[agent_id] = base_url
-            self.a2a_agent_cards[agent_id] = a2a_card
-            self.agent_urls[agent_id] = base_url
-
             register_msg = RegisterAgent(agent_card=custom_card,
                                          api_key=os.getenv("AGENT_API_KEY") or None)
             await self.register_agent(None, register_msg)
+            if self.agent_cards.get(agent_id) is not custom_card:
+                return
+
+            self.a2a_clients[agent_id] = base_url
+            self.a2a_agent_cards[agent_id] = a2a_card
+            self.agent_urls[agent_id] = base_url
 
             logger.info(f"External agent discovered via A2A (WebSocket unavailable): {agent_id} at {base_url}")
 
