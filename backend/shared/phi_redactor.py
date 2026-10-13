@@ -212,7 +212,8 @@ def redact(value: Any, *, kind: str = "args") -> Tuple[Optional[str], bool]:
     # Never raises: caller must not crash or leak via traceback
     except Exception as exc:  # pragma: no cover
         logger.error(
-            "phi_redactor.redaction_failed",
+            "phi_redactor.redaction_failed: %s",
+            type(exc).__name__,
             extra={"kind": kind, "error": type(exc).__name__},
         )
         return "[redaction failed]", False
