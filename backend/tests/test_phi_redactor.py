@@ -244,3 +244,74 @@ class TestSafeHarborCoverage:
             assert any(label in p for p in PHI_FIELD_PATTERNS), (
                 f"PHI_FIELD_PATTERNS missing coverage for Safe Harbor label {label!r}"
             )
+
+
+class TestSecretPatternMasking:
+    def test_openai_api_key_masked(self):
+        out, _ = redact("Used sk-proj-1234567890abcdef1234567890 in request.")
+        assert "[REDACTED:api_key]" in out
+        assert "sk-proj-1234567890abcdef1234567890" not in out
+
+    def test_github_token_masked(self):
+        out, _ = redact("Export GITHUB_TOKEN=ghp_123456789012345678901234567890123456 now.")
+        assert "[REDACTED:token]" in out
+        assert "ghp_123456789012345678901234567890123456" not in out
+
+    def test_aws_access_key_masked(self):
+        out, _ = redact("AWS key AKIAIOSFODNN7EXAMPLE detected.")
+        assert "[REDACTED:aws_key]" in out
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_jwt_token_masked(self):
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        out, _ = redact(f"Authorization: {token}")
+        assert "[REDACTED:jwt]" in out
+        assert token not in out
+
+    def test_private_key_block_masked(self):
+        pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+        out, _ = redact(f"Key data:\n{pem}")
+        assert "[REDACTED:private_key]" in out
+        assert "-----BEGIN RSA PRIVATE KEY-----" not in out
+
+    def test_secret_field_key_masked(self):
+        out, _ = redact({"api_key": "raw-key-value-999"})
+        parsed = json.loads(out)
+        assert parsed["api_key"] == "[REDACTED:secret]"
+
+    def test_secret_redaction_never_logs_secret_content(self, caplog):
+        caplog.set_level(logging.INFO, logger="PHIRedactor")
+        raw_secret = "sk-proj-secretcontentthatmustnotleak123456789"
+        redact(f"Test call with {raw_secret}")
+        for record in caplog.records:
+            assert raw_secret not in record.getMessage()
+
+    def test_clinical_and_metadata_negative_cases_not_masked(self):
+        payload = {
+            "token_count": 123,
+            "secretion": "normal",
+            "secretions": "clear",
+            "tokens_used": 45,
+            "prompt_tokens": 10,
+            "completion_tokens": 35,
+        }
+        out, _ = redact(payload)
+        parsed = json.loads(out)
+        assert parsed["token_count"] == 123
+        assert parsed["secretion"] == "normal"
+        assert parsed["secretions"] == "clear"
+        assert parsed["tokens_used"] == 45
+        assert parsed["prompt_tokens"] == 10
+        assert parsed["completion_tokens"] == 35
+
+    def test_exception_handler_does_not_leak_secret_in_log(self, caplog):
+        caplog.set_level(logging.ERROR, logger="PHIRedactor")
+
+        class FaultyWithSecret:
+            def __repr__(self):
+                raise ValueError("synthetic_secret_xyz123_leaked_in_exception")
+
+        out, _ = redact(FaultyWithSecret())
+        assert out == "[redaction failed]"
+        assert "synthetic_secret_xyz123_leaked_in_exception" not in caplog.text
+        assert "ValueError" in caplog.text
