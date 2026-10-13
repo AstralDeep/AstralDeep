@@ -46,7 +46,9 @@ _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chro
 _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_user_skill_delete", "chrome_declarative_command",
                            "chrome_note_save", "chrome_note_toggle", "chrome_note_forget",
-                           "chrome_safety_stop", "chrome_safety_resume"})
+                           "chrome_safety_stop", "chrome_safety_resume",
+                           "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
+                           "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -63,7 +65,7 @@ def _socket_method(message):
     payload = message.get("payload")
     if (action == "chrome_open" and type(payload) is dict
             and type(payload.get("surface")) is str
-            and payload.get("surface") in {"agent_authoring", "guidance", "evidence", "safety"}):
+            and payload.get("surface") in {"agent_authoring", "guidance", "evidence", "safety", "mesh"}):
         return "WS_READ"
     return None
 

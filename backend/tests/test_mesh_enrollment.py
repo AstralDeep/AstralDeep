@@ -713,6 +713,152 @@ def test_two_threads_race_redeem_exactly_one_wins(store):
     assert len(store.list_members("owner-threads")) == 1
 
 
+def test_duplicate_active_device_key_invitation_is_refused_and_audited(
+    store, audit_events
+):
+    owner = "owner-duplicate-key"
+    jwk, private_key = _device()
+    result = store.create_invitation(
+        owner,
+        label="First device",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    fields = _payload_fields(result["payload"])
+    _confirm_and_redeem(store, result["invitation"], fields, private_key)
+    assert [event for event in audit_events if event.outcome == "failure"] == []
+    with pytest.raises(me.IdentityAmbiguous) as ambiguous:
+        store.create_invitation(
+            owner,
+            label="Duplicate clone",
+            device_key=jwk,
+            scopes=["tools:read"],
+            creator_kind="owner",
+            creator_id=owner,
+        )
+    assert ambiguous.value.status == 409
+    assert ambiguous.value.code == "mesh_identity_ambiguous"
+    denials = [event for event in audit_events if event.outcome == "failure"]
+    assert len(denials) == 1
+    assert denials[0].action_type == "mesh.invitation.create"
+    assert denials[0].inputs_meta["reason"] == "device_key_already_active"
+    assert denials[0].inputs_meta["fingerprint"] == result["invitation"][
+        "device_key_fingerprint"
+    ]
+    members = store.list_members(owner)
+    assert len(members) == 1
+    assert members[0]["status"] == "active"
+
+
+def test_second_confirmed_invitation_with_same_key_redeems_only_after_revocation(
+    store, audit_events
+):
+    owner = "owner-key-race"
+    jwk, private_key = _device()
+    first = store.create_invitation(
+        owner,
+        label="First",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    second = store.create_invitation(
+        owner,
+        label="Second",
+        device_key=jwk,
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    first_fields = _payload_fields(first["payload"])
+    second_fields = _payload_fields(second["payload"])
+    _confirm(store, first_fields)
+    _confirm(store, second_fields)
+    activated = store.redeem_invitation(
+        owner_id=owner,
+        invite_id=first_fields["i"],
+        token=first_fields["t"],
+        challenge=first_fields["c"],
+        signature=_signature_b64(private_key, first_fields["c"]),
+    )
+    with pytest.raises(me.IdentityAmbiguous):
+        store.redeem_invitation(
+            owner_id=owner,
+            invite_id=second_fields["i"],
+            token=second_fields["t"],
+            challenge=second_fields["c"],
+            signature=_signature_b64(private_key, second_fields["c"]),
+        )
+    assert store.get_invitation(owner, second_fields["i"])["status"] == "confirmed"
+    assert (
+        store.get_member(owner, activated["member"]["member_id"])["status"]
+        == "active"
+    )
+    assert [
+        event
+        for event in audit_events
+        if event.outcome == "failure" and event.action_type == "mesh.invitation.create"
+    ] == []
+    store.revoke_member(owner, activated["member"]["member_id"])
+    recovered = store.redeem_invitation(
+        owner_id=owner,
+        invite_id=second_fields["i"],
+        token=second_fields["t"],
+        challenge=second_fields["c"],
+        signature=_signature_b64(private_key, second_fields["c"]),
+    )
+    assert recovered["member"]["status"] == "active"
+    assert recovered["member"]["member_id"] != activated["member"]["member_id"]
+    with store._transaction() as transaction:
+        mesh, member, _ = store._current_member(
+            transaction, owner, recovered["member"]["member_id"]
+        )
+    assert member.member_status == "active"
+
+
+def test_revoked_member_key_can_be_reenrolled(store):
+    owner = "owner-reenroll"
+    result, fields, private_key = _make_invitation(store, owner)
+    outcome = _confirm_and_redeem(store, result["invitation"], fields, private_key)
+    member_id = outcome["member"]["member_id"]
+    store.revoke_member(owner, member_id)
+    reactivation = store.create_invitation(
+        owner,
+        label="Re-enrolled device",
+        device_key=outcome["member"]["device_key"],
+        scopes=["tools:read"],
+        creator_kind="owner",
+        creator_id=owner,
+    )
+    reactivated_fields = _payload_fields(reactivation["payload"])
+    reactivated = _confirm_and_redeem(
+        store, reactivation["invitation"], reactivated_fields, private_key
+    )
+    assert reactivated["member"]["status"] == "active"
+    assert reactivated["member"]["member_id"] != member_id
+    with store._transaction() as transaction:
+        store._current_member(transaction, owner, reactivated["member"]["member_id"])
+
+
+def test_member_creator_cannot_duplicate_an_active_device_key(store):
+    owner = "owner-member-duplicate"
+    fields, key, member = _confirmed_by_member(store, owner)
+    with pytest.raises(me.IdentityAmbiguous) as ambiguous:
+        store.create_invitation(
+            owner,
+            label="Self clone",
+            device_key=member["device_key"],
+            scopes=[],
+            creator_kind="member",
+            creator_id=member["member_id"],
+        )
+    assert ambiguous.value.code == "mesh_identity_ambiguous"
+    assert store.get_member(owner, member["member_id"])["status"] == "active"
+
+
 def test_revoked_member_loses_authority(store):
     result, fields, private_key = _make_invitation(store, "owner-revoke")
     outcome = _confirm_and_redeem(store, result["invitation"], fields, private_key)
@@ -1297,3 +1443,111 @@ def test_malformed_current_confirmation_identity_is_denied(store, change):
             decider_id=member["member_id"],
         )
     assert store.get_invitation(owner, pending["i"])["status"] == "pending"
+
+
+def _fill_namespace(store, owner, namespace, template, count):
+    existing = len(store._list(owner, namespace))
+    with store._transaction() as transaction:
+        store._lock_mesh(transaction, owner)
+        for index in range(count - existing):
+            identifier = f"synthetic-history-{index}"
+            record = dict(template)
+            record["member_id" if namespace == me.MEMBER_NAMESPACE else "invite_id"] = identifier
+            record["status"] = "revoked" if namespace == me.MEMBER_NAMESPACE else "rejected"
+            store._credentials.repository.upsert_credential(
+                transaction,
+                owner_id=owner,
+                agent_id=namespace,
+                credential_key=identifier,
+                encrypted_value=me._encode_record(record),
+                updated_at=record["updated_at"],
+            )
+
+
+@pytest.mark.parametrize("count", [998, 999])
+def test_invitation_creation_preserves_readable_capacity(store, audit_repository, count):
+    owner = f"owner-invitation-capacity-{count}"
+    _, fields, _ = _make_invitation(store, owner)
+    template = store._get(owner, me.INVITATION_NAMESPACE, fields["i"])
+    _fill_namespace(store, owner, me.INVITATION_NAMESPACE, template, count)
+    before = store.list_invitations(owner)
+    before_audit = audit_repository.list_for_user(owner)[0]
+    if count == 998:
+        _make_invitation(store, owner)
+        assert len(store.list_invitations(owner)) == 999
+    else:
+        with pytest.raises(me.MeshEnrollmentError) as refusal:
+            _make_invitation(store, owner)
+        assert refusal.value.status == 503
+        assert refusal.value.code == "mesh_inventory_capacity"
+        assert store.list_invitations(owner) == before
+        assert audit_repository.list_for_user(owner)[0] == before_audit
+
+
+@pytest.mark.parametrize("count", [998, 999])
+def test_redemption_preserves_readable_capacity(store, audit_repository, count):
+    owner = f"owner-member-capacity-{count}"
+    invitation, fields, key = _make_invitation(store, owner)
+    member = _confirm_and_redeem(store, invitation, fields, key)["member"]
+    _fill_namespace(store, owner, me.MEMBER_NAMESPACE, member, count)
+    _, pending, pending_key = _make_invitation(store, owner)
+    _confirm(store, pending)
+    before = store.list_members(owner)
+    before_invitation = store.get_invitation(owner, pending["i"])
+    before_audit = audit_repository.list_for_user(owner)[0]
+    with store._transaction() as transaction:
+        before_mesh = store._membership.get_mesh(
+            transaction, owner_id=owner, mesh_id=me.mesh_id_for_owner(owner)
+        )
+    if count == 998:
+        _redeem(store, pending, pending_key)
+        assert len(store.list_members(owner)) == 999
+    else:
+        with pytest.raises(me.MeshEnrollmentError) as refusal:
+            _redeem(store, pending, pending_key)
+        assert refusal.value.status == 503
+        assert refusal.value.code == "mesh_inventory_capacity"
+        assert store.list_members(owner) == before
+        assert store.get_invitation(owner, pending["i"]) == before_invitation
+        assert audit_repository.list_for_user(owner)[0] == before_audit
+        with store._transaction() as transaction:
+            assert store._membership.get_mesh(
+                transaction, owner_id=owner, mesh_id=me.mesh_id_for_owner(owner)
+            ) == before_mesh
+
+
+@pytest.mark.parametrize("operation", ["create", "redeem"])
+def test_concurrent_insertions_share_last_readable_slot(store, audit_repository, operation):
+    from concurrent.futures import ThreadPoolExecutor
+
+    owner = f"owner-capacity-concurrent-{operation}"
+    invitation, fields, key = _make_invitation(store, owner)
+    namespace = me.INVITATION_NAMESPACE
+    template = store._get(owner, namespace, fields["i"])
+    pending = []
+    if operation == "redeem":
+        namespace = me.MEMBER_NAMESPACE
+        template = _confirm_and_redeem(store, invitation, fields, key)["member"]
+        for _ in range(2):
+            _, candidate, candidate_key = _make_invitation(store, owner)
+            _confirm(store, candidate)
+            pending.append((candidate, candidate_key))
+    _fill_namespace(store, owner, namespace, template, 998)
+    before_audit = len(audit_repository.list_for_user(owner)[0])
+    barrier = threading.Barrier(2)
+
+    def insert(index):
+        barrier.wait(timeout=10)
+        try:
+            if operation == "create":
+                _make_invitation(store, owner)
+            else:
+                _redeem(store, *pending[index])
+            return "inserted"
+        except me.MeshEnrollmentError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        assert sorted(workers.map(insert, range(2))) == ["inserted", "mesh_inventory_capacity"]
+    assert len(store._list(owner, namespace)) == 999
+    assert len(audit_repository.list_for_user(owner)[0]) == before_audit + 1
