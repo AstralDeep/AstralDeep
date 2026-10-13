@@ -60,8 +60,8 @@ MUTATIONS = (
     Mutation(
         "phi-value-masking-removed",
         "shared/phi_redactor.py",
-        "    for pattern, replacement in PHI_VALUE_PATTERNS:\n",
-        "    for pattern, replacement in ():\n",
+        "    for pattern, replacement in PHI_VALUE_PATTERNS",
+        "    for pattern, replacement in ()",
         (
             "backend/tests/test_phi_clinical_acceptance.py::test_synthetic_phi_controls_are_masked[synthetic-ssn]",
         ),
