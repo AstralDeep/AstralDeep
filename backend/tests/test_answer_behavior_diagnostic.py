@@ -6,9 +6,15 @@ from contextlib import redirect_stdout
 from copy import deepcopy
 import io
 import json
+from multiprocessing.connection import Listener
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from uuid import uuid4
 
 from security_benchmark.answer_behavior import (
     DiagnosticError, MAX_BYTES, compare, digest, evaluate, load_json, main,
@@ -147,10 +153,89 @@ class AnswerBehaviorDiagnosticTests(unittest.TestCase):
             path = Path(directory) / "input.json"
             with self.assertRaises(DiagnosticError):
                 load_json(path)
-            for raw in (b"x" * (MAX_BYTES + 1), b"\xff", b'{"x":1,"x":2}', b'{"x":NaN}', b"{"):
+            for raw in (b"x" * (MAX_BYTES + 1), b"\xff", b'{"x":1,"x":2}',
+                        b'{"nested":{"x":1,"x":2}}', b'{"x":NaN}',
+                        b'{"x":Infinity}', b'{"x":-Infinity}', b"{", b"{}\x1a", b"[" * 2000):
                 path.write_bytes(raw)
                 with self.assertRaises(DiagnosticError):
                     load_json(path)
+
+    def test_loader_accepts_utf8_and_enforces_exact_raw_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "caf\u00e9.json"
+            raw = '{"message":"caf\u00e9"}\r\n'.encode("utf-8")
+            path.write_bytes(raw + b" " * (MAX_BYTES - len(raw)))
+            self.assertEqual(load_json(path), {"message": "caf\u00e9"})
+            with path.open("ab") as source:
+                source.write(b" ")
+            with self.assertRaises(DiagnosticError):
+                load_json(path)
+
+    def test_loader_refuses_directories_devices_and_invalid_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for path in (directory, os.devnull, "private-input\x00.json"):
+                with self.subTest(path=path), self.assertRaises(DiagnosticError):
+                    load_json(path)
+
+    def test_loader_checks_open_descriptor_before_accepting_pipe_data(self):
+        reader, writer = os.pipe()
+        os.write(writer, b'{"must_not_be_read":true}')
+        os.close(writer)
+        with patch("security_benchmark.answer_behavior.os.open", return_value=reader):
+            with self.assertRaises(DiagnosticError):
+                load_json("replaced-regular-file.json")
+        with self.assertRaises(OSError):
+            os.fstat(reader)
+
+    def assert_special_path_refused(self, path):
+        result = subprocess.run(
+            [sys.executable, "-m", "security_benchmark.answer_behavior", "--corpus",
+             str(FIXTURES / "corpus.json"), "--outputs", str(path), "--partition", "development"],
+            cwd=FIXTURES.parents[1], capture_output=True, text=True, check=False, timeout=10,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout), {
+            "version": "answer-behavior/v1", "state": "refused", "reason": "invalid_or_unavailable_inputs",
+        })
+        self.assertEqual(result.stderr, "")
+        self.assertNotIn(str(path), result.stdout)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO paths are unavailable")
+    def test_loader_refuses_fifo_without_a_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-pipe.json"
+            os.mkfifo(path)
+            self.assert_special_path_refused(path)
+
+    @unittest.skipUnless(os.name == "nt", "Windows named pipes are unavailable")
+    def test_loader_refuses_windows_named_pipe_without_a_sender(self):
+        path = rf"\\.\pipe\answer-diagnostic-{uuid4().hex}"
+        with Listener(path, family="AF_PIPE"):
+            self.assert_special_path_refused(path)
+
+    def test_cli_loader_failure_is_private_and_recovers_after_input_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-fixture-name.json"
+            for raw in (b'{"private_payload":', b"{}\x1a", b" " * (MAX_BYTES + 1)):
+                path.write_bytes(raw)
+                stream = io.StringIO()
+                with redirect_stdout(stream):
+                    code = main(["--corpus", str(FIXTURES / "corpus.json"), "--outputs", str(path),
+                                 "--partition", "development"])
+                self.assertEqual(code, 2)
+                self.assertEqual(json.loads(stream.getvalue()), {
+                    "version": "answer-behavior/v1", "state": "refused",
+                    "reason": "invalid_or_unavailable_inputs",
+                })
+                self.assertNotIn("private_", stream.getvalue())
+                self.assertNotIn(str(path), stream.getvalue())
+            path.write_bytes((FIXTURES / "frozen_outputs.json").read_bytes())
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                code = main(["--corpus", str(FIXTURES / "corpus.json"), "--outputs", str(path),
+                             "--partition", "development"])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(stream.getvalue())["candidate"]["partition"], "development")
 
     def test_cli_reports_without_emitting_prompts_receipts_or_raw_claims(self):
         stream = io.StringIO()

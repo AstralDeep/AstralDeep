@@ -37,7 +37,8 @@ def _pairs(items):
 
 def load_json(path):
     try:
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as source:
+        flags = os.O_RDONLY | (os.O_BINARY if os.name == "nt" else os.O_NONBLOCK)
+        with os.fdopen(os.open(path, flags), "rb") as source:
             _require(stat.S_ISREG(os.fstat(source.fileno()).st_mode))
             raw = source.read(MAX_BYTES + 1)
         _require(len(raw) <= MAX_BYTES)
