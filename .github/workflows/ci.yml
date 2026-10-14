@@ -613,6 +613,8 @@ jobs:
             scripts/tests/test_backend_web_state.py
             scripts/tests/test_merge_backend_web_coverage.py
             scripts/tests/test_install_local_components.py
+            scripts/tests/test_install_doctor.py
+            backend/tests/test_install_doctor.py
             scripts/tests/test_retire_restored_sessions.py
             scripts/tests/test_verify_component_ownership.py
             scripts/tests/test_verify_composition.py
