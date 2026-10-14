@@ -210,6 +210,8 @@ class FrameworkWorkOperations:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
 
         def _apply(transaction, repository):
+            _method(repository, "get_operation")(
+                transaction, owner_id=owner_id, assignment_id=identity, lock=True)
             read = _owned_operation(transaction, repository, owner_id, identity)
             receipt = _method(repository, "get_submission_receipt")(
                 transaction, owner_id=owner_id, assignment_id=identity,

@@ -517,7 +517,7 @@ class AssignmentRunner:
 
             fire_completions(self.service, tx, repository, owner_id=current.owner_id,
                              source_id=current.assignment_id,
-                             source_revision=current.state_version,
+                             source_revision=result.state_version,
                              outcome=completion.terminal_outcome)
         return result
 

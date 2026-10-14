@@ -508,7 +508,7 @@ async def test_runner_completion_fires_the_subscription_and_wakes_the_target(wor
 
 
 @pytest.mark.asyncio
-async def test_completion_fire_skips_unwakeable_targets_and_redrives(work):
+async def test_uncertain_wake_rolls_back_runner_completion_and_retry_recovers(work):
     caller = _issue(work)
     source, target = _operation(work), _operation(work)
     await _subscribe(work, caller, source, target)
@@ -523,23 +523,20 @@ async def test_completion_fire_skips_unwakeable_targets_and_redrives(work):
         repository.accept_wake = refusing_accept
         executor = await _claim_source(work, runner, source)
         before = (await _read(work, source)).assignment
-        await runner._finish_operation(executor, OneShotEpisodeResult(
-            before, _terminal_completion(before, "skip")))
-        finished = await _read(work, source)
-        assert finished.assignment.lifecycle == "completed"
-        pending = (await _read(work, target)).assignment
-        assert pending.phase == "awaiting_event"
+        outcome = OneShotEpisodeResult(before, _terminal_completion(before, "skip"))
+        with pytest.raises(AssignmentError, match="assignment_action_uncertain"):
+            await runner._finish_operation(executor, outcome)
+        assert (await _read(work, source)).assignment.lifecycle == "active"
+        assert (await _read(work, target)).assignment.phase == "awaiting_event"
         assert await _audits(work, work.owner, "work.completion_wake") == []
-        assert (work.owner, source.assignment_id) in _redrive_pending
+        assert _redrive_pending == {}
+        repository.accept_wake = original_accept
+        await runner._finish_operation(executor, outcome)
+        assert (await _read(work, target)).assignment.phase == "waiting"
+        assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
     finally:
         repository.accept_wake = original_accept
         await runner.stop()
-
-    assert await redrive_pending(work.service) == 1
-    woken = (await _read(work, target)).assignment
-    assert woken.phase == "waiting"
-    assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
-    assert await redrive_pending(work.service) == 0
 
 
 @pytest.mark.asyncio
@@ -707,7 +704,7 @@ async def test_fire_guards_skip_invalid_requests(work):
 
 
 @pytest.mark.asyncio
-async def test_fire_scan_failures_do_not_break_the_caller(work, monkeypatch):
+async def test_fire_scan_failures_abort_the_completion_transaction(work, monkeypatch):
     repository = work.service.store.repository
 
     def refusing_list(tx, **kwargs):
@@ -722,9 +719,11 @@ async def test_fire_scan_failures_do_not_break_the_caller(work, monkeypatch):
                                 outcome="completed")
 
     monkeypatch.setattr(repository, "list_operations", refusing_list)
-    assert run_fire() == 0
+    with pytest.raises(AssignmentError, match="work_repository_unavailable"):
+        run_fire()
     monkeypatch.setattr(repository, "list_operations", broken_list)
-    assert run_fire() == 0
+    with pytest.raises(RuntimeError, match="synthetic scan failure"):
+        run_fire()
 
 
 @pytest.mark.asyncio
@@ -843,3 +842,68 @@ async def test_subscription_audit_metadata_is_bounded(work):
         await run(lambda tx: audit.append_completion_wake(
             tx, owner_id=work.owner, record=record, source_id=str(uuid4()),
             revision=0, outcome="completed"))
+
+
+@pytest.mark.asyncio
+async def test_transient_wake_failure_rolls_back_completion_and_retry_after_restart(work, monkeypatch):
+    caller = _issue(work)
+    source = await work.ops.submit(caller, idempotency_key=str(uuid4()),
+                                   name="Atomic completion", instructions="Read public data.")
+    target = _operation(work)
+    await _subscribe(work, caller, source["id"], target)
+    repository = work.service.store.repository
+    original_accept = repository.accept_wake
+
+    def broken_wake(tx, **options):
+        raise RuntimeError("synthetic transient wake failure")
+
+    monkeypatch.setattr(repository, "accept_wake", broken_wake)
+    with pytest.raises(AssignmentError, match="assignment_transaction_unavailable"):
+        await work.ops.cancel(caller, operation_id=source["id"],
+                              expected_revision=source["revision"], submission_id=str(uuid4()))
+    unfinished = (await _read(work, source["id"])).assignment
+    assert unfinished.lifecycle == "active"
+    assert unfinished.operation.get("terminal_outcome") is None
+    assert (await _read(work, target)).assignment.phase == "awaiting_event"
+    assert await _audits(work, work.owner, "work.completion_wake") == []
+    _redrive_pending.clear()
+    monkeypatch.setattr(repository, "accept_wake", original_accept)
+    reopened = AssignmentStore(plane_runtime=work.runtime)
+    try:
+        restarted = FrameworkWorkOperations(
+            assignments=AssignmentService(work.orch, reopened, enabled=True,
+                                          phi_gate=work.service.phi_gate),
+            credentials=work.credentials)
+        await restarted.cancel(caller, operation_id=source["id"],
+                               expected_revision=source["revision"], submission_id=str(uuid4()))
+    finally:
+        reopened.close()
+    assert (await _read(work, target)).assignment.phase == "waiting"
+    assert len(await _audits(work, work.owner, "work.completion_wake")) == 1
+
+
+@pytest.mark.asyncio
+async def test_reciprocal_subscriptions_serialize_without_source_owner_lock_inversion(work, monkeypatch):
+    import threading
+
+    first_caller, second_caller = _issue(work), _issue(work)
+    first, second = _operation(work), _operation(work)
+    barrier = threading.Barrier(2)
+    original_transaction = work.service.store.transaction
+
+    async def synchronized_transaction(callback, **options):
+        def start(tx, repository):
+            assert barrier.wait(timeout=10) in (0, 1)
+            return callback(tx, repository)
+        return await original_transaction(start, **options)
+
+    monkeypatch.setattr(work.service.store, "transaction", synchronized_transaction)
+    async with asyncio.timeout(15):
+        results = await asyncio.gather(
+            _subscribe(work, first_caller, first, second),
+            _subscribe(work, second_caller, second, first), return_exceptions=True)
+    assert all(isinstance(result, dict) and result["applied"] is True for result in results)
+    monkeypatch.setattr(work.service.store, "transaction", original_transaction)
+    for source, target in ((first, second), (second, first)):
+        wait = (await _read(work, target)).assignment.operation["control"]["wait"]
+        assert wait["event_key"] == completion_event_key(source.assignment_id)

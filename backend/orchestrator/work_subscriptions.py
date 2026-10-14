@@ -11,6 +11,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 
+from astralplane.repositories import RepositoryConflictError
 from astralplane.repositories.assignment_models import (
     AssignmentControlResult, AssignmentOperationRead, AssignmentRecord,
 )
@@ -105,8 +106,11 @@ class WorkSubscriptionService(WorkControlService):
         signature = _signature("subscribe", source_id, target_id)
 
         def subscribe(tx, repository):
+            _method(repository, "get_operation")(
+                tx, owner_id=owner, assignment_id=source_id, lock=True)
+            self.credentials.assert_execution(tx, observation)
             source = _owned_operation(tx, repository, owner, source_id).assignment
-            if source.operation.get("terminal_outcome") is not None:
+            if source.lifecycle in {"stopped", "completed"} or source.operation.get("terminal_outcome") is not None:
                 raise AssignmentError("assignment_not_waiting", 409)
             read = _owned_operation(tx, repository, owner, target_id)
             record = read.assignment
@@ -185,6 +189,8 @@ class WorkSubscriptionService(WorkControlService):
         signature = _signature("unsubscribe", source_id, target_id)
 
         def cancel(tx, repository):
+            _method(repository, "get_operation")(
+                tx, owner_id=owner, assignment_id=target_id, lock=True)
             read = _owned_operation(tx, repository, owner, target_id)
             record = read.assignment
             wait = _wait(record)
@@ -227,9 +233,9 @@ def _entry(tx, repository, owner: str, read: AssignmentOperationRead,
 
 def _release(tx, repository, audit: WorkControlAudit, owner_id: str, source_id: str,
              target: AssignmentRecord, source_revision: int, outcome: str) -> bool:
-    key = completion_event_key(source_id)
-    watermark = _watermark(target, key)
-    revision = max(source_revision, watermark + 1)
+    wait = _wait(target)
+    key = wait["event_key"]
+    revision = max(source_revision, wait["source_revision"] + 1, _watermark(target, key) + 1)
     event_id = "completion:" + source_id + ":" + target.assignment_id + ":" + str(revision)
     try:
         with tx.savepoint("work_subscription_fire_" + uuid.uuid4().hex):
@@ -238,8 +244,12 @@ def _release(tx, repository, audit: WorkControlAudit, owner_id: str, source_id: 
             if fresh is None:
                 return False
             current = fresh.assignment
-            if _wait(current) is None or current.phase != "awaiting_event":
+            current_wait = _wait(current)
+            if (fresh.continuation_supported is not True or current.lifecycle != "active"
+                    or current.phase != "awaiting_event" or current_wait is None
+                    or current_wait["event_key"] != key):
                 return False
+            audit.assert_current()
             result = _method(repository, "accept_wake")(
                 tx, owner_id=owner_id, assignment_id=current.assignment_id,
                 expected_state_version=current.state_version,
@@ -255,63 +265,54 @@ def _release(tx, repository, audit: WorkControlAudit, owner_id: str, source_id: 
                 audit.append_completion_wake(tx, owner_id=owner_id, record=result.assignment,
                                              source_id=source_id, revision=revision,
                                              outcome=outcome)
-            return True
-    except AssignmentError as exc:
-        if exc.code in _REDRIVABLE_CODES:
-            schedule_redrive(owner_id, source_id)
-        _logger.info("work_subscription_fire_skipped code=%s", exc.code)
-        return False
-    except Exception:
-        schedule_redrive(owner_id, source_id)
-        _logger.warning("work_subscription_fire_unavailable", exc_info=True)
+            return result.applied
+    except (AssignmentError, RepositoryConflictError) as exc:
+        if exc.code in _REDRIVABLE_CODES or isinstance(exc, AssignmentError) and exc.status_code >= 500:
+            raise
+        _logger.info("work_subscription_fire_blocked code=%s", exc.code)
         return False
 
 
 def fire_completions(assignments, tx, repository, *, owner_id: str, source_id: str,
                      source_revision: int, outcome: str) -> int:
-    if outcome not in _TERMINAL_OUTCOMES or type(source_revision) is not int:
+    if (outcome not in _TERMINAL_OUTCOMES or type(source_revision) is not int
+            or source_revision < 1 or type(owner_id) is not str or not owner_id):
         return 0
     try:
         source_id = validate_id(source_id)
     except (ValueError, TypeError, AttributeError):
         return 0
     audit = WorkControlAudit(assignments)
-    try:
-        audit.assert_current()
-    except AssignmentError:
-        _logger.warning("work_subscription_audit_unavailable")
-        return 0
-    key = completion_event_key(source_id)
-    fired = 0
-    try:
-        cursor = None
-        for _ in range(_SCAN_PAGES):
-            page = _method(repository, "list_operations")(
-                tx, owner_id=owner_id, limit=_SCAN_PAGE, after_id=cursor)
-            if not page:
-                break
-            for read in page:
-                record = read.assignment
-                wait = _wait(record)
-                if (wait is None or wait["event_key"] != key or record.lifecycle != "active"
-                        or record.phase != "awaiting_event"):
-                    continue
-                if _release(tx, repository, audit, owner_id, source_id, record,
-                            source_revision, outcome):
-                    fired += 1
-            cursor = page[-1].assignment.assignment_id
-            if len(page) < _SCAN_PAGE:
-                break
-    except AssignmentError as exc:
-        _logger.warning("work_subscription_fire_scan_failed code=%s", exc.code)
-    except Exception:
-        _logger.warning("work_subscription_fire_scan_unavailable", exc_info=True)
-    return fired
+    keys = {completion_event_key(source_id), "completion:" + source_id}
+    return sum(_release(tx, repository, audit, owner_id, source_id, read.assignment,
+                        source_revision, outcome)
+               for read in event_waiters(repository, tx, owner_id=owner_id, event_keys=keys))
+
+
+def event_waiters(repository, tx, *, owner_id: str, event_keys: set[str]):
+    cursor = None
+    for _ in range(_SCAN_PAGES):
+        page = _method(repository, "list_operations")(
+            tx, owner_id=owner_id, limit=_SCAN_PAGE, after_id=cursor)
+        if not page:
+            return
+        for read in page:
+            record = read.assignment
+            wait = _wait(record)
+            if (wait is not None and wait["event_key"] in event_keys
+                    and record.lifecycle == "active" and record.phase == "awaiting_event"):
+                yield read
+        cursor = page[-1].assignment.assignment_id
+        if len(page) < _SCAN_PAGE:
+            return
+    if _method(repository, "list_operations")(
+            tx, owner_id=owner_id, limit=1, after_id=cursor):
+        raise AssignmentError("work_completion_capacity_exhausted", 503)
 
 
 def schedule_redrive(owner_id: str, source_id: str) -> None:
     try:
-        if type(owner_id) is not str or type(source_id) is not str:
+        if type(owner_id) is not str or not owner_id or type(source_id) is not str:
             return
         validate_id(source_id)
     except (ValueError, TypeError, AttributeError):

@@ -706,7 +706,7 @@ def _plane_schema_literal_import(
     items = list(declarations[0].value.elts)
     for index, item in enumerate(items):
         if (stem in {"selected_input", "scheduler_policy", "framework_credential",
-                     "typesafe_credential", "mesh", "stop"}
+                     "typesafe_credential", "mesh", "stop", "completion_wake"}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
@@ -735,6 +735,7 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("typesafe_credential", "TYPESAFE_CREDENTIAL_SCHEMA_STATEMENTS"),
         ("mesh", "MESH_SCHEMA_STATEMENTS"),
         ("stop", "STOP_SCHEMA_STATEMENTS"),
+        ("completion_wake", "COMPLETION_WAKE_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))

@@ -346,3 +346,30 @@ class WorkService:
         return {"revision": revision, "changed": changed,
                 "resync_required": after_revision is not None and after_revision > revision,
                 "operation": current if changed else None}
+
+    async def continuations(self, owner_id, claims, identity):
+        self._owner(owner_id, claims)
+        from orchestrator.work_completion_wake import (_wait, completion_event_source,
+                                                       continuation_view)
+
+        def transaction(tx, repository):
+            get_operation = getattr(repository, "get_operation", None)
+            if not callable(get_operation):
+                raise AssignmentError("work_repository_unavailable", 503)
+            read = get_operation(tx, owner_id=owner_id, assignment_id=_identity(identity))
+            if read is None:
+                raise AssignmentError("work_not_found", 404)
+            wait = _wait(read.assignment)
+            source_id = completion_event_source(wait["event_key"]) if wait else None
+            if source_id is None:
+                return {"continuation": None}
+            try:
+                source_read = get_operation(tx, owner_id=owner_id, assignment_id=source_id)
+            except (ValueError, TypeError, AttributeError):
+                source_read = None
+            return {"continuation": continuation_view(read, source_read)}
+
+        try:
+            return await self.store.transaction(transaction)
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+            raise AssignmentError("work_read_unavailable", 503) from exc

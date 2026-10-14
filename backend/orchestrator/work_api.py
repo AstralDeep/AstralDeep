@@ -25,8 +25,13 @@ from orchestrator.auth import get_web_or_bearer_user_payload, verify_user
 from orchestrator.work_controls import (
     WorkControlRequest, WorkControlService, WorkDecideRequest, WorkDeleteRequest,
 )
+from orchestrator.work_completion_wake import (
+    WorkCompletionWakeService, WorkContinuationConfirmRequest, WorkContinuationProposalRequest,
+)
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
-from orchestrator.work_continuations import WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest
+from orchestrator.work_continuations import (
+    WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest,
+)
 from orchestrator.work_publication import (
     WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,
 )
@@ -179,7 +184,8 @@ class WorkReadRoute(APIRoute):
                     "assignment_scope_unavailable", "assignment_source_not_read_only",
                     "work_result_unavailable", "work_proposal_expired",
                     "assignment_proposal_changed", "assignment_approval_invalid",
-                    "assignment_deadline_exceeded",
+                    "assignment_deadline_exceeded", "work_continuation_source_terminal",
+                    "work_continuation_waiter_unsupported",
                 }
                 unavailable = "work_read_unavailable" if request.method == "GET" else "work_control_unavailable"
                 return _json({"error": exc.code if exc.code in known else unavailable}, exc.status_code)
@@ -383,6 +389,33 @@ async def decide_work(identity: str, action_id: str, body: WorkDecideRequest, re
 async def wake_work(identity: str, body: WorkOwnerWakeRequest, request: Request):
     return _json(await WorkWakeService(_service(request).assignments).wake(
         identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/continuations/proposals")
+async def propose_continuation(identity: str, body: WorkContinuationProposalRequest,
+                               request: Request):
+    return _json(await WorkCompletionWakeService(_service(request).assignments).propose(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/continuations")
+async def confirm_continuation(identity: str, body: WorkContinuationConfirmRequest,
+                               request: Request):
+    return _json(await WorkCompletionWakeService(_service(request).assignments).confirm(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.get("/{identity}/continuations")
+async def read_continuations(identity: str, request: Request, owner_id: str = _OWNER,
+                             claims: dict = _CLAIMS):
+    return _json(await _read(request, owner_id, claims, "continuations", identity=identity))
+
+
+@work_router.delete("/{identity}/continuations/{source_operation_id}")
+async def revoke_continuation(identity: str, source_operation_id: str,
+                              body: WorkControlRequest, request: Request):
+    return _json(await WorkCompletionWakeService(_service(request).assignments).revoke(
+        identity, source_operation_id, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/result/proposals")
