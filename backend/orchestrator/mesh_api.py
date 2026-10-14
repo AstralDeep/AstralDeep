@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from orchestrator import mesh_enrollment as me
 from orchestrator import mesh_admission as ma
+from orchestrator import mesh_presence as mp
 from orchestrator.api import _get_orchestrator
 from orchestrator.auth import (
     security,
@@ -75,6 +76,12 @@ def _store(
 
 def _admission(request: Request, store: me.MeshEnrollmentStore = Depends(_store)):
     return ma.MeshAdmission(_get_orchestrator(request), store=store)
+
+
+def _presence(
+    request: Request, store: me.MeshEnrollmentStore = Depends(_store)
+) -> mp.MeshPresence:
+    return mp.MeshPresence(_plane_source(request), store=store)
 
 
 def _member_token(request: Request):
@@ -546,3 +553,56 @@ async def invoke_member_tool(
         channel="rest",
     )
     return json.loads(result.to_json())
+
+
+@mesh_router.get("/topology")
+async def owner_topology(
+    owner_id: str = Depends(_read_owner),
+    presence: mp.MeshPresence = Depends(_presence),
+):
+    try:
+        targets = await asyncio.to_thread(presence.resolve, owner_id)
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
+    return {"targets": targets}
+
+
+@mesh_router.get("/presence")
+async def member_presence(
+    actor: dict[str, Any] = Depends(_read_actor),
+    presence: mp.MeshPresence = Depends(_presence),
+    service=Depends(_admission),
+):
+    if actor["kind"] != "member":
+        raise HTTPException(403, "member identity required")
+    try:
+        record = await asyncio.to_thread(
+            presence.self_presence, admission=service, claims=actor["claims"]
+        )
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
+    return {"presence": record}
+
+
+@mesh_router.post("/presence")
+async def publish_presence(
+    request: Request,
+    body: dict[str, Any],
+    actor: dict[str, Any] = Depends(_read_actor),
+    presence: mp.MeshPresence = Depends(_presence),
+    service=Depends(_admission),
+    _guard: None = _WRITE_GUARD,
+):
+    if actor["kind"] != "member":
+        raise HTTPException(403, "member identity required")
+    try:
+        record = await asyncio.to_thread(
+            presence.publish,
+            admission=service,
+            claims=actor["claims"],
+            endpoint=body.get("endpoint"),
+            capabilities=body.get("capabilities"),
+        )
+    except me.MeshEnrollmentError as exc:
+        raise HTTPException(exc.status, exc.code) from exc
+    return {"presence": record}

@@ -360,9 +360,19 @@ def test_shared_surface_renders_real_mesh_inventory(mesh):
     mesh.enroll(scopes=["tools:read"])
     html = asyncio.run(mesh_surface.render(mesh.host, mesh.owner, ["user"], {}))
     assert "Synthetic device" in html
-    assert ">Active<" in html
+    assert ">Offline<" in html
+    assert "No presence reported" in html
+    assert ">Revoked<" not in html
     listed = mesh.store.list_members(mesh.owner)[0]
     assert listed["device_key"]["kty"] not in html
     components = asyncio.run(mesh_surface.components(mesh.host, mesh.owner, ["user"], {}))
     assert any(c.get("type") == "card" for c in components)
+    offline = [
+        component
+        for card in components
+        if card.get("type") == "card"
+        for component in card.get("content", [])
+        if component.get("type") == "badge" and component.get("label") == "Offline"
+    ]
+    assert offline and offline[0]["variant"] == "default"
     assert "chrome_mesh_revoke" in mesh_surface.HANDLERS
