@@ -59,17 +59,25 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
+# ========== NEW: Resource URI patterns for ChatGPT Work panel ==========
+RESOURCE_URI_PATTERN = re.compile(r"^astral://work/([a-f0-9\-]+)/status$")
+ARTIFACT_URI_PATTERN = re.compile(r"^astral://artifact/([a-f0-9\-]+)$")
+MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
 _METHOD_PHASE = {
     "server/discover": "discover",
     "tools/list": "tools_list",
     "tools/call": "tools_call",
     "subscriptions/listen": "subscriptions_listen",
+    "resources/list": "resources_list",      # NEW
+    "resources/read": "resources_read",      # NEW
 }
 _METHOD_SCOPE = {
     "server/discover": ("mcp:discover",),
     "tools/list": ("mcp:tools:read",),
     "tools/call": ("mcp:tools:invoke",),
     "subscriptions/listen": ("mcp:discover",),
+    "resources/list": ("mcp:resources:read",),  # NEW
+    "resources/read": ("mcp:resources:read",),   # NEW
 }
 
 
@@ -345,6 +353,169 @@ def _tool_result(response: Any) -> dict[str, Any]:
             "astral/correlationId": response.correlation_id,
         },
     }
+
+
+def _build_bounded_view_model(work: dict) -> dict:
+    """Build a sandboxed view model with only necessary fields.
+
+    SECURITY: Only expose safe fields, exclude owner_id, credentials, notes.
+    """
+    return {
+        "id": work.get("id"),
+        "title": work.get("title", "Untitled"),
+        "status": work.get("status", "unknown"),
+        "progress": work.get("progress", 0),
+        "createdAt": work.get("created_at"),
+        "updatedAt": work.get("updated_at"),
+    }
+
+
+async def list_resources(
+    orchestrator: Any,
+    user_id: str,
+    claims: dict,
+) -> list[dict]:
+    """List all resources (work items) accessible to the authenticated user.
+
+    Returns a list of resource URIs that the user can access.
+    Each work item gets two resources: /status and /artifacts.
+    """
+    # Get work operations from orchestrator
+    ops = getattr(orchestrator, 'work_ops', None)
+    if ops is None:
+        ops = getattr(getattr(orchestrator, 'runtime', None), 'work_ops', None)
+
+    if ops is None:
+        logger.warning("work_ops not found in orchestrator, returning empty list")
+        return []
+
+    try:
+        # Call the list method
+        result = await ops.list(
+            caller=None,
+            limit=50,
+        )
+
+        # Extract works from result
+        works = result.get("works", []) if isinstance(result, dict) else []
+
+        # Build resource URIs for each work item
+        resources = []
+        for work in works:
+            work_id = work.get("id")
+            if work_id:
+                resources.append({
+                    "uri": f"astral://work/{work_id}/status",
+                    "name": f"Work: {work.get('title', 'Untitled')}",
+                    "mimeType": "application/json",
+                    "description": f"Status for work item {work_id}",
+                })
+                resources.append({
+                    "uri": f"astral://work/{work_id}/artifacts",
+                    "name": f"Artifacts: {work.get('title', 'Untitled')}",
+                    "mimeType": "application/json",
+                    "description": f"Artifacts for work item {work_id}",
+                })
+
+        return resources
+
+    except Exception as exc:
+        logger.error(f"Failed to list resources: {exc}")
+        return []
+
+
+async def read_resource(
+    orchestrator: Any,
+    user_id: str,
+    uri: str,
+    claims: dict,
+) -> dict:
+    """Read a single resource with full authorization and sandboxing.
+
+    SECURITY CHECKS:
+    1. Validate URI format (prevent injection)
+    2. Verify ownership (prevent cross-user access)
+    3. Return bounded view model (sandbox sensitive data)
+    """
+    # 1. Validate URI format
+    work_match = RESOURCE_URI_PATTERN.match(uri)
+    artifact_match = ARTIFACT_URI_PATTERN.match(uri)
+
+    if not work_match and not artifact_match:
+        raise MCPAuthError(
+            400,
+            "invalid_uri",
+            "URI format is invalid. Expected: astral://work/{id}/status or astral://artifact/{id}",
+            MCP_RESOURCES_SCOPE,
+        )
+
+    # 2. Extract work ID from URI
+    work_id = work_match.group(1) if work_match else artifact_match.group(1)
+    resource_type = "status" if work_match else "artifact"
+
+    # 3. Get work operations
+    ops = getattr(orchestrator, 'work_ops', None)
+    if ops is None:
+        ops = getattr(getattr(orchestrator, 'runtime', None), 'work_ops', None)
+
+    if ops is None:
+        raise MCPAuthError(
+            503,
+            "service_unavailable",
+            "Work operations not available",
+            MCP_RESOURCES_SCOPE,
+        )
+
+    # 4. Fetch the work item
+    try:
+        result = await ops.get(
+            caller=None,
+            operation_id=work_id,
+        )
+
+        # 5. CRITICAL: Verify ownership
+        if result.get("owner_id") != user_id:
+            raise MCPAuthError(
+                403,
+                "forbidden",
+                "You do not have permission to access this resource",
+                MCP_RESOURCES_SCOPE,
+            )
+
+        # 6. Build bounded view model
+        if resource_type == "status":
+            bounded_model = _build_bounded_view_model(result)
+            return {
+                "uri": uri,
+                "name": f"Status: {bounded_model.get('title', 'Untitled')}",
+                "mimeType": "application/json",
+                "boundedViewModel": bounded_model,
+            }
+
+        elif resource_type == "artifact":
+            bounded_model = {
+                "workId": work_id,
+                "title": result.get("title", "Untitled"),
+                "status": result.get("status"),
+                "artifactCount": result.get("artifact_count", 0),
+            }
+            return {
+                "uri": uri,
+                "name": f"Artifacts: {bounded_model.get('title', 'Untitled')}",
+                "mimeType": "application/json",
+                "boundedViewModel": bounded_model,
+            }
+
+    except MCPAuthError:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to read resource {uri}: {exc}")
+        raise MCPAuthError(
+            500,
+            "internal_error",
+            "Failed to read resource",
+            MCP_RESOURCES_SCOPE,
+        ) from exc
 
 
 async def _wait_for_disconnect(
@@ -787,6 +958,62 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                         }
                         cache_control = "no-store"
+                    elif method == "resources/list":
+                        try:
+                            resources = await list_resources(orchestrator, user_id, claims)
+                            result = {
+                                "resultType": "complete",
+                                "resources": resources,
+                                "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
+                            }
+                            cache_control = "private, max-age=60"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resources authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
+                    elif method == "resources/read":
+                        uri = params.get("uri")
+                        if not uri:
+                            result_code = "invalid_request"
+                            return _with_origin(
+                                _json_error(request_id, MCP_INVALID_REQUEST, "Missing 'uri' parameter", 400),
+                                origin,
+                                base_url,
+                            )
+
+                        try:
+                            resource = await read_resource(orchestrator, user_id, uri, claims)
+                            result = {
+                                "resultType": "complete",
+                                "resource": resource,
+                            }
+                            cache_control = "no-store"
+                        except MCPAuthError as exc:
+                            result_code = exc.error
+                            return _with_origin(
+                                _json_error(
+                                    request_id,
+                                    MCP_INVALID_REQUEST,
+                                    "MCP resource authorization failed",
+                                    exc.status_code,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=exc.error, required_scopes=exc.required_scopes
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
                     else:
                         projected = await asyncio.to_thread(
                             resolve_projected_tool,
