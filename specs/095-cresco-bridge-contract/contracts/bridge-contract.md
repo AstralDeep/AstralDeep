@@ -1,128 +1,90 @@
 # Contract: General Cresco Bridge — Bounded Integration Contract
 
 **Feature**: 095-cresco-bridge-contract | [spec.md](../spec.md)
-**Status**: Ratified and bounded (2026-10-13). The bridge agent and its wsapi client are **not implemented**; nothing in this contract asserts runtime completion.
-**Governing authority**: `.specify/memory/constitution.md` v6.2.0, Principle VII (Cresco clause) and Principle V. Where spec 050 disagrees with this contract, this contract wins.
+**Status**: Bounded topology is implemented behind `FF_CRESCO` (default off). Generic work dispatch and bounded executor results are unavailable. Real-fabric acceptance is pending.
+**Authority**: `.specify/memory/constitution.md`, Principles VII and V. This contract supersedes stale assumptions in spec 050 without rewriting its evaluation history.
 
-This contract bounds any future general Cresco bridge in AstralDeep: what it may speak (`wsapi` profile), what it may see (bounded topology), what it may do (risk tiers), where it may act (member-target mapping), how it fails (fault states), and what it may never do (unsupported matrix). It is enforced by deterministic conformance cases ([`conformance-cases.json`](conformance-cases.json), executed by `backend/tests/test_cresco_contract_095.py`) that fail closed on repository drift.
+The original document-only ratification preceded the runtime child. Current conformance executes the present bridge's admission and wire behavior; it no longer asserts that the bridge package is absent. Neither source review nor the synthetic TLS fixture establishes a deployed fabric or completed dispatch.
 
-## 1. Scope and disposition
+## 1. Scope and activation
 
-- **In scope**: one first-party Python bridge agent, in-process, over the Cresco fabric's `wsapi` WebSocket seam, behind `FF_CRESCO` (fail-closed, default off), inheriting every existing AstralDeep gate (registration, per-tool scopes, security flags, safe-marking, RFC 8693 delegation, PHI/taint, egress validation, hash-chained audit).
-- **Not implemented**: the bridge agent, its wsapi client, its tools, and its registration do not exist in this snapshot. This contract is a specification, not a runtime claim.
-- **Relationship to GaiaKeep (spec 092)**: the merged GaiaKeep integration is a specialized, Cresco-gated archival path — a caller-owned DGX SSH tunnel to a GaiaKeep gateway carrying the `cresco_service_key` header. It is not a topology/discovery/dispatch bridge, does not satisfy this contract by existing, and its flag posture is independent of bridge activation.
+The bridge is a first-party Python agent over the external fabric's wsapi seam. `FF_CRESCO` remains fail-closed and default off. Static discovery never includes the bridge; when the flag is off, in-process registration and standalone/subprocess start exclude the bridge and attempted tool execution is refused before dialing. The public first-party identity is declared but is never automatically marked safe. Normal owner, permission, scope, confirmation, security-flag, RFC 8693, PHI/taint, egress and hash-chained audit gates remain in force.
 
-## 2. wsapi profile
+The GaiaKeep integration is an independent specialized archival path. It retains its own `FF_GAIAKEEP` AND `FF_CRESCO` boundary and caller-owned SSH tunnel. It does not establish general topology or work-dispatch acceptance.
 
-Shape-pinned from the 2026-07-06 evaluation (`wsapi` @ `d5b4bcd`, cross-read from `pycrescolib` 1.3.0). The wire format is implementation-defined upstream and upstream is under active development: **byte-level re-verification against the then-current upstream is a hard precondition for implementation.**
+## 2. Verified control profile
 
-- **Endpoint**: `wss://<host>:8282` with paths `/api/apisocket` (control/RPC — the only path in the general bridge's initial scope), `/api/dataplane` and `/api/logstreamer` (out of scope; §8).
-- **Authentication**: a `cresco_service_key` HTTP header on the WebSocket upgrade. One all-or-nothing fabric credential; the fabric performs no per-caller scoping (§7).
-- **Envelope**: JSON `{"message_info": {…}, "message_payload": {"action": <verb>, …}}`; `message_info` carries message type, event type, RPC flag, and the RPC correlation id. Bulk parameters travel `base64(gzip(json_bytes))` inside the payload. The canonical encoding rule pinned for fixtures and tests: `base64(gzip(json_bytes))` where `json_bytes = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()` and gzip.GzipFile uses `compresslevel=9, mtime=0` and emits OS byte255 (platform independent).
-- **Egress**: before dialing, the configured wsapi host MUST be validated through `shared/external_http.py::validate_egress_url` in its http(s) form (`https://<host>:<port>`; the validator admits only http/https schemes, and `wss` is the TLS form of the same dial target). Private/on-prem hosts are permitted only via the validator's host-scoped private-host allowance for the configured host — never a global bypass.
-- **TLS**: verified by default (system trust), with operator opt-in to a trusted CA bundle or a pinned SHA-256 certificate fingerprint. `CERT_NONE` and global verification bypass are prohibited in every mode. A self-signed certificate is refused unless trust is explicitly configured.
-- **Timeouts and reconnect**: bounded connect and RPC timeouts; reconnect/backoff via stdlib only.
-- **Drift**: a frame that does not match the pinned envelope fails safe with a diagnostic (maps to the `protocol` fault state) — never mis-parsed, never partially applied.
+The reviewed control sources are bound by commit, path and SHA-256 in [wsapi-wire-profile.json](wsapi-wire-profile.json). They were inspected as data, without executing upstream code. The profile is source-verified; deployment compatibility remains unverified.
 
-Conformance cases: C-07 (envelope shape + deterministic bulk-param encoding), C-08 (egress/TLS posture is contract text only in this snapshot — no client exists to execute; recorded as unexecuted-by-necessity, see §9).
+- **Endpoint**: `wss://<host>:8282/api/apisocket`. A configured base address receives that control path. `/api/dataplane`, `/api/logstreamer`, other paths, query/fragment and embedded URI credentials are refused before credential delivery.
+- **Authentication**: the runtime-only `cresco_service_key` HTTP upgrade header. Fabric possession confers no Astral identity, role, scope or mesh admission.
+- **Requests**: JSON with `message_info` and `message_payload`; every value in those two maps is a string. `message_type` is `global_controller_msgevent` or `global_agent_msgevent`; `message_event_type` is `EXEC` or `CONFIG`; `is_rpc` is the string `"true"`. A client-generated `client_rpc_id` is carried in the payload.
+- **Replies**: plain JSON response params with string values. They have no response envelope. The controller echoes `client_rpc_id`; only the matching reply can satisfy the call. Stray correlated replies are discarded within the bounded result window.
+- **Regions**: global controller `EXEC`, action `listregions`, compressed `regionslist` containing `regions` records whose identifier is `name`.
+- **Agents**: global controller `EXEC`, action `listagents`, optional `action_region`, compressed `agentslist` containing `region_id`/`agent_id` records.
+- **Agent information**: global agent `CONFIG`, action `getagentinfo`, `dst_region`/`dst_agent` in message info. Its verified `agent-data` result is the data-directory path, not a fabricated plugin inventory or running-state record.
+- **System information**: global controller `EXEC`, action `resourceinfo`, `action_region`/`action_agent`, compressed `resourceinfo` containing `agentresourceinfo` and its serialized `perf` object. There is no invented `getsysinfo` wire verb.
+- **Compression**: base64(gzip(canonical JSON)), implemented with `gzip.GzipFile(compresslevel=9, mtime=0)`. The platform-independent gzip header uses OS byte 255. Incoming frames are capped at 2 MiB and expansion at 4 MiB before JSON materialization; invalid UTF-8, malformed bulk or unexpected result shapes are refused.
+- **Egress**: `shared/external_http.py::validate_egress_url` validates the configured dial host in its HTTPS form. Private-host allowance is scoped to that exact configured host; no global verification bypass is permitted.
+- **TLS**: CA-chain and hostname verification are mandatory. An operator may add a trusted CA bundle and a pinned SHA-256 certificate fingerprint. A pin adds a requirement; it never replaces CA/hostname verification. The pin is checked during TLS wrapping before WebSocket HTTP headers expose the service key. `CERT_NONE` is prohibited.
+- **Lifetimes**: bounded connect/RPC budgets and stdlib backoff. Dial retries apply only before an operation is sent; no operation is automatically replayed after send.
 
-## 3. Bounded topology
+## 3. Bounded topology and targets
 
-The bridge's read surface is bounded to:
+Read tools expose bounded region/agent listings, agent data location and system information. Lists and sysinfo are capped at 50 records/fields; output follows the normal taint/PHI/render path through astralprims. Topology never adds approved targets, agent cards, routes, identities or permissions. Log/metric streams and file operations remain unimplemented.
 
-- `listregions` — regions known to the configured fabric, rendered as a bounded table;
-- `listagents` (optionally per region) — agents per region with status;
-- per-agent info and host sysinfo for a named admitted target;
-- bounded, capped log/metric window reads for a named admitted target (truncation noted; never an unbounded stream).
+Targets retain the exact `region_agent[_plugin]` grammar: two or three lowercase components matching `[a-z0-9][a-z0-9-]{0,62}`, total length at most 192, without wildcards, empty components, whitespace, paths or URI syntax. Every named target must appear in `CRESCO_APPROVED_TARGETS` before dialing. The full approved tuple is retained in audit even where a read addresses its node. Fabric discovery cannot widen that set.
 
-Discovery is read-only and produces no routes, no agent cards, no automatic registration of fabric members into AstralDeep, and no advertisement of AstralDeep into the fabric. Topology data is untrusted fabric content: it flows the normal taint/PHI/render path and is never executed or linked.
+## 4. Effect disposition
 
-## 4. Risk tiers
-
-| Tier | Scope | Surface | Gate |
+| Surface | Scope | Required gates | Current disposition |
 |---|---|---|---|
-| Read | `tools:read` | topology/telemetry reads (§3) | standard per-user permission gate |
-| Write | `tools:write` | file put/get through the fabric filerepo | standard per-user permission gate |
-| System | `tools:system` | the `executor` wrapper only | default-deny; hard `tool_security` flag; explicit per-user override; never enabled by the safe-agent baseline; every attempt (allow and deny) audited |
+| Bounded topology | `tools:read` | normal owner/per-user permission and PHI/taint gates | implemented; real-fabric acceptance pending |
+| Generic work dispatch | `tools:write` | target admission, confirmation, unattended-channel denial, audit | unavailable; no verified generic work/result contract |
+| Executor wrapper | `tools:system` | hard security flag, default deny, operator switch, explicit permission, confirmation, audit | unavailable; bounded result transport not qualified |
+| File put/get | `tools:write` | normal owner/per-user gates | unimplemented |
 
-The executor wraps an arbitrary-shell remote execution surface (executor @ `8e9020e`); it is the most tightly gated tool in the feature and may never be relaxed below the System row above.
+No reviewed controller, wsapi or Python caller source exposes `submitwork`. The executor plugin supports `config_process`/`run_process`; its stdout/stderr use `/api/dataplane`, outside this contract. A control acknowledgement that a runner started is not proof of execution completion. The bridge therefore refuses generic dispatch and executor effects before any dial and never reports synthetic work completion. Their existing denial/confirmation/security/audit gates remain, without admitting an alternative shell or credential path.
 
-## 5. Member-target mapping
+## 5. Faults and credential boundaries
 
-A member target identifies where an action is directed: `region_agent[_plugin]` — region and agent components required, plugin optional.
+The closed states remain `unavailable`, `unreachable`, `auth`, `protocol`, `tls`. Only transport unreachability is retryable; unavailable operations, authentication, protocol drift and TLS/pin failures are not. Public faults use bounded fixed diagnostics, never raw exception text. Service-key bytes are scrubbed from both untrusted keys and values before results or UI rendering; audit carries identifiers and dispositions, never work text or credentials. A persisted hash-chained intent is required before any handler can dial. Results are withheld if their audit disposition does not persist; the fixed `audit_unavailable` refusal is non-retryable. Missing recorders, queued inserts and insert exceptions do not permit a fabric read. Local refusals remain typed even when audit storage is unavailable. Public feedback distinguishes unavailable effect transport (`CRESCO_OPERATION_UNAVAILABLE`) and audit storage (`CRESCO_AUDIT_UNAVAILABLE`) from missing fabric configuration.
 
-- **Grammar (bounded)**: lowercase components separated by `_`; each component matches `[a-z0-9][a-z0-9-]{0,62}`; exactly two or three components; total length ≤ 192; no wildcards, no empty components, no whitespace, no path separators, no scheme or authority syntax.
-- **Admission**: a target is actionable only if the operator configured the fabric and the target lies within it; the bridge does not discover-and-trust targets on its own. The service key authenticates the bridge to the fabric and grants **no Astral role, scope, or mesh admission** (§7). A member target never confers, maps to, or implies any Astral permission.
-- **Attribution**: every audited bridge call records the full `region_agent[_plugin]` tuple of the target it acted on.
+`CRESCO_SERVICE_KEY` is an operator-local runtime secret. It opens only an outbound authenticated fabric connection and never grants Astral permissions or inbound admission. No credential value is committed or published. Sharing the variable with GaiaKeep does not couple their activation.
 
-Conformance cases: C-09 (grammar/admission examples), C-10 (fault-state table), C-11 (credential boundaries).
+## 6. Unsupported operations and acceptance limits
 
-## 6. Fault states
+The Cresco JVM/OSGi/ActiveMQ fabric remains external; it is never embedded, used as an internal bus, or substituted for A2A/WebSocket agent transport. Fabric-initiated inbound connections, automatic member trust, arbitrary dialect fallback, weakened TLS, dataplane/log streaming, generic work and unqualified executor completion are unsupported. Shipping code never activates the bridge by default.
 
-Closed set; every bridge-visible failure maps to exactly one. Anything unmapped fails safe into `protocol`.
+Synthetic loopback topology tests establish adapter behavior and denial boundaries. Real operator-approved multi-node fabric acceptance is still required. A future effect implementation must supply an actual supported request/result contract and pass all existing owner, permission, confirmation, security, PHI/taint, audit and egress gates; this preparation neither invents that contract nor authorizes activation.
 
-| State | Trigger | User-legible result | Retryable |
+## 7. Source traceability
+
+Full audited file hashes are retained in the wire profile. Current source-only verification:
+
+| Source | Commit | Status | Retrieved |
 |---|---|---|---|
-| `unavailable` | `CRESCO_WSAPI_URL` or `CRESCO_SERVICE_KEY` unset | "Cresco fabric not configured" | no |
-| `unreachable` | dial failure, RPC timeout, socket error | "Cresco fabric unreachable" | yes |
-| `auth` | fabric rejects the service key | "Cresco authentication failed" | no |
-| `protocol` | frame drift / undecodable / unmapped failure | "Unexpected fabric response" | no |
-| `tls` | certificate verification or pin failure | "Cresco TLS verification failed" | no |
+| Cresco wsapi seam | `8d57820c58f2290b272e7805508c3e39ae015df4` | source-verified | 2026-10-13 |
+| pycrescolib control callers | `8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1` | source-verified, not executed/adopted | 2026-10-13 |
+| CrescoEdge/controller | `02ffc9327b94196c2e17e5c5542ff0f92412db61` | source-verified | 2026-10-13 |
+| Cresco executor plugin | `8e9020e45d23a863c8eb3ba555e6fe9e02c3457d` | source-verified, result transport unsupported | 2026-10-13 |
 
-Fault results never contain credential material, never contain raw exception text, and never expose the configured host beyond what the egress posture already permits. Flag-off (`FF_CRESCO` off) is not a fault state: with the flag off the bridge does not exist — no tool, no registration, no route.
+Historical pins remain explicit: CrescoEdge/agent `4093d7d` and CrescoEdge/library `826df9c` are pinned-unreverified from 2026-07-06; the pycrescolib PyPI 1.3.0 evaluation is historical, not current adoption. GaiaKeep SDK `9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9` remains pinned by its owning requirements. AstralPlane dependency issue #67 remains recorded as open-external/unverified here; this does not stand in for owner qualification.
 
-## 7. Credential and admission boundaries
+## 8. Executable conformance
 
-- `CRESCO_SERVICE_KEY` is an operator-local runtime secret: configured via environment, never committed, never logged, never echoed into errors, results, audit rows, or UI payloads. It is not documented in `.env.example`; operator enablement documentation lives with the future implementation's quickstart, and the variable name (not value) is the only permitted reference in committed text.
-- The key authenticates the bridge **to** the fabric. It confers no Astral role or scope, adds no mesh admission, registers no agent, and opens no inbound path. The fabric admits nothing into AstralDeep: the bridge dials out only, through egress validation, with verified TLS.
-- The GaiaKeep path shares the same variable as its tunnel credential under its own dual-flag boundary (`FF_GAIAKEEP` AND `FF_CRESCO`); sharing the variable does not couple the two integrations' activation.
+The [conformance cases](conformance-cases.json) bind every case to `backend/tests/test_cresco_contract_095.py`; protocol/TLS loopback denial regressions additionally run in `backend/agents/cresco/tests/`.
 
-## 8. Supported / unsupported matrix
-
-**Supported** (when the future bridge is implemented and the flag is operator-enabled): bounded read-only topology and telemetry (§3); audited file put/get at write scope; the executor wrapper under the full System-tier gate; typed fault states (§6); reconnect with bounded stdlib backoff.
-
-**Unsupported — permanently or until a new constitution-sanctioned decision**:
-
-- Embedding the Cresco JVM/OSGi runtime, ActiveMQ, or any broker in the product image; using the fabric as an internal message bus; replacing or extending the A2A/WebSocket agent protocol with fabric semantics.
-- Fabric-initiated inbound connections to AstralDeep; exposing an AstralDeep agent card to the fabric.
-- Enabling the executor wrapper by scope alone, by the safe-agent baseline, or by any flag other than an explicit per-user override.
-- Unbounded log/metric streaming; `/api/dataplane` and `/api/logstreamer` subscriptions in the initial scope.
-- Treating topology data as trusted content, or mapping fabric members into AstralDeep agents/identities.
-- Disabling TLS verification (globally or per dial) in any mode.
-- Granting any Astral permission, scope, or admission from possession of `CRESCO_SERVICE_KEY`.
-- Activating any of this by shipping: this snapshot contains no bridge runtime, and `FF_CRESCO`'s default remains off.
-
-## 9. Authoritative sources
-
-Pin discipline per Constitution XIII: identifier, status, retrieval date. External re-verification status is explicit; a pin not re-verified in this snapshot is a precondition debt for implementation, not a claim of currency.
-
-| Source | Identifier | Status | Retrieved |
-|---|---|---|---|
-| CrescoEdge/agent | git @ `4093d7d` | pinned-unreverified | 2026-07-06 |
-| CrescoEdge/controller | git @ `1b3cc3c` | pinned-unreverified | 2026-07-06 |
-| CrescoEdge/library (docs) | git @ `826df9c` | pinned-unreverified | 2026-07-06 |
-| Cresco wsapi seam | `wsapi` git @ `d5b4bcd` | pinned-unreverified | 2026-07-06 |
-| Cresco executor plugin | `executor` git @ `8e9020e` | pinned-unreverified | 2026-07-06 |
-| pycrescolib | PyPI 1.3.0 (wire cross-read; TLS-verify-off default) | evaluated, not adopted | 2026-07-06 |
-| GaiaKeep SDK | `GaiaKeep/gfs` git @ `9f30ebaeebdfdf1f44a2980d62ab0908d809e7a9` | pinned, verifiable in `backend/requirements-gaiakeep.txt` | 2026-10-13 (from in-repo pin) |
-| AstralPlane dependency | AstralPlane issue #67 | open, external, unverified in this environment | 2026-10-13 |
-
-Internal authorities (current tree, verified 2026-10-13): `backend/shared/feature_flags.py` (`"cresco": self._read("FF_CRESCO", False)`); `backend/orchestrator/local_agents.py` (`BUILT_IN_AGENT_DIRS`, `FIRST_PARTY_PUBLIC_AGENT_IDS`, the `gaiakeep` dual-flag guard); `backend/start.py::_gaiakeep_enabled`; `backend/agents/gaiakeep/transport.py` (`cresco_service_key` header over the SSH tunnel); `backend/shared/external_http.py::validate_egress_url` (http/https-only scheme admission).
-
-## 10. Conformance cases
-
-The cases in [`conformance-cases.json`](conformance-cases.json) are the executable acceptance surface of this contract. Each case id below is executed by the named test in `backend/tests/test_cresco_contract_095.py`; the suite fails closed if a case is added without an executor or removed without updating this document.
-
-- **C-01** flag default: `FF_CRESCO` default off, fail-closed.
-- **C-02** bridge runtime absent: no `agents.cresco` package is importable.
-- **C-03** bridge unregistered: `cresco` is not a built-in agent directory and discovery never yields it.
-- **C-04** bridge unlisted: `cresco-1` is absent from `FIRST_PARTY_PUBLIC_AGENT_IDS`.
-- **C-05** GaiaKeep dual flag: enablement requires `FF_GAIAKEEP` AND `FF_CRESCO` (`backend/start.py::_gaiakeep_enabled`).
-- **C-06** dual-flag truth table: both-off / one-off → disabled; both-on → enabled; flag-read failure → disabled.
-- **C-07** wsapi envelope: the pinned canonical request shape parses, and the pinned bulk-param encoding is exactly `base64(gzip(json_bytes))` under the §2 canonical rule, with exact round-trip.
-- **C-08** profile boundary records: the contract's egress/TLS profile statements remain present (text-level guard; no client exists to execute behaviorally in this snapshot).
-- **C-09** member-target grammar: valid targets accepted; wildcards/empty/over-depth/non-grammar targets rejected.
-- **C-10** fault states: the closed set of §6 with fixed dispositions and retryability, and no credential material in any result text.
-- **C-11** credential boundary: no committed file contains a literal `cresco_service_key` value; committed references are env-name references only.
-- **C-12** no new bus: no Cresco/JVM/broker/OSGi artifact in runtime manifests (requirements, Dockerfiles, compose files).
-- **C-13** source pins: every authoritative external source carries identifier, status, and retrieval date; unreverified pins are labeled as such.
+- **C-01** default-off feature flag.
+- **C-02** present runtime's flag-off kill switch refuses before dialing.
+- **C-03** real in-process registration excludes the bridge when off and includes it only when enabled.
+- **C-04** declared public identity is never automatically marked safe.
+- **C-05** GaiaKeep dual-flag boundary.
+- **C-06** dual-flag truth table and flag-read failure denial.
+- **C-07** real string-valued request, flat correlated reply and public deterministic bulk codec.
+- **C-08** runtime verified-TLS, exact control endpoint and private-egress denial.
+- **C-09** actual target parser and approved-target admission, including refusals.
+- **C-10** closed fault-state set and bounded non-secret dispositions.
+- **C-11** no committed credential literals.
+- **C-12** no embedded fabric/broker artifacts in manifests.
+- **C-13** source identifiers, statuses, dates and hashed reviewed files; historical unreverified pins remain labeled.

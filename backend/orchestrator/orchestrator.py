@@ -17271,7 +17271,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()])
 
         if (
-            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1")
+            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1")
             and _session_claims.get("_invocation_channel") == "mcp"
         ):
             from orchestrator import remote_confirmation
@@ -17299,7 +17299,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.gaiakeep.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
-        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1"):
+        if agent_id == "cresco-1":
+            from agents.cresco.mcp_server import bind_owner_context
+            bind_owner_context(args, user_id)
+
+        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1"):
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
                 remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
@@ -22928,6 +22932,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
+                # Cresco must never be auto-marked safe: owner approval is required by the bridge's charter
+                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):

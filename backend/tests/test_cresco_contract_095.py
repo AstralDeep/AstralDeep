@@ -1,16 +1,10 @@
-"""Executes the bounded general Cresco bridge contract: every conformance case in
-specs/095-cresco-bridge-contract/contracts/conformance-cases.json runs against the live
-tree, and the repository fails closed if it drifts from the contract's bounded posture.
-The suite is deterministic and offline: it verifies contract and posture, not bridge
-runtime, which does not exist in this snapshot.
+"""Executes Cresco contract conformance against the present default-off bridge runtime.
+The suite checks admission, safe-seed exclusion and the verified control dialect while
+retaining explicit missing real-fabric and effect-transport qualification.
 """
 
 from __future__ import annotations
 
-import base64
-import gzip
-import io
-import importlib.util
 import json
 import re
 import subprocess
@@ -24,10 +18,10 @@ CONTRACT_PATH = REPO / "specs" / "095-cresco-bridge-contract" / "contracts" / "b
 
 KNOWN_KINDS = {
     "flag_default_off",
-    "bridge_runtime_absent",
+    "bridge_runtime_gated",
     "gaiakeep_dual_flag",
     "envelope_roundtrip",
-    "profile_boundary_text",
+    "transport_boundaries",
     "target_grammar",
     "fault_states",
     "secret_hygiene",
@@ -37,13 +31,13 @@ KNOWN_KINDS = {
 
 CASE_BINDINGS = {
     "C-01": "test_c01_flag_default_off",
-    "C-02": "test_c02_bridge_package_absent",
-    "C-03": "test_c03_bridge_not_registered",
-    "C-04": "test_c04_bridge_absent_from_public_registry",
+    "C-02": "test_c02_present_runtime_has_a_flag_off_kill_switch",
+    "C-03": "test_c03_bridge_registration_requires_the_flag",
+    "C-04": "test_c04_bridge_is_not_automatically_safe",
     "C-05": "test_c05_gaiakeep_requires_both_flags",
     "C-06": "test_c06_dual_flag_truth_table_and_read_failure",
     "C-07": "test_c07_envelope_shape_and_deterministic_encoding",
-    "C-08": "test_c08_profile_boundary_text",
+    "C-08": "test_c08_runtime_transport_boundaries",
     "C-09": "test_c09_member_target_grammar",
     "C-10": "test_c10_fault_state_table",
     "C-11": "test_c11_no_committed_credential_material",
@@ -81,7 +75,7 @@ def _tracked_files(scan_paths: list[str]) -> list[Path]:
 def test_case_inventory_is_wellformed():
     cases = _load_cases()
     assert cases["status"] == (
-        "contract ratified and bounded; bridge implementation not started; no runtime activation"
+        "bounded topology implemented behind default-off flag; effect transports unavailable; real fabric acceptance pending"
     )
     assert cases["contract"] == "specs/095-cresco-bridge-contract/contracts/bridge-contract.md"
     ids = [case["id"] for case in cases["cases"]]
@@ -113,27 +107,55 @@ def test_c01_flag_default_off(monkeypatch):
     assert FeatureFlags().is_enabled(expect["flag"]) is expect["expected_default"]
 
 
-def test_c02_bridge_package_absent():
+def test_c02_present_runtime_has_a_flag_off_kill_switch(monkeypatch):
+    from agents.cresco.mcp_server import MCPServer
+    from agents.cresco.wsapi_client import WsapiClient
+
     case = _case_by_id(_load_cases(), "C-02")
-    import agents  # noqa: F401
+    _set_flag(monkeypatch, "cresco", False)
+    def never_dial(*args, **kwargs):
+        pytest.fail("flag-off bridge attempted a connection")
+    monkeypatch.setattr(WsapiClient, "_connect", never_dial)
+    result = MCPServer().invoke(case["expect"]["tool"], user_id="synthetic-owner")
+    assert result["_error"]["data"]["detail"] == case["expect"]["fault_detail"]
 
-    assert importlib.util.find_spec(case["expect"]["module"]) is None
+@pytest.mark.asyncio
+async def test_c03_bridge_registration_requires_the_flag(monkeypatch):
+    from types import SimpleNamespace
+    from agents.cresco import cresco_agent
+    from orchestrator import local_agents
+    from shared import attachment_materializer, attachment_resolver
+
+    monkeypatch.setattr(local_agents, "discover_built_in_agent_dirs", list)
+    monkeypatch.setattr(attachment_resolver, "register_plane_runtime", lambda *a: True)
+    monkeypatch.setattr(attachment_materializer, "register_materialization_service", lambda *a: None)
+    monkeypatch.setattr(cresco_agent.BaseA2AAgent, "_init_crypto",
+                        lambda self: setattr(self, "_public_key_jwk", {"test": "ephemeral"}))
+    for enabled in (False, True):
+        for name in ("gaiakeep", "remote_compute", "computer_use", "fhir"):
+            _set_flag(monkeypatch, name, False)
+        _set_flag(monkeypatch, "cresco", enabled)
+        cards = []
+        async def register_agent(socket, message):
+            cards.append(message.agent_card.agent_id)
+        plane = SimpleNamespace(runtime=object(), repositories=object(), blobs=object(),
+                                attachment_materializer=object())
+        orch = SimpleNamespace(runtime_composition=SimpleNamespace(plane=plane),
+                               local_agents={}, register_agent=register_agent)
+        assert await local_agents.register_built_ins(orch) == (["cresco-1"] if enabled else [])
+        assert cards == (["cresco-1"] if enabled else [])
 
 
-def test_c03_bridge_not_registered():
-    case = _case_by_id(_load_cases(), "C-03")
-    from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, discover_built_in_agent_dirs
-
-    assert case["expect"]["member"] not in BUILT_IN_AGENT_DIRS
-    assert case["expect"]["member"] not in discover_built_in_agent_dirs()
-
-
-def test_c04_bridge_absent_from_public_registry():
-    case = _case_by_id(_load_cases(), "C-04")
+@pytest.mark.asyncio
+async def test_c04_bridge_is_not_automatically_safe(monkeypatch):
     from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
+    from tests.test_remote_orchestrator_wiring_063 import _drive_start
 
-    assert case["expect"]["member"] not in FIRST_PARTY_PUBLIC_AGENT_IDS
-
+    case = _case_by_id(_load_cases(), "C-04")
+    member = case["expect"]["member"]
+    assert member in FIRST_PARTY_PUBLIC_AGENT_IDS
+    _, seeded = await _drive_start(monkeypatch, remote_compute=False, gaiakeep=True)
+    assert member not in seeded[0][1]
 
 def _set_flag(monkeypatch, name: str, value: bool) -> None:
     from shared.feature_flags import flags
@@ -169,38 +191,51 @@ def test_c06_dual_flag_truth_table_and_read_failure(monkeypatch):
 
 
 def test_c07_envelope_shape_and_deterministic_encoding():
-    case = _case_by_id(_load_cases(), "C-07")
-    expect = case["expect"]
+    from agents.cresco.wsapi_client import build_request, decode_bulk, encode_bulk, parse_frame, response_matches
+
+    expect = _case_by_id(_load_cases(), "C-07")["expect"]
     request = expect["canonical_request"]
-    assert set(request) == {"message_info", "message_payload"}
-    assert request["message_info"]["is_rpc"] is True
-    assert isinstance(request["message_payload"]["action"], str)
+    assert build_request("listregions", {}, message_id="case-7") == request
+    assert all(isinstance(value, str) for part in request.values() for value in part.values())
+    assert encode_bulk(expect["bulk_params_sample"]) == expect["bulk_params_encoding"]
+    assert decode_bulk(expect["bulk_params_encoding"]) == expect["bulk_params_sample"]
+    reply = parse_frame(json.dumps(expect["canonical_reply"]))
+    assert response_matches(reply, "case-7")
+    assert decode_bulk(reply["regionslist"]) == {"regions": []}
 
-    sample = expect["bulk_params_sample"]
-    json_bytes = json.dumps(sample, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    buffer = io.BytesIO()
-    with gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=9, mtime=0) as stream:
-        stream.write(json_bytes)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    assert encoded == expect["bulk_params_encoding"]
-    assert json.loads(gzip.decompress(base64.b64decode(encoded))) == sample
+def test_c08_runtime_transport_boundaries(monkeypatch):
+    import ssl
+    from agents.cresco.wsapi_client import FabricConfig, FabricFault, WsapiClient, build_ssl_context
 
-
-def test_c08_profile_boundary_text():
-    case = _case_by_id(_load_cases(), "C-08")
-    text = _contract_text()
-    for phrase in case["expect"]["required_phrases"]:
-        assert phrase in text, f"contract lost profile statement: {phrase}"
-
+    monkeypatch.delenv("EXTERNAL_AGENT_ALLOWED_PRIVATE_HOSTS", raising=False)
+    config = FabricConfig(wsapi_url="wss://127.0.0.1:8282", service_key="synthetic",
+                          tls_fingerprint="ab" * 32)
+    context = build_ssl_context(config)
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    assert config.control_url == "wss://127.0.0.1:8282/api/apisocket"
+    with pytest.raises(FabricFault) as denied:
+        WsapiClient(config).validate_egress()
+    assert denied.value.state == "tls"
+    with pytest.raises(FabricFault) as endpoint:
+        WsapiClient(FabricConfig(wsapi_url="wss://127.0.0.1/api/dataplane", service_key="synthetic")).validate_egress()
+    assert endpoint.value.state == "protocol"
 
 def test_c09_member_target_grammar():
     case = _case_by_id(_load_cases(), "C-09")
     expect = case["expect"]
+    from agents.cresco.targets import TargetRefused, parse_target, require_approved
+
     grammar = re.compile(expect["grammar"])
+    env = {"CRESCO_APPROVED_TARGETS": ",".join(expect["valid"])}
     for target in expect["valid"]:
         assert grammar.fullmatch(target), target
+        assert "_".join(require_approved(target, env)) == target
     for target in expect["invalid"]:
         assert grammar.fullmatch(target) is None, target
+        with pytest.raises(TargetRefused):
+            parse_target(target)
+    with pytest.raises(TargetRefused):
+        require_approved("r9_unadmitted", env)
 
     widest = "_".join(["a" * 63] * 3)
     assert len(widest) == 191 and grammar.fullmatch(widest)
@@ -256,6 +291,18 @@ def test_c13_source_pins_carry_identifier_status_and_date():
         assert source["status"] in expect["required_status_values"]
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", source["retrieved"])
         assert source["name"] in text or source["identifier"].split(":")[-1] in text
+    profile = json.loads((CONTRACT_PATH.parent / "wsapi-wire-profile.json").read_text())
+    assert profile["status"] == _load_cases()["status"]
+    assert profile["requests"]["list_regions"] == _case_by_id(_load_cases(), "C-07")["expect"]["canonical_request"]
+    from agents.cresco.wsapi_client import build_request
+    assert build_request("agentinfo", {"region_agent": "r1_a1"}, message_id="case-agent") == profile["requests"]["agent_info"]
+    assert build_request("getsysinfo", {"region_agent": "r1_a1"}, message_id="case-sys") == profile["requests"]["sysinfo"]
+    for source in profile["sources"]:
+        assert re.fullmatch(r"[a-f0-9]{40}", source["commit"])
+        assert re.fullmatch(r"[a-f0-9]{64}", source["sha256"])
+        assert source["repository"].startswith("https://github.com/CrescoEdge/")
+        assert source["path"] and source["status"] == "source-verified"
+        assert source["retrieved"] == "2026-10-13"
     unreverified = [s for s in expect["sources"] if s["status"] == "pinned-unreverified"]
     assert unreverified, "the contract must carry its unreverified external pins honestly"
 

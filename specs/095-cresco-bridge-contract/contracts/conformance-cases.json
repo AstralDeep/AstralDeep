@@ -1,7 +1,7 @@
 {
   "contract": "specs/095-cresco-bridge-contract/contracts/bridge-contract.md",
   "bounded_on": "2026-10-13",
-  "status": "contract ratified and bounded; bridge implementation not started; no runtime activation",
+  "status": "bounded topology implemented behind default-off flag; effect transports unavailable; real fabric acceptance pending",
   "cases": [
     {
       "id": "C-01",
@@ -15,26 +15,28 @@
     },
     {
       "id": "C-02",
-      "kind": "bridge_runtime_absent",
-      "title": "No bridge package is importable",
+      "kind": "bridge_runtime_gated",
+      "title": "Present runtime refuses calls with FF_CRESCO off",
       "expect": {
-        "module": "agents.cresco"
+        "module": "agents.cresco",
+        "tool": "cresco_list_regions",
+        "fault_detail": "feature_flag_off"
       }
     },
     {
       "id": "C-03",
-      "kind": "bridge_runtime_absent",
-      "title": "Bridge is not a built-in agent directory and discovery never yields it",
+      "kind": "bridge_runtime_gated",
+      "title": "Bridge in-process registration follows the fail-closed feature flag",
       "expect": {
         "registry": "BUILT_IN_AGENT_DIRS",
         "member": "cresco",
-        "discovery_fn": "discover_built_in_agent_dirs"
+        "discovery_fn": "register_built_ins"
       }
     },
     {
       "id": "C-04",
-      "kind": "bridge_runtime_absent",
-      "title": "cresco-1 absent from the first-party public agent registry",
+      "kind": "bridge_runtime_gated",
+      "title": "Public bridge identity is never automatically marked safe",
       "expect": {
         "registry": "FIRST_PARTY_PUBLIC_AGENT_IDS",
         "member": "cresco-1"
@@ -93,32 +95,37 @@
       "id": "C-07",
       "kind": "envelope_roundtrip",
       "title": "Pinned wsapi envelope shape and deterministic bulk-param encoding",
-      "note": "Shape pinned from the 2026-07-06 evaluation (wsapi @ d5b4bcd, cross-read from pycrescolib 1.3.0); field values illustrate the envelope shape, and byte-level fabric frames require upstream re-verification before implementation.",
+      "note": "Source-verified request routing and plain string-parameter reply format; no REQUEST/EVENT or submitwork protocol exists in the reviewed sources.",
       "expect": {
-        "encoding_rule": "base64(gzip(json_bytes)) with canonical JSON, compression level9, mtime0 and platform-independent OS byte255 via gzip.GzipFile",
+        "encoding_rule": "base64(gzip(json_bytes)), with canonical JSON and gzip.GzipFile(compresslevel=9, mtime=0), including its platform-independent OS byte 255",
         "canonical_request": {
           "message_info": {
-            "message_type": 4,
-            "message_event_type": 5,
-            "is_rpc": true,
-            "message_id": 1
+            "message_type": "global_controller_msgevent",
+            "message_event_type": "EXEC",
+            "is_rpc": "true"
           },
           "message_payload": {
-            "action": "listregions"
+            "action": "listregions",
+            "client_rpc_id": "case-7"
           }
         },
         "bulk_params_sample": {
           "region": "global",
           "limit": 128
         },
-        "bulk_params_encoding": "H4sIAAAAAAAC/6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA"
+        "bulk_params_encoding": "H4sIAAAAAAAC/6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA",
+        "canonical_reply": {
+          "action": "listregions",
+          "client_rpc_id": "case-7",
+          "regionslist": "H4sIAAAAAAAC/6tWKkpNz8zPK1ayio6tBQCec+y3DgAAAA=="
+        }
       }
     },
     {
       "id": "C-08",
-      "kind": "profile_boundary_text",
-      "title": "Egress/TLS profile statements remain present in the contract",
-      "note": "Text-level guard: no wsapi client exists in this snapshot to exercise behaviorally; the guard keeps the bounded profile statements from silently disappearing.",
+      "kind": "transport_boundaries",
+      "title": "Verified TLS and control-endpoint admission remain fail closed",
+      "note": "Executes the runtime TLS configuration and endpoint/egress denial; socket-level pin-before-credential regressions run in the owning bridge module suite.",
       "expect": {
         "contract": "specs/095-cresco-bridge-contract/contracts/bridge-contract.md",
         "required_phrases": [
@@ -238,7 +245,8 @@
           "pinned-unreverified",
           "evaluated",
           "pinned",
-          "open-external"
+          "open-external",
+          "source-verified"
         ],
         "sources": [
           {
@@ -249,9 +257,9 @@
           },
           {
             "name": "CrescoEdge/controller",
-            "identifier": "git:1b3cc3c",
-            "status": "pinned-unreverified",
-            "retrieved": "2026-07-06"
+            "identifier": "git:02ffc9327b94196c2e17e5c5542ff0f92412db61",
+            "status": "source-verified",
+            "retrieved": "2026-10-13"
           },
           {
             "name": "CrescoEdge/library",
@@ -261,15 +269,15 @@
           },
           {
             "name": "Cresco wsapi seam",
-            "identifier": "git:d5b4bcd",
-            "status": "pinned-unreverified",
-            "retrieved": "2026-07-06"
+            "identifier": "git:8d57820c58f2290b272e7805508c3e39ae015df4",
+            "status": "source-verified",
+            "retrieved": "2026-10-13"
           },
           {
             "name": "Cresco executor plugin",
-            "identifier": "git:8e9020e",
-            "status": "pinned-unreverified",
-            "retrieved": "2026-07-06"
+            "identifier": "git:8e9020e45d23a863c8eb3ba555e6fe9e02c3457d",
+            "status": "source-verified",
+            "retrieved": "2026-10-13"
           },
           {
             "name": "pycrescolib",
@@ -287,6 +295,12 @@
             "name": "AstralPlane dependency",
             "identifier": "issue:67",
             "status": "open-external",
+            "retrieved": "2026-10-13"
+          },
+          {
+            "name": "pycrescolib control callers",
+            "identifier": "git:8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
+            "status": "source-verified",
             "retrieved": "2026-10-13"
           }
         ]
