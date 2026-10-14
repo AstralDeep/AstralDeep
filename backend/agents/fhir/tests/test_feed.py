@@ -216,3 +216,76 @@ def test_vitals_stream_first_chunk_serves_the_non_streaming_path(connected):
     refused = MCPServer().process_request(MCPRequest(
         request_id="live", method="tools/call", params={"name": "stream_patient_vitals", "arguments": {"patient": ""}}))
     assert refused.error["code"] == "FHIR_BAD_REQUEST"
+
+
+async def test_a_resumed_feed_run_sends_its_closing_card_at_once(connected, fast):
+    stream = mcp_tools.watch_icu_activity({"minutes": 1, "_stream_elapsed_s": 30}, {})
+    first = await stream.__anext__()
+    assert first.terminal is False and first.raw["watching"] is True
+    chunks = [chunk async for chunk in stream]
+    assert len(chunks) == 1
+    final = chunks[0]
+    assert final.terminal is True and final.raw["watching"] is False
+    hero = final.components[0]["content"][0]
+    assert hero["subtitle"].startswith("Finished") and hero["badges"][0] == "0 notifications"
+    deletes = [call for call in connected.calls if call[0] == "DELETE"]
+    assert len(deletes) == 2
+
+
+async def test_an_elapsed_hint_of_the_full_declared_feed_duration_closes_at_once(connected, fast):
+    stream = mcp_tools.watch_icu_activity({"minutes": 1, "_stream_elapsed_s": mcp_tools.SECONDS_PER_MINUTE}, {})
+    await stream.__anext__()
+    assert len([chunk async for chunk in stream if not chunk.terminal]) == 0
+
+
+async def test_a_resumed_feed_run_polls_only_for_the_remaining_time(connected, fast):
+    plain = mcp_tools.watch_icu_activity({"minutes": 2}, {})
+    await plain.__anext__()
+    plain_chunks = [chunk async for chunk in plain]
+    resumed = mcp_tools.watch_icu_activity({"minutes": 2, "_stream_elapsed_s": mcp_tools.SECONDS_PER_MINUTE}, {})
+    await resumed.__anext__()
+    resumed_chunks = [chunk async for chunk in resumed]
+    plain_updates = [chunk for chunk in plain_chunks if not chunk.terminal]
+    resumed_updates = [chunk for chunk in resumed_chunks if not chunk.terminal]
+    assert len(plain_updates) > 1 and len(resumed_updates) > 1
+    assert len(resumed_updates) < len(plain_updates)
+    assert plain_chunks[-1].terminal is True and plain_chunks[-1].raw["watching"] is False
+    assert resumed_chunks[-1].terminal is True and resumed_chunks[-1].raw["watching"] is False
+
+
+@pytest.mark.parametrize("unusable", ["30", True, -5.0, float("nan"), float("inf")])
+async def test_an_unusable_elapsed_hint_runs_the_feed_for_its_full_time(connected, fast, unusable):
+    hinted = mcp_tools.watch_icu_activity({"minutes": 1, "_stream_elapsed_s": unusable}, {})
+    await hinted.__anext__()
+    hinted_updates = [chunk async for chunk in hinted if not chunk.terminal]
+    plain = mcp_tools.watch_icu_activity({"minutes": 1}, {})
+    await plain.__anext__()
+    plain_updates = [chunk async for chunk in plain if not chunk.terminal]
+    assert len(hinted_updates) > 1 and abs(len(hinted_updates) - len(plain_updates)) <= 2
+
+
+async def test_a_resumed_vitals_stream_sends_the_unchanged_closing_card(connected, live):
+    stream = mcp_tools.stream_patient_vitals({"patient": "002-1", "minutes": 5, "_stream_elapsed_s": 600}, {})
+    first = await stream.__anext__()
+    assert first.components[0]["content"][0]["subtitle"].startswith("Streaming for 5 min")
+    assert [button["label"] for button in first.components[0]["content"][-2]["buttons"]] == ["Patient overview"]
+    chunks = [chunk async for chunk in stream]
+    assert len(chunks) == 1
+    final = chunks[0]
+    assert final.terminal is True and final.raw["watching"] is False
+    ended = final.components[0]["content"]
+    assert ended[0]["subtitle"].startswith("Stream ended")
+    again = ended[-2]["buttons"][0]
+    assert (again["label"], again["action"]) == ("Stream again", "stream_subscribe")
+    assert again["payload"] == {"tool_name": "stream_patient_vitals", "params": {"patient": "002-1", "minutes": 5}}
+
+
+async def test_a_resumed_vitals_stream_polls_only_for_the_remaining_time(connected, live):
+    plain = mcp_tools.stream_patient_vitals({"patient": "002-1", "minutes": 2}, {})
+    await plain.__anext__()
+    plain_updates = [chunk async for chunk in plain if not chunk.terminal]
+    resumed = mcp_tools.stream_patient_vitals({"patient": "002-1", "minutes": 2, "_stream_elapsed_s": mcp_tools.SECONDS_PER_MINUTE}, {})
+    await resumed.__anext__()
+    resumed_updates = [chunk async for chunk in resumed if not chunk.terminal]
+    assert len(plain_updates) > 1 and len(resumed_updates) > 1
+    assert len(resumed_updates) < len(plain_updates)
