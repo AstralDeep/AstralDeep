@@ -13,6 +13,7 @@ import importlib.util
 import json
 import re
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -167,7 +168,8 @@ def test_c06_dual_flag_truth_table_and_read_failure(monkeypatch):
     assert start._gaiakeep_enabled() is case["expect"]["flag_read_failure_result"]
 
 
-def test_c07_envelope_shape_and_deterministic_encoding():
+@pytest.mark.parametrize("reverse_keys", [False, True])
+def test_c07_envelope_shape_and_deterministic_encoding(reverse_keys):
     case = _case_by_id(_load_cases(), "C-07")
     expect = case["expect"]
     request = expect["canonical_request"]
@@ -176,9 +178,16 @@ def test_c07_envelope_shape_and_deterministic_encoding():
     assert isinstance(request["message_payload"]["action"], str)
 
     sample = expect["bulk_params_sample"]
-    json_bytes = json.dumps(sample, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    encoded = base64.b64encode(gzip.compress(json_bytes, compresslevel=9, mtime=0)).decode("ascii")
+    value = dict(reversed(sample.items())) if reverse_keys else sample
+    json_bytes = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    buffer = BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, compresslevel=9, mtime=0) as stream:
+        stream.write(json_bytes)
+    compressed = buffer.getvalue()
+    assert compressed[:10] == bytes.fromhex("1f8b08000000000002ff")
+    encoded = base64.b64encode(compressed).decode("ascii")
     assert encoded == expect["bulk_params_encoding"]
+    assert gzip.decompress(base64.b64decode(encoded)) == json_bytes
     assert json.loads(gzip.decompress(base64.b64decode(encoded))) == sample
 
 

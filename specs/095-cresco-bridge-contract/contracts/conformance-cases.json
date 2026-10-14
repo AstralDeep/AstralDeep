@@ -76,7 +76,7 @@
       "title": "Pinned wsapi envelope shape and deterministic bulk-param encoding",
       "note": "Shape pinned from the 2026-07-06 evaluation (wsapi @ d5b4bcd, cross-read from pycrescolib 1.3.0); field values illustrate the envelope shape, and byte-level fabric frames require upstream re-verification before implementation.",
       "expect": {
-        "encoding_rule": "base64(gzip(json_bytes)) with json_bytes = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8') and gzip.compress(json_bytes, compresslevel=9, mtime=0)",
+        "encoding_rule": "base64(gzip(json_bytes)) with json_bytes = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8'); write once to gzip.GzipFile(filename='', mode='wb', fileobj=io.BytesIO(), compresslevel=9, mtime=0), close the member, then encode the complete buffer; header hex 1f8b08000000000002ff",
         "canonical_request": {
           "message_info": {
             "message_type": 4,
@@ -92,7 +92,7 @@
           "region": "global",
           "limit": 128
         },
-        "bulk_params_encoding": "H4sIAAAAAAACA6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA"
+        "bulk_params_encoding": "H4sIAAAAAAAC/6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA"
       }
     },
     {
@@ -252,6 +252,12 @@
             "identifier": "issue:67",
             "status": "open-external",
             "retrieved": "2026-10-13"
+          },
+          {
+            "name": "CPython gzip",
+            "identifier": "cpython:v3.11.15/Lib/gzip.py",
+            "status": "pinned",
+            "retrieved": "2026-10-14"
           }
         ]
       }
