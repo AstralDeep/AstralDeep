@@ -5,11 +5,9 @@ astral_sdk.models and astral_sdk.errors, only httpx at runtime.
 
 from __future__ import annotations
 
-import base64
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
 from types import TracebackType
 from typing import Any, Optional
 
@@ -24,7 +22,7 @@ from astral_sdk.errors import (
 )
 from astral_sdk.models import (
     Artifact, CompletionSubscriptionList, ControlResult, Event, Operation, OperationList,
-    RetryPolicy, TerminalOutput, TerminalSessionView,
+    RetryPolicy,
 )
 from astral_sdk.tools import MCP_PROTOCOL_VERSION
 
@@ -83,24 +81,6 @@ def _challenge_error_code(www_authenticate: Optional[str]) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _terminal_response(response: httpx.Response) -> dict[str, Any]:
-    try:
-        value = response.json()
-    except ValueError as exc:
-        raise AstralHTTPError("malformed terminal response",
-                              status_code=response.status_code) from exc
-    if response.is_error:
-        code = value.get("error") if isinstance(value, dict) else None
-        detail = value.get("detail") if isinstance(value, dict) else None
-        message = code or (detail if isinstance(detail, str) else None) or "terminal request refused"
-        error_type = (AstralAuthError if response.status_code in (401, 403) else
-                      AstralConflictError if response.status_code in (409, 423) else AstralHTTPError)
-        raise error_type(message, status_code=response.status_code, code=str(code or message))
-    if not isinstance(value, dict):
-        raise AstralHTTPError("malformed terminal response", status_code=response.status_code)
-    return value
-
-
 def _raise_for_response(status_code: int, body: dict[str, Any],
                         www_authenticate: Optional[str] = None) -> dict[str, Any]:
     if "error" in body:
@@ -123,20 +103,6 @@ def _unwrap_tool_result(result: dict[str, Any]) -> dict[str, Any]:
         raise _classify_error(text)(text, code=text)
     structured = result.get("structuredContent")
     return structured if isinstance(structured, dict) else {}
-
-
-def _terminal_guard(token: str) -> None:
-    if token.startswith("afk_"):
-        raise AstralAuthError("terminal sessions require an owner Keycloak access token",
-                              status_code=401,
-                              code="terminal_owner_authentication_required")
-
-
-def _terminal_body(cols: int, rows: int, command: Optional[str]) -> dict[str, Any]:
-    body: dict[str, Any] = {"cols": cols, "rows": rows}
-    if command is not None:
-        body["command"] = command
-    return body
 
 
 def _owner_response(response: httpx.Response) -> dict[str, Any]:
@@ -354,65 +320,6 @@ class AstralClient:
             raise AstralHTTPError("emergency stop transport unavailable") from exc
         return _owner_response(response)
 
-    def _terminal(self, method: str, path: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        _terminal_guard(self._token)
-        try:
-            response = self._http.request(method, "/api/terminals" + path, json=body,
-                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
-        except httpx.TimeoutException as exc:
-            raise AstralTimeoutError("terminal request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise AstralHTTPError("terminal transport unavailable") from exc
-        return _terminal_response(response)
-
-    def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                command: Optional[str] = None) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            self._terminal("POST", "", _terminal_body(cols, rows, command)))
-
-    def list_terminal_sessions(self) -> list[TerminalSessionView]:
-        sessions = self._terminal("GET", "").get("sessions", [])
-        return [TerminalSessionView.from_dict(s) for s in sessions]
-
-    def write_terminal(self, session_id: str, data: str | bytes) -> TerminalSessionView:
-        payload = data.encode("utf-8") if isinstance(data, str) else data
-        encoded = base64.b64encode(payload).decode("ascii")
-        return TerminalSessionView.from_dict(
-            self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}))
-
-    def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            self._terminal("POST", f"/{session_id}/resize", {"cols": cols, "rows": rows}))
-
-    def interrupt_terminal(self, session_id: str) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(self._terminal("POST", f"/{session_id}/interrupt", {}))
-
-    def read_terminal(self, session_id: str, *, offset: int = 0,
-                      wait_seconds: float = 0.0) -> TerminalOutput:
-        _terminal_guard(self._token)
-        try:
-            response = self._http.request("GET", f"/api/terminals/{session_id}/output",
-                params={"offset": offset, "wait_seconds": wait_seconds},
-                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
-        except httpx.TimeoutException as exc:
-            raise AstralTimeoutError("terminal request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise AstralHTTPError("terminal transport unavailable") from exc
-        return TerminalOutput.from_dict(_terminal_response(response))
-
-    def stream_terminal(self, session_id: str, *, offset: int = 0,
-                        wait_seconds: float = 1.0) -> Iterator[TerminalOutput]:
-        cursor = offset
-        while True:
-            chunk = self.read_terminal(session_id, offset=cursor, wait_seconds=wait_seconds)
-            yield chunk
-            cursor = chunk.next_offset
-            if chunk.eof:
-                return
-
-    def close_terminal(self, session_id: str) -> dict[str, Any]:
-        return self._terminal("DELETE", f"/{session_id}")
-
     def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                           timeout_seconds: Optional[float] = None) -> Operation:
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
@@ -596,66 +503,6 @@ class AsyncAstralClient:
         except httpx.HTTPError as exc:
             raise AstralHTTPError("emergency stop transport unavailable") from exc
         return _owner_response(response)
-
-    async def _terminal(self, method: str, path: str, body: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-        _terminal_guard(self._token)
-        try:
-            response = await self._http.request(method, "/api/terminals" + path, json=body,
-                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
-        except httpx.TimeoutException as exc:
-            raise AstralTimeoutError("terminal request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise AstralHTTPError("terminal transport unavailable") from exc
-        return _terminal_response(response)
-
-    async def create_terminal_session(self, *, cols: int = 80, rows: int = 24,
-                                      command: Optional[str] = None) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", "", _terminal_body(cols, rows, command)))
-
-    async def list_terminal_sessions(self) -> list[TerminalSessionView]:
-        sessions = (await self._terminal("GET", "")).get("sessions", [])
-        return [TerminalSessionView.from_dict(s) for s in sessions]
-
-    async def write_terminal(self, session_id: str, data: str | bytes) -> TerminalSessionView:
-        payload = data.encode("utf-8") if isinstance(data, str) else data
-        encoded = base64.b64encode(payload).decode("ascii")
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", f"/{session_id}/input", {"data_b64": encoded}))
-
-    async def resize_terminal(self, session_id: str, *, cols: int, rows: int) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", f"/{session_id}/resize", {"cols": cols, "rows": rows}))
-
-    async def interrupt_terminal(self, session_id: str) -> TerminalSessionView:
-        return TerminalSessionView.from_dict(
-            await self._terminal("POST", f"/{session_id}/interrupt", {}))
-
-    async def read_terminal(self, session_id: str, *, offset: int = 0,
-                            wait_seconds: float = 0.0) -> TerminalOutput:
-        _terminal_guard(self._token)
-        try:
-            response = await self._http.request("GET", f"/api/terminals/{session_id}/output",
-                params={"offset": offset, "wait_seconds": wait_seconds},
-                headers={"Authorization": f"Bearer {self._token}", "Accept": "application/json"})
-        except httpx.TimeoutException as exc:
-            raise AstralTimeoutError("terminal request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise AstralHTTPError("terminal transport unavailable") from exc
-        return TerminalOutput.from_dict(_terminal_response(response))
-
-    async def stream_terminal(self, session_id: str, *, offset: int = 0,
-                              wait_seconds: float = 1.0) -> AsyncIterator[TerminalOutput]:
-        cursor = offset
-        while True:
-            chunk = await self.read_terminal(session_id, offset=cursor, wait_seconds=wait_seconds)
-            yield chunk
-            cursor = chunk.next_offset
-            if chunk.eof:
-                return
-
-    async def close_terminal(self, session_id: str) -> dict[str, Any]:
-        return await self._terminal("DELETE", f"/{session_id}")
 
     async def wait_for_terminal(self, operation_id: str, *, poll_interval_seconds: float = 1.0,
                                 timeout_seconds: Optional[float] = None) -> Operation:

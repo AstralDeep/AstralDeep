@@ -28,9 +28,6 @@ def _client(args: argparse.Namespace) -> AstralClient:
 
 
 def _dump(value: Any) -> str:
-    if isinstance(value, (list, tuple)):
-        value = [dataclasses.asdict(v) if dataclasses.is_dataclass(v) and not isinstance(v, type) else v
-                 for v in value]
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         value = dataclasses.asdict(value)
     return json.dumps(value, indent=2, sort_keys=True, default=str)
@@ -121,98 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--expected-revision", type=int, required=True,
                         help="Current stop revision from emergency-status")
 
-    tcreate = sub.add_parser("terminal-create", help="Open an interactive terminal session")
-    _add_common(tcreate)
-    tcreate.add_argument("--cols", type=int, default=80)
-    tcreate.add_argument("--rows", type=int, default=24)
-    tcreate.add_argument("--shell-command", dest="shell_command", default=None,
-                         help="Run one command instead of an interactive shell")
-
-    tlist = sub.add_parser("terminal-list", help="List your open terminal sessions")
-    _add_common(tlist)
-
-    twrite = sub.add_parser("terminal-write", help="Write one base64-free text/byte chunk to a session's stdin")
-    _add_common(twrite)
-    twrite.add_argument("session_id")
-    twrite.add_argument("--data", required=True,
-                        help="Text to send; prefix 'base64:' to send raw bytes")
-
-    tread = sub.add_parser("terminal-read", help="Read new output from a session")
-    _add_common(tread)
-    tread.add_argument("session_id")
-    tread.add_argument("--offset", type=int, default=0)
-    tread.add_argument("--wait-seconds", type=float, default=0.0)
-
-    tresize = sub.add_parser("terminal-resize", help="Resize a session's terminal")
-    _add_common(tresize)
-    tresize.add_argument("session_id")
-    tresize.add_argument("--cols", type=int, required=True)
-    tresize.add_argument("--rows", type=int, required=True)
-
-    tinterrupt = sub.add_parser("terminal-interrupt", help="Send an interrupt (SIGINT) to a session's foreground process")
-    _add_common(tinterrupt)
-    tinterrupt.add_argument("session_id")
-
-    tclose = sub.add_parser("terminal-close", help="Close a terminal session and terminate its processes")
-    _add_common(tclose)
-    tclose.add_argument("session_id")
-
-    tattach = sub.add_parser("terminal-attach", help="Attach stdin/stdout to a live session until it ends")
-    _add_common(tattach)
-    tattach.add_argument("session_id")
-
     return parser
-
-
-def _terminal_payload(data: str) -> bytes:
-    if data.startswith("base64:"):
-        import base64
-
-        return base64.b64decode(data[len("base64:"):])
-    return data.encode("utf-8")
-
-
-def _attach(client: AstralClient, session_id: str) -> int:
-    import queue
-    import threading
-
-    chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()
-
-    def _pump() -> None:
-        while True:
-            try:
-                data = os.read(0, 4096)
-            except OSError:
-                data = b""
-            chunks.put(data or None)
-            if not data:
-                return
-
-    threading.Thread(target=_pump, daemon=True).start()
-    offset = 0
-    stdin_open = True
-    while True:
-        while stdin_open:
-            try:
-                data = chunks.get_nowait()
-            except queue.Empty:
-                break
-            if data is None:
-                stdin_open = False
-                break
-            client.write_terminal(session_id, data)
-        try:
-            out = client.read_terminal(session_id, offset=offset, wait_seconds=0.5)
-        except AstralHTTPError as exc:
-            if exc.code in ("terminal_session_closed", "terminal_session_not_found"):
-                return 0
-            raise
-        if out.data:
-            sys.stdout.buffer.write(out.data)
-            sys.stdout.buffer.flush()
-        offset = out.next_offset
-        if out.eof:
-            return 0
 
 
 def run(argv: Optional[list[str]] = None) -> int:
@@ -258,24 +164,6 @@ def run(argv: Optional[list[str]] = None) -> int:
             value = client.emergency_stop(reason=args.reason)
         elif args.command == "emergency-resume":
             value = client.emergency_resume(expected_revision=args.expected_revision)
-        elif args.command == "terminal-create":
-            value = client.create_terminal_session(cols=args.cols, rows=args.rows,
-                                                   command=args.shell_command)
-        elif args.command == "terminal-list":
-            value = client.list_terminal_sessions()
-        elif args.command == "terminal-write":
-            value = client.write_terminal(args.session_id, _terminal_payload(args.data))
-        elif args.command == "terminal-read":
-            value = client.read_terminal(args.session_id, offset=args.offset,
-                                         wait_seconds=args.wait_seconds)
-        elif args.command == "terminal-resize":
-            value = client.resize_terminal(args.session_id, cols=args.cols, rows=args.rows)
-        elif args.command == "terminal-interrupt":
-            value = client.interrupt_terminal(args.session_id)
-        elif args.command == "terminal-close":
-            value = client.close_terminal(args.session_id)
-        elif args.command == "terminal-attach":
-            return _attach(client, args.session_id)
         else:  # pragma: no cover
             raise SystemExit(f"unknown command: {args.command}")
     except AstralHTTPError as exc:

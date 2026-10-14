@@ -6,7 +6,6 @@ Operation.raw.
 
 from __future__ import annotations
 
-import base64
 import random
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -160,53 +159,6 @@ class CompletionSubscriptionList:
 
 
 @dataclass(frozen=True)
-class TerminalSessionView:
-    session_id: str
-    cols: int
-    rows: int
-    created_at_monotonic: float
-    idle_seconds: float
-    ring_start: int
-    ring_end: int
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TerminalSessionView":
-        return cls(
-            session_id=data["session_id"],
-            cols=int(data.get("cols", 0)),
-            rows=int(data.get("rows", 0)),
-            created_at_monotonic=float(data.get("created_at_monotonic", 0.0)),
-            idle_seconds=float(data.get("idle_seconds", 0.0)),
-            ring_start=int(data.get("ring_start", 0)),
-            ring_end=int(data.get("ring_end", 0)),
-        )
-
-
-@dataclass(frozen=True)
-class TerminalOutput:
-    session_id: str
-    offset: int
-    next_offset: int
-    data: bytes
-    truncated: bool
-    eof: bool
-    session: Optional[TerminalSessionView]
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TerminalOutput":
-        session = data.get("session")
-        return cls(
-            session_id=data["session_id"],
-            offset=int(data.get("offset", 0)),
-            next_offset=int(data.get("next_offset", 0)),
-            data=base64.b64decode(data.get("data_b64") or ""),
-            truncated=bool(data.get("truncated")),
-            eof=bool(data.get("eof")),
-            session=TerminalSessionView.from_dict(session) if session else None,
-        )
-
-
-@dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 4
     base_delay_seconds: float = 0.25
@@ -244,7 +196,5 @@ __all__ = [
     "ControlResult",
     "CompletionSubscription",
     "CompletionSubscriptionList",
-    "TerminalSessionView",
-    "TerminalOutput",
     "RetryPolicy",
 ]
