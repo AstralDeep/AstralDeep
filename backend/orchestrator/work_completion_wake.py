@@ -26,6 +26,7 @@ from orchestrator.work_subscriptions import (
     _REDRIVE_ATTEMPTS as _REDRIVE_ATTEMPTS, _REDRIVE_LIMIT as _REDRIVE_LIMIT,
     _redrive_pending as _redrive_pending, fire_completions as fire_completions,
     redrive_pending as redrive_pending, schedule_redrive as schedule_redrive,
+    assert_event_wait_capacity, completion_event_keys,
 )
 from orchestrator.work_service import _identity, _public
 from persistent_agents.models import AssignmentError, validate_id
@@ -267,6 +268,8 @@ class WorkCompletionWakeService(WorkControlService):
                 raise AssignmentError("assignment_version_unsupported", 409)
             if terminal_outcome(source_read.assignment) is not None:
                 raise AssignmentError("work_continuation_source_terminal", 409)
+            assert_event_wait_capacity(repository, tx, owner_id=owner,
+                                       event_keys=completion_event_keys(source_id), target=record)
             result = _method(repository, "set_owner_event_wait")(
                 tx, owner_id=owner, assignment_id=waiter_id,
                 expected_instruction_revision=record.instruction_revision,

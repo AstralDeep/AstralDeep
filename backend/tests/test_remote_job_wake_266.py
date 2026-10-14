@@ -234,7 +234,7 @@ class TestWakeSubscribers:
         attempts = []
 
         class _Flaky:
-            def list_operations(self, tx, *, owner_id, limit=100, after_id=None):
+            def list_owner_event_waits(self, tx, *, owner_id, event_keys, limit=100, after_id=None, include_terminal=True):
                 return [SimpleNamespace(assignment=SimpleNamespace(**_subscriber()))]
 
             def get_operation(self, tx, *, owner_id, assignment_id):
@@ -258,7 +258,7 @@ class TestWakeSubscribers:
         attempts = []
 
         class _Refusing:
-            def list_operations(self, tx, *, owner_id, limit=100, after_id=None):
+            def list_owner_event_waits(self, tx, *, owner_id, event_keys, limit=100, after_id=None, include_terminal=True):
                 return [SimpleNamespace(assignment=SimpleNamespace(**_subscriber()))]
 
             def get_operation(self, tx, *, owner_id, assignment_id):
@@ -644,7 +644,7 @@ async def test_wait_job_refuses_a_malformed_repository_result(job_value, monkeyp
 
 def test_vanished_subscriber_is_skipped_silently():
     class _Ghost:
-        def list_operations(self, tx, *, owner_id, limit=100, after_id=None):
+        def list_owner_event_waits(self, tx, *, owner_id, event_keys, limit=100, after_id=None, include_terminal=True):
             return [SimpleNamespace(assignment=SimpleNamespace(**_subscriber()))]
 
         def get_operation(self, tx, *, owner_id, assignment_id):
@@ -744,3 +744,23 @@ async def test_remote_wake_audit_failure_rolls_back_terminal_state_and_restart_c
     events, _ = value.audit.list_for_user(OWNER)
     assert sum(event.action_type == "remote_job.completion_wake" for event in events) == 1
     assert value.audit.verify_chain(OWNER) is None
+
+
+async def test_wait_job_refuses_relevant_fanout_capacity_and_preserves_replays(job_value, monkeypatch):
+    from orchestrator import work_subscriptions
+    from persistent_agents.models import AssignmentError
+
+    value = job_value
+    monkeypatch.setattr(work_subscriptions, "_MAX_EVENT_WAITERS", 1, raising=False)
+    _create_tracked_job(value)
+    service = WorkContinuationService(value.reads.assignments)
+    body = await _job_wait_body(value)
+    await service.wait_job(value.identity, body, caller=value.caller)
+    assert (await service.wait_job(value.identity, body, caller=value.caller))["applied"] is False
+    with value.runtime.transaction() as tx:
+        alternative = next(read.assignment for read in value.runtime.repositories.assignments.list_operations(
+            tx, owner_id=OWNER) if read.assignment.assignment_id != value.identity)
+    value.identity = alternative.assignment_id
+    with pytest.raises(AssignmentError, match="work_completion_capacity_exhausted"):
+        await service.wait_job(value.identity, await _job_wait_body(value), caller=value.caller)
+    assert (await _current(value)).operation.get("control", {}).get("wait") is None

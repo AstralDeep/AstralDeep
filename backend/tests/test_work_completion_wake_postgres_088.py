@@ -778,22 +778,23 @@ async def test_scan_failures_roll_back_completion(api, monkeypatch):
     source, waiter = await paired(api)
     await subscribe(api, waiter, source)
     repository = api.runtime.repositories.assignments
-    original_scan = repository.list_operations
+    original_scan = repository.list_owner_event_waits
 
     for failure in (AssignmentError("work_repository_unavailable", 503),
                     RuntimeError("synthetic scan failure")):
-        def failing_scan(tx, *, owner_id, limit, after_id, _failure=failure):
+        def failing_scan(tx, *, owner_id, limit, after_id, _failure=failure, **event_filters):
             raise _failure
 
-        monkeypatch.setattr(repository, "list_operations", failing_scan)
+        monkeypatch.setattr(repository, "list_owner_event_waits", original_scan)
         stage_source, stage_waiter = await paired(api)
         await subscribe(api, stage_waiter, stage_source)
+        monkeypatch.setattr(repository, "list_owner_event_waits", failing_scan)
         with pytest.raises(AssignmentError):
             await complete_source(api, stage_source)
         assert current(api.runtime, stage_source).lifecycle == "active"
         assert current(api.runtime, stage_waiter).phase == "awaiting_event"
         assert module()._redrive_pending == {}
-    monkeypatch.setattr(repository, "list_operations", original_scan)
+    monkeypatch.setattr(repository, "list_owner_event_waits", original_scan)
 
 
 async def test_confirm_rechecks_source_existence_and_support(api):
@@ -1022,3 +1023,17 @@ async def test_completion_wake_audit_refuses_unreadable_ids(api):
             audit.append_completion_wake(tx, owner_id=record.owner_id, record=record,
                                          source_id="not-a-uuid", revision=1,
                                          outcome="completed")
+
+
+async def test_owner_confirmation_refuses_relevant_fanout_capacity_without_consuming_a_wait(api, monkeypatch):
+    from orchestrator import work_subscriptions
+
+    monkeypatch.setattr(work_subscriptions, "_MAX_EVENT_WAITERS", 1, raising=False)
+    source, first = await paired(api)
+    _, refused = await paired(api)
+    await subscribe(api, first, source)
+    proposal = await propose_for(api, refused, source)
+    with pytest.raises(AssignmentError, match="work_completion_capacity_exhausted"):
+        await service_for(api).confirm(refused.assignment_id, confirm_body(
+            refused, source.assignment_id, proposal), caller=await caller(api, api.fixture[2]))
+    assert current(api.runtime, refused).operation.get("control", {}).get("wait") is None

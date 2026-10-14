@@ -30,6 +30,7 @@ _COMPLETION_SUFFIX = ":completed"
 _SCAN_PAGE = 100
 _SCAN_PAGES = 10
 _MAX_LIST = 100
+_MAX_EVENT_WAITERS = 256
 _REDRIVE_LIMIT = 256
 _REDRIVE_ATTEMPTS = 3
 _TERMINAL_OUTCOMES = frozenset({"completed", "failed", "cancelled"})
@@ -128,6 +129,8 @@ class WorkSubscriptionService(WorkControlService):
                     raise AssignmentError("assignment_event_key_conflict", 409)
                 return {"operation": _public(read, owner), "applied": False,
                         "subscription": _subscription(source_id, target_id)}
+            assert_event_wait_capacity(repository, tx, owner_id=owner,
+                                       event_keys=completion_event_keys(source_id), target=record)
             self.credentials.assert_execution(tx, observation)
             result = _method(repository, "set_owner_event_wait")(
                 tx, owner_id=owner, assignment_id=target_id,
@@ -161,8 +164,9 @@ class WorkSubscriptionService(WorkControlService):
             found = []
             position = cursor
             for _ in range(_SCAN_PAGES):
-                page = _method(repository, "list_operations")(
-                    tx, owner_id=owner, limit=_SCAN_PAGE, after_id=position)
+                page = _method(repository, "list_owner_event_waits")(
+                    tx, owner_id=owner, event_key_prefix=_COMPLETION_PREFIX,
+                    limit=_SCAN_PAGE, after_id=position)
                 if not page:
                     break
                 for read in page:
@@ -175,6 +179,11 @@ class WorkSubscriptionService(WorkControlService):
                     break
             selected = found[:limit]
             next_after_id = selected[-1]["target_operation_id"] if len(found) > limit else None
+            if next_after_id is None and position is not None and _method(
+                    repository, "list_owner_event_waits")(
+                    tx, owner_id=owner, event_key_prefix=_COMPLETION_PREFIX,
+                    limit=1, after_id=position):
+                next_after_id = position
             return {"subscriptions": selected, "next_after_id": next_after_id}
 
         return await self.store.transaction(scan, bound_session_waits=True)
@@ -283,20 +292,25 @@ def fire_completions(assignments, tx, repository, *, owner_id: str, source_id: s
     except (ValueError, TypeError, AttributeError):
         return 0
     audit = WorkControlAudit(assignments)
-    keys = {completion_event_key(source_id), "completion:" + source_id}
+    keys = completion_event_keys(source_id)
     return sum(_release(tx, repository, audit, owner_id, source_id, read.assignment,
                         source_revision, outcome)
                for read in event_waiters(repository, tx, owner_id=owner_id, event_keys=keys))
 
 
-def event_waiters(repository, tx, *, owner_id: str, event_keys: set[str]):
+def event_waiters(repository, tx, *, owner_id: str, event_keys):
     cursor = None
+    count = 0
     for _ in range(_SCAN_PAGES):
-        page = _method(repository, "list_operations")(
-            tx, owner_id=owner_id, limit=_SCAN_PAGE, after_id=cursor)
+        page = _method(repository, "list_owner_event_waits")(
+            tx, owner_id=owner_id, event_keys=tuple(sorted(event_keys)),
+            limit=_SCAN_PAGE, after_id=cursor, include_terminal=False)
         if not page:
             return
         for read in page:
+            count += 1
+            if count > _MAX_EVENT_WAITERS:
+                raise AssignmentError("work_completion_capacity_exhausted", 503)
             record = read.assignment
             wait = _wait(record)
             if (wait is not None and wait["event_key"] in event_keys
@@ -305,9 +319,35 @@ def event_waiters(repository, tx, *, owner_id: str, event_keys: set[str]):
         cursor = page[-1].assignment.assignment_id
         if len(page) < _SCAN_PAGE:
             return
-    if _method(repository, "list_operations")(
-            tx, owner_id=owner_id, limit=1, after_id=cursor):
+    if _method(repository, "list_owner_event_waits")(
+            tx, owner_id=owner_id, event_keys=tuple(sorted(event_keys)),
+            limit=1, after_id=cursor, include_terminal=False):
         raise AssignmentError("work_completion_capacity_exhausted", 503)
+
+
+def completion_event_keys(source_id):
+    return (completion_event_key(source_id), "completion:" + source_id)
+
+
+def assert_event_wait_capacity(repository, tx, *, owner_id, event_keys, target):
+    wait = _wait(target)
+    if wait is not None and wait["event_key"] in event_keys:
+        return
+    cursor = None
+    count = 0
+    for _ in range(_SCAN_PAGES):
+        page = _method(repository, "list_owner_event_waits")(
+            tx, owner_id=owner_id, event_keys=tuple(sorted(event_keys)),
+            limit=_SCAN_PAGE, after_id=cursor, include_terminal=False)
+        if not page:
+            return
+        count += len(page)
+        if count >= _MAX_EVENT_WAITERS:
+            raise AssignmentError("work_completion_capacity_exhausted", 429)
+        cursor = page[-1].assignment.assignment_id
+        if len(page) < _SCAN_PAGE:
+            return
+    raise AssignmentError("work_completion_capacity_exhausted", 429)
 
 
 def schedule_redrive(owner_id: str, source_id: str) -> None:

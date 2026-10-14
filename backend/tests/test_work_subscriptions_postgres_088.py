@@ -718,10 +718,10 @@ async def test_fire_scan_failures_abort_the_completion_transaction(work, monkeyp
                                 source_id=str(uuid4()), source_revision=1,
                                 outcome="completed")
 
-    monkeypatch.setattr(repository, "list_operations", refusing_list)
+    monkeypatch.setattr(repository, "list_owner_event_waits", refusing_list)
     with pytest.raises(AssignmentError, match="work_repository_unavailable"):
         run_fire()
-    monkeypatch.setattr(repository, "list_operations", broken_list)
+    monkeypatch.setattr(repository, "list_owner_event_waits", broken_list)
     with pytest.raises(RuntimeError, match="synthetic scan failure"):
         run_fire()
 

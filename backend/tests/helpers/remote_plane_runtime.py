@@ -658,6 +658,20 @@ class InMemoryAssignmentsWakeRepository:
         )
         return [SimpleNamespace(assignment=SimpleNamespace(**row)) for row in rows[:limit]]
 
+    def list_owner_event_waits(self, transaction, *, owner_id, event_keys=None,
+                              event_key_prefix=None, limit=100, after_id=None,
+                              include_terminal=True):
+        rows = sorted((row for row in self._storage.assignments.values()
+                       if row["owner_id"] == owner_id
+                       and (include_terminal or row["lifecycle"] in {"active", "paused"})
+                       and (after_id is None or row["assignment_id"] > after_id)
+                       and (row["operation"].get("control", {}).get("wait") or {})
+                       and ((row["operation"]["control"]["wait"]["event_key"] in event_keys)
+                            if event_keys is not None else
+                            row["operation"]["control"]["wait"]["event_key"].startswith(event_key_prefix))),
+                      key=lambda row: row["assignment_id"])
+        return [SimpleNamespace(assignment=SimpleNamespace(**row)) for row in rows[:limit]]
+
     def get_operation(self, transaction: object, *, owner_id: str,
                       assignment_id: str) -> Any | None:
         row = self._storage.assignments.get(assignment_id)

@@ -21,6 +21,7 @@ from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, _method, _owned_operation
 from orchestrator.work_service import _identity, _public
+from orchestrator.work_subscriptions import assert_event_wait_capacity
 from orchestrator.work_submit import _sync
 from persistent_agents.models import AssignmentError, validate_id
 from persistent_agents.runtime_values import digest
@@ -156,6 +157,8 @@ class WorkContinuationService(WorkControlService):
                 raise AssignmentError("work_job_already_terminal", 409)
             source_revision = job.last_polled_at if job.last_polled_at is not None else job.created_at
             current = read.assignment
+            assert_event_wait_capacity(repository, tx, owner_id=owner,
+                                       event_keys=(event_key,), target=current)
             args = dict(owner_id=owner, assignment_id=identity,
                         expected_instruction_revision=current.instruction_revision,
                         expected_control_epoch=current.control_epoch,
