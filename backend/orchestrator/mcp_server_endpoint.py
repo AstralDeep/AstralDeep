@@ -608,6 +608,21 @@ async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, a
             result = await ops.emergency_stop(caller, reason=args.get("reason"))
         elif method_name == "emergency_resume":
             result = await ops.emergency_resume(caller, expected_revision=args.get("expected_revision"))
+        elif method_name == "subscribe":
+            result = await ops.subscribe(
+                caller, source_operation_id=args.get("source_operation_id"),
+                target_operation_id=args.get("target_operation_id"),
+                submission_id=args.get("submission_id"),
+                expected_revision=args.get("expected_revision"))
+        elif method_name == "subscriptions":
+            result = await ops.subscriptions(
+                caller, limit=args.get("limit", 50), after_id=args.get("after_id"))
+        elif method_name == "unsubscribe":
+            result = await ops.unsubscribe(
+                caller, source_operation_id=args.get("source_operation_id"),
+                target_operation_id=args.get("target_operation_id"),
+                submission_id=args.get("submission_id"),
+                expected_revision=args.get("expected_revision"))
         else:  # pragma: no cover
             return MCPResponse(result_type="complete",
                                error={"message": "Tool is unavailable or not authorized"})
