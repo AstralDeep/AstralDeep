@@ -301,7 +301,10 @@ class WsapiClient:
 
     def _connect(self):
         self.validate_egress()
-        context = build_ssl_context(self.config)
+        try:
+            context = build_ssl_context(self.config)
+        except OSError:
+            raise FabricFault("tls", retryable=False, detail="trust_configuration_failed") from None
         try:
             connection = connect(
                 self.config.control_url,
