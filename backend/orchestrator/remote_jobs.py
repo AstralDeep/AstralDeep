@@ -1,6 +1,7 @@
 """Durable tracking for submitted remote Slurm jobs: a background poller (started in
 Orchestrator.start) reads job status read-only over SSH via remote_transport.py and
 refreshes the job's canvas card in place through the detached-mutation boundary.
+Guarded work_resume.py can reconcile one paused target's terminal tracked-job wait.
 """
 
 from __future__ import annotations
@@ -235,6 +236,43 @@ def _audit_completion_wakes(runtime, tx, *, owner_id, tracked_id, revision, outc
             started_at=now, completed_at=now), transaction=tx, plane_runtime=runtime)
         if type(result) is not AuditEventDTO:
             raise RepositoryError("remote job wake audit unavailable")
+
+
+def reconcile_completion_wait(assignments, tx, repository, record):
+    from persistent_agents.models import AssignmentError
+
+    context = _tracked_context(plane_source_from_orchestrator(assignments.orch))
+    if (context.plane_runtime is not assignments.store.plane_runtime
+            or repository is not context.plane_runtime.repositories.assignments
+            or context.repository is not context.plane_runtime.repositories.tracked_jobs):
+        raise AssignmentError("work_control_unavailable", 503)
+    key = record.operation["control"]["wait"]["event_key"]
+    tracked_id = key[len(WAKE_EVENT_PREFIX):]
+    job = context.repository.get(tx, owner_id=record.owner_id, tracked_job_id=tracked_id, lock=True)
+    if job is None:
+        raise AssignmentError("work_completion_source_missing", 409)
+    if (type(job) is not TrackedJobRecord or job.owner_id != record.owner_id
+            or job.tracked_job_id != tracked_id):
+        raise AssignmentError("work_control_unavailable", 503)
+    if not job.terminal:
+        return False
+    if (not is_terminal_state(job.state) and _base_state(job.state) != "ORPHANED"
+            or type(job.finished_at) is not int):
+        raise AssignmentError("work_job_completion_unconfirmed", 409)
+    outcome = _job_outcome(job.state, job.exit_code)
+    revision = job.finished_at
+    woken, skipped = [], []
+    _try_wake(repository, tx, owner_id=record.owner_id, assignment_id=record.assignment_id,
+              event_key=key, event_id="rj-wake:" + tracked_id, revision=revision,
+              event_digest=_outcome_digest({"event": "remote_job_terminal",
+                  "tracked_job_id": tracked_id, "scheduler_job_id": job.scheduler_job_id,
+                  "machine_id": job.machine_id, "state": job.state, "exit_code": job.exit_code,
+                  "outcome": outcome, "revision": revision}), woken=woken, skipped=skipped)
+    if woken != [record.assignment_id]:
+        raise AssignmentError("work_control_unavailable", 503)
+    _audit_completion_wakes(context.plane_runtime, tx, owner_id=record.owner_id,
+                            tracked_id=tracked_id, revision=revision, outcome=outcome, woken=woken)
+    return True
 
 
 def _apply_and_wake(db, row: Dict[str, Any], *, state: str, exit_code: Optional[str],

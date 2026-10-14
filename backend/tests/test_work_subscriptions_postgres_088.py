@@ -273,7 +273,8 @@ async def test_subscribe_refuses_expired_and_revoked_credentials(work):
     revoked_caller = _issue(work)
     source, target = _operation(work), _operation(work)
     with work.runtime.transaction() as tx:
-        tx.execute("UPDATE framework_credential SET expires_at = created_at + interval '1 millisecond' "
+        tx.execute("UPDATE framework_credential SET created_at = clock_timestamp() - interval '2 seconds', "
+                   "expires_at = clock_timestamp() - interval '1 second' "
                    "WHERE id=%s", (expired_caller.credential_id,))
     with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
         await _subscribe(work, expired_caller, source, target)

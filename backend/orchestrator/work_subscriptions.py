@@ -329,6 +329,38 @@ def completion_event_keys(source_id):
     return (completion_event_key(source_id), "completion:" + source_id)
 
 
+def reconcile_completion_wait(assignments, tx, repository, record):
+    from orchestrator.work_completion_wake import completion_event_source as owner_source, terminal_outcome
+
+    wait = _wait(record)
+    if wait is None or record.lifecycle != "active" or record.phase != "awaiting_event":
+        return False
+    source_id = completion_event_source(wait["event_key"]) or owner_source(wait["event_key"])
+    if source_id is None:
+        from orchestrator import remote_jobs
+
+        if wait["event_key"].startswith(remote_jobs.WAKE_EVENT_PREFIX):
+            return remote_jobs.reconcile_completion_wait(assignments, tx, repository, record)
+        return False
+    source = _method(repository, "get_operation")(
+        tx, owner_id=record.owner_id, assignment_id=source_id, lock=True)
+    if source is None:
+        raise AssignmentError("work_completion_source_missing", 409)
+    if (type(source) is not AssignmentOperationRead or type(source.assignment) is not AssignmentRecord
+            or source.assignment.owner_id != record.owner_id
+            or source.assignment.assignment_id != source_id):
+        raise AssignmentError("work_control_unavailable", 503)
+    if source.continuation_supported is not True:
+        raise AssignmentError("assignment_version_unsupported", 409)
+    outcome = terminal_outcome(source.assignment)
+    if outcome is None:
+        return False
+    if not _release(tx, repository, WorkControlAudit(assignments), record.owner_id, source_id,
+                    record, source.assignment.state_version, outcome):
+        raise AssignmentError("work_control_unavailable", 503)
+    return True
+
+
 def assert_event_wait_capacity(repository, tx, *, owner_id, event_keys, target):
     wait = _wait(target)
     if wait is not None and wait["event_key"] in event_keys:
