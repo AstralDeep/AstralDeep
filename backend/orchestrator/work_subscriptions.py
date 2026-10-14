@@ -154,13 +154,13 @@ class WorkSubscriptionService(WorkControlService):
         return await self.store.transaction(subscribe, bound_session_waits=True)
 
     async def subscriptions(self, caller, *, limit=50, after_id=None) -> dict:
-        _require_scope(caller, "operations.read")
-        owner = caller.owner_id
+        owner, observation = self._caller(caller, "operations.read")
         if type(limit) is not int or not 1 <= limit <= _MAX_LIST:
             raise AssignmentError("work_control_invalid", 422)
         cursor = None if after_id is None else _identity(after_id)
 
         def scan(tx, repository):
+            self.credentials.assert_execution(tx, observation)
             found = []
             position = cursor
             for _ in range(_SCAN_PAGES):

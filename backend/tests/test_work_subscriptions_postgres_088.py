@@ -662,6 +662,30 @@ async def test_stale_caller_without_a_credential_row_is_refused(work):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["before_read", "after_observation"])
+async def test_revoked_caller_cannot_read_completion_subscriptions(work, monkeypatch, when):
+    caller = _issue(work)
+    source, target = _operation(work), _operation(work)
+    await _subscribe(work, caller, source, target)
+    def revoke():
+        work.credentials.revoke(owner_id=work.owner, credential_id=caller.credential_id)
+
+    if when == "before_read":
+        revoke()
+    else:
+        original = work.credentials.fresh_observation
+
+        def revoke_after_observation(value):
+            observation = original(value)
+            revoke()
+            return observation
+
+        monkeypatch.setattr(work.credentials, "fresh_observation", revoke_after_observation)
+    with pytest.raises(AssignmentError, match="framework_credential_authority_unavailable"):
+        await work.ops.subscriptions(caller)
+
+
+@pytest.mark.asyncio
 async def test_subscription_list_bounds_and_mutation_shape_guards(work, monkeypatch):
     caller = _issue(work)
     source, target = _operation(work), _operation(work)
