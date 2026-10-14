@@ -18,7 +18,7 @@ export MSYS_NO_PATHCONV := 1
 export MSYS2_ARG_CONV_EXCL := *
 
 .PHONY: help up down restart apply-config build ps logs logs-db shell psql \
-        bootstrap composition-preflight sync sync-backend sync-components \
+        bootstrap composition-preflight doctor sync sync-backend sync-components \
         test test-backend test-web test-projection check-060-selection test-060 \
         lint lint-backend lint-web secret-scan \
         prepare-release-evidence
@@ -62,6 +62,9 @@ bootstrap: ## Initialize exact submodules and install their locked wheels into t
 composition-preflight: ## Fail closed unless all four initialized component pins/contracts are exact and clean
 	$(COMPOSITION_VERIFIER) --root .
 	$(COMPONENT_INSTALLER) validate --root . --require-gitlinks
+
+doctor: ## Diagnose prerequisites, composition, configuration and services without changes
+	$(PYTHON) scripts/install_doctor.py --root .
 
 up: composition-preflight ## Build images and start all containers in the background
 	docker compose up -d --build
