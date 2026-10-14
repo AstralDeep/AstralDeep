@@ -250,6 +250,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "ci_review_diagnostics.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",

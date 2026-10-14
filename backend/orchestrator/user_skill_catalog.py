@@ -338,6 +338,37 @@ class UserSkillFacade:
             return result
         return await self._transaction(caller, change)
 
+    async def preview_import(self, *, caller, source):
+        from orchestrator.user_skill_import import (
+            LICENSE_REFUSAL_MESSAGE, SkillImportError, audit_representation,
+            parse_skill_import,
+        )
+        self._current(caller)
+        caller.require_write()
+        if not legacy.enabled() or not legacy.import_enabled():
+            raise SkillCatalogError('skill_import_disabled', 403)
+        if type(source) is not str:
+            raise SkillCatalogError('skill_invalid', 422)
+        preview = parse_skill_import(source)
+        if preview.license_requires_confirmation:
+            raise SkillImportError(LICENSE_REFUSAL_MESSAGE,
+                                   'skill_import_license_required')
+
+        def record(tx):
+            self._current(caller)
+            now = datetime.now(timezone.utc)
+            event = AuditEventCreate(actor_user_id=caller.owner_id,
+                auth_principal=caller.owner_id, event_class='settings',
+                action_type='user_skill_import_preview',
+                description='Owner skill import previewed', outcome='success',
+                correlation_id=str(uuid4()),
+                outputs_meta=audit_representation(preview),
+                started_at=now, completed_at=now)
+            self._append_audit(tx, caller, event)
+            return preview
+
+        return await self._transaction(caller, record)
+
     async def save(self, *, caller, skill_id, command_id, expected_revision, name,
                    instructions, applies_to, command='', enabled=True, slug=''):
         from astralplane.repositories.guidance_models import SkillCommand, SkillDefinition
