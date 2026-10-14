@@ -33,6 +33,10 @@ _COMPUTER_USE_AGENT_DIRS = (
     "computer_use",
 )
 
+_TERMINAL_SHELL_AGENT_DIRS = (
+    "terminal_shell",
+)
+
 _FHIR_AGENT_DIRS = (
     "fhir",
 )
@@ -49,6 +53,7 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "web-research-1",
     "remote-compute-1",
     "computer-use-1",
+    "terminal-shell-1",
     "gaiakeep-1",
     "fhir-1",
     "evidence-1",
@@ -153,6 +158,17 @@ async def register_built_ins(orch) -> List[str]:
                     dirs.append(name)
     except Exception:  # noqa: BLE001
         logger.debug("Feature 076 flag check failed (non-fatal)", exc_info=True)
+    try:
+        from shared.feature_flags import flags
+        if flags.is_enabled("terminal_shell"):
+            root = _agents_root()
+            for name in _TERMINAL_SHELL_AGENT_DIRS:
+                d = os.path.join(root, name)
+                if (name not in dirs and os.path.isdir(d)
+                        and os.path.exists(os.path.join(d, f"{name}_agent.py"))):
+                    dirs.append(name)
+    except Exception:  # noqa: BLE001
+        logger.debug("Terminal-shell flag check failed (non-fatal)", exc_info=True)
     try:
         if flags.is_enabled("gaiakeep") and flags.is_enabled("cresco"):
             dirs.append("gaiakeep")
