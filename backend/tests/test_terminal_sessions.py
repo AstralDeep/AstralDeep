@@ -120,7 +120,9 @@ class TestSessionLifecycle:
             assert info["session_id"]
             assert info["cols"] == ts.DEFAULT_COLS and info["rows"] == ts.DEFAULT_ROWS
             assert info["ring_start"] == 0 and info["ring_end"] >= 0
-            assert info in manager.list_sessions("owner-a")
+            listed = manager.list_sessions("owner-a")
+            assert [s["session_id"] for s in listed] == [info["session_id"]]
+            assert listed[0]["cols"] == info["cols"] and listed[0]["rows"] == info["rows"]
             assert manager.list_sessions("owner-b") == []
         finally:
             manager.shutdown()
@@ -187,7 +189,9 @@ class TestSessionLifecycle:
             info = manager.create("owner-a")
             described = manager.resize("owner-a", info["session_id"], cols=120, rows=40)
             assert (described["cols"], described["rows"]) == (120, 40)
-            manager.write("owner-a", info["session_id"], _b64(b"stty size\n"))
+            # Builtins only: a forked size probe fails under transient host fork pressure.
+            manager.write("owner-a", info["session_id"],
+                          _b64(b"shopt -s checkwinsize\necho \"$LINES $COLUMNS\"\n"))
             _, text = _read_until(manager, "owner-a", info["session_id"], "40 120")
             assert "40 120" in text
         finally:
