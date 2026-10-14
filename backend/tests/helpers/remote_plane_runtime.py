@@ -11,11 +11,19 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+from astralplane.repositories import RepositoryConflictError
+from astralplane.repositories.assignments import digest as _plane_digest
 from astralplane.repositories.credentials import MachineCredentialRecord
 from astralplane.repositories.remote import RemoteMachine
 from astralplane.repositories.remote_proposals import RemoteOperationProposalRecord
 from astralplane.repositories.tracked_jobs import TrackedJobRecord
 from orchestrator.plane_repository_context import ApplicationPlaneSource
+
+
+class _InMemoryTransaction:
+    @contextmanager
+    def savepoint(self, name: str):
+        yield self
 
 
 def _machine(storage: Any, machine_id: str) -> RemoteMachine | None:
@@ -629,6 +637,67 @@ class InMemoryRemoteProposalRepository:
         return _proposal(row)
 
 
+class InMemoryAssignmentsWakeRepository:
+    def __init__(self, storage: Any) -> None:
+        if not hasattr(storage, "assignments"):
+            storage.assignments = {}
+        self._storage = storage
+
+    def register_subscriber(self, row: dict[str, Any]) -> dict[str, Any]:
+        self._storage.assignments[row["assignment_id"]] = row
+        return row
+
+    def list_operations(self, transaction: object, *, owner_id: str,
+                        limit: int = 50, after_id: str | None = None
+                        ) -> list[Any]:
+        rows = sorted(
+            (row for row in self._storage.assignments.values()
+             if row["owner_id"] == owner_id
+             and (after_id is None or row["assignment_id"] > after_id)),
+            key=lambda row: row["assignment_id"],
+        )
+        return [SimpleNamespace(assignment=SimpleNamespace(**row)) for row in rows[:limit]]
+
+    def get_operation(self, transaction: object, *, owner_id: str,
+                      assignment_id: str) -> Any | None:
+        row = self._storage.assignments.get(assignment_id)
+        if row is None or row["owner_id"] != owner_id:
+            return None
+        return SimpleNamespace(assignment=SimpleNamespace(**row))
+
+    def accept_wake(self, transaction: object, *, owner_id: str, assignment_id: str,
+                    expected_state_version: int, expected_instruction_revision: int,
+                    expected_control_epoch: int, event_id: str, event_key: str,
+                    source_revision: int,
+                    event_digest: str) -> Any:
+        row = self._storage.assignments.get(assignment_id)
+        if row is None or row["owner_id"] != owner_id:
+            raise RepositoryConflictError("assignment not found", code="assignment_not_found")
+        if (row["state_version"] != expected_state_version
+                or row["instruction_revision"] != expected_instruction_revision
+                or row["control_epoch"] != expected_control_epoch):
+            raise RepositoryConflictError("assignment state changed", code="assignment_state_changed")
+        wait = (row["operation"].get("control") or {}).get("wait") or {}
+        signature = _plane_digest([event_key, source_revision, event_digest])
+        receipts = row.setdefault("wake_receipts", {})
+        if event_id in receipts:
+            if receipts[event_id] != signature:
+                raise RepositoryConflictError("assignment idempotency conflict", code="assignment_idempotency_conflict")
+            return SimpleNamespace(assignment=SimpleNamespace(**row), applied=False)
+        if (row["lifecycle"] != "active" or row["phase"] != "awaiting_event"
+                or wait.get("event_key") != event_key):
+            raise RepositoryConflictError("assignment not waiting", code="assignment_not_waiting")
+        if source_revision <= max(wait.get("source_revision", 0),
+                                  row.setdefault("watermarks", {}).get(event_key, 0)):
+            raise RepositoryConflictError("assignment event revision conflict", code="assignment_event_revision_conflict")
+        receipts[event_id] = signature
+        row["watermarks"][event_key] = source_revision
+        row["operation"]["control"]["wait"] = None
+        row["phase"] = "waiting"
+        row["wake_generation"] = row.get("wake_generation", 0) + 1
+        return SimpleNamespace(assignment=SimpleNamespace(**row), applied=True)
+
+
 class InMemoryPlaneRuntime:
     def __init__(self, storage: Any) -> None:
         tracked = (
@@ -646,7 +715,7 @@ class InMemoryPlaneRuntime:
     @contextmanager
     def transaction(self):
         with self._transaction_lock:
-            yield object()
+            yield _InMemoryTransaction()
 
 
 def make_remote_plane_source(storage: Any) -> ApplicationPlaneSource:
@@ -655,6 +724,16 @@ def make_remote_plane_source(storage: Any) -> ApplicationPlaneSource:
         plane_runtime=runtime,
         plane_repositories=runtime.repositories,
     )
+
+
+def make_remote_wake_plane_source(storage: Any) -> ApplicationPlaneSource:
+    source = make_remote_plane_source(storage)
+    runtime = source.plane_runtime
+    repositories = SimpleNamespace(**vars(runtime.repositories),
+                                   assignments=InMemoryAssignmentsWakeRepository(storage))
+    object.__setattr__(runtime, "repositories", repositories)
+    object.__setattr__(source, "plane_repositories", repositories)
+    return source
 
 
 def make_remote_confirmation_plane_source(storage: Any) -> ApplicationPlaneSource:

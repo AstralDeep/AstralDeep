@@ -30,7 +30,7 @@ from orchestrator.work_completion_wake import (
 )
 from orchestrator.work_control_authority import WorkCallerAuthority, authenticate_work_control_request
 from orchestrator.work_continuations import (
-    WorkContinuationService, WorkOwnerWaitRequest, WorkReconcileRequest,
+    WorkContinuationService, WorkJobWaitRequest, WorkOwnerWaitRequest, WorkReconcileRequest,
 )
 from orchestrator.work_publication import (
     WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,
@@ -175,6 +175,7 @@ class WorkReadRoute(APIRoute):
                     "work_authority_unavailable", "work_research_profile_unavailable",
                     "work_research_budget_insufficient", "assignment_scope_changed",
                     "assignment_scope_revoked", "assignment_not_waiting",
+                    "work_job_already_terminal",
                     "assignment_event_key_conflict", "assignment_event_revision_conflict",
                     "assignment_history_capacity_exhausted",
                     "work_body_invalid", "work_body_too_large", "work_body_timeout", "work_disconnected",
@@ -370,6 +371,12 @@ async def resume_work(identity: str, body: WorkControlRequest, request: Request)
 @work_router.post("/{identity}/wait")
 async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request):
     return _json(await WorkContinuationService(_service(request).assignments).wait(
+        identity, body, caller=_write_caller(request)))
+
+
+@work_router.post("/{identity}/wait-job")
+async def wait_job_work(identity: str, body: WorkJobWaitRequest, request: Request):
+    return _json(await WorkContinuationService(_service(request).assignments).wait_job(
         identity, body, caller=_write_caller(request)))
 
 

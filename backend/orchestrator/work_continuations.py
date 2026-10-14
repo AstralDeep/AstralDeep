@@ -5,8 +5,10 @@ work_api.py and work_publication.py.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
+from astralplane.repositories.tracked_jobs import TrackedJobRecord
 from astralplane.repositories.assignment_models import (
     AssignmentActionReconciliation, AssignmentActionReconciliationPreparation,
     AssignmentActionRecord, AssignmentControlResult, AssignmentOwnerWaitPreparation,
@@ -14,6 +16,8 @@ from astralplane.repositories.assignment_models import (
 )
 from pydantic import Field, ValidationError, field_validator
 
+from orchestrator import remote_jobs
+from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, _method, _owned_operation
 from orchestrator.work_service import _identity, _public
@@ -35,6 +39,26 @@ class WorkOwnerWaitRequest(WorkControlRequest):
 class WorkReconcileRequest(WorkControlRequest):
     prior_result_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     decision: Literal["confirmed_applied", "confirmed_not_applied"]
+
+
+class WorkJobWaitRequest(WorkControlRequest):
+    tracked_job_id: str = Field(min_length=32, max_length=32)
+    machine_id: str = Field(min_length=32, max_length=32)
+    scheduler_job_id: str = Field(min_length=1, max_length=32)
+
+    @field_validator("tracked_job_id", "machine_id")
+    @classmethod
+    def canonical_tracked_ids(cls, value):
+        if re.fullmatch(r"[0-9a-f]{32}", value) is None:
+            raise ValueError("a canonical 32-hex identifier is required")
+        return value
+
+    @field_validator("scheduler_job_id")
+    @classmethod
+    def canonical_scheduler_job(cls, value):
+        if re.fullmatch(r"[0-9]{1,32}", value) is None:
+            raise ValueError("a numeric scheduler job id is required")
+        return value
 
 
 def _request(body, expected):
@@ -96,6 +120,61 @@ class WorkContinuationService(WorkControlService):
                 raise AssignmentError("work_control_unavailable", 503)
             return {"operation": _public(_owned_operation(tx, repository, owner, identity), owner),
                     "applied": True}
+
+        result = await self._transaction(wait, caller)
+        await caller.verify_delivery()
+        return result
+
+    async def wait_job(self, identity, body: WorkJobWaitRequest, *, caller):
+        owner = self._owner(caller)
+        body = _request(body, WorkJobWaitRequest)
+        identity = _identity(identity)
+        source = plane_source_from_orchestrator(self.assignments.orch)
+        context = remote_jobs._tracked_context(source)
+        if context.plane_runtime is not self.store.plane_runtime:
+            raise AssignmentError("work_control_unavailable", 503)
+        event_key = remote_jobs.WAKE_EVENT_PREFIX + body.tracked_job_id
+        signature = digest({"api_version": 1, "operation_id": identity,
+                            "command": "wait_job", **body.model_dump()})
+
+        def wait(tx, repository):
+            read = _owned_operation(tx, repository, owner, identity)
+            receipt = _method(repository, "get_submission_receipt")(
+                tx, owner_id=owner, assignment_id=identity, submission_id=body.submission_id,
+                submission_digest=signature, command="wait")
+            if receipt is not None:
+                return {"operation": _public(read, owner), "applied": False}
+            job = context.repository.get(
+                tx, owner_id=owner, tracked_job_id=body.tracked_job_id, lock=True)
+            if job is None:
+                raise AssignmentError("work_not_found", 404)
+            if type(job) is not TrackedJobRecord or job.owner_id != owner:
+                raise AssignmentError("work_control_unavailable", 503)
+            if job.machine_id != body.machine_id or job.scheduler_job_id != body.scheduler_job_id:
+                raise AssignmentError("work_not_found", 404)
+            if job.terminal:
+                raise AssignmentError("work_job_already_terminal", 409)
+            source_revision = job.last_polled_at if job.last_polled_at is not None else job.created_at
+            current = read.assignment
+            args = dict(owner_id=owner, assignment_id=identity,
+                        expected_instruction_revision=current.instruction_revision,
+                        expected_control_epoch=current.control_epoch,
+                        expected_state_version=body.expected_revision,
+                        submission_id=body.submission_id, submission_digest=signature,
+                        event_key=event_key, source_revision=source_revision,
+                        control_version=1)
+            result = _sync(_method(repository, "set_owner_event_wait")(tx, **args))
+            if (type(result) is not AssignmentControlResult or result.applied is None
+                    or result.assignment.owner_id != owner
+                    or result.assignment.assignment_id != identity):
+                raise AssignmentError("work_control_unavailable", 503)
+            prepared_applied = bool(result.applied)
+            if prepared_applied:
+                self.audit.append(tx, owner_id=owner, command="wait",
+                                  record=result.assignment,
+                                  submission_id=body.submission_id)
+            return {"operation": _public(_owned_operation(tx, repository, owner, identity), owner),
+                    "applied": prepared_applied}
 
         result = await self._transaction(wait, caller)
         await caller.verify_delivery()

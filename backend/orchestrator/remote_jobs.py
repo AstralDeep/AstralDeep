@@ -10,7 +10,10 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from astralplane.repositories import RepositoryConflictError, RepositoryError
+from astralplane.repositories.assignments import digest as _outcome_digest
 from astralplane.repositories.tracked_jobs import TrackedJobRecord
+from orchestrator.work_subscriptions import event_waiters
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     plane_source_from_orchestrator,
@@ -18,6 +21,9 @@ from orchestrator.plane_repository_context import (
 )
 
 logger = logging.getLogger("RemoteJobs")
+
+WAKE_EVENT_PREFIX = "remote-job:"
+_WAKE_RETRIES = 2
 
 TERMINAL_STATES = {
     "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL",
@@ -151,15 +157,136 @@ def _mark_notified(db, row: Dict[str, Any]) -> None:
     )
 
 
+def _job_outcome(state: str, exit_code: Optional[str], *, confirmed: bool = True) -> str:
+    base = _base_state(state)
+    if base == "ORPHANED":
+        return "orphaned"
+    if base in {"CANCELLED", "REVOKED"}:
+        return "cancelled"
+    if base == "COMPLETED" and str(exit_code or "0").split(":")[0] in ("", "0"):
+        return "completed" if confirmed else "unconfirmed"
+    return "failed"
+
+
+def _try_wake(assignments, tx, *, owner_id: str, assignment_id: str, event_id: str,
+              event_key: str, revision: int, event_digest: str,
+              woken: List[str], skipped: List[Dict[str, str]]) -> None:
+    attempts_left = _WAKE_RETRIES + 1
+    while attempts_left:
+        attempts_left -= 1
+        try:
+            with tx.savepoint("rj_wake_" + assignment_id.replace("-", "")):
+                current = assignments.get_operation(tx, owner_id=owner_id,
+                                                    assignment_id=assignment_id)
+                if current is None:
+                    return
+                record = current.assignment
+                wait = (record.operation or {}).get("control", {}).get("wait") or {}
+                observed = wait.get("source_revision", 0)
+                if revision < observed:
+                    raise RepositoryConflictError("assignment_event_revision_conflict",
+                                                  code="assignment_event_revision_conflict")
+                wake_revision = max(revision, observed + 1) if wait else revision
+                result = assignments.accept_wake(
+                    tx, owner_id=owner_id, assignment_id=assignment_id,
+                    expected_state_version=record.state_version,
+                    expected_instruction_revision=record.instruction_revision,
+                    expected_control_epoch=record.control_epoch,
+                    event_id=event_id, event_key=event_key,
+                    source_revision=wake_revision, event_digest=event_digest)
+                if result.applied:
+                    woken.append(assignment_id)
+                return
+        except RepositoryConflictError as exc:
+            skipped.append({"assignment_id": assignment_id, "reason": exc.code})
+            return
+        except RepositoryError:
+            if not attempts_left:
+                raise
+
+
+def _wake_subscribers(assignments, tx, *, owner_id: str, event_key: str, event_id: str,
+                      revision: int, event_digest: str) -> tuple[List[str], List[Dict[str, str]]]:
+    woken: List[str] = []
+    skipped: List[Dict[str, str]] = []
+    for read in event_waiters(assignments, tx, owner_id=owner_id, event_keys={event_key}):
+        _try_wake(assignments, tx, owner_id=owner_id,
+                  assignment_id=read.assignment.assignment_id, event_id=event_id,
+                  event_key=event_key, revision=revision, event_digest=event_digest,
+                  woken=woken, skipped=skipped)
+    return woken, skipped
+
+
+def _audit_completion_wakes(runtime, tx, *, owner_id, tracked_id, revision, outcome, woken):
+    from datetime import UTC, datetime
+
+    from audit.repository import AuditRepository
+    from audit.schemas import AuditEventCreate, AuditEventDTO
+
+    audit = AuditRepository(plane_runtime=runtime)
+    for target_id in woken:
+        now = datetime.now(UTC)
+        result = audit.insert_in_transaction(AuditEventCreate(
+            actor_user_id=owner_id, auth_principal=owner_id, event_class="settings",
+            action_type="remote_job.completion_wake", description="Remote job completion wake",
+            correlation_id=target_id, outcome="success",
+            outputs_meta={"source_tracked_job_id": tracked_id, "target_operation_id": target_id,
+                          "source_revision": revision, "outcome": outcome},
+            started_at=now, completed_at=now), transaction=tx, plane_runtime=runtime)
+        if type(result) is not AuditEventDTO:
+            raise RepositoryError("remote job wake audit unavailable")
+
+
+def _apply_and_wake(db, row: Dict[str, Any], *, state: str, exit_code: Optional[str],
+                    outcome_name: str) -> TrackedJobRecord:
+    if outcome_name not in {"completed", "failed", "cancelled", "orphaned"}:
+        raise RepositoryConflictError("remote_job_completion_unconfirmed",
+                                      code="remote_job_completion_unconfirmed")
+    context = _tracked_context(db)
+    assignments = context.plane_runtime.repositories.assignments
+    tracked_id = row["tracked_job_id"]
+    with context.plane_runtime.transaction() as tx:
+        record = context.repository.apply_poll(
+            tx,
+            owner_id=row["owner_user_id"],
+            tracked_job_id=tracked_id,
+            expected_fail_count=int(row.get("fail_count") or 0),
+            expected_last_polled_at=row.get("last_polled_at"),
+            state=state,
+            exit_code=exit_code,
+            terminal=True,
+            fail_count=0,
+            polled_at=int(time.time()),
+        )
+        revision = record.finished_at
+        woken, skipped = _wake_subscribers(
+            assignments, tx, owner_id=row["owner_user_id"],
+            event_key=WAKE_EVENT_PREFIX + tracked_id,
+            event_id="rj-wake:" + tracked_id, revision=revision,
+            event_digest=_outcome_digest({
+                "event": "remote_job_terminal",
+                "tracked_job_id": tracked_id,
+                "scheduler_job_id": row.get("scheduler_job_id"),
+                "machine_id": row.get("machine_id"),
+                "state": state,
+                "exit_code": exit_code,
+                "outcome": outcome_name,
+                "revision": revision,
+            }))
+        if woken:
+            _audit_completion_wakes(context.plane_runtime, tx,
+                                    owner_id=row["owner_user_id"], tracked_id=tracked_id,
+                                    revision=revision, outcome=outcome_name, woken=woken)
+    if woken or skipped:
+        logger.info("remote-job wake job=%s outcome=%s woken=%d skipped=%s",
+                    tracked_id, outcome_name, len(woken), skipped)
+    return record
+
+
 def _orphan(db, row: Dict[str, Any]) -> None:
-    _apply(
-        db,
-        row,
-        state="orphaned",
-        exit_code=row.get("exit_code"),
-        terminal=True,
-        fail_count=int(row.get("fail_count") or 0),
-    )
+    # atomic apply+wake: a crash rolls both back and the next cycle re-probes and retries the delivery
+    _apply_and_wake(db, row, state="orphaned", exit_code=row.get("exit_code"),
+                    outcome_name="orphaned")
 
 
 def _touch_fail(db, row: Dict[str, Any], fail_count: int) -> None:
@@ -246,7 +373,8 @@ def _probe_state(orch, row: Dict[str, Any]) -> Dict[str, Any]:
     if jobs:
         st = jobs[0]["state"] or "RUNNING"
         term = is_terminal_state(st)
-        out = {"state": st, "terminal": term, "exit_code": None, "machine": label}
+        out = {"state": st, "terminal": term, "exit_code": None, "machine": label,
+               "confirmed": True}
         if term and row.get("output_path"):
             out["output_tail"] = _tail(tx, target, row["output_path"])
         return out
@@ -258,15 +386,12 @@ def _probe_state(orch, row: Dict[str, Any]) -> Dict[str, Any]:
         st = acct[0]["state"] or "COMPLETED"
         term = is_terminal_state(st)
         out = {"state": st, "terminal": term, "exit_code": acct[0].get("exit_code") or "",
-               "machine": label}
+               "machine": label, "confirmed": True}
         if term and row.get("output_path"):
             out["output_tail"] = _tail(tx, target, row["output_path"])
         return out
     if _base_state(row.get("state")) in ("RUNNING", "COMPLETING", "PENDING", "CONFIGURING"):
-        out = {"state": "COMPLETED", "terminal": True, "exit_code": "", "machine": label}
-        if row.get("output_path"):
-            out["output_tail"] = _tail(tx, target, row["output_path"])
-        return out
+        return {"transient": True, "machine": label}
     return {"state": row.get("state") or "submitted", "terminal": False,
             "exit_code": None, "machine": label}
 
@@ -295,6 +420,8 @@ async def _poll_one(orch, row: Dict[str, Any]) -> None:
     import asyncio
     source = plane_source_from_orchestrator(orch)
     outcome = await asyncio.to_thread(_probe_state, orch, row)
+    if outcome.get("terminal") and outcome.get("confirmed") is False:
+        outcome = {"transient": True}
 
     if outcome.get("skip"):
         return
@@ -315,8 +442,14 @@ async def _poll_one(orch, row: Dict[str, Any]) -> None:
     terminal = bool(outcome.get("terminal"))
     exit_code = outcome.get("exit_code")
     changed = (_base_state(new_state) != _base_state(row.get("state"))) or terminal != bool(row.get("terminal"))
-    await asyncio.to_thread(_apply, source, row, state=new_state, exit_code=exit_code,
-                            terminal=terminal, fail_count=0)
+    if terminal:
+        await asyncio.to_thread(
+            _apply_and_wake, source, row, state=new_state, exit_code=exit_code,
+            outcome_name=_job_outcome(new_state, exit_code,
+                                      confirmed=bool(outcome.get("confirmed", True))))
+    else:
+        await asyncio.to_thread(_apply, source, row, state=new_state, exit_code=exit_code,
+                                terminal=False, fail_count=0)
     if changed:
         await _push_component(orch, row, state=new_state, exit_code=exit_code,
                               terminal=terminal, output_tail=outcome.get("output_tail"))
