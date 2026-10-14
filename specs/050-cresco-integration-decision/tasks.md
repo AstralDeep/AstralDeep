@@ -4,12 +4,14 @@
 **Design artifacts**: [research.md](research.md) · [data-model.md](data-model.md) · [quickstart.md](quickstart.md) · [contracts/](contracts/) (wsapi-client / tool / audit).
 Product feature — implementation tasks. Verification is end-to-end against a local single-node Cresco fabric plus unit/integration tests (Constitution III/X/XI apply).
 
+**Bounded 2026-10-13 by [`specs/095-cresco-bridge-contract/`](../095-cresco-bridge-contract/spec.md)** (issue #279): all tasks below remain unchecked; any implementation MUST adopt the spec 095 contract and re-verify the 2026-07-06 upstream source pins first. T003a's registry target is retired (stale); see the reconciliation note in [spec.md](spec.md).
+
 ## Phase 0 — Scaffold
 
 - [ ] T001 Create `backend/agents/cresco/` package matching the feature-040 discovery convention: `__init__.py`, **`cresco_agent.py`** (`class CrescoAgent(BaseA2AAgent)`, `agent_id="cresco-1"`), **`mcp_server.py`** (router; `self.tools = TOOL_REGISTRY`), **`mcp_tools.py`** (handlers + `TOOL_REGISTRY`), `wsapi_client.py`, `tests/`. (Discovery requires `<dir>/<dir>_agent.py`; do **not** name it `agent.py`.)
 - [ ] T002 Add `FF_CRESCO` (default off, fail-closed) to `backend/shared/feature_flags.py`.
 - [ ] T003 Register the agent: add `"cresco"` to `BUILT_IN_AGENT_DIRS` in `backend/orchestrator/local_agents.py` **and** add a `FF_CRESCO` `continue` guard in the `register_built_ins` loop (no per-agent flag pattern exists yet — introduce one). Seeded **not** safe (owner approval required). Flag-off ⇒ not registered (SC-001).
-- [ ] T003a Add `'cresco-1'` to `_FIRST_PARTY_PUBLIC_AGENT_IDS` in `backend/shared/database.py` so the agent is visible in the Agents UI when the flag is on. (Do **not** add it to `_UNTRUSTED_AGENTS` in `taint.py` — Cresco data is fabric-internal, not open-web content.)
+- [ ] T003a ~~Add `'cresco-1'` to `_FIRST_PARTY_PUBLIC_AGENT_IDS` in `backend/shared/database.py`~~ **RETIRED 2026-10-13 (stale target)**: `backend/shared/database.py` no longer exists; the equivalent registry is `FIRST_PARTY_PUBLIC_AGENT_IDS` in `backend/orchestrator/local_agents.py`. (Do **not** add it to `_UNTRUSTED_AGENTS` in `taint.py` — Cresco data is fabric-internal, not open-web content.)
 
 ## Phase 1 — wsapi client (P1 foundation)
 
