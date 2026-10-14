@@ -15995,7 +15995,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             )
                         else:
                             response = await self._call_llm_streamed(
-                                websocket, client, kwargs, stream_chat_id)
+                                websocket, client, kwargs, stream_chat_id,
+                                context_base_url=getattr(resolved, "base_url", None),
+                            )
                     except Exception as _stream_exc:
                         stream_error = self._safe_llm_error_metadata(_stream_exc)
                         logger.warning(
@@ -16258,6 +16260,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         queue: asyncio.Queue = asyncio.Queue()
         from threading import Event
         abandoned = Event()
+        preserve_continuation = is_gemini_continuation_profile(context_base_url)
 
         def _pump():
             from types import SimpleNamespace
@@ -16336,10 +16339,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 acc["name"] += fn.name
                             if getattr(fn, "arguments", None):
                                 acc["arguments"] += fn.arguments
-                        frag = getattr(tc, "extra_content", None)
-                        if frag is not None:
-                            acc["signature"] = merge_continuation_signature(
-                                acc["signature"], frag)
+                        if preserve_continuation:
+                            frag = getattr(tc, "extra_content", None)
+                            if frag is not None:
+                                acc["signature"] = merge_continuation_signature(
+                                    acc["signature"], frag)
                 d_content = getattr(delta, "content", None)
                 if d_content:
                     content_parts.append(d_content)

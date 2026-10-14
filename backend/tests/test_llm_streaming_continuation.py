@@ -407,7 +407,10 @@ async def test_stream_and_non_stream_produce_equivalent_outgoing_wire():
     assert streamed[0]["function"]["arguments"] == '{"city": "Rome"}'
 
 
-@pytest.mark.parametrize("bad_signature", [42, "", "s" * (MAX_THOUGHT_SIGNATURE_BYTES + 1)])
+@pytest.mark.parametrize(
+    "bad_signature", [42, "", "s" * (MAX_THOUGHT_SIGNATURE_BYTES + 1)],
+    ids=["non-string", "empty", "oversized"],
+)
 async def test_unusable_stream_metadata_falls_back_to_non_stream(bad_signature):
     script = [
         httpx.Response(200, content=_sse_completion([
@@ -523,6 +526,44 @@ async def test_non_gemini_profile_is_not_guarded_or_rewritten():
     sent_messages = completions.calls[0]["messages"]
     assert sent_messages[0]["tool_calls"][0]["extra_content"] == {
         "google": {"thought_signature": 5}}
+
+
+@pytest.mark.parametrize("base_url", [
+    "https://api.openai.com/v1",
+    "http://localhost:11434/v1",
+    "https://my-proxy.example/v1",
+])
+@pytest.mark.parametrize("extra_content", [
+    "opaque-provider-state",
+    {"google": "another-provider-value"},
+    {"google": {"thought_signature": SIG_A}},
+])
+async def test_non_gemini_stream_does_not_interpret_continuation_metadata(
+    base_url, extra_content,
+):
+    streamed_call = _delta_tool_call(
+        0, "call_a", "get_weather", '{"city":"Rome"}')
+    streamed_call["extra_content"] = extra_content
+    transport = _ScriptedTransport([
+        httpx.Response(200, content=_sse_completion([
+            _chunk({"tool_calls": [streamed_call]}),
+            _chunk({}, finish_reason="tool_calls"),
+        ]), headers={"content-type": "text/event-stream"}),
+    ])
+    client = OpenAI(
+        api_key="test-key", base_url=base_url, max_retries=0,
+        http_client=httpx.Client(transport=transport),
+    )
+    orch = _orch(client, base_url=base_url)
+    message, _ = await orch._call_llm(
+        object(), [{"role": "user", "content": "weather?"}],
+        tools_desc=_tools_desc(), allow_stream=True, stream_chat_id="chat-1")
+
+    assert len(transport.requests) == 1
+    assert transport.requests[0]["stream"] is True
+    assert message.tool_calls[0].id == "call_a"
+    assert message.tool_calls[0].function.arguments == '{"city":"Rome"}'
+    assert getattr(message.tool_calls[0], "extra_content", None) is None
 
 
 def _object_chunk_response(chunk):
