@@ -440,6 +440,34 @@ class TestLifecycle:
         out, _ = _read_to_eof(env.manager, OWNER, session_id, timeout=25.0)
         assert out["eof"] is True
 
+    def test_spawned_shells_start_interruptible_despite_parent_pollution(self, env):
+        import signal as _signal
+        previous = {
+            sig: _signal.getsignal(sig)
+            for sig in (_signal.SIGHUP, _signal.SIGINT, _signal.SIGQUIT)
+        }
+        try:
+            for sig in previous:
+                _signal.signal(sig, _signal.SIG_IGN)
+            info = env.tools["start_terminal"](user_id=OWNER, command="sleep 60")
+            session_id = _data_of(info)["session"]["session_id"]
+            session = env.manager._sessions[session_id]
+            child = session.process.pid
+            ign = next(
+                int(line.split()[1], 16)
+                for line in open(f"/proc/{child}/status")
+                if line.startswith("SigIgn:")
+            )
+            assert ign & 0b111 == 0
+            env.tools["terminal_interrupt"](user_id=OWNER, session_id=session_id)
+            deadline = time.monotonic() + 8
+            while not session.exited() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert session.exited()
+        finally:
+            for sig, handler in previous.items():
+                _signal.signal(sig, handler)
+
     def test_resize_updates_the_session(self, env):
         info = env.tools["start_terminal"](user_id=OWNER)
         session_id = _data_of(info)["session"]["session_id"]

@@ -521,16 +521,23 @@ class SupervisedProcess:
                 pass
             self._wait_for_tree(grace_deadline)
 
+            force_deadline = deadline
             if self.process_tree_alive():
                 self._signal_tree(force=True, reason=reason)
+                # Earlier siblings' cleanups can exhaust the shared deadline, and
+                # the forced kill still needs its own bounded confirmation window.
+                force_deadline = max(
+                    deadline,
+                    time.monotonic() + self._limits.termination_deadline_seconds / 5,
+                )
             try:
-                self._process.wait(timeout=self._remaining(deadline))
+                self._process.wait(timeout=self._remaining(force_deadline))
             except subprocess.TimeoutExpired:
                 pass
-            self._wait_for_tree(deadline)
-            self._join_readers(deadline)
+            self._wait_for_tree(force_deadline)
+            self._join_readers(force_deadline)
             self._close_pipes()
-            self._join_readers(deadline)
+            self._join_readers(force_deadline)
 
             stdout = self._readers[OutputStream.STDOUT].snapshot()
             stderr = self._readers[OutputStream.STDERR].snapshot()
