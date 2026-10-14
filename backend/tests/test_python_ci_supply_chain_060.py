@@ -242,6 +242,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
 
     expected_scripts = {
         "check_acceptance_mutations.py",
+        "ci_fence_egress_pilot.py",
         "ci_review_diagnostics.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
@@ -355,6 +356,19 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     )
 
     assert completed.returncode == 0, completed.stdout
+
+
+def test_lint_job_fence_pilot_declaration_is_reviewed_and_applicable() -> None:
+    from scripts.ci_fence_egress_pilot import evaluate_workflow, pilot_patch
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    evaluation = evaluate_workflow(workflow)
+    if evaluation.state == "conforming":
+        assert evaluation.reasons == ()
+        return
+    assert evaluation.state == "absent", evaluation.reasons
+    conformed = evaluate_workflow(pilot_patch(workflow))
+    assert conformed.state == "conforming", conformed.reasons
 
 
 def test_windows_candidate_build_never_installs_the_test_lock() -> None:
