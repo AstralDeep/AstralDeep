@@ -337,6 +337,7 @@ def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
         "backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts",
         "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
         "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+        "scripts/tests/test_install_doctor.py::test_real_checkout_composition_and_contract_pass",
     }
 
 
