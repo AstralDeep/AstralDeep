@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import io
 import importlib.util
 import json
 import re
@@ -177,7 +178,10 @@ def test_c07_envelope_shape_and_deterministic_encoding():
 
     sample = expect["bulk_params_sample"]
     json_bytes = json.dumps(sample, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    encoded = base64.b64encode(gzip.compress(json_bytes, compresslevel=9, mtime=0)).decode("ascii")
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", compresslevel=9, mtime=0) as stream:
+        stream.write(json_bytes)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     assert encoded == expect["bulk_params_encoding"]
     assert json.loads(gzip.decompress(base64.b64decode(encoded))) == sample
 

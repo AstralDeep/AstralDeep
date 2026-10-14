@@ -46,7 +46,10 @@
       "title": "GaiaKeep enablement requires FF_GAIAKEEP and FF_CRESCO",
       "expect": {
         "entrypoint": "backend/start.py::_gaiakeep_enabled",
-        "flags": ["gaiakeep", "cresco"],
+        "flags": [
+          "gaiakeep",
+          "cresco"
+        ],
         "operator": "and",
         "probe": {
           "gaiakeep": true,
@@ -62,10 +65,26 @@
       "expect": {
         "entrypoint": "backend/start.py::_gaiakeep_enabled",
         "truth_table": [
-          {"gaiakeep": false, "cresco": false, "expected": false},
-          {"gaiakeep": true, "cresco": false, "expected": false},
-          {"gaiakeep": false, "cresco": true, "expected": false},
-          {"gaiakeep": true, "cresco": true, "expected": true}
+          {
+            "gaiakeep": false,
+            "cresco": false,
+            "expected": false
+          },
+          {
+            "gaiakeep": true,
+            "cresco": false,
+            "expected": false
+          },
+          {
+            "gaiakeep": false,
+            "cresco": true,
+            "expected": false
+          },
+          {
+            "gaiakeep": true,
+            "cresco": true,
+            "expected": true
+          }
         ],
         "flag_read_failure_result": false
       }
@@ -76,7 +95,7 @@
       "title": "Pinned wsapi envelope shape and deterministic bulk-param encoding",
       "note": "Shape pinned from the 2026-07-06 evaluation (wsapi @ d5b4bcd, cross-read from pycrescolib 1.3.0); field values illustrate the envelope shape, and byte-level fabric frames require upstream re-verification before implementation.",
       "expect": {
-        "encoding_rule": "base64(gzip(json_bytes)) with json_bytes = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8') and gzip.compress(json_bytes, compresslevel=9, mtime=0)",
+        "encoding_rule": "base64(gzip(json_bytes)) with canonical JSON, compression level9, mtime0 and platform-independent OS byte255 via gzip.GzipFile",
         "canonical_request": {
           "message_info": {
             "message_type": 4,
@@ -92,7 +111,7 @@
           "region": "global",
           "limit": 128
         },
-        "bulk_params_encoding": "H4sIAAAAAAACA6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA"
+        "bulk_params_encoding": "H4sIAAAAAAAC/6tWysnMzSxRsjI0stBRKkpNz8zPU7JSSs/JT0rMUaoFAA/AW+ofAAAA"
       }
     },
     {
@@ -177,7 +196,14 @@
       "expect": {
         "variable": "CRESCO_SERVICE_KEY",
         "wire_header": "cresco_service_key",
-        "scan_paths": ["backend", "config", "deploy", "scripts", "specs", "tooling"],
+        "scan_paths": [
+          "backend",
+          "config",
+          "deploy",
+          "scripts",
+          "specs",
+          "tooling"
+        ],
         "literal_pattern": "cresco_service_key[\"']?\\s*[:=]\\s*[\"'][A-Za-z0-9+/=_-]{12,}[\"']"
       }
     },
@@ -195,7 +221,12 @@
           "docker-compose.staging.yml",
           "docker-compose.voice-integration.yml"
         ],
-        "forbidden_terms": ["cresco", "pycrescolib", "activemq", "osgi"]
+        "forbidden_terms": [
+          "cresco",
+          "pycrescolib",
+          "activemq",
+          "osgi"
+        ]
       }
     },
     {
@@ -203,7 +234,12 @@
       "kind": "source_pins",
       "title": "Authoritative external sources carry identifier, status, and retrieval date",
       "expect": {
-        "required_status_values": ["pinned-unreverified", "evaluated", "pinned", "open-external"],
+        "required_status_values": [
+          "pinned-unreverified",
+          "evaluated",
+          "pinned",
+          "open-external"
+        ],
         "sources": [
           {
             "name": "CrescoEdge/agent",
