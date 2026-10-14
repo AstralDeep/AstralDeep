@@ -1,15 +1,16 @@
-"""Loads and validates the frozen answer-behavior corpus (data/corpus.json): schema,
-bounds, provenance pins, declared identities, and per-actor frozen answers, failing
-closed on any malformed entry.
+"""Loads and validates the answer-behavior corpus: the tracked module literal by default
+or a JSON file override; enforces schema, bounds, provenance pins, declared identities,
+and per-actor frozen answers, failing closed on any malformed entry.
 """
 
 from __future__ import annotations
 
+import copy
 import json
-import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from answer_behavior import corpus_data
 from answer_behavior.models import (
     ACTIONS,
     DIMENSIONS,
@@ -27,10 +28,6 @@ from answer_behavior.models import (
 SCHEMA_VERSION = 1
 MAX_CASES = 32
 
-DEFAULT_CORPUS_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "corpus.json"
-)
-
 
 @dataclass(frozen=True)
 class Corpus:
@@ -47,7 +44,9 @@ class Corpus:
 
 
 def load_corpus(path: Optional[str] = None) -> Corpus:
-    with open(path or DEFAULT_CORPUS_PATH, "r", encoding="utf-8") as handle:
+    if path is None:
+        return parse_corpus(copy.deepcopy(corpus_data.CORPUS))
+    with open(path, "r", encoding="utf-8") as handle:
         return parse_corpus(json.load(handle))
 
 

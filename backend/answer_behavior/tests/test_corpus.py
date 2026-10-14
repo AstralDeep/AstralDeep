@@ -145,11 +145,11 @@ def test_rejects_missing_required_field():
 
 
 def _raw_corpus():
-    from answer_behavior.corpus import DEFAULT_CORPUS_PATH
-    import json
+    import copy
 
-    with open(DEFAULT_CORPUS_PATH, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    from answer_behavior import corpus_data
+
+    return copy.deepcopy(corpus_data.CORPUS)
 
 
 def test_rejects_empty_case_list():

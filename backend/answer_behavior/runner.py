@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
-from answer_behavior.corpus import DEFAULT_CORPUS_PATH, Corpus, load_corpus
+from answer_behavior.corpus import Corpus, load_corpus
 from answer_behavior.drivers import LIVE_ENV_FLAG, get_driver
 from answer_behavior.models import ACTIONS
 from answer_behavior.report import dimension_stats, render_markdown
@@ -50,7 +50,7 @@ def run(config: RunConfig, stamp: str = "local") -> Tuple[RunRecord, str, List[s
             f"live mode is opt-in: set {LIVE_ENV_FLAG}=1 to run the bounded, non-gating "
             "live driver"
         )
-    corpus: Corpus = load_corpus(config.corpus_path or DEFAULT_CORPUS_PATH)
+    corpus: Corpus = load_corpus(config.corpus_path)
     live_driver = None
     if config.mode == "frozen":
         actors = [actor for actor in config.actors if actor in ACTIONS]

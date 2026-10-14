@@ -28,7 +28,7 @@ Artifacts land in `backend/answer_behavior/_artifacts/<run_id>/` (gitignored):
 
 ## What is scored, and how
 
-Three dimensions over one frozen 15-case corpus (`data/corpus.json`):
+Three dimensions over one frozen 15-case corpus (`corpus_data.CORPUS`):
 
 | Dimension | Scenarios |
 |---|---|
@@ -75,7 +75,7 @@ reasoning is never requested, read, or scored.
 The corpus is **Astral-original synthetic content** (Apache-2.0, this repository): no
 third-party prompt text is redistributed. The suite selects and pins — as *scenario
 patterns and motivation only* — the sources reviewed on 2026-10-06 (see
-`provenance.adapted_from` inside `data/corpus.json` for the exact pins):
+`provenance.adapted_from` inside `answer_behavior/corpus_data.py` for the exact pins):
 
 - **OpenAI Model Spec dataset** (`openai/model_spec_dataset` @ `89c2607…`, MIT) and
   **model_spec_evals** (@ `1d5df6d…`, MIT) — instruction-hierarchy scenario *patterns*.
