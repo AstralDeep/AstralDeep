@@ -60,9 +60,9 @@ _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
 # ========== NEW: Resource URI patterns for ChatGPT Work panel ==========
-RESOURCE_URI_PATTERN = re.compile(r"^astral://work/([a-f0-9\-]+)/status$")
-ARTIFACT_URI_PATTERN = re.compile(r"^astral://artifact/([a-f0-9\-]+)$")
-MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
+_RESOURCE_URI_PATTERN = re.compile(r"^astral://work/([a-f0-9\-]+)/status$")
+_ARTIFACT_URI_PATTERN = re.compile(r"^astral://artifact/([a-f0-9\-]+)$")
+_MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
 _METHOD_PHASE = {
     "server/discover": "discover",
     "tools/list": "tools_list",
@@ -438,15 +438,15 @@ async def read_resource(
     3. Return bounded view model (sandbox sensitive data)
     """
     # 1. Validate URI format
-    work_match = RESOURCE_URI_PATTERN.match(uri)
-    artifact_match = ARTIFACT_URI_PATTERN.match(uri)
+    work_match = _RESOURCE_URI_PATTERN.match(uri)
+    artifact_match = _ARTIFACT_URI_PATTERN.match(uri)
 
     if not work_match and not artifact_match:
         raise MCPAuthError(
             400,
             "invalid_uri",
             "URI format is invalid. Expected: astral://work/{id}/status or astral://artifact/{id}",
-            MCP_RESOURCES_SCOPE,
+            _MCP_RESOURCES_SCOPE,
         )
 
     # 2. Extract work ID from URI
@@ -463,7 +463,7 @@ async def read_resource(
             503,
             "service_unavailable",
             "Work operations not available",
-            MCP_RESOURCES_SCOPE,
+            _MCP_RESOURCES_SCOPE,
         )
 
     # 4. Fetch the work item
@@ -479,7 +479,7 @@ async def read_resource(
                 403,
                 "forbidden",
                 "You do not have permission to access this resource",
-                MCP_RESOURCES_SCOPE,
+                _MCP_RESOURCES_SCOPE,
             )
 
         # 6. Build bounded view model
@@ -514,7 +514,7 @@ async def read_resource(
             500,
             "internal_error",
             "Failed to read resource",
-            MCP_RESOURCES_SCOPE,
+            _MCP_RESOURCES_SCOPE,
         ) from exc
 
 
