@@ -57,9 +57,23 @@ def _record(work_id=WORK_ID, title="Nightly digest"):
     }
 
 
+class _Assignments:
+    """Minimal stand-in for the facade's assignment registry.
+
+    ``FrameworkWorkOperations.__init__`` reads ``assignments.store``, so a bare
+    ``object()`` is not a usable substitute.
+    """
+
+    store = None
+
+
+def _new_facade():
+    return FrameworkWorkOperations(assignments=_Assignments(), credentials=object())
+
+
 def _facade(*, page=None, record=None, list_error=None, get_error=None):
     """A real facade whose reads are answered by a deterministic stub."""
-    ops = FrameworkWorkOperations(assignments=object(), credentials=object())
+    ops = _new_facade()
 
     async def _list(caller, *, limit=50, after_id=None):
         assert isinstance(caller, FrameworkCaller)
@@ -195,7 +209,7 @@ class TestResourceListing:
 
     def test_unexpected_facade_payload_lists_nothing(self):
         resources = asyncio.run(list_resources(
-            _endpoint(_facade(page=None)), OWNER_ID, _claims(_caller())))
+            _endpoint(_facade(page={"unexpected": True})), OWNER_ID, _claims(_caller())))
         assert resources == []
 
 
@@ -287,7 +301,7 @@ class TestOwnerIsolation:
     def test_reader_authenticates_with_the_caller_owner(self):
         """The facade receives the caller itself, never a caller-less request."""
         seen = []
-        ops = FrameworkWorkOperations(assignments=object(), credentials=object())
+        ops = _new_facade()
 
         async def _list(caller, *, limit=50, after_id=None):
             seen.append(caller)
