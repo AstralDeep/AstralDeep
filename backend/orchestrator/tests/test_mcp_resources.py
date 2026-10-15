@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 """
 Tests for MCP resources endpoint (Bounty #322)
 Tests resources/list and resources/read methods.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 class TestResourceList:
@@ -282,17 +281,17 @@ class TestFeatureNegotiation:
     async def test_resource_uri_patterns_exist(self):
         """URI patterns should be defined and match expected formats"""
         from orchestrator.mcp_server_endpoint import (
-            RESOURCE_URI_PATTERN,
-            ARTIFACT_URI_PATTERN,
+            _RESOURCE_URI_PATTERN,
+            _ARTIFACT_URI_PATTERN,
         )
 
         # Valid status URI
-        assert RESOURCE_URI_PATTERN.match("astral://work/abc123/status")
+        assert _RESOURCE_URI_PATTERN.match("astral://work/abc123/status")
         # Valid artifact URI
-        assert ARTIFACT_URI_PATTERN.match("astral://artifact/abc123")
+        assert _ARTIFACT_URI_PATTERN.match("astral://artifact/abc123")
         # Invalid URI
-        assert not RESOURCE_URI_PATTERN.match("astral://work/INVALID!")
-        assert not ARTIFACT_URI_PATTERN.match("astral://artifact/INVALID!")
+        assert not _RESOURCE_URI_PATTERN.match("astral://work/INVALID!")
+        assert not _ARTIFACT_URI_PATTERN.match("astral://artifact/INVALID!")
 
 
 class TestSecurityChecks:
