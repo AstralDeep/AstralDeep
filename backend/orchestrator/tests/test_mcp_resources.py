@@ -6,6 +6,8 @@ environment which lacks the FastAPI dependency.
 """
 
 import asyncio
+import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +17,7 @@ from orchestrator.mcp_authz import MCPAuthError
 from orchestrator.mcp_server_endpoint import (
     _WORK_RESOURCE_URI_PATTERN,
     _build_bounded_view_model,
+    create_mcp_router,
     list_resources,
     read_resource,
 )
@@ -101,7 +104,11 @@ def _make_mock_request(headers=None, body=None):
     req.headers.get = MagicMock(side_effect=lambda k, d=None: (headers or {}).get(k, d))
     req.query_params = {}
     req.cookies = {}
-    req.stream = AsyncMock(return_value=iter([body or b'{}']))
+    # _read_body consumes the body via `async for chunk in request.stream()`,
+    # so the mock must return an *async* iterable, not a plain iterator.
+    async def _stream():
+        yield body or b'{}'
+    req.stream = MagicMock(return_value=_stream())
     req.is_disconnected = AsyncMock(return_value=False)
     return req
 
@@ -326,47 +333,78 @@ class TestOwnerIsolation:
         ops = _facade(get_error=AssignmentError("work_authentication_required", 401))
         with pytest.raises(MCPAuthError) as caught:
             asyncio.run(read_resource(
-                _endpoint(_facade()), OWNER_ID, f"astral://work/{WORK_ID}/status", _claims(_caller())))
+                _endpoint(ops), OWNER_ID, f"astral://work/{WORK_ID}/status", _claims(_caller())))
         assert caught.value.status_code == 401
 
 
+class _Orchestrator:
+    """Minimal orchestrator stand-in; only a real Work facade is required.
+
+    mcp_endpoint reads ``orchestrator.framework_work_operations`` (a real
+    ``FrameworkWorkOperations``) and optionally ``orchestrator.runtime_observability``
+    (absent here, so metric recording is a no-op). Admission is mocked away.
+    """
+    history = None
+
+
 class TestIntegration:
-    """Integration tests that exercise the full mcp_endpoint dispatch path.
-    
-    These tests create a minimal mock Request and call mcp_endpoint directly,
-    avoiding the FastAPI dependency so they run in CI.
+    """Exercise the real mcp_endpoint dispatch path for resources/*.
+
+    ``mcp_endpoint`` is a route handler nested inside ``create_mcp_router``
+    (decorated with ``@router.post("/mcp")``), so it is not importable at module
+    level. The faithful, FastAPI-free way to reach it -- and to cover its
+    resources/list and resources/read branches -- is to build the router and
+    pull the ``/mcp`` handler out, then drive it with a mock Request. Admission
+    is mocked so we only exercise the resource dispatch logic.
     """
 
-    def _make_endpoint(self, ops):
-        """Create an endpoint object with the given operations."""
-        class _Endpoint:
-            def __init__(self, ops):
-                self.framework_work_operations = ops
-            history = None
-        return _Endpoint(ops)
+    @asynccontextmanager
+    async def _fake_admission(self, *args, **kwargs):
+        yield MagicMock()
 
-    def test_resources_list_dispatch_via_endpoint(self):
-        """resources/list goes through the main dispatcher, not just the helper."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
-        ops = _facade(page={"operations": [_record()], "next_cursor": None, "page_full": False})
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
+    def _mcp_endpoint(self, ops):
+        """Build the router with a real Work facade and return the /mcp handler."""
+        orch = _Orchestrator()
+        orch.framework_work_operations = ops
+        router = create_mcp_router(orch, public_base_url="https://example.com")
+        return next(
+            r.endpoint
+            for r in router.routes
+            if getattr(r, "path", None) == "/mcp"
+        )
+
+    def _claims_with_sub(self):
+        claims = _claims(_caller())
+        claims.setdefault("sub", OWNER_ID)
+        return claims
+
+    def _dispatch(self, ops, *, method, body, mcp_method=None):
+        mcp_endpoint = self._mcp_endpoint(ops)
         mock_request = _make_mock_request(
             headers={
                 "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/list",
+                "mcp-protocol-version": "2026-07-28",
+                "mcp-method": mcp_method or method,
             },
-            body=b'{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+            body=body,
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
+        with patch(
+            "orchestrator.mcp_server_endpoint.authorize_mcp_request",
+            new_callable=lambda: AsyncMock(return_value=self._claims_with_sub()),
+        ), patch(
+            "orchestrator.mcp_server_endpoint._admitted_request", self._fake_admission
+        ):
+            return asyncio.run(mcp_endpoint(mock_request))
+
+    def test_resources_list_dispatch_via_endpoint(self):
+        """resources/list is served through the main dispatcher, not just the helper."""
+        ops = _facade(page={"operations": [_record()], "next_cursor": None, "page_full": False})
+        resp = self._dispatch(
+            ops,
+            method="resources/list",
+            body=b'{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
+        )
         assert resp.status_code == 200
-        import json
         body = json.loads(resp.body)
         assert body["result"]["resultType"] == "complete"
         resources = body["result"]["resources"]
@@ -376,27 +414,14 @@ class TestIntegration:
         assert f"astral://work/{WORK_ID}/artifacts" in uris
 
     def test_resources_read_dispatch_via_endpoint(self):
-        """resources/read goes through the main dispatcher, not just the helper."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
+        """resources/read is served through the main dispatcher, not just the helper."""
         ops = _facade(record=_record())
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
-        mock_request = _make_mock_request(
-            headers={
-                "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/read",
-            },
-            body=b'{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"astral://work/3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        resp = self._dispatch(
+            ops,
+            method="resources/read",
+            body=b'{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"astral://work/3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
         assert resp.status_code == 200
-        import json
         body = json.loads(resp.body)
         assert body["result"]["resultType"] == "complete"
         resource = body["result"]["resource"]
@@ -405,128 +430,73 @@ class TestIntegration:
         assert "owner_id" not in resource["boundedViewModel"]
 
     def test_invalid_uri_rejected_via_endpoint(self):
-        """Bad URI reaches the reader and returns error through the dispatcher."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
+        """A malformed URI reaches the reader and returns a 400 error via the dispatcher."""
         ops = _facade(record=_record())
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
-        mock_request = _make_mock_request(
-            headers={
-                "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/read",
-            },
-            body=b'{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"astral://work/bad-id/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        resp = self._dispatch(
+            ops,
+            method="resources/read",
+            body=b'{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"astral://work/bad-id/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
-        assert resp.status_code == 200
-        import json
+        assert resp.status_code == 400
         body = json.loads(resp.body)
-        # Should get an error result, not a crash
-        assert "error" in body or body["result"].get("resultType") != "complete"
+        assert "error" in body
 
     def test_missing_uri_param_rejected_via_endpoint(self):
-        """Missing uri param returns error through the dispatcher path."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
+        """A resources/read request without a uri param returns a 400 error."""
         ops = _facade(record=_record())
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
-        mock_request = _make_mock_request(
-            headers={
-                "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/read",
-            },
-            body=b'{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}'
+        resp = self._dispatch(
+            ops,
+            method="resources/read",
+            body=b'{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
-        assert resp.status_code == 200
-        import json
+        assert resp.status_code == 400
         body = json.loads(resp.body)
         assert "error" in body
 
     def test_auth_failure_propagates_via_endpoint(self):
-        """Auth failure raises MCPAuthError that the dispatcher catches."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        from orchestrator.mcp_authz import MCPAuthError
-        
+        """An auth failure raises MCPAuthError that the dispatcher turns into 403."""
         ops = _facade()
-        endpoint = self._make_endpoint(ops)
-        
-        def raise_auth(*a, **kw):
-            raise MCPAuthError(403, "forbidden", "no scope", ("mcp:resources:read",))
-        
+        mcp_endpoint = self._mcp_endpoint(ops)
         mock_request = _make_mock_request(
             headers={
                 "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
+                "mcp-protocol-version": "2026-07-28",
                 "mcp-method": "resources/list",
             },
-            body=b'{"jsonrpc":"2.0","id":5,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+            body=b'{"jsonrpc":"2.0","id":5,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", side_effect=raise_auth):
+
+        def raise_auth(*a, **kw):
+            raise MCPAuthError(403, "forbidden", "no scope", ("mcp:resources:read",))
+
+        with patch(
+            "orchestrator.mcp_server_endpoint.authorize_mcp_request", side_effect=raise_auth
+        ), patch(
+            "orchestrator.mcp_server_endpoint._admitted_request", self._fake_admission
+        ):
             resp = asyncio.run(mcp_endpoint(mock_request))
-        
         assert resp.status_code == 403
 
     def test_resources_list_auth_error_propagates_via_endpoint(self):
-        """resources/list auth error goes through dispatcher."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
+        """A facade denial on resources/list propagates as a 403 error."""
         ops = _facade(list_error=AssignmentError("framework_scope_required", 403))
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
-        mock_request = _make_mock_request(
-            headers={
-                "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/list",
-            },
-            body=b'{"jsonrpc":"2.0","id":6,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        resp = self._dispatch(
+            ops,
+            method="resources/list",
+            body=b'{"jsonrpc":"2.0","id":6,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
-        assert resp.status_code == 200
-        import json
+        assert resp.status_code == 403
         body = json.loads(resp.body)
-        # Should return error result through dispatcher
-        assert "error" in body or "result" in body
+        assert "error" in body
 
     def test_resources_read_auth_error_propagates_via_endpoint(self):
-        """resources/read auth error goes through dispatcher."""
-        from orchestrator.mcp_server_endpoint import mcp_endpoint
-        
+        """A facade denial on resources/read propagates as a 404 error."""
         ops = _facade(get_error=AssignmentError("work_not_found", 404))
-        endpoint = self._make_endpoint(ops)
-        
-        fake_claims = _claims(_caller())
-        mock_request = _make_mock_request(
-            headers={
-                "content-type": "application/json",
-                "mcp-protocol-version": "2024-11-05",
-                "mcp-method": "resources/read",
-            },
-            body=b'{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"astral://work/7c2e4a1b-5d3f-4a8b-9e6c-1f2a3b4c5d6e/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2024-11-05","io.modelcontextprotocol/clientCapabilities":{}}}}'
+        resp = self._dispatch(
+            ops,
+            method="resources/read",
+            body=b'{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"astral://work/7c2e4a1b-5d3f-4a8b-9e6c-1f2a3b4c5d6e/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
         )
-        
-        with patch("orchestrator.mcp_server_endpoint.authorize_mcp_request", new_callable=lambda: AsyncMock(return_value=fake_claims)):
-            resp = asyncio.run(mcp_endpoint(mock_request))
-        
-        assert resp.status_code == 200
-        import json
+        assert resp.status_code == 404
         body = json.loads(resp.body)
         assert "error" in body
