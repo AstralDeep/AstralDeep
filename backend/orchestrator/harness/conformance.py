@@ -30,7 +30,7 @@ AGENT_ID = "conformance-agent"
 
 TOOL_NAME = "conformance-agent__lookup"
 
-CREDENTIAL = "ts_live_CANARY_CONFORMANCE_KEY_NOT_REAL_0000000000"
+CREDENTIAL = "ts_live_CANARY0000NOTAREALKEY000000"
 
 _TYPESAFE_ID = "typesafe_jev_latest"
 
