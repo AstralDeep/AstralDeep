@@ -83,6 +83,16 @@ def _client(client, *, device=False):
     return client
 
 
+def _redirect_uri(client, value):
+    if client in _REDIRECTS and value == _REDIRECTS[client]:
+        return value
+    if client == "astral-desktop" and type(value) is str:
+        match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})/callback", value)
+        if match and 1024 <= int(match[1]) <= 65535:
+            return value
+    _deny()
+
+
 def _pairs(items):
     result = {}
     for key, value in items:
@@ -281,10 +291,10 @@ async def token(request):
             body = await _body(request, {"session_custody", "grant_type", "client_id",
                                          "code", "code_verifier", "redirect_uri"})
             client = _client(body["client_id"])
+            redirect_uri = _redirect_uri(client, body["redirect_uri"])
             binding.client = client
             await binding.current()
             if (body["grant_type"] != "authorization_code"
-                    or body["redirect_uri"] != _REDIRECTS[client]
                     or not _text(body["code"], 4096)
                     or not isinstance(body["code_verifier"], str)
                     or re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", body["code_verifier"]) is None):
@@ -302,6 +312,7 @@ async def token(request):
             if len(_ISSUANCE_TASKS) >= ISSUANCE_LIMIT:
                 _deny(429)
             fields = {k: v for k, v in body.items() if k != "session_custody"}
+            fields["redirect_uri"] = redirect_uri
             try:
                 status, payload = await device_login._default_post_form(
                     binding.issuer + "/protocol/openid-connect/token", fields)
@@ -311,6 +322,8 @@ async def token(request):
                 _deny(503)
             if status != 200:
                 _deny(401)
+            if fields["redirect_uri"] != redirect_uri:
+                _deny(503)
             return await _issue(request, binding, payload)
     except TimeoutError:
         _deny(503)

@@ -169,6 +169,11 @@ def _render_tabs(tab: str) -> str:
         f'<button type="button" role="tab" aria-selected="false" class="{_BTN_GHOST}" '
         f"data-ui-action=\"chrome_open\" data-ui-payload='{drafts_pl}'>Drafts</button>"
     )
+    mesh_pl = _payload({"surface": "mesh", "params": {}})
+    parts.append(
+        f'<button type="button" role="tab" aria-selected="false" class="{_BTN_GHOST}" '
+        f"data-ui-action=\"chrome_open\" data-ui-payload='{mesh_pl}'>Mesh devices</button>"
+    )
     parts.append("</div>")
     return "".join(parts)
 

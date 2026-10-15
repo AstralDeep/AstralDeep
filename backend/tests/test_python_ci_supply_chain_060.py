@@ -241,6 +241,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     assert not any("*" in omission for omission in omissions)
 
     expected_scripts = {
+        "check_acceptance_mutations.py",
+        "ci_review_diagnostics.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",
@@ -254,6 +256,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "initialize_backend_web_services.py",
         "install_local_components.py",
         "merge_backend_web_coverage.py",
+        "prepare_plane_upgrade_baseline.py",
         "prepare_release_evidence.py",
         "probe_backend_web_auth.py",
         "probe_backend_web_functional.py",
@@ -279,6 +282,10 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         expected_scripts
     )
     expected_test_paths = {
+        "scripts/tests/test_ci_review_diagnostics.py",
+        "scripts/tests/test_acceptance_mutations.py",
+        "scripts/tests/test_acceptance_ci_contract.py",
+        "scripts/tests/test_prepare_plane_upgrade_baseline.py",
         "backend/tests/test_changed_coverage_060.py",
         "backend/tests/test_release_tooling_coverage_060.py",
         "backend/tests/test_apple_coverage_artifacts_088.py",

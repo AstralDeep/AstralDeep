@@ -33,7 +33,9 @@ cleanup() {
 trap cleanup EXIT
 docker network create --label "org.astraldeep.qualification.namespace=$namespace" "$namespace" >/dev/null
 docker run -d --name "$namespace-pg" --network "$namespace" --cpus=2 --memory=2g \
+  --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=1g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
+  --env POSTGRES_INITDB_WALDIR=/var/lib/postgresql/wal \
   --env POSTGRES_USER=astral --env POSTGRES_PASSWORD=isolated_ci_only \
   --env POSTGRES_DB=ad_gate_tests \
   postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4 >/dev/null
@@ -161,4 +163,8 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
     python -m venv --system-site-packages /tmp/ci
     /tmp/ci/bin/python -m pip install --require-hashes -r /qualification-policy/tooling/backend-ci/requirements.lock.txt
     /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web --group "$ASTRAL_GATE_GROUP"
+    if [[ "$ASTRAL_GATE_GROUP" == modules || "$ASTRAL_GATE_GROUP" == all ]]; then
+      /tmp/ci/bin/python /workspace/scripts/check_acceptance_mutations.py \
+        --output /workspace/build/backend-web/acceptance-mutations.json
+    fi
   '
