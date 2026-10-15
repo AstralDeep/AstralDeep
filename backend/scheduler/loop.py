@@ -10,7 +10,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from agentic_settings import SCHEDULER_TICK_SECONDS
 from orchestrator.work_admission import (
@@ -31,13 +31,21 @@ logger = logging.getLogger("scheduler.loop")
 
 
 class ClaimLeaseKeeper:
-    def __init__(self, store, claim: OccurrenceClaim, *, lease_seconds: int) -> None:
+    def __init__(
+        self,
+        store,
+        claim: OccurrenceClaim,
+        *,
+        lease_seconds: int,
+        interval_wait: Optional[Callable[[float], Awaitable[None]]] = None,
+    ) -> None:
         if lease_seconds < 5 or lease_seconds > 60:
             raise ValueError("scheduled claim lease must be between 5 and 60 seconds")
         self.store = store
         self.claim = claim
         self.lease_seconds = lease_seconds
         self.interval_seconds = lease_seconds / 3
+        self.interval_wait = interval_wait
         self.lost = asyncio.Event()
         self.successful_renewals = 0
         self.renewal_monotonic: list[float] = []
@@ -59,11 +67,16 @@ class ClaimLeaseKeeper:
 
     async def _run(self) -> None:
         while not self._stop.is_set() and not self.lost.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
-                continue
-            except asyncio.TimeoutError:
-                pass
+            if self.interval_wait is not None:
+                await self.interval_wait(self.interval_seconds)
+            else:
+                try:
+                    await asyncio.wait_for(
+                        self._stop.wait(), timeout=self.interval_seconds
+                    )
+                    continue
+                except asyncio.TimeoutError:
+                    pass
             try:
                 renewed_until = await asyncio.to_thread(
                     self.store.renew_claim,

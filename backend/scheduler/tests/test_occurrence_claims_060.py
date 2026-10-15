@@ -395,6 +395,37 @@ def test_recovery_preserves_occurrence_but_allocates_distinct_attempt_operations
     ]
 
 
+async def _wait_until(predicate, timeout: float = 30.0) -> None:
+    async def _poll():
+        while not predicate():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_poll(), timeout=timeout)
+
+
+@pytest.mark.asyncio
+async def test_claim_keeper_default_interval_wait_exits_when_stop_event_fires():
+    renewals: list[int] = []
+
+    class _RecordingStore:
+        def renew_claim(self, claim, *, lease_seconds: int = 15):
+            renewals.append(lease_seconds)
+            return datetime.now(UTC) + timedelta(seconds=lease_seconds)
+
+    keeper = ClaimLeaseKeeper(
+        _RecordingStore(),
+        SimpleNamespace(occurrence_id=uuid.uuid4()),
+        lease_seconds=15,
+    )
+    keeper.start()
+    await asyncio.sleep(0)
+    keeper._stop.set()
+    await asyncio.wait_for(keeper._task, timeout=10)
+    assert keeper._task.cancelled() is False
+    assert renewals == []
+    await keeper.stop()
+
+
 @pytest.mark.asyncio
 async def test_claim_renews_while_operation_is_queued_for_two_full_leases(
     clean_database,
@@ -411,12 +442,27 @@ async def test_claim_renews_while_operation_is_queued_for_two_full_leases(
     assert queued.execution_fence is None
     assert queued.operation_state is OperationState.QUEUED
 
-    keeper = ClaimLeaseKeeper(store, claims[1], lease_seconds=15)
+    requested_intervals: list[float] = []
+    interval_gates: list[asyncio.Event] = []
+
+    async def paced_interval_wait(timeout: float) -> None:
+        requested_intervals.append(timeout)
+        gate = asyncio.Event()
+        interval_gates.append(gate)
+        await gate.wait()
+
+    keeper = ClaimLeaseKeeper(
+        store, claims[1], lease_seconds=15, interval_wait=paced_interval_wait
+    )
     keeper.start()
     try:
-        await asyncio.sleep(31.0)
+        for renewal in range(1, 7):
+            await _wait_until(lambda: len(interval_gates) >= renewal)
+            interval_gates[renewal - 1].set()
+            await _wait_until(lambda: keeper.successful_renewals >= renewal)
         assert keeper.lost.is_set() is False
-        assert keeper.successful_renewals >= 6
+        assert requested_intervals[:6] == [5.0] * 6
+        assert all(interval == 5.0 for interval in requested_intervals)
         competing = ScheduledJobStore(clean_database).materialize_and_claim_due(
             "scheduler-b", limit=10, lease_seconds=15
         )
@@ -450,10 +496,18 @@ async def test_lost_renewal_refuses_queued_start_and_any_effect(clean_database):
     assert first.execution_fence is not None
     assert queued.execution_fence is None
 
-    keeper = ClaimLeaseKeeper(store, claims[1], lease_seconds=5)
+    requested_intervals: list[float] = []
+
+    async def immediate_interval_wait(timeout: float) -> None:
+        requested_intervals.append(timeout)
+
+    keeper = ClaimLeaseKeeper(
+        store, claims[1], lease_seconds=5, interval_wait=immediate_interval_wait
+    )
     keeper.start()
     _rotate_claim(clean_database, claims[1].occurrence_id)
-    await asyncio.wait_for(keeper.lost.wait(), timeout=2.5)
+    await asyncio.wait_for(keeper.lost.wait(), timeout=30)
+    assert requested_intervals and requested_intervals[0] == pytest.approx(5 / 3)
     await keeper.stop()
 
     coordinator.terminalize(
