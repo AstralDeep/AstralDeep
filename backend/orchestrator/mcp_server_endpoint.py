@@ -59,9 +59,14 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
-# ========== NEW: Resource URI patterns for ChatGPT Work panel ==========
-_RESOURCE_URI_PATTERN = re.compile(r"^astral://work/([a-f0-9\-]+)/status$")
-_ARTIFACT_URI_PATTERN = re.compile(r"^astral://artifact/([a-f0-9\-]+)$")
+# Resource URI contract for the ChatGPT Work panel (bounty #322). The lister and the
+# reader share one pattern so that every advertised URI round-trips to a successful
+# read, and the captured identity is the canonical UUID4 the Work facade accepts.
+_WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+_WORK_UUID4_RE = re.compile(_WORK_UUID4)
+_WORK_RESOURCE_URI_PATTERN = re.compile(rf"^astral://work/({_WORK_UUID4})/(status|artifacts)\Z")
+_WORK_RESOURCE_KINDS = ("status", "artifacts")
+_RESOURCE_LIST_LIMIT = 50
 _MCP_RESOURCES_SCOPE = ("mcp:resources:read",)
 _METHOD_PHASE = {
     "server/discover": "discover",
@@ -356,18 +361,48 @@ def _tool_result(response: Any) -> dict[str, Any]:
 
 
 def _build_bounded_view_model(work: dict) -> dict:
-    """Build a sandboxed view model with only necessary fields.
+    """Project a Work record onto the bounded, allowlisted status view model.
 
-    SECURITY: Only expose safe fields, exclude owner_id, credentials, notes.
+    SECURITY: only the fields the panel renders are copied out of the facade's
+    public record; owner identity, credentials and free-form notes never appear.
     """
     return {
         "id": work.get("id"),
-        "title": work.get("title", "Untitled"),
-        "status": work.get("status", "unknown"),
-        "progress": work.get("progress", 0),
+        "title": work.get("title") or "Untitled",
+        "kind": work.get("kind"),
+        "disposition": work.get("disposition"),
+        "lifecycle": work.get("lifecycle"),
+        "phase": work.get("phase"),
+        "revision": work.get("revision"),
         "createdAt": work.get("created_at"),
         "updatedAt": work.get("updated_at"),
     }
+
+
+def _authorized_work_operations(orchestrator: Any, claims: dict) -> tuple[Any, Any]:
+    """Return the framework Work facade together with the verified caller.
+
+    SECURITY: mirrors the guard the existing ``tools/call`` path already applies.
+    The caller must be a real ``FrameworkCaller`` carrying ``operations.read``;
+    anything else fails closed instead of reaching the facade with no authority.
+    Owner isolation is then enforced by the facade, which scopes every read to
+    ``caller.owner_id``; this module never widens that scope.
+    """
+    from orchestrator.framework_credentials import FrameworkCaller
+    from orchestrator.work_operations import FrameworkWorkOperations
+
+    ops = getattr(orchestrator, "framework_work_operations", None)
+    caller = claims.get("_framework_caller") if isinstance(claims, dict) else None
+    if (not isinstance(ops, FrameworkWorkOperations)
+            or not isinstance(caller, FrameworkCaller)
+            or not caller.has_scope("operations.read")):
+        raise MCPAuthError(
+            403,
+            "forbidden",
+            "Resource access is not authorized",
+            _MCP_RESOURCES_SCOPE,
+        )
+    return ops, caller
 
 
 async def list_resources(
@@ -375,53 +410,45 @@ async def list_resources(
     user_id: str,
     claims: dict,
 ) -> list[dict]:
-    """List all resources (work items) accessible to the authenticated user.
+    """List the Work resources the authenticated caller is allowed to read.
 
-    Returns a list of resource URIs that the user can access.
-    Each work item gets two resources: /status and /artifacts.
+    Every advertised URI is one ``read_resource`` accepts, so a listed URI always
+    round-trips. The listing is scoped by the facade to the caller's own owner.
     """
-    # Get work operations from orchestrator
-    ops = getattr(orchestrator, 'work_ops', None)
-    if ops is None:
-        ops = getattr(getattr(orchestrator, 'runtime', None), 'work_ops', None)
+    from persistent_agents.models import AssignmentError
 
-    if ops is None:
-        logger.warning("work_ops not found in orchestrator, returning empty list")
-        return []
+    ops, caller = _authorized_work_operations(orchestrator, claims)
 
     try:
-        # Call the list method
-        result = await ops.list(
-            caller=None,
-            limit=50,
-        )
+        result = await ops.list(caller, limit=_RESOURCE_LIST_LIMIT)
+    except AssignmentError as exc:
+        raise MCPAuthError(
+            exc.status_code,
+            "resource_unavailable",
+            "The work listing is not available to this caller",
+            _MCP_RESOURCES_SCOPE,
+        ) from exc
 
-        # Extract works from result
-        works = result.get("works", []) if isinstance(result, dict) else []
+    records = result.get("operations", ()) if isinstance(result, dict) else ()
 
-        # Build resource URIs for each work item
-        resources = []
-        for work in works:
-            work_id = work.get("id")
-            if work_id:
-                resources.append({
-                    "uri": f"astral://work/{work_id}/status",
-                    "name": f"Work: {work.get('title', 'Untitled')}",
-                    "mimeType": "application/json",
-                    "description": f"Status for work item {work_id}",
-                })
-                resources.append({
-                    "uri": f"astral://work/{work_id}/artifacts",
-                    "name": f"Artifacts: {work.get('title', 'Untitled')}",
-                    "mimeType": "application/json",
-                    "description": f"Artifacts for work item {work_id}",
-                })
+    resources: list[dict] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        work_id = record.get("id")
+        if not isinstance(work_id, str) or not _WORK_UUID4_RE.fullmatch(work_id):
+            continue
+        title = record.get("title")
+        label = title if isinstance(title, str) and title else "Untitled"
+        for kind in _WORK_RESOURCE_KINDS:
+            resources.append({
+                "uri": f"astral://work/{work_id}/{kind}",
+                "name": f"{kind.capitalize()}: {label}",
+                "mimeType": "application/json",
+                "description": f"{kind.capitalize()} for work item {work_id}",
+            })
 
-        return resources
-
-    except Exception as exc:
-        logger.error(f"Failed to list resources: {exc}")
-        return []
+    return resources
 
 
 async def read_resource(
@@ -430,92 +457,66 @@ async def read_resource(
     uri: str,
     claims: dict,
 ) -> dict:
-    """Read a single resource with full authorization and sandboxing.
+    """Read one advertised Work resource under the caller's own authority.
 
     SECURITY CHECKS:
-    1. Validate URI format (prevent injection)
-    2. Verify ownership (prevent cross-user access)
-    3. Return bounded view model (sandbox sensitive data)
+    1. Validate the URI against the same contract the lister advertises
+    2. Require a verified caller holding ``operations.read``
+    3. Read through the facade, which scopes the lookup to ``caller.owner_id``
+       and re-checks current permission/revocation on every request
+    4. Return a bounded view model rather than the raw record
     """
-    # 1. Validate URI format
-    work_match = _RESOURCE_URI_PATTERN.match(uri)
-    artifact_match = _ARTIFACT_URI_PATTERN.match(uri)
+    from persistent_agents.models import AssignmentError
 
-    if not work_match and not artifact_match:
+    match = _WORK_RESOURCE_URI_PATTERN.match(uri) if isinstance(uri, str) else None
+    if match is None:
         raise MCPAuthError(
             400,
             "invalid_uri",
-            "URI format is invalid. Expected: astral://work/{id}/status or astral://artifact/{id}",
+            "URI must be astral://work/{uuid4}/status or astral://work/{uuid4}/artifacts",
             _MCP_RESOURCES_SCOPE,
         )
+    work_id, kind = match.group(1), match.group(2)
 
-    # 2. Extract work ID from URI
-    work_id = work_match.group(1) if work_match else artifact_match.group(1)
-    resource_type = "status" if work_match else "artifact"
+    ops, caller = _authorized_work_operations(orchestrator, claims)
 
-    # 3. Get work operations
-    ops = getattr(orchestrator, 'work_ops', None)
-    if ops is None:
-        ops = getattr(getattr(orchestrator, 'runtime', None), 'work_ops', None)
+    try:
+        record = await ops.get(caller, work_id)
+    except AssignmentError as exc:
+        # A cross-owner or revoked lookup surfaces as the facade's own 404/403
+        # rather than a distinct code, so it cannot confirm that a foreign work
+        # item exists. Every code passes through unchanged.
+        raise MCPAuthError(
+            exc.status_code,
+            "resource_unavailable",
+            "The resource is not available to this caller",
+            _MCP_RESOURCES_SCOPE,
+        ) from exc
 
-    if ops is None:
+    if not isinstance(record, dict):
         raise MCPAuthError(
             503,
             "service_unavailable",
-            "Work operations not available",
+            "Work read returned an unexpected record",
             _MCP_RESOURCES_SCOPE,
         )
 
-    # 4. Fetch the work item
-    try:
-        result = await ops.get(
-            caller=None,
-            operation_id=work_id,
-        )
+    if kind == "status":
+        bounded_model = _build_bounded_view_model(record)
+    else:
+        bounded_model = {
+            "id": record.get("id"),
+            "title": record.get("title") or "Untitled",
+            "disposition": record.get("disposition"),
+            "revision": record.get("revision"),
+        }
 
-        # 5. CRITICAL: Verify ownership
-        if result.get("owner_id") != user_id:
-            raise MCPAuthError(
-                403,
-                "forbidden",
-                "You do not have permission to access this resource",
-                _MCP_RESOURCES_SCOPE,
-            )
-
-        # 6. Build bounded view model
-        if resource_type == "status":
-            bounded_model = _build_bounded_view_model(result)
-            return {
-                "uri": uri,
-                "name": f"Status: {bounded_model.get('title', 'Untitled')}",
-                "mimeType": "application/json",
-                "boundedViewModel": bounded_model,
-            }
-
-        elif resource_type == "artifact":
-            bounded_model = {
-                "workId": work_id,
-                "title": result.get("title", "Untitled"),
-                "status": result.get("status"),
-                "artifactCount": result.get("artifact_count", 0),
-            }
-            return {
-                "uri": uri,
-                "name": f"Artifacts: {bounded_model.get('title', 'Untitled')}",
-                "mimeType": "application/json",
-                "boundedViewModel": bounded_model,
-            }
-
-    except MCPAuthError:
-        raise
-    except Exception as exc:
-        logger.error(f"Failed to read resource {uri}: {exc}")
-        raise MCPAuthError(
-            500,
-            "internal_error",
-            "Failed to read resource",
-            _MCP_RESOURCES_SCOPE,
-        ) from exc
+    return {
+        "uri": uri,
+        "name": f"{kind.capitalize()}: {bounded_model.get('title', 'Untitled')}",
+        "mimeType": "application/json",
+        "boundedViewModel": bounded_model,
+    }
 
 
 async def _wait_for_disconnect(
