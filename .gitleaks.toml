@@ -111,4 +111,8 @@ regexes = [
   # key, neither is derived from one, and neither is a prefix of one.
   '''ts_live_CANARY0000NOTAREALKEY000000''',
   '''zqkfmp_(0canary9notarealkey)+''',
+  # The conformance harness fixture's synthetic TypeSafe canary
+  # (backend/orchestrator/harness/conformance.py). It names itself as not a
+  # key; anchoring the complete value keeps every other ts_live_ shape flagged.
+  '''^ts_live_CANARY_CONFORMANCE_KEY_NOT_REAL_0000000000$''',
 ]

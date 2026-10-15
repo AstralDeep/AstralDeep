@@ -151,6 +151,10 @@ class _MintingHTTPClient:
     def headers(self) -> httpx.Headers:
         return self._inner.headers
 
+    @property
+    def timeout(self) -> httpx.Timeout:
+        return self._inner.timeout
+
     def stream(
         self,
         method: str,
