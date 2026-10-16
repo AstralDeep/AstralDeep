@@ -615,7 +615,7 @@ http {
             "machine_digest": policy.machine.digest,
             "keycloak_realm": realm["realm"],
             "keycloak_image": "quay.io/keycloak/keycloak@sha256:4883630ef9db14031cde3e60700c9a9a8eaf1b5c24db1589d6a2d43de38ba2a9",
-            "lets_commit": "292d557c6fb4184eb9ee38dd013500260ba5637d",
+            "lets_commit": "ed5c1e4bd61a6b11625d265aeb77229b7c2c017b",
             "expires_within_hours": 48,
             "public_certificate_sha256": {
                 name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
