@@ -996,12 +996,27 @@ def _skill_row(skill: us.Skill) -> str:
     )
 
 
+@dataclass(frozen=True, repr=False)
+class _ImportedSkill(us.Skill):
+    skill_id: str = ""
+    command_id: str = ""
+    import_source: str = ""
+
+
+def _skill_form_metadata(skill, prefill=None):
+    if skill is None and type(prefill) is _ImportedSkill:
+        return {"skill_id": prefill.skill_id, "command_id": prefill.command_id,
+                "expected_revision": 0, "skill_slug": "", "skill_enabled": "false",
+                "skill_import_source": prefill.import_source}
+    return {**_skill_identity(skill), "skill_slug": skill.slug if skill else "",
+            "skill_enabled": "true" if skill is None or skill.enabled else "false"}
+
+
 def _skill_form(skill: us.Skill | None, prefill: us.Skill | None = None) -> str:
     editing = skill is not None
     shown = skill if editing else prefill
     title = "Edit skill" if editing else "Add a skill"
-    metadata = {**_skill_identity(skill), "skill_slug": skill.slug if editing else "",
-                "skill_enabled": "true" if skill is None or skill.enabled else "false"}
+    metadata = _skill_form_metadata(skill, prefill)
     slug = "".join(f'<input type="hidden" name="{key}" value="{esc(str(value))}">'
                    for key, value in metadata.items())
     applies = "" if (skill is None or skill.always) else ", ".join(skill.applies_to)
@@ -1032,7 +1047,7 @@ def _skill_form(skill: us.Skill | None, prefill: us.Skill | None = None) -> str:
 
 
 def _skill_import_form() -> str:
-    metadata = {**_skill_identity(None), "skill_slug": "", "skill_enabled": "true"}
+    metadata = {**_skill_identity(None), "skill_slug": "", "skill_enabled": "false"}
     slug = "".join(f'<input type="hidden" name="{key}" value="{esc(str(value))}">'
                    for key, value in metadata.items())
     return (
@@ -1263,16 +1278,26 @@ async def _render_session(orch, user_id: str, draft_id: str) -> str:
 
 
 def _import_prefill(params: Any) -> us.Skill | None:
+    from orchestrator.user_skill_import import SkillImportError, parse_skill_import
+    if not us.import_enabled():
+        return None
     raw = params.get("skill_import") if isinstance(params, dict) else None
     if type(raw) is not dict:
         return None
-    name, instructions = raw.get("name"), raw.get("instructions")
-    if type(name) is not str or type(instructions) is not str or not name or not instructions:
+    source = raw.get("source")
+    if type(source) is not str:
         return None
-    if len(name) > us.MAX_NAME_CHARS or len(instructions) > us.MAX_INSTRUCTIONS_CHARS:
+    try:
+        identity = _skill_request_identity(raw)
+        preview = parse_skill_import(source)
+    except (AssignmentError, SkillImportError):
         return None
-    return us.Skill(slug=us.slugify(name), name=name, instructions=instructions,
-                    applies_to=("always",))
+    if (identity["expected_revision"] != 0 or preview.license_requires_confirmation
+            or raw.get("name") != preview.name or raw.get("instructions") != preview.instructions):
+        return None
+    return _ImportedSkill(slug=preview.slug, name=preview.name, instructions=preview.instructions,
+                          applies_to=("always",), enabled=False, import_source=source,
+                          skill_id=identity["skill_id"], command_id=identity["command_id"])
 
 
 async def render(orch, user_id: str, roles: Any, params: Any) -> str:
@@ -1481,8 +1506,7 @@ def _skill_form_components(skill: us.Skill | None, _sdui,
                       "name); a /command makes it a shortcut you can type.", "caption"),
            _sdui.form(fields, submit_action="chrome_user_skill_save",
                       submit_label="Save" if editing else "Add skill",
-                      submit_payload={**_skill_identity(skill), "skill_slug": skill.slug if editing else "",
-                                      "skill_enabled": "true" if skill is None or skill.enabled else "false"})]
+                      submit_payload=_skill_form_metadata(skill, prefill))]
     if editing:
         out.append(_sdui.button("Cancel", "chrome_author_list"))
     return out
@@ -1499,7 +1523,7 @@ def _skill_import_components(_sdui) -> List[Dict[str, Any]]:
             _sdui.field("skill_instructions", "SKILL.md contents", "textarea"),
         ], submit_action="chrome_user_skill_save", submit_label="Preview import",
            submit_payload={**_skill_identity(None), "skill_slug": "",
-                           "skill_enabled": "true"}),
+                           "skill_enabled": "false"}),
     ]
 
 
@@ -1830,9 +1854,11 @@ def _import_notice(preview) -> str:
     detail = (" Not imported: " + "; ".join(reports)) if reports else \
         " Everything else in the file maps to nothing here."
     license_text = f"license {preview.license}" if preview.license else "license not stated"
+    attribution = "; ".join(f"{key}: {value}" for key, value in preview.attribution)
     return (f"Import preview: “{preview.name}” ({license_text}, {preview.source_bytes} bytes)."
+            f" {preview.description} Source SHA-256: {preview.source_sha256}. {attribution}"
             f"{detail} Nothing is saved yet — review the prefilled skill below, then choose "
-            "Add skill to save it.")
+            "Add skill to save it disabled. You can enable it from your skills list.")
 
 
 def _is_import_source(name: str, instructions: str) -> bool:
@@ -1852,19 +1878,30 @@ async def _h_skill_save(orch, websocket, user_id, roles, payload):
         raise AssignmentError("skill_invalid", 422)
     name = fields.get("skill_name", "")
     instructions = fields.get("skill_instructions", "")
-    if us.import_enabled() and _is_import_source(name, instructions):
+    if type(name) is not str or type(instructions) is not str:
+        raise AssignmentError("skill_invalid", 422)
+    source = payload.get("skill_import_source", fields.get("skill_import_source"))
+    if ("skill_import_source" in payload and "skill_import_source" in fields
+            and payload["skill_import_source"] != fields["skill_import_source"]):
+        raise AssignmentError("skill_invalid", 422)
+    if source is None and us.import_enabled() and _is_import_source(name, instructions):
         from orchestrator.user_skill_import import SkillImportError
+        if identity["expected_revision"] != 0 or slug:
+            raise AssignmentError("skill_invalid", 422)
         try:
             preview = await store.preview_import(caller=caller, source=instructions)
         except SkillImportError as error:
             return (SURFACE_KEY, {}, notice_block("error", str(error)))
-        return (SURFACE_KEY, {"skill_import": {"name": preview.name,
+        return (SURFACE_KEY, {"skill_import": {**identity, "source": instructions,
+                                               "name": preview.name,
                                                "instructions": preview.instructions}},
                 notice_block("info", _import_notice(preview)))
     await store.save(caller=caller, **identity, name=name,
         instructions=instructions, applies_to=fields.get("skill_applies", ""),
-        command=fields.get("skill_command", ""), enabled=value == "true", slug=slug)
-    return (SURFACE_KEY, {}, notice_block("success", "Skill saved."))
+        command=fields.get("skill_command", ""), enabled=value == "true", slug=slug,
+        import_source=source)
+    message = "Skill saved disabled. Enable it when ready." if source is not None else "Skill saved."
+    return (SURFACE_KEY, {}, notice_block("success", message))
 
 
 async def _h_skill_edit(orch, websocket, user_id, roles, payload):
