@@ -282,6 +282,17 @@ def ingress_plane():
         yield runtime
 
 
+@pytest.fixture(autouse=True)
+async def ingress_database(ingress_plane, monkeypatch):
+    database = await asyncio.to_thread(
+        ingress_plane.fetch_one, "SELECT current_database() AS name"
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
+    )
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
+
+
 class GeneratedExecutor:
     def __init__(self, root: Path, slug: str, agent_id: str) -> None:
         self.root = root
@@ -679,13 +690,6 @@ async def rig_enforce(
     orchestrator_factory,
 ):
     identity = ingress_identity
-    database = await asyncio.to_thread(
-        ingress_plane.fetch_one, "SELECT current_database() AS name"
-    )
-    monkeypatch.setenv(
-        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
-    )
-    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
@@ -707,13 +711,6 @@ async def rig_off(
     ingress_plane, ingress_identity, tmp_path, monkeypatch, orchestrator_factory
 ):
     identity = ingress_identity
-    database = await asyncio.to_thread(
-        ingress_plane.fetch_one, "SELECT current_database() AS name"
-    )
-    monkeypatch.setenv(
-        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
-    )
-    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
@@ -1425,13 +1422,6 @@ async def test_shadow_mode_requests_receipt_but_leaves_effect_ungoverned(
     orchestrator_factory,
 ) -> None:
     identity = ingress_identity
-    database = await asyncio.to_thread(
-        ingress_plane.fetch_one, "SELECT current_database() AS name"
-    )
-    monkeypatch.setenv(
-        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
-    )
-    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
         ingress_plane=orchestrator.runtime_composition.plane.runtime,
@@ -1466,6 +1456,7 @@ async def test_external_mediated_only_population_is_not_governed(
 ) -> None:
     identity = ingress_identity
     orchestrator = await asyncio.to_thread(orchestrator_factory)
+    ingress_plane = orchestrator.runtime_composition.plane.runtime
     owner_id = _unique("ingress-owner")
     agent_id = _unique("ingress-agent")
     audience = _unique("ingress-executor")
