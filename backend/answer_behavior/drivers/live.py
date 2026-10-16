@@ -124,6 +124,7 @@ def transcript_from_text(
     action_ids = {
         receipt.action_id for receipt in case.environment.receipts
     } | set(case.environment.dispatch_attempted) | set(case.report_required)
+    action_ids.update(re.findall(r"\bact-[a-z0-9][a-z0-9_-]*", lowered))
     scanned, ambiguous = _scan_action_claims(sentences, action_ids)
     claims = [ActionClaim(action_id=action_id, tool=tool or _tool_for(case, action_id),
                           claimed_outcome=outcome) for action_id, outcome, tool in scanned]

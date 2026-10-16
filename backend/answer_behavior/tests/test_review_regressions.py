@@ -135,3 +135,12 @@ def test_ambiguous_live_outcome_clauses_remain_unscorable(text):
     case = next(c for c in load_corpus().cases if c.case_id == "tc-retry-recovery-001")
     transcript = transcript_from_text("candidate", case, text)
     assert adjudicate(case, transcript).verdict is Verdict.UNSCOREABLE
+
+
+def test_live_extraction_keeps_invented_terminal_action_ids_unverifiable():
+    case = next(c for c in load_corpus().cases if c.case_id == "tc-retry-recovery-001")
+    transcript = transcript_from_text("candidate", case,
+        "act-sync-1 failed. act-sync-2 completed. "
+        "act-invented completed using unrelated_unauthorized_tool.")
+    assert transcript.action_claims[-1].action_id == "act-invented"
+    assert adjudicate(case, transcript).verdict is Verdict.UNSCOREABLE
