@@ -1,7 +1,5 @@
-"""Composed route-level mobile transition traces for the voice seams: authenticated
-REST session routes plus voice control WebSocket frames across both configured speech
-backends, asserting single-turn acceptance, stale-socket fencing, chat routing,
-bounded cleanup, and post-recovery denial application.
+"""Exercises composed voice routes and runtime transitions with an in-memory repository and overridden HTTP identity.
+Real binding verification covers stale and expired authority; scripted chat dispatches exercise transition formatting without qualifying permission, LETS or physical mobile acceptance.
 """
 
 from __future__ import annotations
@@ -823,7 +821,7 @@ async def _safe_send_recorder(self, websocket: Any, data: str) -> bool:
 
 
 class _Harness:
-    def __init__(self, backend: VoiceSpeechBackend) -> None:
+    def __init__(self, backend: VoiceSpeechBackend, *, media_grant_seconds: int = 300) -> None:
         self.clock = _Clock()
         self.replica_id = "trace-replica"
         self.backend = backend
@@ -845,6 +843,7 @@ class _Harness:
             media=self.media,
             replica_id=self.replica_id,
             clock=self.clock.utcnow,
+            media_grant_seconds=media_grant_seconds,
             speech_backend=backend,
             backend_selection=self.selection,
         )
@@ -963,13 +962,14 @@ class _Harness:
         connection_generation: str,
         *,
         device_id: str = DEVICE_A,
+        credential_expires_at: datetime | None = None,
     ) -> _RegisteredBinding:
         socket = _TraceSocket(device_id, connection_generation)
         issued = self.issuer.mint(
             subject=USER,
             device_id=device_id,
             connection_generation=connection_generation,
-            credential_expires_at=self.clock.utcnow() + timedelta(minutes=10),
+            credential_expires_at=credential_expires_at or self.clock.utcnow() + timedelta(minutes=10),
         )
         displaced = self._voice_device_bindings.get((USER, device_id))
         if displaced is not None:
@@ -1589,7 +1589,7 @@ async def test_local_chat_change_during_reconnect_routes_turn_to_new_chat(
     harness.assert_no_sensitive_material_durable()
 
 
-async def test_local_denials_still_apply_after_recovery_and_nothing_durable_leaks(
+async def test_local_scripted_rejections_after_recovery_preserve_bounded_state(
     local_harness: _Harness,
 ) -> None:
     harness = local_harness
@@ -1666,7 +1666,7 @@ async def test_local_denials_still_apply_after_recovery_and_nothing_durable_leak
     harness.assert_no_sensitive_material_durable()
 
 
-async def test_remote_connection_replacement_grant_expiry_and_chat_change_recover(
+async def test_remote_connection_replacement_refresh_and_chat_change_recover(
     remote_harness: _Harness,
 ) -> None:
     harness = remote_harness
@@ -1700,8 +1700,9 @@ async def test_remote_connection_replacement_grant_expiry_and_chat_change_recove
     assert stale_update.status_code == 403
     assert stale_update.json()["code"] == "binding_not_current"
 
-    expired_refresh = await _refresh_grant(harness, wifi, session)
-    assert expired_refresh.status_code == 403
+    displaced_refresh = await _refresh_grant(harness, wifi, session)
+    assert displaced_refresh.status_code == 403
+    assert displaced_refresh.json()["code"] == "binding_not_current"
 
     refreshed = await _refresh_grant(harness, cellular, session)
     assert refreshed.status_code == 201, refreshed.text
@@ -1755,6 +1756,81 @@ async def test_remote_connection_replacement_grant_expiry_and_chat_change_recove
     assert [call for call in harness.media.calls if call[0] == "end"] == [
         ("end", "user")
     ]
+    harness.assert_no_sensitive_material_durable()
+
+
+async def test_expired_current_control_binding_refuses_refresh_and_replay_before_effects(
+    remote_harness: _Harness,
+) -> None:
+    harness = remote_harness
+    harness.clock.now = NOW
+    binding = harness.register_socket(
+        CONNECTION_WIFI, credential_expires_at=NOW + timedelta(seconds=10)
+    )
+    created = await _create_remote_session(harness, binding)
+    assert created.status_code == 201, created.text
+    session = created.json()["session"]
+    calls_before = list(harness.repository.calls)
+    media_before = list(harness.media.calls)
+    record_before = harness.repository.sessions[(USER, session["session_id"])]
+    assignments_before = dict(harness.runtime._active_worker_assignments)
+    harness.clock.advance(11)
+
+    assert harness._voice_device_bindings[(USER, DEVICE_A)] == id(binding.socket)
+    assert harness._voice_control_bindings[id(binding.socket)] == binding.claims
+    for _ in range(2):
+        refused = await _refresh_grant(harness, binding, session)
+        assert refused.status_code == 403
+        assert refused.json()["code"] == "binding_expired"
+    assert harness.repository.calls == calls_before
+    assert harness.media.calls == media_before
+    assert harness.repository.sessions[(USER, session["session_id"])] == record_before
+    assert harness.runtime._active_worker_assignments == assignments_before
+    assert harness.dispatcher.dispatched == []
+    assert harness.dispatcher.denials == []
+
+    renewed = harness.register_socket(CONNECTION_WIFI)
+    assert renewed.claims.binding_id != binding.claims.binding_id
+    ended = await _end_remote_session(harness, renewed, session)
+    assert ended.status_code == 204, ended.text
+    assert harness.repository.sessions[(USER, session["session_id"])].end_reason == "user"
+    assert harness.runtime._active_worker_assignments == {}
+    assert [call for call in harness.media.calls if call[0] == "end"] == [("end", "user")]
+    harness.assert_no_sensitive_material_durable()
+
+
+async def test_expired_media_grant_refresh_and_replay_keep_current_control_authority() -> None:
+    harness = _Harness(VoiceSpeechBackend.LLM_FACTORY, media_grant_seconds=30)
+    harness.clock.now = NOW
+    binding = harness.register_socket(CONNECTION_WIFI)
+    created = await _create_remote_session(harness, binding)
+    assert created.status_code == 201, created.text
+    session = created.json()["session"]
+    harness.clock.advance(31)
+    assert harness.clock.utcnow() < binding.claims.expires_at
+    state = json.loads(await _grant_state(harness, binding, session))
+    assert state["grant_state"]["status"] == "expired"
+
+    refreshed = await _refresh_grant(harness, binding, session)
+    assert refreshed.status_code == 201, refreshed.text
+    assert refreshed.json()["replayed"] is False
+    updated = refreshed.json()["session"]
+    assert updated["media_grant_revision"] == 2
+    active = json.loads(await _grant_state(harness, binding, updated))
+    assert active["grant_state"]["status"] == "active"
+    replayed = await _refresh_grant_with_id(
+        harness, binding, updated,
+        refresh_id=refreshed.json()["refresh_id"], expected_media_grant_revision=1,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["replayed"] is True
+    assert replayed.json()["session"]["media_grant_revision"] == 2
+    assert harness.dispatcher.dispatched == []
+    assert harness.dispatcher.denials == []
+    ended = await _end_remote_session(harness, binding, updated)
+    assert ended.status_code == 204, ended.text
+    assert harness.runtime._active_worker_assignments == {}
+    assert [call for call in harness.media.calls if call[0] == "end"] == [("end", "user")]
     harness.assert_no_sensitive_material_durable()
 
 
