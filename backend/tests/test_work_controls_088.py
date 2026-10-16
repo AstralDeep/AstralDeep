@@ -28,6 +28,7 @@ from tests.test_work_api_088 import host as host
 def controls(host, monkeypatch):
     orch, read, repo = host
     repo.get_submission_receipt = Mock(return_value=None)
+    repo.list_owner_event_waits = Mock(return_value=())
     repo.apply_control = Mock(return_value=SimpleNamespace(applied=True))
     repo.delete_for_owner = Mock(return_value=True)
     orch.persistent_assignments._audit = AsyncMock()

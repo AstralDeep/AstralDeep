@@ -210,6 +210,8 @@ class FrameworkWorkOperations:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
 
         def _apply(transaction, repository):
+            _method(repository, "get_operation")(
+                transaction, owner_id=owner_id, assignment_id=identity, lock=True)
             read = _owned_operation(transaction, repository, owner_id, identity)
             receipt = _method(repository, "get_submission_receipt")(
                 transaction, owner_id=owner_id, assignment_id=identity,
@@ -217,7 +219,7 @@ class FrameworkWorkOperations:
             )
             if receipt is not None:
                 updated = _owned_operation(transaction, repository, owner_id, identity)
-                return _public(updated, owner_id), False
+                return _public(updated, owner_id), False, False
             self.credentials.assert_execution(transaction, observation)
             current = read.assignment
             result = _method(repository, "apply_control")(
@@ -228,13 +230,47 @@ class FrameworkWorkOperations:
                 control=plane_command,
             )
             updated = _owned_operation(transaction, repository, owner_id, identity)
-            return _public(updated, owner_id), result.applied
+            fired = 0
+            if result.applied and plane_command == "stop":
+                from orchestrator.work_subscriptions import fire_completions
 
-        public, applied = await self.store.transaction(_apply, bound_session_waits=True)
+                fired = fire_completions(self.assignments, transaction, repository,
+                                         owner_id=owner_id, source_id=identity,
+                                         source_revision=updated.assignment.state_version,
+                                         outcome="cancelled")
+            return _public(updated, owner_id), result.applied, fired
+
+        public, applied, _fired = await self.store.transaction(_apply, bound_session_waits=True)
         return {"operation": public, "applied": applied}
 
     async def decide(self, caller: FrameworkCaller, *_args, **_kwargs) -> dict:
         raise AssignmentError("assignment_human_required", 403)
+
+    async def subscribe(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        return await WorkSubscriptionService(self.assignments, self.credentials).subscribe(
+            caller,
+            source_operation_id=arguments.get("source_operation_id"),
+            target_operation_id=arguments.get("target_operation_id"),
+            submission_id=arguments.get("submission_id"),
+            expected_revision=arguments.get("expected_revision"))
+
+    async def subscriptions(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        return await WorkSubscriptionService(self.assignments, self.credentials).subscriptions(
+            caller, limit=arguments.get("limit", 50), after_id=arguments.get("after_id"))
+
+    async def unsubscribe(self, caller: FrameworkCaller, **arguments) -> dict:
+        from orchestrator.work_subscriptions import WorkSubscriptionService
+
+        return await WorkSubscriptionService(self.assignments, self.credentials).cancel(
+            caller,
+            source_operation_id=arguments.get("source_operation_id"),
+            target_operation_id=arguments.get("target_operation_id"),
+            submission_id=arguments.get("submission_id"),
+            expected_revision=arguments.get("expected_revision"))
 
     async def reconcile(self, caller: FrameworkCaller, *_args, **_kwargs) -> dict:
         raise AssignmentError("assignment_human_required", 403)
@@ -276,7 +312,9 @@ DISPATCHABLE_TOOL_NAMES = (
     "astral_submit_operation", "astral_get_operation", "astral_list_operations",
     "astral_get_operation_events", "astral_cancel_operation", "astral_pause_operation",
     "astral_get_artifact", "astral_emergency_status", "astral_emergency_stop",
-    "astral_emergency_resume",
+    "astral_emergency_resume", "astral_subscribe_operation_completion",
+    "astral_list_operation_completion_subscriptions",
+    "astral_cancel_operation_completion_subscription",
 )
 
 
@@ -292,6 +330,9 @@ def dispatch_name(tool_name: str) -> Optional[str]:
         "astral_emergency_status": "emergency_status",
         "astral_emergency_stop": "emergency_stop",
         "astral_emergency_resume": "emergency_resume",
+        "astral_subscribe_operation_completion": "subscribe",
+        "astral_list_operation_completion_subscriptions": "subscriptions",
+        "astral_cancel_operation_completion_subscription": "unsubscribe",
     }.get(tool_name) if tool_name in DISPATCHABLE_TOOL_NAMES else None
 
 

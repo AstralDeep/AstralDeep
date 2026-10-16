@@ -36,6 +36,14 @@ def enabled() -> bool:
         return True
 
 
+def import_enabled() -> bool:
+    try:
+        from shared.feature_flags import flags
+        return bool(flags.is_enabled("skill_import")) and enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @dataclass(frozen=True)
 class Skill:
     slug: str
@@ -282,6 +290,14 @@ def store_for(orch):
     return store
 
 
+def selection_ref(skill: Any) -> str:
+    skill_id = getattr(skill, "skill_id", "")
+    revision = getattr(skill, "revision", 0)
+    if skill_id and revision:
+        return f" [skill {skill_id} rev {revision}]"
+    return ""
+
+
 def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
     skills = [skill for skill in skills if skill.enabled]
     in_play = set(agent_ids or ())
@@ -291,11 +307,11 @@ def digest_lines(skills, agent_ids: Any, *, max_chars: int) -> List[str]:
     total = 0
     for index, skill in enumerate(picked):
         body = skill.instructions.strip()
-        section = f"### Your skill: {skill.name}\n{body}"
+        section = f"### Your skill: {skill.name}{selection_ref(skill)}\n{body}"
         separator = 2 if out else 0
         if total + separator + len(section) > max_chars:
             section = (
-                f"### Your skill: {skill.name}\n"
+                f"### Your skill: {skill.name}{selection_ref(skill)}\n"
                 f"Instructions omitted ({len(body)} characters): the complete procedure "
                 "does not fit. Do not execute an incomplete procedure."
             )

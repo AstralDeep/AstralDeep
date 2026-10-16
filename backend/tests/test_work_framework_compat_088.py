@@ -44,7 +44,12 @@ def session(runtime):
 
 
 @pytest.fixture
-def credentials(runtime):
+def credentials(runtime, monkeypatch):
+    def credential_clock():
+        with runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"]
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", credential_clock)
     return FrameworkCredentialService(plane_runtime=runtime, audit=AuditRepository(plane_runtime=runtime))
 
 

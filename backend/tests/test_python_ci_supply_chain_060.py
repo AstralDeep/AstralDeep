@@ -255,10 +255,12 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "ci_review_diagnostics.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
         "initialize_backend_web_services.py",
+        "install_doctor.py",
         "install_local_components.py",
         "merge_backend_web_coverage.py",
         "prepare_plane_upgrade_baseline.py",
@@ -316,6 +318,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_backend_web_state.py",
         "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_install_doctor.py",
+        "backend/tests/test_install_doctor.py",
         "scripts/tests/test_retire_restored_sessions.py",
         "scripts/tests/test_verify_component_ownership.py",
         "scripts/tests/test_verify_composition.py",
@@ -338,6 +342,7 @@ def test_release_tooling_job_excludes_real_component_checkout_tests() -> None:
         "backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts",
         "scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts",
         "scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands",
+        "scripts/tests/test_install_doctor.py::test_real_checkout_composition_and_contract_pass",
     }
 
 

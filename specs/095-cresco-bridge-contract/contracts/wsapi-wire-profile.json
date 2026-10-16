@@ -1,0 +1,136 @@
+{
+  "status": "bounded topology implemented behind default-off flag; effect transports unavailable; real fabric acceptance pending",
+  "sources": [
+    {
+      "repository": "https://github.com/CrescoEdge/wsapi",
+      "commit": "8d57820c58f2290b272e7805508c3e39ae015df4",
+      "path": "src/main/java/io/cresco/wsapi/netty/ApiSocketWsHandler.java",
+      "sha256": "ef3e22405a7fd9909caae45f8a738462b43108cbe622af633bc69ec2ec4a5636",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/wsapi",
+      "commit": "8d57820c58f2290b272e7805508c3e39ae015df4",
+      "path": "src/main/java/io/cresco/wsapi/netty/FailureEcho.java",
+      "sha256": "e7192ffb11a833a205c50d54126bd6b0d24da26fb6a290856eef82573094af3d",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/pycrescolib",
+      "commit": "8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
+      "path": "pycrescolib/messaging.py",
+      "sha256": "4d27b9176e04379792369bfadcfdd05ecc2a69ab680e9230b26f352572a67d2e",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/pycrescolib",
+      "commit": "8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
+      "path": "pycrescolib/wc_interface.py",
+      "sha256": "5873307bb575a9cdb29cc8585eaf75c48958cd7e2aef2c88ecf137ad0b8382e6",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/pycrescolib",
+      "commit": "8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
+      "path": "pycrescolib/globalcontroller.py",
+      "sha256": "4c496a9667bccbb9ad8914ec616a1d74c1dd71917a6e24665c8ac423182f77ae",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/pycrescolib",
+      "commit": "8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
+      "path": "pycrescolib/agents.py",
+      "sha256": "ac8f64f7f2e3601298950d120d6768c2ad43802bd57cb01c9e55942e8fddbe0d",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/controller",
+      "commit": "02ffc9327b94196c2e17e5c5542ff0f92412db61",
+      "path": "src/main/java/io/cresco/agent/controller/globalcontroller/GlobalExecutor.java",
+      "sha256": "57f8c4cef1abb4195f32d87a3cd9ddf4cb1cd599718ba088c449b372760ad7d0",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/controller",
+      "commit": "02ffc9327b94196c2e17e5c5542ff0f92412db61",
+      "path": "src/main/java/io/cresco/agent/controller/agentcontroller/AgentExecutor.java",
+      "sha256": "3c3e6e04962beeb9068404bfe636e0be06a14cf4b266d7c0535c4d95b51e149e",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/controller",
+      "commit": "02ffc9327b94196c2e17e5c5542ff0f92412db61",
+      "path": "src/main/java/io/cresco/agent/controller/measurement/PerfControllerMonitor.java",
+      "sha256": "4375887e272d5d30a723ad6f0c8c42de69c795600bf3cbd299411965dfc42829",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/controller",
+      "commit": "02ffc9327b94196c2e17e5c5542ff0f92412db61",
+      "path": "src/main/java/io/cresco/agent/db/DBInterfaceImpl.java",
+      "sha256": "02a85c2778da5894a7f5164bad86c3057424ea54042d2628788fba0b8725860a",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    },
+    {
+      "repository": "https://github.com/CrescoEdge/executor",
+      "commit": "8e9020e45d23a863c8eb3ba555e6fe9e02c3457d",
+      "path": "src/main/java/io/cresco/executor/ExecutorImpl.java",
+      "sha256": "34c026744ce41361639037ef095864e7275bbaf9d6b333ff2b4d7fe2d19a5d4f",
+      "status": "source-verified",
+      "retrieved": "2026-10-13"
+    }
+  ],
+  "requests": {
+    "list_regions": {
+      "message_info": {
+        "message_type": "global_controller_msgevent",
+        "message_event_type": "EXEC",
+        "is_rpc": "true"
+      },
+      "message_payload": {
+        "action": "listregions",
+        "client_rpc_id": "case-7"
+      }
+    },
+    "agent_info": {
+      "message_info": {
+        "message_type": "global_agent_msgevent",
+        "message_event_type": "CONFIG",
+        "is_rpc": "true",
+        "dst_region": "r1",
+        "dst_agent": "a1"
+      },
+      "message_payload": {
+        "action": "getagentinfo",
+        "client_rpc_id": "case-agent"
+      }
+    },
+    "sysinfo": {
+      "message_info": {
+        "message_type": "global_controller_msgevent",
+        "message_event_type": "EXEC",
+        "is_rpc": "true"
+      },
+      "message_payload": {
+        "action": "resourceinfo",
+        "action_region": "r1",
+        "action_agent": "a1",
+        "client_rpc_id": "case-sys"
+      }
+    }
+  },
+  "reply_format": "plain string-valued response params, not a message_info/message_payload envelope",
+  "correlation": "message_payload.client_rpc_id is echoed into response params",
+  "dispatch": "unsupported: no generic submitwork action in the reviewed control sources",
+  "executor": "config_process CONFIG then run_process EXEC; stdout/stderr require out-of-scope dataplane; no completed-result claim"
+}

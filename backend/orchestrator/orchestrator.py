@@ -14243,6 +14243,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _skill_facade = _user_skills.store_for(self)
         if _skill_facade is not None:
             from orchestrator.turn_guidance_authority import acquire_turn_guidance_reader
+            from orchestrator import skill_guidance_read as _skill_guidance_read
             _skill_caller = None
             try:
                 _skill_caller = await acquire_turn_guidance_reader(
@@ -14250,6 +14251,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 if _skill_caller.owner_id != user_id:
                     raise SkillCatalogError("skill_authentication_required", 401)
                 _current_user_skills = await _skill_facade.list(caller=_skill_caller)
+                if flags.is_enabled("skill_packs") and _current_user_skills:
+                    _skill_guidance_read.record_turn_catalog(
+                        expected_orchestrator=self, websocket=websocket, chat_id=chat_id,
+                        user_id=user_id, skills=_current_user_skills)
             except AssignmentError as exc:
                 logger.warning("Current turn skill catalog refused: %s (%s)",
                                exc.code, exc.status_code)
@@ -14605,6 +14610,15 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 tool_to_agent[_st_name] = _subtasks.META_AGENT_ID
                 tool_to_unqualified[_st_name] = _st_name
 
+        from orchestrator import skill_guidance_read as _skill_guidance_read
+        if _skill_guidance_read.should_inject(draft_agent_id, _current_user_skills) \
+                and not is_text_only:
+            for _sg_def in _skill_guidance_read.meta_tool_definitions():
+                _sg_name = _sg_def["function"]["name"]
+                tools_desc.append(_sg_def)
+                tool_to_agent[_sg_name] = _skill_guidance_read.META_AGENT_ID
+                tool_to_unqualified[_sg_name] = _sg_name
+
         if not tools_desc and draft_agent_id:
             _perm_memo.__exit__(None, None, None)
             await self.send_ui_render(websocket, [
@@ -14675,7 +14689,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     from orchestrator import skill_packs
                     _meta = {"__orchestrator__", "__scheduler__", "__memory__", "__persistent_assignments__",
-                             "__desktop_codegen__", "__subtasks__"}
+                             "__desktop_codegen__", "__subtasks__", "__skill_guidance__"}
                     _agents_in_play = {a for a in tool_to_agent.values() if a and a not in _meta}
                     _digest = skill_packs.build_skill_digest(
                         self.knowledge_index, _agents_in_play, user_skills=_current_user_skills)
@@ -14686,7 +14700,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
             personalization_skill_lines: List[str] = []
             _meta_agent_ids = {"__orchestrator__", "__scheduler__", "__memory__", "__subtasks__", "__persistent_assignments__",
-                               "__desktop_codegen__"}
+                               "__desktop_codegen__", "__skill_guidance__"}
             for _td in tools_desc:
                 try:
                     _fn = _td.get("function") or {}
@@ -17280,7 +17294,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()])
 
         if (
-            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1")
+            agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1")
             and _session_claims.get("_invocation_channel") == "mcp"
         ):
             from orchestrator import remote_confirmation
@@ -17308,7 +17322,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.gaiakeep.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
-        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1"):
+        if agent_id == "cresco-1":
+            from agents.cresco.mcp_server import bind_owner_context
+            bind_owner_context(args, user_id)
+
+        if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1"):
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
                 remote_confirmation.evaluate, self, websocket, agent_id, tool_name,
@@ -17672,6 +17690,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         read_only = (agent_id, tool_name) in {
             ("__memory__", "memory_get"), ("__memory__", "memory_search"),
             ("__desktop_codegen__", "offer_desktop_codegen"),
+            ("__skill_guidance__", "read_user_skill"),
         }
         decomposition = (agent_id, tool_name) == ("__subtasks__", "delegate_subtasks")
         if session.get("sub") == user_id and scopes and (
@@ -17771,6 +17790,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     if not str(a).startswith("__")})
             return await _st.handle_meta_tool(
                 self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket
+            )
+        if agent_id == "__skill_guidance__":
+            from orchestrator import skill_guidance_read
+            return await skill_guidance_read.handle_meta_tool(
+                self, tool_name, args, user_id=user_id, chat_id=chat_id, websocket=websocket,
+                tool_to_agent=tool_to_agent
             )
 
         auth = await self._authorize_and_prepare(
@@ -18559,6 +18584,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                  _st.handle_meta_tool(
                                      self, tool_name, args, user_id=user_id,
                                      chat_id=chat_id, websocket=websocket)))
+                continue
+            if agent_id == "__skill_guidance__":
+                from orchestrator import skill_guidance_read
+                prepared.append((idx, tc, tool_name, agent_id, None,
+                                 skill_guidance_read.handle_meta_tool(
+                                     self, tool_name, args, user_id=user_id,
+                                     chat_id=chat_id, websocket=websocket,
+                                     tool_to_agent=tool_to_agent)))
                 continue
 
             auth = await self._authorize_and_prepare(
@@ -19946,6 +19979,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 caller_capabilities=dict(caller_capabilities),
                 caller_info=caller_info,
             )
+            stream_manager = getattr(self, "stream_manager", None)
+            if stream_manager is not None:
+                stream_manager.register_pending_request(stream_id, request_id)
             if agent_id in self.local_agents:
                 from shared.local_transport import LoopbackSocket
 
@@ -22919,6 +22955,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if flags.is_enabled("safe_agents"):
                 from orchestrator import agent_trust
                 seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
+                # Cresco must never be auto-marked safe: owner approval is required by the bridge's charter
+                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
                 if not flags.is_enabled("remote_compute"):
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):

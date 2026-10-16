@@ -1,6 +1,7 @@
-"""Typed dataclass views (Operation, Event, Artifact, ControlResult, RetryPolicy) over
-Deep's Work-over-MCP wire contract, matching astral_sdk/work_contract.json field for
-field, with unknown extra keys preserved on Operation.raw.
+"""Typed dataclass views (Operation, Event, Artifact, ControlResult,
+CompletionSubscription, RetryPolicy) over Deep's Work-over-MCP wire contract, matching
+astral_sdk/work_contract.json field for field, with unknown extra keys preserved on
+Operation.raw.
 """
 
 from __future__ import annotations
@@ -120,6 +121,44 @@ class ControlResult:
 
 
 @dataclass(frozen=True)
+class CompletionSubscription:
+    target_operation_id: str
+    source_operation_id: str
+    target_disposition: Optional[str]
+    target_phase: Optional[str]
+    event_revision: int
+    source_disposition: Optional[str]
+    source_missing: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionSubscription":
+        return cls(
+            target_operation_id=data["target_operation_id"],
+            source_operation_id=data["source_operation_id"],
+            target_disposition=data.get("target_disposition"),
+            target_phase=data.get("target_phase"),
+            event_revision=int(data.get("event_revision") or 0),
+            source_disposition=data.get("source_disposition"),
+            source_missing=bool(data.get("source_missing")),
+        )
+
+
+@dataclass(frozen=True)
+class CompletionSubscriptionList:
+    subscriptions: tuple[CompletionSubscription, ...]
+    next_after_id: Optional[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionSubscriptionList":
+        return cls(
+            subscriptions=tuple(
+                CompletionSubscription.from_dict(s) for s in data.get("subscriptions", [])
+            ),
+            next_after_id=data.get("next_after_id"),
+        )
+
+
+@dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 4
     base_delay_seconds: float = 0.25
@@ -155,5 +194,7 @@ __all__ = [
     "Event",
     "Artifact",
     "ControlResult",
+    "CompletionSubscription",
+    "CompletionSubscriptionList",
     "RetryPolicy",
 ]
