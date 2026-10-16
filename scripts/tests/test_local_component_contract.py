@@ -82,9 +82,9 @@ EXPECTED: dict[str, dict[str, Any]] = {
     },
     "lets": {
         "distribution": "lets-agent",
-        "version": "1.0.12",
+        "version": "1.1.0",
         "path": "components/LETS",
-        "contract": "1.0.12",
+        "contract": "1.1.0",
         "availability": "external-feature-gated",
         "import": "lets",
         "extras": ["client"],

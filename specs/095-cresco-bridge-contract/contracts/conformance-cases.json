@@ -97,7 +97,7 @@
       "title": "Pinned wsapi envelope shape and deterministic bulk-param encoding",
       "note": "Source-verified request routing and plain string-parameter reply format; no REQUEST/EVENT or submitwork protocol exists in the reviewed sources.",
       "expect": {
-        "encoding_rule": "base64(gzip(json_bytes)), with canonical JSON and gzip.GzipFile(compresslevel=9, mtime=0), including its platform-independent OS byte 255",
+        "encoding_rule": "base64(gzip(json_bytes)) with json_bytes = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8'); write once to gzip.GzipFile(filename='', mode='wb', fileobj=io.BytesIO(), compresslevel=9, mtime=0), close the member, then encode the complete buffer; header hex 1f8b08000000000002ff",
         "canonical_request": {
           "message_info": {
             "message_type": "global_controller_msgevent",
@@ -302,6 +302,12 @@
             "identifier": "git:8813399c48d8c6a3c8965fe52b1f707d2ef9f8a1",
             "status": "source-verified",
             "retrieved": "2026-10-13"
+          },
+          {
+            "name": "CPython gzip",
+            "identifier": "cpython:v3.11.15/Lib/gzip.py",
+            "status": "pinned",
+            "retrieved": "2026-10-14"
           }
         ]
       }
