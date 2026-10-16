@@ -5,6 +5,7 @@ jobs stay source-free, and signing dependencies are hash-locked.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -363,17 +364,26 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     assert completed.returncode == 0, completed.stdout
 
 
-def test_lint_job_fence_pilot_declaration_is_reviewed_and_applicable() -> None:
-    from scripts.ci_fence_egress_pilot import evaluate_workflow, pilot_patch
+def test_lint_job_requires_actual_fence_and_merged_helper_bytes() -> None:
+    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS, evaluate_workflow
 
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     evaluation = evaluate_workflow(workflow)
-    if evaluation.state == "conforming":
-        assert evaluation.reasons == ()
-        return
-    assert evaluation.state == "absent", evaluation.reasons
-    conformed = evaluate_workflow(pilot_patch(workflow))
-    assert conformed.state == "conforming", conformed.reasons
+    assert evaluation.state == "conforming", evaluation.reasons
+    assert REVIEWED_HELPERS is not None
+    merged = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", REVIEWED_HELPERS.commit, "origin/main"],
+        cwd=REPO_ROOT, capture_output=True, check=False,
+    )
+    assert merged.returncode == 0, "reviewed helper commit must already be on the default branch"
+    for name, digest in REVIEWED_HELPERS.identities():
+        pinned = subprocess.run(
+            ["git", "show", f"{REVIEWED_HELPERS.commit}:scripts/{name}"],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+        assert pinned.returncode == 0, "reviewed helper Git object must exist"
+        assert hashlib.sha256(pinned.stdout).hexdigest() == digest
+        assert (REPO_ROOT / "scripts" / name).read_bytes() == pinned.stdout
 
 
 def test_windows_candidate_build_never_installs_the_test_lock() -> None:
