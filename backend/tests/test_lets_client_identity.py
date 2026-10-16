@@ -37,6 +37,7 @@ POLICY_DIGEST = "sha256:" + "1" * 64
 MACHINE_DIGEST = "sha256:" + "2" * 64
 SEED = bytes(range(32))
 TENANT = "tenant-a"
+INFO_DOCUMENT = {"api_version": "v1", "protocol": "lets/1", "warden_id": "warden-a"}
 ISSUER = "https://astral.example/lets-identity"
 AUDIENCE = "astral-lets-warden"
 KID = "astral-orch/ed25519-1"
@@ -240,7 +241,7 @@ def _recording_transport(seen: list[str | None], *, status: int = 200) -> httpx.
         seen.append(request.headers.get("authorization"))
         return httpx.Response(
             status,
-            json={"tenant_id": TENANT},
+            json=INFO_DOCUMENT,
             headers={"content-type": "application/json"},
         )
 
@@ -340,7 +341,7 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
             entered.set()
             assert release.wait(5.0)
         return httpx.Response(
-            200, json={"tenant_id": TENANT}, headers={"content-type": "application/json"}
+            200, json=INFO_DOCUMENT, headers={"content-type": "application/json"}
         )
 
     client = MintingLETSClient(
@@ -363,8 +364,9 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
         thread_b = threading.Thread(target=run, args=("b",))
         thread_a.start()
         assert entered.wait(5.0)
-        thread_b.start()
         time.sleep(0.6)
+        thread_b.start()
+        time.sleep(0.05)
         release.set()
         thread_a.join(5.0)
         thread_b.join(5.0)
@@ -374,7 +376,7 @@ def test_queued_request_after_deadline_recreation_carries_its_own_bearer() -> No
         client.close()
 
     assert isinstance(outcomes["a"], httpx.TimeoutException)
-    assert outcomes["b"] == {"tenant_id": TENANT}
+    assert outcomes["b"] == INFO_DOCUMENT
     assert client._client is not original
     assert len(seen) == 2
     assert seen[0][0] != seen[1][0]
@@ -409,7 +411,7 @@ def test_concurrent_callers_each_send_the_bearer_they_minted() -> None:
             _verified_jti(request.headers.get("authorization"))
         )
         return httpx.Response(
-            200, json={"tenant_id": TENANT}, headers={"content-type": "application/json"}
+            200, json=INFO_DOCUMENT, headers={"content-type": "application/json"}
         )
 
     client = MintingLETSClient(
@@ -424,7 +426,7 @@ def test_concurrent_callers_each_send_the_bearer_they_minted() -> None:
         try:
             gate.wait(5.0)
             for _ in range(5):
-                assert client.info() == {"tenant_id": TENANT}
+                assert client.info() == INFO_DOCUMENT
         except BaseException as error:  # noqa: BLE001
             errors.append(error)
 
