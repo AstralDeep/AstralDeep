@@ -148,4 +148,3 @@ async def test_relevant_fanout_is_bounded_and_replays_do_not_consume_capacity(wo
         await _subscribe(work, caller, source, refused)
     assert (await _read(work, refused)).assignment.operation.get("control", {}).get("wait") is None
     assert (await _subscribe(work, caller, source, first))["applied"] is False
-
