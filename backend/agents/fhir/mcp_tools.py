@@ -13,7 +13,7 @@ from functools import wraps
 from typing import Any, AsyncIterator, Callable, Deque, Dict, List, Optional, Tuple
 
 from shared.feature_flags import flags
-from shared.stream_sdk import StreamComponents, get_stream_metadata, streaming_tool
+from shared.stream_sdk import StreamComponents, get_stream_metadata, stream_seconds_left, streaming_tool
 
 from agents.fhir import clinical, presentation, reference
 from agents.fhir.client import RESOURCE_TYPES, FhirClient, FhirError, bundle_resources, load_settings
@@ -720,9 +720,9 @@ async def watch_icu_activity(args: Dict[str, Any], credentials: Dict[str, Any]) 
             return
         yield StreamComponents(components=[state.card(now, True)], raw=state.summary(now, True))
         positions = dict.fromkeys(identifiers, 0)
-        deadline = asyncio.get_running_loop().time() + minutes * SECONDS_PER_MINUTE
+        deadline = asyncio.get_running_loop().time() + stream_seconds_left(args, minutes * SECONDS_PER_MINUTE)
         while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(POLL_SECONDS)
+            await asyncio.sleep(min(POLL_SECONDS, max(0.0, deadline - asyncio.get_running_loop().time())))
             try:
                 for identifier in identifiers:
                     positions[identifier] = await asyncio.to_thread(drain, client, identifier, positions[identifier], state)
@@ -799,9 +799,9 @@ async def stream_patient_vitals(args: Dict[str, Any], credentials: Dict[str, Any
         )
         return
     yield StreamComponents(components=[card], raw=summary)
-    deadline = asyncio.get_running_loop().time() + minutes * SECONDS_PER_MINUTE
+    deadline = asyncio.get_running_loop().time() + stream_seconds_left(args, minutes * SECONDS_PER_MINUTE)
     while asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(LIVE_POLL_SECONDS)
+        await asyncio.sleep(min(LIVE_POLL_SECONDS, max(0.0, deadline - asyncio.get_running_loop().time())))
         try:
             card, summary, _ = await asyncio.to_thread(live_snapshot, client, identifier, began, minutes, True)
         except FhirError:

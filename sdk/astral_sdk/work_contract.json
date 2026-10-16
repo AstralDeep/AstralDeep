@@ -10,7 +10,10 @@
     "astral_get_artifact",
     "astral_emergency_status",
     "astral_emergency_stop",
-    "astral_emergency_resume"
+    "astral_emergency_resume",
+    "astral_subscribe_operation_completion",
+    "astral_list_operation_completion_subscriptions",
+    "astral_cancel_operation_completion_subscription"
   ],
   "framework_credential_scopes": [
     "agents.read",
@@ -127,6 +130,40 @@
       "read_only": false,
       "scope": "operations.control"
     },
+    "astral_cancel_operation_completion_subscription": {
+      "description": "Withdraw one pending completion subscription; the target operation's wait is released and it returns to the dispatch queue immediately. Cancelling an already-fired or released subscription reports work_not_found.",
+      "facade_method": "unsubscribe",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source_operation_id": {
+            "description": "The operation whose completion was subscribed.",
+            "type": "string"
+          },
+          "submission_id": {
+            "description": "A fresh UUID4 per attempt.",
+            "type": "string"
+          },
+          "target_operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_operation_id",
+          "target_operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
+    },
     "astral_emergency_resume": {
       "description": "Explicitly resume after an emergency stop; requires the current stop revision and the engaging owner's credential.",
       "facade_method": "emergency_resume",
@@ -232,6 +269,29 @@
       "read_only": true,
       "scope": "operations.read"
     },
+    "astral_list_operation_completion_subscriptions": {
+      "description": "List the credential owner's pending completion subscriptions with each target's disposition and its source's current state.",
+      "facade_method": "subscriptions",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "after_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "read_only": true,
+      "scope": "operations.read"
+    },
     "astral_list_operations": {
       "description": "List the credential owner's recent Work operations.",
       "facade_method": "list",
@@ -324,6 +384,40 @@
       },
       "read_only": false,
       "scope": "operations.submit"
+    },
+    "astral_subscribe_operation_completion": {
+      "description": "Subscribe one owner operation (target) to wake when another owner operation (source) finishes; durable across completion and restart. The target must be owner-interactive work and the source must not be terminal; a repeat with the same submission_id replays unchanged.",
+      "facade_method": "subscribe",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source_operation_id": {
+            "description": "The operation whose completion wakes the target.",
+            "type": "string"
+          },
+          "submission_id": {
+            "description": "A fresh UUID4 per attempt.",
+            "type": "string"
+          },
+          "target_operation_id": {
+            "description": "The operation id returned by astral_submit_operation.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_operation_id",
+          "target_operation_id",
+          "submission_id",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "read_only": false,
+      "scope": "operations.control"
     }
   }
 }

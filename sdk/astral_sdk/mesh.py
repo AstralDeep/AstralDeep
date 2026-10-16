@@ -256,6 +256,25 @@ class MeshClient:
     def invitations(self):
         return self._request("GET", "/api/mesh/invitations")["invitations"]
 
+    def publish_presence(self, endpoint, capabilities=None):
+        if not isinstance(endpoint, str) or not 1 <= len(endpoint) <= 255:
+            raise ValueError("endpoint must be a bounded origin string")
+        if capabilities is not None and (
+            not isinstance(capabilities, list) or len(capabilities) > 8
+        ):
+            raise ValueError("capabilities must be a list of at most 8 labels")
+        return self.request(
+            "POST",
+            "/api/mesh/presence",
+            body={"endpoint": endpoint, "capabilities": capabilities},
+        )["presence"]
+
+    def presence(self):
+        return self.request("GET", "/api/mesh/presence")["presence"]
+
+    def topology(self):
+        return self._request("GET", "/api/mesh/topology")["targets"]
+
     def redeem(self, payload, *, agent_id=None):
         response = self._request(
             "POST",

@@ -23,6 +23,9 @@ _SCOPE_FOR_TOOL = {
     "astral_emergency_status": "operations.read",
     "astral_emergency_stop": "operations.control",
     "astral_emergency_resume": "operations.control",
+    "astral_subscribe_operation_completion": "operations.control",
+    "astral_list_operation_completion_subscriptions": "operations.read",
+    "astral_cancel_operation_completion_subscription": "operations.control",
 }
 
 
@@ -38,6 +41,7 @@ class FakeAstralState:
         self.requests: list[dict[str, Any]] = []
         self.stop_engaged: bool = False
         self.stop_revision: int = 0
+        self.subscriptions: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def _operation_view(op: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +225,69 @@ class _Handler(BaseHTTPRequestHandler):
     def _tool_astral_get_artifact(self, arguments: dict[str, Any]) -> dict[str, Any]:
         op = self._tool_astral_get_operation(arguments)
         return {"id": op["id"], "revision": op["revision"], "result": {"text": "synthetic result"}}
+
+    def _tool_astral_subscribe_operation_completion(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        source_id = arguments["source_operation_id"]
+        target_id = arguments["target_operation_id"]
+        with self.state.lock:
+            target = self.state.operations.get(target_id)
+            source = self.state.operations.get(source_id)
+            if target is None or source is None:
+                raise _ToolError("work_not_found")
+            if target["revision"] != arguments["expected_revision"]:
+                raise _ToolError("assignment_revision_conflict")
+            if source["disposition"] in ("completed", "failed", "cancelled"):
+                raise _ToolError("assignment_not_waiting")
+            key = (source_id, target_id)
+            existing = self.state.subscriptions.get(key)
+            if existing is not None:
+                return {"operation": _operation_view(target), "applied": False,
+                        "subscription": {"source_operation_id": source_id,
+                                         "target_operation_id": target_id}}
+            self.state.subscriptions[key] = {
+                "source_operation_id": source_id, "target_operation_id": target_id,
+                "target_disposition": target["disposition"], "target_phase": target["phase"],
+                "event_revision": 0, "source_disposition": source["disposition"],
+                "source_missing": False,
+            }
+            target["disposition"] = "awaiting_event"
+            target["phase"] = "awaiting_event"
+            target["revision"] += 1
+            return {"operation": _operation_view(target), "applied": True,
+                    "subscription": {"source_operation_id": source_id,
+                                     "target_operation_id": target_id}}
+
+    def _tool_astral_list_operation_completion_subscriptions(
+            self, arguments: dict[str, Any]) -> dict[str, Any]:
+        with self.state.lock:
+            entries = [dict(entry) for entry in self.state.subscriptions.values()]
+        entries.sort(key=lambda entry: entry["target_operation_id"])
+        after_id = arguments.get("after_id")
+        if after_id is not None:
+            entries = [entry for entry in entries if entry["target_operation_id"] > after_id]
+        limit = arguments.get("limit", 50)
+        selected = entries[:limit]
+        next_after_id = selected[-1]["target_operation_id"] if len(entries) > limit else None
+        return {"subscriptions": selected, "next_after_id": next_after_id}
+
+    def _tool_astral_cancel_operation_completion_subscription(
+            self, arguments: dict[str, Any]) -> dict[str, Any]:
+        source_id = arguments["source_operation_id"]
+        target_id = arguments["target_operation_id"]
+        with self.state.lock:
+            target = self.state.operations.get(target_id)
+            entry = self.state.subscriptions.get((source_id, target_id))
+            if target is None or entry is None:
+                raise _ToolError("work_not_found")
+            if target["revision"] != arguments["expected_revision"]:
+                raise _ToolError("assignment_revision_conflict")
+            del self.state.subscriptions[(source_id, target_id)]
+            target["disposition"] = "active"
+            target["phase"] = "waiting"
+            target["revision"] += 1
+            return {"operation": _operation_view(target), "applied": True,
+                    "subscription": {"source_operation_id": source_id,
+                                     "target_operation_id": target_id}}
 
     def _tool_astral_emergency_status(self, arguments: dict[str, Any]) -> dict[str, Any]:
         with self.state.lock:

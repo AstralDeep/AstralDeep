@@ -34,6 +34,16 @@ PUBLIC_ERRORS = {
     "FHIR_NOT_FOUND": "No matching record was found in the FHIR data source. Check the identifier and try again.",
     "FHIR_BAD_REQUEST": "The FHIR data source did not accept this query. Adjust the request and try again.",
     "FHIR_INVALID_RESPONSE": "The FHIR data source returned a response that could not be read. Try again later.",
+    "CRESCO_NOT_CONFIGURED": "The Cresco fabric is not configured. Ask an administrator to set its address and service key.",
+    "CRESCO_OPERATION_UNAVAILABLE": "This Cresco operation is unavailable because a supported work and result transport has not been verified.",
+    "CRESCO_AUDIT_UNAVAILABLE": "Cresco audit storage is unavailable. Results are withheld; do not retry automatically.",
+    "CRESCO_AUTH_FAILED": "The Cresco fabric rejected the configured service key. Ask an administrator to check it.",
+    "CRESCO_UNREACHABLE": "The Cresco fabric is unreachable. Try again later.",
+    "CRESCO_TLS_FAILED": "The Cresco fabric's TLS certificate could not be verified. Ask an administrator to check its trust configuration.",
+    "CRESCO_INVALID_RESPONSE": "The Cresco fabric returned a response that could not be read. No further action was taken.",
+    "CRESCO_TARGET_REFUSED": "That Cresco target is not operator-approved, so nothing was sent.",
+    "CRESCO_BAD_REQUEST": "The Cresco request was not valid, so nothing was sent. Adjust it and try again.",
+    "CRESCO_RESULT_UNCONFIRMED": "The Cresco dispatch was sent but no confirmed result arrived; check the fabric before retrying.",
 }
 _NOTICES: ContextVar[set[str] | None] = ContextVar("tool_failure_notices", default=None)
 _MAX_NOTICES = 64

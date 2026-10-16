@@ -71,12 +71,35 @@ skill packs (`backend/knowledge/user_skills/<owner>/<slug>.md`, one directory pe
 user, named by a hash of your account), so an operator can promote a good one to a
 shared pack by copying the file.
 
+### Import a SKILL.md file
+
+If the deployment enables `FF_SKILL_IMPORT`, *Your skills* also offers **Import a
+SKILL.md file**: paste the contents of one [Agent Skills](https://agentskills.io)
+SKILL.md file and press **Preview import**. Nothing is saved by that first step —
+Astral shows exactly what maps (the name and the instruction body) and everything
+that does not, then prefills the normal Add-a-skill form for you to review and
+save explicitly. Only plain instructions are imported:
+
+- `allowed-tools`, compatibility notes and other metadata are shown but never
+  imported; they cannot grant tools or permissions here.
+- Skills whose instructions link to bundled files (`scripts/`, `references/`,
+  `assets/`) are refused — an instructions-only import would be incomplete.
+- Values larger than Astral's limits (60-character name, 4,000-character
+  instructions) are refused, never truncated.
+- The source license is shown. Material whose license is missing or not
+  recognized as permitting reuse is not imported; if you have permission under
+  its terms, add it with the Add-a-skill form instead.
+- Nothing is fetched from the network and nothing in the file is executed.
+
+Saving uses the same facade, limits, audit trail and delete as any other skill.
+
 ## For operators
 
 | Setting | Default | Effect |
 |---|---|---|
 | `FF_BYO_AGENTS` | off | Personal agents (unchanged from feature 058). |
 | `FF_USER_SKILLS` | on | User skills: the surface section, the per-turn digest lines and `/command` expansion. Off is byte-identical to before. |
+| `FF_SKILL_IMPORT` | off | The **Import a SKILL.md file** preview on the skills surface (requires `FF_USER_SKILLS`). Off hides the import form entirely. |
 
 Skills live under the runtime knowledge directory (`./backend/knowledge`, bind-mounted
 in Compose); back it up with the rest of that directory. Multi-instance

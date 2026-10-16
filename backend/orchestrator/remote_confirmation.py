@@ -118,6 +118,18 @@ def _computer_use_summary(orch, user_id: str, tool_name: str, args: Dict[str, An
         tool_name, args, _computer_use_label(orch, user_id, args.get("computer")))
 
 
+def _cresco_label(orch, user_id: str, ref) -> str:
+    return str(ref or "the approved fabric target")[:80]
+
+
+def _cresco_summary(orch, user_id: str, tool_name: str, args: dict[str, Any]) -> str:
+    from shared.phi_redactor import redact
+
+    public = {k: v for k, v in args.items() if not str(k).startswith("_") and k != "user_id"}
+    preview, _ = redact(public, kind="args")
+    return f"{tool_name} on {_cresco_label(orch, user_id, args.get('target'))}: {preview}"
+
+
 def _policies() -> Dict[str, AgentConfirmationPolicy]:
     from agents.gaiakeep.catalog import READ_TOOLS, TOOLS, is_mutation
     from orchestrator import computer_use_policy
@@ -165,6 +177,28 @@ def _policies() -> Dict[str, AgentConfirmationPolicy]:
             card_as_result=True,
             on_approved=_computer_use_on_approved,
             retry_grace_s=computer_use_policy.APPROVAL_RETRY_GRACE_S,
+        ),
+        "cresco-1": AgentConfirmationPolicy(
+            agent_id="cresco-1",
+            classification={
+                "cresco_list_regions": "never",
+                "cresco_list_agents": "never",
+                "cresco_agent_info": "never",
+                "cresco_get_sysinfo": "never",
+                "cresco_dispatch_work": "always",
+                "cresco_run_command": "always",
+            },
+            machine_key="target",
+            gate_unclassified_unattended=True,
+            unattended_allowed=frozenset({"cresco_list_regions", "cresco_list_agents", "cresco_agent_info", "cresco_get_sysinfo"}),
+            card_title="Confirm a Cresco dispatch",
+            card_caption=("This sends work to the approved Cresco fabric target and cannot be "
+                          "recalled once the fabric accepts it. Approve this exact operation "
+                          "after checking its target and payload."),
+            summary=_cresco_summary,
+            machine_label=_cresco_label,
+            auto_continue=True,
+            card_as_result=True,
         ),
     }
 

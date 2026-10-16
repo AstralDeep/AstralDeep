@@ -19,12 +19,12 @@ from orchestrator import remote_jobs as rj
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.remote_transport import FakeTransport, set_transport
 from orchestrator.projection_surfaces import remote_machines as surface
-from tests.helpers.remote_plane_runtime import make_remote_plane_source
+from tests.helpers.remote_plane_runtime import make_remote_wake_plane_source
 
 USER = "user-1"
 
 SENTINEL_KEY = "ASTRAL063LEAKSENTINELPRIVATEKEYBYTES"
-FAKE_PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+FAKE_PEM = ("synthetic-ssh-private-key-fixture\n"
             f"{SENTINEL_KEY}\n"
             "-----END OPENSSH PRIVATE KEY-----")
 SENTINEL_PASSPHRASE = "astral063.leak.sentinel.passphrase"
@@ -233,7 +233,7 @@ def env(monkeypatch, caplog):
     rec = _AuditRecorder()
     monkeypatch.setattr("audit.recorder.get_recorder", lambda: rec)
     db = _MemDB()
-    source = make_remote_plane_source(db)
+    source = make_remote_wake_plane_source(db)
     credmgr = CredentialManager(
         plane_runtime=source.plane_runtime,
         plane_repositories=source.plane_repositories,

@@ -172,6 +172,9 @@ class AssignmentRunner:
         await self.store.call("recover_expired_for_administration", limit=100)
         if self.one_shot is not None:
             await self._recover_operations()
+            from orchestrator.work_subscriptions import redrive_pending
+
+            await redrive_pending(self.service)
             if self._operation_first:
                 await self._tick_operations()
             self._operation_first = not self._operation_first
@@ -509,6 +512,13 @@ class AssignmentRunner:
         self.orch.work_admission.terminalize(executor.operation_fence,
             state=OperationState.COMPLETED, terminal_code=None, safe_summary=None,
             retry_after_ms=None, transaction=tx)
+        if completion.terminal_outcome in {"completed", "failed", "cancelled"}:
+            from orchestrator.work_subscriptions import fire_completions
+
+            fire_completions(self.service, tx, repository, owner_id=current.owner_id,
+                             source_id=current.assignment_id,
+                             source_revision=result.state_version,
+                             outcome=completion.terminal_outcome)
         return result
 
     async def _finish_operation(self, executor, outcome):
