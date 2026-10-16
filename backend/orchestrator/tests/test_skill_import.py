@@ -13,6 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 ORCH_DIR = Path(__file__).resolve().parents[1]
 if str(ORCH_DIR) not in sys.path:
@@ -275,7 +276,8 @@ def test_import_saves_disabled_through_facade():
     _, kwargs = facade.save.call_args
     assert kwargs["enabled"] is False
     assert kwargs["expected_revision"] == 0
-    assert kwargs["skill_id"] == ""
+    assert UUID(kwargs["skill_id"]).version == 4
+    assert str(UUID(kwargs["skill_id"])) == kwargs["skill_id"]
     assert kwargs["slug"] == ""
     assert kwargs["name"] == "Demo Skill"
     assert kwargs["applies_to"] == ("always",)
@@ -287,14 +289,16 @@ def test_import_generates_command_id_when_omitted():
     parsed = parse_agent_skill(_skill(license_="MIT"))
     asyncio.run(import_instructions_only(facade, object(), parsed))
     _, kwargs = facade.save.call_args
-    assert isinstance(kwargs["command_id"], str) and kwargs["command_id"]
+    assert UUID(kwargs["command_id"]).version == 4
+    assert str(UUID(kwargs["command_id"])) == kwargs["command_id"]
 
 
 def test_import_uses_supplied_command_id():
     facade = _facade()
     parsed = parse_agent_skill(_skill(license_="MIT"))
-    asyncio.run(import_instructions_only(facade, object(), parsed, command_id="cmd-1"))
-    assert facade.save.call_args[1]["command_id"] == "cmd-1"
+    command_id = "1cb62afb-adff-4477-b695-ef97a18a9130"
+    asyncio.run(import_instructions_only(facade, object(), parsed, command_id=command_id))
+    assert facade.save.call_args[1]["command_id"] == command_id
 
 
 def test_import_blocks_nonpermissive_license_by_default():

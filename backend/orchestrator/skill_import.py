@@ -29,6 +29,7 @@ Deterministic and offline: depends only on the Python standard library.
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -180,6 +181,21 @@ def _extract_resource_links(instructions: str) -> Tuple[str, ...]:
     return tuple(sorted(set(_URL_RE.findall(instructions))))
 
 
+def _field_text(meta: Dict[str, Any], key: str) -> str:
+    value = meta.get(key, "")
+    if type(value) is not str:
+        raise SkillImportError("invalid_field_type", f"Field '{key}' must be scalar text.")
+    return value.strip()
+
+
+def _validate_characters(value: str, field: str, *, multiline: bool = False) -> None:
+    if any(
+        unicodedata.category(char) in {"Cc", "Cs"}
+        and not (multiline and char in "\n\t\r") for char in value
+    ):
+        raise SkillImportError("invalid_field_value", f"Field '{field}' contains invalid characters.")
+
+
 def parse_agent_skill(
     text: Any,
     *,
@@ -193,8 +209,22 @@ def parse_agent_skill(
     Raises :class:`SkillImportError` on any bounded-intake violation. Never performs
     filesystem, network, archive, or execution side effects.
     """
+    limits = {
+        "max_bytes": max_bytes,
+        "max_field_chars": max_field_chars,
+        "max_yaml_depth": max_yaml_depth,
+        "max_instructions_chars": max_instructions_chars,
+    }
+    for key, value in limits.items():
+        if type(value) is not int or value < (0 if key == "max_yaml_depth" else 1):
+            raise SkillImportError("invalid_limit", f"Invalid intake limit '{key}'.")
+    max_instructions_chars = min(max_instructions_chars, MAX_INSTRUCTIONS_CHARS)
+
     if isinstance(text, str):
-        data = text.encode("utf-8")
+        try:
+            data = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SkillImportError("invalid_encoding", "Input must be valid UTF-8.") from exc
     elif isinstance(text, (bytes, bytearray)):
         data = bytes(text)
     else:
@@ -231,9 +261,12 @@ def parse_agent_skill(
 
     meta = _parse_flat_frontmatter(fm_text, max_field_chars=max_field_chars)
 
-    name = (meta.get("name") or "").strip()
+    name = _field_text(meta, "name")
     if not name:
         raise SkillImportError("missing_name", "SKILL.md frontmatter requires a 'name'.")
+    if len(name) < 2:
+        raise SkillImportError("invalid_field_value", "Name must contain at least two characters.")
+    _validate_characters(name, "name")
     if len(name) > MAX_NAME_CHARS:
         raise SkillImportError(
             "name_too_long",
@@ -241,8 +274,12 @@ def parse_agent_skill(
             "Edit the source before import (it is not silently truncated).",
         )
 
-    description = (meta.get("description") or "").strip()
+    description = _field_text(meta, "description")
+    _validate_characters(description, "description")
     instructions = body.strip()
+    if len(instructions) < 10:
+        raise SkillImportError("invalid_field_value", "Instructions must contain at least ten characters.")
+    _validate_characters(instructions, "instructions", multiline=True)
     if len(instructions) > max_instructions_chars:
         raise SkillImportError(
             "instructions_too_long",
@@ -251,9 +288,9 @@ def parse_agent_skill(
             "(it is not silently truncated).",
         )
 
-    license_value = meta.get("license")
+    license_value = _field_text(meta, "license") or None
     if license_value is not None:
-        license_value = str(license_value).strip() or None
+        _validate_characters(license_value, "license")
 
     raw_metadata = {
         k: v for k, v in meta.items() if k not in ("name", "description", "license")
@@ -381,11 +418,16 @@ async def import_instructions_only(
             "permission (pass permit_nonpermissive=True).",
         )
 
-    cid = command_id or uuid.uuid4().hex
-    # New skill: expected_revision=0, empty skill_id/slug (facade derives the slug).
+    cid = str(uuid.uuid4()) if command_id is None else command_id
+    try:
+        command_uuid = uuid.UUID(cid) if type(cid) is str else None
+    except ValueError:
+        command_uuid = None
+    if command_uuid is None or command_uuid.version != 4 or str(command_uuid) != cid:
+        raise SkillImportError("invalid_command_id", "Command identity must be canonical UUID4.")
     await facade.save(
         caller=caller,
-        skill_id="",
+        skill_id=str(uuid.uuid4()),
         command_id=cid,
         expected_revision=0,
         name=parsed.name,
