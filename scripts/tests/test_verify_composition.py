@@ -155,9 +155,9 @@ def _lets(root: Path) -> None:
     component = root / COMPONENT_PATHS["lets"]
     _write(
         component / "pyproject.toml",
-        '[project]\nname = "lets-agent"\nversion = "1.0.12"\n',
+        '[project]\nname = "lets-agent"\nversion = "1.1.0"\n',
     )
-    _write(component / "src/lets/__init__.py", '__version__ = "1.0.12"\n')
+    _write(component / "src/lets/__init__.py", '__version__ = "1.1.0"\n')
     _write(component / "src/lets/api.py", 'API_VERSION = "v1"\n')
     _write(component / "src/lets/client.py", "class LETSClient: pass\n")
     _write(
@@ -188,7 +188,7 @@ def _lets(root: Path) -> None:
         json.dumps(
             {
                 "openapi": "3.1.0",
-                "info": {"title": "LETS Warden API", "version": "1.0.12"},
+                "info": {"title": "LETS Warden API", "version": "1.1.0"},
                 "paths": {"/v1/info": {}},
             },
             sort_keys=True,
@@ -231,8 +231,8 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "repository": CANONICAL_REPOSITORIES["lets"],
                 "path": COMPONENT_PATHS["lets"],
                 "commit": commits["lets"],
-                "ref": "v1.0.12",
-                "contract_version": "1.0.12",
+                "ref": "v1.1.0",
+                "contract_version": "1.1.0",
             },
         },
         "availability": {
@@ -262,7 +262,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 ),
             },
             "lets": {
-                "release": "v1.0.12",
+                "release": "v1.1.0",
                 "api_version": "v1",
                 "openapi_sha256": hashlib.sha256(lets_openapi.read_bytes()).hexdigest(),
                 "receipt_wire_type": "lets.receipt/v1",
