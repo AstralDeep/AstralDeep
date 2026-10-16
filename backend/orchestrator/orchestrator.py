@@ -1028,6 +1028,8 @@ class Orchestrator:
         from orchestrator.computer_sessions import ComputerSessionManager
         self.computer_hosts = ComputerHostRegistry(self)
         self.computer_sessions = ComputerSessionManager(self, self.computer_hosts)
+        from orchestrator.terminal_sessions import TerminalSessionManager
+        self.terminal_sessions = TerminalSessionManager()
         self._job_context: Dict[str, Dict[str, Any]] = {}
         self.cancelled_sessions: Dict[str, bool] = {}
         self._chat_locks: Dict[tuple, asyncio.Lock] = {}
@@ -17308,6 +17310,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             from agents.gaiakeep.mcp_server import bind_owner_context
             bind_owner_context(args, user_id)
 
+        if agent_id == "terminal-shell-1":
+            from agents.terminal_shell.mcp_server import bind_owner_context
+            bind_owner_context(args, user_id)
+
         if agent_id in ("remote-compute-1", "computer-use-1", "gaiakeep-1"):
             from orchestrator import remote_confirmation
             _conf = await asyncio.to_thread(
@@ -22923,6 +22929,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
                 if not flags.is_enabled("computer_use"):
                     seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
+                if not flags.is_enabled("terminal_shell"):
+                    seed_ids = tuple(a for a in seed_ids if a != "terminal-shell-1")
                 if not flags.is_enabled("fhir"):
                     seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
                 await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
@@ -23350,6 +23358,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(task_router)
         app.include_router(async_task_router)
         app.include_router(operation_router)
+        from orchestrator.terminal_api import terminal_router
+        app.include_router(terminal_router)
         app.include_router(audit_router)
         app.include_router(feedback_user_router)
         app.include_router(feedback_admin_router)
