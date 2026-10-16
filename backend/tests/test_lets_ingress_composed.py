@@ -1,8 +1,6 @@
-"""Composed LETS ingress regression: real MCP HTTP, A2A JSON-RPC, and accepted
-client-local voice WebSocket turns drive one generated protected executor through
-the orchestrator's governed dispatch onto a real isolated test Plane database.
-Only the LLM tool-selection boundary is simulated; authentication, admission,
-receipts, replay defense, and durable Plane checkpoints all run product code.
+"""Drives real MCP, A2A, and accepted client-local voice ingress through governed
+dispatch and a generated protected executor onto one isolated Plane database.
+Only provider resolution and model tool selection are simulated.
 """
 
 from __future__ import annotations
@@ -42,7 +40,6 @@ from lets.manifest import (
 from lets.models import Receipt
 from lets.policy import MachineSpec, PolicySpec, ResourceDimension, TransitionSpec
 
-from orchestrator.async_tasks import DurableUserTurnWebSocket
 from orchestrator.generated_lets_executor import _SCOPE_BINDINGS
 from orchestrator.governed_dispatch import DispatchRuntime
 from orchestrator.lets_client import LetsClientBoundaryError
@@ -52,7 +49,11 @@ from orchestrator.lets_gateway import LetsAuthorizationGateway
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.voice_bootstrap import build_voice_services
 from shared.protocol import MCP_PROTOCOL_VERSION, MCPRequest
-from tests.helpers.voice_plane_runtime import isolated_voice_plane_runtime
+from tests.helpers.plane_template import database_dsn
+from tests.helpers.voice_plane_runtime import (
+    build_test_database_url,
+    isolated_voice_plane_runtime,
+)
 
 TENANT_ID = "tenant-ingress"
 ENVELOPE_ID = "envelope-ingress"
@@ -678,16 +679,27 @@ async def rig_enforce(
     orchestrator_factory,
 ):
     identity = ingress_identity
+    database = await asyncio.to_thread(
+        ingress_plane.fetch_one, "SELECT current_database() AS name"
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
+    )
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
-        ingress_plane=ingress_plane,
+        ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
         mode="enforce",
     )
     rig.identity = identity
-    yield rig
+    try:
+        yield rig
+    finally:
+        for context in tuple(orchestrator._connection_contexts.values()):
+            await orchestrator._drain_connection_context(context)
 
 
 @pytest.fixture
@@ -695,9 +707,16 @@ async def rig_off(
     ingress_plane, ingress_identity, tmp_path, monkeypatch, orchestrator_factory
 ):
     identity = ingress_identity
+    database = await asyncio.to_thread(
+        ingress_plane.fetch_one, "SELECT current_database() AS name"
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
+    )
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
-        ingress_plane=ingress_plane,
+        ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -880,6 +899,24 @@ async def _create_voice_session(
     return session_id
 
 
+async def _submit_voice_frame(
+    rig: IngressRig, socket: _RecorderSocket, frame: dict[str, Any]
+) -> None:
+    orch = rig.orchestrator
+    context = orch._connection_contexts.get(id(socket))
+    if context is None:
+        context = orch._new_connection_context(socket)
+    assert await orch._route_ui_frame(context, json.dumps(frame))
+    async with asyncio.timeout(10):
+        if context.admission_task is not None:
+            await context.admission_task
+        tasks = [
+            work.task for work in context.operations.values() if work.task is not None
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+
 async def _accepted_voice_turn(
     rig: IngressRig,
 ) -> tuple[_RecorderSocket, str, Any, dict[str, Any]]:
@@ -903,18 +940,17 @@ async def _accepted_voice_turn(
     await _ensure_history_chat(orch, owner, chat_id)
 
     socket = _RecorderSocket()
-    await orch.handle_ui_message(
+    await _submit_voice_frame(
+        rig,
         socket,
-        json.dumps(
-            {
-                "type": "register_ui",
-                "token": rig.identity.user_token(owner),
-                "device_id": device_id,
-                "connection_generation": connection_generation,
-                "device": {"device_type": "web"},
-                "capabilities": [],
-            }
-        ),
+        {
+            "type": "register_ui",
+            "token": rig.identity.user_token(owner),
+            "device_id": device_id,
+            "connection_generation": connection_generation,
+            "device": {"device_type": "web"},
+            "capabilities": [],
+        },
     )
     binding_frame = _frame_of(socket, "voice_control_binding")
     session_id = await _create_voice_session(
@@ -934,42 +970,40 @@ async def _accepted_voice_turn(
         "generation": 1,
         "speech_revision": 1,
     }
-    await orch.handle_ui_message(
+    await _submit_voice_frame(
+        rig,
         socket,
-        json.dumps(
-            {
-                "type": "voice_local_ready",
-                **common,
-                "contract": "client_local/v1",
-                "transport": "client_local",
-                "configured_locale": "en-US",
-                "full_duplex": False,
-                "has_microphone": True,
-                "has_audio_output": True,
-                "microphone_permission": "authorized",
-                "recognition_permission": "authorized",
-                "recognition_processing": "guaranteed_local",
-                "recognition_locale": "ready",
-                "recognition_installation": "ready",
-                "synthesis_processing": "guaranteed_local",
-                "synthesis_locale": "ready",
-                "client_sequence": 1,
-            }
-        ),
+        {
+            "type": "voice_local_ready",
+            **common,
+            "contract": "client_local/v1",
+            "transport": "client_local",
+            "configured_locale": "en-US",
+            "full_duplex": False,
+            "has_microphone": True,
+            "has_audio_output": True,
+            "microphone_permission": "authorized",
+            "recognition_permission": "authorized",
+            "recognition_processing": "guaranteed_local",
+            "recognition_locale": "ready",
+            "recognition_installation": "ready",
+            "synthesis_processing": "guaranteed_local",
+            "synthesis_locale": "ready",
+            "client_sequence": 1,
+        },
     )
     client_turn_id = str(uuid.uuid4())
-    await orch.handle_ui_message(
+    await _submit_voice_frame(
+        rig,
         socket,
-        json.dumps(
-            {
-                "type": "voice_local_recognition_started",
-                **common,
-                "client_turn_id": client_turn_id,
-                "chat_id": chat_id,
-                "chat_context_revision": 1,
-                "recognition_sequence": 2,
-            }
-        ),
+        {
+            "type": "voice_local_recognition_started",
+            **common,
+            "client_turn_id": client_turn_id,
+            "chat_id": chat_id,
+            "chat_context_revision": 1,
+            "recognition_sequence": 2,
+        },
     )
     bound = _frame_of(socket, "voice_local_turn_bound")
     canonical = unicodedata.normalize("NFC", "lookup patient record 42").strip()
@@ -988,7 +1022,7 @@ async def _accepted_voice_turn(
         "text": canonical,
         "text_digest_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
     }
-    await orch.handle_ui_message(socket, json.dumps(final))
+    await _submit_voice_frame(rig, socket, final)
     turn = await asyncio.to_thread(
         services.repository.get_turn, user_id=owner, turn_id=bound["turn_id"]
     )
@@ -997,33 +1031,82 @@ async def _accepted_voice_turn(
     return socket, chat_id, turn, final
 
 
-def _voice_tool_call() -> Any:
-    return SimpleNamespace(
-        function=SimpleNamespace(
-            name=TOOL_NAME, arguments=json.dumps(FINAL_ARGUMENTS)
-        )
+@pytest.fixture
+def voice_model(rig_enforce, monkeypatch):
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from llm_config.types import CredentialSource, ResolvedConfig
+
+    selected: list[str] = []
+    tool_results: list[str] = []
+    model = ResolvedConfig(
+        model="synthetic-ingress-model",
+        base_url="https://synthetic-provider.invalid/v1",
     )
 
-
-async def _dispatch_accepted_voice_turn(
-    rig: IngressRig, socket: _RecorderSocket, chat_id: str
-) -> Any:
-    orch = rig.orchestrator
-    runtime_websocket = DurableUserTurnWebSocket(socket, user_id=rig.owner_id)
-    orch.ui_sessions[runtime_websocket] = {
-        **_claims(rig.owner_id),
-        "_raw_token": rig.identity.user_token(rig.owner_id),
-    }
-    try:
-        return await orch.execute_single_tool(
-            runtime_websocket,
-            _voice_tool_call(),
-            {TOOL_NAME: rig.agent_id},
-            chat_id,
-            user_id=rig.owner_id,
+    def title_completion(**kwargs):
+        return ChatCompletion.model_validate(
+            {
+                "id": "synthetic-chat-title",
+                "object": "chat.completion",
+                "created": 0,
+                "model": model.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Clinical lookup"},
+                    }
+                ],
+            }
         )
-    finally:
-        orch.ui_sessions.pop(runtime_websocket, None)
+
+    provider = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=title_completion))
+    )
+
+    async def resolve(websocket):
+        assert rig_enforce.orchestrator._get_user_id(websocket) == rig_enforce.owner_id
+        return provider, CredentialSource.USER, model
+
+    async def complete(websocket, messages, tools_desc=None, **kwargs):
+        assert rig_enforce.orchestrator._get_user_id(websocket) == rig_enforce.owner_id
+        if kwargs.get("feature") == "tool_dispatch":
+            tool_results[:] = [
+                message["content"]
+                for message in messages
+                if isinstance(message, dict) and message.get("role") == "tool"
+            ]
+        if kwargs.get("feature") == "tool_dispatch" and not selected:
+            available = {
+                definition["function"]["name"] for definition in tools_desc or []
+            }
+            assert TOOL_NAME in available
+            selected.append(TOOL_NAME)
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "synthetic-voice-lookup",
+                        "type": "function",
+                        "function": {
+                            "name": TOOL_NAME,
+                            "arguments": json.dumps(FINAL_ARGUMENTS),
+                        },
+                    }
+                ],
+            }
+        else:
+            message = {
+                "role": "assistant",
+                "content": "The synthetic voice turn finished.",
+                "tool_calls": [],
+            }
+        return ChatCompletionMessage.model_validate(message), None
+
+    monkeypatch.setattr(rig_enforce.orchestrator, "_resolve_llm_client_for", resolve)
+    monkeypatch.setattr(rig_enforce.orchestrator, "_call_llm", complete)
+    return SimpleNamespace(selected=selected, tool_results=tool_results)
 
 
 def _rebuild_actuator_request(original: MCPRequest, arguments: dict[str, object]) -> MCPRequest:
@@ -1156,16 +1239,21 @@ async def test_a2a_transport_numbers_cannot_reach_protected_effects(rig_enforce)
 
 @pytest.mark.asyncio
 async def test_accepted_voice_turn_reaches_receipt_protected_effect(
-    rig_enforce, user_skills_disabled
+    rig_enforce, user_skills_disabled, voice_model
 ) -> None:
     rig = rig_enforce
-    socket, chat_id, _turn, _final = await _accepted_voice_turn(rig)
-    rejection = _frame_of(socket, "voice_local_final_rejected")
-    assert rejection["reason"] == "invalid_binding", rejection
-    response = await _dispatch_accepted_voice_turn(rig, socket, chat_id)
-    assert response is not None and response.error is None, (
-        response.error if response else None
-    )
+    socket, chat_id, turn, final = await _accepted_voice_turn(rig)
+    assert not [
+        frame
+        for frame in socket.sent
+        if frame.get("type") == "voice_local_final_rejected"
+    ], socket.sent
+    acknowledgement = _frame_of(socket, "user_message_acked")
+    assert acknowledgement["voice_turn_id"] == turn.turn_id
+    assert acknowledgement["chat_id"] == chat_id
+    assert acknowledgement["submission_id"] == final["submission_id"]
+    assert turn.message_id is not None
+    assert voice_model.selected == [TOOL_NAME]
     await _assert_governed_enforcement(
         rig,
         channel="websocket",
@@ -1173,6 +1261,54 @@ async def test_accepted_voice_turn_reaches_receipt_protected_effect(
         captured=rig.executor.captured,
     )
     assert rig.executor.replay_store().status().claim_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_replayed_accepted_voice_final_has_no_new_protected_effect(
+    rig_enforce, user_skills_disabled, voice_model
+) -> None:
+    rig = rig_enforce
+    socket, _chat_id, _turn, final = await _accepted_voice_turn(rig)
+    assert not [
+        frame
+        for frame in socket.sent
+        if frame.get("type") == "voice_local_final_rejected"
+    ], socket.sent
+    assert len(rig.executor.read_effects()) == 1
+    captured = list(rig.executor.captured)
+    authorizations = list(rig.warden.calls)
+
+    await _submit_voice_frame(rig, socket, final)
+
+    assert len(rig.executor.read_effects()) == 1
+    assert rig.executor.captured == captured
+    assert rig.warden.calls == authorizations
+    assert rig.executor.replay_store().status().claim_sequence == 1
+    assert voice_model.selected == [TOOL_NAME]
+
+
+@pytest.mark.asyncio
+async def test_revoked_authority_denies_accepted_voice_with_zero_effects(
+    rig_enforce, user_skills_disabled, voice_model
+) -> None:
+    rig = rig_enforce
+    await asyncio.to_thread(_revoke_binding, rig)
+
+    socket, _chat_id, turn, _final = await _accepted_voice_turn(rig)
+
+    assert not [
+        frame
+        for frame in socket.sent
+        if frame.get("type") == "voice_local_final_rejected"
+    ], socket.sent
+    assert _frame_of(socket, "user_message_acked")["voice_turn_id"] == turn.turn_id
+    assert voice_model.selected == [TOOL_NAME]
+    assert len(voice_model.tool_results) == 1
+    assert '"status": "error"' in voice_model.tool_results[0]
+    assert '"code": "TOOL_FAILED"' in voice_model.tool_results[0]
+    assert rig.executor.read_effects() == []
+    assert rig.executor.captured == []
+    assert rig.warden.calls == []
 
 
 @pytest.mark.asyncio
@@ -1289,9 +1425,16 @@ async def test_shadow_mode_requests_receipt_but_leaves_effect_ungoverned(
     orchestrator_factory,
 ) -> None:
     identity = ingress_identity
+    database = await asyncio.to_thread(
+        ingress_plane.fetch_one, "SELECT current_database() AS name"
+    )
+    monkeypatch.setenv(
+        "DATABASE_URL", database_dsn(build_test_database_url(), database["name"])
+    )
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", _unique("ingress-composition"))
     orchestrator = await asyncio.to_thread(orchestrator_factory)
     rig = await _build_rig(
-        ingress_plane=ingress_plane,
+        ingress_plane=orchestrator.runtime_composition.plane.runtime,
         orchestrator=orchestrator,
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
