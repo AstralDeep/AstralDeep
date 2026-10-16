@@ -1,30 +1,19 @@
-"""Tests for the MCP resource endpoints (bounty #322, partial deliverable).
-
-Testing strategy
-----------------
-The substantive behaviour -- list/read dispatch, owner isolation, authorization,
-and the bounded view models -- is exercised against the **real**
-``FrameworkWorkOperations`` facade. The facade is backed by a synthetic
-assignment store (``_Repository``) that returns well-formed reads, so the real
-``WorkService`` -> ``_public`` transformation runs end to end exactly as in
-production. This proves the resource helpers honour the real Work contract
-(owner scoping, the ``operations.read`` guard, and the public record shape)
-instead of a fabricated mock shape.
-
-A small number of *defensive* guards live in ``list_resources`` /
-``read_resource`` that are unreachable through the validating real facade
-(every id is a canonical UUID4 and every record is well formed). Those branches
-are exercised directly against the facade method in clearly labelled tests.
+"""Checks resource URI/view projection and protocol serialization through the Work facade.
+Scripted wire tests do not qualify IAM; separate HTTP boundary tests retain real token verification and resource denials.
 """
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from jose import jwt
 
 from orchestrator.framework_credentials import FrameworkCaller
 from orchestrator.mcp_authz import MCPAuthError
@@ -37,6 +26,8 @@ from orchestrator.mcp_server_endpoint import (
 )
 from orchestrator.work_operations import FrameworkWorkOperations
 from persistent_agents.models import AssignmentError
+from tests.test_mcp_endpoint_064 import _Orchestrator as AdmissionOrchestrator
+from tests.test_request_session_authority_088 import signing_key as signing_key
 
 OWNER_ID = "owner-2f1c"
 WORK_ID = "3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f"
@@ -53,7 +44,6 @@ def _caller(*, owner_id=OWNER_ID, scopes=("operations.read",)):
 
 
 def _record(work_id=WORK_ID, title="Nightly digest"):
-    """A facade record shape used by the direct _build_bounded_view_model test."""
     return {
         "id": work_id,
         "revision": 4,
@@ -71,8 +61,6 @@ def _record(work_id=WORK_ID, title="Nightly digest"):
 
 def _make_read(owner_id, assignment_id, *, title="Nightly digest",
                disposition="active", lifecycle="active", phase="executing", revision=4):
-    """A well-formed synthetic assignment read that survives the real facade's
-    ``_public`` transformation (the same path production uses)."""
     assignment = SimpleNamespace(
         owner_id=owner_id,
         execution_profile="one_shot",
@@ -98,8 +86,6 @@ def _make_read(owner_id, assignment_id, *, title="Nightly digest",
 
 
 class _Repository:
-    """Synthetic Work repository: returns real-shaped reads so the real
-    ``FrameworkWorkOperations`` / ``WorkService`` / ``_public`` path runs end to end."""
 
     def __init__(self, reads, *, list_error=None, get_error=None):
         self._reads = dict(reads)
@@ -117,6 +103,7 @@ class _Repository:
         return items[:limit]
 
     def get_operation(self, tx, *, owner_id, assignment_id):
+        self.captured_owner_ids.append(owner_id)
         if self.get_error is not None:
             raise self.get_error
         return self._reads.get(assignment_id)
@@ -158,14 +145,13 @@ def _claims(caller):
 
 
 def _make_mock_request(headers=None, body=None):
-    """Create a minimal mock Request object for testing mcp_endpoint."""
     req = MagicMock()
     req.headers = MagicMock()
     req.headers.get = MagicMock(side_effect=lambda k, d=None: (headers or {}).get(k, d))
     req.query_params = {}
     req.cookies = {}
-    # _read_body consumes the body via `async for chunk in request.stream()`,
-    # so the mock must return an *async* iterable, not a plain iterator.
+
+
     async def _stream():
         yield body or b'{}'
     req.stream = MagicMock(return_value=_stream())
@@ -174,7 +160,6 @@ def _make_mock_request(headers=None, body=None):
 
 
 class TestResourceUriContract:
-    """The lister and the reader must agree on exactly one URI shape."""
 
     @pytest.mark.parametrize("kind", ["status", "artifacts"])
     def test_advertised_uris_match_the_reader_contract(self, kind):
@@ -184,10 +169,10 @@ class TestResourceUriContract:
         assert match.group(2) == kind
 
     @pytest.mark.parametrize("uri", [
-        "astral://work/work-1/status",                     # not a canonical UUID4
-        "astral://work/work-2/artifacts",                  # not a canonical UUID4
-        f"astral://work/{WORK_ID}/metadata",               # unadvertised kind
-        f"astral://artifact/{WORK_ID}",                    # retired form, never listed
+        "astral://work/work-1/status",
+        "astral://work/work-2/artifacts",
+        f"astral://work/{WORK_ID}/metadata",
+        f"astral://artifact/{WORK_ID}",
         f"astral://work/{WORK_ID}",
         f"astral://work/{WORK_ID}/status/../../etc/passwd",
         "astral://work/../../etc/passwd/status",
@@ -216,7 +201,6 @@ class TestResourceUriContract:
 
 
 class TestAuthorization:
-    """Every resource request must carry the framework Work authority."""
 
     def test_listing_without_a_verified_caller_fails_closed(self):
         for claims in ({}, {"_framework_caller": None}, {"_framework_caller": object()}):
@@ -280,9 +264,9 @@ class TestResourceListing:
         assert all(item["mimeType"] == "application/json" for item in resources)
 
     def test_records_without_a_canonical_id_are_skipped(self):
-        # Defensive guard in list_resources: records whose id is not a canonical
-        # UUID4 are skipped. The real facade validates every id, so this branch is
-        # exercised directly against the facade method.
+
+
+
         async def _list(caller, *, limit=50, after_id=None):
             return {"operations": [
                 {"id": "work-1", "title": "legacy"},
@@ -294,7 +278,7 @@ class TestResourceListing:
         ops.list = _list
         resources = asyncio.run(
             list_resources(_endpoint(ops), OWNER_ID, _claims(_caller())))
-        # 1 valid UUID4 record × 2 resource kinds (status, artifacts) = 2 resources
+
         assert len(resources) == 2
         assert all(WORK_ID in item["uri"] for item in resources)
         uris = {item["uri"] for item in resources}
@@ -308,7 +292,6 @@ class TestResourceListing:
 
 
 class TestResourceRoundTrip:
-    """Anything the lister advertises must be readable with a valid UUID4 id."""
 
     def test_every_listed_uri_reads_successfully(self):
         ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})
@@ -374,9 +357,9 @@ class TestBoundedViewModels:
         assert read["boundedViewModel"]["title"] == "Untitled"
 
     def test_unexpected_read_payload_fails_as_unavailable(self):
-        # Defensive guard in read_resource: a non-dict record from the facade is a
-        # 503. The real facade always returns a dict (or raises), so this branch is
-        # exercised directly against the facade method.
+
+
+
         ops = _new_facade()
         ops.get = AsyncMock(return_value=None)
         try:
@@ -389,7 +372,6 @@ class TestBoundedViewModels:
 
 class TestOwnerIsolation:
     def test_foreign_work_surfaces_the_facade_not_found(self):
-        """A work item outside the caller's owner reads as absent, not as a leak."""
         ops = _facade(get_error=AssignmentError("work_not_found", 404))
         try:
             asyncio.run(read_resource(
@@ -399,7 +381,6 @@ class TestOwnerIsolation:
             assert caught.status_code == 404
 
     def test_reader_authenticates_with_the_caller_owner(self):
-        """The facade receives the caller's owner_id, never a caller-less request."""
         ops = _facade(reads={WORK_ID: _make_read("owner-distinct", WORK_ID)})
         caller = _caller(owner_id="owner-distinct")
         asyncio.run(list_resources(_endpoint(ops), "ignored-user-id", _claims(caller)))
@@ -416,32 +397,16 @@ class TestOwnerIsolation:
 
 
 class _Orchestrator:
-    """Minimal orchestrator stand-in; only a real Work facade is required.
-
-    mcp_endpoint reads ``orchestrator.framework_work_operations`` (a real
-    ``FrameworkWorkOperations``) and optionally ``orchestrator.runtime_observability``
-    (absent here, so metric recording is a no-op). Admission is mocked away.
-    """
     history = None
 
 
-class TestIntegration:
-    """Exercise the real mcp_endpoint dispatch path for resources/*.
-
-    ``mcp_endpoint`` is a route handler nested inside ``create_mcp_router``
-    (decorated with ``@router.post("/mcp")``), so it is not importable at module
-    level. The faithful, FastAPI-free way to reach it -- and to cover its
-    resources/list and resources/read branches -- is to build the router and
-    pull the ``/mcp`` handler out, then drive it with a mock Request. Admission
-    is mocked so we only exercise the resource dispatch logic.
-    """
+class TestResourceWireDispatch:
 
     @asynccontextmanager
     async def _fake_admission(self, *args, **kwargs):
         yield MagicMock()
 
     def _mcp_endpoint(self, ops):
-        """Build the router with a real Work facade and return the /mcp handler."""
         orch = _Orchestrator()
         orch.framework_work_operations = ops
         router = create_mcp_router(orch, public_base_url="https://example.com")
@@ -475,7 +440,6 @@ class TestIntegration:
             return asyncio.run(mcp_endpoint(mock_request))
 
     def test_resources_list_dispatch_via_endpoint(self):
-        """resources/list is served through the main dispatcher, not just the helper."""
         ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})
         resp = self._dispatch(
             ops,
@@ -486,29 +450,46 @@ class TestIntegration:
         body = json.loads(resp.body)
         assert body["result"]["resultType"] == "complete"
         resources = body["result"]["resources"]
-        assert len(resources) == 2  # status + artifacts
+        assert len(resources) == 2
         uris = {r["uri"] for r in resources}
         assert f"astral://work/{WORK_ID}/status" in uris
         assert f"astral://work/{WORK_ID}/artifacts" in uris
 
-    def test_resources_read_dispatch_via_endpoint(self):
-        """resources/read is served through the main dispatcher, not just the helper."""
-        ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})
+    @pytest.mark.parametrize("kind", ["status", "artifacts"])
+    def test_resources_read_dispatch_via_endpoint(self, kind):
+        title = "Synthetic <report> 🪐"
+        ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID, title=title)})
+        request = resource_request("resources/read", "unused")["json"]
+        request["params"]["uri"] = f"astral://work/{WORK_ID}/{kind}"
         resp = self._dispatch(
             ops,
             method="resources/read",
-            body=b'{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"astral://work/3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f/status","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}',
+            body=json.dumps(request).encode(),
         )
         assert resp.status_code == 200
         body = json.loads(resp.body)
         assert body["result"]["resultType"] == "complete"
-        resource = body["result"]["resource"]
-        assert resource["uri"] == f"astral://work/{WORK_ID}/status"
-        assert resource["boundedViewModel"]["id"] == WORK_ID
-        assert "owner_id" not in resource["boundedViewModel"]
+        assert set(body["result"]) == {"resultType", "contents"}
+        resource = body["result"]["contents"][0]
+        assert resource["uri"] == f"astral://work/{WORK_ID}/{kind}"
+        assert resource["mimeType"] == "application/json"
+        view = json.loads(resource["text"])
+        assert view["id"] == WORK_ID
+        assert view["title"] == title
+        assert "owner_id" not in view
+
+    @pytest.mark.parametrize("title", [float("nan"), SimpleNamespace(private="synthetic-private-record")])
+    def test_resource_serialization_failure_is_content_free(self, title):
+        ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID, title=title)})
+        response = self._dispatch(ops, method="resources/read",
+                                  body=json.dumps(resource_request("resources/read", "unused")["json"]).encode())
+        assert response.status_code == 500
+        assert json.loads(response.body) == {"jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32603, "message": "Internal MCP server error"}}
+        assert response.headers["cache-control"] == "no-store"
+        assert "synthetic-private-record" not in response.body.decode()
 
     def test_invalid_uri_rejected_via_endpoint(self):
-        """A malformed URI reaches the reader and returns a 400 error via the dispatcher."""
         ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})
         resp = self._dispatch(
             ops,
@@ -520,7 +501,6 @@ class TestIntegration:
         assert "error" in body
 
     def test_missing_uri_param_rejected_via_endpoint(self):
-        """A resources/read request without a uri param returns a 400 error."""
         ops = _facade(reads={WORK_ID: _make_read(OWNER_ID, WORK_ID)})
         resp = self._dispatch(
             ops,
@@ -532,7 +512,6 @@ class TestIntegration:
         assert "error" in body
 
     def test_auth_failure_propagates_via_endpoint(self):
-        """An auth failure raises MCPAuthError that the dispatcher turns into 403."""
         ops = _facade()
         mcp_endpoint = self._mcp_endpoint(ops)
         mock_request = _make_mock_request(
@@ -556,7 +535,6 @@ class TestIntegration:
         assert resp.status_code == 403
 
     def test_resources_list_auth_error_propagates_via_endpoint(self):
-        """A facade denial on resources/list propagates as a 403 error."""
         ops = _facade(list_error=AssignmentError("framework_scope_required", 403))
         resp = self._dispatch(
             ops,
@@ -568,7 +546,6 @@ class TestIntegration:
         assert "error" in body
 
     def test_resources_read_auth_error_propagates_via_endpoint(self):
-        """A facade denial on resources/read propagates as a 404 error."""
         ops = _facade(get_error=AssignmentError("work_not_found", 404))
         resp = self._dispatch(
             ops,
@@ -578,3 +555,71 @@ class TestIntegration:
         assert resp.status_code == 404
         body = json.loads(resp.body)
         assert "error" in body
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_resource_capability_tracks_existing_mcp_gate(monkeypatch, enabled):
+    from shared.feature_flags import FeatureFlags
+    from orchestrator.mcp_server_endpoint import _discover_result
+
+    monkeypatch.setenv("FF_MCP_SERVER", str(enabled).lower())
+    monkeypatch.setattr("shared.feature_flags.flags", FeatureFlags())
+    capabilities = _discover_result()["capabilities"]
+    assert capabilities == ({"tools": {}, "resources": {}} if enabled else {"tools": {}})
+
+
+def resource_request(method, token):
+    params = {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}}}
+    if method == "resources/read":
+        params["uri"] = f"astral://work/{WORK_ID}/status"
+    return {"json": {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            "headers": {"Authorization": f"Bearer {token}", "MCP-Protocol-Version": "2026-07-28",
+                        "Mcp-Method": method}}
+
+
+@pytest.mark.parametrize("method", ["resources/list", "resources/read"])
+def test_resolved_framework_bearer_still_cannot_claim_unsupported_resource_scope(monkeypatch, method):
+    from shared.feature_flags import FeatureFlags
+
+    monkeypatch.setenv("FF_FRAMEWORK_CREDENTIALS", "true")
+    monkeypatch.setattr("shared.feature_flags.flags", FeatureFlags())
+    orch = _endpoint(_facade())
+    resolved = []
+    def resolve(token):
+        resolved.append(token)
+        return _caller()
+    orch.framework_credentials = SimpleNamespace(resolve_bearer=resolve)
+    app = FastAPI()
+    app.include_router(create_mcp_router(orch, public_base_url="https://mcp.invalid"))
+    response = TestClient(app).post("/mcp", **resource_request(method, "afk_synthetic"))
+    assert response.status_code == 403
+    assert resolved == ["afk_synthetic"]
+    assert 'scope="mcp:resources:read"' in response.headers["www-authenticate"]
+    assert orch.framework_work_operations.store.repository.captured_owner_ids == []
+
+
+@pytest.mark.parametrize("method", ["resources/list", "resources/read"])
+def test_verified_mcp_jwt_does_not_manufacture_framework_authority(monkeypatch, signing_key, method):
+    from orchestrator import mcp_authz
+
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    authority = "https://synthetic-iam.invalid/realm"
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
+    claims = {"sub": OWNER_ID, "iss": authority, "aud": "astral-mcp", "exp": int(time.time()) + 300,
+              "scope": "mcp:resources:read", "realm_access": {"roles": ["user"]}}
+    token = jwt.encode(claims, signing_key[0], algorithm="RS256", headers={"kid": "synthetic-request-authority"})
+    requested = []
+    async def keys(url, *, token):
+        requested.append(url)
+        return signing_key[1]
+    monkeypatch.setattr(mcp_authz, "get_jwks", keys)
+    orch = AdmissionOrchestrator()
+    orch.framework_work_operations = _facade()
+    app = FastAPI()
+    app.include_router(create_mcp_router(orch, public_base_url="https://mcp.invalid"))
+    response = TestClient(app).post("/mcp", **resource_request(method, token))
+    assert response.status_code == 403
+    assert requested == [f"{authority}/protocol/openid-connect/certs"]
+    assert orch.framework_work_operations.store.repository.captured_owner_ids == []
+    assert orch.calls == []

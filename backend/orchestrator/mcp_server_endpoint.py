@@ -59,9 +59,6 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 _SAFE_PLAIN_NAME = re.compile(r"^[\x21-\x7e]+$")
 _BASE64_SENTINEL = re.compile(r"^=\?base64\?([A-Za-z0-9+/]*={0,2})\?=$")
-# Resource URI contract for the ChatGPT Work panel (bounty #322). The lister and the
-# reader share one pattern so that every advertised URI round-trips to a successful
-# read, and the captured identity is the canonical UUID4 the Work facade accepts.
 _WORK_UUID4 = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 _WORK_UUID4_RE = re.compile(_WORK_UUID4)
 _WORK_RESOURCE_URI_PATTERN = re.compile(rf"^astral://work/({_WORK_UUID4})/(status|artifacts)\Z")
@@ -73,16 +70,16 @@ _METHOD_PHASE = {
     "tools/list": "tools_list",
     "tools/call": "tools_call",
     "subscriptions/listen": "subscriptions_listen",
-    "resources/list": "resources_list",      # NEW
-    "resources/read": "resources_read",      # NEW
+    "resources/list": "resources_list",
+    "resources/read": "resources_read",
 }
 _METHOD_SCOPE = {
     "server/discover": ("mcp:discover",),
     "tools/list": ("mcp:tools:read",),
     "tools/call": ("mcp:tools:invoke",),
     "subscriptions/listen": ("mcp:discover",),
-    "resources/list": ("mcp:resources:read",),  # NEW
-    "resources/read": ("mcp:resources:read",),   # NEW
+    "resources/list": ("mcp:resources:read",),
+    "resources/read": ("mcp:resources:read",),
 }
 
 
@@ -300,10 +297,15 @@ def _server_info() -> dict[str, str]:
 
 
 def _discover_result() -> dict[str, Any]:
+    from shared.feature_flags import flags
+
+    capabilities = {"tools": {}}
+    if flags.is_enabled("mcp_server"):
+        capabilities["resources"] = {}
     return {
         "resultType": "complete",
         "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
-        "capabilities": {"tools": {}},
+        "capabilities": capabilities,
         "instructions": (
             "Astral exposes the requesting user's authorized tools. "
             "Destructive unattended calls are refused."
@@ -361,11 +363,6 @@ def _tool_result(response: Any) -> dict[str, Any]:
 
 
 def _build_bounded_view_model(work: dict) -> dict:
-    """Project a Work record onto the bounded, allowlisted status view model.
-
-    SECURITY: only the fields the panel renders are copied out of the facade's
-    public record; owner identity, credentials and free-form notes never appear.
-    """
     return {
         "id": work.get("id"),
         "title": work.get("title") or "Untitled",
@@ -380,14 +377,6 @@ def _build_bounded_view_model(work: dict) -> dict:
 
 
 def _authorized_work_operations(orchestrator: Any, claims: dict) -> tuple[Any, Any]:
-    """Return the framework Work facade together with the verified caller.
-
-    SECURITY: mirrors the guard the existing ``tools/call`` path already applies.
-    The caller must be a real ``FrameworkCaller`` carrying ``operations.read``;
-    anything else fails closed instead of reaching the facade with no authority.
-    Owner isolation is then enforced by the facade, which scopes every read to
-    ``caller.owner_id``; this module never widens that scope.
-    """
     from orchestrator.framework_credentials import FrameworkCaller
     from orchestrator.work_operations import FrameworkWorkOperations
 
@@ -410,11 +399,6 @@ async def list_resources(
     user_id: str,
     claims: dict,
 ) -> list[dict]:
-    """List the Work resources the authenticated caller is allowed to read.
-
-    Every advertised URI is one ``read_resource`` accepts, so a listed URI always
-    round-trips. The listing is scoped by the facade to the caller's own owner.
-    """
     from persistent_agents.models import AssignmentError
 
     ops, caller = _authorized_work_operations(orchestrator, claims)
@@ -457,15 +441,6 @@ async def read_resource(
     uri: str,
     claims: dict,
 ) -> dict:
-    """Read one advertised Work resource under the caller's own authority.
-
-    SECURITY CHECKS:
-    1. Validate the URI against the same contract the lister advertises
-    2. Require a verified caller holding ``operations.read``
-    3. Read through the facade, which scopes the lookup to ``caller.owner_id``
-       and re-checks current permission/revocation on every request
-    4. Return a bounded view model rather than the raw record
-    """
     from persistent_agents.models import AssignmentError
 
     match = _WORK_RESOURCE_URI_PATTERN.match(uri) if isinstance(uri, str) else None
@@ -483,9 +458,6 @@ async def read_resource(
     try:
         record = await ops.get(caller, work_id)
     except AssignmentError as exc:
-        # A cross-owner or revoked lookup surfaces as the facade's own 404/403
-        # rather than a distinct code, so it cannot confirm that a foreign work
-        # item exists. Every code passes through unchanged.
         raise MCPAuthError(
             exc.status_code,
             "resource_unavailable",
@@ -997,7 +969,12 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             resource = await read_resource(orchestrator, user_id, uri, claims)
                             result = {
                                 "resultType": "complete",
-                                "resource": resource,
+                                "contents": [{
+                                    "uri": resource["uri"],
+                                    "mimeType": resource["mimeType"],
+                                    "text": json.dumps(resource["boundedViewModel"], ensure_ascii=False,
+                                                       allow_nan=False, separators=(",", ":")),
+                                }],
                             }
                             cache_control = "no-store"
                         except MCPAuthError as exc:
