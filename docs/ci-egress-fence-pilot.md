@@ -10,7 +10,7 @@ Fence is pinned to the published v0.10.5 production action bundle `openai/fence@
 
 `ReviewedHelpers` binds one actual merged AstralDeep default-branch commit and SHA256 identities for `scripts/ci_network_fixture.py` and `scripts/ci_fence_fixture_verifier.py`. An unmerged candidate ref, a placeholder digest or a candidate-controlled assertion of trust cannot authorize the pre-Fence launcher. The [owning supply-chain gate](../backend/tests/test_python_ci_supply_chain_060.py) requires actual workflow conformance, verifies that the helper commit is already an ancestor of `origin/main`, checks both Git-object digests and compares the candidate's helper files with those exact bytes.
 
-The reviewed helper merge is `1f76a8c820f1709865106af0443aff5982fd4930`. Its peer SHA256 is `23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240`; its verifier SHA256 is `f3e72a05048b50f55f4115f931137fb954a0573b40d37d35bd0b14485600d201`. The merged helper's neutral lifecycle is qualified separately. Actual protected Fence acceptance is still required for this pilot candidate.
+The reviewed helper merge is `85e50f5392e7916ccfd4da84c1ae90e097ef01e5`. Its peer SHA256 is `23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240`; its verifier SHA256 is `68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3`. The merged helper's neutral lifecycle is qualified separately. Actual protected Fence acceptance is still required for this pilot candidate.
 
 The lint job follows one fixed order:
 

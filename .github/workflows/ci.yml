@@ -464,9 +464,9 @@ jobs:
         run: |
           state=$(/usr/bin/sudo --non-interactive /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin:/sbin LANG=C LC_ALL=C /usr/bin/python3 -I - <<'ASTRAL_REVIEWED_START'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', 'f3e72a05048b50f55f4115f931137fb954a0573b40d37d35bd0b14485600d201'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
           limit = 262144
-          commit = '1f76a8c820f1709865106af0443aff5982fd4930'
+          commit = '85e50f5392e7916ccfd4da84c1ae90e097ef01e5'
           import urllib.request
           if os.geteuid() != 0:
               raise RuntimeError("trusted_start_requires_root")
@@ -535,7 +535,7 @@ jobs:
         run: |
           /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' 'astral-lint-${{ github.run_id }}-${{ github.run_attempt }}' <<'ASTRAL_REVIEWED_VERIFY'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', 'f3e72a05048b50f55f4115f931137fb954a0573b40d37d35bd0b14485600d201'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
           limit = 262144
           fixture = sys.argv[1]
           if re.fullmatch("[0-9a-f]{16}", fixture) is None:
@@ -583,7 +583,7 @@ jobs:
         run: |
           /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' <<'ASTRAL_REVIEWED_CLOSE'
           import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', 'f3e72a05048b50f55f4115f931137fb954a0573b40d37d35bd0b14485600d201'))
+          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier.py', '68bb90701e0302714686a685752a2e93da541146877a5cfac069c319d9921ca3'))
           limit = 262144
           fixture = sys.argv[1]
           if re.fullmatch("[0-9a-f]{16}", fixture) is None:
