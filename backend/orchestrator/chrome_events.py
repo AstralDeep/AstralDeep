@@ -728,6 +728,11 @@ async def _dispatch_chrome_event(orch, websocket, action: str, payload: dict,
                     params = json.loads(params)
                 except json.JSONDecodeError:
                     params = {}
+            if surface:
+                from orchestrator.projection_surfaces import get_surface
+                merge_form = getattr(get_surface(surface), "form_params", None)
+                if callable(merge_form):
+                    params = merge_form(params, payload.get("fields"))
             if isinstance(params, dict) and not params.get("chat_id"):
                 params = dict(params)
                 chat_id = getattr(orch, "_ws_active_chat", {}).get(id(websocket), "")
