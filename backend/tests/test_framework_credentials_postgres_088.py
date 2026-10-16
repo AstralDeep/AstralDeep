@@ -6,6 +6,8 @@ scope/TTL/admission bounds, and resolve_bearer's tamper/expiry/ownership refusal
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -180,6 +182,32 @@ def test_resolve_bearer_round_trips_a_freshly_issued_token(service, session):
     assert caller.owner_id == owner and caller.credential_id == view["credential_id"]
     assert caller.scopes == frozenset({"operations.submit", "operations.read"})
     assert caller.has_scope("operations.submit") and not caller.has_scope("agents.read")
+
+
+@pytest.mark.parametrize("offset", [timedelta(days=-1), timedelta(days=1)])
+def test_database_clock_capture_ignores_host_skew_and_preserves_attenuation(service, session,
+                                                                         runtime, monkeypatch, offset):
+    store, owner, sid = session
+    _, secret = _issue(service, store, owner, sid)
+
+    def shifted():
+        with runtime.transaction() as tx:
+            return tx.fetch_one("SELECT clock_timestamp() AS now")["now"] + offset
+
+    monkeypatch.setattr("orchestrator.framework_credentials._now", shifted)
+    caller = service.resolve_bearer(secret)
+    assert isinstance(caller, FrameworkCaller)
+    narrowed = replace(caller, scopes=frozenset({"operations.read"}))
+    observation = service.fresh_observation(narrowed)
+    assert observation.credential.scopes == ("operations.read",)
+    assert observation.valid_until - observation.started_at == timedelta(seconds=15)
+    with runtime.transaction() as tx:
+        service.assert_execution(tx, observation)
+    assert service.fresh_observation(replace(caller, scopes=frozenset({"artifacts.read"}))) is None
+    assert service.fresh_observation(replace(caller, _token_hash="0" * 64)) is None
+    service.revoke(owner_id=owner, credential_id=caller.credential_id)
+    assert service.resolve_bearer(secret) is None
+    assert service.fresh_observation(narrowed) is None
 
 
 @pytest.mark.parametrize("bad", [
