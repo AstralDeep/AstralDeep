@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -804,3 +804,111 @@ async def test_recovery_of_recall_and_cancelled_completed_attempt_preserves_char
     total = await recovered.totals("alice", "conversation")
     assert total["charged_cancelled"] == total["cancelled"] == 1
     assert total["recall_bytes"] == 11 and total["complete"]
+
+
+def usage_envelope(snapshot, *, event_class="llm_call", action_type="context.usage"):
+    return {"event_id": str(uuid4()), "event_class": event_class,
+            "action_type": action_type, "actor_user_id": "alice",
+            "conversation_id": "conversation",
+            "outputs_meta": {"usage_record": snapshot}}
+
+
+async def test_unparseable_rates_and_non_string_dates_refuse_the_whole_quote(ledger, audit):
+    for pricing in ({"input_per_million": "not-a-number"}, {**PRICE, "date": 20261015}):
+        async def invoke():
+            return response()
+
+        await ledger.model_call("alice", "conversation", "direct", "model-a", invoke,
+                                pricing=pricing)
+    totals = await ledger.totals("alice", "conversation")
+    assert totals["unknown_cost"] == 2 and totals["known_cost_by_currency"] == {}
+    assert not totals["complete"] and not totals["verified_cost"]
+    assert all(event.outputs_meta["usage_record"]["pricing"] is None for event in audit.events)
+
+
+async def test_recovery_refuses_malformed_foreign_and_backdated_snapshots(ledger, audit):
+    await call(ledger)
+    snapshot = deepcopy(audit.events[-1].outputs_meta["usage_record"])
+
+    malformed = deepcopy(snapshot)
+    del malformed["purpose"]
+    foreign = deepcopy(snapshot)
+    foreign["owner_id"] = "mallory"
+    backdated = deepcopy(snapshot)
+    backdated["updated_at"] = (datetime.fromisoformat(backdated["started_at"])
+                               - timedelta(seconds=1)).isoformat()
+
+    for broken, match in ((malformed, "recovery_invalid"), (foreign, "identity_invalid"),
+                          (backdated, "recovery_invalid")):
+        async def recover(*_args, broken=broken):
+            return [usage_envelope(broken)]
+
+        with pytest.raises(ContextUsageError, match=match):
+            await ContextUsage(audit.record, recover).totals("alice", "conversation")
+
+
+async def test_recovery_refuses_a_valid_snapshot_recorded_under_a_tampered_event_identity(ledger, audit):
+    await call(ledger)
+    tampered = audit.events[-1].model_copy(deep=True)
+    tampered.event_id = str(uuid4())
+
+    async def recover(*_args):
+        return [tampered]
+
+    with pytest.raises(ContextUsageError, match="identity_invalid"):
+        await ContextUsage(audit.record, recover).totals("alice", "conversation")
+
+
+async def test_recovery_skips_foreign_event_classes_and_refuses_unreadable_usage_records(ledger, audit):
+    await call(ledger)
+    foreign = usage_envelope({}, event_class="tool_call", action_type="tool.invoke")
+
+    async def with_foreign(*_args):
+        return [*await audit.recover("alice", "conversation"), foreign]
+
+    recovered = ContextUsage(audit.record, with_foreign)
+    assert await recovered.totals("alice", "conversation") == await ledger.totals("alice", "conversation")
+
+    async def unreadable(*_args):
+        envelope = usage_envelope({})
+        envelope["outputs_meta"] = {}
+        return [envelope]
+
+    with pytest.raises(ContextUsageError, match="recovery_invalid"):
+        await ContextUsage(audit.record, unreadable).totals("alice", "conversation")
+
+
+async def test_recovery_refuses_a_recall_attempt_claiming_a_later_revision(ledger, audit):
+    await ledger.record_recall("alice", "conversation", 8)
+    snapshot = deepcopy(audit.events[-1].outputs_meta["usage_record"])
+    snapshot["revision"] = 2
+
+    async def recover(*_args):
+        return [usage_envelope(snapshot)]
+
+    with pytest.raises(ContextUsageError, match="recovery_invalid"):
+        await ContextUsage(audit.record, recover).totals("alice", "conversation")
+
+
+async def test_recovery_preserves_retry_lineage_and_refuses_unreadable_retry_parents(ledger, audit):
+    await call(ledger)
+    parent = deepcopy(audit.events[-1].outputs_meta["usage_record"])
+
+    async def invoke():
+        return response()
+
+    await ledger.model_call("alice", "conversation", "direct", "model-a", invoke,
+                            pricing=PRICE, retry_of=parent["attempt_id"])
+    retry = deepcopy(audit.events[-1].outputs_meta["usage_record"])
+    recovered = ContextUsage(audit.record, audit.recover)
+    assert await recovered.totals("alice", "conversation") == await ledger.totals("alice", "conversation")
+    await recovered.begin("alice", "conversation", "direct", "model-a", retry_of=retry["attempt_id"])
+
+    snapshot = deepcopy(audit.events[-1].outputs_meta["usage_record"])
+    snapshot["retry_of"] = "not-a-uuid"
+
+    async def unreadable_parent(*_args):
+        return [usage_envelope(snapshot)]
+
+    with pytest.raises(ContextUsageError, match="identity_invalid"):
+        await ContextUsage(audit.record, unreadable_parent).totals("alice", "conversation")
